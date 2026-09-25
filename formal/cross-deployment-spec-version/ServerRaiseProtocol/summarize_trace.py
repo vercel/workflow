@@ -15,7 +15,7 @@ for f in sys.argv[1:]:
         act=body.split('\n')[0]
         act=re.sub(r' line.*','',act)
         vals={}
-        for k in ['stamp','exec','row','log','epc','eatt','eheld','kpc','kheld','cpc','sawUlid','crashes']:
+        for k in ['stamp','exec','row','log','epc','eatt','eheld','kpc','kheld','cpc','sawUlid','crashes','wleft','eturbo','rraised']:
             mm=re.search(r'^/\\ '+k+r' = (.*?)(?=\n/\\ |\n\n|\Z)',body,re.S|re.M)
             if mm: vals[k]=' '.join(mm.group(1).split())
         diff={k:v for k,v in vals.items() if prev.get(k)!=v}

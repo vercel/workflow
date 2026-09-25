@@ -23,10 +23,13 @@
 #                                    that attest (RaceScope = "attesting")
 #                                    to keep the state space tractable. Per
 #                                    invariant for the key variants (c, f, g,
-#                                    h, i); one combined run for the others.
+#                                    h, i, k); one combined run for the others.
 # For each ablation StartStamping_h_minus_<Fix>.cfg:
 #   results/<v>.txt, results/<v>__race_cancel.txt,
 #   results/<v>__race_recovery.txt   combined runs (first violation only)
+# For each ProbeCache timing cfg PC_<name>.cfg (ProbeCache.tla):
+#   results/PC_<name>.txt            one run: NoLongFallbackRun and/or the
+#                                    liveness properties the cfg lists
 # results/summary.txt                verdict + compact trace per result file
 #                                    (digest.py)
 #
@@ -41,7 +44,7 @@ AINVS="NoOverStamp CallerCap CallerCapExplicit AttrGateMatchesStamp AttributesGa
 BINVS="NoBrick NoAvoidableBrick NoMixedIdentityLog NoStuck NoAvoidableStuck NoResurrect SpecNeverLowered SingleRunCreated NoOverRaise CallerCanReadResult"
 DEFAULT_BINVS="NoAvoidableBrick NoMixedIdentityLog NoAvoidableStuck CallerCanReadResult"
 RACE_BINVS="NoAvoidableBrick NoMixedIdentityLog NoAvoidableStuck NoResurrect SpecNeverLowered SingleRunCreated"
-RACE_PER_INV="c_4327_4366_1044 f_floor6_10s_allfixes g_floor6_10s_notcommitted_reread h_floor6_10s_recommended i_recommended_envdrift"
+RACE_PER_INV="c_4327_4366_1044 f_floor6_10s_allfixes g_floor6_10s_notcommitted_reread h_floor6_10s_recommended i_recommended_envdrift k_4327_4366_head"
 ONLY="${ONLY:-}"   # optional: run only variants whose name matches this regex
 
 [[ -z "$ONLY" ]] && rm -rf results generated
@@ -109,6 +112,22 @@ for cfg in StartStamping_*.cfg; do
     gen "$cfg" "${v}__race_recovery" "$RACE_BINVS" 'FocusInv="LB"' "${RACE_RECOVERY[@]}"
   fi
 done
+
+# ProbeCache.tla: timing of #4327's probe cache (PC_<name>.cfg, one result
+# each; invariants and liveness PROPERTIES as listed in the cfg).
+if [[ -z "$ONLY" || "PC_" =~ $ONLY ]]; then
+  for cfg in PC_*.cfg; do
+    n="${cfg%.cfg}"
+    meta="$(mktemp -d)"
+    echo ">>> $n"
+    timeout 900 "${TLC[@]}" -metadir "$meta" -config "$cfg" ProbeCache.tla \
+      > "results/$n.txt" 2>&1
+    echo "exit=$?" >> "results/$n.txt"
+    grep -E "is violated|properties were violated|No error has been found|distinct states found" \
+      "results/$n.txt" | tail -2 | sed 's/^/    /'
+    rm -rf "$meta"
+  done
+fi
 
 python3 digest.py > results/summary.txt
 echo "wrote results/summary.txt"

@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 114 and seed 8982834968858157768 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 131966] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 8 and seed 3394333637818010698 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 80179] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 02:20:47)
+Starting... (2026-09-25 19:45:45)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -42,6 +42,12 @@ Starting... (2026-09-25 02:20:47)
    FALSE,
    "MutAttestAboveMax",
    TRUE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
    "ScenarioFilter",
    "all",
    "RaceScope",
@@ -91,5 +97,5 @@ Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-Finished in 01s at (2026-09-25 02:20:49)
+Finished in 01s at (2026-09-25 19:45:46)
 exit=12

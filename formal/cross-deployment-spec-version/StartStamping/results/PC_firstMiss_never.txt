@@ -1,0 +1,18 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 94 and seed 2133448532339619429 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 82075] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/ProbeCache.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module ProbeCache
+Starting... (2026-09-25 19:46:55)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-25 19:46:55.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.3E-14
+1237 states generated, 247 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 22.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 6).
+Finished in 00s at (2026-09-25 19:46:55)
+exit=0

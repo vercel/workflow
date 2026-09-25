@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 91 and seed -2361215580994930867 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 119853] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 95 and seed 2989905500703105773 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 64610] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 01:54:59)
+Starting... (2026-09-25 19:23:57)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -42,6 +42,12 @@ Starting... (2026-09-25 01:54:59)
    FALSE,
    "MutAttestAboveMax",
    FALSE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
    "ScenarioFilter",
    "all",
    "RaceScope",
@@ -65,7 +71,7 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 01:55:00.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:23:58.
 Error: Invariant NoResurrect is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -106,7 +112,7 @@ State 1: <Initial predicate>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 2: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 2: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -144,7 +150,7 @@ State 2: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 3: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 3: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -182,7 +188,7 @@ State 3: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 4: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
+State 4: <CRow line 500, col 5 to line 510, col 41 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -220,7 +226,7 @@ State 4: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 5: <CCrash line 491, col 5 to line 494, col 54 of module StartStamping>
+State 5: <CEvt line 519, col 5 to line 526, col 53 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -244,11 +250,11 @@ State 5: <CCrash line 491, col 5 to line 494, col 54 of module StartStamping>
 /\ att = <<3, 1>>
 /\ row = [ex |-> TRUE, st |-> "pending", sp |-> 1]
 /\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
-/\ clk = 100
-/\ crashes = 1
+/\ clk = 101
+/\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<0, 0>>
-/\ cpc = "failed"
+/\ cpc = "done"
 /\ kpc = "idle"
 /\ outc = <<FALSE, "none">>
 /\ resur = FALSE
@@ -256,9 +262,9 @@ State 5: <CCrash line 491, col 5 to line 494, col 54 of module StartStamping>
 /\ hist = {[st |-> "pending", sp |-> 1]}
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {}
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 1, n |-> 100]}
 
-State 6: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 6: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"exhausted", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -282,11 +288,11 @@ State 6: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ att = <<3, 1>>
 /\ row = [ex |-> TRUE, st |-> "failed", sp |-> 1]
 /\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
-/\ clk = 100
-/\ crashes = 1
+/\ clk = 101
+/\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<0, 0>>
-/\ cpc = "failed"
+/\ cpc = "done"
 /\ kpc = "idle"
 /\ outc = <<FALSE, "none">>
 /\ resur = FALSE
@@ -294,9 +300,9 @@ State 6: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ hist = {[st |-> "failed", sp |-> 1], [st |-> "pending", sp |-> 1]}
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {}
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 1, n |-> 100]}
 
-State 7: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 7: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"exhausted", "upg">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -320,11 +326,11 @@ State 7: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ att = <<3, 1>>
 /\ row = [ex |-> TRUE, st |-> "failed", sp |-> 1]
 /\ held = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 1]>>
-/\ clk = 100
-/\ crashes = 1
+/\ clk = 101
+/\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<0, 0>>
-/\ cpc = "failed"
+/\ cpc = "done"
 /\ kpc = "idle"
 /\ outc = <<FALSE, "none">>
 /\ resur = FALSE
@@ -332,9 +338,9 @@ State 7: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ hist = {[st |-> "failed", sp |-> 1], [st |-> "pending", sp |-> 1]}
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {}
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 1, n |-> 100]}
 
-State 8: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
+State 8: <XUpg line 579, col 5 to line 603, col 48 of module StartStamping>
 /\ xpc = <<"exhausted", "trans">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -358,11 +364,11 @@ State 8: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
 /\ att = <<3, 1>>
 /\ row = [ex |-> TRUE, st |-> "failed", sp |-> 1]
 /\ held = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 1]>>
-/\ clk = 100
-/\ crashes = 1
+/\ clk = 101
+/\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<0, 0>>
-/\ cpc = "failed"
+/\ cpc = "done"
 /\ kpc = "idle"
 /\ outc = <<FALSE, "none">>
 /\ resur = FALSE
@@ -370,9 +376,9 @@ State 8: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
 /\ hist = {[st |-> "failed", sp |-> 1], [st |-> "pending", sp |-> 1]}
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {}
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 1, n |-> 100]}
 
-State 9: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
+State 9: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
 /\ xpc = <<"exhausted", "ins">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -396,11 +402,11 @@ State 9: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
 /\ att = <<3, 1>>
 /\ row = [ex |-> TRUE, st |-> "running", sp |-> 1]
 /\ held = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 1]>>
-/\ clk = 100
-/\ crashes = 1
+/\ clk = 101
+/\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<0, 0>>
-/\ cpc = "failed"
+/\ cpc = "done"
 /\ kpc = "idle"
 /\ outc = <<FALSE, "none">>
 /\ resur = TRUE
@@ -410,10 +416,10 @@ State 9: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
   [st |-> "pending", sp |-> 1] }
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {}
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 1, n |-> 100]}
 
-70438 states generated, 33970 distinct states found, 15424 states left on queue.
+74457 states generated, 35796 distinct states found, 16208 states left on queue.
 The depth of the complete state graph search is 9.
-The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 4).
-Finished in 02s at (2026-09-25 01:55:01)
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 7 and the 95th percentile is 4).
+Finished in 02s at (2026-09-25 19:23:59)
 exit=12

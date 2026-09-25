@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 86 and seed -3109939038691922659 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 106166] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 16 and seed 805364185392477692 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 53061] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/SharedPool.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,38 +10,47 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module SharedPool
-Starting... (2026-09-25 01:36:48)
+Starting... (2026-09-25 19:13:11)
 Implied-temporal checking--satisfiability problem has 1 branches.
 Computing initial states...
 Computed 2 initial states...
-Finished computing initial states: 3 distinct states generated at 2026-09-25 01:36:49.
+Finished computing initial states: 3 distinct states generated at 2026-09-25 19:13:11.
 Error: Invariant SafeExec is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
+/\ phase = "old"
 /\ bad = FALSE
 /\ att = 0
-/\ seg = 0
-/\ status = "init"
-/\ phase = "old"
 /\ stamp = 0
+/\ status = "init"
+/\ sph = "none"
+/\ rolled = FALSE
+/\ seen = {"old"}
+/\ seg = 0
 
-State 2: <Start line 62, col 10 to line 65, col 41 of module SharedPool>
+State 2: <Start line 80, col 10 to line 83, col 55 of module SharedPool>
+/\ phase = "old"
 /\ bad = FALSE
 /\ att = 1
-/\ seg = 0
-/\ status = "running"
-/\ phase = "old"
 /\ stamp = 8
+/\ status = "running"
+/\ sph = "old"
+/\ rolled = FALSE
+/\ seen = {"old"}
+/\ seg = 0
 
-State 3: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+State 3: <Deliver line 86, col 3 to line 97, col 43 of module SharedPool>
+/\ phase = "old"
 /\ bad = TRUE
 /\ att = 1
-/\ seg = 1
-/\ status = "running"
-/\ phase = "old"
 /\ stamp = 8
+/\ status = "running"
+/\ sph = "old"
+/\ rolled = FALSE
+/\ seen = {"old"}
+/\ seg = 1
 
-11 states generated, 9 distinct states found, 1 states left on queue.
-The depth of the complete state graph search is 3.
-The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
-Finished in 00s at (2026-09-25 01:36:49)
+16 states generated, 16 distinct states found, 3 states left on queue.
+The depth of the complete state graph search is 4.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-09-25 19:13:11)

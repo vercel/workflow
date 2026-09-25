@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 49 and seed 2102664781152435913 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112797] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 32 and seed -5492207411842010025 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 56686] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 01:43:15)
+Starting... (2026-09-25 19:15:14)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -42,6 +42,12 @@ Starting... (2026-09-25 01:43:15)
    FALSE,
    "MutAttestAboveMax",
    FALSE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
    "ScenarioFilter",
    "all",
    "RaceScope",
@@ -67,7 +73,7 @@ Computed 2048 initial states...
 Computed 4096 initial states...
 Computed 8192 initial states...
 Computed 16384 initial states...
-Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 01:43:16.
+Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 19:15:15.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -108,7 +114,7 @@ State 1: <Initial predicate>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 2: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 2: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"rsCreate", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -146,7 +152,7 @@ State 2: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 3: <XRsCreate line 656, col 5 to line 671, col 79 of module StartStamping>
+State 3: <XRsCreate line 694, col 5 to line 709, col 79 of module StartStamping>
 /\ xpc = <<"rsEvt", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -184,8 +190,8 @@ State 3: <XRsCreate line 656, col 5 to line 671, col 79 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 4: <XRsEvt line 674, col 5 to line 678, col 53 of module StartStamping>
-/\ xpc = <<"trans", "fetch">>
+State 4: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
+/\ xpc = <<"rsEvt", "upg">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
   t |-> "T_S6",
@@ -207,8 +213,8 @@ State 4: <XRsEvt line 674, col 5 to line 678, col 53 of module StartStamping>
      rn |-> 0 ] >>
 /\ att = <<1, 1>>
 /\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
-/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "none", sp |-> 0]>>
-/\ clk = 101
+/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 3]>>
+/\ clk = 100
 /\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<3, 0>>
@@ -220,9 +226,9 @@ State 4: <XRsEvt line 674, col 5 to line 678, col 53 of module StartStamping>
 /\ hist = {[st |-> "pending", sp |-> 3]}
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
+/\ log = {}
 
-State 5: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 5: <XRsEvt line 712, col 5 to line 716, col 53 of module StartStamping>
 /\ xpc = <<"trans", "upg">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -260,7 +266,7 @@ State 5: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 6: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
+State 6: <XUpg line 579, col 5 to line 603, col 48 of module StartStamping>
 /\ xpc = <<"trans", "tx">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -298,7 +304,7 @@ State 6: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 7: <XTx line 569, col 5 to line 593, col 79 of module StartStamping>
+State 7: <XTx line 607, col 5 to line 631, col 79 of module StartStamping>
 /\ xpc = <<"trans", "trans">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -336,7 +342,7 @@ State 7: <XTx line 569, col 5 to line 593, col 79 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "S", sp |-> 6, n |-> 1]}
 
-State 8: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
+State 8: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
 /\ xpc = <<"ins", "trans">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -376,7 +382,7 @@ State 8: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "S", sp |-> 6, n |-> 1]}
 
-State 9: <XIns line 637, col 5 to line 643, col 41 of module StartStamping>
+State 9: <XIns line 675, col 5 to line 681, col 41 of module StartStamping>
 /\ xpc = <<"replay", "trans">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -417,8 +423,8 @@ State 9: <XIns line 637, col 5 to line 643, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 6, n |-> 1],
   [t |-> "RS", k |-> "U", sp |-> 0, n |-> 101] }
 
-185166 states generated, 85598 distinct states found, 27302 states left on queue.
+186123 states generated, 86134 distinct states found, 27438 states left on queue.
 The depth of the complete state graph search is 9.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 3).
-Finished in 04s at (2026-09-25 01:43:19)
+Finished in 03s at (2026-09-25 19:15:17)
 exit=12

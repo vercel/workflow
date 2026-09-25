@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 107 and seed 2725113320015929853 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 135831] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /tmp/tmp.yhIgwLh6c7/ServerRaiseProtocol.tla
+Running breadth-first search Model-Checking with fp 47 and seed 8941696107736621306 with 3 workers on 8 cores with 2731MB heap and 64MB offheap memory [pid: 81930] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.qYX5Ghf3v4/ServerRaiseProtocol.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/Sequences.tla
@@ -8,19 +8,18 @@ Semantic processing of module Naturals
 Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module ServerRaiseProtocol
-Starting... (2026-09-25 02:44:47)
+Starting... (2026-09-25 19:46:52)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
-Finished computing initial states: 12 distinct states generated at 2026-09-25 02:44:48.
-Progress(21) at 2026-09-25 02:44:51: 578,776 states generated (578,776 s/min), 214,353 distinct states found (214,353 ds/min), 14,116 states left on queue.
+Finished computing initial states: 12 distinct states generated at 2026-09-25 19:46:52.
 Model checking completed. No error has been found.
   Estimates of the probability that TLC did not check all reachable states
   because two distinct states had the same fingerprint:
   calculated (optimistic):  val = 5.6E-9
-  based on the actual fingerprints:  val = 1.3E-9
+  based on the actual fingerprints:  val = 1.9E-9
 665423 states generated, 249657 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 29.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
-Finished in 04s at (2026-09-25 02:44:51)
+Finished in 03s at (2026-09-25 19:46:55)

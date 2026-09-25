@@ -19,11 +19,62 @@ brick (never run, or fail terminally), corrupt their log, lose their result,
 or move backwards. They also check the proposed fixes and show which fixes
 are necessary.
 
-Code versions modelled: workflow `764eafd1a` (#4327 head), `origin/main`
-(with #4193: `SPEC_VERSION_CURRENT = SPEC_VERSION_MAX_SUPPORTED = 8`,
-hook force-claim), `origin/stable` (v4, mints 3, max 3),
-`origin/peter/executor-spec-version` (#4366), and workflow-server `d0575db`
-(#1044 head). The line references in each model point into those trees.
+Code versions modelled. The original models: workflow `764eafd1a` (#4327),
+`origin/main` (with #4193: `SPEC_VERSION_CURRENT = SPEC_VERSION_MAX_SUPPORTED = 8`,
+hook force-claim), `origin/stable` (v4, mints 3, max 3), #4366 before
+`03e6e67`, and workflow-server `d0575db` (#1044). The `HEAD` variants model
+the heads the PRs were approved at: #4327 `29197a10f`, #4366 `03e6e6771`,
+and workflow-server #1044 `f83173c` (which includes #1061). Line references
+in each model point into those trees.
+
+## Status at the current PR heads
+
+Most findings below were found against the earlier heads and have since been
+fixed in the PRs. This table is the current state; the `HEAD` configs are the
+evidence. Every verdict is pinned in `expected-verdicts.txt`.
+
+| ID | Finding | Status at HEAD | Evidence at HEAD |
+|---|---|---|---|
+| C1 | Cross-deployment start stamped the caller's own version | fixed (#4327) | `StartStamping/j_4327_head29197__CallerCap` |
+| C2 | A probe miss stamps 6, which bricks targets whose max is below 6 (`stable`, pre-3) | **open**, tracked in vercel/workflow#4401 | `j_4327_head29197__NoAvoidableBrick`; `Combined.race_miss_current_iff` |
+| C3 | Dropping the miss floor to 3 is only safe once the server raise is live on the whole fleet | design constraint for #4401 | `Combined.race_miss_proposed_*` |
+| C4 | Explicit, replay and CLI stamps are not capped; a stamp of 8 on a spec-7 target lets force-claim strand `await hook` | **open**, tracked in vercel/workflow#4407. The CLI part is fixed | `FC_Head4327_Explicit`; `Combined.cli_zero_version_fixed` |
+| P1 | A repeated probe miss refreshed the miss window and pinned a slow target to the 2 s budget | fixed (#4327 `29197a10f`) | `ProbeCache`: `PC_refresh_mid_live` violated, `PC_firstMiss_mid` passes |
+| P2 | A JSON reply with a malformed version stamped 2 | fixed (#4327: stamps 3) | `Resolve.resolve_malformed` |
+| P3 | A cached probe answer can be stale after a rollback, on Worlds that reuse deployment ids | open, minor; not reachable on Vercel (deployment ids are immutable) | `Completeness/SP_Rollback_Cross_Head_Cache` |
+| E1 | The executor attestation re-read the env on every request and could over-claim | fixed (#4366 `03e6e67`) | `AttestSound.head_sound_always` |
+| E1b | The `?? mintedSpecVersion()` fallback, taken when world-vercel storage is built without `createWorld`, keeps E1 | open, minor | `AttestSound.head_fallback_unsound_env_mutable` |
+| S1 | Resilient start never raised the run | fixed (#1044) | `ServerRaiseProtocol/HEAD` (all 14 properties pass) |
+| S2 | The "run_created not committed" skip fell through to a ULID `run_started` | fixed (#1044 retry window, #1061) | `HEAD__NoDoomedRun` |
+| S3 | A stale second delivery wrote a ULID event into a re-keyed log | fixed (#1044) | `HEAD__NoMixedIdentityLog` |
+| S4 | A cancel racing the raise wrote a ULID event into a slot log | fixed (#1044) | `HEAD__NoMixedIdentityLog` |
+| S5 | `run_started` could revive a finished run, including through the resilient-start conflict path | fixed (#1044, `09887ac`) | `HEAD__TerminalIsFinal`; `H9159765__TerminalIsFinal` is the regression witness |
+| S6 | Recovery rebuilt a raised run at the caller's stamp (8 -> 3) | fixed (#1044 `4b7b241`) | `HEAD_crash` (SpecNeverLowered, RunCreatedSpecMatchesRow) |
+| S7 | A `stable` caller cannot decode the compressed result of a raised run | **open** (documented #1044 residual) | `MidRunRaiseGates/Full_Head_StableCaller` |
+| S8 | `run_started` could land between the run row and its `run_created` | fixed (workflow-server#1061) | `HEAD__ReplayNeverFails`; `H9159765` is the witness |
+| S9 | An old server build writes ULID ids into a re-keyed log during deploy or rollback | accepted: #1044 deploys before any #4366 release, and the kill switch goes off before a rollback | `Completeness/RS_Skew_Fixed_Flag_Rollback` |
+| S10 | A future structural version would be raised mid-run | fixed (capability allow-list in #4366 / #1044) | `Head_AllowList_S679`; `Raise.crossesStructural_true_iff` |
+| T1 | Turbo mode writes step events after a failed `run_started` | no doomed run at HEAD: the server rejects step writes on runs that are not running | `HEAD_turbo`, `HEAD_turbo_crash` pass; `HEAD_turbo_noStepCheck` shows that check is what makes it safe |
+
+What the `HEAD` runs still report, and why none of it is a new bug:
+
+- `HEAD_flagOff*` fails exactly like `MAIN`: with the kill switch set, a v4
+  caller's stamp-3 run is created with ULID ids and a v5 executor cannot read
+  it (S1 as it is on `main`). That is the intended behaviour of the kill switch.
+- `HEAD_crash__PROGRESS` fails only when every redelivery keeps reading the
+  stale pre-reset row. With `StaleSettles` (reads settle before a
+  redelivery, which is seconds against a queue backoff of at least 5 s) it
+  passes.
+- `HEAD_turbo_crash*__PROGRESS` also fails on `main`
+  (`MAIN_turbo_crash_settled_slotStamps__PROGRESS`). It is turbo-mode
+  behaviour that predates the stack.
+- `Full_Head__ReplayConsistent` is the informational property from R4: a
+  slot-mode cancel that read spec 6 writes its row tagged 6 after a 6 -> 8
+  raise. The executor can still read the log.
+- `StartStamping` variant `k` (#4327 + #4366 HEAD) still reports
+  NoMixedIdentityLog violations. Its server half is `d0575db`, so those are
+  the S3/S4 races, which `ServerRaiseProtocol/HEAD` shows are closed at
+  `f83173c`.
 
 ## The protocol in brief
 
@@ -117,6 +168,15 @@ Lean output per check.
   - `XReplay` -> `slot-identity.ts:116-124`
   - `XComplete` -> `workflow.ts:1254`
   - `KPatch` -> `events.ts:2588-2650`
+
+`StartStamping/ProbeCache.tla` models #4327's per-deployment probe cache
+over time: 10 s for a first probe, 2 s after a recent miss, answers cached
+for 10 min and misses for 60 s, an eviction step for the 256-entry cap, and
+a target that answers in 1 s, 5 s or never. `Rule` selects no cache
+(`764eafd1a`), refresh-on-every-miss (`4fbbbda45`) or 60 s from the first
+miss (`29197a10f`). It checks that a target able to answer within the full
+budget is eventually read correctly (liveness), plus a bounded surrogate
+(`NoLongFallbackRun`).
 
 ### ServerRaiseProtocol (TLA+): the #1044 raise at DB-operation granularity
 

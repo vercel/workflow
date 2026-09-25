@@ -20,7 +20,7 @@ the same trust level as a TLC run. The pure decision functions are reused from
 **Starters** (`Starter`, any number, each looping forever). Each one is a queue
 delivery of `run_started` (redelivery, turbo re-invocation, world-vercel
 event-retry, a second executor), and a retryable failure sends it back to
-`readRun` as a fresh request. Its attested version `e` is `some (mintedSpecVersion())`
+`readRun` as a fresh request. Its attested version `e` is `some (world.specVersion)` (#4366 @ 03e6e6771 captures it at createWorld; it was `mintedSpecVersion()` per request before)
 (#4366) or `none` (stable, or no #4366).
 
 | pc          | code |

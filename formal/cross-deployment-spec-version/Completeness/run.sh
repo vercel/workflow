@@ -56,5 +56,7 @@ SP_PkgSkew_KillSwitch violation
 SP_PkgSkew_NoKillSwitch pass
 SP_PkgSkew_KillSwitch_Cross4327 violation
 SP_KillSwitchNew_Rolling pass
+SP_Rollback_Cross_Head_NoCache pass
+SP_Rollback_Cross_Head_Cache violation
 LIST
 exit $fail

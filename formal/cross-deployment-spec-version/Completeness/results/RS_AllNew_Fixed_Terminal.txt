@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 102 and seed 4278169402096164633 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 104828] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 84 and seed 8585232632328259125 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 52269] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/RolloutSkew.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/Sequences.tla
@@ -10,14 +10,14 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module RolloutSkew
-Starting... (2026-09-25 01:36:22)
+Starting... (2026-09-25 19:12:53)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-09-25 01:36:23.
+Finished computing initial states: 1 distinct state generated at 2026-09-25 19:12:53.
 Model checking completed. No error has been found.
   Estimates of the probability that TLC did not check all reachable states
   because two distinct states had the same fingerprint:
   calculated (optimistic):  val = 9.7E-14
 2772 states generated, 1020 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 11.
-The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
-Finished in 00s at (2026-09-25 01:36:23)
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
+Finished in 00s at (2026-09-25 19:12:54)

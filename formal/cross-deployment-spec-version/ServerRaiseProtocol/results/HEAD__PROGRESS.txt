@@ -1,0 +1,32 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 128 and seed -1774987311974058063 with 3 workers on 8 cores with 2731MB heap and 64MB offheap memory [pid: 58272] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.PpeE6UHSgx/ServerRaiseProtocol.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ServerRaiseProtocol
+Starting... (2026-09-25 19:16:26)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Finished computing initial states: 12 distinct states generated at 2026-09-25 19:16:26.
+Checking temporal properties for the current state space with 69353 total distinct states at (2026-09-25 19:16:29)
+Finished checking temporal properties in 00s at 2026-09-25 19:16:29
+Progress(13) at 2026-09-25 19:16:29: 170,314 states generated (170,314 s/min), 69,666 distinct states found (69,666 ds/min), 20,325 states left on queue.
+Progress(31) at 2026-09-25 19:16:40: 933,375 states generated, 394,904 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 394904 total distinct states at (2026-09-25 19:16:40)
+Finished checking temporal properties in 02s at 2026-09-25 19:16:42
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.2E-8
+  based on the actual fingerprints:  val = 2.4E-9
+933375 states generated, 394904 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 31.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
+Finished in 17s at (2026-09-25 19:16:42)

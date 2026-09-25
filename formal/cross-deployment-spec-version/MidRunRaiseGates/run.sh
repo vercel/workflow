@@ -57,6 +57,17 @@ RUNS=(
   "Full_Proposed__ReplayConsistent:MidRunRaiseGates:violation"
   "G4_Window_Proposed_NoRecovery:MidRunRaiseGates:pass"
   "Full_Proposed_StableCaller:MidRunRaiseGates:pass"
+  # I. #1044 @ 9159765 (flag on), regression witness
+  "Full_H9159765:MidRunRaiseGates:violation"
+  "Full_H9159765__TerminalAbsorbing:MidRunRaiseGates:violation"
+  # J. #1044 @ f83173c (HEAD, flag on)
+  "Head_AllowList_S679:MidRunRaiseGates:pass"
+  "Full_Head:MidRunRaiseGates:pass"
+  "Full_Head__ReplayConsistent:MidRunRaiseGates:violation"
+  "Full_Head_StableCaller:MidRunRaiseGates:violation"
+  "Full_Head_NoWindowPremise:MidRunRaiseGates:pass"
+  "Full_Head_FlagOff:MidRunRaiseGates:violation"
+  "Full_Main:MidRunRaiseGates:violation"
   # H. force-claim victim gate
   "FC_Main_Probe:ForceClaimGate:pass"
   "FC_Main_Explicit:ForceClaimGate:pass"

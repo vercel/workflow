@@ -19,6 +19,8 @@ def verdict(txt):
     m = re.search(r"^Error: Invariant (\w+) is violated", txt, re.M)
     if m:
         return "VIOLATED " + m.group(1)
+    if "Temporal properties were violated" in txt:
+        return "VIOLATED temporal"
     if "No error has been found" in txt:
         return "holds"
     if "Assumption" in txt and "is false" in txt:
@@ -79,6 +81,26 @@ def main():
             if verdict(txt).startswith("VIOLATED"):
                 for line in compact_trace(txt):
                     print(line[:900])
+        print()
+    # ProbeCache timing model (#4327 probe cache)
+    for cfg in sorted(glob.glob(os.path.join(HERE, "PC_*.cfg"))):
+        n = os.path.basename(cfg)[:-4]
+        with open(cfg) as f:
+            head = f.readline().strip().lstrip("\\* ")
+        rf = os.path.join(RES, f"{n}.txt")
+        if not os.path.exists(rf):
+            continue
+        txt = open(rf).read()
+        print(f"=== {n}: {head}")
+        print(f"  [{verdict(txt)}] {n} ({states(txt)})")
+        if verdict(txt).startswith("VIOLATED"):
+            i = max(txt.find("Error: Invariant"), txt.find("Error: Temporal"))
+            steps = []
+            for m in re.finditer(r"^State (\d+): .*?(?=^State |^Back to|\Z)", txt[i:], re.S | re.M):
+                vs = dict(re.findall(r"^/\\ (\w+) = (.*)$", m.group(0), re.M))
+                steps.append(f"{m.group(1)}:{vs.get('last','?').strip(chr(34))}/age={vs.get('age')}/afb={vs.get('afb')}")
+            back = re.search(r"^Back to state (\d+)", txt[i:], re.M)
+            print("      " + " ".join(steps)[:900] + (f"  -> back to {back.group(1)} (lasso)" if back else ""))
         print()
 
 

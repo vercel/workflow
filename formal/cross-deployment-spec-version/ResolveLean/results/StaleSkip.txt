@@ -133,4 +133,4 @@ shortest witness trace per violated property (first scenario of the family that 
 === [triples, row missing] allFixes: scenarios=9 states=9274 quiescent=18 violated=[]
 
 === [full (2 starters+terminal+crash, row missing)] allFixes: scenarios=6 states=40086 quiescent=230 violated=[]
-exit=0 elapsed=142s
+exit=0 elapsed=93s

@@ -19,11 +19,23 @@ Code facts (workflow origin/main + origin/peter/executor-spec-version):
   called from getWorld/getWorldLazy/start).  core's MAX comes from core's copy
   of @workflow/world, mintedSpecVersion from world-vercel's copy: the two can
   differ when the packages are mixed (pinned separately, or bundled twice).
-* #4366 attests  mintedSpecVersion()  re-evaluated per request
-  (world-vercel/src/events.ts:765-770), NOT world.specVersion.
+* #4366 @ d2b83751f attested  mintedSpecVersion()  re-evaluated per request
+  (world-vercel/src/events.ts:765-770), NOT world.specVersion  -> finding E1.
+* #4366 @ 03e6e6771 (origin/peter/executor-spec-version): createWorld reads
+  mintedSpecVersion() ONCE, uses it as world.specVersion AND threads it into
+  APIConfig.mintedSpecVersion (world-vercel/src/index.ts:31-34, 46);
+  run_started attests  config?.mintedSpecVersion ?? mintedSpecVersion()
+  (events.ts:779-781). Every event write of a World built by createWorld goes
+  through that config (storage.ts:56), so it attests exactly the declared
+  value. The `??` fallback re-reads the env only for a caller that builds the
+  storage itself from an APIConfig without the field (createStorage is
+  exported from world-vercel/src/index.ts:22): modelled as `head false`.
 -/
 
-inductive Source | recompute | captured
+/-- `recompute` = #4366 @ d2b83751f; `captured` = the idealised fix;
+`head viaCreateWorld` = #4366 @ 03e6e6771, `config?.mintedSpecVersion ??
+mintedSpecVersion()` with the field set iff the World came from createWorld. -/
+inductive Source | recompute | captured | head (viaCreateWorld : Bool)
   deriving DecidableEq, Repr
 
 /-- mint as computed by the World package whose SPEC_VERSION_CURRENT is `cur`. -/
@@ -40,6 +52,8 @@ def attest (src : Source) (cur : Nat) (envCreate envCall : Bool) : Nat :=
   match src with
   | .recompute => mint cur envCall
   | .captured  => declared cur envCreate
+  | .head true  => declared cur envCreate   -- config.mintedSpecVersion
+  | .head false => mint cur envCall         -- `?? mintedSpecVersion()` fallback
 
 def sound (src : Source) (cur coreMax : Nat) (envCreate envCall : Bool) : Bool :=
   !accepted cur coreMax envCreate || attest src cur envCreate envCall ≤ coreMax
@@ -77,6 +91,25 @@ force-claim gate would take a hook from a reader that cannot see
 forceClaimedBy. -/
 theorem witness : accepted 8 7 false = true ∧ attest .recompute 8 false true = 8 := by decide
 
+/-- E1 FIXED at 03e6e6771: on a World built by createWorld (every runtime
+path: getWorld / getWorldLazy -> createWorld) the attestation is the declared
+value, so it is sound with a mutable environment. -/
+theorem head_sound_always : allSound (.head true) false = true := by decide
+
+/-- ...and it is literally the captured value on every input. -/
+theorem head_eq_captured :
+    curs.all (fun c => bools.all fun e0 => bools.all fun e1 =>
+      attest (.head true) c e0 e1 == attest .captured c e0 e1) = true := by decide
+
+/-- Residual: the `??` fallback (an APIConfig without `mintedSpecVersion`, i.e.
+storage built directly, not through createWorld) still recomputes and has
+exactly the E1 unsound cases. -/
+theorem head_fallback_is_recompute :
+    curs.all (fun c => maxes.all fun m => bools.all fun e0 => bools.all fun e1 =>
+      sound (.head false) c m e0 e1 == sound .recompute c m e0 e1) = true := by decide
+
+theorem head_fallback_unsound_env_mutable : allSound (.head false) false = false := by decide
+
 /-- Kill switch direction is harmless: flipping sealed OFF in-process only
 lowers the attestation (6), which the raise treats as not-newer or a lower
 raise; never above coreMax. -/
@@ -88,3 +121,9 @@ theorem kill_switch_off_midprocess_sound :
   bools.filterMap fun e1 =>
     if sound .recompute c m e0 e1 then none
     else some s!"UNSOUND recompute: worldCURRENT={c} coreMAX={m} sealedAtCreate={e0} sealedAtCall={e1} attests {attest .recompute c e0 e1}")
+
+#eval (curs.flatMap fun c => maxes.flatMap fun m => bools.flatMap fun e0 =>
+  bools.filterMap fun e1 =>
+    if sound (.head true) c m e0 e1 then none
+    else some s!"UNSOUND head(createWorld): worldCURRENT={c} coreMAX={m} sealedAtCreate={e0} sealedAtCall={e1}")
+#eval s!"head(createWorld) unsound cases: {(curs.flatMap fun c => maxes.flatMap fun m => bools.flatMap fun e0 => bools.filter fun e1 => !sound (.head true) c m e0 e1).length}"

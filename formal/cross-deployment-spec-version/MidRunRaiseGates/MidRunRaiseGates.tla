@@ -108,6 +108,17 @@
 (*                 the caller's stamp >= 5, so the payload format stays    *)
 (*                 bound to what the caller declared it can decode.        *)
 (*                                                                         *)
+(* #1044 @ 9159765 / f83173c switches (see CONSTANTS): Full_H9159765* and *)
+(* Full_Head* / Full_Main configs (gen-configs.sh sections I and J). At    *)
+(* f83173c (flag on, the default): allow-list rule over CAPABILITY_ONLY_   *)
+(* SPEC_VERSIONS {3,4,5,8} (ws version-utils.ts 120-146), FixResilient,    *)
+(* bounded retry of doomed skips, ULID-only FixCancelGuard, run_started    *)
+(* guard status == 'pending' AND spec == held, terminal re-check after     *)
+(* both upgrade calls, #1061 atomic row + run_created (caller and          *)
+(* resilient start), reset-to-pending only for raised runs                 *)
+(* (raisedFromSpecVersion). Full_Head_FlagOff = kill switch (ExecVersions  *)
+(* = {0}); Full_Main = pre-PR main reference.                              *)
+(*                                                                         *)
 (* Serial = TRUE (lattice configs A) serializes the requests of different  *)
 (* deliveries, i.e. the revision-1 atomic-request abstraction, so those    *)
 (* configs compare raise RULES; every other config interleaves freely.     *)
@@ -141,7 +152,34 @@ CONSTANTS
   Serial,          \* BOOLEAN: requests of different deliveries never overlap
                    \*   (the revision-1 atomic abstraction; lattice configs)
   FixResilient, FixRetrySkips, FixCancelGuard, FixGuardStart, FixRecovery,
-  CompressGate     \* "run" | "stamp"
+  CompressGate,    \* "run" | "stamp"
+  \* #1044 @ 9159765 (HEAD) switches; the defaults (FALSE / 0) reproduce the
+  \* model before HEAD exactly:
+  HeadUpgrade,     \* upgrade.ts @ HEAD: a doomed skip (rekey, held pending)
+                   \*   rereads (moved spec = lost race), else retries (503)
+                   \*   while the 60 s window lasts (RetryBudget retries,
+                   \*   run-wide) except for run-created-already-slot, then
+                   \*   falls through; the main path re-checks terminal after
+                   \*   the upgrade, the conflict-refetch path does not
+  RetryBudget,     \* window retries before the window closes
+  WindowHolds,     \* a window retry's refetch starts only once no other
+                   \*   request is in flight (Retry-After 1 s vs ms requests)
+  HeadGuardStart,  \* run_started patch where status == held.status AND
+                   \*   spec == held.spec; on failure reread: terminal -> 410,
+                   \*   running -> alreadyRunning, else 503
+  FixReviveGap,    \* terminal re-check after the refetch-path upgrade too
+  RecoveryReset,   \* recovery resets a wedged run to pending (keeps the log
+                   \*   and version) when the log holds run_created
+  CancelGuardUlidOnly, \* FixCancelGuard applies to ULID-mode writes only
+                   \*   (HEAD: slot-mode commitRunPatchWithEvent unchanged)
+  \* #1044 @ f83173c switches (FALSE = the 9159765 behaviour above):
+  AtomicRsCreate,  \* #1061: resilient start commits the run row and its
+                   \*   run_created in one transaction (adopting a slot-1
+                   \*   run_created left by a deleted run entity)
+  GuardPendingOnly, \* #1065: run_started patch where status == 'pending'
+                   \*   AND spec == held.spec (not status == held.status)
+  ResetOnlyRaised  \* 4b7b241: the recovery reset applies only to a run
+                   \*   carrying raisedFromSpecVersion; others rebuild
 
 ASSUME Rule \in {"default", "allowlist", "none"}
 ASSUME CompressGate \in {"run", "stamp"}
@@ -180,10 +218,16 @@ VARIABLES
   replayFail, \* some executor replay met a row its code cannot read
   outComp,    \* the caller-read output was written compressed
   recovered,  \* the recovery fired
-  refused     \* raises blocked on a non-fresh log (cost metric)
+  refused,    \* raises blocked on a non-fresh log (cost metric)
+  wleft,      \* HEAD: window retries left
+  via,        \* HEAD: the delivery came through the resilient-start refetch
+  raised      \* f83173c: the row carries raisedFromSpecVersion (tracked only
+              \*   when ResetOnlyRaised)
 
 vars == <<stamp, exe, rowEx, st, rv, hist, log, cpc, pc, held, hidx, hfresh,
-          att, turbo, gvv, kpc, kheld, replayFail, outComp, recovered, refused>>
+          att, turbo, gvv, kpc, kheld, replayFail, outComp, recovered, refused,
+          wleft, via, raised>>
+HUnch == <<wleft, via>>
 
 Cur == [st |-> st, v |-> rv]
 Reads == IF StaleReads THEN hist ELSE {Cur}
@@ -223,11 +267,14 @@ Init ==
   /\ kheld = [st |-> "none", v |-> 0]
   /\ replayFail = FALSE /\ outComp = FALSE /\ recovered = FALSE
   /\ refused = {}
+  /\ wleft = RetryBudget
+  /\ via = [d \in D |-> FALSE]
+  /\ raised = FALSE
 
 -----------------------------------------------------------------------------
 (* Caller: run_created                                                     *)
 CUnch == <<stamp, exe, pc, held, hidx, hfresh, att, turbo, gvv, kpc, kheld,
-           replayFail, outComp, recovered, refused>>
+           replayFail, outComp, recovered, refused, raised>>
 
 CallerRow ==
   /\ cpc = "row"
@@ -240,25 +287,26 @@ CallerRow ==
         /\ IF CallerSplit
              THEN cpc' = "evt" /\ UNCHANGED log
              ELSE cpc' = "done" /\ log' = << Row("rc", stamp) >>
-  /\ UNCHANGED CUnch
+  /\ UNCHANGED CUnch /\ UNCHANGED HUnch
 
 CallerEvt ==
   /\ cpc = "evt" /\ Room
   /\ log' = Append(log, Row("rc", stamp))   \* id mode from the row it created
   /\ cpc' = "done"
   /\ UNCHANGED <<rowEx, st, rv, hist>>
-  /\ UNCHANGED CUnch
+  /\ UNCHANGED CUnch /\ UNCHANGED HUnch
 
 -----------------------------------------------------------------------------
 (* Deliveries: the run_started request, then the executor                 *)
-SUnch == <<stamp, exe, cpc, kpc, kheld, recovered>>
+SUnch0 == <<stamp, exe, cpc, kpc, kheld, recovered>>
+SUnch == <<stamp, exe, cpc, kpc, kheld, recovered, raised>>
 Go(d, p) == pc' = [pc EXCEPT ![d] = p]
 Hold(d, r) == held' = [held EXCEPT ![d] = r]
 
 \* request-internal pcs: between these steps another request may interleave
 \* unless Serial
 ReqPcs == {"rs_create", "rs_evt", "rs_refetch", "check", "head", "tx",
-           "reread", "trans", "ins"}
+           "reread", "trans", "ins", "skip", "skip_slot"}
 Free(d) == Serial => \A d2 \in D \ {d} : pc[d2] \notin ReqPcs
 
 Fail(d) ==
@@ -268,8 +316,19 @@ Fail(d) ==
        /\ turbo' = [turbo EXCEPT ![d] = FALSE]     \* redelivery: attempt >= 2
   ELSE /\ Go(d, "err") /\ UNCHANGED <<att, turbo>>
 
+\* HEAD window-retry redelivery: starts once no other request is in flight
+WinOK(d) == WindowHolds =>
+  /\ cpc /= "evt" /\ kpc \in {"read", "done"}
+  /\ \A d2 \in D \ {d} : pc[d2] \notin ReqPcs
+
+\* HEAD: terminal re-check after the upgrade (main path only unless fixed)
+AfterUpg(d) ==
+  Go(d, IF HeadUpgrade /\ (~via[d] \/ FixReviveGap) /\ st = "terminal"
+        THEN "gone" ELSE "trans")
+
 SFetch(d) ==
-  /\ pc[d] = "fetch" /\ Free(d)
+  /\ pc[d] \in {"fetch", "wfetch"} /\ Free(d)
+  /\ pc[d] = "wfetch" => WinOK(d)
   /\ (rowEx \/ ResilientStart)
   /\ IF ~rowEx
      THEN IF stamp >= 3                     \* runInput present
@@ -281,17 +340,26 @@ SFetch(d) ==
             ELSE Hold(d, r) /\ Go(d, "check") /\ UNCHANGED <<att, turbo>>
   /\ UNCHANGED <<rowEx, st, rv, hist, log, hidx, hfresh, gvv, replayFail,
                  outComp, refused>>
+  /\ via' = [via EXCEPT ![d] = FALSE]
+  /\ UNCHANGED wleft
   /\ UNCHANGED SUnch
 
 SRsCreate(d) ==
   /\ pc[d] = "rs_create"
   /\ IF rowEx
-     THEN Go(d, "rs_refetch") /\ UNCHANGED <<rowEx, st, rv, hist, held>>
+     THEN Go(d, "rs_refetch") /\ UNCHANGED <<rowEx, st, rv, hist, held, log>>
      ELSE /\ rowEx' = TRUE /\ Commit("pending", RsV(d))
           /\ Hold(d, [st |-> "pending", v |-> RsV(d)])
-          /\ Go(d, "rs_evt")
-  /\ UNCHANGED <<log, hidx, hfresh, att, turbo, gvv, replayFail, outComp, refused>>
-  /\ UNCHANGED SUnch
+          /\ IF AtomicRsCreate                 \* #1061: row + run_created
+             THEN /\ Room
+                  /\ IF SlotTag(Regime(RsV(d))) /\ HasSlotRC
+                       THEN UNCHANGED log       \* adopt slot-1 run_created
+                       ELSE log' = Append(log, Row("rc", RsV(d)))
+                  /\ Go(d, "trans")             \* no upgrade on this path
+             ELSE Go(d, "rs_evt") /\ UNCHANGED log
+  /\ raised' = IF ~rowEx THEN ResetOnlyRaised /\ RsV(d) /= stamp ELSE raised
+  /\ UNCHANGED <<hidx, hfresh, att, turbo, gvv, replayFail, outComp, refused>>
+  /\ UNCHANGED SUnch0 /\ UNCHANGED HUnch
 
 SRsEvt(d) ==
   /\ pc[d] = "rs_evt" /\ Room
@@ -301,16 +369,17 @@ SRsEvt(d) ==
   /\ Go(d, "trans")                              \* no upgrade on this path
   /\ UNCHANGED <<rowEx, st, rv, hist, held, hidx, hfresh, att, turbo, gvv,
                  replayFail, outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 SRsRefetch(d) ==
   /\ pc[d] = "rs_refetch" /\ rowEx
   /\ \E r \in Reads :
        IF r.st = "terminal" THEN Go(d, "gone") /\ UNCHANGED held
        ELSE Hold(d, r) /\ Go(d, IF FixResilient THEN "check" ELSE "trans")
+  /\ via' = [via EXCEPT ![d] = HeadUpgrade]
   /\ UNCHANGED <<rowEx, st, rv, hist, log, hidx, hfresh, att, turbo, gvv,
                  replayFail, outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED wleft
 
 SCheck(d) ==
   /\ pc[d] = "check"
@@ -323,7 +392,7 @@ SCheck(d) ==
         ELSE Go(d, "head") /\ UNCHANGED refused
   /\ UNCHANGED <<rowEx, st, rv, hist, log, held, hidx, hfresh, att, turbo, gvv,
                  replayFail, outComp>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 SHead(d) ==
   /\ pc[d] = "head"
@@ -332,21 +401,43 @@ SHead(d) ==
          reason ==
            IF Len(log) = 0 THEN "not-committed"
            ELSE IF log[FirstIdx].t /= "rc" THEN "not-first"
-           ELSE IF (RequiresFresh(from, e) /\ Len(log) > 1)
-                   \/ (Rekey(from, e) /\ SlotTag(log[FirstIdx].g))
-                THEN "not-fresh"
+           ELSE IF RequiresFresh(from, e) /\ Len(log) > 1 THEN "not-fresh"
+           ELSE IF Rekey(from, e) /\ SlotTag(log[FirstIdx].g)
+                THEN IF HeadUpgrade THEN "already-slot" ELSE "not-fresh"
            ELSE "go"
+         doomed == HeadUpgrade /\ Rekey(from, e) /\ held[d].st = "pending"
      IN
-     /\ refused' = IF reason = "not-fresh" THEN refused \cup {<<from, e>>}
-                   ELSE refused
+     /\ refused' = IF reason \in {"not-fresh", "already-slot"}
+                   THEN refused \cup {<<from, e>>} ELSE refused
      /\ IF reason = "go"
         THEN /\ hidx' = [hidx EXCEPT ![d] = FirstIdx]
              /\ hfresh' = [hfresh EXCEPT ![d] = (Len(log) = 1)]
              /\ Go(d, "tx") /\ UNCHANGED <<att, turbo>>
+        ELSE IF doomed
+        THEN /\ Go(d, IF reason = "already-slot" THEN "skip_slot" ELSE "skip")
+             /\ UNCHANGED <<hidx, hfresh, att, turbo>>
         ELSE IF FixRetrySkips /\ reason \in {"not-committed", "not-fresh"}
         THEN Fail(d) /\ UNCHANGED <<hidx, hfresh>>
         ELSE Go(d, "trans") /\ UNCHANGED <<hidx, hfresh, att, turbo>>
   /\ UNCHANGED <<rowEx, st, rv, hist, log, held, gvv, replayFail, outComp>>
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
+
+\* HEAD upgrade.ts skip() for a doomed skip: consistent reread; a moved spec
+\* is a lost race; else a 503 (window retry, not counted against the queue's
+\* attempts: 60 s of Retry-After 1 s against a ~9-10 h delivery horizon)
+\* while the window lasts, unless run-created-already-slot; then fall
+\* through with the INPUT run.
+SSkip(d) ==
+  /\ pc[d] \in {"skip", "skip_slot"}
+  /\ IF rowEx /\ rv /= held[d].v
+     THEN Hold(d, Cur) /\ AfterUpg(d) /\ UNCHANGED <<turbo, wleft>>
+     ELSE IF pc[d] = "skip" /\ wleft > 0
+     THEN /\ wleft' = wleft - 1 /\ Go(d, "wfetch")
+          /\ turbo' = [turbo EXCEPT ![d] = FALSE]    \* a redelivery
+          /\ UNCHANGED held
+     ELSE Go(d, "trans") /\ UNCHANGED <<held, turbo, wleft>>
+  /\ UNCHANGED <<rowEx, st, rv, hist, log, hidx, hfresh, att, gvv, replayFail,
+                 outComp, refused, via>>
   /\ UNCHANGED SUnch
 
 STx(d) ==
@@ -361,39 +452,48 @@ STx(d) ==
                  /\ (Rekey(from, e) => ~SlotTag(log[i].g))
      IN IF cond
         THEN /\ Commit(st, e)
+             /\ raised' = (raised \/ ResetOnlyRaised)
              \* run_created rewritten (rekey delete+create at slot 1, or a
              \* specVersion patch); rows appended since the head read keep
              \* the tag they were written under.
              /\ log' = IF hfresh[d] THEN [log EXCEPT ![i].g = Regime(e)]
                        ELSE log
-        ELSE UNCHANGED <<st, rv, hist, log>>          \* lost-race
+        ELSE UNCHANGED <<st, rv, hist, log, raised>>  \* lost-race
   /\ Go(d, "reread")
   /\ UNCHANGED <<rowEx, held, hidx, hfresh, att, turbo, gvv, replayFail,
                  outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch0 /\ UNCHANGED HUnch
 
 SReread(d) ==
   /\ pc[d] = "reread"
-  /\ Hold(d, Cur) /\ Go(d, "trans")
+  /\ Hold(d, Cur) /\ AfterUpg(d)
   /\ UNCHANGED <<rowEx, st, rv, hist, log, hidx, hfresh, att, turbo, gvv,
                  replayFail, outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 STrans(d) ==
   /\ pc[d] = "trans"
   /\ LET h == held[d] IN
      IF h.st = "running"
-       THEN Go(d, "replay") /\ UNCHANGED <<st, rv, hist, held>>  \* alreadyRunning
+       THEN Go(d, "replay") /\ UNCHANGED <<st, rv, hist, held, att, turbo>>  \* alreadyRunning
+     ELSE IF HeadGuardStart
+       THEN IF (IF GuardPendingOnly THEN st = "pending" ELSE st = h.st) /\ rv = h.v
+              THEN Commit("running", rv) /\ Go(d, "ins") /\ UNCHANGED <<held, att, turbo>>
+            ELSE IF st = "terminal"
+              THEN Go(d, "gone") /\ UNCHANGED <<st, rv, hist, held, att, turbo>>
+            ELSE IF st = "running"                          \* alreadyRunning
+              THEN Hold(d, Cur) /\ Go(d, "replay") /\ UNCHANGED <<st, rv, hist, att, turbo>>
+            ELSE Fail(d) /\ UNCHANGED <<st, rv, hist, held>> \* 503 stale spec
      ELSE IF ~FixGuardStart
-       THEN Commit("running", rv) /\ Go(d, "ins") /\ UNCHANGED held  \* no .where
+       THEN Commit("running", rv) /\ Go(d, "ins") /\ UNCHANGED <<held, att, turbo>>  \* no .where
      ELSE IF st = "pending" /\ rv = h.v
-       THEN Commit("running", rv) /\ Go(d, "ins") /\ UNCHANGED held
+       THEN Commit("running", rv) /\ Go(d, "ins") /\ UNCHANGED <<held, att, turbo>>
      ELSE /\ Hold(d, Cur)                                        \* reread
           /\ Go(d, IF st = "terminal" THEN "gone" ELSE "check")
-          /\ UNCHANGED <<st, rv, hist>>
-  /\ UNCHANGED <<rowEx, log, hidx, hfresh, att, turbo, gvv, replayFail,
+          /\ UNCHANGED <<st, rv, hist, att, turbo>>
+  /\ UNCHANGED <<rowEx, log, hidx, hfresh, gvv, replayFail,
                  outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 SIns(d) ==
   /\ pc[d] = "ins"
@@ -406,7 +506,7 @@ SIns(d) ==
         /\ Go(d, "replay") /\ UNCHANGED <<att, turbo>>
   /\ UNCHANGED <<rowEx, st, rv, hist, held, hidx, hfresh, gvv, replayFail,
                  outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 \* What the executor code can read.  ReaderCode >= 6 (v5): every row must be
 \* slot-numbered, unconditionally.  ReaderCode < 6 (v4 stable): ULID ids;
@@ -422,7 +522,7 @@ SReplay(d) ==
        ELSE Go(d, "work") /\ UNCHANGED replayFail
   /\ UNCHANGED <<rowEx, st, rv, hist, log, held, hidx, hfresh, att, turbo,
                  outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 SWork(d) ==
   /\ pc[d] = "work" /\ Free(d)
@@ -433,7 +533,7 @@ SWork(d) ==
             /\ Go(d, "complete")
   /\ UNCHANGED <<rowEx, st, rv, hist, held, hidx, hfresh, att, turbo, gvv,
                  replayFail, outComp, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 Compresses(d) == IF CompressGate = "stamp" THEN stamp >= 5 ELSE gvv[d] >= 5
 
@@ -445,13 +545,14 @@ SComplete(d) ==
        IF r.st = "terminal" \/ st = "terminal"
          THEN Go(d, "done") /\ UNCHANGED <<st, rv, hist, log, outComp>>
        ELSE /\ CanAllocate(r.v) /\ Room
-            /\ FixCancelGuard => rv = r.v
+            /\ (FixCancelGuard /\ (CancelGuardUlidOnly => ~SlotTag(Regime(r.v))))
+                 => rv = r.v
             /\ Commit("terminal", rv)
             /\ log' = Append(log, Row("tm", r.v))
             /\ outComp' = (outComp \/ Compresses(d))
             /\ Go(d, "done")
   /\ UNCHANGED <<rowEx, held, hidx, hfresh, att, turbo, gvv, replayFail, refused>>
-  /\ UNCHANGED SUnch
+  /\ UNCHANGED SUnch /\ UNCHANGED HUnch
 
 \* G5: a retried run_started (delivery d, a redelivery) finds the run running
 \* with no run_started and no progress, deletes the run entity only, and
@@ -467,21 +568,31 @@ Recover(d) ==
          \* run_created (and its version, = the deleted row's, which #1044
          \* keeps in sync), then go through the upgrade path.
          v == IF FixRecovery THEN Max(stamp, rv) ELSE RsV(d)
-     IN /\ Commit("pending", v)
+     IN IF RecoveryReset /\ HasRC /\ (ResetOnlyRaised => raised)
+        THEN \* HEAD (ws handlers/v4/events.ts:1864-1904, runs.ts:3954-3990):
+             \* status running -> pending, version and log kept; the 503'd
+             \* run_started is retried on the ordinary path.
+             /\ Commit("pending", rv)
+             /\ UNCHANGED <<log, held, wleft, raised>>
+             /\ Go(d, "fetch")
+        ELSE
+        /\ Commit("pending", v)
         /\ IF (FixRecovery /\ HasRC) \/ (SlotTag(Regime(v)) /\ HasSlotRC)
              THEN UNCHANGED log                      \* adopt
              ELSE Room /\ log' = Append(log, Row("rc", v))
         /\ Hold(d, [st |-> "pending", v |-> v])
         /\ Go(d, IF FixRecovery /\ FixResilient THEN "check" ELSE "trans")
+        /\ wleft' = RetryBudget                     \* new run.createdAt
+        /\ raised' = (ResetOnlyRaised /\ v /= stamp) \* rebuilt row's marker
   /\ recovered' = TRUE
   /\ turbo' = [turbo EXCEPT ![d] = FALSE]
   /\ UNCHANGED <<stamp, exe, rowEx, cpc, hidx, hfresh, att, gvv, kpc, kheld,
-                 replayFail, outComp, refused>>
+                 replayFail, outComp, refused, via>>
 
 -----------------------------------------------------------------------------
 (* External terminal writer (run_cancelled / run_failed POST)              *)
 KUnch == <<stamp, exe, rowEx, cpc, pc, held, hidx, hfresh, att, turbo, gvv,
-           replayFail, outComp, recovered, refused>>
+           replayFail, outComp, recovered, refused, wleft, via, raised>>
 
 KRead ==
   /\ kpc = "read"
@@ -496,7 +607,8 @@ KPatch ==
   /\ kpc = "patch"
   /\ IF SlotTag(Regime(kheld.v))
      THEN \* commitRunPatchWithEvent: one transaction, guard non-terminal
-          ( IF st /= "terminal" /\ FixCancelGuard /\ rv /= kheld.v
+          ( IF st /= "terminal" /\ FixCancelGuard /\ ~CancelGuardUlidOnly
+               /\ rv /= kheld.v
               THEN kheld' = Cur /\ kpc' = "patch" /\ UNCHANGED <<st, rv, hist, log>>
             ELSE /\ IF st /= "terminal" /\ CanAllocate(kheld.v) /\ Room
                       THEN Commit("terminal", rv) /\ log' = Append(log, Row("tm", kheld.v))
@@ -522,7 +634,7 @@ Next ==
   \/ \E d \in D : \/ SFetch(d) \/ SRsCreate(d) \/ SRsEvt(d) \/ SRsRefetch(d)
                   \/ SCheck(d) \/ SHead(d) \/ STx(d) \/ SReread(d)
                   \/ STrans(d) \/ SIns(d) \/ SReplay(d) \/ SWork(d)
-                  \/ SComplete(d) \/ Recover(d)
+                  \/ SComplete(d) \/ Recover(d) \/ SSkip(d)
   \/ KRead \/ KPatch \/ KInsert
   \/ UNCHANGED vars            \* quiescence (bounded log) is not a deadlock
 
@@ -535,6 +647,7 @@ TypeOK ==
   /\ Len(log) \in 0..MaxLog
   /\ \A i \in Rows : log[i].t \in {"rc", "rs", "w", "tm"}
   /\ refused \subseteq ((1..MaxV) \X (0..MaxV))
+  /\ wleft \in 0..RetryBudget
 
 (* G1: the executor code can replay the run. Checked when a replay         *)
 (* actually loads the log (replayFail) and as a state predicate on every   *)

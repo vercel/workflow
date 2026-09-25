@@ -1,0 +1,349 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 42 and seed -5855618224805792378 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 78214] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module StartStamping
+Starting... (2026-09-25 19:44:03)
+<< "VARIANT",
+   "CallerHas4327",
+   TRUE,
+   "MissFloor",
+   6,
+   "ProbeBudgetSec",
+   10,
+   "ServerRaise",
+   TRUE,
+   "RaiseOnResilient",
+   FALSE,
+   "RaiseOnNotCommitted",
+   FALSE,
+   "FixLateRunCreated",
+   FALSE,
+   "FixSkipReread",
+   FALSE,
+   "FixGuardStart",
+   FALSE,
+   "FixRecoveryAdopt",
+   FALSE,
+   "FixConsistentIdMode",
+   FALSE,
+   "FixAtomicCreate",
+   FALSE,
+   "FixCompressOnStamp",
+   FALSE,
+   "EnvDrift",
+   FALSE,
+   "MutAttestAboveMax",
+   FALSE,
+   "MalformedReplies",
+   TRUE,
+   "HeadMalformed3",
+   TRUE,
+   "CliCapsSource",
+   TRUE,
+   "ScenarioFilter",
+   "all",
+   "RaceScope",
+   "attesting",
+   "FocusInv",
+   "LB",
+   "scenarios",
+   5830,
+   "layerB classes",
+   72 >>
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Computed 64 initial states...
+Computed 128 initial states...
+Computed 256 initial states...
+Computed 512 initial states...
+Computed 1024 initial states...
+Computed 2048 initial states...
+Computed 4096 initial states...
+Finished computing initial states: 5830 states generated, with 72 of them distinct at 2026-09-25 19:44:03.
+Error: Invariant NoResurrect is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ xpc = <<"fetch", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> FALSE, st |-> "none", sp |-> 0]
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "row"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 0
+/\ hist = {}
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {}
+
+State 2: <CRow line 500, col 5 to line 510, col 41 of module StartStamping>
+/\ xpc = <<"fetch", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 1]
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 1
+/\ hist = {[st |-> "pending", sp |-> 1]}
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {}
+
+State 3: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
+/\ xpc = <<"upg", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 1]
+/\ held = <<[st |-> "pending", sp |-> 1], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 1
+/\ hist = {[st |-> "pending", sp |-> 1]}
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {}
+
+State 4: <KRead line 765, col 5 to line 769, col 56 of module StartStamping>
+/\ xpc = <<"upg", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 1]
+/\ held = <<[st |-> "pending", sp |-> 1], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "patch"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 1
+/\ hist = {[st |-> "pending", sp |-> 1]}
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "pending", sp |-> 1]
+/\ log = {}
+
+State 5: <XUpg line 579, col 5 to line 603, col 48 of module StartStamping>
+/\ xpc = <<"trans", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 1]
+/\ held = <<[st |-> "pending", sp |-> 1], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "patch"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 1
+/\ hist = {[st |-> "pending", sp |-> 1]}
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "pending", sp |-> 1]
+/\ log = {}
+
+State 6: <KPatch line 771, col 5 to line 783, col 34 of module StartStamping>
+/\ xpc = <<"trans", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "cancelled", sp |-> 1]
+/\ held = <<[st |-> "pending", sp |-> 1], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "ins"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 1
+/\ hist = {[st |-> "cancelled", sp |-> 1], [st |-> "pending", sp |-> 1]}
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "pending", sp |-> 1]
+/\ log = {}
+
+State 7: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
+/\ xpc = <<"ins", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_S6",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 1 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "running", sp |-> 1]
+/\ held = <<[st |-> "pending", sp |-> 1], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "ins"
+/\ outc = <<FALSE, "none">>
+/\ resur = TRUE
+/\ peak = 1
+/\ hist = { [st |-> "cancelled", sp |-> 1],
+  [st |-> "running", sp |-> 1],
+  [st |-> "pending", sp |-> 1] }
+/\ mint = <<6, 6>>
+/\ kheld = [st |-> "pending", sp |-> 1]
+/\ log = {}
+
+27994 states generated, 12110 distinct states found, 6357 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 4).
+Finished in 01s at (2026-09-25 19:44:04)
+exit=12

@@ -9,15 +9,17 @@ The end-to-end pipeline of the stack for one run:
 1. **client** (`stampOf`). The stamp comes from one of these sources:
    * a v5 `start()`: `c` is the caller's `world.specVersion` ∈ [6, MAX]
      (world-compatibility.ts:36-56), and the stamp is `resolve (probeOf reply net) c`
-     (start.ts:117-138, 504-588). The proposed floor-3 variant is also modelled.
+     (#4327 @ 29197a10f start.ts:156-182, 614-703: malformed JSON → 3). The
+     proposed floor-3 variant (#4401) is also modelled.
    * an explicit `opts.specVersion`, which wins uncapped (start.ts:587-588).
    * `recreateRunFromExisting` onto the same deployment: `run.specVersion ?? 1`,
      explicit (runs.ts:83-130).
    * `recreateRunFromExisting` redirected to another deployment: unset, so it
      goes through `start()`'s probe.
-   * the CLI `startRun` (cli/src/lib/inspect/run.ts:87-109): `min(hc, world)` only
-     for a healthy numeric reply, otherwise `run.specVersion`. When that is unset
-     too, `start()`'s own resolution applies.
+   * the CLI `startRun` (29197a10f cli/src/lib/inspect/run.ts:87-113): `min(hc, world)`
+     only for a healthy reply with a valid (integer ≥ 1) version, otherwise
+     `min(run.specVersion, world)`. When that is unset too, `start()`'s own
+     resolution applies.
    * a stable (v4) caller: always 3 (stable start.ts:248-252).
 2. **server**. Two models:
    * *sequential* (`serverRaise`): one `run_started`, optionally one redelivery,
@@ -133,9 +135,9 @@ def serverRaise (s : Nat) (attest : Option Nat) (path : StartPath) (redeliver : 
   if redeliver then redelivery (firstDelivery s attest path) attest else firstDelivery s attest path
 
 inductive Client where
-  /-- #4327 as written (miss floor 6, unversioned → 2) -/
+  /-- #4327 @ 29197a10f (miss floor 6, malformed JSON → 3, plain text → 2) -/
   | current
-  /-- proposed (miss floor 3, malformed JSON → 3, plain text → 2) -/
+  /-- proposed #4401 (HEAD with miss floor 3) -/
   | proposed
 deriving DecidableEq, Repr
 
@@ -207,10 +209,11 @@ def chkMissProposed : Bool := forAllIn [.proposed] misses (fun _ => true) fun cl
 
 theorem miss_proposed_bricks_iff : chkMissProposed = true := by decide +kernel
 
-/-- Malformed JSON version, current (→ 2): bricks ⟺ `2 < lo ∧ ¬healed`. -/
+/-- Malformed JSON version, current = #4327 @ 29197a10f (→ 3, 'probe-malformed'):
+bricks ⟺ `3 < lo ∧ ¬healed`. (At 764eafd1a it was → 2, bricking ⟺ `2 < lo ∧ ¬healed`.) -/
 def chkMalformedCurrent : Bool :=
   forAllIn [.current] [.answered] (·.reply == .jsonMalformed) fun cl t n c pa rd =>
-    (!accepts t (finalSpec cl t n c pa rd) == (decide (2 < t.lo) && !healed t pa))
+    (!accepts t (finalSpec cl t n c pa rd) == (decide (3 < t.lo) && !healed t pa))
 
 theorem malformed_current_bricks_iff : chkMalformedCurrent = true := by decide +kernel
 
@@ -350,7 +353,8 @@ theorem miss_current_bricks_low (t : Target) (c : Nat) (hc : 6 ≤ c) (hhi : t.h
 def pre3 : Target := ⟨.plaintext, 1, 2, none⟩
 /-- origin/stable (v4): JSON 3, max 3, no executorSpecVersion. -/
 def stable : Target := ⟨.json 3, 1, 3, none⟩
-/-- #4327 head alone (not rebased on #4193, no #4366): mints 7, max 7. -/
+/-- #4327 head at 764eafd1a (not rebased on #4193, no #4366): mints 7, max 7.
+(29197a10f is rebased on main: mints 8, max 8, the same as `v5mainPre4366`.) -/
 def v5head : Target := ⟨.json 7, 6, 7, none⟩
 /-- #4327 head with WORKFLOW_SEALED_LOG=0: mints 6, max 7. -/
 def v5headKill : Target := ⟨.json 6, 6, 7, none⟩
@@ -358,7 +362,9 @@ def v5headKill : Target := ⟨.json 6, 6, 7, none⟩
 def v5main : Target := ⟨.json 8, 6, 8, some 8⟩
 /-- main + #4366, WORKFLOW_SEALED_LOG=0: reports and attests 6. -/
 def v5mainKill : Target := ⟨.json 6, 6, 8, some 6⟩
-/-- main + #4366, responder captured 8 at createWorld but the executor's env now mints 6. -/
+/-- main + #4366 @ d2b83751f: responder captured 8 at createWorld but the executor's
+env now mints 6. Not reachable in one process at #4366 @ 03e6e6771 (both are the
+createWorld capture); kept as a cross-process / pre-fix profile. -/
 def v5mainSplit : Target := ⟨.json 8, 6, 8, some 6⟩
 /-- a main deployment built before #4366 (no attestation). -/
 def v5mainPre4366 : Target := ⟨.json 8, 6, 8, none⟩
@@ -411,10 +417,22 @@ theorem explicit_can_brick :
     accepts v5main (serverRaise 3 v5main.attest .runCreatedLate true) = false := by
   decide
 
-/-- CLI `startRun` (cli/src/lib/inspect/run.ts:87-109): `min(hc.specVersion,
-world.specVersion)` only for a healthy reply with a numeric version, else the
-source run's version, uncapped. -/
+/-- CLI `startRun` at 29197a10f (cli/src/lib/inspect/run.ts:87-113):
+`min(hc.specVersion, world.specVersion)` for a healthy reply with an integer
+version ≥ 1 (the same `validSpec` check as `start()`), else the source run's
+version, now also capped at `world.specVersion`. -/
 def cliStamp (p : Option ProbeObj) (runSpec c : Nat) : Nat :=
+  match p with
+  | some o =>
+    if o.healthy then
+      match validSpec o.spec with
+      | some v => min v c
+      | none => min runSpec c
+    else min runSpec c
+  | none => min runSpec c
+
+/-- The CLI at 764eafd1a: any numeric version taken, the source run's uncapped. -/
+def cliStamp764 (p : Option ProbeObj) (runSpec c : Nat) : Nat :=
   match p with
   | some o =>
     if o.healthy then
@@ -424,19 +442,54 @@ def cliStamp (p : Option ProbeObj) (runSpec c : Nat) : Nat :=
     else runSpec
   | none => runSpec
 
+/-- HEAD: the CLI never claims a version above its own World (both paths capped). -/
+theorem cli_le_caller (p : Option ProbeObj) (runSpec c : Nat) : cliStamp p runSpec c ≤ c := by
+  unfold cliStamp
+  split
+  · split
+    · split <;> omega
+    · omega
+  · omega
+
+/-- ...and never 0 for a runnable source run: a JSON `specVersion: 0` is ignored. -/
+theorem cli_pos (p : Option ProbeObj) {runSpec c : Nat} (hr : 1 ≤ runSpec) (hc : 1 ≤ c) :
+    1 ≤ cliStamp p runSpec c := by
+  unfold cliStamp
+  split
+  · split
+    · split
+      · rename_i v h; have := validSpec_pos h; omega
+      · omega
+    · omega
+  · omega
+
 /-- The CLI replays onto the source run's own deployment, so when the source run
 was runnable there (`runSpec ≤ hi`) the CLI stamp is too — on every probe outcome. -/
 theorem cli_le_hi (t : Target) (ht : t.wf = true) (runSpec c : Nat) (hr : runSpec ≤ t.hi) (n : Net) :
     cliStamp (probeOf t.reply n) runSpec c ≤ t.hi := by
   unfold Target.wf at ht
-  cases n <;> simp [probeOf, cliStamp] <;> (try omega)
-  cases hrep : t.reply <;> simp_all <;> omega
+  cases n with
+  | timeout => simp [probeOf, cliStamp]; omega
+  | noChannel => simp [probeOf, cliStamp]; omega
+  | answered =>
+    cases hrep : t.reply with
+    | plaintext => simp [probeOf, cliStamp, validSpec]; omega
+    | jsonMalformed => simp [probeOf, cliStamp, validSpec]; omega
+    | json r =>
+      rw [hrep] at ht
+      simp at ht
+      simp only [probeOf, cliStamp, validSpec, ite_true]
+      split <;> simp_all <;> omega
 
-/-- ...but a JSON `specVersion: 0` would stamp 0 via the CLI (no `>= 1` check),
-where `start()` would have treated it as unversioned (2). No in-repo responder
-sends 0. -/
-theorem cli_zero_version : cliStamp (some ⟨true, .int 0, false⟩) 8 8 = 0 ∧
-    resolve (some ⟨true, .int 0, false⟩) 8 = 2 := by decide
+/-- FIXED at 2f8f58dac: at 764eafd1a a JSON `specVersion: 0` stamped 0 via the CLI
+(no `>= 1` check), where `start()` treated it as unversioned (2); a source run
+at 8 was replayed uncapped by a 7 CLI. At HEAD the CLI ignores the 0 and falls
+back to the (capped) source version, and `start()` stamps such a reply 3. -/
+theorem cli_zero_version_764 : cliStamp764 (some ⟨true, .int 0, .json⟩) 8 8 = 0 ∧
+    resolve764 (some ⟨true, .int 0, .json⟩) 8 = 2 ∧ cliStamp764 none 8 7 = 8 := by decide
+
+theorem cli_zero_version_fixed : cliStamp (some ⟨true, .int 0, .json⟩) 8 8 = 8 ∧
+    resolve (some ⟨true, .int 0, .json⟩) 8 = 3 ∧ cliStamp none 8 7 = 7 := by decide
 
 
 /-! ## Report tables (printed into results/Combined.txt) -/
@@ -452,13 +505,13 @@ def pathName : StartPath → String
   | .resilient => "resilient"
 
 def clientName : Client → String
-  | .current => "current(#4327)"
+  | .current => "current(#4327@29197a1)"
   | .proposed => "proposed(floor3)"
 
 /-! ## Race-composed pipeline -/
 
 inductive Client2 where
-  /-- `start()` at #4327 (probe; miss floor 6, unversioned → 2) -/
+  /-- `start()` at #4327 @ 29197a10f (probe; miss floor 6, malformed JSON → 3, plain text → 2) -/
   | current
   /-- `start()` with the proposed floor 3 / malformed → 3 -/
   | proposed
@@ -474,17 +527,18 @@ inductive Client2 where
   | stableCaller
 deriving DecidableEq, Repr
 
-/-- CLI: `min(hc.specVersion, world.specVersion)` for a healthy numeric reply,
-else the source run's (possibly unset) version. -/
+/-- CLI at 29197a10f: `min(hc.specVersion, world.specVersion)` for a healthy reply
+with a valid version, else the source run's (possibly unset) version capped at
+`world.specVersion`; unset -> `start()` resolves it. -/
 def cliStampOpt (p : Option ProbeObj) (rs : Option Nat) (c : Nat) : Option Nat :=
   match p with
   | some o =>
     if o.healthy then
-      match o.spec with
-      | .int n => some (min n.toNat c)
-      | _ => rs
-    else rs
-  | none => rs
+      match validSpec o.spec with
+      | some v => some (min v c)
+      | none => rs.map (min · c)
+    else rs.map (min · c)
+  | none => rs.map (min · c)
 
 def stampOf2 : Client2 → Option ProbeObj → Nat → Nat
   | .current, p, c => resolve p c
@@ -635,9 +689,9 @@ theorem race_miss_proposed_fixed_iff :
 
 /-- Malformed JSON version. -/
 theorem race_malformed_iff :
-    (forAll2 [.current] [.answered] (·.reply == .jsonMalformed) fun cl t n c pa =>
-      brickPossible .asIs cl t n c pa == decide (2 < t.lo) &&
-      brickPossible .fixed cl t n c pa == (decide (2 < t.lo) && t.attest.isNone)) &&
+    (forAll2 [.current, .recreateRedirect] [.answered] (·.reply == .jsonMalformed) fun cl t n c pa =>
+      brickPossible .asIs cl t n c pa == decide (3 < t.lo) &&
+      brickPossible .fixed cl t n c pa == (decide (3 < t.lo) && t.attest.isNone)) &&
     (forAll2 [.proposed] [.answered] (·.reply == .jsonMalformed) fun cl t n c pa =>
       brickPossible .asIs cl t n c pa == decide (3 < t.lo) &&
       brickPossible .fixed cl t n c pa == (decide (3 < t.lo) && t.attest.isNone)) = true := by
@@ -706,7 +760,7 @@ theorem race_args_decodable :
 /-! ### Race-composed profile table -/
 
 def client2Name : Client2 → String
-  | .current => "current(#4327)"
+  | .current => "current(#4327@29197a1)"
   | .proposed => "proposed(floor3)"
   | .explicit v => s!"explicit({v})"
   | .recreateSame rs => s!"recreateSame({match rs with | some v => toString v | none => "unset"})"

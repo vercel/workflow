@@ -69,6 +69,18 @@
 (*                     main before #4327 and stable (runs.ts:64-65):        *)
 (*                     options.specVersion ?? run.specVersion ?? LEGACY.    *)
 (*                     ex = that explicit/source value (0 = both unset).   *)
+(*   #4327 @ 29197a10f (HeadMalformed3, CliCapsSource, probe "badjson"):    *)
+(*                     start.ts:156-182 a JSON reply without a valid       *)
+(*                     version -> 3 ('probe-malformed'), plain text -> 2,  *)
+(*                     miss -> 6; cli run.ts:94-108 ignores a version that *)
+(*                     is not an integer >= 1 and caps run.specVersion at  *)
+(*                     world.specVersion. The probe cache (start.ts:250-   *)
+(*                     320) changes only WHEN a start gets fast/miss, not  *)
+(*                     the set of outcomes: see ProbeCache.tla.            *)
+(*   #4366 @ 03e6e6771 attests world.specVersion captured at createWorld   *)
+(*                     (world-vercel index.ts:31-34, events.ts:779-781):   *)
+(*                     EnvDrift is no longer reachable inside one process; *)
+(*                     variant i_ keeps it as the d2b83751f behaviour.     *)
 (*   cli               764eafd1a cli inspect/run.ts:87-109: min(hc, world)  *)
 (*                     only on a versioned reply, else run.specVersion      *)
 (*                     uncapped; run.specVersion undefined (ex = 0) passes  *)
@@ -159,6 +171,13 @@ CONSTANTS
     RaceScope,           \* "all" | "attesting": restrict to world-vercel targets
                          \*  that run #4366 (the only runs the server raises);
                          \*  used to keep the cancel / crash+recovery races small
+    MalformedReplies,    \* JSON targets may answer with a malformed specVersion
+                         \*  (probe kind "badjson"; a community World / bug)
+    HeadMalformed3,      \* #4327 @ 29197a10f: start() stamps a JSON reply
+                         \*  without a valid version 3 ('probe-malformed');
+                         \*  FALSE = 764eafd1a (-> 2, like plain text)
+    CliCapsSource,       \* #4327 @ 29197a10f: `wf inspect` caps the source
+                         \*  run's version at its World too (cli run.ts:94-97)
     FocusInv             \* "ALL" (full run, prints the Layer-A summary), "LB"
                          \* (Layer-B-only run: no summary, Layer-A verdicts out
                          \* of the VIEW), or a Layer-A invariant name: restrict
@@ -218,8 +237,17 @@ Worlds == {"vercel", "local"}
 StartKinds == {"same", "cross", "latestOther"}
 Kinds  == StartKinds \cup {"replaySame", "replayRedirect", "cli"}
 Probes == {"fast", "slow", "miss", "nochan"}   \* slow = answers in (2s, 10s]
+\* "badjson": the target answered in time, in JSON, without a valid specVersion
+\* (not an integer >= 1). Only JSON targets, only when MalformedReplies.
+\* The #4327 @ 29197a10f probe cache (start.ts:250-320) adds no new Layer-A
+\* outcome: a cache hit reuses an answer (same stamp as "fast"), and a start
+\* that gets the 2 s retry budget after a recent miss either answers ("fast")
+\* or misses ("miss"), both already in Probes. WHEN each outcome happens is
+\* the sibling timing model ProbeCache.tla.
+AllProbes == Probes \cup {"badjson"}
 
-ProbeKinds(k) == IF k = "same" THEN {"none"} ELSE Probes
+ProbeKinds(k) == IF k = "same" THEN {"none"}
+                 ELSE Probes \cup (IF MalformedReplies THEN {"badjson"} ELSE {})
 ExSet(k, t) ==
     CASE k \in StartKinds \cup {"replayRedirect"} -> {0} \cup Specs
       [] k = "replaySame" -> 1..TMax[t]
@@ -229,24 +257,31 @@ Valid(r) ==
     /\ (r.k = "same") => (r.t = SameTarget[r.c])
     /\ (r.k = "latestOther") => (r.w = "vercel")   \* local: 'latest' = self
     /\ r.p \in ProbeKinds(r.k)
+    /\ (r.p = "badjson") => TReply(r.t) = "json"
     /\ r.ex \in ExSet(r.k, r.t)
     /\ r.a => (r.k \in StartKinds /\ IsV5Caller(r.c))
 
 AllScenarios ==
     {r \in [c : Callers, t : Targets, w : Worlds, k : Kinds,
-            p : Probes \cup {"none"}, a : BOOLEAN, ex : {0} \cup Specs] :
+            p : AllProbes \cup {"none"}, a : BOOLEAN, ex : {0} \cup Specs] :
         Valid(r)}
 
 (* ---------------- Layer A: pure stamp behaviour ---------------- *)
 StartProbeGot(r) ==
-    IF CallerCode(r.c) = "4327"
+    IF r.p = "badjson" THEN TRUE               \* answered in time
+    ELSE IF CallerCode(r.c) = "4327"
     THEN r.p = "fast" \/ (r.p = "slow" /\ ProbeBudgetSec >= 10)
     ELSE r.p = "fast"                          \* pre-#4327 budget 2s
 StartProbeTarget(r) ==
     IF r.p # "nochan" /\ StartProbeGot(r)
-    THEN (IF TReply(r.t) = "json" THEN TResp[r.t] ELSE 2)
+    THEN (IF r.p = "badjson"
+          THEN (IF HeadMalformed3 /\ CallerCode(r.c) = "4327" THEN 3 ELSE 2)
+          ELSE IF TReply(r.t) = "json" THEN TResp[r.t] ELSE 2)
     ELSE MissFloor
-CliGot(p) == p \in {"fast", "slow"}              \* CLI budget is 10s
+\* CLI budget is 10s. A malformed version is not used: at 29197a10f it fails
+\* the >= 1 integer check (cli run.ts:103-108); at 764eafd1a a non-number was
+\* dropped too (a numeric 0 was not: Lean Combined.cli_zero_version_764).
+CliGot(p) == p \in {"fast", "slow"}
 CliVersioned(r) == r.k = "cli" /\ CliGot(r.p) /\ TReply(r.t) = "json"
 
 Default(r) ==           \* start()'s own resolution when no explicit value
@@ -266,7 +301,10 @@ Stamp(r) ==
             IF CliVersioned(r)
             THEN (IF CallerCode(r.c) = "4327"
                   THEN Min(TResp[r.t], CallerMint[r.c]) ELSE TResp[r.t])
-            ELSE (IF r.ex # 0 THEN r.ex ELSE Default(r))
+            ELSE (IF r.ex # 0
+                  THEN (IF CliCapsSource /\ CallerCode(r.c) = "4327"
+                        THEN Min(r.ex, CallerMint[r.c]) ELSE r.ex)
+                  ELSE Default(r))
 
 \* The stamp did not come out of start()'s own (capped) resolution.
 Explicit(r) ==
@@ -338,7 +376,7 @@ InGroup(g, r) ==
 
 KScore(k) == CASE k = "same" -> 0 [] k = "cross" -> 1 [] k = "latestOther" -> 2
                [] k = "replaySame" -> 2 [] OTHER -> 3
-PScore(p) == CASE p \in {"none", "fast"} -> 0 [] p \in {"miss", "slow"} -> 1
+PScore(p) == CASE p \in {"none", "fast"} -> 0 [] p \in {"miss", "slow", "badjson"} -> 1
                [] OTHER -> 2
 Score(r) == KScore(r.k) + PScore(r.p) + (IF r.a THEN 1 ELSE 0)
             + (IF r.w = "vercel" THEN 0 ELSE 1) + (IF r.ex = 0 THEN 0 ELSE 1)
@@ -852,6 +890,8 @@ ASSUME PrintT(<<"VARIANT", "CallerHas4327", CallerHas4327, "MissFloor", MissFloo
                 "FixAtomicCreate", FixAtomicCreate,
                 "FixCompressOnStamp", FixCompressOnStamp, "EnvDrift", EnvDrift,
                 "MutAttestAboveMax", MutAttestAboveMax,
+                "MalformedReplies", MalformedReplies,
+                "HeadMalformed3", HeadMalformed3, "CliCapsSource", CliCapsSource,
                 "ScenarioFilter", ScenarioFilter, "RaceScope", RaceScope,
                 "FocusInv", FocusInv,
                 "scenarios", Cardinality(Scenarios),

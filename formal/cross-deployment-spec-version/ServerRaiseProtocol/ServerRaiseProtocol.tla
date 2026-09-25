@@ -157,6 +157,50 @@
 (*       the row-without-run_created window (PROPOSED_MIN_P5 and           *)
 (*       RECOMMENDED explore identical state spaces).                      *)
 (*                                                                         *)
+(* HEAD variant (#1044 @ f83173c, flag run-spec-version-upgrade on, the   *)
+(* default; ws = workflow-server @ f83173c)                                *)
+(*   P1+P1e  resilient start creates the row and its run_created at        *)
+(*       createdSpecVersion = Max(stamp, executorSpecVersion) (legacy      *)
+(*       stamps are never raised; outside this model's stamps), events.ts  *)
+(*       8424-8450, and records raisedFromSpecVersion when it raised.      *)
+(*       The conflict refetch runs the upgrade and, since 09887ac,         *)
+(*       re-checks terminal -> 410 (events.ts 8590-8620; FixReviveGap).    *)
+(*   P2 bounded (HeadUpgrade, RetryBudget, WindowHolds) upgrade.ts skip(): *)
+(*       a doomed skip (rekey crossing, held pending) other than terminal  *)
+(*       rereads (moved spec = lost race), else 503 Retry-After 1 while    *)
+(*       now - run.createdAt < 60 s (not for run-created-already-slot),    *)
+(*       then falls through with the input run (doomed). Modelled as       *)
+(*       RetryBudget window retries per run-row lifetime.                  *)
+(*   P3  ULID-mode terminal patches .where(spec == held) (PropCancelGuard);*)
+(*       slot mode stays one TX guarded non-terminal.                      *)
+(*   P4' run_started .where(status == 'pending' AND spec == held.spec)     *)
+(*       (HeadGuardStart + GuardPendingOnly, events.ts 2601-2640); on a    *)
+(*       failed condition resolveLostRunStartedTransition (2504-2563):     *)
+(*       running -> alreadyRunning, missing/terminal -> 404/410, pending   *)
+(*       at another spec -> 503.                                           *)
+(*   P5  #1061: handleRunCreated and resilient start commit the row and    *)
+(*       run_created in one TX (PropAtomicCreate); a slot-1 conflict with  *)
+(*       no run row writes the row alone and adopts the orphaned           *)
+(*       run_created (AdoptOrphanRC, events.ts 2207-2283).                 *)
+(*   Recovery: reset-to-pending only for rows with raisedFromSpecVersion  *)
+(*       and a run_created in the log (ResetOnlyRaised, variable rraised;  *)
+(*       ws handlers/v4/events.ts 1870-1905, 4b7b241); every other wedged  *)
+(*       run keeps delete-and-rebuild.                                     *)
+(*   FlagOn = FALSE is the kill switch WORKFLOW_FLAG_RUN_SPEC_VERSION_     *)
+(*       UPGRADE=0 (executorSpecVersion ignored). MAIN = pre-PR reference  *)
+(*       (no attestation, no P3, delete-and-rebuild; #1061 + #1065, which  *)
+(*       came from main).                                                  *)
+(*   TurboWrites: a turbo first delivery backgrounds run_started; if it    *)
+(*       fails, the SDK still sends the first replay's step writes (wf     *)
+(*       core runtime.ts 1276-1293, 2500-2560). The server rejects a step  *)
+(*       write whose run read is not running (StepStatusCheck, events.ts   *)
+(*       2365 / 8109), but that read is eventually consistent;             *)
+(*       StepCheckConsistent is the hypothetical server-side fix. The      *)
+(*       client-side fix (no step write before run_started commits) is    *)
+(*       TurboWrites = FALSE, i.e. the HEAD config itself.                 *)
+(*   H9159765 = HEAD without P5, AdoptOrphanRC, GuardPendingOnly,          *)
+(*       FixReviveGap and ResetOnlyRaised (regression witness).            *)
+(*                                                                         *)
 (* RESULTS (./run.sh -> results/<cfg>.txt, <cfg>__<Prop>.txt,             *)
 (* <cfg>__PROGRESS.txt)                                                    *)
 (*   CURRENT*: every safety invariant except SpecMonotonic and             *)
@@ -178,6 +222,27 @@
 (*     P3, P4 or P5 fails safety. RECOMMENDED_crash_noGrace and            *)
 (*     RECOMMENDED__PROGRESS_noBL show that both timing premises are       *)
 (*     load-bearing.                                                       *)
+(*   H9159765: ReplayNeverFails (7 states, the two-write run_created       *)
+(*     window: no P5 yet), TerminalIsFinal (the refetch-path revive gap),  *)
+(*     plus NoDoomedRun / ExecutorReadable / AtMostOneRunStarted.          *)
+(*   HEAD (f83173c): every safety invariant, action property and          *)
+(*     informational invariant PASSES, and so does progress; also with     *)
+(*     turbo writes (HEAD_turbo), the server consistent-check fix          *)
+(*     (HEAD_turboFix) and without the window premise. HEAD_crash,         *)
+(*     HEAD_turbo_crash, HEAD_turboFix_crash: safety PASSES; progress      *)
+(*     fails only when an eventually consistent read may still return the *)
+(*     pre-reset 'running' row on every redelivery (HEAD_crash_settled     *)
+(*     passes). HEAD_turbo_crash_settled / HEAD_turboFix_crash_settled:    *)
+(*     a turbo step write lands after a run_started request died between  *)
+(*     its running patch and its event insert; recovery then sees progress *)
+(*     and never repairs the run (MAX_DELIVERIES run_failed). The same     *)
+(*     happens on MAIN (MAIN_turbo_crash_settled_slotStamps).              *)
+(*   HEAD_turbo_noStepCheck (hypothetical server without the step status  *)
+(*     check): a turbo step write under a stale 'pending' read mints a     *)
+(*     ULID into the re-keyed slot log (NoMixedIdentityLog, NoDoomedRun).  *)
+(*   HEAD_flagOff (kill switch) = MAIN verdicts: the S1 brick of a stamp   *)
+(*     below 6 under a v5 executor (NoDoomedRun, ExecutorReadable,         *)
+(*     ReplayNeverFails), nothing else.                                    *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -199,8 +264,37 @@ CONSTANTS
   BoundedLatency,    \* BOOLEAN: timing assumption (redeliveries), see header
   GraceHolds,        \* BOOLEAN: timing assumption (recovery grace window)
   PropResilient, PropResilientEventMax, PropRetrySkips, PropRetryNotFresh,
-  PropCancelGuard, PropGuardStart, PropAtomicCreate
+  PropCancelGuard, PropGuardStart, PropAtomicCreate,
                      \* BOOLEANs, see PROPOSED variant above
+  FlagOn,            \* BOOLEAN: run-spec-version-upgrade flag (HEAD: when
+                     \*   FALSE the attestation is ignored; TRUE everywhere
+                     \*   before HEAD, where the raise was not gated)
+  HeadUpgrade,       \* BOOLEAN: upgradeRunSpecVersionForExecutor @ 9159765
+  RetryBudget,       \* window retries (503) before a doomed skip falls through
+  WindowHolds,       \* BOOLEAN: timing premise of the 60 s retry window
+  HeadGuardStart,    \* BOOLEAN: run_started patch @ 9159765
+  FixReviveGap,      \* BOOLEAN: terminal re-check after the refetch upgrade
+  RecoveryReset,     \* BOOLEAN: wedged-run recovery resets to pending
+  TurboWrites,       \* BOOLEAN: turbo client writes a step after a failed
+                     \*   backgrounded run_started
+  StepStatusCheck,   \* BOOLEAN: server rejects a step write whose run read
+                     \*   is not running (TRUE in the code)
+  \* #1044 @ f83173c switches (FALSE = the 9159765 behaviour above):
+  GuardPendingOnly,  \* BOOLEAN: run_started patch .where(status == 'pending'
+                     \*   AND spec == held.spec) (#1065, events.ts:2601-2640)
+                     \*   instead of status == held.status
+  ResetOnlyRaised,   \* BOOLEAN: the wedged-run reset applies only to runs
+                     \*   carrying raisedFromSpecVersion (4b7b241); others
+                     \*   keep delete-and-rebuild
+  AdoptOrphanRC,     \* BOOLEAN: #1061 createRunWithCreatedEvent: a slot
+                     \*   conflict on the pinned run_created with no run row
+                     \*   writes the run row alone (the caller adopts the
+                     \*   orphaned run_created) instead of cancelling
+  StepCheckConsistent, \* BOOLEAN: hypothetical server fix: the step write's
+                     \*   running check uses a consistent read
+  StaleSettles       \* BOOLEAN: timing premise: eventually consistent reads
+                     \*   have converged by the time a redelivery or window
+                     \*   retry (>= 1 s later) fetches the run
 
 NoRow == [st |-> "none", sp |-> 0]
 DeletedRow == [ex |-> FALSE, st |-> "none", sp |-> 0]
@@ -226,10 +320,19 @@ VARIABLES
   epc, eheld, eatt, eid, erc, ersp,  \* executor deliveries
   kpc, kheld,        \* canceller
   sawUlid,           \* some executor replay loaded a ULID row
-  crashes            \* executor request crashes so far
+  crashes,           \* executor request crashes so far
+  wleft,             \* HEAD: window retries left (the 60 s window, run-wide)
+  ewr,               \* HEAD: this delivery's next fetch is a window retry
+  erf,               \* HEAD: this delivery came through the conflict refetch
+  eturbo,            \* HEAD: this delivery is a turbo first delivery
+  rraised            \* f83173c: the run row carries raisedFromSpecVersion
+                     \*   (only tracked when ResetOnlyRaised)
 
 vars == <<stamp, exec, row, hist, peak, log, clk, cpc, epc, eheld, eatt, eid,
-          erc, ersp, kpc, kheld, sawUlid, crashes>>
+          erc, ersp, kpc, kheld, sawUlid, crashes, wleft, ewr, erf, eturbo,
+          rraised>>
+NUnch == <<wleft, ewr, erf, eturbo>>
+EffExec == IF FlagOn THEN exec ELSE 0   \* attestation as the server uses it
 
 -----------------------------------------------------------------------------
 SEv == {e \in log : e.k = "S"}
@@ -283,13 +386,18 @@ Live == row.ex /\ row.st \in {"pending", "running"}
 (* Timing assumption helpers                                               *)
 \* pcs at which a delivery has no server request in flight
 Boundary == {"fetch", "replay", "step", "done", "gone", "gaveup",
-             "maxdel", "rf_read"}
+             "maxdel", "rf_read", "tstep"}
 Quiet(d) ==
   /\ cpc \in {"done", "crashed"}
   /\ kpc \in {"read", "done"}
   /\ \A x \in D \ {d} : epc[x] \in Boundary
 LatencyOK(d) == BoundedLatency => Quiet(d)
 GraceOK(d) == GraceHolds => Quiet(d)
+\* HEAD retry window: a 503 'run-spec-version-upgrade-pending' carries
+\* Retry-After 1 s, so its redelivery starts once in-flight requests (ms)
+\* have resolved; the window (60 s after run creation) closes after
+\* RetryBudget such retries.
+WinOK(d) == WindowHolds => Quiet(d)
 
 -----------------------------------------------------------------------------
 Init ==
@@ -311,6 +419,11 @@ Init ==
   /\ kheld = NoRow
   /\ sawUlid = FALSE
   /\ crashes = 0
+  /\ wleft = RetryBudget
+  /\ ewr = [d \in D |-> FALSE]
+  /\ erf = [d \in D |-> FALSE]
+  /\ eturbo \in [D -> IF TurboWrites THEN BOOLEAN ELSE {FALSE}]
+  /\ rraised = FALSE
 
 -----------------------------------------------------------------------------
 (* Caller: run_created POST                                                *)
@@ -326,17 +439,26 @@ CallerRow ==
         /\ UNCHANGED <<row, hist, peak, log, clk>>
      \/ /\ ~row.ex
         /\ IF CallerAtomic
-           THEN IF Slot(stamp) /\ Slot1Taken  \* TX cancelled on slot 1
-                THEN /\ cpc' = "done"
+           THEN IF Slot(stamp) /\ Slot1Taken /\ ~AdoptOrphanRC
+                THEN /\ cpc' = "done"             \* TX cancelled on slot 1
                      /\ UNCHANGED <<row, hist, peak, log, clk>>
+                ELSE IF Slot(stamp) /\ Slot1Taken
+                THEN \* f83173c: slot 1 held, no run row -> row alone; the
+                     \* event insert that follows conflicts (409 to start())
+                     /\ SetRow("pending", stamp)
+                     /\ cpc' = "done"
+                     /\ UNCHANGED <<log, clk>>
                 ELSE /\ SetRow("pending", stamp)
                      /\ RCInsert(stamp)
                      /\ cpc' = "done"
            ELSE /\ SetRow("pending", stamp)
                 /\ cpc' = "evt"
                 /\ UNCHANGED <<log, clk>>
+  \* a (re)created row opens a new retry window (run.createdAt)
+  /\ wleft' = IF ~row.ex /\ row'.ex THEN RetryBudget ELSE wleft
+  /\ rraised' = IF ~row.ex /\ row'.ex THEN FALSE ELSE rraised
   /\ UNCHANGED <<stamp, exec, epc, eheld, eatt, eid, erc, ersp,
-                 kpc, kheld, sawUlid, crashes>>
+                 kpc, kheld, sawUlid, crashes, ewr, erf, eturbo>>
 
 CallerEvt ==
   /\ cpc = "evt"
@@ -346,21 +468,36 @@ CallerEvt ==
      \/ /\ RCInsert(stamp)
         /\ cpc' = "done"
   /\ UNCHANGED <<stamp, exec, row, hist, peak, epc, eheld, eatt, eid, erc,
-                 ersp, kpc, kheld, sawUlid, crashes>>
+                 ersp, kpc, kheld, sawUlid, crashes, rraised>>
+  /\ UNCHANGED NUnch
 
 -----------------------------------------------------------------------------
 (* Executor deliveries: run_started server request, then replay + step     *)
-ExUnch == <<stamp, exec, cpc, kpc, kheld, crashes>>
+ExUnch0 == <<stamp, exec, cpc, kpc, kheld, crashes>>
+ExUnch == <<stamp, exec, cpc, kpc, kheld, crashes, rraised>>
 RowUnch == <<row, hist, peak>>
 
+\* A retryable failure of the run_started request: the queue redelivers.
+\* A turbo first delivery backgrounds run_started and, once it has settled
+\* (here: failed), still sends the step writes of its first replay
+\* (wf core runtime.ts:1276-1293, 2500-2560; suspension-handler.ts:533-541
+\* swallows the barrier rejection), then errors out and is redelivered.
 Fail(d) ==
   IF eatt[d] < MaxAttempts
-  THEN /\ epc' = [epc EXCEPT ![d] = "fetch"]
+  THEN /\ epc' = [epc EXCEPT ![d] = IF eturbo[d] /\ eatt[d] = 1
+                                    THEN "tstep" ELSE "fetch"]
        /\ eatt' = [eatt EXCEPT ![d] = @ + 1]
   ELSE /\ epc' = [epc EXCEPT ![d] = "maxdel"]   \* next delivery: run_failed
        /\ UNCHANGED eatt
 
 Goto(d, pc) == epc' = [epc EXCEPT ![d] = pc]
+
+\* HEAD: the terminal check after upgradeRunSpecVersion (ws events.ts
+\* 8189-8207) exists on the main path only; the conflict-refetch path
+\* (events.ts 8398-8420) has none unless FixReviveGap.
+PostTermCheck(d) == HeadUpgrade /\ (~erf[d] \/ FixReviveGap)
+AfterUpg(d) == Goto(d, IF PostTermCheck(d) /\ row.ex /\ Terminal(row.st)
+                       THEN "gone" ELSE "trans")
 
 \* spec carried by the synthetic resilient-start run_created
 RsEventSp(d) == IF PropResilient /\ PropResilientEventMax THEN ersp[d]
@@ -377,27 +514,35 @@ RsEventWrite(d) ==
 
 ExFetch(d) ==
   /\ epc[d] = "fetch"
-  /\ eatt[d] > 1 => LatencyOK(d)                      \* redelivery
+  /\ ewr[d] => WinOK(d)                               \* window retry
+  /\ (eatt[d] > 1 /\ ~ewr[d]) => LatencyOK(d)         \* redelivery
   /\ \/ /\ ~row.ex /\ ResilientStart
         /\ Goto(d, "rs_create") /\ UNCHANGED eheld   \* resilient start
      \/ /\ ~row.ex /\ ~ResilientStart /\ cpc \in {"done", "crashed"}
         /\ Goto(d, "done") /\ UNCHANGED eheld        \* isolation knob only
      \/ /\ row.ex
-        /\ \E r \in Reads :
+        /\ \E r \in IF StaleSettles /\ (eatt[d] > 1 \/ ewr[d]) THEN {CurRow}
+                    ELSE Reads :
              IF Terminal(r.st)
              THEN /\ Goto(d, "gone") /\ UNCHANGED eheld   \* 410
              ELSE /\ eheld' = [eheld EXCEPT ![d] = r]
                   /\ Goto(d, "upg_check")
-  /\ UNCHANGED <<row, hist, peak, log, clk, eatt, eid, erc, ersp, sawUlid>>
+  /\ ewr' = [ewr EXCEPT ![d] = FALSE]
+  /\ erf' = [erf EXCEPT ![d] = FALSE]
+  /\ UNCHANGED <<row, hist, peak, log, clk, eatt, eid, erc, ersp, sawUlid,
+                 wleft, eturbo>>
   /\ UNCHANGED ExUnch
 
 ExRsCreate(d) ==
   /\ epc[d] = "rs_create"
   /\ IF row.ex
      THEN /\ Goto(d, "rs_refetch")                   \* EntityConflictError
-          /\ UNCHANGED <<row, hist, peak, eheld, ersp, log, clk>>
-     ELSE LET rs == IF PropResilient THEN Max(stamp, exec) ELSE stamp IN
+          /\ UNCHANGED <<row, hist, peak, eheld, ersp, log, clk, wleft,
+                         rraised>>
+     ELSE LET rs == IF PropResilient THEN Max(stamp, EffExec) ELSE stamp IN
           /\ SetRow("pending", rs)
+          /\ wleft' = RetryBudget                    \* new run.createdAt
+          /\ rraised' = (ResetOnlyRaised /\ rs # stamp)  \* raisedFrom
           /\ eheld' = [eheld EXCEPT ![d] = [st |-> "pending", sp |-> rs]]
           /\ ersp' = [ersp EXCEPT ![d] = rs]
           /\ IF PropAtomicCreate                     \* P5: one TX
@@ -414,55 +559,64 @@ ExRsCreate(d) ==
                   /\ Goto(d, "trans")
              ELSE /\ Goto(d, "rs_event")
                   /\ UNCHANGED <<log, clk>>
-  /\ UNCHANGED <<eatt, eid, erc, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED <<eatt, eid, erc, sawUlid, ewr, erf, eturbo>>
+  /\ UNCHANGED ExUnch0
 
 ExRsEvent(d) ==
   /\ epc[d] = "rs_event"
   /\ RsEventWrite(d)
   /\ Goto(d, "trans")                                \* no upgrade on this path
   /\ UNCHANGED <<row, hist, peak, eheld, eatt, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 ExRsRefetch(d) ==
   /\ epc[d] = "rs_refetch"
   /\ IF ~row.ex
-     THEN /\ Fail(d) /\ UNCHANGED eheld              \* gone again: retry
+     THEN /\ Fail(d) /\ UNCHANGED <<eheld, erf>>     \* gone again: retry
      ELSE \E r \in Reads :
             IF Terminal(r.st)
-            THEN /\ Goto(d, "gone") /\ UNCHANGED <<eheld, eatt>>
+            THEN /\ Goto(d, "gone") /\ UNCHANGED <<eheld, eatt, erf>>
             ELSE /\ eheld' = [eheld EXCEPT ![d] = r]
                  /\ Goto(d, IF PropResilient THEN "upg_check" ELSE "trans")
+                 /\ erf' = [erf EXCEPT ![d] = HeadUpgrade]
                  /\ UNCHANGED eatt
-  /\ UNCHANGED <<row, hist, peak, log, clk, eid, erc, ersp, sawUlid>>
+  /\ UNCHANGED <<row, hist, peak, log, clk, eid, erc, ersp, sawUlid,
+                 wleft, ewr, eturbo>>
   /\ UNCHANGED ExUnch
 
 ExUpgCheck(d) ==
   /\ epc[d] = "upg_check"
   /\ LET r == eheld[d] IN
-       IF \/ exec <= r.sp                                   \* not-newer
+       IF \/ EffExec <= r.sp                                \* not-newer
           \/ Terminal(r.st)                                 \* terminal
-          \/ (RequiresFresh(r.sp, exec) /\ r.st # "pending") \* log-not-fresh
+          \/ (RequiresFresh(r.sp, EffExec) /\ r.st # "pending") \* log-not-fresh
        THEN Goto(d, "trans")
        ELSE Goto(d, "upg_head")
   /\ UNCHANGED <<row, hist, peak, log, clk, eheld, eatt, eid, erc, ersp,
                  sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 ExUpgHead(d) ==
   /\ epc[d] = "upg_head"
   /\ LET from == eheld[d].sp
-         fresh == RequiresFresh(from, exec)
-         rk == Rekey(from, exec)
+         fresh == RequiresFresh(from, EffExec)
+         rk == Rekey(from, EffExec)
          reason == IF log = {} THEN "not-committed"
                    ELSE IF First.t # RC THEN "not-first"
-                   ELSE IF (fresh /\ Cardinality(log) > 1)
-                           \/ (rk /\ First.k = "S") THEN "not-fresh"
+                   ELSE IF fresh /\ Cardinality(log) > 1 THEN "not-fresh"
+                   ELSE IF rk /\ First.k = "S"
+                        THEN IF HeadUpgrade THEN "already-slot" ELSE "not-fresh"
                    ELSE "go"
+         \* HEAD upgrade.ts: doomedIfSkipped = rekey && held status pending
+         doomed == HeadUpgrade /\ rk /\ eheld[d].st = "pending"
      IN
      IF reason = "go"
      THEN /\ erc' = [erc EXCEPT ![d] = First]
           /\ Goto(d, "upg_tx")
+          /\ UNCHANGED eatt
+     ELSE IF doomed
+     THEN /\ erc' = [erc EXCEPT ![d] = Ev(reason, "U", 0, 0)]  \* remember why
+          /\ Goto(d, "upg_skip")                   \* reread-on-skip
           /\ UNCHANGED eatt
      ELSE IF \/ (PropRetrySkips /\ reason = "not-committed")
              \/ (PropRetryNotFresh /\ reason = "not-fresh")
@@ -471,13 +625,35 @@ ExUpgHead(d) ==
      ELSE /\ Goto(d, "trans")               \* skip: keep the INPUT run
           /\ UNCHANGED <<erc, eatt>>
   /\ UNCHANGED <<row, hist, peak, log, clk, eheld, eid, ersp, sawUlid>>
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
+
+\* HEAD upgrade.ts skip(): a doomed skip rereads the run consistently; a
+\* moved spec is a lost race (continue on the reread); otherwise, inside the
+\* 60 s window and unless the reason is run-created-already-slot, a
+\* retryable 503; past it, fall through with the INPUT run ("doomed").
+ExUpgSkip(d) ==
+  /\ epc[d] = "upg_skip"
+  /\ IF row.ex /\ row.sp # eheld[d].sp
+     THEN /\ eheld' = [eheld EXCEPT ![d] = CurRow]
+          /\ AfterUpg(d)
+          /\ UNCHANGED <<eatt, wleft, ewr, eturbo>>
+     ELSE IF erc[d].t # "already-slot" /\ wleft > 0
+     THEN /\ wleft' = wleft - 1                    \* 503, Retry-After 1
+          /\ epc' = [epc EXCEPT ![d] = IF eturbo[d] /\ eatt[d] = 1
+                                       THEN "tstep" ELSE "fetch"]
+          /\ ewr' = [ewr EXCEPT ![d] = TRUE]
+          /\ eturbo' = [eturbo EXCEPT ![d] = FALSE] \* redelivery: attempt 2
+          /\ UNCHANGED <<eheld, eatt>>
+     ELSE /\ Goto(d, "trans")                     \* window over: doomed
+          /\ UNCHANGED <<eheld, eatt, wleft, ewr, eturbo>>
+  /\ UNCHANGED <<row, hist, peak, log, clk, eid, erc, ersp, sawUlid, erf>>
   /\ UNCHANGED ExUnch
 
 ExUpgTx(d) ==
   /\ epc[d] = "upg_tx"
   /\ LET from == eheld[d].sp
-         fresh == RequiresFresh(from, exec)
-         rk == Rekey(from, exec)
+         fresh == RequiresFresh(from, EffExec)
+         rk == Rekey(from, EffExec)
          rc == erc[d]
          Match == {e \in log : e.t = RC /\ e.k = rc.k /\ e.n = rc.n}
          cond == /\ row.ex
@@ -488,27 +664,34 @@ ExUpgTx(d) ==
      IN
      IF cond
      THEN LET cur == CHOOSE e \in Match : TRUE IN
-          /\ SetRow(row.st, exec)
+          /\ SetRow(row.st, EffExec)
+          /\ rraised' = (ResetOnlyRaised \/ rraised)
           /\ IF rk
-             THEN log' = (log \ {cur}) \cup {Ev(RC, "S", 1, exec)}
-             ELSE log' = (log \ {cur}) \cup {[cur EXCEPT !.sp = exec]}
-     ELSE UNCHANGED <<row, hist, peak, log>>         \* cancelled: lost-race
+             THEN log' = (log \ {cur}) \cup {Ev(RC, "S", 1, EffExec)}
+             ELSE log' = (log \ {cur}) \cup {[cur EXCEPT !.sp = EffExec]}
+     ELSE UNCHANGED <<row, hist, peak, log, rraised>> \* cancelled: lost-race
   /\ Goto(d, "upg_reread")
   /\ UNCHANGED <<clk, eheld, eatt, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch0 /\ UNCHANGED NUnch
 
 ExUpgReread(d) ==
   /\ epc[d] = "upg_reread"
   /\ IF row.ex
      THEN /\ eheld' = [eheld EXCEPT ![d] = CurRow]   \* consistent get
-          /\ Goto(d, "trans")
+          /\ AfterUpg(d)
           /\ UNCHANGED eatt
+     ELSE IF HeadUpgrade                             \* lostRace(reread ?? run)
+     THEN /\ Goto(d, "trans") /\ UNCHANGED <<eheld, eatt>>
      ELSE /\ Fail(d) /\ UNCHANGED eheld              \* null reread throws
   /\ UNCHANGED <<row, hist, peak, log, clk, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 \* v4 recoverMissingRunEvent: past the grace window and with a log holding
 \* only start events, delete the run row (conditional on status running).
+\* HEAD (RecoveryReset): with a run_created in the log, reset the row to
+\* pending instead (ws handlers/v4/events.ts:1864-1904, runs.ts:3954-3990:
+\* patch status=pending where status=running AND startedAt=observed; the
+\* grace premise makes the observed startedAt the current one).
 RecoveryDeletes(d) ==
   /\ row.ex /\ row.st = "running"
   /\ \A e \in log : e.t \in {RC, "run_started"}
@@ -522,15 +705,37 @@ ExTrans(d) ==
         THEN IF RSs # {}
              THEN /\ Goto(d, "replay")               \* alreadyRunning
                   /\ UNCHANGED <<row, hist, peak, eheld, eatt>>
-             ELSE /\ IF RecoveryDeletes(d)            \* wedge: delete row
-                     THEN /\ row' = DeletedRow
-                          /\ UNCHANGED <<hist, peak>>
+             ELSE /\ IF RecoveryDeletes(d)            \* wedge
+                     THEN IF /\ RecoveryReset /\ RCs # {}
+                             /\ ResetOnlyRaised => rraised
+                          THEN SetRow("pending", row.sp)   \* HEAD: reset
+                          ELSE /\ row' = DeletedRow        \* delete row
+                               /\ UNCHANGED <<hist, peak>>
                      ELSE UNCHANGED RowUnch           \* grace / progress
                   /\ Fail(d)                          \* 503 either way
                   /\ UNCHANGED eheld
         ELSE IF ~row.ex
         THEN /\ Fail(d)                               \* patch on missing row
              /\ UNCHANGED <<row, hist, peak, eheld>>
+        ELSE IF HeadGuardStart
+        THEN \* HEAD events.ts:2417-2445: .where(status == held.status AND
+             \* specVersion == held.specVersion); on a conditional failure
+             \* resolveStaleRunStarted (7120-7159) rereads consistently.
+             IF /\ IF GuardPendingOnly THEN row.st = "pending"
+                   ELSE row.st = h.st
+                /\ row.sp = h.sp
+             THEN /\ SetRow("running", row.sp)
+                  /\ Goto(d, "rs_insert")
+                  /\ UNCHANGED <<eheld, eatt>>
+             ELSE IF Terminal(row.st)
+             THEN /\ Goto(d, "gone")                  \* 410
+                  /\ UNCHANGED <<row, hist, peak, eheld, eatt>>
+             ELSE IF row.st = "running"
+             THEN /\ eheld' = [eheld EXCEPT ![d] = CurRow]  \* alreadyRunning
+                  /\ Goto(d, "trans")
+                  /\ UNCHANGED <<row, hist, peak, eatt>>
+             ELSE /\ Fail(d)                          \* 503 spec changed
+                  /\ UNCHANGED <<row, hist, peak, eheld>>
         ELSE IF ~PropGuardStart
         THEN /\ SetRow("running", row.sp)            \* unconditional patch
              /\ Goto(d, "rs_insert")
@@ -543,7 +748,9 @@ ExTrans(d) ==
              /\ Goto(d, IF Terminal(row.st) THEN "gone" ELSE "upg_check")
              /\ UNCHANGED <<row, hist, peak, eatt>>
   /\ UNCHANGED <<log, clk, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  \* a deleted row loses its raisedFromSpecVersion marker
+  /\ rraised' = IF row.ex /\ ~row'.ex THEN FALSE ELSE rraised
+  /\ UNCHANGED ExUnch0 /\ UNCHANGED NUnch
 
 ExRsInsert(d) ==
   /\ epc[d] = "rs_insert"
@@ -554,7 +761,7 @@ ExRsInsert(d) ==
           /\ Goto(d, "replay")
           /\ UNCHANGED eatt
   /\ UNCHANGED <<row, hist, peak, eheld, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 \* A server request dies after a committed write, before its response.
 Crash(d) ==
@@ -563,7 +770,33 @@ Crash(d) ==
   /\ Fail(d)
   /\ crashes' = crashes + 1
   /\ UNCHANGED <<row, hist, peak, log, clk, eheld, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED <<stamp, exec, cpc, kpc, kheld>>
+  /\ UNCHANGED <<stamp, exec, cpc, kpc, kheld, rraised>> /\ UNCHANGED NUnch
+
+\* Turbo step write after a failed run_started (see Fail): the step
+\* request's run read (EC) must say running when StepStatusCheck
+\* (ws events.ts:2239-2241 fetchAndValidateRun -> WorkflowNotRunningError
+\* 410; batch path events.ts:11154), else only a terminal run rejects it.
+ExTStep(d) ==
+  /\ epc[d] = "tstep"
+  /\ IF ~row.ex
+     THEN /\ Goto(d, "fetch") /\ UNCHANGED eheld      \* 404
+     ELSE \E r \in IF StepCheckConsistent THEN {CurRow} ELSE Reads :
+            IF Terminal(r.st) \/ (StepStatusCheck /\ r.st # "running")
+            THEN /\ Goto(d, "fetch") /\ UNCHANGED eheld   \* 409/410
+            ELSE /\ eheld' = [eheld EXCEPT ![d] = r]
+                 /\ Goto(d, "tstep_ins")
+  /\ UNCHANGED <<row, hist, peak, log, clk, eatt, eid, erc, ersp, sawUlid>>
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
+
+ExTStepIns(d) ==
+  /\ epc[d] = "tstep_ins"
+  /\ LET kind == IF Slot(eheld[d].sp) THEN "S" ELSE "U" IN
+     IF kind = "S" /\ ~CanAllocate(eheld[d].sp)
+     THEN UNCHANGED <<log, clk>>                      \* 500
+     ELSE Append("step_created", kind)
+  /\ Goto(d, "fetch")                                 \* then redelivered
+  /\ UNCHANGED <<row, hist, peak, eheld, eatt, eid, erc, ersp, sawUlid>>
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 ExReplay(d) ==
   /\ epc[d] = "replay"
@@ -576,7 +809,7 @@ ExReplay(d) ==
      ELSE /\ Goto(d, "step")
           /\ UNCHANGED sawUlid
   /\ UNCHANGED <<row, hist, peak, log, clk, eheld, eatt, eid, erc, ersp>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 ExStep(d) ==
   /\ epc[d] = "step"
@@ -596,7 +829,7 @@ ExStep(d) ==
             \* modelled as a separate outcome: the SDK retries the step
             \* call, which is the same as picking a fresh read here.
   /\ UNCHANGED <<row, hist, peak, log, clk, eatt, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 ExStepIns(d) ==
   /\ epc[d] = "step_ins"
@@ -606,7 +839,7 @@ ExStepIns(d) ==
      ELSE Append("step_created", kind)
   /\ Goto(d, "done")
   /\ UNCHANGED <<row, hist, peak, eheld, eatt, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 \* run_failed POST (MAX_DELIVERIES_EXCEEDED, or terminal replay error)
 ExRfRead(d) ==
@@ -620,7 +853,7 @@ ExRfRead(d) ==
             ELSE /\ eheld' = [eheld EXCEPT ![d] = r]
                  /\ Goto(d, "rf_write")
   /\ UNCHANGED <<row, hist, peak, log, clk, eatt, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 ExRfWrite(d) ==
   /\ epc[d] = "rf_write"
@@ -650,12 +883,12 @@ ExRfWrite(d) ==
      ELSE /\ Goto(d, "gone")                          \* already finished
           /\ UNCHANGED <<row, hist, peak, log, clk, eheld>>
   /\ UNCHANGED <<eatt, eid, erc, ersp, sawUlid>>
-  /\ UNCHANGED ExUnch
+  /\ UNCHANGED ExUnch /\ UNCHANGED NUnch
 
 -----------------------------------------------------------------------------
 (* Canceller: run_cancelled POST                                           *)
 KUnch == <<stamp, exec, cpc, epc, eheld, eatt, eid, erc, ersp, sawUlid,
-          crashes>>
+          crashes, wleft, ewr, erf, eturbo, rraised>>
 
 KRead ==
   /\ kpc = "read"
@@ -711,6 +944,7 @@ ProcNext ==
                   \/ ExUpgTx(d) \/ ExUpgReread(d) \/ ExTrans(d)
                   \/ ExRsInsert(d) \/ Crash(d) \/ ExReplay(d) \/ ExStep(d)
                   \/ ExStepIns(d) \/ ExRfRead(d) \/ ExRfWrite(d)
+                  \/ ExUpgSkip(d) \/ ExTStep(d) \/ ExTStepIns(d)
   \/ KRead \/ KPatch \/ KInsert
 
 Next == ProcNext \/ (AllDone /\ UNCHANGED vars)
@@ -724,6 +958,7 @@ TypeOK ==
   /\ row.ex \in BOOLEAN
   /\ \A e \in log : e.k \in {"S", "U"}
   /\ \A d \in D : eatt[d] \in 1..MaxAttempts
+  /\ wleft \in 0..RetryBudget
 
 \* No transient in-flight write that is allowed to leave the log briefly
 \* out of shape (caller between row and run_created, resilient start between

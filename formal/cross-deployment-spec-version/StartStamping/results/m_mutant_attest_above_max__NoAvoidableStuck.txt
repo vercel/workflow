@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 58 and seed 24558425955622964 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 132279] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 9 and seed -5834088555696837281 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 80616] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 02:21:02)
+Starting... (2026-09-25 19:45:59)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -42,6 +42,12 @@ Starting... (2026-09-25 02:21:02)
    FALSE,
    "MutAttestAboveMax",
    TRUE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
    "ScenarioFilter",
    "all",
    "RaceScope",
@@ -67,8 +73,8 @@ Computed 2048 initial states...
 Computed 4096 initial states...
 Computed 8192 initial states...
 Computed 16384 initial states...
-Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 02:21:03.
-Progress(9) at 2026-09-25 02:21:06: 226,606 states generated (226,606 s/min), 104,478 distinct states found (104,478 ds/min), 32,284 states left on queue.
+Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 19:46:00.
+Progress(10) at 2026-09-25 19:46:03: 282,882 states generated (282,882 s/min), 128,739 distinct states found (128,739 ds/min), 37,191 states left on queue.
 Error: Invariant NoAvoidableStuck is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -109,7 +115,7 @@ State 1: <Initial predicate>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 2: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
+State 2: <CRow line 500, col 5 to line 510, col 41 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -147,7 +153,7 @@ State 2: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 3: <CEvt line 481, col 5 to line 488, col 53 of module StartStamping>
+State 3: <CEvt line 519, col 5 to line 526, col 53 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -185,7 +191,7 @@ State 3: <CEvt line 481, col 5 to line 488, col 53 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 4: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 4: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"upg", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -223,7 +229,7 @@ State 4: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 5: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
+State 5: <XUpg line 579, col 5 to line 603, col 48 of module StartStamping>
 /\ xpc = <<"tx", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -261,7 +267,7 @@ State 5: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 6: <XTx line 569, col 5 to line 593, col 79 of module StartStamping>
+State 6: <XTx line 607, col 5 to line 631, col 79 of module StartStamping>
 /\ xpc = <<"trans", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -299,7 +305,7 @@ State 6: <XTx line 569, col 5 to line 593, col 79 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "S", sp |-> 9, n |-> 1]}
 
-State 7: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
+State 7: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
 /\ xpc = <<"ins", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -339,7 +345,7 @@ State 7: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "S", sp |-> 9, n |-> 1]}
 
-State 8: <XIns line 637, col 5 to line 643, col 41 of module StartStamping>
+State 8: <XIns line 675, col 5 to line 681, col 41 of module StartStamping>
 /\ xpc = <<"replay", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -380,7 +386,7 @@ State 8: <XIns line 637, col 5 to line 643, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-State 9: <XReplay line 685, col 5 to line 696, col 41 of module StartStamping>
+State 9: <XReplay line 723, col 5 to line 734, col 41 of module StartStamping>
 /\ xpc = <<"overmax", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -421,7 +427,7 @@ State 9: <XReplay line 685, col 5 to line 696, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-State 10: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 10: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"overmax", "upg">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -462,7 +468,7 @@ State 10: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-State 11: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
+State 11: <XUpg line 579, col 5 to line 603, col 48 of module StartStamping>
 /\ xpc = <<"overmax", "trans">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -503,7 +509,7 @@ State 11: <XUpg line 541, col 5 to line 565, col 48 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-State 12: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
+State 12: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
 /\ xpc = <<"overmax", "replay">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -544,7 +550,7 @@ State 12: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-State 13: <XReplay line 685, col 5 to line 696, col 41 of module StartStamping>
+State 13: <XReplay line 723, col 5 to line 734, col 41 of module StartStamping>
 /\ xpc = <<"overmax", "overmax">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -585,8 +591,8 @@ State 13: <XReplay line 685, col 5 to line 696, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-599422 states generated, 262203 distinct states found, 49303 states left on queue.
+600196 states generated, 262624 distinct states found, 49168 states left on queue.
 The depth of the complete state graph search is 13.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
-Finished in 07s at (2026-09-25 02:21:09)
+Finished in 06s at (2026-09-25 19:46:05)
 exit=12

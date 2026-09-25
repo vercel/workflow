@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 53 and seed 7806117197147700202 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 128187] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 70 and seed 6735011386018368939 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 70661] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 02:08:04)
+Starting... (2026-09-25 19:33:16)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -42,6 +42,12 @@ Starting... (2026-09-25 02:08:04)
    FALSE,
    "MutAttestAboveMax",
    FALSE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
    "ScenarioFilter",
    "all",
    "RaceScope",
@@ -65,7 +71,7 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 02:08:04.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:33:17.
 Error: Invariant NoResurrect is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -106,7 +112,7 @@ State 1: <Initial predicate>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 2: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 2: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"rsCreate", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -144,7 +150,7 @@ State 2: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 3: <XRsCreate line 656, col 5 to line 671, col 79 of module StartStamping>
+State 3: <XRsCreate line 694, col 5 to line 709, col 79 of module StartStamping>
 /\ xpc = <<"trans", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -182,7 +188,7 @@ State 3: <XRsCreate line 656, col 5 to line 671, col 79 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "S", sp |-> 6, n |-> 1]}
 
-State 4: <KRead line 727, col 5 to line 731, col 56 of module StartStamping>
+State 4: <KRead line 765, col 5 to line 769, col 56 of module StartStamping>
 /\ xpc = <<"trans", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -220,7 +226,7 @@ State 4: <KRead line 727, col 5 to line 731, col 56 of module StartStamping>
 /\ kheld = [st |-> "pending", sp |-> 6]
 /\ log = {[t |-> "RC", k |-> "S", sp |-> 6, n |-> 1]}
 
-State 5: <KPatch line 733, col 5 to line 745, col 34 of module StartStamping>
+State 5: <KPatch line 771, col 5 to line 783, col 34 of module StartStamping>
 /\ xpc = <<"trans", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -259,7 +265,7 @@ State 5: <KPatch line 733, col 5 to line 745, col 34 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 6, n |-> 1],
   [t |-> "RK", k |-> "S", sp |-> 0, n |-> 2] }
 
-State 6: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
+State 6: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
 /\ xpc = <<"ins", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -300,8 +306,8 @@ State 6: <XTrans line 597, col 5 to line 633, col 77 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 6, n |-> 1],
   [t |-> "RK", k |-> "S", sp |-> 0, n |-> 2] }
 
-12272 states generated, 5034 distinct states found, 2861 states left on queue.
+12631 states generated, 5241 distinct states found, 2965 states left on queue.
 The depth of the complete state graph search is 6.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 4).
-Finished in 01s at (2026-09-25 02:08:05)
+Finished in 01s at (2026-09-25 19:33:18)
 exit=12

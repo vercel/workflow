@@ -10,6 +10,14 @@
 #   JAVA       java binary (default: java)
 #   WORKERS    TLC workers (default 2)
 #   TLC_TIMEOUT seconds per run (default 900)
+#   XMX        JVM heap (default 2g)
+#   ISOLATE=1  with named configs, also run the per-property isolation runs
+#
+# #1044 @ f83173c (HEAD*), the pre-PR reference (MAIN*) and the 9159765
+# regression witness (H9159765) are generated with the rest; to rerun only
+# them with the isolation runs:
+#   ISOLATE=1 WORKERS=3 XMX=3g TLC_TIMEOUT=2400 \
+#     ./run.sh H9159765 $(python3 gen_cfgs.py | grep -E '^(HEAD|MAIN)') RECOMMENDED
 #
 # Condensed traces: python3 summarize_trace.py results/<file>.txt
 #
@@ -31,11 +39,12 @@ TLA2TOOLS="${TLA2TOOLS:-$HOME/.local/opt/tla2tools.jar}"
 JAVA="${JAVA:-java}"
 WORKERS="${WORKERS:-2}"
 TLC_TIMEOUT="${TLC_TIMEOUT:-900}"
+XMX="${XMX:-2g}"
 RESULTS="$HERE/results"
 mkdir -p "$RESULTS"
 
 tlc() { # <dir> <cfg> <out>
-  (cd "$1" && timeout "$TLC_TIMEOUT" "$JAVA" -XX:+UseParallelGC -Xmx2g \
+  (cd "$1" && timeout "$TLC_TIMEOUT" "$JAVA" -XX:+UseParallelGC -Xmx"$XMX" \
      -cp "$TLA2TOOLS" tlc2.TLC -workers "$WORKERS" -metadir "$1/states" \
      -config "$2" ServerRaiseProtocol.tla) > "$3" 2>&1
   local rc=$?
@@ -56,6 +65,7 @@ progress_cfg() {
 
 if [ $# -gt 0 ]; then
   CONFIGS=("$@"); ONLY_HEADLINE=1
+  [ "${ISOLATE:-0}" = 1 ] && ONLY_HEADLINE=0
 else
   mapfile -t CONFIGS < <(cd "$HERE" && python3 gen_cfgs.py); ONLY_HEADLINE=0
 fi

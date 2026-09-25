@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 118 and seed 2269250885261935487 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 110753] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 77 and seed -3481461664133169107 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 50593] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 01:40:24)
+Starting... (2026-09-25 19:11:26)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -42,6 +42,12 @@ Starting... (2026-09-25 01:40:24)
    FALSE,
    "MutAttestAboveMax",
    FALSE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
    "ScenarioFilter",
    "all",
    "RaceScope",
@@ -67,7 +73,7 @@ Computed 2048 initial states...
 Computed 4096 initial states...
 Computed 8192 initial states...
 Computed 16384 initial states...
-Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 01:40:25.
+Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 19:11:27.
 Error: Invariant NoBrick is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -108,7 +114,7 @@ State 1: <Initial predicate>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 2: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
+State 2: <CRow line 500, col 5 to line 510, col 41 of module StartStamping>
 /\ xpc = <<"fetch", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -146,7 +152,7 @@ State 2: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 3: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+State 3: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"overmax", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -184,8 +190,8 @@ State 3: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-20721 states generated, 1652 distinct states found, 1219 states left on queue.
+20723 states generated, 1654 distinct states found, 1219 states left on queue.
 The depth of the complete state graph search is 3.
 The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 4 and the 95th percentile is 4).
-Finished in 01s at (2026-09-25 01:40:25)
+Finished in 01s at (2026-09-25 19:11:27)
 exit=12

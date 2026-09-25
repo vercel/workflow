@@ -58,6 +58,36 @@ gen Full_Proposed__ReplayConsistent "$F$FIX" "TypeOK ReplayConsistent" ""
 gen G4_Window_Proposed_NoRecovery "$F$FIX"$'\nRecovery=FALSE' "$HARD ReplayConsistent" "Monotone TerminalAbsorbing"
 gen Full_Proposed_StableCaller "$F$FIX"$'\nInitVersions={3}\nCallerCode=3' "$HARD CallerCanDecode" "Monotone TerminalAbsorbing"
 
+# --- I. #1044 @ 9159765 (flag on), regression witness: allow-list rule, P1,
+# bounded P2 (RetryBudget window retries, reread on a doomed skip), P3 on
+# ULID-mode writes only, run_started guard status==held.status AND
+# spec==held.spec, reset-to-pending recovery, terminal re-check after the
+# upgrade on the main path only (revive-terminal gap), no #1061.
+HEADK=$'\nRule="allowlist"\nFixResilient=TRUE\nFixCancelGuard=TRUE\nCancelGuardUlidOnly=TRUE\nHeadUpgrade=TRUE\nRetryBudget=2\nHeadGuardStart=TRUE\nRecoveryReset=TRUE'
+gen Full_H9159765          "$F$HEADK" "$HARD" "Monotone TerminalAbsorbing"
+gen Full_H9159765__TerminalAbsorbing "$F$HEADK" "TypeOK" "TerminalAbsorbing"
+
+# --- J. #1044 @ f83173c (HEAD, flag on = default): I + #1061 (caller and
+# resilient start commit run row + run_created atomically) + #1065
+# (run_started where status == 'pending' AND spec == held.spec) + 09887ac
+# (terminal re-check on the refetch path too) + 4b7b241 (reset only runs
+# carrying raisedFromSpecVersion, others delete-and-rebuild).
+HEADF="$HEADK"$'\nCallerSplit=FALSE\nAtomicRsCreate=TRUE\nGuardPendingOnly=TRUE\nFixReviveGap=TRUE\nResetOnlyRaised=TRUE'
+gen Full_Head              "$F$HEADF" "$HARD" "Monotone TerminalAbsorbing"
+# Full_Head checks the HARD invariants + both action properties together
+# (so per-property and single-executor-version runs are implied); the
+# revision-1 ReplayConsistent gets its own run, CallerCanDecode is checked
+# with a stable caller below (CallerCode 8 decodes everything).
+gen Full_Head__ReplayConsistent "$F$HEADF" "TypeOK ReplayConsistent" ""
+gen Full_Head_StableCaller "$F$HEADF"$'\nInitVersions={3}\nCallerCode=3' "$HARD CallerCanDecode" "Monotone TerminalAbsorbing"
+gen Full_Head_NoWindowPremise "$F$HEADF"$'\nWindowHolds=FALSE' "$HARD" "Monotone TerminalAbsorbing"
+# kill switch WORKFLOW_FLAG_RUN_SPEC_VERSION_UPGRADE=0: attestation ignored
+gen Full_Head_FlagOff      "$F$HEADF"$'\nExecVersions={0}' "$HARD" "Monotone TerminalAbsorbing"
+# pre-PR reference: main with #1061 + #1065, no attestation, no P3, rebuild
+gen Full_Main              "$F"$'\nCallerSplit=FALSE\nAtomicRsCreate=TRUE\nHeadGuardStart=TRUE\nGuardPendingOnly=TRUE\nExecVersions={0}' "$HARD" "Monotone TerminalAbsorbing"
+# allow-list rule over the lattice with the HEAD request machinery
+gen Head_AllowList_S679    "$S9"$'\nStructuralSet={6, 7, 9}'"$HEADF" "$LAT" "Monotone"
+
 # --- H. ForceClaimGate.tla: the #4193 victim gate vs a concurrent raise ---
 HEAD=$'VictimCode=7\nMinted={6, 7}'
 STABLE=$'VictimCode=3\nMinted={3}'
