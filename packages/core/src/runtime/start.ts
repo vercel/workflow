@@ -134,9 +134,12 @@ export type SpecVersionSource =
  *
  * Once executors attest their version on `run_started` and the backend
  * raises a run to it (vercel/workflow#4366, vercel/workflow-server#1044), a
- * v5 target heals an under-stamped run, and this miss floor can drop to
- * `SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT` with a short budget. Tracked
- * in vercel/workflow#4401.
+ * v5 target heals an under-stamped run, and this miss floor may drop, but
+ * only once the raise is enabled on the whole server fleet AND every v5
+ * target a caller can reach attests its version (a published beta that does
+ * not would be stamped below slot identity and fail). Even then a floor
+ * below `SPEC_VERSION_SUPPORTS_ATTRIBUTES` would refuse `attributes` on every
+ * miss. Tracked in vercel/workflow#4401.
  *
  * Exported for tests.
  */

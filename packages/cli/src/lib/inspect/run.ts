@@ -100,7 +100,12 @@ export const startRun = async (
       deploymentId,
       timeout: 10_000,
     });
-    if (hc.healthy && hc.specVersion != null) {
+    if (
+      hc.healthy &&
+      typeof hc.specVersion === 'number' &&
+      Number.isInteger(hc.specVersion) &&
+      hc.specVersion >= 1
+    ) {
       specVersion = Math.min(hc.specVersion, world.specVersion);
     }
   } catch {
