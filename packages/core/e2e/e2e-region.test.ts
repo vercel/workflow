@@ -295,7 +295,58 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
     );
   });
 
-  describe('cross-region stream visibility', () => {
+  describe('cross-region stream routing', () => {
+    test(
+      'an sfo1 writer contributes to and closes an iad1-owned stream',
+      { timeout: 120_000 },
+      async () => {
+        const startUrl = new URL('/api/e2e-stream-write/iad1', deploymentUrl);
+        const startResponse = await fetch(startUrl, {
+          method: 'POST',
+          headers: await getTrustedSourcesHeaders(),
+        });
+        expect(startResponse.ok).toBe(true);
+        const started = (await startResponse.json()) as {
+          runId: string;
+          token: string;
+          region: string | null;
+        };
+        expect(started.region).toBe('iad1');
+
+        const finishUrl = new URL('/api/e2e-stream-write/sfo1', deploymentUrl);
+        const finishResponse = await fetch(finishUrl, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(await getTrustedSourcesHeaders()),
+          },
+          body: JSON.stringify({
+            runId: started.runId,
+            token: started.token,
+          }),
+        });
+        expect(finishResponse.ok).toBe(true);
+        expect(
+          ((await finishResponse.json()) as { region: string | null }).region
+        ).toBe('sfo1');
+
+        const run = getRun<string>(started.runId);
+        trackRun(run, {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'crossRegionRedisRelayWorkflow',
+        });
+        const reader = run.getReadable<string>().getReader();
+        const chunks: string[] = [];
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        expect(chunks).toEqual(['owner-chunk', 'relayed-chunk']);
+        expect(await run.returnValue).toBe('done');
+      }
+    );
+
     test(
       'an sfo1 reader sees chunks of an IN-PROGRESS iad1 stream',
       { timeout: 120_000 },
