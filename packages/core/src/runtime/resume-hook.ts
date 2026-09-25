@@ -912,7 +912,15 @@ async function resumeHookAttempt<T = any>(
         hook.runId,
         {
           eventType: 'hook_received',
-          specVersion: SPEC_VERSION_CURRENT,
+          // The run's version, not this SDK's, when the run's is lower: the
+          // event is read by the runtime executing the run, which may be
+          // older or another SDK entirely (the Python SDK rejects the run's
+          // whole event log over one event stamped above what it supports).
+          // The payload is already encoded for the run (see `compression`).
+          specVersion: Math.min(
+            SPEC_VERSION_CURRENT,
+            resumeContext.runSpecVersion ?? SPEC_VERSION_CURRENT
+          ),
           correlationId: hook.hookId,
           eventData: {
             ...(v1Compat ? {} : { token: hook.token }),
