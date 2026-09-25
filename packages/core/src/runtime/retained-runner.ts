@@ -85,6 +85,17 @@ class RunnerFault extends WorkflowRuntimeError {
 }
 class InputRejected extends WorkflowWorldError {}
 
+const DISPATCH_STAGGER_MS = Number(
+  process.env.WORKFLOW_DISPATCH_STAGGER_MS ?? 0
+);
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) =>
+    DISPATCH_STAGGER_MS > 0
+      ? setTimeout(resolve, DISPATCH_STAGGER_MS)
+      : setImmediate(resolve)
+  );
+}
+
 /** Persistence proved that another writer advanced the log past this owner. */
 function isOwnerSuperseded(cause: unknown): boolean {
   for (let error = cause, depth = 0; error && depth < 5; depth++) {
@@ -118,6 +129,8 @@ interface MailboxBatch {
   finish(): Promise<void>;
 }
 const MAX_MAILBOX_BATCH = 100;
+/** Durable step starts committed (then dispatched) per prefix. */
+const START_PREFIX_SIZE = 50;
 // Extend deliberately: shared-resource operations and failure/retry decisions
 // must retain their own turn boundaries.
 const BATCHABLE_INPUT_EVENTS: readonly string[] = ['step_completed'];
@@ -1085,12 +1098,46 @@ export class RetainedRunner {
           }
         }
       }
-      const starts: Array<{
+      let starts: Array<{
         step: Step;
         claimed?: Step & { startedAt: Date };
       }> = [];
       const policy = this.queuedSteps;
       if (policy) await this.armStepRecovery();
+      // Make each durable start prefix available as soon as it commits, so a
+      // large fan-out dispatches its first bodies while later starts persist.
+      const launch = async () => {
+        const chunk = starts;
+        starts = [];
+        if (!chunk.length) return;
+        // Tentative VM progress is private; user code needs a durable start prefix.
+        await this.flushWriter();
+        const remote: Array<Step & { startedAt: Date }> = [];
+        let localSlots =
+          policy?.mode === 'hybrid' ? 3 - this.localWorkers.size : 0;
+        for (const { step, claimed } of chunk) {
+          // Flush may replace tentative entities with the native materialization.
+          const canonical = claimed ? this.steps.get(step.stepId) : undefined;
+          if (claimed && !canonical?.startedAt)
+            throw new RunnerFault(
+              'persistence',
+              new Error('Missing committed step start')
+            );
+          const admitted = canonical?.startedAt
+            ? { ...canonical, startedAt: canonical.startedAt }
+            : claimed;
+          if (policy && localSlots-- <= 0) {
+            if (!admitted)
+              throw new RunnerFault(
+                'persistence',
+                new Error('Missing queued step admission')
+              );
+            remote.push(admitted);
+          } else this.startStep(step, admitted);
+        }
+        if (remote.length)
+          await this.dispatchSteps(remote, policy!.attemptTimeoutMs);
+      };
       let available =
         (policy?.mode === 'hybrid' ? 100 : 16) -
         [...this.steps.values()].filter((step) => step.status === 'running')
@@ -1125,35 +1172,10 @@ export class RetainedRunner {
               claimed: { ...result.step, startedAt: result.step.startedAt },
             });
           } else starts.push({ step });
+          if (starts.length >= START_PREFIX_SIZE) await launch();
         }
       }
-      // Tentative VM progress is private; user code needs a durable start prefix.
-      if (starts.length) await this.flushWriter();
-      const remote: Array<Step & { startedAt: Date }> = [];
-      let localSlots =
-        policy?.mode === 'hybrid' ? 3 - this.localWorkers.size : 0;
-      for (const { step, claimed } of starts) {
-        // Flush may replace tentative entities with the native materialization.
-        const canonical = claimed ? this.steps.get(step.stepId) : undefined;
-        if (claimed && !canonical?.startedAt)
-          throw new RunnerFault(
-            'persistence',
-            new Error('Missing committed step start')
-          );
-        const admitted = canonical?.startedAt
-          ? { ...canonical, startedAt: canonical.startedAt }
-          : claimed;
-        if (policy && localSlots-- <= 0) {
-          if (!admitted)
-            throw new RunnerFault(
-              'persistence',
-              new Error('Missing queued step admission')
-            );
-          remote.push(admitted);
-        } else this.startStep(step, admitted);
-      }
-      if (remote.length)
-        await this.dispatchSteps(remote, policy!.attemptTimeoutMs);
+      await launch();
       if (this.events.length === before) return;
     }
   }
@@ -1515,8 +1537,15 @@ export class RetainedRunner {
       // Direct execution can wait for a result invoke. Never await it inside the
       // serialized owner turn: that would deadlock its own result admission.
       const parentSpanId = this.currentTurnId;
+      // Yield between request starts: a synchronous burst of HTTP requests
+      // is throttled by the platform. Each start waits for the previous one
+      // plus a macrotask, without awaiting any request's completion.
+      let started: Promise<void> = Promise.resolve();
       for (const { message, opts } of messages) {
+        const gate = started.then(yieldToEventLoop);
+        started = gate;
         const work = this.inTurn.run(false, async () => {
+          await gate;
           try {
             await this.observed(
               'step_dispatch',

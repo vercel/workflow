@@ -342,11 +342,16 @@ async function bufferedFanout(count: number) {
     false,
     'hybrid'
   );
+  const order: string[] = [];
   const queue = vi
     .spyOn(fixture.world, 'queue')
-    .mockResolvedValue({ messageId: null });
+    .mockImplementation(async (_name, message) => {
+      if ('stepId' in message) order.push('dispatch');
+      return { messageId: null };
+    });
   const create = fixture.world.events.create.bind(fixture.world.events);
   const flushes: string[][] = [];
+  const stagedHistory: string[][] = [];
   let staged: string[] = [];
   let barrier: (() => Promise<void>) | undefined;
   fixture.world.events.createWriteSession = () => ({
@@ -361,6 +366,10 @@ async function bufferedFanout(count: number) {
         const prefix = staged;
         staged = [];
         flushes.push(prefix);
+        stagedHistory.push(prefix);
+        order.push(
+          `flush:${prefix.filter((t) => t === 'step_started').length}`
+        );
         if (prefix.includes('step_completed')) await barrier?.();
       }
     },
@@ -368,6 +377,12 @@ async function bufferedFanout(count: number) {
   });
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   await fixture.send('fanout', 'start');
+  // Dispatch starts are staggered and follow each durable start prefix.
+  await vi.waitFor(() =>
+    expect(
+      queue.mock.calls.filter(([, message]) => 'stepId' in message)
+    ).toHaveLength(count - 3)
+  );
   const messages = queue.mock.calls
     .map(([, message]) => message)
     .filter((message) => 'stepId' in message);
@@ -413,6 +428,8 @@ async function bufferedFanout(count: number) {
   flushes.length = 0;
   return {
     ...fixture,
+    stagedHistory,
+    order,
     bodies,
     flushes,
     completions,
@@ -422,6 +439,20 @@ async function bufferedFanout(count: number) {
     },
   };
 }
+
+it('commits a 100-step fan-out as two durable start prefixes and staggers dispatch starts', async () => {
+  const f = await bufferedFanout(100);
+  const starts = f.stagedHistory
+    .map((prefix) => prefix.filter((type) => type === 'step_started').length)
+    .filter((n) => n > 0);
+  expect(starts).toEqual([50, 50]);
+  // The first prefix is dispatched without waiting for the second to persist.
+  const second = f.order.indexOf('flush:50', f.order.indexOf('flush:50') + 1);
+  expect(f.order.slice(0, second)).toContain('dispatch');
+  f.bodies.resolve();
+  await Promise.all(f.completions.map(f.submit));
+  await f.finished;
+});
 
 it('flushes a contiguous completion prefix once, holds duplicate ACKs, and advances only after durability', async () => {
   const f = await bufferedFanout(100);

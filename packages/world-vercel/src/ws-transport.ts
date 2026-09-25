@@ -22,6 +22,7 @@
  * `events-v4.ts` consumes one seam instead of assembling the transport.
  */
 
+import { channel } from 'node:diagnostics_channel';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
@@ -486,8 +487,27 @@ class WsEventsTransport {
               synced(meta: Record<string, unknown>): Promise<void>;
             }
           | undefined;
+        // Connection phase timing, published for diagnostics only.
+        const timing: Record<string, number | string> = {};
+        const startedAt = performance.now();
+        const mark = (name: string) => {
+          timing[name] = Math.round(performance.now() - startedAt);
+        };
+        const publishTiming = (status: string) => {
+          const observations = channel('workflow.eventsync');
+          if (observations.hasSubscribers)
+            observations.publish({
+              version: 1,
+              event: 'connect_timing',
+              at: Date.now(),
+              url: this.wsUrl,
+              status,
+              ...timing,
+            });
+        };
         try {
           const headers = await this.resolveUpgradeHeaders();
+          mark('headersMs');
           let url = this.wsUrl;
           const after = this.catchUpOptions?.position();
           if (after !== undefined) {
@@ -509,6 +529,7 @@ class WsEventsTransport {
             let chain = Promise.resolve();
             syncing = {
               history: (body) => {
+                if (timing.firstHistoryMs === undefined) mark('firstHistoryMs');
                 chain = chain.then(async () => {
                   events = events.concat(await catchUp.decode(body));
                 });
@@ -561,13 +582,25 @@ class WsEventsTransport {
 
         const { ws } = conn;
         let opened = false;
+        ws.on(
+          'upgrade',
+          (response: { socket?: { remoteAddress?: string } }) => {
+            if (timing.upgradeMs !== undefined) return;
+            mark('upgradeMs');
+            if (response?.socket?.remoteAddress)
+              timing.remoteAddress = response.socket.remoteAddress;
+          }
+        );
 
         const adopt = () => {
+          mark('readyMs');
+          publishTiming('completed');
           this.connection = conn;
           this.reconnectAttempts = 0;
           resolve(conn);
         };
         ws.on('open', () => {
+          mark('openMs');
           opened = true;
           if (this.closed) {
             // Released while this handshake was in flight: `close()` could
