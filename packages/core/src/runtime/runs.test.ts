@@ -204,6 +204,53 @@ describe('recreateRunFromExisting', () => {
       })
     );
   });
+
+  it('pins the source run spec version for a replay on its own deployment', async () => {
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_source',
+    });
+
+    expect(vi.mocked(start).mock.calls[0][2]).toMatchObject({
+      deploymentId: 'deploy_source',
+      specVersion: 6,
+    });
+  });
+
+  it('leaves the spec version to start() when the replay targets another deployment', async () => {
+    // The source run's version describes its own deployment, not the one
+    // the replay is redirected to; start() probes the target instead.
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_other',
+    });
+
+    const opts = vi.mocked(start).mock.calls[0][2];
+    expect(opts).toMatchObject({ deploymentId: 'deploy_other' });
+    expect(opts?.specVersion).toBeUndefined();
+  });
+
+  it('still honours an explicit specVersion on a redirected replay', async () => {
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_other',
+      specVersion: 7,
+    });
+
+    expect(vi.mocked(start).mock.calls[0][2]?.specVersion).toBe(7);
+  });
 });
 
 describe('Run.exists', () => {
