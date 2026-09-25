@@ -1,4 +1,7 @@
-import { SPEC_VERSION_CURRENT } from '@workflow/world/spec-version';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+} from '@workflow/world/spec-version';
 import { describe, expect, it } from 'vitest';
 import { specVersionForRunWrite } from './run-spec-version.js';
 
@@ -21,5 +24,11 @@ describe('specVersionForRunWrite', () => {
 
   it("stamps this SDK's version when the run has none recorded", () => {
     expect(specVersionForRunWrite(undefined)).toBe(SPEC_VERSION_CURRENT);
+  });
+
+  it('uses the given fallback when the run has none recorded', () => {
+    expect(specVersionForRunWrite(undefined, SPEC_VERSION_LEGACY)).toBe(
+      SPEC_VERSION_LEGACY
+    );
   });
 });
