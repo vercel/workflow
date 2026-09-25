@@ -349,7 +349,7 @@ export async function getNextBuilderEager(
 
           watcher.watch({ ...scope, startTime });
           logDevHmr(
-            `workflow dev hmr: watching ${scope.files.length} graph files and ${scope.directories.length} entrypoint roots`
+            `workflow dev hmr: watching ${scope.files.length} graph files and ${scope.directories.length} directories`
           );
         };
 

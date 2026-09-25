@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { posix } from 'node:path';
+import { normalize, posix } from 'node:path';
 
 /**
  * Next.js route roots. Any file below one of these can become an entrypoint by
@@ -41,6 +41,16 @@ export const ROOT_MODULE_EXTENSIONS: readonly string[] = [
   'jsx',
 ];
 
+/**
+ * A watch scope, in the platform's own path form.
+ *
+ * Every path here is native (backslashes on Windows). Watchpack keys its
+ * watchers by the string it is handed but records directory entries as
+ * `path.join(dir, name)`, and its key comparison only lowercases — it does not
+ * normalize separators. Hand it `d:/app/flow.ts` and its own scan files the
+ * same module under `d:\app\flow.ts`, so no listener ever matches: edits go
+ * unreported and every attach looks like a deletion instead.
+ */
 export interface WatchScope {
   /**
    * Exact files tracked for content and existence changes. These are the
@@ -48,8 +58,10 @@ export interface WatchScope {
    */
   files: string[];
   /**
-   * Directory trees tracked recursively, so a newly created route entrypoint is
-   * noticed even though nothing imports it yet.
+   * Directory trees tracked recursively: the route roots, where a file becomes
+   * an entrypoint by filename alone, and the directories the graph already
+   * lives in, where a new module can appear under an import that is already
+   * written.
    */
   directories: string[];
   /**
@@ -77,10 +89,17 @@ export interface WatchScopeOptions {
 
 const toPosix = (pathname: string) => pathname.replace(/\\/g, '/');
 
+/** POSIX in, platform-native out. A no-op everywhere except Windows. */
+const toNative = (pathname: string) => normalize(pathname);
+
 const stripTrailingSlash = (pathname: string) =>
   pathname.length > 1 && pathname.endsWith('/')
     ? pathname.slice(0, -1)
     : pathname;
+
+/** Whether `candidate` is `directory` itself or sits below it. */
+const isAtOrBelow = (candidate: string, directory: string) =>
+  candidate === directory || candidate.startsWith(`${directory}/`);
 
 /**
  * Every path a root-level entrypoint could occupy, whether or not it exists.
@@ -117,15 +136,64 @@ function rootEntrypointCandidates({
 }
 
 /**
+ * The directories the graph already occupies, which is where a module can
+ * appear under an import that is already written — the `import './helpers'` a
+ * developer types before creating `helpers.ts`. Discovery cannot resolve that
+ * import, so the file is not in the graph and no later edit announces it; only
+ * watching the directory catches its creation.
+ *
+ * The root-entrypoint directories are left out. A file directly in the project
+ * root or in `src/` is reached through `files`/`missing` instead, because
+ * following those recursively would pull in the whole source tree and undo the
+ * scoping.
+ */
+function graphDirectories({
+  files,
+  root,
+  routeRoots,
+  isIgnored,
+}: {
+  files: readonly string[];
+  root: string;
+  routeRoots: readonly string[];
+  isIgnored: (normalizedPath: string) => boolean;
+}): string[] {
+  const rootEntrypointDirectories = new Set(
+    ROOT_ENTRYPOINT_DIRECTORIES.map((segment) =>
+      segment ? posix.join(root, segment) : root
+    )
+  );
+
+  return [
+    ...new Set(
+      files
+        .map((file) => posix.dirname(file))
+        .filter(
+          (directory) =>
+            !rootEntrypointDirectories.has(directory) &&
+            // A directory above the app (a monorepo root reached through an
+            // import) would recurse over everything beside the app too.
+            !isAtOrBelow(root, directory) &&
+            // Already followed recursively as a route root.
+            !routeRoots.some((routeRoot) =>
+              isAtOrBelow(directory, routeRoot)
+            ) &&
+            !isIgnored(directory)
+        )
+    ),
+  ];
+}
+
+/**
  * Describe what the dev watcher should track.
  *
  * The workflow build only bundles what it can reach from the framework's
  * entrypoints, so watching the whole project tree buys nothing: an edit outside
  * that graph cannot change a bundle, and `classifyRebuild` discards it after
- * paying for the event. The scope is therefore the module graph itself, plus
- * the two places a file can join that graph without an existing module
- * importing it — a new route below a {@link NEXT_ROUTE_ROOTS} directory, and a
- * new root-level entrypoint.
+ * paying for the event. The scope is therefore the module graph, the
+ * directories that graph lives in, and the places a file can become an
+ * entrypoint by filename alone — below a {@link NEXT_ROUTE_ROOTS} directory, or
+ * as a root-level entrypoint.
  *
  * Nothing here is a file to hand to an OS watch API. The caller feeds `files`
  * and `missing` to a watcher that derives file events from the parent
@@ -142,18 +210,23 @@ export function createWatchScope({
 }: WatchScopeOptions): WatchScope {
   const root = stripTrailingSlash(toPosix(workingDir));
 
-  const directories = [
+  const routeRoots = [
     ...new Set(
       NEXT_ROUTE_ROOTS.map((segment) => posix.join(root, segment)).filter(
         (directory) => !isIgnored(directory) && pathExists(directory)
       )
     ),
-  ].sort();
+  ];
 
   const files = [
     ...new Set(
       [...relevantFiles].map(toPosix).filter((file) => !isIgnored(file))
     ),
+  ].sort();
+
+  const directories = [
+    ...routeRoots,
+    ...graphDirectories({ files, root, routeRoots, isIgnored }),
   ].sort();
 
   const watchedFiles = new Set(files);
@@ -172,5 +245,9 @@ export function createWatchScope({
     ),
   ].sort();
 
-  return { files, directories, missing };
+  return {
+    files: files.map(toNative),
+    directories: directories.map(toNative),
+    missing: missing.map(toNative),
+  };
 }

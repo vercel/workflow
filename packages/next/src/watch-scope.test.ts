@@ -39,19 +39,27 @@ describe('createWatchScope', () => {
     return canonical(abs);
   };
 
+  // `createWatchScope` answers in the platform's own path form, which is what
+  // the watcher needs; compare in the canonical form the rest of the suite uses.
   const scope = ({
     relevantFiles = [] as string[],
     isIgnored = () => false,
   }: {
     relevantFiles?: string[];
     isIgnored?: (path: string) => boolean;
-  } = {}) =>
-    createWatchScope({
+  } = {}) => {
+    const result = createWatchScope({
       workingDir: root,
       relevantFiles,
       pageExtensions,
       isIgnored,
     });
+    return {
+      files: result.files.map(canonical),
+      directories: result.directories.map(canonical),
+      missing: result.missing.map(canonical),
+    };
+  };
 
   beforeEach(() => {
     root = canonical(mkdtempSync(join(tmpdir(), 'wf-watch-scope-')));
@@ -88,6 +96,50 @@ describe('createWatchScope', () => {
     mkdirSync(join(root, 'src/pages'), { recursive: true });
 
     expect(scope().directories).toEqual([p('app'), p('src/pages')]);
+  });
+
+  test('follows the directories the graph already lives in', () => {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    const page = write('app/page.tsx');
+    const workflow = write('workflows/order.ts');
+
+    // `workflows/` is where an `import './helpers'` that is already written
+    // would be satisfied, so a file appearing there has to be noticed.
+    expect(scope({ relevantFiles: [page, workflow] }).directories).toEqual([
+      p('app'),
+      p('workflows'),
+    ]);
+  });
+
+  test('does not follow a route root twice through a graph file inside it', () => {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    const nested = write('app/reports/page.tsx');
+
+    expect(scope({ relevantFiles: [nested] }).directories).toEqual([p('app')]);
+  });
+
+  test('does not follow the root entrypoint directories', () => {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    mkdirSync(join(root, 'src'), { recursive: true });
+    const instrumentation = write('instrumentation.ts');
+    const srcModule = write('src/mdx-components.tsx');
+
+    // Recursing these would pull in the whole source tree; they are reached
+    // through `files`/`missing` instead.
+    const { directories, files } = scope({
+      relevantFiles: [instrumentation, srcModule],
+    });
+    expect(directories).toEqual([p('app')]);
+    expect(files).toEqual([instrumentation, srcModule].sort());
+  });
+
+  test('does not follow a directory above the app', () => {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    const outside = write('../outside/shared.ts');
+
+    expect(scope({ relevantFiles: [outside] }).directories).toEqual(
+      [p('app'), canonical(join(root, '../outside'))].sort()
+    );
   });
 
   test('drops ignored paths from every part of the scope', () => {
@@ -139,11 +191,10 @@ describe('createWatchScope', () => {
  * watch through FSEvents but falls back to kqueue for a file, holding one
  * descriptor per watched file, which is what exhausted the per-process limit.
  *
- * These drive a live watcher over a temp tree. Windows does not deliver
- * `fs.watch` events for files tracked through their parent directory the way
- * this harness expects, which is a property of that platform's watcher rather
- * than of the scope; `dev.test.ts` skips its dev HMR coverage there for the
- * same reason. The scope itself is pure, and its tests above run everywhere.
+ * These drive a live watcher over a temp tree, on every platform: Windows is
+ * where a separator mismatch between the paths handed to the watcher and the
+ * ones its own scan records silently costs every event, so it is the platform
+ * this coverage is most worth running on.
  */
 // Watchpack is CommonJS and calls `require('fs').watch`, so the recording hook
 // goes on the CJS module object rather than through `vi.spyOn`, which cannot
@@ -152,7 +203,7 @@ const nodeFs = createRequire(import.meta.url)('node:fs') as {
   watch: typeof import('node:fs').watch;
 };
 
-describe.skipIf(process.platform === 'win32')('watching a scope', () => {
+describe('watching a scope', () => {
   let root: string;
   let watcher: Watchpack | undefined;
   let restoreWatch: (() => void) | undefined;
@@ -275,20 +326,35 @@ describe.skipIf(process.platform === 'win32')('watching a scope', () => {
     expect(await waitFor(() => changes.includes(created))).toBe(true);
   });
 
-  test('stays silent for an unimported neighbour of a tracked module', async () => {
+  /**
+   * The case that a file-only scope misses: the import is already written, so
+   * no later edit announces the module, and discovery could not resolve it when
+   * the build ran. Only watching the directory the graph lives in catches it.
+   */
+  test('reports a module created under an import that already exists', async () => {
     const workflow = write('workflows/order.ts');
-    write('workflows/unimported.ts');
+    write('app/page.tsx');
+
+    const { changes } = startWatching([workflow, p('app/page.tsx')]);
+    const created = write('workflows/late-helper.ts');
+
+    expect(await waitFor(() => changes.includes(created))).toBe(true);
+  });
+
+  test('stays silent for a directory the app never imports', async () => {
+    const workflow = write('workflows/order.ts');
+    write('unimported/flow.ts');
     write('app/page.tsx');
 
     const { changes } = startWatching([workflow, p('app/page.tsx')]);
 
-    write('workflows/unimported.ts', 'export const value = 2;\n');
+    write('unimported/flow.ts', 'export const value = 2;\n');
     write('workflows/order.ts', 'export const value = 2;\n');
 
     // The tracked edit landed second, so once it is reported the unimported
     // one has had at least as long to arrive.
     expect(await waitFor(() => changes.includes(workflow))).toBe(true);
-    expect(changes).not.toContain(p('workflows/unimported.ts'));
+    expect(changes).not.toContain(p('unimported/flow.ts'));
   });
 
   /**

@@ -82,6 +82,7 @@ Accepted values:
 In `next dev`, Workflow watches the modules your app actually imports, not your whole project:
 
 - Every file the workflow build reached from your Next.js entrypoints. Editing one rebuilds the affected workflow bundles.
-- The `app` and `pages` directories (`src/` variants included), so a route you create is picked up even though nothing imports it yet, along with root entrypoints such as `middleware.ts` and `instrumentation.ts`.
+- The directories those files live in, so a module you add under an import you have already written is picked up.
+- The `app` and `pages` directories (`src/` variants included), so a route you create is noticed even though nothing imports it yet, along with root entrypoints such as `middleware.ts` and `instrumentation.ts`.
 
-A directory your app never imports is not watched, so files there never produce workflow bundles or rebuilds. Import one from a page and the next rebuild brings it into the watched set. Files are only ever watched through the directory that contains them, so the watcher's cost scales with the number of watched directories rather than the number of source files.
+A directory your app never imports is not watched at all, so files there never produce workflow bundles or rebuilds. Import one from a page and the next rebuild brings it into the watched set. Files are only ever watched through the directory that contains them, so the watcher's cost scales with the number of watched directories rather than the number of source files.

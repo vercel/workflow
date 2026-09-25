@@ -1534,28 +1534,15 @@ ${apiFileContent}`
           snapshot = await waitForGeneratedArtifactStability();
         }
 
-        // A file nothing imports cannot change a bundle, so the contract is
-        // that it never rebuilds. Whether the watcher reports it and lets the
-        // classifier dismiss it, or scopes it out and never reports it at all,
-        // is up to the integration: the Next watcher tracks the module graph,
-        // so a file sitting unimported next to a workflow is not watched.
         const unrelatedLogCursor = await readDevServerLogCursor();
         await fs.writeFile(files.unrelated, 'export const unrelated = true;\n');
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedLogCursor, {
-          full: 0,
-          hot: 0,
-          skip: { max: 1 },
-        });
+        await expectHmrLogCounts(unrelatedLogCursor, { skip: 1 });
 
         const unrelatedRemovalLogCursor = await readDevServerLogCursor();
         await fs.unlink(files.unrelated);
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedRemovalLogCursor, {
-          full: 0,
-          hot: 0,
-          skip: { max: 1 },
-        });
+        await expectHmrLogCounts(unrelatedRemovalLogCursor, { skip: 1 });
       }
     );
   });
