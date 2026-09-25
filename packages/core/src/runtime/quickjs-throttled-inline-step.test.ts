@@ -1,6 +1,7 @@
 import {
   type CreateEventRequest,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -42,7 +43,10 @@ const workflowRun: WorkflowRun = {
  * answered `throttled`: the lazy `step_started` was rejected with a 429, so
  * the step was never created.
  */
-async function runThrottledInlineStep(input: Uint8Array) {
+async function runThrottledInlineStep(
+  input: Uint8Array,
+  run: WorkflowRun = workflowRun
+) {
   const created: CreateEventRequest[] = [];
   const queued: { payload: any; opts: any }[] = [];
   setWorld({
@@ -55,7 +59,7 @@ async function runThrottledInlineStep(input: Uint8Array) {
         return { event: { ...request, runId, eventId: 'evnt_1' } };
       },
     },
-    runs: { get: async () => workflowRun },
+    runs: { get: async () => run },
     queue: async (_queueName: string, payload: unknown, opts: unknown) => {
       queued.push({ payload, opts });
       return { messageId: null };
@@ -88,8 +92,8 @@ async function runThrottledInlineStep(input: Uint8Array) {
 
   await runWorkflowWithQuickJS({
     workflowCode: '',
-    workflowName: workflowRun.workflowName,
-    workflowRun,
+    workflowName: run.workflowName,
+    workflowRun: run,
   });
 
   const stepMessages = queued.filter((q) => q.payload?.stepId === stepId);
@@ -125,6 +129,25 @@ it('materializes the step before queueing when the input is too large for the me
   expect(stepCreated[0]).toMatchObject({
     correlationId: stepId,
     eventData: { stepName: 'step//throttled//run', input },
+  });
+  expect(stepMessages).toHaveLength(1);
+  expect(stepMessages[0].payload).not.toHaveProperty('stepInput');
+});
+
+it('materializes the step before queueing on a legacy JSON-transport run', async () => {
+  // Below the CBOR queue transport, a binary `stepInput` would not survive
+  // the JSON message encoding and the consumer would reject the message.
+  const input = new Uint8Array([1, 2, 3, 4]);
+  const { created, stepMessages } = await runThrottledInlineStep(input, {
+    ...workflowRun,
+    specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT - 1,
+  });
+
+  const stepCreated = created.filter((e) => e.eventType === 'step_created');
+  expect(stepCreated).toHaveLength(1);
+  expect(stepCreated[0]).toMatchObject({
+    correlationId: stepId,
+    eventData: { input },
   });
   expect(stepMessages).toHaveLength(1);
   expect(stepMessages[0].payload).not.toHaveProperty('stepInput');

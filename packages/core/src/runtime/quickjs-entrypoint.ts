@@ -1945,14 +1945,24 @@ export async function runWorkflowWithQuickJS(params: {
           // so the step does not exist. A bare queued start would then fail
           // with "step not found" on every delivery until the delivery
           // ceiling, with nothing left to recover the input from. Give the
-          // consumer the input: on the message when it fits (the consumer
-          // materializes `step_created` from it in-band), otherwise by
-          // writing `step_created` here before queueing. A `retry` outcome
+          // consumer the input: on the message when the run's transport can
+          // carry it and it fits (the consumer materializes `step_created`
+          // from it in-band), otherwise by writing `step_created` here
+          // before queueing. A `retry` outcome
           // comes from a step whose start succeeded, so it already exists.
           let stepInput: Uint8Array | undefined;
           if (outcome.type === 'throttled') {
             const lazyInput = lazyInputs[i];
+            // Same transport gate as the resilient dispatch path:
+            // `stepInput.input` must arrive as a Uint8Array, which only the
+            // CBOR queue transport preserves (a JSON-transport run would have
+            // the consumer reject the message outright). Not gated on
+            // WORKFLOW_RESILIENT_STEP_DISPATCH: that switch governs racing
+            // the dispatch against the producer's step_created write, and
+            // here there is no such write to race.
             if (
+              (workflowRun.specVersion ?? 0) >=
+                SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT &&
               lazyInput instanceof Uint8Array &&
               lazyInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
             ) {
