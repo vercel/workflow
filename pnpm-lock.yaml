@@ -32,8 +32,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.5.1
-      version: 0.5.1
+      specifier: 0.6.0
+      version: 0.6.0
     '@vitest/coverage-v8':
       specifier: ^4.1.10
       version: 4.1.10
@@ -1417,7 +1417,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.5.1(@opentelemetry/api@1.9.1)
+        version: 0.6.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1472,7 +1472,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.5.1(@opentelemetry/api@1.9.1)
+        version: 0.6.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1622,7 +1622,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.5.1(@opentelemetry/api@1.9.1)
+        version: 0.6.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -10139,8 +10139,8 @@ packages:
     resolution: {integrity: sha512-6pjdXyNfdCQnj1nyeB1rPtll/XUhmciyeZJD0rpIUUwmcIfR+utDl6+iFvlHvsBdqAVT8UC6ydObT0v+xldfUQ==}
     engines: {node: '>=20.0.0'}
 
-  '@vercel/queue@0.5.1':
-    resolution: {integrity: sha512-7gO8hOtIh15UDzbjCg7oJDOwY1Hs3XC4xSK6HjMVo93Ge3oEhPZJ18ogamwZTXwcFRYwvgN1vp2w3+zgqfIpoA==}
+  '@vercel/queue@0.6.0':
+    resolution: {integrity: sha512-Le0A3ldZhnItV5f6zO101aBCL/Zty0RURD7b+RDA8+p6fuBhsiA2vSimbA2OysEIXYTEhANokGaSJrV6m7qpxw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@opentelemetry/api': 1.9.1
@@ -14089,10 +14089,6 @@ packages:
   minimatch@10.1.1:
     resolution: {integrity: sha512-enIvLvRAFZYXJzkCYG5RKmPfrFArdLv+R+lbQ53BmIMLIry74bjKzX6iHAm8WYamJkhSSEabrWN5D97XnKObjQ==}
     engines: {node: 20 || >=22}
-
-  minimatch@10.2.4:
-    resolution: {integrity: sha512-oRjTw/97aTBN0RHbYCdtF1MQfvusSIBQM0IZEgzl6426+8jSC0nF1a/GmnVLpfB9yyr6g6FTqWqiZVbxrtaCIg==}
-    engines: {node: 18 || 20 || >=22}
 
   minimatch@10.2.5:
     resolution: {integrity: sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg==}
@@ -26256,7 +26252,7 @@ snapshots:
 
   '@ts-morph/common@0.28.0':
     dependencies:
-      minimatch: 10.2.4
+      minimatch: 10.2.5
       path-browserify: 1.0.1
       tinyglobby: 0.2.17
 
@@ -26839,7 +26835,7 @@ snapshots:
       picocolors: 1.1.1
     optional: true
 
-  '@vercel/queue@0.5.1(@opentelemetry/api@1.9.1)':
+  '@vercel/queue@0.6.0(@opentelemetry/api@1.9.1)':
     dependencies:
       '@vercel/oidc': 3.2.0
       minimatch: 10.2.5
@@ -31889,10 +31885,6 @@ snapshots:
   minimatch@10.1.1:
     dependencies:
       '@isaacs/brace-expansion': 5.0.0
-
-  minimatch@10.2.4:
-    dependencies:
-      brace-expansion: 5.0.6
 
   minimatch@10.2.5:
     dependencies:
