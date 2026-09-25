@@ -99,9 +99,17 @@ export async function recreateRunFromExisting(
         globalThis
       )
     );
-    const specVersion =
-      options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;
     const deploymentId = options.deploymentId ?? run.deploymentId;
+    // The source run's spec version describes the deployment that executed
+    // it, so it is only a valid default for a replay on that same
+    // deployment. When the replay is redirected elsewhere, leave it unset
+    // and let `start()` resolve the target's version from its capability
+    // probe, instead of pinning the replay to the old deployment's.
+    const specVersion =
+      options.specVersion ??
+      (deploymentId === run.deploymentId
+        ? (run.specVersion ?? SPEC_VERSION_LEGACY)
+        : undefined);
 
     const newRun = await start(
       { workflowId: run.workflowName },

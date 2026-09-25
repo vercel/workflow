@@ -4,7 +4,11 @@ import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import type {
+  EventsResolveData,
+  PaginationOptions,
+  ResolveData,
+} from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -178,7 +182,7 @@ export function isChildEntityCreationEventType(
  */
 export function stripEventDataRefs(
   event: Event,
-  resolveData: ResolveData
+  resolveData: EventsResolveData
 ): Event {
   if (resolveData !== 'none') return event;
   if (!('eventData' in event)) return event;
@@ -795,7 +799,17 @@ export type CreateEventRequest = Exclude<
 
 export interface CreateEventParams {
   v1Compat?: boolean;
-  resolveData?: ResolveData;
+  /**
+   * `'skip-step-inputs'` applies only to the event-log page this create
+   * returns (the `sinceCursor` delta or a replay preload), never to the
+   * created `event` or the returned `step` entity, whose `input` is what step
+   * execution reads. See {@link EventsResolveData}.
+   *
+   * Code that forwards these params to an entity read (runs, steps, hooks,
+   * whose `resolveData` is a plain {@link ResolveData}) must map them with
+   * `entityResolveData()` first.
+   */
+  resolveData?: EventsResolveData;
   /**
    * Lazy hook resume idempotency key. Set only by `resumeHook()` when it
    * persists a `hook_received` event whose creation must be deduplicated
@@ -1188,7 +1202,7 @@ export interface ListEventsParams {
   runId: string;
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
-  resolveData?: ResolveData;
+  resolveData?: EventsResolveData;
 }
 
 export interface ListEventsByCorrelationIdParams {

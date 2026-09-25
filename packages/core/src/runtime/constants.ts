@@ -266,9 +266,10 @@ export function isResilientStepDispatchEnabled(): boolean {
  * `world.events.createBatch` call (one durable write, per-event outcomes)
  * instead of one write per event. Only engages when the World implements the
  * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
- * no resilient step dispatch. Everything else keeps the single-event path
- * byte-for-byte.
+ * (specVersion >= 6) AND the suspension carries no attribute writes and no
+ * resilient step dispatch. Hook writes in the same suspension go through the
+ * single-event path concurrently with the batch. Everything else keeps the
+ * single-event path byte-for-byte.
  *
  * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
  * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the

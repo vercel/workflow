@@ -15,6 +15,7 @@ import type {
   CreateEventParams,
   Event,
   EventResult,
+  EventsResolveData,
   ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
@@ -36,6 +37,7 @@ import {
   EVENT_ID_BODY_LENGTH,
   EVENT_ID_PREFIX,
   EventSchema,
+  entityResolveData,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
@@ -370,7 +372,7 @@ async function reportSkippedSlots(
   runId: string,
   committedEventId: string,
   askedFor: number,
-  resolveData: ResolveData
+  resolveData: EventsResolveData
 ): Promise<{ events: Event[]; hasMore: boolean } | undefined> {
   const committedSlot = eventIdToSlot(committedEventId);
   if (
@@ -1259,7 +1261,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             `wevt_${legacyEventUlid()}`,
             data,
             currentRun,
-            params
+            params && { resolveData: entityResolveData(params.resolveData) }
           );
         }
       }
