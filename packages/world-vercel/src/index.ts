@@ -28,6 +28,10 @@ export function createWorld(config?: APIConfig): World {
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
+  // Read once: the runtime validates this declaration, and `run_started`
+  // attests the same value (see `APIConfig.mintedSpecVersion`).
+  const specVersion = mintedSpecVersion();
+  config = { ...config, mintedSpecVersion: specVersion };
 
   return {
     // The version is what tells the backend which id scheme a run uses: it is
@@ -39,7 +43,7 @@ export function createWorld(config?: APIConfig): World {
     // version that introduced slots: a bump has to move this declaration with
     // it, or the runtime's compatibility floor rises past the adapter shipped
     // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
-    specVersion: mintedSpecVersion(),
+    specVersion,
     capabilities: {
       hookRetention: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which

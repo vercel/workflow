@@ -776,7 +776,9 @@ async function createWorkflowRunEventInner(
     runId: id,
     specVersion: data.specVersion ?? 2,
     ...(data.eventType === 'run_started'
-      ? { executorSpecVersion: mintedSpecVersion() }
+      ? {
+          executorSpecVersion: config?.mintedSpecVersion ?? mintedSpecVersion(),
+        }
       : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
     ...(params?.requestId ? { vercelId: params.requestId } : {}),

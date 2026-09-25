@@ -246,9 +246,9 @@ describe('createWorkflowRunEvent with v1Compat', () => {
  * lower to this value.
  */
 describe('createWorkflowRunEvent executorSpecVersion', () => {
-  async function postRunStartedAndCaptureMeta(): Promise<
-    Record<string, unknown> | undefined
-  > {
+  async function postRunStartedAndCaptureMeta(
+    extraConfig: { mintedSpecVersion?: number } = {}
+  ): Promise<Record<string, unknown> | undefined> {
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
     agent
@@ -280,7 +280,7 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
         specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
       } as AnyEventRequest,
       undefined,
-      { token: 'test-token', dispatcher: agent }
+      { token: 'test-token', dispatcher: agent, ...extraConfig }
     );
     agent.assertNoPendingInterceptors();
     return capturedMeta;
@@ -290,6 +290,23 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
     const meta = await postRunStartedAndCaptureMeta();
     expect(meta?.specVersion).toBe(SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT);
     expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
+  });
+
+  it('attests the version the World declared at creation, not a later env read', async () => {
+    // `createWorld` records what it declared; flipping the kill switch
+    // in-process afterwards must not make run_started claim more than the
+    // runtime validated.
+    vi.stubEnv(SEALED_LOG_ENV_VAR, '1');
+    try {
+      const meta = await postRunStartedAndCaptureMeta({
+        mintedSpecVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      });
+      expect(meta?.executorSpecVersion).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('follows the sealed-log kill switch', async () => {
