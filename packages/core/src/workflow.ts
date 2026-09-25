@@ -7,7 +7,7 @@ import {
 import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
-import * as nanoid from 'nanoid';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import { monotonicFactory } from 'ulid';
 import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
@@ -134,9 +134,7 @@ export async function runWorkflow(
     const workflowDiscontinuation = withResolvers<void>();
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
-    const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
-    );
+    const generateNanoid = createSeededNanoid(() => vmGlobalThis.Math.random());
 
     // Create a mutable holder for the promise queue so the EventsConsumer
     // can access the current queue state via a getter. The queue is mutated
