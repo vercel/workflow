@@ -1,4 +1,4 @@
-import type { Script } from 'node:vm';
+import { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
   ERROR_SLUGS,
@@ -151,17 +151,30 @@ export interface CompiledWorkflowScripts {
  * this promise while `run_started` loads the replay snapshot, then evaluates
  * the scripts only after it has created the fresh context.
  */
-export function compileWorkflowBundle(
+function compileWorkflowScripts(
   workflowCode: string,
-  workflowName: string
+  workflowName: string,
+  cache: 'shared' | 'none'
 ): Promise<CompiledWorkflowScripts> {
   const parsedName = parseWorkflowName(workflowName);
   const filename = parsedName?.moduleSpecifier || workflowName;
   const workflowLookupCode = `globalThis.__private_workflows?.get(${JSON.stringify(workflowName)})`;
 
   return trace('workflow.bundle.compile', async (span) => {
-    const bundle = getCachedWorkflowScript(workflowCode, filename);
-    const lookup = getCachedWorkflowScript(workflowLookupCode, filename);
+    const bundle =
+      cache === 'shared'
+        ? getCachedWorkflowScript(workflowCode, filename)
+        : {
+            script: new Script(workflowCode, { filename }),
+            cacheHit: false,
+          };
+    const lookup =
+      cache === 'shared'
+        ? getCachedWorkflowScript(workflowLookupCode, filename)
+        : {
+            script: new Script(workflowLookupCode, { filename }),
+            cacheHit: false,
+          };
     span?.setAttributes({
       // This attribute intentionally describes the workflow bundle. The tiny
       // lookup script may miss when another workflow from the same source file
@@ -173,6 +186,21 @@ export function compileWorkflowBundle(
       workflowLookupScript: lookup.script,
     };
   });
+}
+
+export function compileWorkflowBundle(
+  workflowCode: string,
+  workflowName: string
+): Promise<CompiledWorkflowScripts> {
+  return compileWorkflowScripts(workflowCode, workflowName, 'shared');
+}
+
+/** Compile invocation-scoped dynamic source without touching the static cache. */
+export function compileDynamicWorkflowBundle(
+  workflowCode: string,
+  workflowName: string
+): Promise<CompiledWorkflowScripts> {
+  return compileWorkflowScripts(workflowCode, workflowName, 'none');
 }
 
 /**

@@ -263,6 +263,26 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
   });
 
+  it('surfaces dynamicWorkflowVersion when present in the response', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: 1 })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBe(1);
+  });
+
+  it('omits malformed dynamicWorkflowVersion values', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: '1' })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBeUndefined();
+  });
+
   it('omits workflowCoreVersion when the response does not include the field', async () => {
     // Independent of specVersion — the field is omitted by any responder
     // running an older `@workflow/core` that predates the addition of
