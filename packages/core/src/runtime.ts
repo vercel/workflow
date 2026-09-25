@@ -840,6 +840,9 @@ export function workflowEntrypoint(
             // left to drive it. Throw so the queue redelivers with its backoff
             // (honoring a 429's Retry-After); the redelivery is still past the
             // ceiling, so it only retries this terminal write, never the replay.
+            // This relies on the World redelivering past the ceiling: VQS and
+            // world-local do, while world-postgres currently caps its jobs at
+            // exactly this delivery (#4427, fixed by #4428).
             if (isRetryableWorldError(err)) {
               runLogger.warn(
                 'Transient error marking run as failed after max deliveries, retrying via queue redelivery',

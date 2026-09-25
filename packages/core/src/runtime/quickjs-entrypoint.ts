@@ -166,10 +166,8 @@ async function queueStepMessage(params: {
    * Resilient step dispatch: the serialized (possibly encrypted) step input
    * to carry on the message as `stepInput`, so the consumer can idempotently
    * re-ensure the `step_created` event if the producer's parallel direct
-   * write failed transiently. Set on `dispatch` publishes that
-   * dispatchPendingOps parallelizes with the step_created write, and on the
-   * `retry` publish of a throttled lazy inline claim, whose step was never
-   * created.
+   * write failed transiently. Only set on `dispatch` publishes that
+   * dispatchPendingOps parallelizes with the step_created write.
    */
   stepInput?: Uint8Array;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
@@ -1419,6 +1417,10 @@ export async function runWorkflowWithQuickJS(params: {
   // exiting awaiting_external with the unblocking event already written
   // and nothing scheduled to read it.
   let pendingRequeueSignal = false;
+  // Set when an inline step's lazy claim came back `throttled`: the exit
+  // defers a fresh orchestrator invocation by this many seconds (the longest
+  // backoff in the batch) instead of handing the step to the queue.
+  let throttledReplaySeconds: number | undefined;
 
   /**
    * Fetch all events not yet processed by the live VM (log order), reading
@@ -1862,18 +1864,11 @@ export async function runWorkflowWithQuickJS(params: {
         typeof logView.logCursor === 'string'
           ? logView.logCursor
           : undefined;
-      // Encrypted once per candidate: the lazy claim carries these bytes, and
-      // a throttled claim hands the same bytes to the queue (see below).
-      const lazyInputs = await Promise.all(
-        inlineCandidates.map((step) =>
-          encryptSerializedData(step.input, encryptionKey)
-        )
-      );
       budget.pause();
       let outcomes: StepExecutionResult[];
       try {
         outcomes = await Promise.all(
-          inlineCandidates.map((step, i) =>
+          inlineCandidates.map((step) =>
             runStepSingleFlight(
               runId,
               step.correlationId,
@@ -1897,7 +1892,10 @@ export async function runWorkflowWithQuickJS(params: {
                     // exactly-one-owner. A concurrent claimant gets
                     // EntityConflictError → { type: 'skipped' } and never
                     // runs the body. Mirrors the node engine's inline path.
-                    lazyStepInput: lazyInputs[i],
+                    lazyStepInput: await encryptSerializedData(
+                      step.input,
+                      encryptionKey
+                    ),
                     // Ownership stamp: wake replays see the body as in
                     // flight in this invocation and arm a delayed backstop
                     // instead of immediately requeueing the step.
@@ -1939,52 +1937,22 @@ export async function runWorkflowWithQuickJS(params: {
             cursorAdvanced: advanced,
           });
         }
-        if (outcome.type === 'retry' || outcome.type === 'throttled') {
-          // A `throttled` outcome means the lazy `step_started` (the write
-          // that would have created the step from its input) was rejected,
-          // so the step does not exist. A bare queued start would then fail
-          // with "step not found" on every delivery until the delivery
-          // ceiling, with nothing left to recover the input from. Give the
-          // consumer the input: on the message when the run's transport can
-          // carry it and it fits (the consumer materializes `step_created`
-          // from it in-band), otherwise by writing `step_created` here
-          // before queueing. A `retry` outcome
-          // comes from a step whose start succeeded, so it already exists.
-          let stepInput: Uint8Array | undefined;
-          if (outcome.type === 'throttled') {
-            const lazyInput = lazyInputs[i];
-            // Same transport gate as the resilient dispatch path:
-            // `stepInput.input` must arrive as a Uint8Array, which only the
-            // CBOR queue transport preserves (a JSON-transport run would have
-            // the consumer reject the message outright). Not gated on
-            // WORKFLOW_RESILIENT_STEP_DISPATCH: that switch governs racing
-            // the dispatch against the producer's step_created write, and
-            // here there is no such write to race.
-            if (
-              (workflowRun.specVersion ?? 0) >=
-                SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT &&
-              lazyInput instanceof Uint8Array &&
-              lazyInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
-            ) {
-              stepInput = lazyInput;
-            } else {
-              try {
-                await createEvent({
-                  eventType: 'step_created',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  correlationId: step.correlationId,
-                  eventData: { stepName: step.stepId, input: lazyInput },
-                });
-              } catch (err) {
-                // Already created (the throttled start landed after all, or
-                // a concurrent invocation won): nothing to materialize. Any
-                // other failure redelivers this orchestrator message, whose
-                // replay re-attempts the step inline with its input.
-                if (!EntityConflictError.is(err)) throw err;
-              }
-            }
-          }
-          // Hand the step to the queue with the requested backoff:
+        if (outcome.type === 'throttled') {
+          // The lazy `step_started` (the write that would have created the
+          // step from its input) was rejected, so the step does NOT exist.
+          // Handing it to the queue as a background step would send a bare
+          // `step_started` the world rejects with "step not found" on every
+          // delivery until the ceiling, with no input left to recover it
+          // from. Mirror the node engine instead: defer a fresh orchestrator
+          // invocation by the backoff, whose replay re-attempts the step
+          // inline WITH its input (its step_created is deferred anew).
+          throttledReplaySeconds = Math.max(
+            throttledReplaySeconds ?? 0,
+            outcome.timeoutSeconds
+          );
+        } else if (outcome.type === 'retry') {
+          // The step's start succeeded, so it exists: hand it to the queue
+          // with the requested backoff:
           // background delivery drives the retry from here.
           queuedStepIds.add(step.correlationId);
           await queueStepMessage({
@@ -2000,7 +1968,6 @@ export async function runWorkflowWithQuickJS(params: {
             // keeps the retry enqueueable even if a world retired a
             // historical key for this step (see the purpose docs above).
             purpose: 'retry:1',
-            ...(stepInput !== undefined ? { stepInput } : {}),
             wfdiag,
           });
         } else if (outcome.type === 'gone') {
@@ -2016,6 +1983,10 @@ export async function runWorkflowWithQuickJS(params: {
         count: inlineCandidates.length,
         outcomes: outcomes.map((o) => o.type),
       });
+      // A throttled claim ends this invocation: the deferred replay picks up
+      // the batch's other terminals along with the retried step, and the
+      // backoff is what the throttle asked for.
+      if (throttledReplaySeconds !== undefined) break;
 
       // Feed the inline batch's terminal events into the live VM. When
       // the eventually-consistent listing has not surfaced them yet,
@@ -2026,7 +1997,7 @@ export async function runWorkflowWithQuickJS(params: {
       // requeue signal so the suspended exit schedules a fresh immediate
       // invocation whose fresh read picks the terminals up. Outcomes that
       // wrote no terminal ('skipped': a concurrent claimant owns the
-      // body; 'gone', retry/throttled: a queue message exists) don't
+      // body; 'gone'; 'retry': a queue message exists) don't
       // need it, but signaling on them too only costs a no-op invocation
       // in an already-rare lag window.
       const queued = takeQueuedEvents();
@@ -2155,6 +2126,30 @@ export async function runWorkflowWithQuickJS(params: {
     if (runGone) {
       // The run no longer exists (expired / deleted), so nothing to drive.
       wfdiag('exit_suspended', { action: 'run_gone' });
+      return;
+    }
+
+    if (throttledReplaySeconds !== undefined) {
+      // A throttled lazy inline claim: replay after the backoff (a
+      // fresh message, for the reasons given below) so the step
+      // re-runs inline with its input. Checked before the immediate-requeue
+      // exits, which would retry the throttled write with no backoff. Waits
+      // are covered: the loop armed the soonest wait's continuation before
+      // running the batch.
+      wfdiag('exit_suspended', {
+        action: 'throttled_step_deferred_replay',
+        timeoutSeconds: throttledReplaySeconds,
+      });
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
+        {
+          runId,
+          traceCarrier: await nextTraceCarrier(),
+          requestedAt: new Date(),
+        },
+        { delaySeconds: throttledReplaySeconds }
+      );
       return;
     }
 

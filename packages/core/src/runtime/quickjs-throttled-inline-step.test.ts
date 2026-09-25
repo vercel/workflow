@@ -1,12 +1,10 @@
 import {
   type CreateEventRequest,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
 import { afterEach, expect, it, vi } from 'vitest';
-import { MAX_RESILIENT_STEP_INPUT_BYTES } from './constants.js';
 import { runWorkflowWithQuickJS } from './quickjs-entrypoint.js';
 import { startQuickJSWorkflow } from './quickjs-runtime.js';
 import { executeStep } from './step-executor.js';
@@ -20,6 +18,7 @@ vi.mock('./step-executor.js', () => ({ executeStep: vi.fn() }));
 afterEach(() => {
   setWorld(undefined);
   vi.clearAllMocks();
+  vi.mocked(executeStep).mockReset();
 });
 
 const runId = 'wrun_quickjs_throttled';
@@ -38,15 +37,18 @@ const workflowRun: WorkflowRun = {
 };
 
 /**
- * One QuickJS invocation whose only pending op is a fresh step (no
- * `step_created` yet, so it runs as a lazy inline claim), with the claim
- * answered `throttled`: the lazy `step_started` was rejected with a 429, so
- * the step was never created.
+ * One QuickJS invocation whose pending ops are fresh steps (no
+ * `step_created` yet, so they run as lazy inline claims). By default the
+ * claim is answered `throttled`: the lazy `step_started` was rejected with a
+ * 429, so the step was never created.
  */
 async function runThrottledInlineStep(
   input: Uint8Array,
-  run: WorkflowRun = workflowRun
+  pending: { correlationId: string; stepId: string }[] = [
+    { correlationId: stepId, stepId: 'step//throttled//run' },
+  ]
 ) {
+  const run = workflowRun;
   const created: CreateEventRequest[] = [];
   const queued: { payload: any; opts: any }[] = [];
   setWorld({
@@ -71,24 +73,23 @@ async function runThrottledInlineStep(
   vi.mocked(startQuickJSWorkflow).mockImplementation(async () => ({
     result: {
       suspended: {
-        pendingOperations: [
-          {
-            type: 'step',
-            correlationId: stepId,
-            stepId: 'step//throttled//run',
-            input,
-            hasCreatedEvent: false,
-          },
-        ],
+        pendingOperations: pending.map((p) => ({
+          type: 'step',
+          ...p,
+          input,
+          hasCreatedEvent: false,
+        })),
       },
     },
     continueWithEvents: vi.fn(),
     dispose: vi.fn(),
   }));
-  vi.mocked(executeStep).mockResolvedValue({
-    type: 'throttled',
-    timeoutSeconds: 5,
-  });
+  if (!vi.mocked(executeStep).getMockImplementation()) {
+    vi.mocked(executeStep).mockResolvedValue({
+      type: 'throttled',
+      timeoutSeconds: 5,
+    });
+  }
 
   await runWorkflowWithQuickJS({
     workflowCode: '',
@@ -96,59 +97,55 @@ async function runThrottledInlineStep(
     workflowRun: run,
   });
 
-  const stepMessages = queued.filter((q) => q.payload?.stepId === stepId);
-  return { created, stepMessages };
+  const stepMessages = queued.filter((q) => q.payload?.stepId !== undefined);
+  const replays = queued.filter((q) => q.payload?.stepId === undefined);
+  return { created, stepMessages, replays };
 }
 
-it('carries the input on the retry message of a throttled lazy inline claim', async () => {
-  // Regression: the retry message used to be input-less. The step was never
-  // created, so the consumer's bare `step_started` failed "step not found"
-  // on every delivery until the delivery ceiling, with no input on the
-  // message to materialize the step from.
+it('defers a fresh replay instead of queueing a throttled lazy inline step', async () => {
+  // Regression: the throttled step used to be handed to the queue as an
+  // input-less background step. The step was never created, so the
+  // consumer's bare `step_started` failed "step not found" on every delivery
+  // until the delivery ceiling. Like the node engine, the orchestrator is
+  // re-invoked after the backoff instead, and its replay re-runs the step
+  // inline with its input.
   const input = new Uint8Array([1, 2, 3, 4]);
-  const { created, stepMessages } = await runThrottledInlineStep(input);
+  const { created, stepMessages, replays } =
+    await runThrottledInlineStep(input);
 
   expect(executeStep).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(executeStep).mock.calls[0][0].lazyStepInput).toEqual(input);
-  expect(stepMessages).toHaveLength(1);
-  expect(stepMessages[0].payload.stepInput).toEqual({ input });
-  expect(stepMessages[0].opts).toMatchObject({
-    delaySeconds: 5,
-    idempotencyKey: `${stepId}:retry:1`,
-  });
-  // The message is the recovery path: no extra write under a throttle.
+  expect(stepMessages).toHaveLength(0);
+  expect(replays).toHaveLength(1);
+  expect(replays[0].payload).toMatchObject({ runId });
+  expect(replays[0].payload).not.toHaveProperty('hookInput');
+  expect(replays[0].opts).toMatchObject({ delaySeconds: 5 });
+  // No write under the throttle: the replay's lazy claim creates the step.
   expect(created.map((e) => e.eventType)).not.toContain('step_created');
 });
 
-it('materializes the step before queueing when the input is too large for the message', async () => {
-  const input = new Uint8Array(MAX_RESILIENT_STEP_INPUT_BYTES + 1).fill(7);
-  const { created, stepMessages } = await runThrottledInlineStep(input);
+it('defers by the longest backoff and still queues a sibling retry', async () => {
+  const input = new Uint8Array([1]);
+  const pending = [
+    { correlationId: 'step_a', stepId: 'step//a' },
+    { correlationId: 'step_b', stepId: 'step//b' },
+    { correlationId: 'step_c', stepId: 'step//c' },
+  ];
+  vi.mocked(executeStep).mockImplementation(async ({ stepId: cid }) =>
+    cid === 'step_a'
+      ? { type: 'throttled', timeoutSeconds: 3 }
+      : cid === 'step_b'
+        ? { type: 'throttled', timeoutSeconds: 9 }
+        : { type: 'retry', timeoutSeconds: 2 }
+  );
+  const { stepMessages, replays } = await runThrottledInlineStep(
+    input,
+    pending
+  );
 
-  const stepCreated = created.filter((e) => e.eventType === 'step_created');
-  expect(stepCreated).toHaveLength(1);
-  expect(stepCreated[0]).toMatchObject({
-    correlationId: stepId,
-    eventData: { stepName: 'step//throttled//run', input },
-  });
-  expect(stepMessages).toHaveLength(1);
-  expect(stepMessages[0].payload).not.toHaveProperty('stepInput');
-});
-
-it('materializes the step before queueing on a legacy JSON-transport run', async () => {
-  // Below the CBOR queue transport, a binary `stepInput` would not survive
-  // the JSON message encoding and the consumer would reject the message.
-  const input = new Uint8Array([1, 2, 3, 4]);
-  const { created, stepMessages } = await runThrottledInlineStep(input, {
-    ...workflowRun,
-    specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT - 1,
-  });
-
-  const stepCreated = created.filter((e) => e.eventType === 'step_created');
-  expect(stepCreated).toHaveLength(1);
-  expect(stepCreated[0]).toMatchObject({
-    correlationId: stepId,
-    eventData: { input },
-  });
-  expect(stepMessages).toHaveLength(1);
-  expect(stepMessages[0].payload).not.toHaveProperty('stepInput');
+  expect(executeStep).toHaveBeenCalledTimes(3);
+  // The retrying step exists (its start succeeded): it keeps its own message.
+  expect(stepMessages.map((m) => m.payload.stepId)).toEqual(['step_c']);
+  expect(stepMessages[0].opts).toMatchObject({ delaySeconds: 2 });
+  expect(replays).toHaveLength(1);
+  expect(replays[0].opts).toMatchObject({ delaySeconds: 9 });
 });
