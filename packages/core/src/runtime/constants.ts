@@ -20,6 +20,11 @@ import { runtimeLogger } from '../logger.js';
 // backend outage; conversely, spanning the full 24h window would require a
 // substantially higher cap here, not a higher per-hop ceiling, since VQS
 // clamps every hop at 900s.)
+//
+// world-postgres sizes its Graphile job attempt cap from this value
+// (`CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT` = this + 1, plus headroom for
+// post-ceiling redeliveries of the terminal write). Update it there too if
+// this changes.
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**

@@ -576,6 +576,36 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('keeps post-ceiling headroom when transferring a job on the default cap', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    const fetchMock = vi
+      .spyOn(nodeHttp, 'nodeHttpFetch')
+      .mockResolvedValue(Response.json({ ok: true }));
+    try {
+      const payload = buildMessageData('__wkf_workflow_example', {
+        runId: 'run_a',
+      });
+      // Delivery 49 is where core records MAX_DELIVERIES_EXCEEDED. A job with
+      // no stored cap takes the default, so the transferred job must still
+      // have attempts left for core's post-ceiling redeliveries (73 - 49 + 1).
+      await getTaskHandler('workflow_flows')(payload, {
+        job: { attempts: 49 },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_flows_executor',
+        expect.objectContaining({ attempt: 49, attemptOffset: 48 }),
+        expect.objectContaining({ maxAttempts: 25 })
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('does not acknowledge a legacy transfer when enqueue fails', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },

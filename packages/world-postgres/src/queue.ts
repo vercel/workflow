@@ -145,6 +145,8 @@ const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 // throw would retire the job and strand the run anyway. Graphile's retry
 // backoff is exp(min(attempts, 10)) seconds, so each extra attempt waits ~6h
 // and 24 of them keep retrying the terminal write for ~6 days.
+// Mirrors `MAX_QUEUE_DELIVERIES + 1` in @workflow/core (runtime/constants.ts),
+// which this package does not depend on. Keep the two in sync.
 const CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT = 49;
 const POST_CEILING_RETRY_ATTEMPTS = 24;
 const MAX_GRAPHILE_JOB_ATTEMPTS =
