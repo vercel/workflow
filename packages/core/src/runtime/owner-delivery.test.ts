@@ -46,6 +46,13 @@ it('stops at the attempt deadline rather than renewing the retry budget', async 
   expect(attempt).toHaveBeenCalledTimes(calls);
 });
 
+it('treats every 5xx as an unknown outcome', () => {
+  for (const status of [500, 502, 503, 504])
+    expect(
+      isRetryableOwnerDelivery(new WorkflowWorldError('x', { status }))
+    ).toBe(true);
+});
+
 it('does not retry definite rejection or a terminal runner fault', async () => {
   const errors = [
     new WorkflowWorldError('Invalid input', { status: 400 }),

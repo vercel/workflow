@@ -3,9 +3,12 @@ import { WorkflowWorldError } from '@workflow/errors';
 /** Delivery failures do not establish whether the owner processed the input. */
 export function isRetryableOwnerDelivery(error: unknown): boolean {
   if (!WorkflowWorldError.is(error)) return false;
-  if ([400, 401, 403, 404, 410].includes(error.status ?? 0)) return false;
+  const status = error.status ?? 0;
+  // Any platform or transport 5xx (including affinity backoff 503 and a worker
+  // invocation that failed before running) leaves the outcome unknown.
   return (
-    [408, 429, 502, 503, 504].includes(error.status ?? 0) ||
+    status >= 500 ||
+    [408, 429].includes(status) ||
     ['TRANSPORT', 'TIMEOUT', 'INVOCATION_OUTCOME_UNKNOWN'].includes(
       error.code ?? ''
     )
