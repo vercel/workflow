@@ -1,5 +1,16 @@
 # @workflow/world-testing
 
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- [#4348](https://github.com/vercel/workflow/pull/4348) [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6) Thanks [@pranaygp](https://github.com/pranaygp)! - Added a `resolveData: 'skip-step-inputs'` option, which directs the World to leave out `input` from `step_created` and `step_started` events. Replay recomputes step arguments by re-running workflow code, and steps take their input from the `step_started` response or from memory, never from the replay log, so replay now reads the event log with this option and no longer downloads recorded step inputs. For workflows that pass growing state into their steps, this removes the part of the replay transfer that grows quadratically. A World that doesn't implement the option must treat it as `'all'`.
+- Updated dependencies [[`c0aad6d`](https://github.com/vercel/workflow/commit/c0aad6d01b65921a089174ded374bd6a2b515c78), [`ff80d62`](https://github.com/vercel/workflow/commit/ff80d62a59c7bf0f45c4552d7b0cde82beb2ebc4), [`20aa656`](https://github.com/vercel/workflow/commit/20aa6562f1f70917013ddad5716eb40661435fdc), [`35ebeb4`](https://github.com/vercel/workflow/commit/35ebeb4c5afa263bb37cd870a79c608fa237510a), [`25ec4ba`](https://github.com/vercel/workflow/commit/25ec4ba7edb2cb96d792cab7e9f74c88bf86c472), [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04), [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`bc18326`](https://github.com/vercel/workflow/commit/bc18326bb68974b00e71abac7d39673152d09099), [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b), [`548147a`](https://github.com/vercel/workflow/commit/548147ac691a6f6c8114b2b1282208691a7d7e8a)]:
+  - @workflow/core@5.0.0-beta.57
+  - @workflow/cli@5.0.0-beta.57
+  - @workflow/world@5.0.0-beta.39
+  - workflow@5.0.0-beta.57
+
 ## 5.0.0-beta.56
 
 ### Patch Changes
