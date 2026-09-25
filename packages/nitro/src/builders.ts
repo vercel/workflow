@@ -76,6 +76,11 @@ export class LocalBuilder extends BaseBuilder {
         externalPackages: getNitroStringExternals(nitro),
       }),
       buildTarget: 'next', // Placeholder, not actually used
+      // Dev inlines project-local step dependencies (see `#buildOnce`), so a
+      // Vite virtual module anywhere in that graph has to be resolvable here.
+      // `workflow/vite` supplies this; a bare Nitro app has no host bundler to
+      // ask and leaves it undefined.
+      hostResolver: nitro.options.workflow?._hostResolver,
     });
     this.#outDir = outDir;
   }

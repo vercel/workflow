@@ -32,6 +32,36 @@ export type WorkflowAfterTransformHook = (
   result: WorkflowTransformResult
 ) => void | Promise<void>;
 
+/**
+ * A resolver backed by the host bundler, used as a last resort for module ids
+ * that nothing on disk can satisfy.
+ *
+ * Step bundles are produced by a standalone esbuild pass, so Vite virtual
+ * modules such as `virtual:env/server` are otherwise unresolvable there. See
+ * vercel/workflow#3859.
+ */
+export interface HostModuleResolver {
+  /**
+   * Resolve `source` (optionally relative to `importer`) to a host module id,
+   * or return null/undefined to decline.
+   */
+  resolveId(
+    source: string,
+    importer?: string
+  ): Promise<
+    { readonly id: string; readonly external?: boolean } | null | undefined
+  >;
+  /** Load the source for a host module id, or decline. */
+  load(id: string): Promise<string | null | undefined>;
+}
+
+/**
+ * esbuild namespace for modules whose contents come from
+ * {@link HostModuleResolver}. These ids are not files, so they must never
+ * reach esbuild's own file-backed resolution or loading.
+ */
+const HOST_MODULE_NAMESPACE = 'workflow-host-module';
+
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow';
   entriesToBundle?: string[];
@@ -77,6 +107,12 @@ export interface SwcPluginOptions {
    * `package.json` and silently drops bare imports of these modules.
    */
   sideEffectEntries?: string[];
+  /**
+   * Last-resort resolver for module ids only the host bundler can satisfy.
+   * Consulted only after on-disk resolution and esbuild's own resolver have
+   * both declined, so it never shadows a real file.
+   */
+  hostResolver?: HostModuleResolver;
 }
 
 const NODE_RESOLVE_OPTIONS = {
@@ -153,6 +189,26 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
         }
       };
 
+      const hostResolver = options.hostResolver;
+      if (hostResolver) {
+        build.onLoad(
+          { filter: /.*/, namespace: HOST_MODULE_NAMESPACE },
+          async (args) => {
+            const contents = await hostResolver.load(args.path);
+            if (contents == null) {
+              return {
+                errors: [
+                  {
+                    text: `Host bundler resolved "${args.path}" but returned no source for it.`,
+                  },
+                ],
+              };
+            }
+            return { contents, loader: 'js' as const };
+          }
+        );
+      }
+
       // Pre-compute the normalized side-effect entries set for O(1) lookups.
       const normalizedSideEffectEntries = new Set(
         options.sideEffectEntries?.map((e) => e.replace(/\\/g, '/'))
@@ -160,6 +216,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.skipSwcPlugin) return null;
+        if (args.namespace === HOST_MODULE_NAMESPACE) return null;
 
         if (
           !options.entriesToBundle &&
@@ -240,6 +297,36 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                   external: true,
                   path: specifier,
                 };
+              } else if (!didResolve && hostResolver) {
+                // Nothing on disk satisfies this specifier. Before letting
+                // esbuild fail it, ask the host bundler: it may be a virtual
+                // module only the host's plugin pipeline can provide.
+                try {
+                  const hostResolution = await hostResolver.resolveId(
+                    specifier,
+                    args.importer || undefined
+                  );
+                  if (hostResolution?.external) {
+                    return { path: hostResolution.id, external: true };
+                  }
+                  if (hostResolution) {
+                    return {
+                      path: hostResolution.id,
+                      namespace: HOST_MODULE_NAMESPACE,
+                    };
+                  }
+                } catch (error) {
+                  return {
+                    errors: [
+                      {
+                        text:
+                          error instanceof Error
+                            ? error.message
+                            : String(error),
+                      },
+                    ],
+                  };
+                }
               }
             }
           }
