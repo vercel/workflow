@@ -5,10 +5,14 @@ test driver and assertions remain in `packages/core/e2e/e2e.test.ts`; this
 workbench supplies equivalent Python fixtures and exposes them through the same
 manifest and workflow protocols as the JavaScript workbenches.
 
-`vercel-workflow` is sourced from the `main` branch of
-[vercel-py](https://github.com/vercel/vercel-py). `uv.lock` records the exact
-commit used by local development, CI, and Vercel builds, so updating upstream
-does not change this workbench until the lockfile is refreshed.
+`vercel-workflow` and its in-repository `vercel-*` dependencies are sourced from
+the [`fantix/workflow-encryption-write`](https://github.com/vercel/vercel-py/pull/374)
+branch of vercel-py. That branch is based on the
+[`fantix/workflow-compression-write`](https://github.com/vercel/vercel-py/pull/372)
+branch, so this integration workbench exercises both pending changes. `uv.lock`
+records the exact commit used by local development, CI, and Vercel builds, so
+updating either upstream branch does not change this workbench until the
+lockfile is refreshed.
 
 ## Layout
 
@@ -50,7 +54,7 @@ node ./node_modules/workflow/bin/run.js inspect --json runs
 
 ## Update the Python SDK
 
-Regenerate the lockfile to update the pinned `vercel-py/main` revision, then
+Regenerate the lockfile to update the pinned vercel-py branch revision, then
 rerun the suite:
 
 ```bash

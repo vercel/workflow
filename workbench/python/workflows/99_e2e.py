@@ -91,6 +91,24 @@ async def addTenWorkflow(input: int) -> int:
 
 
 ##########################################################
+# payloadCompressionWorkflow
+#
+# A compressible value crosses all three payloads Python writes during an
+# ordinary workflow: the step input, the step result, and the run output. The
+# shared driver checks both the hydrated value and the raw event prefixes.
+
+
+@app.step
+async def roundTripCompressiblePayload(payload: str) -> str:
+    return payload
+
+
+@app.workflow
+async def payloadCompressionWorkflow(payload: str) -> str:
+    return await roundTripCompressiblePayload(payload)
+
+
+##########################################################
 # promiseAllWorkflow
 #
 # `asyncio.gather` is Python's `Promise.all`, and the interesting part is the
