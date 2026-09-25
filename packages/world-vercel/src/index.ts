@@ -45,6 +45,9 @@ export function createWorld(config?: APIConfig): World {
     // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
     specVersion,
     capabilities: {
+      // This adapter implements the ordered events.createBatch contract below;
+      // the core runtime also checks method presence and the run spec version.
+      eventsCreateBatch: true,
       hookRetention: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
