@@ -192,6 +192,88 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
+  it('creates forced hooks on different tokens concurrently', async () => {
+    // The first forced create is held until the second has been issued, so
+    // creating one token at a time would deadlock here.
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const wakes: string[] = [];
+    const queue = vi.fn(
+      async (
+        _queueName: string,
+        message: { runId: string },
+        opts?: { idempotencyKey?: string }
+      ) => {
+        if (message.runId !== runId) {
+          wakes.push(`${message.runId}:${opts?.idempotencyKey}`);
+        }
+        return { messageId: 'msg' };
+      }
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { hookForceClaim: true },
+      events: {
+        list: vi.fn(async () => ({ data: [], cursor: null, hasMore: false })),
+        create: vi.fn(async (_runId: string, request: CreateEventRequest) => {
+          const correlationId = request.correlationId as string;
+          if (correlationId === 'hook_forced_a') {
+            await firstHeld;
+          } else if (correlationId === 'hook_forced_b') {
+            releaseFirst();
+          }
+          const letter = correlationId.slice(-1);
+          return {
+            event: { ...request, runId, eventId: `evnt_${correlationId}` },
+            hook: {
+              hookId: correlationId,
+              claimedFrom: {
+                runId: `wrun_victim_${letter}`,
+                hookId: `hook_victim_${letter}`,
+                workflowName: 'victim-workflow',
+              },
+            },
+          };
+        }),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as unknown as World);
+    startQuickJSWorkflow.mockResolvedValue({
+      result: {
+        suspended: {
+          pendingOperations: ['a', 'b'].map((letter) => ({
+            type: 'hook',
+            correlationId: `hook_forced_${letter}`,
+            token: `forced-token-${letter}`,
+            isWebhook: false,
+            force: true,
+            hasCreatedEvent: false,
+          })),
+        },
+      },
+      continueWithEvents: vi.fn(),
+      dispose: vi.fn(),
+    });
+
+    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    await runWorkflowWithQuickJS({
+      workflowCode: '// not evaluated: the VM is mocked',
+      workflowName: 'workflow',
+      workflowRun,
+      preloadedEvents: [],
+    });
+
+    // Each victim is still woken once, under its own claimer hook's key.
+    expect(wakes.sort()).toEqual([
+      'wrun_victim_a:hook-force-claim-hook_forced_a',
+      'wrun_victim_b:hook-force-claim-hook_forced_b',
+    ]);
+  });
+
   it("does not hold the other writes for a forced creation's victim wake", async () => {
     // The wake still goes out, but the sibling hook and the wait are written
     // while it is in flight rather than after it. A crash before it goes out

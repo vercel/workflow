@@ -803,6 +803,66 @@ describe('handleSuspension', () => {
       });
     });
 
+    it('creates forced hooks on different tokens concurrently', async () => {
+      // The first forced create is held until the second has been issued, so
+      // creating one token at a time (each waiting on its victim wake before
+      // the next starts) would deadlock here.
+      let releaseFirst!: () => void;
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        if (event.correlationId === 'hook_forced_a') {
+          await firstHeld;
+        } else if (event.correlationId === 'hook_forced_b') {
+          releaseFirst();
+        }
+        const letter = event.correlationId.slice(-1);
+        return {
+          event,
+          hook: {
+            hookId: event.correlationId,
+            claimedFrom: {
+              runId: `wrun_victim_${letter}`,
+              hookId: `hook_victim_${letter}`,
+              workflowName: 'victim-workflow',
+            },
+          },
+        };
+      });
+      const queue = vi.fn(async () => ({ messageId: 'msg_wake' }));
+      const world = {
+        events: { create: eventsCreate },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue,
+      } as unknown as World;
+
+      await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            hook('hook_forced_a', { force: true }),
+            hook('hook_forced_b', { force: true }),
+          ]),
+          globalThis
+        ),
+        world,
+        run,
+      });
+
+      // Each victim is still woken once, under its own claimer hook's key.
+      expect(
+        queue.mock.calls
+          .map(([, message, opts]) => [
+            (message as { runId: string }).runId,
+            (opts as { idempotencyKey: string }).idempotencyKey,
+          ])
+          .sort()
+      ).toEqual([
+        ['wrun_victim_a', 'hook-force-claim-hook_forced_a'],
+        ['wrun_victim_b', 'hook-force-claim-hook_forced_b'],
+      ]);
+    });
+
     it('creates a hook before delivering its abort within one suspension', async () => {
       const order: string[] = [];
       const eventsCreate = vi.fn(async (_runId, event) => {
