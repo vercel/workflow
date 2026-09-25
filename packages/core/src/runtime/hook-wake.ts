@@ -179,13 +179,15 @@ export async function publishForceClaimVictimWake(
  * the debt, but a row another run put here does not. Both engines call this
  * on the log they loaded for the invocation, before writing anything.
  *
- * Reading only the last own row is sound because both engines keep every
- * other write of the invocation off that tail until the wake is out: a token
- * group holding a forced creation runs first, one group at a time, publishing
- * its wake before its next write, and nothing else is dispatched until those
- * groups have settled. Were a sibling hook's creation (or, in QuickJS, a step
- * or wait) allowed to land concurrently, a crash before the publish would
- * leave that row last and hide the debt.
+ * Reading only the last own row is best-effort. Any row this run writes after
+ * the forced creation and before the wake goes out ends the debt as if the
+ * wake had been published: a step, wait, attribute or other hook row the same
+ * suspension writes concurrently (neither engine holds those for the wake), or
+ * a step or wait terminal from another invocation. If the invocation then
+ * dies before publishing, the victim reads its disposal only on its next
+ * invocation for any other reason — the same outcome as a wake whose publish
+ * fails outright. Making the recovery independent of the log's tail is
+ * vercel/workflow#4393.
  */
 export function forcedCreationOwingWake(
   events: readonly Event[] | undefined

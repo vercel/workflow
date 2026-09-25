@@ -521,72 +521,267 @@ describe('handleSuspension', () => {
     });
   });
 
-  it('lands no other hook write between a forced creation and its victim wake', async () => {
-    // The replay repays an owed wake only while the forced `hook_created` is
-    // the last event the run wrote. A sibling hook created concurrently
-    // (another token, same suspension) could otherwise land after it while
-    // the wake is in flight, and a crash then would leave that sibling as
-    // the tail and the victim never woken.
-    const order: string[] = [];
-    const eventsCreate = vi.fn(async (_runId, event) => {
-      order.push(`${event.eventType}:${event.correlationId}`);
-      if (event.correlationId === 'hook_forced') {
-        return {
-          event,
-          hook: {
-            hookId: 'hook_forced',
-            claimedFrom: {
-              runId: 'wrun_victim',
-              hookId: 'hook_victim',
-              workflowName: 'victim-workflow',
+  describe('hook writes alongside the rest of the suspension', () => {
+    // With an inline cap of 1 the first uncreated step defers to the caller's
+    // lazy claim and writes nothing here, so every test pairs it with an
+    // eager one.
+    beforeEach(() => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    const step = (id: string) =>
+      [
+        id,
+        { type: 'step' as const, correlationId: id, stepName: id, args: [] },
+      ] as const;
+    const hook = (id: string, extra: Record<string, unknown> = {}) =>
+      [
+        id,
+        {
+          type: 'hook' as const,
+          correlationId: id,
+          token: `tok-${id}`,
+          ...extra,
+        },
+      ] as const;
+
+    it('writes step and wait events without waiting for a hook create', async () => {
+      // The hook create is held until both other writes have been issued; a
+      // hook-first barrier would deadlock here.
+      let releaseHook!: () => void;
+      const hookHeld = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      const seen: string[] = [];
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        seen.push(event.eventType);
+        if (event.eventType === 'hook_created') {
+          await hookHeld;
+        } else if (
+          seen.includes('step_created') &&
+          seen.includes('wait_created')
+        ) {
+          releaseHook();
+        }
+        return { event };
+      });
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            hook('hook_1'),
+            step('s_lazy'),
+            step('s_eager'),
+            [
+              'w1',
+              {
+                type: 'wait' as const,
+                correlationId: 'w1',
+                resumeAt: new Date(Date.now() + 60_000),
+              },
+            ],
+          ]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+      });
+
+      expect(seen[0]).toBe('hook_created');
+      expect([...seen].sort()).toEqual([
+        'hook_created',
+        'step_created',
+        'wait_created',
+      ]);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s_eager']);
+      expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+        's_lazy',
+      ]);
+      expect(result.hasHookEvents).toBe(true);
+    });
+
+    it("does not hold other writes for a forced creation's victim wake", async () => {
+      // The wake still goes out, once, but the sibling hook and the step are
+      // written while it is in flight rather than after it
+      // (vercel/workflow#4393 tracks the recovery gap that leaves after a
+      // crash).
+      const order: string[] = [];
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        order.push(`${event.eventType}:${event.correlationId}`);
+        if (event.correlationId === 'hook_forced') {
+          return {
+            event,
+            hook: {
+              hookId: 'hook_forced',
+              claimedFrom: {
+                runId: 'wrun_victim',
+                hookId: 'hook_victim',
+                workflowName: 'victim-workflow',
+              },
             },
-          },
+          };
+        }
+        return { event };
+      });
+      const queue = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push('wake:wrun_victim');
+        return { messageId: 'msg_wake' };
+      });
+      const world = {
+        events: { create: eventsCreate },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue,
+      } as unknown as World;
+
+      await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            step('s_lazy'),
+            step('s_eager'),
+            hook('hook_plain'),
+            hook('hook_forced', { force: true }),
+          ]),
+          globalThis
+        ),
+        world,
+        run,
+      });
+
+      const wakeAt = order.indexOf('wake:wrun_victim');
+      expect(wakeAt).toBeGreaterThan(order.indexOf('hook_created:hook_forced'));
+      expect(order.indexOf('hook_created:hook_plain')).toBeLessThan(wakeAt);
+      expect(order.indexOf('step_created:s_eager')).toBeLessThan(wakeAt);
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][2]).toMatchObject({
+        idempotencyKey: 'hook-force-claim-hook_forced',
+      });
+    });
+
+    it('creates a hook before delivering its abort within one suspension', async () => {
+      const order: string[] = [];
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        order.push(`${event.eventType}:${event.correlationId}`);
+        return { event };
+      });
+      const world = {
+        events: { create: eventsCreate },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        streams: {
+          write: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+        },
+      } as unknown as World;
+
+      await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            hook('hook_abort', { isSystem: true, abortRequested: true }),
+          ]),
+          globalThis
+        ),
+        world,
+        run,
+      });
+
+      expect(order).toEqual([
+        'hook_created:hook_abort',
+        'hook_received:hook_abort',
+      ]);
+    });
+
+    it('merges the hook delta in slot order around a concurrent skipped-slot report', async () => {
+      // The step write lands at slot 4 and reports slot 3 (another writer's
+      // event), which is folded in before the hook create, at slot 2, hands
+      // back its delta. Appending that delta would put slot 2 after slot 3.
+      const slotEvent = (slot: number, eventType: Event['eventType']) =>
+        ({
+          eventId: slotToEventId(slot),
+          eventType,
+          runId: run.runId,
+          createdAt: new Date(),
+        }) as Event;
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+      let releaseHook!: () => void;
+      const hookHeld = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        if (event.eventType === 'hook_created') {
+          await hookHeld;
+          const committed = { ...event, eventId: slotToEventId(2) } as Event;
+          return {
+            event: committed,
+            events: [committed],
+            cursor: `eid:${committed.eventId}`,
+            hasMore: false,
+          };
+        }
+        // The hook create returns only once this write's report is in.
+        setTimeout(releaseHook, 0);
+        return {
+          event: { ...event, eventId: slotToEventId(4) },
+          events: [slotEvent(3, 'hook_received')],
         };
-      }
-      return { event };
-    });
-    const queue = vi.fn(async () => {
-      // Give a concurrently started sibling every chance to write first.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      order.push('wake:wrun_victim');
-      return { messageId: 'msg_wake' };
-    });
-    const world = {
-      events: { create: eventsCreate },
-      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
-      queue,
-    } as unknown as World;
-    const pending = new Map([
-      [
-        'hook_plain',
-        {
-          type: 'hook' as const,
-          correlationId: 'hook_plain',
-          token: 'plain-token',
-        },
-      ],
-      [
-        'hook_forced',
-        {
-          type: 'hook' as const,
-          correlationId: 'hook_forced',
-          token: 'forced-token',
-          force: true,
-        },
-      ],
-    ]);
+      });
 
-    await handleSuspension({
-      suspension: new WorkflowSuspension(pending, globalThis),
-      world,
-      run,
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            hook('hook_1'),
+            step('s_lazy'),
+            step('s_eager'),
+          ]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(eventLog.events.map((e) => e.eventId)).toEqual([
+        slotToEventId(1),
+        slotToEventId(2),
+        slotToEventId(3),
+      ]);
+      expect(eventLog.cursor).toBe(`eid:${slotToEventId(2)}`);
+      // Two writes, so the log is not claimed complete.
+      expect(result.eventLogCarriedForward).toBe(false);
     });
 
-    expect(order).toEqual([
-      'hook_created:hook_forced',
-      'wake:wrun_victim',
-      'hook_created:hook_plain',
-    ]);
+    it('counts only the stretch a hook create outlasts the other writes', async () => {
+      const delay = (ms: number) =>
+        new Promise((resolve) => setTimeout(resolve, ms));
+      const suspend = (hookMs: number, stepMs: number) => {
+        const eventsCreate = vi.fn(async (_runId, event) => {
+          await delay(event.eventType === 'hook_created' ? hookMs : stepMs);
+          return { event };
+        });
+        return handleSuspension({
+          suspension: new WorkflowSuspension(
+            new Map<string, QueueItem>([
+              hook('hook_1'),
+              step('s_lazy'),
+              step('s_eager'),
+            ]),
+            globalThis
+          ),
+          world: createWorld(eventsCreate),
+          run,
+        });
+      };
+
+      // The step write outlasts the hook create: the hook never blocked.
+      expect((await suspend(5, 120)).hookCreationMs).toBeLessThan(60);
+      // The hook create outlasts the step write by ~115ms.
+      expect((await suspend(120, 5)).hookCreationMs).toBeGreaterThanOrEqual(60);
+    });
   });
 
   // Regression test for #2777: a dispose() of an earlier hook must be
@@ -1844,14 +2039,67 @@ describe('handleSuspension batched fan-out', () => {
     expect(eventsCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the single path when the suspension carries hook writes', async () => {
+  it('batches the steps and waits of a suspension that also creates a hook', async () => {
+    // Hook writes cannot ride a batch, but they need no barrier against one:
+    // the hook create goes through the single path while the fold commits.
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
-      event: { ...event, eventType: event.eventType },
-      hook: { hookId: 'hook_1', token: 'tok' },
+      event,
     }));
     const createBatch = successfulCreateBatch();
     const world = createBatchWorld(eventsCreate, createBatch);
-    const pending = stepsAndWait(['s1']) as Map<string, unknown>;
+    const pending = stepsAndWait(['s1', 's2', 's3'], 'wait_1') as Map<
+      string,
+      unknown
+    >;
+    pending.set('hook_1', {
+      type: 'hook' as const,
+      correlationId: 'hook_1',
+      token: 'order:456',
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(
+      createBatch.mock.calls[0][1].map(
+        (e: { event: { eventType: string; correlationId: string } }) =>
+          `${e.event.eventType}:${e.event.correlationId}`
+      )
+    ).toEqual(['step_created:s2', 'step_created:s3', 'wait_created:wait_1']);
+    expect(
+      eventsCreate.mock.calls.map(
+        ([, event]) => `${event.eventType}:${event.correlationId}`
+      )
+    ).toEqual(['hook_created:hook_1']);
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s2', 's3']);
+    expect(result.hasHookEvents).toBe(true);
+  });
+
+  it('commits the batch without waiting for the hook create', async () => {
+    // The hook create does not return until the batch has been posted: if
+    // the steps still waited behind the hook, this would never settle.
+    let releaseHook!: () => void;
+    const hookHeld = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
+      await hookHeld;
+      return { event };
+    });
+    const batchWrite = successfulCreateBatch();
+    const createBatch = vi.fn().mockImplementation(async (...args) => {
+      releaseHook();
+      return batchWrite(...args);
+    });
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1', 's2', 's3']) as Map<string, unknown>;
     pending.set('hook_1', {
       type: 'hook' as const,
       correlationId: 'hook_1',
@@ -1867,7 +2115,175 @@ describe('handleSuspension batched fan-out', () => {
       run: slotRun,
     });
 
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(eventsCreate).toHaveBeenCalledWith(
+      slotRun.runId,
+      expect.objectContaining({ eventType: 'hook_created' }),
+      expect.anything()
+    );
+  });
+
+  it('folds a lone inline step into a pair beside a hook create', async () => {
+    // A suspension that creates a hook runs its inline steps only after
+    // their claims settle, and a lazy claim could only go out once the hook
+    // create committed. Folded, the claim commits alongside the hook create.
+    let releaseHook!: () => void;
+    const hookHeld = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
+      await hookHeld;
+      return { event };
+    });
+    const batchWrite = successfulCreateBatch();
+    const createBatch = vi.fn().mockImplementation(async (...args) => {
+      releaseHook();
+      return batchWrite(...args);
+    });
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1']) as Map<string, unknown>;
+    pending.set('hook_abort', {
+      type: 'hook' as const,
+      correlationId: 'hook_abort',
+      token: 'abrt_1',
+      isSystem: true,
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+      ownerMessageId: 'msg_owner_1',
+    });
+
+    expect(
+      createBatch.mock.calls[0][1].map(
+        (e: { event: { eventType: string; correlationId: string } }) =>
+          `${e.event.eventType}:${e.event.correlationId}`
+      )
+    ).toEqual(['step_created:s1', 'step_started:s1']);
+    expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual(['s1']);
+    expect(eventsCreate.mock.calls.map(([, event]) => event.eventType)).toEqual(
+      ['hook_created']
+    );
+  });
+
+  it('pre-claims nothing beside a hook with a getConflict() awaiter', async () => {
+    // The caller continues the workflow to resolve the awaiter instead of
+    // running anything inline, so the steps are created eagerly (batched
+    // beside the hook create) and none is claimed for this invocation.
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1', 's2']) as Map<string, unknown>;
+    pending.set('hook_awaited', {
+      type: 'hook' as const,
+      correlationId: 'hook_awaited',
+      token: 'order:789',
+      hasConflictAwaiter: true,
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+      ownerMessageId: 'msg_owner_1',
+    });
+
+    expect(
+      createBatch.mock.calls[0][1].map(
+        (e: { event: { eventType: string; correlationId: string } }) =>
+          `${e.event.eventType}:${e.event.correlationId}`
+      )
+    ).toEqual(['step_created:s1', 'step_created:s2']);
+    expect(result.inlineClaims.size).toBe(0);
+    expect(result.lazyInlineSteps).toEqual([]);
+    expect(result.hasAwaitedHookCreation).toBe(true);
+  });
+
+  it('keeps a lone inline step lazy beside a hook that already exists', async () => {
+    // Nothing is being created, so the lazy claim waits on no hook write.
+    const eventsCreate = vi.fn();
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1']) as Map<string, unknown>;
+    pending.set('hook_1', {
+      type: 'hook' as const,
+      correlationId: 'hook_1',
+      token: 'order:456',
+      hasCreatedEvent: true,
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+      ownerMessageId: 'msg_owner_1',
+    });
+
     expect(createBatch).not.toHaveBeenCalled();
+    expect(result.inlineClaims.size).toBe(0);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual(['s1']);
+  });
+
+  it('does not carry the log forward when a batch committed beside the hook create', async () => {
+    // The hook create's delta may predate the batch's rows, and the batch
+    // hands nothing back, so the caller must read before continuing.
+    const eventLog = {
+      events: [
+        {
+          eventId: slotToEventId(1),
+          eventType: 'run_started',
+          runId: slotRun.runId,
+          createdAt: new Date(),
+        } as Event,
+      ],
+      cursor: 'eid:cursor_1',
+    };
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
+      const committed = { ...event, eventId: slotToEventId(2) } as Event;
+      return {
+        event: committed,
+        events: [committed],
+        cursor: `eid:${committed.eventId}`,
+        hasMore: false,
+      };
+    });
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1', 's2', 's3']) as Map<string, unknown>;
+    pending.set('hook_awaited', {
+      type: 'hook' as const,
+      correlationId: 'hook_awaited',
+      token: 'tok',
+      hasConflictAwaiter: true,
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+      eventLog,
+    });
+
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.eventLogCarriedForward).toBe(false);
   });
 
   it('routes a lone eager event through the single path, never a batch of one', async () => {
