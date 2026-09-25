@@ -176,6 +176,8 @@ export class RetainedRunner {
     { hookId: string; token: string; digest: string }
   >();
   private session?: WorkflowSession;
+  /** Events the retained session has consumed; resuming requires more. */
+  private sessionEvents = 0;
   private key?: PayloadKey;
   private payloadCache?: ReplayPayloadCache;
   private initialized = false;
@@ -933,71 +935,78 @@ export class RetainedRunner {
         );
       await this.completeDueWaits();
       const before = this.events.length;
-      if (!this.session)
-        await this.observed(
-          'replay_prewarm',
-          () => this.replayCache.prewarm(this.runState!, this.events),
-          { eventCount: this.events.length }
-        );
-      else await this.replayCache.prewarm(this.runState, this.events);
-      const mode = this.session ? 'retained' : 'replay';
-      const result = await observeWorkflowPass(
-        {
-          runId: this.runId,
-          loopIteration: ++this.loopIteration,
-          mode,
-          parentSpanId: this.currentTurnId,
-          ownerId: this.id,
-        },
-        async () =>
-          this.session
-            ? resumeWorkflow(this.session, this.events)
-            : replayWorkflow({
-                workflowCode: this.workflowCode,
-                workflowRun: this.run,
-                events: this.events,
-                encryptionKey: this.key,
-                replayPayloadCache: this.replayCache,
-                worldCapabilities: this.facade.capabilities,
-              })
-      );
-      if (result.type === 'replay')
-        throw new RunnerFault(
-          'execution',
-          new Error('Retained VM could not resume')
-        );
-      if (result.type === 'completed') {
-        await this.commit({
-          eventType: 'run_completed',
-          specVersion: SPEC_VERSION_CURRENT,
-          eventData: { output: result.output },
-        });
-        this.session = undefined;
-        return;
-      }
-      this.session = result.session;
-      const handled = await handleSuspension({
-        suspension: result.suspension,
-        world: this.facade,
-        run: this.runState,
-        requestId: this.metadata.requestId,
-        deferInlineSteps: false,
-      });
-      await handled.deferredBatchWork;
-      if (this.fault) throw this.fault;
-      if (handled.waitTimeout) {
-        const wakeKey = handled.waitTimeout.correlationId;
-        if (!this.timerWakeups.has(wakeKey)) {
-          this.timerWakeups.add(wakeKey);
-          await this.backend.queue(
-            this.metadata.queueName,
-            { runId: this.runId },
-            {
-              deploymentId: this.runState.deploymentId,
-              delaySeconds: handled.waitTimeout.seconds,
-              idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
-            }
+      // A retained VM advances only on new events. Wakes that bring none (for
+      // example a step-recovery timer whose steps already finished) keep the
+      // current suspension and go straight to step admission below.
+      if (!this.session || this.events.length > this.sessionEvents) {
+        if (!this.session)
+          await this.observed(
+            'replay_prewarm',
+            () => this.replayCache.prewarm(this.runState!, this.events),
+            { eventCount: this.events.length }
           );
+        else await this.replayCache.prewarm(this.runState, this.events);
+        const mode = this.session ? 'retained' : 'replay';
+        const result = await observeWorkflowPass(
+          {
+            runId: this.runId,
+            loopIteration: ++this.loopIteration,
+            mode,
+            parentSpanId: this.currentTurnId,
+            ownerId: this.id,
+          },
+          async () => {
+            this.sessionEvents = this.events.length;
+            return this.session
+              ? resumeWorkflow(this.session, this.events)
+              : replayWorkflow({
+                  workflowCode: this.workflowCode,
+                  workflowRun: this.run,
+                  events: this.events,
+                  encryptionKey: this.key,
+                  replayPayloadCache: this.replayCache,
+                  worldCapabilities: this.facade.capabilities,
+                });
+          }
+        );
+        if (result.type === 'replay')
+          throw new RunnerFault(
+            'execution',
+            new Error('Retained VM could not resume')
+          );
+        if (result.type === 'completed') {
+          await this.commit({
+            eventType: 'run_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { output: result.output },
+          });
+          this.session = undefined;
+          return;
+        }
+        this.session = result.session;
+        const handled = await handleSuspension({
+          suspension: result.suspension,
+          world: this.facade,
+          run: this.runState,
+          requestId: this.metadata.requestId,
+          deferInlineSteps: false,
+        });
+        await handled.deferredBatchWork;
+        if (this.fault) throw this.fault;
+        if (handled.waitTimeout) {
+          const wakeKey = handled.waitTimeout.correlationId;
+          if (!this.timerWakeups.has(wakeKey)) {
+            this.timerWakeups.add(wakeKey);
+            await this.backend.queue(
+              this.metadata.queueName,
+              { runId: this.runId },
+              {
+                deploymentId: this.runState.deploymentId,
+                delaySeconds: handled.waitTimeout.seconds,
+                idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
+              }
+            );
+          }
         }
       }
       const starts: Array<{

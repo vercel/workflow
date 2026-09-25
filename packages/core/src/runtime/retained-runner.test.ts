@@ -158,6 +158,30 @@ it.each([
   ).toHaveLength(count - 3);
 });
 
+it('keeps the retained session when a wake brings no new events', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await expect(fixture.send('a', 'one')).resolves.toEqual({
+    status: 'accepted',
+  });
+  await vi.waitFor(() => expect(values).toEqual(['one']));
+  const count = fixture.owner.events.length;
+  // A step-recovery or wait timer arriving after the work it guarded finished.
+  await fixture.owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('late-recovery-wake') }
+  );
+  expect(fixture.owner.events).toHaveLength(count);
+  await expect(fixture.send('b', 'two')).resolves.toEqual({
+    status: 'accepted',
+  });
+  await vi.waitFor(() => expect(values).toEqual(['one', 'two']));
+});
+
 it('dispatches admitted steps, executes concurrent workers without worker writes, and preserves completion order', async () => {
   const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
   const started: number[] = [];
