@@ -1,5 +1,13 @@
 import { constants, type Dirent } from 'node:fs';
-import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
@@ -7,6 +15,10 @@ import type {
 } from '@workflow/builders';
 import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
+import {
+  normalizeWorkflowRoutePrefix,
+  workflowRoutePrefixDirectory,
+} from './route-prefix.js';
 import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
   classifyRebuild,
@@ -31,6 +43,7 @@ const rootModuleEntrypoint =
   /^(?:instrumentation-client|mdx-components)\.(?:mjs|[jt]sx?)$/;
 const rootModuleNames = ['instrumentation-client', 'mdx-components'];
 const rootModuleExtensions = ['js', 'mjs', 'tsx', 'ts', 'jsx'];
+const WELL_KNOWN_DIR = '.well-known';
 
 export function createNextEntrypointMatcher(pageExtensions: readonly string[]) {
   const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
@@ -92,7 +105,31 @@ export async function getNextBuilderEager(
 
     async build() {
       const outputDir = await this.findAppDirectory();
-      const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
+      const routePrefix = normalizeWorkflowRoutePrefix(
+        this.config.experimentalRoutePrefix
+      );
+      const routePrefixDir = workflowRoutePrefixDirectory(routePrefix);
+      const publicDir = join(this.config.workingDir, 'public');
+      const workflowGeneratedDir = join(
+        outputDir,
+        routePrefixDir,
+        '.well-known/workflow/v1'
+      );
+      const publicManifestDir = join(
+        publicDir,
+        routePrefixDir,
+        '.well-known/workflow/v1'
+      );
+
+      // An earlier build under a different prefix (including none) left its
+      // routes behind. Next.js would keep serving that flow route and Vercel
+      // would attach the queue trigger to it as well, leaving the deployment
+      // with two consumers of the same topic; a leftover public manifest would
+      // keep answering at its old URL with a frozen workflow list.
+      await this.removeStaleGeneratedDirs({
+        roots: [outputDir, publicDir],
+        keep: [workflowGeneratedDir, publicManifestDir],
+      });
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
@@ -136,11 +173,9 @@ export async function getNextBuilderEager(
         });
 
         // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
+        // The static copy carries the route prefix too, so the manifest stays
+        // reachable at `<prefix>/.well-known/workflow/v1/manifest.json`.
         if (this.shouldExposePublicManifest && manifestJson) {
-          const publicManifestDir = join(
-            this.config.workingDir,
-            'public/.well-known/workflow/v1'
-          );
           await mkdir(publicManifestDir, { recursive: true });
           if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
             await writeFileIfChanged(
@@ -159,7 +194,7 @@ export async function getNextBuilderEager(
 
       await writeManifest(combinedResult?.manifest);
 
-      await this.writeFunctionsConfig(outputDir);
+      await this.writeFunctionsConfig(workflowGeneratedDir);
 
       if (this.config.watch) {
         // TODO: implement watch mode for combined bundle
@@ -694,7 +729,94 @@ export async function getNextBuilderEager(
       });
     }
 
-    private async writeFunctionsConfig(outputDir: string) {
+    /**
+     * Removes workflow route directories this builder generated somewhere it
+     * no longer writes, which is how a change to (or removal of) the route
+     * prefix leaves a second flow route behind.
+     *
+     * Only directories carrying the `.gitignore` marker this builder writes
+     * are removed, so a hand-written route under `.well-known/workflow/` is
+     * never deleted, and only ones outside `keep`, so the current build's own
+     * output (and an untouched public copy from a `WORKFLOW_PUBLIC_MANIFEST`
+     * build) survives. The emptied `.well-known/workflow` parents are left
+     * alone: git does not track empty directories and Next.js routes nothing
+     * from them, so pruning upwards would only add ways to delete too much.
+     */
+    private async removeStaleGeneratedDirs({
+      roots,
+      keep,
+    }: {
+      roots: string[];
+      keep: string[];
+    }): Promise<void> {
+      const kept = new Set(keep);
+      const candidates = (
+        await Promise.all(roots.map((root) => this.findWorkflowRouteDirs(root)))
+      ).flat();
+
+      await Promise.all(
+        candidates
+          .filter((dir) => !kept.has(dir))
+          .map(async (dir) => {
+            if (await this.isGeneratedDir(dir)) {
+              await rm(dir, { recursive: true, force: true });
+            }
+          })
+      );
+    }
+
+    /** Every `.well-known/workflow/v1` path below `root`, generated or not. */
+    private async findWorkflowRouteDirs(root: string): Promise<string[]> {
+      const found: string[] = [];
+
+      const visit = async (dir: string): Promise<void> => {
+        let entries: Dirent<string>[];
+        try {
+          entries = await readdir(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+
+        await Promise.all(
+          entries.map(async (entry) => {
+            if (!entry.isDirectory()) {
+              return;
+            }
+            if (entry.name === WELL_KNOWN_DIR) {
+              // Workflow routes never nest below another `.well-known`.
+              found.push(join(dir, entry.name, 'workflow/v1'));
+              return;
+            }
+            // Neither `node_modules` nor a dot directory (`.next`, `.git`)
+            // holds app routes, and both are expensive to walk.
+            if (entry.name === 'node_modules' || entry.name.startsWith('.')) {
+              return;
+            }
+            await visit(join(dir, entry.name));
+          })
+        );
+      };
+
+      await visit(root);
+      return found;
+    }
+
+    private async isGeneratedDir(dir: string): Promise<boolean> {
+      try {
+        const marker = await readFile(join(dir, '.gitignore'), 'utf-8');
+        return marker.trim() === '*';
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Writes the Vercel function config for the flow route. It lives one level
+     * above the route directory (`../config.json` relative to
+     * `flow/route.js`), which is where the Vercel Next.js builder reads the
+     * `workflows` options from, including under a route prefix.
+     */
+    private async writeFunctionsConfig(workflowGeneratedDir: string) {
       // we don't run this in development mode as it's not needed
       if (process.env.NODE_ENV === 'development') {
         return;
@@ -712,7 +834,7 @@ export async function getNextBuilderEager(
       };
 
       await writeFileIfChanged(
-        join(outputDir, '.well-known/workflow/v1/config.json'),
+        join(workflowGeneratedDir, 'config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );
     }
