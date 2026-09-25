@@ -67,7 +67,7 @@ import {
 } from './helpers.js';
 import {
   publishForceClaimVictimWake,
-  republishOwedForceClaimVictimWake,
+  republishOwedForceClaimVictimWakes,
 } from './hook-wake.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
@@ -152,6 +152,15 @@ export interface SuspensionHandlerParams {
    * keep the everything-durable-at-return behavior.
    */
   allowDeferredBatchWork?: boolean;
+  /**
+   * The invocation's record of hooks whose force-claim victim wake it has
+   * already published or attempted, whether as the forced creation's own wake
+   * or as a replay's republish (see `republishOwedForceClaimVictimWakes`). The
+   * caller passes one set for the whole invocation so a run that suspends more
+   * than once per invocation sends each hook's wake once, not once per
+   * suspension. Omitted, every suspension republishes on its own.
+   */
+  forceClaimVictimWakes?: Set<string>;
 }
 
 /**
@@ -358,6 +367,7 @@ async function createHookEvent({
   sinceCursor,
   createEvent,
   world,
+  forceClaimVictimWakes,
 }: {
   runId: string;
   hookEvent: CreateEventRequest;
@@ -368,6 +378,8 @@ async function createHookEvent({
    * `publishForceClaimVictimWake`.
    */
   world: World;
+  /** See {@link SuspensionHandlerParams.forceClaimVictimWakes}. */
+  forceClaimVictimWakes?: Set<string>;
   /**
    * Cursor to ask the World for the event-log delta against, or undefined to
    * not ask. See `hookDeltaCursor` in {@link handleSuspension} for when it is
@@ -404,12 +416,14 @@ async function createHookEvent({
     // A forced creation that took the token over: the World journaled the
     // victim's `hook_disposed{forceClaimedBy}` and recorded the victim on the
     // hook. The victim only reads that row when something invokes it, and the
-    // World has no queue, so the wake is ours to publish — before the hook
-    // phase is considered done, so a claimer that dies here re-posts and
-    // republishes (the World answers a completed takeover with the same
-    // `claimedFrom`, on the adoption path). See `publishForceClaimVictimWake`
-    // for why a wake that still fails does not fail the claimer.
+    // World has no queue, so the wake is ours to publish. A claimer that dies
+    // before it goes out has left the forced `hook_created` in its log, and
+    // every replay inside the republish window repays it
+    // (`forcedCreationsOwingWake`), whatever else this suspension wrote. See
+    // `publishForceClaimVictimWake` for why a wake that still fails does not
+    // fail the claimer.
     if (result.hook?.claimedFrom) {
+      forceClaimVictimWakes?.add(result.hook.hookId);
       const outcome = await publishForceClaimVictimWake(
         world,
         runId,
@@ -491,14 +505,23 @@ export async function handleSuspension({
   stepDispatch,
   ownerMessageId,
   allowDeferredBatchWork,
+  forceClaimVictimWakes,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
-  // A forced creation whose victim wake this run still owes (the invocation
-  // that created it died before publishing) is repaid before anything else;
-  // see `forcedCreationOwingWake` for the rule and why it reads the log as
-  // loaded, before this suspension's writes.
-  await republishOwedForceClaimVictimWake(world, runId, eventLog?.events);
+  // Every recent forced creation in the loaded log may still owe its victim a
+  // wake (the invocation that created it may have died before publishing), so
+  // it is republished under the hook's idempotency key; see
+  // `forcedCreationsOwingWake` for the rule and its window. The rule reads
+  // nothing this suspension writes, so the republish goes out alongside the
+  // writes below instead of ahead of them, and is joined before returning.
+  // It never rejects.
+  const owedVictimWakes = republishOwedForceClaimVictimWakes(
+    world,
+    runId,
+    eventLog?.events,
+    { alreadyWoken: forceClaimVictimWakes }
+  );
 
   // Turbo mode: hold every world write below until the backgrounded
   // `run_started` has *settled*, so we never write a step/hook/wait event for a
@@ -820,6 +843,7 @@ export async function handleSuspension({
           sinceCursor: hookDeltaCursor,
           createEvent: createGuarded,
           world,
+          forceClaimVictimWakes,
         });
         if (result.hasHookConflict) {
           hookConflictCorrelationIds.push(queueItem.correlationId);
@@ -912,11 +936,10 @@ export async function handleSuspension({
   //
   // That includes forced creations. A forced creation publishes its victim's
   // wake before its token group's next write, but other groups and the step
-  // writes are not held for it, so a crash before the wake can leave one of
-  // them as the log's last row and hide the owed wake from the replay's
-  // `forcedCreationOwingWake`. That check was never airtight (an earlier
-  // suspension's step can finish in the same window), and making the recovery
-  // independent of the log's tail is tracked in vercel/workflow#4393.
+  // writes are not held for it. They need not be: a crash before the wake is
+  // repaid by the next replay from the forced `hook_created` itself, which
+  // `forcedCreationsOwingWake` finds wherever it sits in the log, so no row
+  // written after it can hide the debt.
   const hookGroups = [...hookItemsByToken.values()];
   const hooksNeedingAbort = allHookItems.filter(
     (item) => item.abortRequested && !item.disposed
@@ -2048,7 +2071,11 @@ export async function handleSuspension({
   const nonHookOpsSettled = Promise.allSettled(
     ops.filter((op) => op !== hookOp)
   ).then(() => Date.now());
-  await settlePhase(ops);
+  try {
+    await settlePhase(ops);
+  } finally {
+    await owedVictimWakes;
+  }
 
   // The hook writes' share of this suspension's wall time: only the stretch
   // they held it after every other write had settled, since until then the
