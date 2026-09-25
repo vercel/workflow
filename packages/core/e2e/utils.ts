@@ -10,7 +10,12 @@ import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
-import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
+import {
+  getWorld,
+  healthCheck,
+  start as runtimeStart,
+  setWorld,
+} from '../src/runtime';
 import { hydrateRunError } from '../src/serialization';
 import { getWorkbenchAppPath } from './workbench-path';
 
@@ -1068,6 +1073,94 @@ export async function waitForRunPickup(
 }
 
 /**
+ * How long a failed spec-version probe is trusted before the next start asks
+ * again. Only a failure is retried: a probe that lands before the deployment
+ * is warm should not pin every later run to this process's version.
+ */
+const TARGET_SPEC_VERSION_RETRY_MS = 30_000;
+const TARGET_SPEC_VERSION_PROBE_TIMEOUT_MS = 15_000;
+
+let targetSpecVersion: number | undefined;
+let targetSpecVersionProbe: Promise<number | undefined> | undefined;
+let targetSpecVersionFailedAt = 0;
+
+/**
+ * The spec version the deployment under test executes, for apps whose runtime
+ * is not this SDK.
+ *
+ * The harness starts runs as the deployment under test (`VERCEL_DEPLOYMENT_ID`
+ * is the target), so `start()` takes every run for a same-deployment start and
+ * stamps this process's spec version. That is right only when the target runs
+ * this same SDK. An app that declares an `e2e-conformance.json` runs another
+ * one (`workbench/python` runs the Python SDK), which rejects a run stamped
+ * above the version it supports, so the run stays `pending` forever. Ask the
+ * target once, with the health check a cross-deployment `start()` probes, and
+ * stamp what it answers.
+ */
+async function getTargetSpecVersion(): Promise<number | undefined> {
+  if (!getConformanceConfig()) return undefined;
+  if (targetSpecVersion !== undefined) return targetSpecVersion;
+  if (Date.now() - targetSpecVersionFailedAt < TARGET_SPEC_VERSION_RETRY_MS) {
+    return undefined;
+  }
+  targetSpecVersionProbe ??= (async () => {
+    try {
+      const result = await healthCheck(await getWorld(), {
+        timeout: TARGET_SPEC_VERSION_PROBE_TIMEOUT_MS,
+      });
+      if (result.healthy && Number.isInteger(result.specVersion)) {
+        targetSpecVersion = result.specVersion;
+        return targetSpecVersion;
+      }
+    } catch {}
+    targetSpecVersionFailedAt = Date.now();
+    return undefined;
+  })().finally(() => {
+    targetSpecVersionProbe = undefined;
+  });
+  return targetSpecVersionProbe;
+}
+
+/**
+ * `start()` stamped with the deployment under test's spec version when it is
+ * lower than this process's (see {@link getTargetSpecVersion}). An explicit
+ * `specVersion` still wins. Use it wherever the suite would call `start()`
+ * directly.
+ */
+export async function startAtTargetSpecVersion<T>(
+  ...args: Parameters<typeof runtimeStart<T>>
+): Promise<Run<T>> {
+  const target = await getTargetSpecVersion();
+  if (target === undefined) return runtimeStart<T>(...args);
+  const [workflow, argsOrOptions, maybeOptions] = args as unknown as [
+    Parameters<typeof runtimeStart<T>>[0],
+    unknown,
+    Record<string, unknown> | undefined,
+  ];
+  const optionsFirst =
+    argsOrOptions !== undefined && !Array.isArray(argsOrOptions);
+  const options = (optionsFirst ? argsOrOptions : maybeOptions) as
+    | Record<string, unknown>
+    | undefined;
+  if (options?.specVersion !== undefined) return runtimeStart<T>(...args);
+  const world =
+    (options?.world as { specVersion?: number } | undefined) ??
+    (await getWorld());
+  const local = world.specVersion;
+  if (local === undefined || target >= local) return runtimeStart<T>(...args);
+  const stamped = { ...options, specVersion: target };
+  return (
+    optionsFirst
+      ? runtimeStart<T>(workflow, stamped as never)
+      : runtimeStart<T>(
+          workflow,
+          (argsOrOptions ?? []) as never,
+          stamped as never
+        )
+  ) as Promise<Run<T>>;
+}
+
+/**
  * `start()` + `trackRun()` with a pickup watchdog.
  *
  * A run that is still `pending` after {@link PICKUP_BUDGET_MS} was never
@@ -1082,13 +1175,13 @@ export async function waitForRunPickup(
 export async function startTracked<T>(
   ...args: Parameters<typeof runtimeStart<T>>
 ): Promise<Run<T>> {
-  const run = await runtimeStart<T>(...args);
+  const run = await startAtTargetSpecVersion<T>(...args);
   trackRun(run);
   if (await waitForRunPickup(run)) {
     return run;
   }
 
-  const replacement = await runtimeStart<T>(...args);
+  const replacement = await startAtTargetSpecVersion<T>(...args);
   trackRun(replacement);
   recordInfraEvent({
     kind: 'run-pickup-stall',
