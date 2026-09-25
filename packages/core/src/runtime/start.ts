@@ -545,34 +545,59 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
-      const currentDeploymentId = await world.getDeploymentId();
-      let deploymentId = opts.deploymentId ?? currentDeploymentId;
+      // `undefined` when this process is not itself a deployment and the
+      // caller named a concrete target; see below.
+      let currentDeploymentId: string | undefined;
+      let deploymentId: string;
+      if (opts.deploymentId === undefined || opts.deploymentId === 'latest') {
+        // Defaulting the target and resolving 'latest' both need the current
+        // deployment, so a world that cannot report one fails the start here.
+        const current = await world.getDeploymentId();
+        currentDeploymentId = current;
+        deploymentId = opts.deploymentId ?? current;
 
-      // When 'latest' is requested, resolve the actual latest deployment ID
-      // for the current deployment's environment (same production target or
-      // same git branch for preview deployments).
-      //
-      // Resolving 'latest' only means something in worlds with atomic,
-      // immutable deployments (e.g. Vercel), which implement
-      // resolveLatestDeploymentId(). Worlds without that concept (local dev,
-      // self-hosted Postgres) have nothing to resolve between, so rather than
-      // fail a run that works fine on Vercel, we warn and fall back to the
-      // current deployment, making 'latest' an effective no-op there.
-      if (deploymentId === 'latest') {
-        if (world.resolveLatestDeploymentId) {
-          deploymentId = await world.resolveLatestDeploymentId();
-        } else {
-          // Warn once per process; see latestNoOpWarning.warned above.
-          if (!latestNoOpWarning.warned) {
-            latestNoOpWarning.warned = true;
-            runtimeLogger.warn(
-              "deploymentId: 'latest' has no effect in this world and was ignored. " +
-                'It is only supported by worlds with atomic deployments, such as Vercel. ' +
-                'The run will target the current deployment.',
-              { currentDeploymentId }
-            );
+        // When 'latest' is requested, resolve the actual latest deployment ID
+        // for the current deployment's environment (same production target or
+        // same git branch for preview deployments).
+        //
+        // Resolving 'latest' only means something in worlds with atomic,
+        // immutable deployments (e.g. Vercel), which implement
+        // resolveLatestDeploymentId(). Worlds without that concept (local dev,
+        // self-hosted Postgres) have nothing to resolve between, so rather than
+        // fail a run that works fine on Vercel, we warn and fall back to the
+        // current deployment, making 'latest' an effective no-op there.
+        if (deploymentId === 'latest') {
+          if (world.resolveLatestDeploymentId) {
+            deploymentId = await world.resolveLatestDeploymentId();
+          } else {
+            // Warn once per process; see latestNoOpWarning.warned above.
+            if (!latestNoOpWarning.warned) {
+              latestNoOpWarning.warned = true;
+              runtimeLogger.warn(
+                "deploymentId: 'latest' has no effect in this world and was ignored. " +
+                  'It is only supported by worlds with atomic deployments, such as Vercel. ' +
+                  'The run will target the current deployment.',
+                { currentDeploymentId }
+              );
+            }
+            deploymentId = current;
           }
-          deploymentId = currentDeploymentId;
+        }
+      } else {
+        // With a concrete target the current deployment only decides whether
+        // the start is same-deployment. A process that is not itself a
+        // deployment (e.g. `workflow web` replaying a production run, or a
+        // recovery script) must still be able to start one, so an unavailable
+        // current deployment means "not the target": take the
+        // cross-deployment probe path below instead of failing.
+        deploymentId = opts.deploymentId;
+        try {
+          currentDeploymentId = await world.getDeploymentId();
+        } catch (err) {
+          runtimeLogger.debug(
+            'Current deployment is unavailable; starting as a cross-deployment run',
+            { deploymentId, error: String(err) }
+          );
         }
       }
 
