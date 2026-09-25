@@ -229,6 +229,21 @@ export function workflowEntrypoint(
             // Run already finished, consume the message silently
             return;
           }
+          // A transient backend failure (429 / 5xx / transport) must not
+          // abandon the run: acking here leaves it `running` with no message
+          // left to drive it. Throw so the queue redelivers; the redelivery is
+          // still past the ceiling, so it only retries this terminal write.
+          if (isRetryableWorldError(err)) {
+            runtimeLogger.warn(
+              'Transient error marking run as failed after max deliveries, retrying via queue redelivery',
+              {
+                workflowRunId: runId,
+                attempt: metadata.attempt,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+            throw err;
+          }
           runtimeLogger.error(
             `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
               `A persistent error is preventing the run from being terminated. ` +
