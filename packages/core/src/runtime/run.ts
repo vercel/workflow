@@ -8,7 +8,6 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
-import { SPEC_VERSION_CURRENT } from '@workflow/world/spec-version';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -23,6 +22,7 @@ import {
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
   type StopSleepOptions,
@@ -289,9 +289,11 @@ export class Run<TResult> {
   async cancel(options?: CancelRunOptions): Promise<void> {
     'use step';
     const world = await this.#lazyWorldPromise;
+    // The caller is often not the run's executor, so stamp the run's version.
+    const run = await world.runs.get(this.runId, { resolveData: 'none' });
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: specVersionForRunWrite(run.specVersion),
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),

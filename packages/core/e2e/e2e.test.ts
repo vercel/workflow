@@ -33,7 +33,6 @@ import {
   getRun,
   getWorld,
   healthCheck,
-  start as rawStart,
   resumeHook,
 } from '../src/runtime';
 import {
@@ -55,6 +54,7 @@ import {
   isLocalDeployment,
   noteTestSettled,
   noteTestStarted,
+  startAtTargetSpecVersion as rawStart,
   requireFixture,
   requireSupported,
   runInTestState,

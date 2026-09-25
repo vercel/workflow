@@ -5,7 +5,6 @@ import {
   WorkflowDeploymentMismatchError,
 } from '@workflow/errors';
 import {
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
@@ -15,6 +14,7 @@ import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 
 /** Cap on the re-route backoff, in seconds. */
 const MAX_REROUTE_DELAY_SECONDS = 8;
@@ -206,7 +206,8 @@ export async function guardDeploymentAffinity({
         run.runId,
         {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          // Written by a deployment that is, by definition, not the run's own.
+          specVersion: specVersionForRunWrite(run.specVersion),
           eventData: {
             error: dehydratedError,
             errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
