@@ -250,7 +250,12 @@ export async function executeOwnedStep(
             (error as { code?: unknown })?.code === undefined
               ? undefined
               : String((error as { code?: unknown }).code),
-          httpStatus: (error as { status?: unknown })?.status,
+          httpStatus:
+            (error as { responseStatus?: unknown })?.responseStatus ??
+            (error as { status?: unknown })?.status,
+          errorName: (error as { name?: unknown })?.name,
+          responseErrorCode: (error as { responseErrorCode?: unknown })
+            ?.responseErrorCode,
           retryInMs: Math.round(retryInMs),
           parentSpanId: input.parentSpanId,
           executionMode: input.executionMode ?? 'queued',

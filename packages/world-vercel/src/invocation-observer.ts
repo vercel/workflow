@@ -44,7 +44,32 @@ export async function observeInvocation<T>(
       at: Date.now(),
       elapsedMs: performance.now() - started,
       status: 'error',
+      ...errorDetails(error),
     });
     throw error;
   }
+}
+
+function errorDetails(error: unknown) {
+  const value = error as {
+    name?: unknown;
+    status?: unknown;
+    code?: unknown;
+    responseStatus?: unknown;
+    responseErrorCode?: unknown;
+  } | null;
+  return {
+    errorName: typeof value?.name === 'string' ? value.name : undefined,
+    httpStatus:
+      typeof value?.responseStatus === 'number'
+        ? value.responseStatus
+        : typeof value?.status === 'number'
+          ? value.status
+          : undefined,
+    errorCode: typeof value?.code === 'string' ? value.code : undefined,
+    responseErrorCode:
+      typeof value?.responseErrorCode === 'string'
+        ? value.responseErrorCode
+        : undefined,
+  };
 }
