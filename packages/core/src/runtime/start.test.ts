@@ -6,6 +6,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  type World,
 } from '@workflow/world';
 import {
   afterEach,
@@ -915,6 +916,123 @@ describe('start', () => {
         }),
         expect.anything()
       );
+    });
+  });
+
+  // A process that is not itself a deployment (e.g. `workflow web` replaying
+  // a production run via recreateRunFromExisting, or a recovery script) has
+  // no current deployment: the Vercel world's getDeploymentId() throws when
+  // VERCEL_DEPLOYMENT_ID is unset.
+  describe('without a current deployment', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+    let mockGetDeploymentId: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    const createWorld = (overrides: Record<string, unknown> = {}) =>
+      ({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: mockGetDeploymentId,
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        ...overrides,
+      }) as unknown as World;
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+      mockGetDeploymentId = vi
+        .fn()
+        .mockRejectedValue(
+          new Error('Starting a workflow run requires VERCEL_DEPLOYMENT_ID')
+        );
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('starts a run targeted at an explicit deploymentId', async () => {
+      const run = await start(validWorkflow, [], {
+        deploymentId: 'dpl_target_456',
+        world: createWorld(),
+      });
+
+      expect(run.runId).toMatch(/^wrun_/);
+      expect(mockGetDeploymentId).toHaveBeenCalledTimes(1);
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            deploymentId: 'dpl_target_456',
+          }),
+        }),
+        expect.anything()
+      );
+      expect(mockQueue).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({ deploymentId: 'dpl_target_456' })
+      );
+    });
+
+    it('treats the explicit deploymentId as a cross-deployment target', async () => {
+      // With a probe channel, the start must probe the target's capabilities
+      // rather than assume it runs this SDK (the same-deployment shortcut).
+      // Failing the probe's enqueue ends it at once instead of polling out
+      // its timeout; the start then falls back to the universally readable
+      // formats.
+      const mockStreamsGet = vi.fn();
+      mockQueue.mockImplementation((queueName: string) =>
+        queueName.endsWith('health_check')
+          ? Promise.reject(new Error('probe unavailable'))
+          : Promise.resolve(undefined)
+      );
+
+      await start(validWorkflow, [], {
+        deploymentId: 'dpl_target_456',
+        world: createWorld({ streams: { get: mockStreamsGet } }),
+      });
+
+      expect(mockQueue).toHaveBeenCalledWith(
+        expect.stringContaining('health_check'),
+        expect.anything(),
+        expect.objectContaining({ deploymentId: 'dpl_target_456' })
+      );
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({ eventType: 'run_created' }),
+        expect.anything()
+      );
+    });
+
+    it('still fails when no deploymentId is given', async () => {
+      await expect(
+        start(validWorkflow, [], { world: createWorld() })
+      ).rejects.toThrow('requires VERCEL_DEPLOYMENT_ID');
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it("still fails for deploymentId: 'latest'", async () => {
+      const mockResolveLatest = vi.fn().mockResolvedValue('dpl_latest');
+
+      await expect(
+        start(validWorkflow, [], {
+          deploymentId: 'latest',
+          world: createWorld({ resolveLatestDeploymentId: mockResolveLatest }),
+        })
+      ).rejects.toThrow('requires VERCEL_DEPLOYMENT_ID');
+      expect(mockResolveLatest).not.toHaveBeenCalled();
+      expect(mockEventsCreate).not.toHaveBeenCalled();
     });
   });
 
