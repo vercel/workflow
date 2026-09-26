@@ -4254,6 +4254,33 @@ describe.concurrent('e2e', () => {
   });
 
   test(
+    'hookRaceAfterLostRaceWorkflow - payload reaches the pending await after a hook lost a race to sleep',
+    { timeout: 90_000 },
+    async () => {
+      // https://github.com/vercel/workflow/issues/4264
+      const token = Math.random().toString(36).slice(2);
+      const run = await start(await e2e('hookRaceAfterLostRaceWorkflow'), [
+        token,
+      ]);
+
+      const hook = await waitForHook(token, { runId: run.runId });
+      // Resume only after the first race has been decided by its sleep, so
+      // the payload can only be meant for the second await.
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'wait_completed',
+        { description: 'wait_completed event for the first race' }
+      );
+      await resumeHook(hook, { value: 'delivered' });
+
+      expect(await run.returnValue).toEqual({
+        first: 'sleep',
+        second: 'delivered',
+      });
+    }
+  );
+
+  test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
     { timeout: 90_000 },
     async () => {

@@ -1,3 +1,4 @@
+import type { Event } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from './global.js';
 import { dehydrateStepReturnValue } from './serialization.js';
@@ -748,6 +749,99 @@ function defineTests(mode: 'sync' | 'async') {
         'progressStep'
       );
     });
+
+    // https://github.com/vercel/workflow/issues/4264
+    //
+    // The payload can be recorded after the second race registers its sleep
+    // (the run was already waiting in that race when the hook was resumed),
+    // or before it (the hook was resumed while the run was still replaying
+    // the first race's outcome). Either way it belongs to the second race.
+    for (const payloadBeforeSecondSleep of [false, true]) {
+      it(`should deliver a payload to the pending await after the hook lost a race to sleep (hook_received ${payloadBeforeSecondSleep ? 'before' : 'after'} the second wait_created)`, async () => {
+        await setupHydrateMock();
+        const ops: Promise<any>[] = [];
+        const payload = await dehydrateStepReturnValue(
+          { value: 'delivered' },
+          'wrun_test',
+          undefined,
+          ops
+        );
+        const firstResumeAt = new Date('2026-05-20T22:16:57.197Z');
+        const secondResumeAt = new Date('2099-01-01');
+
+        const hookReceived: Event = {
+          eventId: 'evnt_hook_received',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload },
+          createdAt: new Date(),
+        };
+        const secondWaitCreated: Event = {
+          eventId: 'evnt_second_wait_created',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt: secondResumeAt },
+          createdAt: new Date(),
+        };
+
+        const ctx = setupWorkflowContext([
+          {
+            eventId: 'evnt_0',
+            runId: 'wrun_test',
+            eventType: 'hook_created',
+            correlationId: `hook_${CORR_IDS[0]}`,
+            eventData: { token: 'test-token', isWebhook: false },
+            createdAt: new Date(),
+          },
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_test',
+            eventType: 'wait_created',
+            correlationId: `wait_${CORR_IDS[1]}`,
+            eventData: { resumeAt: firstResumeAt },
+            createdAt: new Date(),
+          },
+          {
+            eventId: 'evnt_2',
+            runId: 'wrun_test',
+            eventType: 'wait_completed',
+            correlationId: `wait_${CORR_IDS[1]}`,
+            eventData: { resumeAt: firstResumeAt },
+            createdAt: new Date(),
+          },
+          ...(payloadBeforeSecondSleep
+            ? [hookReceived, secondWaitCreated]
+            : [secondWaitCreated, hookReceived]),
+        ]);
+
+        const createHook = createCreateHook(ctx);
+        const sleep = createSleep(ctx);
+
+        const { result, error } = await runWithDiscontinuation(
+          ctx,
+          async () => {
+            const hook = createHook<{ value: string }>({ token: 'test-token' });
+
+            const first = await Promise.race([
+              hook.then(() => 'hook' as const),
+              sleep(firstResumeAt).then(() => 'sleep' as const),
+            ]);
+
+            const second = await Promise.race([
+              hook.then((received) => received.value),
+              sleep(secondResumeAt).then(() => 'timeout' as const),
+            ]);
+
+            return { first, second };
+          }
+        );
+
+        expect(error).toBeUndefined();
+        expect(result).toEqual({ first: 'sleep', second: 'delivered' });
+      });
+    }
   });
 
   describe(`hook + incomplete step ${label}`, () => {

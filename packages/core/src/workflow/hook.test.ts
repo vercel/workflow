@@ -104,6 +104,33 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
+  it('should settle concurrent awaits with the same pending payload', async () => {
+    const ops: Promise<any>[] = [];
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'test-token',
+          payload: await dehydrateStepReturnValue(
+            { message: 'hello' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'test-token' });
+    const results = await Promise.all([hook.then((v) => v), hook]);
+    expect(results).toEqual([{ message: 'hello' }, { message: 'hello' }]);
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
   it('should invoke workflow error handler when hook_created token mismatches the hook', async () => {
     const ctx = setupWorkflowContext([
       {
