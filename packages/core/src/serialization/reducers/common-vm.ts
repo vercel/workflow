@@ -43,6 +43,17 @@ function reviveArrayBuffer(value: string): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
+// Buffer for the `DataView` reviver; see the host-side common.ts for why a
+// non-string payload (a pre-reducer wire form, hydrated by devalue's built-in
+// DataView path) has to be accepted here.
+function reviveDataViewBuffer(value: string | ArrayBufferLike): ArrayBuffer {
+  if (typeof value === 'string') return reviveArrayBuffer(value);
+  const bytes = new Uint8Array(value);
+  const arrayBuffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(arrayBuffer).set(bytes);
+  return arrayBuffer;
+}
+
 // ---- Error subclass helper ----
 
 // Creates a reducer for a built-in Error subclass whose serialized shape
@@ -97,6 +108,10 @@ export function getCommonReducers(): Partial<Reducers> {
       value instanceof BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof BigUint64Array && viewToBase64(value),
+    // Claimed rather than left to devalue, which encodes a DataView as its
+    // whole backing ArrayBuffer plus offset/length. See the host-side
+    // common.ts for the full rationale.
+    DataView: (value) => value instanceof DataView && viewToBase64(value),
     Date: (value) => {
       if (!(value instanceof Date)) return false;
       const valid = !Number.isNaN(value.getDate());
@@ -387,6 +402,8 @@ export function getCommonRevivers(): Partial<Revivers> {
       new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
+    DataView: (value: string | ArrayBufferLike) =>
+      new DataView(reviveDataViewBuffer(value)),
     Date: (value) => new Date(value),
     DOMException: (value) => {
       const error = new DOMException(value.message, value.name);

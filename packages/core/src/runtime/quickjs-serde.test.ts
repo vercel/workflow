@@ -146,6 +146,22 @@ describe('wire parity: guest serialize matches the reference codec', () => {
       () => new Uint8Array([1, 2, 3, 4, 5]).subarray(1, 4),
     ],
     [
+      'DataView',
+      'new DataView(new Uint8Array([9, 8, 7]).buffer)',
+      () => new DataView(new Uint8Array([9, 8, 7]).buffer),
+    ],
+    [
+      // Neither encoding may carry the bytes outside [2, 5).
+      'DataView subview',
+      'new DataView(new Uint8Array([1,2,3,4,5,6,7,8]).buffer, 2, 3)',
+      () => new DataView(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer, 2, 3),
+    ],
+    [
+      'empty DataView',
+      'new DataView(new ArrayBuffer(8), 4, 0)',
+      () => new DataView(new ArrayBuffer(8), 4, 0),
+    ],
+    [
       'Error',
       '(() => { const e = new Error("boom"); e.stack = "fake-stack"; return e; })()',
       () => {
@@ -343,6 +359,37 @@ describe('full round trip through the host serde only', () => {
         }`
       )
     ).toEqual({ sameRef: true, mapVal: 1, time: 1700000000000, setHas: true });
+  });
+
+  it('carries a DataView subview without the rest of its buffer', () => {
+    const bytes = serializeGuest(
+      'new DataView(new Uint8Array([1,2,3,4,5,6,7,8]).buffer, 2, 3)'
+    );
+
+    // The payload is the base64 of [3, 4, 5] and nothing else; the whole
+    // buffer would additionally encode 1, 2, 6, 7 and 8.
+    expect(text(bytes)).toBe('devl[["DataView",1],"AwQF"]');
+
+    expect(
+      checkInGuest(
+        bytes,
+        `function (v) {
+          return {
+            isDataView: v instanceof DataView,
+            byteLength: v.byteLength,
+            bufferByteLength: v.buffer.byteLength,
+            first: v.getUint8(0),
+            last: v.getUint8(2),
+          };
+        }`
+      )
+    ).toEqual({
+      isDataView: true,
+      byteLength: 3,
+      bufferByteLength: 3,
+      first: 3,
+      last: 5,
+    });
   });
 });
 

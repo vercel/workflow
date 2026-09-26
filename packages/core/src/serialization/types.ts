@@ -72,6 +72,7 @@ export interface SerializableSpecial {
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
+  DataView: string; // base64 string of the viewed bytes only
   Date: string; // ISO string
   DOMException: {
     message: string;
