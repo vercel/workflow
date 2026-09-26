@@ -80,6 +80,7 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   BigInt64Array: [['BigInt64Array', 1], '.'],
   BigUint64Array: [['BigUint64Array', 1], '.'],
   Class: [['Class', 1], { classId: 2 }, 'class//Example'],
+  DataView: [['DataView', 1], '.'],
   Date: [['Date', 1], '2025-01-01T00:00:00.000Z'],
   DOMException: [
     ['DOMException', 1],
