@@ -313,13 +313,16 @@ describe('async deserialization ordering', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({ token: 'test-token' });
 
-    // Await two payloads from the hook
+    // Request two payloads from the hook up front. Concurrent `hook.then()`
+    // reads share the next payload (see #4264), so read through the iterator,
+    // whose queued `next()` calls each take their own payload.
+    const iterator = hook[Symbol.asyncIterator]();
     const resolveOrder: string[] = [];
-    const promiseA = hook.then((val: any) => {
+    const promiseA = iterator.next().then(({ value: val }: any) => {
       resolveOrder.push(`A:${val.message}`);
       return val;
     });
-    const promiseB = hook.then((val: any) => {
+    const promiseB = iterator.next().then(({ value: val }: any) => {
       resolveOrder.push(`B:${val.message}`);
       return val;
     });

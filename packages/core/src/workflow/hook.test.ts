@@ -701,6 +701,46 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
+  it('should share the next payload between reads made before it arrives', async () => {
+    const ops: Promise<any>[] = [];
+    const [first, second] = await Promise.all([
+      dehydrateStepReturnValue('first', 'wrun_test', undefined, ops),
+      dehydrateStepReturnValue('second', 'wrun_test', undefined, ops),
+    ]);
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { token: 'test-token', payload: first },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { token: 'test-token', payload: second },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook<string>({ token: 'test-token' });
+
+    // An abandoned read (e.g. one that lost a `Promise.race`) must not take
+    // the payload from the read that is still waiting (#4264).
+    const abandoned = hook.then((value) => value);
+    const waiting = hook.then((value) => value);
+    expect(await waiting).toBe('first');
+    expect(await abandoned).toBe('first');
+
+    // Once delivered, the next read takes the next payload.
+    expect(await hook).toBe('second');
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
   it('should include token in error message for unexpected event type', async () => {
     const ctx = setupWorkflowContext([
       {
