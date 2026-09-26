@@ -1147,6 +1147,7 @@ export async function executeStep(
             () => {
               // The last instant before user code: T7 of the resume window.
               reportResumeTtr();
+              world.recordStepExecution?.(stepId);
               return stepFn.apply(thisVal, args);
             }
           );
