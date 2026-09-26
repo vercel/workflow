@@ -74,6 +74,7 @@ export class LocalBuilder extends BaseBuilder {
       bundleFinalOutput: false,
       externalizeNonSteps: true,
       tsconfigPath,
+      shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
     });
 
     // Post-process the generated file to wrap with Astro request converter
