@@ -73,7 +73,7 @@ vi.mock('./utils.js', () => ({
 }));
 
 import { missingDeploymentIdMessage } from './deployment-id.js';
-import { createQueue } from './queue.js';
+import { createQueue, recordStepExecution } from './queue.js';
 import { getHttpUrl } from './utils.js';
 
 describe('createQueue', () => {
@@ -1132,6 +1132,115 @@ describe('createQueue', () => {
       await routeHandler(new Request('http://localhost'));
 
       expect(capturedMeta.requestId).toBeUndefined();
+    });
+
+    it('reports the step IDs executed by a flow request', async () => {
+      mockHandleCallback.mockImplementation((handler) => {
+        return async () => {
+          await handler(
+            {
+              payload: { runId: 'run-123' },
+              queueName: '__wkf_workflow_test',
+            },
+            { messageId: 'msg-123', deliveryCount: 1 }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const routeHandler = createQueue().createQueueHandler(
+        '__wkf_workflow_',
+        async () => {
+          recordStepExecution('step-a');
+          recordStepExecution('step-b');
+          recordStepExecution('step-a');
+        }
+      );
+
+      const response = await routeHandler(new Request('http://localhost'));
+
+      expect(response.headers.get('x-vercel-internal-workflow-step-ids')).toBe(
+        JSON.stringify(['step-a', 'step-b'])
+      );
+    });
+
+    it('isolates step IDs between concurrent flow requests', async () => {
+      mockHandleCallback.mockImplementation((handler) => {
+        return async (request: Request) => {
+          const runId = new URL(request.url).pathname.slice(1);
+          await handler(
+            {
+              payload: { runId },
+              queueName: '__wkf_workflow_test',
+            },
+            { messageId: `msg-${runId}`, deliveryCount: 1 }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const firstStarted = Promise.withResolvers<void>();
+      const releaseFirst = Promise.withResolvers<void>();
+      const routeHandler = createQueue().createQueueHandler(
+        '__wkf_workflow_',
+        async (payload) => {
+          if ('runId' in payload && payload.runId === 'run-first') {
+            recordStepExecution('step-first');
+            firstStarted.resolve();
+            await releaseFirst.promise;
+          } else {
+            recordStepExecution('step-second');
+          }
+        }
+      );
+
+      const firstResponse = routeHandler(
+        new Request('http://localhost/run-first')
+      );
+      await firstStarted.promise;
+      const secondResponse = routeHandler(
+        new Request('http://localhost/run-second')
+      );
+      releaseFirst.resolve();
+
+      const [first, second] = await Promise.all([
+        firstResponse,
+        secondResponse,
+      ]);
+      expect(first.headers.get('x-vercel-internal-workflow-step-ids')).toBe(
+        JSON.stringify(['step-first'])
+      );
+      expect(second.headers.get('x-vercel-internal-workflow-step-ids')).toBe(
+        JSON.stringify(['step-second'])
+      );
+    });
+
+    it('keeps the scalar step delivery path unchanged', async () => {
+      mockHandleCallback.mockImplementation((handler) => {
+        return async () => {
+          await handler(
+            {
+              payload: { runId: 'run-123', stepId: 'step-a' },
+              queueName: '__wkf_workflow_test',
+            },
+            { messageId: 'msg-123', deliveryCount: 1 }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const routeHandler = createQueue().createQueueHandler(
+        '__wkf_workflow_',
+        async () => {
+          recordStepExecution('step-a');
+        }
+      );
+
+      const response = await routeHandler(new Request('http://localhost'));
+
+      expect(
+        response.headers.get('x-vercel-internal-workflow-step-ids')
+      ).toBeNull();
     });
 
     it('should re-enqueue inline step payloads correctly', async () => {

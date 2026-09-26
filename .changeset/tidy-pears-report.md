@@ -1,5 +1,7 @@
 ---
 '@workflow/core': minor
+'@workflow/world': minor
+'@workflow/world-vercel': minor
 ---
 
-Report the workflow step IDs executed by each handler invocation to the platform runtime.
+Let Vercel correlate flow requests with every workflow step executed inline.

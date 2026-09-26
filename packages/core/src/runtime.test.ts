@@ -1631,9 +1631,11 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       hasMore: false,
       cursor: 'cursor_test',
     }));
+    const recordStepExecution = vi.fn();
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      recordStepExecution,
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
@@ -1682,6 +1684,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       handlerPromise,
       order,
       queue,
+      recordStepExecution,
       durableEvents,
       eventsList,
       stepIdSends,
@@ -1715,21 +1718,20 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   });
 
   it('reports every step whose user code ran during the invocation', async () => {
-    const { handlerPromise, durableEvents } = await driveHandler({
-      runId: 'wrun_invocation_step_ids',
-      queueImpl: async () => ({ messageId: null }),
-    });
+    const { handlerPromise, durableEvents, recordStepExecution } =
+      await driveHandler({
+        runId: 'wrun_invocation_step_ids',
+        queueImpl: async () => ({ messageId: null }),
+      });
 
-    const res = (await handlerPromise) as Response;
+    await handlerPromise;
     const startedStepIds = durableEvents
       .filter((event) => event.eventType === 'step_started')
       .map((event) => event.correlationId);
 
-    expect(
-      JSON.parse(
-        res.headers.get('x-vercel-internal-workflow-step-ids') ?? 'null'
-      )
-    ).toEqual(startedStepIds);
+    expect(recordStepExecution.mock.calls.map(([stepId]) => stepId)).toEqual(
+      startedStepIds
+    );
   });
 
   it('does not ack while the step-dispatch send is still in flight', async () => {

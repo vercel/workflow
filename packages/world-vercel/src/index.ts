@@ -5,7 +5,7 @@ import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
-import { createQueue } from './queue.js';
+import { createQueue, recordStepExecution } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -70,6 +70,7 @@ export function createWorld(config?: APIConfig): World {
       // immediately, without a redeploy of this adapter.
     },
     getRuntimeDeadline: getDeadline,
+    recordStepExecution,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.
