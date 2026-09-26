@@ -93,11 +93,11 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
-import { withRunInputs } from './runtime/invocations.js';
 import {
   attachInvocationStepIds,
   withInvocationStepIds,
 } from './runtime/invocation-step-ids.js';
+import { withRunInputs } from './runtime/invocations.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
@@ -5558,12 +5558,19 @@ export function workflowEntrypoint(
             });
           }
 
-          const response = await cachedHandler!(req);
-          if (response instanceof Response) {
-            span?.setAttributes(
-              Attribute.HttpResponseStatusCode(response.status)
-            );
+          const activeHandler = cachedHandler;
+          if (!activeHandler) {
+            throw new Error('Workflow route handler was not initialized');
           }
+
+          const response = await activeHandler(req);
+          if (!(response instanceof Response)) {
+            return response;
+          }
+
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(response.status)
+          );
           return attachInvocationStepIds(response);
         }
       );

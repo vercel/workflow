@@ -15,17 +15,15 @@ describe('invocation step IDs', () => {
 
       const response = attachInvocationStepIds(new Response(null));
 
-      expect(
-        JSON.parse(response.headers.get(WORKFLOW_STEP_IDS_HEADER)!)
-      ).toEqual(['step_a', 'step_b']);
+      expect(response.headers.get(WORKFLOW_STEP_IDS_HEADER)).toBe(
+        JSON.stringify(['step_a', 'step_b'])
+      );
     });
   });
 
   it('isolates concurrent invocations', async () => {
-    let releaseFirst!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
+    const { promise: firstBlocked, resolve: releaseFirst } =
+      Promise.withResolvers<void>();
 
     const first = withInvocationStepIds(async () => {
       recordInvocationStepId('step_first');
@@ -41,11 +39,11 @@ describe('invocation step IDs', () => {
     releaseFirst();
     const [firstResponse, secondResponse] = await Promise.all([first, second]);
 
-    expect(
-      JSON.parse(firstResponse.headers.get(WORKFLOW_STEP_IDS_HEADER)!)
-    ).toEqual(['step_first']);
-    expect(
-      JSON.parse(secondResponse.headers.get(WORKFLOW_STEP_IDS_HEADER)!)
-    ).toEqual(['step_second']);
+    expect(firstResponse.headers.get(WORKFLOW_STEP_IDS_HEADER)).toBe(
+      JSON.stringify(['step_first'])
+    );
+    expect(secondResponse.headers.get(WORKFLOW_STEP_IDS_HEADER)).toBe(
+      JSON.stringify(['step_second'])
+    );
   });
 });
