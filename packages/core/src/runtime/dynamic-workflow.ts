@@ -5,9 +5,8 @@
  * The normal path compiles workflow functions at build time — the SWC plugin
  * rewrites `"use workflow"` bodies, the builder bundles them, and `start()`
  * names one by the `workflowId` the transform stamped on it. Dynamic source
- * covers the cases where the shape of the orchestration is only known after
- * the deployment exists: a workflow-builder UI, a customer-defined automation,
- * an LLM-generated plan over a fixed catalog of steps.
+ * covers orchestration the application assembles after the deployment exists,
+ * over a fixed catalog of deployed steps.
  *
  * This module owns the compile half of that: validating the source, deriving
  * a stable workflow id from it, and generating the VM code that registers it.
@@ -18,10 +17,11 @@
  *
  * Deliberately not a security sandbox. The workflow VM enforces determinism,
  * not isolation from malicious JavaScript, so dynamic source is trusted
- * application code — reviewed, or generated under constraints the application
- * imposes. The `steps` allowlist below is a convenience that keeps ordinary
- * generated code from reaching a step it was not given; it is not a
- * capability boundary against code that is actively trying to escape one.
+ * application code with the full privileges of the deployment's functions.
+ * The `steps` allowlist below is a convenience that keeps ordinary code from
+ * reaching a step it was not given; it is not a capability boundary against
+ * code that is actively trying to escape one. Deployments opt in with
+ * `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` before they start or execute it.
  */
 
 import { WorkflowRuntimeError } from '@workflow/errors';

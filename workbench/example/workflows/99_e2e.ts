@@ -4142,9 +4142,9 @@ export async function lifecycleHookObserver(token: string) {
 //////////////////////////////////////////////////////////
 
 /**
- * Stands in for whatever an app generates at runtime — an LLM's output, a
- * builder UI's export, a customer-defined automation. Built here rather than
- * inlined as a constant so the source really is assembled per call.
+ * Stands in for orchestration an app assembles at runtime from its own
+ * templates. Built here rather than inlined as a constant so the source
+ * really is assembled per call.
  *
  * Only `steps`, `sleep` and `createHook` are in scope inside it; `steps.add`
  * resolves to the `add` step this file already exports and deploys.

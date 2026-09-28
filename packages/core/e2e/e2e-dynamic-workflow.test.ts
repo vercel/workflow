@@ -11,8 +11,8 @@
  *   `.stepId` the build-time transform stamped on it is what binds the source
  *   to a registered step. This runner cannot do that — it holds no handle on
  *   the function — and would have to fall back to an explicit `{ stepId }`.
- * - The source is assembled at runtime by app code, which is how a builder UI
- *   or an LLM-generated plan actually reaches `start()`.
+ * - The source is assembled at runtime by app code, which is how dynamic
+ *   source reaches `start()` in an application.
  * - The deployed handler compiles, stores, reads back and evaluates the code
  *   in its own process, on every delivery.
  *
@@ -20,8 +20,11 @@
  * then asserts on the child. Runs against every world the matrix covers —
  * Vercel, local dev/prod, and Postgres — with no per-world branching.
  *
+ * The deployment must opt in with WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1;
+ * without it each fixture's `start()` refuses and the test skips.
+ *
  * Run locally:
- *   1. cd workbench/nextjs-turbopack && pnpm dev
+ *   1. cd workbench/nextjs-turbopack && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-dynamic-workflow.test.ts
  */
