@@ -94,14 +94,16 @@ function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
-    const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
-    const { dynamicWorkflowCode: _dynamicWorkflowCode, ...deserialized } =
-      normalizeWorkflowRunData(
-        deserializeError<WorkflowRun>(rest) as unknown as Record<
-          string,
-          unknown
-        >
-      );
+    // The code is dropped before normalizing, so it is never decompressed.
+    const {
+      inputRef: _inputRef,
+      outputRef: _outputRef,
+      dynamicWorkflowCode: _dynamicWorkflowCode,
+      ...rest
+    } = run;
+    const deserialized = normalizeWorkflowRunData(
+      deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
+    );
     return {
       ...deserialized,
       input: undefined,

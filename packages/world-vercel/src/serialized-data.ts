@@ -80,8 +80,13 @@ export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
     // A dynamic run's workflow code is a run payload like the others, so it
     // can carry a compression wrapper and gets unwrapped the same way. Only
     // reachable when encryption is off — with it on, the outermost prefix is
-    // `encr` and unwrapping happens after decryption instead.
-    dynamicWorkflowCode: normalizeSerializedData(run.dynamicWorkflowCode),
+    // `encr` and unwrapping happens after decryption instead. Absent stays
+    // absent, so a run without code does not gain the key.
+    ...(run.dynamicWorkflowCode !== undefined
+      ? {
+          dynamicWorkflowCode: normalizeSerializedData(run.dynamicWorkflowCode),
+        }
+      : {}),
   };
 }
 
