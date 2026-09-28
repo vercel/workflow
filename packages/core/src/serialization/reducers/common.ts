@@ -73,29 +73,6 @@ function reviveArrayBuffer(
   return arrayBuffer;
 }
 
-/**
- * Buffer for the `DataView` reviver.
- *
- * Normally the payload is the base64 the reducer produced. Payloads written
- * before that reducer existed encoded `DataView` through devalue's built-in
- * path, which stores a reference to the whole backing `ArrayBuffer`; devalue
- * hands a custom reviver the hydrated referent rather than the tuple, so those
- * arrive here as an `ArrayBuffer` (its subview bounds, which devalue keeps
- * beside the reference, are not reachable from a reviver). Copying it through
- * keeps those older event logs replayable — as the whole buffer, which is what
- * they recorded.
- */
-function reviveDataViewBuffer(
-  value: string | ArrayBufferLike,
-  global: Record<string, any>
-): ArrayBuffer {
-  if (typeof value === 'string') return reviveArrayBuffer(value, global);
-  const bytes = new Uint8Array(value);
-  const arrayBuffer = new global.ArrayBuffer(bytes.byteLength);
-  new global.Uint8Array(arrayBuffer).set(bytes);
-  return arrayBuffer;
-}
-
 function revive(str: string) {
   // devalue.stringify() always produces valid JSON: special values
   // (undefined, NaN, Infinity, -0) are encoded as negative integer
@@ -263,15 +240,23 @@ export function getCommonReducers(
       types.isBigInt64Array(value) && viewToBase64(value),
     BigUint64Array: (value) =>
       types.isBigUint64Array(value) && viewToBase64(value),
-    // Claimed here for the same reason every typed array is: devalue's
-    // built-in `DataView` encoding emits the *whole* backing ArrayBuffer
-    // plus the view's offset and length. For a view onto Node's shared
-    // `Buffer` pool (`Buffer.allocUnsafe`, and `Buffer.from` below
+    // Claims `DataView` for the same reason every typed array is claimed:
+    // devalue's built-in `DataView` encoding emits the *whole* backing
+    // ArrayBuffer plus the view's offset and length. For a view onto Node's
+    // shared `Buffer` pool (`Buffer.allocUnsafe`, and `Buffer.from` below
     // `Buffer.poolSize >>> 1`) that whole buffer is 8 KiB of unrelated
     // allocations, so a four-byte view would persist bytes the workflow
-    // never handed us into the run's event log. Reducing to base64 of the
-    // viewed range keeps the payload to the bytes the view actually spans.
-    DataView: (value) => types.isDataView(value) && viewToBase64(value),
+    // never handed us into the run's event log. Base64 of the viewed range
+    // keeps the payload to the bytes the view actually spans.
+    //
+    // The tag deliberately is *not* `DataView`. devalue skips its built-in
+    // branch for any tag that has a custom reviver, so registering one under
+    // that name would strip the bounds off `["DataView", buf, offset, length]`
+    // tuples already in event logs — the o11y UI and CLI read those with
+    // current code, and would render the whole pooled slab this reducer
+    // exists to keep out. Under a distinct tag the built-in branch stays
+    // reachable and those payloads still revive with their bounds.
+    DataViewBytes: (value) => types.isDataView(value) && viewToBase64(value),
     Date: (value) => {
       // Brand check + captured intrinsics: a sandbox-side patch of
       // `Date.prototype.toISOString` (e.g. a Temporal polyfill wrapping it)
@@ -503,8 +488,10 @@ export function getCommonRevivers(
       new global.BigInt64Array(reviveArrayBuffer(value, global)),
     BigUint64Array: (value: string) =>
       new global.BigUint64Array(reviveArrayBuffer(value, global)),
-    DataView: (value: string | ArrayBufferLike) =>
-      new global.DataView(reviveDataViewBuffer(value, global)),
+    // No `DataView` reviver: see the `DataViewBytes` reducer. Older payloads
+    // tagged `DataView` must keep reaching devalue's built-in branch.
+    DataViewBytes: (value: string) =>
+      new global.DataView(reviveArrayBuffer(value, global)),
     Date: (value) => new global.Date(value),
     DOMException: (value) => {
       const error = new global.DOMException(value.message, value.name);

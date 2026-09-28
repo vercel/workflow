@@ -2783,11 +2783,10 @@ describe('DataView serialization', () => {
     )) as Uint8Array;
 
     const wire = new TextDecoder().decode(serialized);
-    expect(wire).toContain('DataView');
     expect(wire).not.toContain('ArrayBuffer');
     // Every byte of the payload is accounted for by the four viewed bytes:
     // base64 of the pool would be several KiB of it.
-    expect(wire).toBe('devl[["DataView",1],"AQIDBA=="]');
+    expect(wire).toBe('devl[["DataViewBytes",1],"AQIDBA=="]');
 
     const hydrated = (await hydrateStepReturnValue(
       serialized,
@@ -2869,12 +2868,18 @@ describe('DataView serialization', () => {
     expect(runInContext('val.getUint8(0)', context)).toBe(9);
   });
 
-  it('still revives payloads written before the DataView reducer existed', async () => {
+  it('revives a pre-existing DataView payload with its bounds', async () => {
     // devalue's built-in encoding: a reference to the whole backing
-    // ArrayBuffer, with the subview bounds alongside it. A custom reviver
-    // only ever receives the hydrated referent, so the bounds are gone —
-    // but the payload must still produce a usable DataView rather than
-    // throwing or decoding the ArrayBuffer as if it were base64.
+    // ArrayBuffer, with the subview bounds alongside it. This is what is
+    // already in event logs, and the tuple below records the two bytes
+    // [2, 3] of a four-byte buffer.
+    //
+    // devalue skips its built-in branch for any tag that has a custom
+    // reviver, and hands a custom reviver the hydrated referent rather than
+    // the tuple — so a reviver registered under `DataView` could not see
+    // `1, 2` and would widen this back to the whole buffer. That is why the
+    // new encoding uses its own tag; this pins that the old one is
+    // untouched.
     const legacy = [
       ['DataView', 1, 1, 2],
       ['ArrayBuffer', 2],
@@ -2884,7 +2889,25 @@ describe('DataView serialization', () => {
     const hydrated = hydrateData(legacy, getCommonRevivers()) as DataView;
 
     expect(hydrated).toBeInstanceOf(DataView);
-    expect([...new Uint8Array(hydrated.buffer)]).toEqual([1, 2, 3, 4]);
+    expect(hydrated.byteOffset).toBe(1);
+    expect(hydrated.byteLength).toBe(2);
+    expect(hydrated.getUint8(0)).toBe(2);
+    expect(hydrated.getUint8(1)).toBe(3);
+  });
+
+  it('keeps the old and new encodings distinguishable on the wire', async () => {
+    const serialized = (await dehydrateStepReturnValue(
+      new DataView(new Uint8Array([1, 2, 3, 4]).buffer, 1, 2),
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    // The reducer claims the value before devalue's built-in DataView
+    // branch can run, so the built-in tag never appears in a new payload
+    // and cannot collide with the tuples already in event logs.
+    const wire = new TextDecoder().decode(serialized);
+    expect(wire).toBe('devl[["DataViewBytes",1],"AgM="]');
   });
 });
 

@@ -72,7 +72,10 @@ export interface SerializableSpecial {
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
-  DataView: string; // base64 string of the viewed bytes only
+  // A `DataView`, as base64 of the bytes it views. Not tagged `DataView`:
+  // that tag belongs to devalue's built-in encoding, which payloads written
+  // before this one still use. See `reducers/common.ts`.
+  DataViewBytes: string; // base64 string of the viewed bytes only
   Date: string; // ISO string
   DOMException: {
     message: string;

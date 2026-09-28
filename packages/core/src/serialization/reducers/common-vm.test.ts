@@ -74,11 +74,25 @@ describe('common-vm reducer/reviver drift guard', () => {
     const view = new DataView(backing.buffer, 2, 3);
     const expected = Buffer.from([2, 3, 4]).toString('base64');
 
-    expect(getNodeReducers().DataView!(view)).toBe(expected);
-    expect(getVmReducers().DataView!(view)).toBe(expected);
+    expect(getNodeReducers().DataViewBytes!(view)).toBe(expected);
+    expect(getVmReducers().DataViewBytes!(view)).toBe(expected);
 
-    const revived = getVmRevivers().DataView!(expected) as DataView;
+    const revived = getVmRevivers().DataViewBytes!(expected) as DataView;
     expect(revived.byteLength).toBe(3);
     expect(Array.from(new Uint8Array(revived.buffer))).toEqual([2, 3, 4]);
+  });
+
+  it('neither side claims the built-in DataView tag', () => {
+    // A custom reviver for that tag would take devalue's built-in branch
+    // out of reach, and with it the bounds recorded in payloads that
+    // predate `DataViewBytes`.
+    for (const set of [
+      getNodeReducers(),
+      getVmReducers(),
+      getNodeRevivers(),
+      getVmRevivers(),
+    ]) {
+      expect(set).not.toHaveProperty('DataView');
+    }
   });
 });

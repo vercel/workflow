@@ -1068,8 +1068,11 @@ export function createQuickJSSerde(
     // Mirrors the typed-array reducers, and for the same reason: devalue's
     // built-in DataView encoding emits the whole backing ArrayBuffer, so a
     // view onto a slice of a larger buffer would put the rest of that
-    // buffer on the wire. `viewBytes` copies only the viewed range.
-    DataView: (value) =>
+    // buffer on the wire. `viewBytes` copies only the viewed range. The tag
+    // is not `DataView`, so payloads already written under that name still
+    // take the built-in parse branch (`fromViewInfo` below) with their
+    // bounds intact; see serialization/reducers/common.ts.
+    DataViewBytes: (value) =>
       isHandle(value) && tagOfHandle(value) === 'DataView'
         ? bytesToBase64(viewBytes(value))
         : false,
@@ -1724,20 +1727,10 @@ export function createQuickJSSerde(
       buildTypedArray('BigInt64Array', value),
     BigUint64Array: (value: string | JSValueHandle) =>
       buildTypedArray('BigUint64Array', value),
-    DataView: (value: string | JSValueHandle) => {
-      // Payloads written before the DataView reducer existed used devalue's
-      // built-in encoding, which references the whole backing ArrayBuffer;
-      // devalue hands a custom reviver the hydrated referent, so those
-      // arrive as a guest ArrayBuffer rather than base64. See the host-side
-      // serialization/reducers/common.ts.
-      if (isHandle(value) && tagOfHandle(value) === 'ArrayBuffer') {
-        const Constructor = typedArrayConstructors.get('DataView');
-        if (!Constructor)
-          throw new Error('DataView is not available in the VM');
-        return vm.construct(Constructor, value);
-      }
-      return buildTypedArray('DataView', value);
-    },
+    // No `DataView` reviver: older payloads under that tag must keep taking
+    // the built-in branch, which restores their bounds via `fromViewInfo`.
+    DataViewBytes: (value: string | JSValueHandle) =>
+      buildTypedArray('DataView', value),
     Date: (value: JSValueHandle | string) => {
       // The reducer emits '.' for invalid dates and an ISO string otherwise.
       const iso = isHandle(value) ? value.toString() : value;

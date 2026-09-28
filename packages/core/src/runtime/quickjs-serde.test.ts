@@ -368,7 +368,7 @@ describe('full round trip through the host serde only', () => {
 
     // The payload is the base64 of [3, 4, 5] and nothing else; the whole
     // buffer would additionally encode 1, 2, 6, 7 and 8.
-    expect(text(bytes)).toBe('devl[["DataView",1],"AwQF"]');
+    expect(text(bytes)).toBe('devl[["DataViewBytes",1],"AwQF"]');
 
     expect(
       checkInGuest(
@@ -389,6 +389,37 @@ describe('full round trip through the host serde only', () => {
       bufferByteLength: 3,
       first: 3,
       last: 5,
+    });
+  });
+
+  it('revives a pre-existing DataView payload with its bounds', () => {
+    // Written by devalue's built-in encoding before `DataViewBytes` existed:
+    // a reference to the whole buffer, with the view's bounds beside it.
+    // `fromViewInfo` is the only thing that can read those bounds back, and
+    // devalue only reaches it while no custom reviver claims the tag.
+    const legacy = new TextEncoder().encode(
+      'devl[["DataView",1,1,2],["ArrayBuffer",2],"AQIDBA=="]'
+    );
+
+    expect(
+      checkInGuest(
+        legacy,
+        `function (v) {
+          return {
+            isDataView: v instanceof DataView,
+            byteOffset: v.byteOffset,
+            byteLength: v.byteLength,
+            first: v.getUint8(0),
+            last: v.getUint8(1),
+          };
+        }`
+      )
+    ).toEqual({
+      isDataView: true,
+      byteOffset: 1,
+      byteLength: 2,
+      first: 2,
+      last: 3,
     });
   });
 });

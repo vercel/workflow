@@ -655,7 +655,7 @@ describe('common reducers', () => {
     const backing = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
     const view = new DataView(backing.buffer, 2, 3);
 
-    expect(reducers.DataView!(view)).toBe(
+    expect(reducers.DataViewBytes!(view)).toBe(
       Buffer.from([2, 3, 4]).toString('base64')
     );
   });
@@ -675,20 +675,20 @@ describe('common reducers', () => {
 
     expect(view.buffer.byteLength).toBeGreaterThan(view.byteLength);
 
-    const reduced = reducers.DataView!(view) as string;
+    const reduced = reducers.DataViewBytes!(view) as string;
     expect([...Buffer.from(reduced, 'base64')]).toEqual([7, 8, 9]);
   });
 
   it('should reduce an empty DataView to the sentinel', () => {
-    expect(reducers.DataView!(new DataView(new ArrayBuffer(8), 4, 0))).toBe(
-      '.'
-    );
+    expect(
+      reducers.DataViewBytes!(new DataView(new ArrayBuffer(8), 4, 0))
+    ).toBe('.');
   });
 
   it('should not reduce non-DataView values', () => {
-    expect(reducers.DataView!(new Uint8Array([1]))).toBe(false);
-    expect(reducers.DataView!(new ArrayBuffer(4))).toBe(false);
-    expect(reducers.DataView!({ byteLength: 4 })).toBe(false);
+    expect(reducers.DataViewBytes!(new Uint8Array([1]))).toBe(false);
+    expect(reducers.DataViewBytes!(new ArrayBuffer(4))).toBe(false);
+    expect(reducers.DataViewBytes!({ byteLength: 4 })).toBe(false);
   });
 
   it('should reduce typed arrays', () => {
@@ -834,10 +834,10 @@ describe('common revivers', () => {
 
   it('should round-trip a DataView subview onto its own buffer', () => {
     const backing = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
-    const reduced = reducers.DataView!(
+    const reduced = reducers.DataViewBytes!(
       new DataView(backing.buffer, 2, 3)
     ) as string;
-    const revived = revivers.DataView!(reduced) as DataView;
+    const revived = revivers.DataViewBytes!(reduced) as DataView;
 
     expect(revived).toBeInstanceOf(DataView);
     expect(revived.byteOffset).toBe(0);
@@ -847,24 +847,22 @@ describe('common revivers', () => {
   });
 
   it('should round-trip an empty DataView', () => {
-    const reduced = reducers.DataView!(
+    const reduced = reducers.DataViewBytes!(
       new DataView(new ArrayBuffer(8), 4, 0)
     ) as string;
-    const revived = revivers.DataView!(reduced) as DataView;
+    const revived = revivers.DataViewBytes!(reduced) as DataView;
 
     expect(revived).toBeInstanceOf(DataView);
     expect(revived.byteLength).toBe(0);
   });
 
-  it('should revive a DataView from a pre-reducer ArrayBuffer payload', () => {
-    // devalue's built-in encoding hands a custom reviver the hydrated
-    // backing ArrayBuffer rather than base64; those payloads predate the
-    // DataView reducer but still have to replay.
-    const legacy = new Uint8Array([1, 2, 3, 4]).buffer;
-    const revived = revivers.DataView!(legacy as never) as DataView;
-
-    expect(revived).toBeInstanceOf(DataView);
-    expect(Array.from(new Uint8Array(revived.buffer))).toEqual([1, 2, 3, 4]);
+  it('should leave the built-in DataView tag unclaimed', () => {
+    // devalue only consults its built-in branch for tags with no custom
+    // reviver. Payloads already in event logs carry their bounds in that
+    // tuple, and only the built-in branch can read them back, so this set
+    // must not grow a `DataView` entry.
+    expect(revivers).not.toHaveProperty('DataView');
+    expect(getCommonReducers()).not.toHaveProperty('DataView');
   });
 });
 
