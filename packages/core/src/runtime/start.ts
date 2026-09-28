@@ -727,7 +727,6 @@ export async function start<TArgs extends unknown[], TResult>(
 
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
-      let targetDynamicWorkflowVersion: number | undefined;
       // The consumer's hook-resume protocol version, stamped onto the new
       // run. Current producers write the hook_received event durably before
       // publishing the wake and never read it; OLDER producers gate their
@@ -751,9 +750,6 @@ export async function start<TArgs extends unknown[], TResult>(
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
         targetSpecVersion = world.specVersion;
         specVersionSource = 'same-deployment';
-        targetDynamicWorkflowVersion = isDynamicWorkflowsEnabled()
-          ? DYNAMIC_WORKFLOW_VERSION
-          : undefined;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
@@ -764,7 +760,6 @@ export async function start<TArgs extends unknown[], TResult>(
         // Nor its spec version: no probe result to resolve from.
         ({ specVersion: targetSpecVersion, source: specVersionSource } =
           resolveCrossDeploymentSpecVersion(undefined, world.specVersion));
-        targetDynamicWorkflowVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -817,16 +812,6 @@ export async function start<TArgs extends unknown[], TResult>(
             }
           );
         }
-        targetDynamicWorkflowVersion = probe?.dynamicWorkflowVersion;
-      }
-
-      if (
-        dynamicWorkflow &&
-        targetDynamicWorkflowVersion !== DYNAMIC_WORKFLOW_VERSION
-      ) {
-        throw new WorkflowRuntimeError(
-          `Dynamic workflows require target runtime capability version ${DYNAMIC_WORKFLOW_VERSION}. The target did not attest that exact version, so no run was created.`
-        );
       }
 
       const ops: Promise<void>[] = [];
