@@ -582,6 +582,10 @@ export async function start<TArgs extends unknown[], TResult>(
         { slug: 'start-invalid-workflow-function' }
       );
     }
+    // Validate the queue destination before any serialization, upload, or
+    // run creation. The queue write runs beside run creation, so validating it
+    // there could leave a created but unscheduled run behind.
+    const queueName = getWorkflowQueueName(workflowName, opts.namespace);
 
     const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
     return trace(spanName, async (span) => {
@@ -1087,7 +1091,7 @@ export async function start<TArgs extends unknown[], TResult>(
           { v1Compat }
         ),
         world.queue(
-          getWorkflowQueueName(workflowName, opts.namespace),
+          queueName,
           {
             runId,
             traceCarrier,

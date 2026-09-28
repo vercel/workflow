@@ -192,7 +192,7 @@ async function workflow(input) {
 | Option | Type | Description |
 | --- | --- | --- |
 | `experimental_dynamic.steps` | `Record<string, StepFunction \| { stepId: string }>` | Required. Registered steps the source may call, keyed by the alias it calls them under. |
-| `experimental_dynamic.exportName` | `string` | Name of the async workflow function in the source. Defaults to `"workflow"`. |
+| `experimental_dynamic.exportName` | `string` | Name of the async workflow function in the source. Use letters, digits, and `_`, not starting with a digit. Defaults to `"workflow"`. |
 
 The return type is `Run<unknown>`: the source's shape is only known to whatever generated it, so there is nothing to infer. The workflow ID is derived from the source and its step bindings — it cannot be supplied.
 

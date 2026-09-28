@@ -118,7 +118,7 @@ Supply a unique, deterministic approval token from the caller. The workflow must
 
 `start()` validates the source before it writes anything, so a definition that could never run fails at the call site rather than on a queue delivery:
 
-- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name.
+- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name; export names may contain letters, digits, and `_`, and cannot start with a digit.
 - The function's first statement must be the `"use workflow"` directive.
 - No `import` or `export`. Reach steps through `steps`, not through modules.
 - JavaScript only — no TypeScript syntax, no npm dependencies, no bundling.
@@ -167,7 +167,7 @@ Dynamic workflows need a World that can store the run's workflow code.
 | [Local](/worlds/local) | Stored on the run record in the local filesystem store. |
 | Others | Whatever the World explicitly attests through the versioned dynamic-workflow storage capability. |
 
-`start()` checks the backend's dynamic-workflow storage capability first. For a cross-deployment start, the target health probe then jointly attests dynamic-runtime support and may return a derived public encryption key. Only after successful capability attestation does `start()` fall back to a separate run-key lookup when the probe returned no key. It constructs and validates the final execution context before serializing or uploading code, creating an event, or publishing a queue message. Missing, malformed, unavailable, or unknown capabilities fail closed, and validation completes before any durable or executable start side effect.
+`start()` checks the backend's dynamic-workflow storage capability first. For a cross-deployment start, the target's capability-probe answer (cached per deployment) then attests dynamic-runtime support. A fresh probe may also return a derived public encryption key; after successful attestation, `start()` falls back to a separate run-key lookup when no key is available. It constructs and validates the final execution context before serializing or uploading code, creating an event, or publishing a queue message. Missing, malformed, unavailable, or unknown capabilities fail closed, and validation completes before any durable or executable start side effect.
 
 ## AI-generated workflows
 

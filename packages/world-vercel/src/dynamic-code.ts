@@ -32,8 +32,9 @@ const UploadResponseSchema = z.object({
  *
  * @param runId - Client-minted ID of the run being started. The backend
  *   embeds it in the storage key so the object is reclaimed with the run.
- * @param params.workflowName - The generated dynamic workflow name, also part
- *   of the key. Passed in because the run record does not exist yet.
+ * @param params.workflowName - The generated dynamic workflow name. The
+ *   backend accepts it for compatibility but stores uploads in a reserved
+ *   run-scoped staging namespace.
  * @param params.code - Serialized (compressed + encrypted) workflow code.
  */
 export async function uploadDynamicWorkflowCode(

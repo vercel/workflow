@@ -479,6 +479,26 @@ async function workflow() {
         compileDynamicWorkflow(SOURCE, options as never)
       ).rejects.toThrow(WorkflowRuntimeError);
     });
+
+    it('rejects an export name the workflow queue cannot address', async () => {
+      await expect(
+        compileDynamicWorkflow(
+          'async function $workflow() { "use workflow"; return 1; }',
+          { steps: STEPS, exportName: '$workflow' }
+        )
+      ).rejects.toThrow(/"\$" cannot appear in workflow queue names/);
+    });
+
+    it('still accepts "$" in step aliases', async () => {
+      await expect(
+        compileDynamicWorkflow(
+          'async function workflow() { "use workflow"; return await steps.$fetch(); }',
+          { steps: { $fetch: STEPS.fetchUser } }
+        )
+      ).resolves.toMatchObject({
+        workflowName: expect.stringMatching(/\/\/workflow$/),
+      });
+    });
   });
 });
 

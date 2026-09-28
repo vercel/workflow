@@ -124,6 +124,13 @@ export const DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES = 24 * 1024;
 const SAFE_DYNAMIC_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 
 /**
+ * The export name becomes the final segment of the generated workflow id,
+ * which is also the queue topic name. Queue names do not accept `$`, so this
+ * is the intersection of JavaScript identifiers and the queue-name alphabet.
+ */
+const SAFE_DYNAMIC_EXPORT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
  * Rejects module syntax, which the generated wrapper cannot host: the code is
  * evaluated as a script in the workflow VM, so an `import` or `export` in it
  * is a syntax error at replay time rather than at `start()` time. Catching it
@@ -310,6 +317,11 @@ export async function compileDynamicWorkflow(
 ): Promise<CompiledDynamicWorkflow> {
   const exportName = options.exportName ?? 'workflow';
   assertDynamicWorkflowIdentifier('exportName', exportName);
+  if (!SAFE_DYNAMIC_EXPORT_NAME.test(exportName)) {
+    throw new WorkflowRuntimeError(
+      `Invalid dynamic workflow exportName ${JSON.stringify(exportName)}. Use letters, digits, and "_", not starting with a digit; "$" cannot appear in workflow queue names.`
+    );
+  }
   validateDynamicWorkflowSource(source, exportName);
 
   if (!options.steps || Object.keys(options.steps).length === 0) {

@@ -107,6 +107,138 @@ describe('start', () => {
       expect(queue).not.toHaveBeenCalled();
     });
 
+    it('rejects a $-prefixed export name before start side effects', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start('async function $workflow() { "use workflow"; return 1; }', {
+          experimental_dynamic: {
+            exportName: '$workflow',
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/cannot appear in workflow queue names/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('validates the queue name before start side effects', async () => {
+      const getDeploymentId = vi.fn().mockResolvedValue('deploy_123');
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      const invalidQueueWorkflow = Object.assign(async () => undefined, {
+        workflowId: 'workflow//./test//$invalid',
+      });
+
+      await expect(start(invalidQueueWorkflow as never, [])).rejects.toThrow(
+        /Invalid workflow name/
+      );
+      expect(getDeploymentId).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    describe('cross-deployment runtime capability', () => {
+      const dynamicOptions = {
+        deploymentId: 'dpl_other',
+        experimental_dynamic: {
+          steps: { noop: { stepId: 'step//./test//noop' } },
+        },
+      };
+
+      function probeStream(response: Record<string, unknown>) {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(JSON.stringify(response))
+            );
+            controller.close();
+          },
+        });
+      }
+
+      function dynamicWorld(overrides: Record<string, unknown>) {
+        return {
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          getBackendCapabilities: vi
+            .fn()
+            .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          uploadDynamicWorkflowCode: upload,
+          events: { create: eventsCreate },
+          queue,
+          ...overrides,
+        } as any;
+      }
+
+      function expectNoRunWrites() {
+        expect(upload).not.toHaveBeenCalled();
+        expect(eventsCreate).not.toHaveBeenCalled();
+        expect(queue).not.toHaveBeenCalledWith(
+          expect.stringContaining('workflow//dynamic/'),
+          expect.anything(),
+          expect.anything()
+        );
+      }
+
+      it('fails closed when the probe fails', async () => {
+        queue.mockRejectedValueOnce(new Error('probe queue unavailable'));
+        setWorld(
+          dynamicWorld({
+            streams: { get: vi.fn() },
+          })
+        );
+
+        await expect(start(source, dynamicOptions)).rejects.toThrow(
+          /target runtime capability version 1/
+        );
+        expectNoRunWrites();
+      });
+
+      it('fails closed when the target has no probe stream', async () => {
+        setWorld(dynamicWorld({}));
+
+        await expect(start(source, dynamicOptions)).rejects.toThrow(
+          /target runtime capability version 1/
+        );
+        expectNoRunWrites();
+      });
+
+      it('fails closed from a cached answer without dynamic support', async () => {
+        const get = vi.fn(async () =>
+          probeStream({
+            healthy: true,
+            endpoint: 'workflow',
+            specVersion: SPEC_VERSION_CURRENT,
+            workflowCoreVersion: '0.0.0-test',
+          })
+        );
+        setWorld(dynamicWorld({ streams: { get } }));
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await expect(start(source, dynamicOptions)).rejects.toThrow(
+            /target runtime capability version 1/
+          );
+        }
+        expect(get).toHaveBeenCalledTimes(1);
+        expectNoRunWrites();
+      });
+    });
+
     it.each([
       [
         'nested declaration',
