@@ -21,7 +21,9 @@
  * Vercel, local dev/prod, and Postgres — with no per-world branching.
  *
  * The deployment must opt in with WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1;
- * without it each fixture's `start()` refuses and the test skips.
+ * without it each fixture's `start()` refuses and the test skips. A lane that
+ * opts its server in also sets WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS=1 on the
+ * runner, and there that refusal fails the test instead.
  *
  * Run locally:
  *   1. cd workbench/nextjs-turbopack && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev
@@ -71,15 +73,28 @@ interface DynamicChild {
 }
 
 /**
+ * Set on lanes whose server runs with WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1,
+ * so a "not opted in" refusal there is a failure rather than a skip.
+ */
+const expectDynamicWorkflows =
+  process.env.WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS === '1';
+
+/**
  * The messages `start()` throws, inside the fixture's step, when this
  * deployment cannot run dynamic workflows. They reach the runner wrapped in
  * the parent's failure.
  */
-const UNSUPPORTED_DEPLOYMENT: readonly { pattern: RegExp; reason: string }[] = [
+const UNSUPPORTED_DEPLOYMENT: readonly {
+  pattern: RegExp;
+  reason: string;
+  /** Fail instead of skipping when the lane expects dynamic workflows. */
+  optIn?: true;
+}[] = [
   {
     // The deployment has not set WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
     pattern: /Dynamic workflows are disabled on this deployment/,
     reason: 'this deployment has not opted in to dynamic workflows',
+    optIn: true,
   },
   {
     // The backend does not advertise dynamic-source storage (including a
@@ -116,7 +131,8 @@ const CREATED_RUN_ID =
 
 /**
  * Skip the running test when the deployment cannot run dynamic workflows: it
- * has not opted in, or its backend has no dynamic-source storage.
+ * has not opted in (unless the lane expects it to have), or its backend has no
+ * dynamic-source storage.
  *
  * A real skip rather than a failure, because the gap is the deployment's
  * configuration or the backend's, and the suite cannot close it: these go
@@ -131,7 +147,11 @@ function skipIfUnsupportedDeployment(error: unknown): never {
           pattern.test(error.message)
         )
       : undefined;
-  if (error instanceof Error && unsupported) {
+  if (
+    error instanceof Error &&
+    unsupported &&
+    !(unsupported.optIn && expectDynamicWorkflows)
+  ) {
     const createdRunId = CREATED_RUN_ID.exec(error.message)?.[1];
     if (createdRunId) {
       // Track it before skipping: the run was created and is inspectable,
