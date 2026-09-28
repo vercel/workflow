@@ -4840,6 +4840,65 @@ describe('dehydrate/hydrateDynamicWorkflowCode', () => {
     expect(hydrateData(stored, {})).toBe(code);
   });
 
+  describe('when encryption is required', () => {
+    const material = new Uint8Array(32).fill(0x3c);
+    async function runKeys() {
+      return runPayloadKeys(
+        await importKey(material),
+        await deriveRunKeyPair(material)
+      );
+    }
+
+    it('rejects plaintext code when the run has a key', async () => {
+      const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+      await expect(
+        hydrateDynamicWorkflowCode(stored, await runKeys())
+      ).rejects.toThrow(/must be encrypted.*"devl"/);
+    });
+
+    it('rejects plaintext code when the run was started with encryption', async () => {
+      const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+      await expect(
+        hydrateDynamicWorkflowCode(stored, undefined, {
+          encryptionRequired: true,
+        })
+      ).rejects.toBeInstanceOf(SerializationError);
+    });
+
+    it('rejects code sealed to the run public key', async () => {
+      const { publicKey } = await deriveRunKeyPair(material);
+      const stored = await dehydrateDynamicWorkflowCode(
+        code,
+        sealTo(publicKey)
+      );
+      expect(decodeFormatPrefix(stored).format).toBe(
+        SerializationFormat.SEALED
+      );
+      await expect(
+        hydrateDynamicWorkflowCode(stored, await runKeys())
+      ).rejects.toThrow(/must be encrypted.*"encp"/);
+    });
+
+    it('rejects compressed plaintext code when the run has a key', async () => {
+      const stored = await dehydrateDynamicWorkflowCode(
+        `${code}${'// padding\n'.repeat(200)}`,
+        undefined,
+        true
+      );
+      await expect(
+        hydrateDynamicWorkflowCode(stored, await runKeys())
+      ).rejects.toBeInstanceOf(SerializationError);
+    });
+
+    it('accepts code encrypted with the run key', async () => {
+      const keys = await runKeys();
+      const stored = await dehydrateDynamicWorkflowCode(code, keys);
+      await expect(
+        hydrateDynamicWorkflowCode(stored, keys, { encryptionRequired: true })
+      ).resolves.toBe(code);
+    });
+  });
+
   it('rejects a payload that is not a string with SerializationError', async () => {
     const prefixed = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,

@@ -303,6 +303,21 @@ export interface CompiledDynamicWorkflow {
 }
 
 /**
+ * The workflow id a dynamic definition registers under.
+ *
+ * Half the digest. Long enough that a collision is not a practical concern and
+ * short enough to keep queue topic names and observability rows readable.
+ * Delivery recomputes it from a run's `dynamicWorkflow` marker and refuses a
+ * run whose `workflowName` does not match, so a marker cannot turn a static
+ * workflow's run into one that executes stored code.
+ */
+export function dynamicWorkflowName(
+  metadata: Pick<DynamicWorkflowMetadata, 'sourceHash' | 'exportName'>
+): string {
+  return `workflow//dynamic/${metadata.sourceHash.slice(0, 32)}//${metadata.exportName}`;
+}
+
+/**
  * Validate dynamic source and generate the workflow VM code for it.
  *
  * The workflow id is derived from the source and its step bindings rather
@@ -342,10 +357,7 @@ export async function compileDynamicWorkflow(
     `${source}\n${stableJsonStringify(steps)}`
   );
 
-  // Half the digest. Long enough that a collision is not a practical concern
-  // and short enough to keep queue topic names and observability rows
-  // readable.
-  const workflowName = `workflow//dynamic/${sourceHash.slice(0, 32)}//${exportName}`;
+  const workflowName = dynamicWorkflowName({ sourceHash, exportName });
 
   const stepBindings = stepEntries
     .map(

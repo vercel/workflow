@@ -4237,17 +4237,41 @@ export async function dehydrateDynamicWorkflowCode(
 
 /**
  * Hydrate a dynamic run's workflow VM code back into source, on the replay
- * path (and for observability surfaces that choose to reveal it).
+ * path.
+ *
+ * When the run has key material, or its execution context records that it was
+ * started with encryption, only the symmetric `encr` envelope is accepted.
+ * Plaintext would let anyone who can write the run record supply code, and a
+ * sealed `encp` envelope can be produced by anyone holding the run's public
+ * key, so neither is evidence that the run's own key encrypted it. This gives
+ * confidentiality and narrows who can supply code; it is not an integrity
+ * guarantee against a holder of the run key.
+ *
+ * Without key material (Worlds with no encryption), plaintext is accepted.
  *
  * @param value - Stored bytes from the run's `dynamicWorkflowCode`.
  * @param key - Encryption key (undefined when encryption is disabled).
- * @throws SerializationError when the payload does not decode to a string —
- *   a corrupted or foreign payload must not reach the workflow VM as code.
+ * @param options.encryptionRequired - The run was started with encryption
+ *   (`executionContext.features.encryption`), so plaintext is refused even
+ *   when no key was resolved.
+ * @throws SerializationError when the payload is not `encr` although
+ *   encryption is required, or does not decode to a string: a corrupted or
+ *   foreign payload must not reach the workflow VM as code.
  */
 export async function hydrateDynamicWorkflowCode(
   value: Uint8Array | unknown,
-  key: PayloadKey | undefined
+  key: PayloadKey | undefined,
+  options: { encryptionRequired?: boolean } = {}
 ): Promise<string> {
+  if (key !== undefined || options.encryptionRequired === true) {
+    const envelope = peekFormatPrefix(value);
+    if (envelope !== SerializationFormat.ENCRYPTED) {
+      throw new SerializationError(
+        `Dynamic workflow code must be encrypted with the run's key ("${SerializationFormat.ENCRYPTED}"), but the stored payload is ${envelope ? `"${envelope}"` : 'not a recognized format'}.`
+      );
+    }
+  }
+
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
     await decrypt(value, key),

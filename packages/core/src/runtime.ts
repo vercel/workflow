@@ -52,6 +52,7 @@ import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
+  DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
@@ -59,6 +60,7 @@ import {
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
+  isDynamicWorkflowsEnabled,
   isInlineOwnershipEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
@@ -69,7 +71,11 @@ import {
   guardDeploymentAffinity,
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
-import { readDynamicWorkflowMetadata } from './runtime/dynamic-workflow.js';
+import {
+  type DynamicWorkflowMetadata,
+  dynamicWorkflowName,
+  readDynamicWorkflowMetadata,
+} from './runtime/dynamic-workflow.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -687,27 +693,43 @@ async function getMaxInlineDurationMs(
   return ms('2m');
 }
 
+/** The workflow code a delivery replays, and the marker when it is dynamic. */
+interface ResolvedWorkflowCode {
+  code: string;
+  dynamicWorkflow?: DynamicWorkflowMetadata;
+}
+
 /**
  * Pick the workflow code this run replays.
  *
- * For a static run — every run today — this is the deployment's bundle,
- * returned unchanged after one plaintext property read. The dynamic branch
- * exists for runs started from source: their workflow function was never in
- * the bundle, so the code came with the run, and replaying it means
- * evaluating that exact code rather than whatever the deployment now
- * contains.
+ * For a static run this is the deployment's bundle, returned unchanged after
+ * one plaintext property read. The dynamic branch exists for runs started from
+ * source: their workflow function was never in the bundle, so the code came
+ * with the run, and replaying it means evaluating that exact code rather than
+ * whatever the deployment now contains.
  *
- * The code is stored the way every other run payload is (compressed, then
- * encrypted with the run's key), so it has to be hydrated before it can be
- * evaluated. Two sources, in order of what the invocation already holds:
+ * Stored code is only executed when all of these hold, and each failure is a
+ * `WorkflowRuntimeError` so the caller fails the run instead of redelivering a
+ * message whose verdict cannot change:
+ *
+ * - this deployment has opted in to dynamic workflows;
+ * - the run's `workflowName` is the id its `dynamicWorkflow` marker derives
+ *   (a marker on a static workflow's run does not redirect it to stored code);
+ * - the code exists and hydrates, which requires the `encr` envelope whenever
+ *   the run has key material or was started with encryption.
+ *
+ * Two sources for the code, in order of what the invocation already holds:
  *
  * 1. On the run snapshot. The normal case: `run_created` and the queue
  *    message both carry the bytes, so a read is already unnecessary by the
  *    time replay begins.
  * 2. Read back from the run. Needed when the definition was too large to
- *    send inline and lives behind a ref — the queue message carries only the
- *    ref, and a turbo-synthesized snapshot has no bytes at all. The run has
- *    to exist first, hence the barrier.
+ *    send inline and lives behind a ref, or the snapshot was read with
+ *    `resolveData: 'none'`, which omits the code. The run has to exist first,
+ *    hence the barrier.
+ *
+ * World and key-lookup errors propagate unchanged, so transient failures are
+ * still redelivered.
  *
  * @param getEncryptionKey - Resolved only on the dynamic branch. The key is
  *   lazy for a reason: some deliveries never need it, and forcing it here
@@ -721,11 +743,24 @@ async function resolveWorkflowCodeForRun(
   getEncryptionKey: () => Promise<PayloadKey | undefined>,
   world: World,
   awaitRunReady: () => Promise<void>
-): Promise<string> {
+): Promise<ResolvedWorkflowCode> {
   const dynamicWorkflow = readDynamicWorkflowMetadata(
     workflowRun.executionContext
   );
-  if (!dynamicWorkflow) return staticWorkflowCode;
+  if (!dynamicWorkflow) return { code: staticWorkflowCode };
+
+  const runLabel = `Workflow run "${workflowRun.runId}" is a dynamic workflow run (source ${dynamicWorkflow.sourceHash.slice(0, 12)})`;
+  if (!isDynamicWorkflowsEnabled()) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but this deployment has not enabled dynamic workflows, so its stored code was not executed. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    );
+  }
+  const expectedWorkflowName = dynamicWorkflowName(dynamicWorkflow);
+  if (workflowRun.workflowName !== expectedWorkflowName) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its workflow name ${JSON.stringify(workflowRun.workflowName)} does not match the dynamic id ${JSON.stringify(expectedWorkflowName)} its marker derives, so its stored code was not executed.`
+    );
+  }
 
   let stored = workflowRun.dynamicWorkflowCode;
   if (stored === undefined) {
@@ -736,12 +771,28 @@ async function resolveWorkflowCodeForRun(
 
   if (stored === undefined) {
     throw new WorkflowRuntimeError(
-      `Workflow run "${workflowRun.runId}" is a dynamic run (source ${dynamicWorkflow.sourceHash.slice(0, 12)}) but its stored workflow code is missing, so it cannot be replayed. ` +
+      `${runLabel}, but its stored workflow code is missing, so it cannot be replayed. ` +
         'This means the code was never persisted or its storage has expired.'
     );
   }
 
-  return hydrateDynamicWorkflowCode(stored, await getEncryptionKey());
+  const encryptionKey = await getEncryptionKey();
+  const features = workflowRun.executionContext?.features as
+    | { encryption?: unknown }
+    | undefined;
+  try {
+    return {
+      code: await hydrateDynamicWorkflowCode(stored, encryptionKey, {
+        encryptionRequired: features?.encryption === true,
+      }),
+      dynamicWorkflow,
+    };
+  } catch (cause) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its stored workflow code could not be decoded, so it was not executed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause }
+    );
+  }
 }
 
 /**
@@ -3022,16 +3073,41 @@ export function workflowEntrypoint(
                   // once here, since the code is fixed for the run's lifetime
                   // and each replay iteration below would otherwise redo the
                   // decrypt.
-                  const effectiveWorkflowCode = await resolveWorkflowCodeForRun(
-                    workflowCode,
-                    workflowRun,
-                    () => encryptionKey.value,
-                    world,
-                    awaitRunReady
-                  );
-                  const dynamicWorkflowMetadata = readDynamicWorkflowMetadata(
-                    workflowRun.executionContext
-                  );
+                  //
+                  // A refusal to execute stored code (opt-in off, a marker
+                  // that does not match the run, missing or undecodable code)
+                  // is a WorkflowRuntimeError and fails the run: every
+                  // redelivery would reach the same verdict.
+                  let resolvedWorkflowCode: ResolvedWorkflowCode;
+                  try {
+                    resolvedWorkflowCode = await resolveWorkflowCodeForRun(
+                      workflowCode,
+                      workflowRun,
+                      () => encryptionKey.value,
+                      world,
+                      awaitRunReady
+                    );
+                  } catch (err) {
+                    await awaitRunReady();
+                    if (!(await recordWorkflowSetupFailure(err))) {
+                      throw err;
+                    }
+                    return;
+                  }
+                  const effectiveWorkflowCode = resolvedWorkflowCode.code;
+                  const dynamicWorkflowMetadata =
+                    resolvedWorkflowCode.dynamicWorkflow;
+                  if (dynamicWorkflowMetadata) {
+                    span?.setAttributes({
+                      ...Attribute.WorkflowDynamic(true),
+                      ...Attribute.WorkflowDynamicSourceHash(
+                        dynamicWorkflowMetadata.sourceHash
+                      ),
+                    });
+                    runLogger.info('Executing stored dynamic workflow code', {
+                      sourceHash: dynamicWorkflowMetadata.sourceHash,
+                    });
+                  }
                   const dynamicWorkflowScripts =
                     dynamicWorkflowMetadata && !useQuickJSVm(workflowRun)
                       ? compileDynamicWorkflowBundle(

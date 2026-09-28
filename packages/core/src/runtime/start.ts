@@ -1065,11 +1065,14 @@ export async function start<TArgs extends unknown[], TResult>(
           dynamicWorkflowCode = serializedCode;
         }
         span?.setAttributes({
-          'workflow.dynamic.source_hash': dynamicWorkflow.metadata.sourceHash,
-          'workflow.dynamic.code_bytes': serializedCode.byteLength,
-          'workflow.dynamic.code_storage': dynamicWorkflowCodeRef
-            ? 'ref'
-            : 'inline',
+          ...Attribute.WorkflowDynamic(true),
+          ...Attribute.WorkflowDynamicSourceHash(
+            dynamicWorkflow.metadata.sourceHash
+          ),
+          ...Attribute.WorkflowDynamicCodeBytes(serializedCode.byteLength),
+          ...Attribute.WorkflowDynamicCodeStorage(
+            dynamicWorkflowCodeRef ? 'ref' : 'inline'
+          ),
         });
       }
 
