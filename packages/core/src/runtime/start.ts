@@ -995,8 +995,8 @@ export async function start<TArgs extends unknown[], TResult>(
           : undefined;
       }
 
-      // Build and validate the complete execution context before serializing or
-      // uploading dynamic source and before either run-creation side effect.
+      // Build the complete execution context before serializing or uploading
+      // dynamic source and before either run-creation side effect.
       const workflowVm = getWorkflowVmFromEnv();
       const executionContext = {
         traceCarrier,
@@ -1013,7 +1013,12 @@ export async function start<TArgs extends unknown[], TResult>(
           ? { dynamicWorkflow: dynamicWorkflow.metadata }
           : {}),
       };
-      world.validateRunExecutionContext?.(executionContext);
+      // A dynamic run's marker is what can push the context past a World's
+      // limit, so only dynamic starts are validated here; static starts keep
+      // relying on the World's own write-time checks.
+      if (dynamicWorkflow) {
+        world.validateRunExecutionContext?.(executionContext);
+      }
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it

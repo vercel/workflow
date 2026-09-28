@@ -656,8 +656,10 @@ export interface World extends Queue, Streamer, Storage {
   getBackendCapabilities?(): Promise<BackendCapabilities>;
 
   /**
-   * Validates the complete execution context against World-specific limits.
-   * Implementations must throw before any durable start side effect.
+   * Validates a dynamic run's complete execution context against
+   * World-specific limits. `start()` calls it only for dynamic starts, before
+   * any durable start side effect, so implementations throw to refuse the
+   * start.
    */
   validateRunExecutionContext?(value: Record<string, unknown>): void;
 

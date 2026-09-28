@@ -32,6 +32,7 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
+import { serializeTraceCarrier } from '../telemetry.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
@@ -504,6 +505,39 @@ async function workflow() {
       expect(upload).not.toHaveBeenCalled();
       expect(eventsCreate).not.toHaveBeenCalled();
       expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('does not apply execution-context validation to static starts', async () => {
+      const validateRunExecutionContext = vi.fn(() => {
+        throw new Error('execution context too large');
+      });
+      eventsCreate.mockImplementation(async (runId) => ({
+        run: { runId, status: 'pending' },
+      }));
+      queue.mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        validateRunExecutionContext,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      const staticWorkflow = Object.assign(async () => undefined, {
+        workflowId: 'workflow//./test//staticWorkflow',
+      });
+
+      // A large trace carrier (baggage / tracestate) is the static-start
+      // shape that could approach a World's execution-context limit.
+      const traceCarrier = { tracestate: 'x'.repeat(4096) };
+      vi.mocked(serializeTraceCarrier).mockResolvedValueOnce(traceCarrier);
+
+      await expect(start(staticWorkflow as never, [])).resolves.toBeDefined();
+      expect(validateRunExecutionContext).not.toHaveBeenCalled();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(
+        eventsCreate.mock.calls[0][1].eventData.executionContext.traceCarrier
+      ).toEqual(traceCarrier);
+      expect(queue).toHaveBeenCalledOnce();
     });
   });
 
