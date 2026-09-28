@@ -3322,7 +3322,12 @@ function filterRunData(
   resolveData: ResolveData
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
-    const { input: _, output: __, ...rest } = run;
+    const {
+      input: _,
+      output: __,
+      dynamicWorkflowCode: _dynamicWorkflowCode,
+      ...rest
+    } = run;
 
     return { input: undefined, output: undefined, ...rest };
   }

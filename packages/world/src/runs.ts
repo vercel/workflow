@@ -170,12 +170,17 @@ export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 export type StartedWorkflowRun = WorkflowRun & { startedAt: Date };
 
 /**
- * WorkflowRun with input/output fields excluded (when resolveData='none').
+ * WorkflowRun with its payload fields excluded (when resolveData='none'):
+ * input, output, and a dynamic run's stored workflow code.
  * Used for listing runs without fetching the full serialized data.
  */
-export type WorkflowRunWithoutData = Omit<WorkflowRun, 'input' | 'output'> & {
+export type WorkflowRunWithoutData = Omit<
+  WorkflowRun,
+  'input' | 'output' | 'dynamicWorkflowCode'
+> & {
   input: undefined;
   output: undefined;
+  dynamicWorkflowCode?: undefined;
 };
 
 // Request types

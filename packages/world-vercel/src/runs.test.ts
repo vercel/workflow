@@ -3,6 +3,7 @@ import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
   cancelWorkflowRuns,
+  getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
 } from './runs.js';
@@ -67,6 +68,63 @@ describe('getWorkflowRuns', () => {
       'wrun_first',
     ]);
     expect(runs[0]?.input).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('getWorkflowRun dynamic workflow code', () => {
+  const code = new Uint8Array([10, 10, 10]);
+
+  function agentReturningRun(remoteRefBehavior: 'lazy' | 'resolve') {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/wrun_dynamic?remoteRefBehavior=${remoteRefBehavior}`,
+        method: 'GET',
+      })
+      .reply(
+        200,
+        () =>
+          encode({
+            runId: 'wrun_dynamic',
+            status: 'running',
+            deploymentId: 'dpl_1',
+            workflowName:
+              'workflow//dynamic/0123456789abcdef0123456789abcdef//workflow',
+            dynamicWorkflowCode: code,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+    return agent;
+  }
+
+  it("omits the code with resolveData: 'none' even when the backend sends it", async () => {
+    const agent = agentReturningRun('lazy');
+
+    const run = await getWorkflowRun(
+      'wrun_dynamic',
+      { resolveData: 'none' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(run).not.toHaveProperty('dynamicWorkflowCode');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it("returns the code with resolveData: 'all'", async () => {
+    const agent = agentReturningRun('resolve');
+
+    const run = await getWorkflowRun(
+      'wrun_dynamic',
+      { resolveData: 'all' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(run.dynamicWorkflowCode).toEqual(code);
     agent.assertNoPendingInterceptors();
   });
 });
