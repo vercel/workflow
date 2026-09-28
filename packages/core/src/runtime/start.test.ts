@@ -32,6 +32,7 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
+import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
@@ -60,11 +61,89 @@ describe('start', () => {
       eventsCreate = vi.fn();
       queue = vi.fn();
       upload = vi.fn();
+      vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, '1');
     });
 
     afterEach(() => {
       setWorld(undefined);
       vi.clearAllMocks();
+      vi.unstubAllEnvs();
+    });
+
+    describe('deployment opt-in', () => {
+      function optInWorld() {
+        return {
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          getBackendCapabilities: vi
+            .fn()
+            .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          getEncryptionKeyForRun: vi.fn(),
+          uploadDynamicWorkflowCode: upload,
+          events: { create: eventsCreate },
+          queue,
+        } as any;
+      }
+
+      it.each([
+        ['unset', undefined],
+        ['empty', ''],
+        ['0', '0'],
+        ['false', 'false'],
+        ['yes', 'yes'],
+      ])('refuses a dynamic start with the opt-in %s, before any world call', async (_label, value) => {
+        if (value === undefined) {
+          vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+        } else {
+          vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, value);
+        }
+        const world = optInWorld();
+        setWorld(world);
+
+        const error = await start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        }).catch((err: unknown) => err);
+
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
+        expect((error as Error).message).toMatch(
+          /Dynamic workflows are disabled on this deployment.*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1/
+        );
+        expect(world.getDeploymentId).not.toHaveBeenCalled();
+        expect(world.getBackendCapabilities).not.toHaveBeenCalled();
+        expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+        expect(upload).not.toHaveBeenCalled();
+        expect(eventsCreate).not.toHaveBeenCalled();
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        '1',
+        'true',
+        'TRUE',
+      ])('accepts the opt-in value %s', async (value) => {
+        vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, value);
+        eventsCreate.mockImplementation(async (runId, event) => ({
+          run: {
+            runId,
+            status: 'pending',
+            dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+          },
+        }));
+        queue.mockResolvedValue(undefined);
+        setWorld(optInWorld());
+
+        await expect(
+          start(source, {
+            experimental_dynamic: {
+              steps: { noop: { stepId: 'step//./test//noop' } },
+            },
+          })
+        ).resolves.toBeDefined();
+        expect(eventsCreate).toHaveBeenCalledOnce();
+        expect(queue).toHaveBeenCalledOnce();
+      });
     });
 
     it.each([
@@ -152,24 +231,10 @@ describe('start', () => {
       expect(queue).not.toHaveBeenCalled();
     });
 
-    describe('cross-deployment runtime capability', () => {
-      const dynamicOptions = {
-        deploymentId: 'dpl_other',
-        experimental_dynamic: {
-          steps: { noop: { stepId: 'step//./test//noop' } },
-        },
+    describe('same-deployment only', () => {
+      const dynamicSteps = {
+        steps: { noop: { stepId: 'step//./test//noop' } },
       };
-
-      function probeStream(response: Record<string, unknown>) {
-        return new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(
-              new TextEncoder().encode(JSON.stringify(response))
-            );
-            controller.close();
-          },
-        });
-      }
 
       function dynamicWorld(overrides: Record<string, unknown>) {
         return {
@@ -178,64 +243,99 @@ describe('start', () => {
           getBackendCapabilities: vi
             .fn()
             .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          getEncryptionKeyForRun: vi.fn(),
           uploadDynamicWorkflowCode: upload,
           events: { create: eventsCreate },
           queue,
+          streams: { get: vi.fn() },
           ...overrides,
         } as any;
       }
 
-      function expectNoRunWrites() {
+      function expectNoSideEffects(world: any) {
+        // No capability probe (a queue call), no key lookup, no upload, and
+        // no run creation.
+        expect(queue).not.toHaveBeenCalled();
+        expect(world.streams.get).not.toHaveBeenCalled();
+        expect(world.getBackendCapabilities).not.toHaveBeenCalled();
+        expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
         expect(upload).not.toHaveBeenCalled();
         expect(eventsCreate).not.toHaveBeenCalled();
-        expect(queue).not.toHaveBeenCalledWith(
-          expect.stringContaining('workflow//dynamic/'),
-          expect.anything(),
-          expect.anything()
-        );
       }
 
-      it('fails closed when the probe fails', async () => {
-        queue.mockRejectedValueOnce(new Error('probe queue unavailable'));
-        setWorld(
-          dynamicWorld({
-            streams: { get: vi.fn() },
-          })
-        );
+      it('rejects an explicit other deployment before probing it', async () => {
+        const world = dynamicWorld({});
+        setWorld(world);
 
-        await expect(start(source, dynamicOptions)).rejects.toThrow(
-          /target runtime capability version 1/
+        const error = await start(source, {
+          deploymentId: 'dpl_other',
+          experimental_dynamic: dynamicSteps,
+        }).catch((err: unknown) => err);
+
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
+        expect((error as Error).message).toMatch(
+          /only start on the current deployment.*"dpl_other" from "deploy_123"/
         );
-        expectNoRunWrites();
+        expectNoSideEffects(world);
       });
 
-      it('fails closed when the target has no probe stream', async () => {
-        setWorld(dynamicWorld({}));
+      it("rejects 'latest' when it resolves to another deployment", async () => {
+        const world = dynamicWorld({
+          resolveLatestDeploymentId: vi.fn().mockResolvedValue('dpl_newer'),
+        });
+        setWorld(world);
 
-        await expect(start(source, dynamicOptions)).rejects.toThrow(
-          /target runtime capability version 1/
-        );
-        expectNoRunWrites();
+        await expect(
+          start(source, {
+            deploymentId: 'latest',
+            experimental_dynamic: dynamicSteps,
+          })
+        ).rejects.toThrow(/only start on the current deployment.*"dpl_newer"/);
+        expectNoSideEffects(world);
       });
 
-      it('fails closed from a cached answer without dynamic support', async () => {
-        const get = vi.fn(async () =>
-          probeStream({
-            healthy: true,
-            endpoint: 'workflow',
-            specVersion: SPEC_VERSION_CURRENT,
-            workflowCoreVersion: '0.0.0-test',
-          })
-        );
-        setWorld(dynamicWorld({ streams: { get } }));
+      it('rejects a concrete target when the current deployment is unknown', async () => {
+        const world = dynamicWorld({
+          getDeploymentId: vi
+            .fn()
+            .mockRejectedValue(new Error('no current deployment')),
+        });
+        setWorld(world);
 
-        for (let attempt = 0; attempt < 2; attempt++) {
-          await expect(start(source, dynamicOptions)).rejects.toThrow(
-            /target runtime capability version 1/
-          );
-        }
-        expect(get).toHaveBeenCalledTimes(1);
-        expectNoRunWrites();
+        await expect(
+          start(source, {
+            deploymentId: 'deploy_123',
+            experimental_dynamic: dynamicSteps,
+          })
+        ).rejects.toThrow(
+          /only start on the current deployment.*an unknown current deployment/
+        );
+        expectNoSideEffects(world);
+      });
+
+      it('accepts an explicit deploymentId naming the current deployment', async () => {
+        eventsCreate.mockImplementation(async (runId, event) => ({
+          run: {
+            runId,
+            status: 'pending',
+            dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+          },
+        }));
+        queue.mockResolvedValue(undefined);
+        const world = dynamicWorld({});
+        setWorld(world);
+
+        await expect(
+          start(source, {
+            deploymentId: 'deploy_123',
+            experimental_dynamic: dynamicSteps,
+          })
+        ).resolves.toBeDefined();
+        // Same deployment: no capability probe, only the run's own queue
+        // message.
+        expect(world.streams.get).not.toHaveBeenCalled();
+        expect(queue).toHaveBeenCalledOnce();
+        expect(queue.mock.calls[0][0]).toContain('workflow//dynamic/');
       });
     });
 

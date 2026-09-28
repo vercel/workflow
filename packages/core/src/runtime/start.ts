@@ -43,6 +43,10 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import {
+  DYNAMIC_WORKFLOWS_ENV,
+  isDynamicWorkflowsEnabled,
+} from './constants.js';
+import {
   compileDynamicWorkflow,
   DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES,
   type DynamicStartOptions,
@@ -476,6 +480,18 @@ export type {
 } from './dynamic-workflow.js';
 
 /**
+ * Dynamic starts are same-deployment only, so the process calling `start()` is
+ * also the deployment that executes the run, and it must have opted in.
+ */
+function assertDynamicWorkflowsEnabled(): void {
+  if (!isDynamicWorkflowsEnabled()) {
+    throw new WorkflowRuntimeError(
+      `Dynamic workflows are disabled on this deployment, so no run was created. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    );
+  }
+}
+
+/**
  * Represents an imported workflow function.
  */
 export type WorkflowFunction<TArgs extends unknown[], TResult> = (
@@ -566,6 +582,9 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
       const compiled = await compileDynamicWorkflow(workflow, dynamicOptions);
+      // Checked after validation (which only parses the source) and before
+      // any world call, trace span, upload, or write.
+      assertDynamicWorkflowsEnabled();
       workflowName = compiled.workflowName;
       dynamicWorkflow = {
         code: compiled.workflowCode,
@@ -656,6 +675,20 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
+      const crossDeployment = deploymentId !== currentDeploymentId;
+      // A dynamic run executes stored code, so it may only target the
+      // deployment that validated and opted in to it: this one. Rejected
+      // before the capability probe, key lookup, upload, or run creation.
+      if (dynamicWorkflow && crossDeployment) {
+        const current =
+          currentDeploymentId === undefined
+            ? 'an unknown current deployment'
+            : JSON.stringify(currentDeploymentId);
+        throw new WorkflowRuntimeError(
+          `Dynamic workflows can only start on the current deployment. This start targets ${JSON.stringify(deploymentId)} from ${current}, so no run was created.`
+        );
+      }
+
       // Decide whether to write byte streams in the framed wire format.
       // For same-deployment starts (the common case) we know the target is
       // running this same SDK version, so framing is safe. For cross-
@@ -710,7 +743,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
       let targetSpecVersion: number;
       let specVersionSource: SpecVersionSource;
-      const crossDeployment = deploymentId !== currentDeploymentId;
       if (!crossDeployment) {
         framedByteStreams = true;
         targetSupportsCompression = true;
@@ -719,7 +751,9 @@ export async function start<TArgs extends unknown[], TResult>(
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
         targetSpecVersion = world.specVersion;
         specVersionSource = 'same-deployment';
-        targetDynamicWorkflowVersion = DYNAMIC_WORKFLOW_VERSION;
+        targetDynamicWorkflowVersion = isDynamicWorkflowsEnabled()
+          ? DYNAMIC_WORKFLOW_VERSION
+          : undefined;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
