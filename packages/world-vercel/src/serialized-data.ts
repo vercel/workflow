@@ -69,6 +69,22 @@ export function normalizeSerializedData(value: unknown): unknown {
   return decompress(format, bytes.subarray(FORMAT_PREFIX_LENGTH));
 }
 
+/**
+ * Corrupt stored code is a permanent contract failure rather than a transport
+ * failure, so delivery fails the run instead of retrying it.
+ */
+function normalizeDynamicWorkflowCode(value: unknown): unknown {
+  try {
+    return normalizeSerializedData(value);
+  } catch (cause) {
+    if (WorkflowWorldError.is(cause)) throw cause;
+    throw new WorkflowWorldError(
+      'Stored dynamic workflow code could not be decompressed.',
+      { code: 'WORLD_CONTRACT_ERROR', cause }
+    );
+  }
+}
+
 export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
   run: T
 ): T {
@@ -84,7 +100,9 @@ export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
     // absent, so a run without code does not gain the key.
     ...(run.dynamicWorkflowCode !== undefined
       ? {
-          dynamicWorkflowCode: normalizeSerializedData(run.dynamicWorkflowCode),
+          dynamicWorkflowCode: normalizeDynamicWorkflowCode(
+            run.dynamicWorkflowCode
+          ),
         }
       : {}),
   };

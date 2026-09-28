@@ -156,6 +156,19 @@ describe('run reads of dynamic workflow code', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it("classifies corrupt code on resolveData: 'all' as a contract error", async () => {
+    const agent = agentReturningRun('resolve', corruptCompressedCode);
+
+    await expect(
+      getWorkflowRun(
+        'wrun_dynamic',
+        { resolveData: 'all' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({ code: 'WORLD_CONTRACT_ERROR' });
+    agent.assertNoPendingInterceptors();
+  });
+
   it("returns the code with resolveData: 'all'", async () => {
     const agent = agentReturningRun('resolve');
 

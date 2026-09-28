@@ -364,6 +364,25 @@ describe('dynamic workflow delivery', () => {
     expect(eventTypes).not.toContain('run_failed');
   });
 
+  it('fails the run when reading the stored code back hits corrupt data', async () => {
+    const compiled = await compileReturning(7);
+
+    const { response, runFailed } = await deliver({
+      workflowName: compiled.workflowName,
+      executionContext: contextFor(compiled.metadata),
+      readBack: async () => {
+        throw new WorkflowWorldError('corrupt stored code', {
+          code: 'WORLD_CONTRACT_ERROR',
+        });
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(runFailed?.eventData.errorCode).toBe(
+      RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+    );
+  });
+
   it('redelivers when reading the stored code back fails transiently', async () => {
     const compiled = await compileReturning(7);
 
