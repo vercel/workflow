@@ -480,6 +480,31 @@ async function workflow() {
       expect(queue).not.toHaveBeenCalled();
     });
 
+    it('rejects an empty backend capability set before start side effects', async () => {
+      // world-vercel maps a backend without the capabilities route (404) to
+      // an empty set, which must fail closed like an absent attestation.
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi.fn().mockResolvedValue({}),
+        getEncryptionKeyForRun: vi.fn(),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/backend storage capability version 1/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
     it('rejects execution-context validation before upload, create, or queue', async () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,

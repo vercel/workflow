@@ -68,12 +68,30 @@ interface DynamicChild {
 }
 
 /**
- * The message `start()` throws when the backend accepted the run but did not
- * persist its workflow code — i.e. a backend that predates dynamic-source
- * storage. It happens inside the fixture's step, so it reaches the runner
- * wrapped in the parent's failure.
+ * The messages `start()` throws, inside the fixture's step, when this
+ * deployment cannot run dynamic workflows. They reach the runner wrapped in
+ * the parent's failure.
  */
-const UNSUPPORTED_BACKEND = /did not store its dynamic workflow code/;
+const UNSUPPORTED_DEPLOYMENT: readonly { pattern: RegExp; reason: string }[] = [
+  {
+    // The deployment has not set WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
+    pattern: /Dynamic workflows are disabled on this deployment/,
+    reason: 'this deployment has not opted in to dynamic workflows',
+  },
+  {
+    // The backend does not advertise dynamic-source storage (including a
+    // backend without the capabilities route, which reads as none).
+    pattern: /Dynamic workflows require backend storage capability version/,
+    reason:
+      "this deployment's Workflow backend does not advertise dynamic-source storage",
+  },
+  {
+    // The backend accepted the run but did not persist its workflow code.
+    pattern: /did not store its dynamic workflow code/,
+    reason:
+      "this deployment's Workflow backend has no dynamic-source storage yet",
+  },
+];
 
 /**
  * The run id `start()` names in that error.
@@ -94,16 +112,23 @@ const CREATED_RUN_ID =
   /Workflow run (wrun_[0-9A-Za-z]+) was created, but this deployment's Workflow backend did not store its dynamic workflow code/;
 
 /**
- * Skip the running test when the deployment's backend has no dynamic-source
- * storage.
+ * Skip the running test when the deployment cannot run dynamic workflows: it
+ * has not opted in, or its backend has no dynamic-source storage.
  *
- * A real skip rather than a failure, because the gap is the backend's and the
- * suite cannot close it: these go live, unchanged, once the server side ships.
+ * A real skip rather than a failure, because the gap is the deployment's
+ * configuration or the backend's, and the suite cannot close it: these go
+ * live, unchanged, once the deployment opts in and the server side ships.
  * Not `expect().toThrow()` either — a passing assertion would be claiming
  * coverage the run never got. Same mechanism as the conformance gate.
  */
-function skipIfUnsupportedBackend(error: unknown): never {
-  if (error instanceof Error && UNSUPPORTED_BACKEND.test(error.message)) {
+function skipIfUnsupportedDeployment(error: unknown): never {
+  const unsupported =
+    error instanceof Error
+      ? UNSUPPORTED_DEPLOYMENT.find(({ pattern }) =>
+          pattern.test(error.message)
+        )
+      : undefined;
+  if (error instanceof Error && unsupported) {
     const createdRunId = CREATED_RUN_ID.exec(error.message)?.[1];
     if (createdRunId) {
       // Track it before skipping: the run was created and is inspectable,
@@ -115,7 +140,7 @@ function skipIfUnsupportedBackend(error: unknown): never {
       });
     }
     getCurrentTest()?.context.skip(
-      "this deployment's Workflow backend has no dynamic-source storage yet" +
+      unsupported.reason +
         (createdRunId ? ` (created, unreplayable run: ${createdRunId})` : '')
     );
   }
@@ -131,7 +156,7 @@ async function startParent(
   try {
     return (await parent.returnValue) as DynamicChild;
   } catch (error) {
-    skipIfUnsupportedBackend(error);
+    skipIfUnsupportedDeployment(error);
   }
 }
 
@@ -337,7 +362,8 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
 
   // Client-side validation is the one part of this that genuinely belongs at
   // the runner level: it happens before any write, so no deployment is
-  // involved and there is no run to observe.
+  // involved and there is no run to observe. It also runs before the opt-in
+  // check, so the runner needs no WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
   it('rejects source that cannot be a workflow before creating a run', async () => {
     const steps = { add: { stepId: 'step//./workflows/99_e2e//add' } };
 
