@@ -1065,6 +1065,17 @@ export function createQuickJSSerde(
       isHandle(value) && tagOfHandle(value) === 'BigUint64Array'
         ? bytesToBase64(viewBytes(value))
         : false,
+    // Mirrors the typed-array reducers, and for the same reason: devalue's
+    // built-in DataView encoding emits the whole backing ArrayBuffer, so a
+    // view onto a slice of a larger buffer would put the rest of that
+    // buffer on the wire. `viewBytes` copies only the viewed range. The tag
+    // is not `DataView`, so payloads already written under that name still
+    // take the built-in parse branch (`fromViewInfo` below) with their
+    // bounds intact; see serialization/reducers/common.ts.
+    DataViewBytes: (value) =>
+      isHandle(value) && tagOfHandle(value) === 'DataView'
+        ? bytesToBase64(viewBytes(value))
+        : false,
     Date: (value) => {
       if (!isHandle(value) || tagOfHandle(value) !== 'Date') return false;
       const time = call(i.dateGetTime, value).consume((h) => h.toNumber());
@@ -1716,6 +1727,10 @@ export function createQuickJSSerde(
       buildTypedArray('BigInt64Array', value),
     BigUint64Array: (value: string | JSValueHandle) =>
       buildTypedArray('BigUint64Array', value),
+    // No `DataView` reviver: older payloads under that tag must keep taking
+    // the built-in branch, which restores their bounds via `fromViewInfo`.
+    DataViewBytes: (value: string | JSValueHandle) =>
+      buildTypedArray('DataView', value),
     Date: (value: JSValueHandle | string) => {
       // The reducer emits '.' for invalid dates and an ISO string otherwise.
       const iso = isHandle(value) ? value.toString() : value;

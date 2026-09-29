@@ -82,6 +82,27 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
 
+/**
+ * Whether the run executes dynamic workflow code stored with the run rather
+ * than the deployment's workflow bundle.
+ */
+export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
+
+/** SHA-256 of a dynamic run's source and step bindings. */
+export const WorkflowDynamicSourceHash = SemanticConvention<string>(
+  'workflow.dynamic.source_hash'
+);
+
+/** Size in bytes of a dynamic run's serialized workflow code. */
+export const WorkflowDynamicCodeBytes = SemanticConvention<number>(
+  'workflow.dynamic.code_bytes'
+);
+
+/** Whether a dynamic run's code was stored inline or behind a ref. */
+export const WorkflowDynamicCodeStorage = SemanticConvention<'inline' | 'ref'>(
+  'workflow.dynamic.code_storage'
+);
+
 /** Whether the compiled application workflow bundle was cached. */
 export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
   'workflow.bundle.compile.cache_hit'
