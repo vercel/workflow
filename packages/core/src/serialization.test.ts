@@ -2748,6 +2748,174 @@ describe('step return value', () => {
   });
 });
 
+describe('DataView serialization', () => {
+  /**
+   * A step that returns a `DataView` must persist the bytes that view spans
+   * and nothing else.
+   *
+   * Left to devalue's built-in `DataView` encoding, the payload is the whole
+   * backing `ArrayBuffer` plus the view's offset and length. Node hands out
+   * small `Buffer`s as windows onto a shared 8 KiB pool, so "the whole
+   * backing buffer" for a `DataView` over a `Buffer.allocUnsafe(n)` is a
+   * slab of unrelated prior allocations — and a step return is written to
+   * the run's event log, where it outlives the process that leaked it.
+   */
+  it('writes only the viewed bytes of a pooled DataView to a step return', async () => {
+    // A neighbour in the pool, allocated first so the pool offset the view
+    // lands on sits after it. `Buffer.allocUnsafe` does not zero what it
+    // hands back, so these bytes are exactly the kind of residue that must
+    // not reach the event log.
+    const neighbour = Buffer.allocUnsafe(256);
+    neighbour.fill('SECRET-POOL-RESIDUE-');
+
+    const viewed = Buffer.allocUnsafe(4);
+    viewed.set([1, 2, 3, 4]);
+    const dataView = new DataView(
+      viewed.buffer,
+      viewed.byteOffset,
+      viewed.byteLength
+    );
+
+    // Precondition: this really is a pooled view, not a standalone buffer.
+    // Without it a passing assertion below would prove nothing.
+    expect(dataView.buffer.byteLength).toBeGreaterThan(dataView.byteLength);
+
+    const serialized = (await dehydrateStepReturnValue(
+      dataView,
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    const wire = new TextDecoder().decode(serialized);
+    expect(wire).not.toContain('ArrayBuffer');
+    // Every byte of the payload is accounted for by the four viewed bytes:
+    // base64 of the pool would be several KiB of it.
+    expect(wire).toBe('devl[["DataViewBytes",1],"AQIDBA=="]');
+
+    const hydrated = (await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as DataView;
+
+    expect(hydrated).toBeInstanceOf(DataView);
+    expect(hydrated.byteOffset).toBe(0);
+    expect(hydrated.byteLength).toBe(4);
+    expect(hydrated.buffer.byteLength).toBe(4);
+    expect([...new Uint8Array(hydrated.buffer)]).toEqual([1, 2, 3, 4]);
+  });
+
+  it('writes only the viewed window of a subview onto a larger buffer', async () => {
+    const backing = new Uint8Array(64);
+    for (let i = 0; i < backing.length; i++) backing[i] = i;
+    const dataView = new DataView(backing.buffer, 8, 4);
+
+    const serialized = (await dehydrateStepReturnValue(
+      dataView,
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    const hydrated = (await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as DataView;
+
+    expect([...new Uint8Array(hydrated.buffer)]).toEqual([8, 9, 10, 11]);
+    expect(hydrated.getUint8(0)).toBe(8);
+    expect(hydrated.getUint8(3)).toBe(11);
+  });
+
+  it('round-trips a zero-length DataView', async () => {
+    const serialized = await dehydrateStepReturnValue(
+      new DataView(new ArrayBuffer(8), 4, 0),
+      mockRunId,
+      noEncryptionKey,
+      []
+    );
+
+    const hydrated = (await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as DataView;
+
+    expect(hydrated).toBeInstanceOf(DataView);
+    expect(hydrated.byteLength).toBe(0);
+    expect(hydrated.buffer.byteLength).toBe(0);
+  });
+
+  it('revives into the workflow VM realm', async () => {
+    const { globalThis: vmGlobalThis, context } = createContext({
+      seed: 'test',
+      fixedTimestamp: 1714857600000,
+    });
+
+    const serialized = await dehydrateStepReturnValue(
+      new DataView(new Uint8Array([9, 8, 7]).buffer),
+      mockRunId,
+      noEncryptionKey,
+      []
+    );
+
+    vmGlobalThis.val = await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+
+    expect(runInContext('val instanceof DataView', context)).toBe(true);
+    expect(runInContext('val.byteLength', context)).toBe(3);
+    expect(runInContext('val.getUint8(0)', context)).toBe(9);
+  });
+
+  it('revives a pre-existing DataView payload with its bounds', async () => {
+    // devalue's built-in encoding: a reference to the whole backing
+    // ArrayBuffer, with the subview bounds alongside it. This is what is
+    // already in event logs, and the tuple below records the two bytes
+    // [2, 3] of a four-byte buffer.
+    //
+    // devalue skips its built-in branch for any tag that has a custom
+    // reviver, and hands a custom reviver the hydrated referent rather than
+    // the tuple — so a reviver registered under `DataView` could not see
+    // `1, 2` and would widen this back to the whole buffer. That is why the
+    // new encoding uses its own tag; this pins that the old one is
+    // untouched.
+    const legacy = [
+      ['DataView', 1, 1, 2],
+      ['ArrayBuffer', 2],
+      Buffer.from([1, 2, 3, 4]).toString('base64'),
+    ];
+
+    const hydrated = hydrateData(legacy, getCommonRevivers()) as DataView;
+
+    expect(hydrated).toBeInstanceOf(DataView);
+    expect(hydrated.byteOffset).toBe(1);
+    expect(hydrated.byteLength).toBe(2);
+    expect(hydrated.getUint8(0)).toBe(2);
+    expect(hydrated.getUint8(1)).toBe(3);
+  });
+
+  it('keeps the old and new encodings distinguishable on the wire', async () => {
+    const serialized = (await dehydrateStepReturnValue(
+      new DataView(new Uint8Array([1, 2, 3, 4]).buffer, 1, 2),
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    // The reducer claims the value before devalue's built-in DataView
+    // branch can run, so the built-in tag never appears in a new payload
+    // and cannot collide with the tuples already in event logs.
+    const wire = new TextDecoder().decode(serialized);
+    expect(wire).toBe('devl[["DataViewBytes",1],"AgM="]');
+  });
+});
+
 describe('step function serialization', () => {
   const { globalThis: vmGlobalThis } = createContext({
     seed: 'test',
