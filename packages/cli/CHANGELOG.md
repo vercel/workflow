@@ -1,5 +1,73 @@
 # @workflow/cli
 
+## 5.0.0-beta.58
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+### Patch Changes
+
+- [#3193](https://github.com/vercel/workflow/pull/3193) [`ad0fcc7`](https://github.com/vercel/workflow/commit/ad0fcc7e52cf27247daed86edad9f6635a23fc08) Thanks [@RihanArfan](https://github.com/RihanArfan)! - Track the standalone web UI server as a srvx `Server`, following the `@workflow/web` change.
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940), [`bf4b45c`](https://github.com/vercel/workflow/commit/bf4b45cc7832a50ccbccaa2cb05d73b9fe019cf1), [`29bc3e0`](https://github.com/vercel/workflow/commit/29bc3e0ee4f05b7f2fa9944b93a37fc1e199126b), [`f58ab84`](https://github.com/vercel/workflow/commit/f58ab8452966b6ce759942e41dc00bfdbf1f1b75), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940), [`ad0fcc7`](https://github.com/vercel/workflow/commit/ad0fcc7e52cf27247daed86edad9f6635a23fc08), [`2d8b8a3`](https://github.com/vercel/workflow/commit/2d8b8a33d57d9b9aa90f15d3f7b6372f01e5799e)]:
+  - @workflow/world@5.0.0-beta.40
+  - @workflow/core@5.0.0-beta.58
+  - @workflow/world-vercel@5.0.0-beta.53
+  - @workflow/world-local@5.0.0-beta.49
+  - @workflow/web@5.0.0-beta.58
+  - @workflow/errors@5.0.0-beta.25
+  - @workflow/builders@5.0.0-beta.58
+
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- [#4327](https://github.com/vercel/workflow/pull/4327) [`c0aad6d`](https://github.com/vercel/workflow/commit/c0aad6d01b65921a089174ded374bd6a2b515c78) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - When running `start({ deploymentId })` cross-deploy, stamp the new run with the spec version that the target deployment reports on its capability probe, instead of the caller's own
+- Updated dependencies [[`c0aad6d`](https://github.com/vercel/workflow/commit/c0aad6d01b65921a089174ded374bd6a2b515c78), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`ff80d62`](https://github.com/vercel/workflow/commit/ff80d62a59c7bf0f45c4552d7b0cde82beb2ebc4), [`20aa656`](https://github.com/vercel/workflow/commit/20aa6562f1f70917013ddad5716eb40661435fdc), [`35ebeb4`](https://github.com/vercel/workflow/commit/35ebeb4c5afa263bb37cd870a79c608fa237510a), [`25ec4ba`](https://github.com/vercel/workflow/commit/25ec4ba7edb2cb96d792cab7e9f74c88bf86c472), [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04), [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`bc18326`](https://github.com/vercel/workflow/commit/bc18326bb68974b00e71abac7d39673152d09099), [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b), [`548147a`](https://github.com/vercel/workflow/commit/548147ac691a6f6c8114b2b1282208691a7d7e8a), [`12fcca0`](https://github.com/vercel/workflow/commit/12fcca0bcd187269654bcb921a1aa63d91e71ac9)]:
+  - @workflow/core@5.0.0-beta.57
+  - @workflow/world-vercel@5.0.0-beta.52
+  - @workflow/world@5.0.0-beta.39
+  - @workflow/world-local@5.0.0-beta.48
+  - @workflow/errors@5.0.0-beta.24
+  - @workflow/builders@5.0.0-beta.57
+  - @workflow/web@5.0.0-beta.57
+
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734), [`873b70b`](https://github.com/vercel/workflow/commit/873b70b5c7808bc48539df1d35b1fa97a0363826)]:
+  - @workflow/world@5.0.0-beta.38
+  - @workflow/core@5.0.0-beta.56
+  - @workflow/world-vercel@5.0.0-beta.51
+  - @workflow/world-local@5.0.0-beta.47
+  - @workflow/errors@5.0.0-beta.23
+  - @workflow/web@5.0.0-beta.56
+  - @workflow/builders@5.0.0-beta.56
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies [[`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c), [`39f1d5c`](https://github.com/vercel/workflow/commit/39f1d5c0a17ad8912efc6a0cd329cf6c66173e50)]:
+  - @workflow/core@5.0.0-beta.55
+  - @workflow/world-vercel@5.0.0-beta.50
+  - @workflow/builders@5.0.0-beta.55
+  - @workflow/web@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- Updated dependencies [[`7840c15`](https://github.com/vercel/workflow/commit/7840c15617c801e0df8f0a85145f43de25f96cc4), [`d3ea4a6`](https://github.com/vercel/workflow/commit/d3ea4a6275a7782df44ea92dac2da51aa064cb75), [`6c1b1e8`](https://github.com/vercel/workflow/commit/6c1b1e881b68f44244bdcf7c8e2cc12225dc946c), [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d), [`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`f160d64`](https://github.com/vercel/workflow/commit/f160d64c1b2912d4898cb78921212cd7a17a23dd), [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390)]:
+  - @workflow/web@5.0.0-beta.54
+  - @workflow/core@5.0.0-beta.54
+  - @workflow/builders@5.0.0-beta.54
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/world-vercel@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.46
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

@@ -1,6 +1,9 @@
 import {
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
   useHookActions,
 } from '@workflow/web-shared';
 import type { Hook } from '@workflow/world';
@@ -30,11 +33,6 @@ import {
   TableHeader,
   TableRow,
 } from '~/components/ui/table';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import { fetchEvents } from '~/lib/rpc-client';
 import type { EnvMap, HookListItem } from '~/lib/types';
 import {

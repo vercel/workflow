@@ -1,5 +1,52 @@
 # @workflow/world-local
 
+## 5.0.0-beta.49
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+### Patch Changes
+
+- [#4478](https://github.com/vercel/workflow/pull/4478) [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Worlds declare dynamic workflow support with `capabilities.dynamicWorkflowCode`, replacing `getBackendCapabilities()`
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade undici to 7.30.0, which stops a failed HTTP/2 stream from leaving a phantom in-flight request on its connection.
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef)]:
+  - @workflow/world@5.0.0-beta.40
+  - @workflow/errors@5.0.0-beta.25
+
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#4348](https://github.com/vercel/workflow/pull/4348) [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6) Thanks [@pranaygp](https://github.com/pranaygp)! - Added a `resolveData: 'skip-step-inputs'` option, which directs the World to leave out `input` from `step_created` and `step_started` events. Replay recomputes step arguments by re-running workflow code, and steps take their input from the `step_started` response or from memory, never from the replay log, so replay now reads the event log with this option and no longer downloads recorded step inputs. For workflows that pass growing state into their steps, this removes the part of the replay transfer that grows quadratically. A World that doesn't implement the option must treat it as `'all'`.
+
+- [#4351](https://github.com/vercel/workflow/pull/4351) [`12fcca0`](https://github.com/vercel/workflow/commit/12fcca0bcd187269654bcb921a1aa63d91e71ac9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop re-executing steps that run longer than 30s: local queue deliveries no longer have a default headers/body deadline
+- Updated dependencies [[`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b)]:
+  - @workflow/world@5.0.0-beta.39
+  - @workflow/errors@5.0.0-beta.24
+
+## 5.0.0-beta.47
+
+### Minor Changes
+
+- [#4193](https://github.com/vercel/workflow/pull/4193) [`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `createHook({ experimental_force: true })` option, which takes a hook token over from the run that currently holds it instead of rejecting with `HookConflictError`. Previous runs awaiting the hook are rejected with `HookForceClaimedError` naming the run that took the token. See [`experimental_force` docs](https://workflow-sdk.dev/v5/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for details.
+
+### Patch Changes
+
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734)]:
+  - @workflow/world@5.0.0-beta.38
+  - @workflow/errors@5.0.0-beta.23
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/errors@5.0.0-beta.22
+
 ## 5.0.0-beta.45
 
 ### Patch Changes

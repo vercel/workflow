@@ -240,6 +240,40 @@ hook.dispose(); // Manually release the token
 After disposal, the hook will no longer receive events and the async iterator will stop yielding values.
 </Callout>
 
+### Taking over a token from another run
+
+Disposing early only works when the run holding the token cooperates. When the newest run should own a token regardless, such as a redeployed bot that must replace the run still waiting on a channel, pass `experimental_force` and let the runtime perform the handoff:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookForceClaimedError } from "workflow/errors";
+
+declare function processMessage(message: { text: string }): Promise<void>; // @setup
+
+export async function channelWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ text: string }>({
+    token: `channel:${channelId}`,
+    experimental_force: true, // [!code highlight]
+  });
+
+  try {
+    for await (const message of hook) {
+      await processMessage(message);
+    }
+  } catch (error) {
+    if (HookForceClaimedError.is(error)) { // [!code highlight]
+      // A newer run for this channel took the token. Wrap up and exit.
+      return { replacedBy: error.claimedByRunId };
+    }
+    throw error;
+  }
+}
+```
+
+The run that held the token is woken and its `await hook` (or `for await...of`) rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) once it has drained the payloads it received before the takeover. Every `resumeHook()` for the token from then on reaches the new run, including one that was already in flight, so senders never notice the handoff. Several runs forcing the same token at once chain in the same way and always end with exactly one owner. A run started at a spec version below 8 cannot be taken from; the forced hook then gets an ordinary `HookConflictError`. See [`createHook()`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for the full semantics.
+
 ## Understanding webhooks
 
 Hooks require you to manually handle HTTP requests and route them to workflows. **Webhooks** provide a higher-level abstraction built on top of hooks that:

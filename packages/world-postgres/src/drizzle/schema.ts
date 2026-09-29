@@ -114,6 +114,17 @@ export const runs = schema.table(
      * older SDKs, which fall back to the symmetric path.
      */
     encryptionPublicKey: varchar('encryption_public_key'),
+    /**
+     * A dynamic run's own workflow VM code, serialized through the same
+     * pipeline as the run's input (compressed, then encrypted with the run's
+     * key). Set only on runs started from source rather than from a workflow
+     * function in the deployment's build-time manifest — the code is nowhere
+     * else, so every replay reads it back from here.
+     *
+     * Write-once at `run_created`: replay must execute the same code the run
+     * started on. Null on every static run.
+     */
+    dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -126,7 +137,7 @@ export const runs = schema.table(
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    >
+    > & { dynamicWorkflowCode?: SerializedData }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
@@ -264,6 +275,11 @@ export const hooks = schema.table(
     // Server-synthesized resume slice. Not carried by the hook_created event,
     // so this backend leaves it null; reads fall back to runs.get.
     resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
+    // Set when this hook took its token from another run
+    // (`createHook({ experimental_force })`); see the hook_created branch of
+    // storage.ts. Carries the victim run's queue coordinates so the claimer's
+    // runtime can wake it.
+    claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),
     // `resumeCapabilities` is deliberately response-only (attested fresh on
     // each by-token lookup, never persisted), so it must not become a column.
   } satisfies DrizzlishOfType<

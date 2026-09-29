@@ -176,6 +176,33 @@ const openWaitRaceWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEE
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// A long sleep is created alongside s1 and awaited after it. s1 runs inline
+// and its terminal write returns an inline delta (the sleep is due far outside
+// this invocation's window); the replay then reaches the sleep and parks. The
+// shape `run.wakeUp()` meets: a completion that lands after the step's write
+// is above the delta, and only a read before parking can see it.
+const sleepAfterStepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    const nap = sleep("1h");
+    const a = await s1();
+    await nap;
+    return a + 7;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// The common polling shape: the sleep is created only after the step, so it
+// did not exist when the step's delta was taken and nothing can sit above that
+// delta for it. Parking on it must not pay a read.
+const stepThenSleepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    const a = await s1();
+    await sleep("5s");
+    return a + 7;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // The payload arrives while the workflow is waiting on s1, before any hook
 // consumer exists. The next pass buffers it, advances through s1, and suspends
 // on s2; delivery idle retires the payload's unarmed barrier at that boundary.
@@ -425,7 +452,11 @@ type DriveMode =
   | { type: 'normal' }
   | { type: 'fail-event'; eventType: Event['eventType'] }
   | { type: 'inject-hook' }
-  | { type: 'inject-wait' };
+  | { type: 'inject-wait' }
+  // `run.wakeUp()`'s shape: the wait's completion is appended right AFTER the
+  // step's terminal write, so it sits above the inline delta that write
+  // returns and only a later read can observe it.
+  | { type: 'inject-wait-after-step-completed' };
 
 type NormalizedDurableEvent = {
   eventType: Event['eventType'];
@@ -522,7 +553,26 @@ type DriveWorldOptions = {
    * continuing over.
    */
   staleFirstReload?: boolean;
+  /**
+   * Honor `resolveData: 'skip-step-inputs'` the way workflow-server does: every replay event
+   * the World hands back (a list page, the `run_started` preload, an inline
+   * delta) leaves `input` out of `step_created` / `step_started`, while the
+   * created event and the `step` entity a `step_started` returns keep it.
+   * `stripped` counts the events served without their input, so a test can
+   * tell the omission actually happened.
+   */
+  skipStepInputs?: { stripped: number };
 };
+
+/** A replay event as a World honoring `skip-step-inputs` serves it. */
+function withoutStepInput(event: Event): Event {
+  if (event.eventType !== 'step_created' && event.eventType !== 'step_started')
+    return event;
+  const eventData = event.eventData as Record<string, unknown> | undefined;
+  if (!eventData || !('input' in eventData)) return event;
+  const { input: _input, ...rest } = eventData;
+  return { ...event, eventData: rest } as Event;
+}
 
 async function drive(
   runId: string,
@@ -542,6 +592,17 @@ async function drive(
     deploymentId: 'test-deployment',
   };
   const events: Event[] = [];
+  // What a replay read hands back: the log, minus step inputs when the caller
+  // asked for that and the World honors it.
+  const served = (log: Event[], params?: { resolveData?: string }) => {
+    const omission = options.skipStepInputs;
+    if (!omission || params?.resolveData !== 'skip-step-inputs') return log;
+    return log.map((event) => {
+      const stripped = withoutStepInput(event);
+      if (stripped !== event) omission.stripped++;
+      return stripped;
+    });
+  };
   const createdEvents: any[] = [];
   const createParams: any[] = [];
   let seq = 0;
@@ -565,7 +626,7 @@ async function drive(
       createdEvents.push(data);
       createParams.push({ eventType: data.eventType, ...params });
       if (data.eventType === 'run_started') {
-        return { run, events };
+        return { run, events: served(events, params) };
       }
       // A create whose token is already claimed commits `hook_conflict` on the
       // slot the `hook_created` asked for — not an error for the caller, an
@@ -638,11 +699,35 @@ async function drive(
       const delta =
         typeof params?.sinceCursor === 'string' && !options.withholdDelta
           ? {
-              events: events.slice(cursorPosition.get(params.sinceCursor) ?? 0),
+              events: served(
+                events.slice(cursorPosition.get(params.sinceCursor) ?? 0),
+                params
+              ),
               cursor: nextCursor(),
               hasMore: false,
             }
           : undefined;
+      if (
+        data.eventType === 'step_completed' &&
+        mode.type === 'inject-wait-after-step-completed'
+      ) {
+        mode = { type: 'normal' };
+        const waitCreated = events.find(
+          (candidate) => candidate.eventType === 'wait_created'
+        );
+        assert(waitCreated, 'expected wait_created before step_completed');
+        // Pushed after `delta` was sliced, so the delta ends at the
+        // step_completed and this completion is only reachable by a read.
+        events.push({
+          eventId: slotToEventId(++seq),
+          runId,
+          eventType: 'wait_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: waitCreated.correlationId,
+          eventData: { resumeAt: waitCreated.eventData.resumeAt },
+          createdAt: new Date(),
+        });
+      }
       // step_started returns a running step entity so executeStep proceeds to
       // run the body and write step_completed.
       return {
@@ -653,7 +738,7 @@ async function drive(
   );
 
   let listCallCount = 0;
-  const eventsList = vi.fn(async () => {
+  const eventsList = vi.fn(async (params?: { resolveData?: string }) => {
     listCallCount++;
     // The cursor is positioned at what the read actually showed, so a stale
     // read hands back a short log AND a cursor that still covers the events it
@@ -663,7 +748,7 @@ async function drive(
         ? events.slice(0, -1)
         : [...events];
     return {
-      data: visible,
+      data: served(visible, params),
       hasMore: false,
       cursor: nextCursor(visible.length),
     };
@@ -704,6 +789,7 @@ async function drive(
     vmBuilds: createContextSpy.mock.calls.length,
     durableLog: normalizeDurableLog(events),
     listCalls: eventsList.mock.calls.length,
+    listParams: eventsList.mock.calls.map(([params]) => params),
     queueSends: queueSend.mock.calls.length,
     createParams,
     createdHook: createdEvents.some((e) => e.eventType === 'hook_created'),
@@ -1002,6 +1088,99 @@ describe('retained VM through the inline replay loop', () => {
     );
     expect(result).toBe(30);
     expect(vmBuilds).toBe(1);
+  });
+
+  /**
+   * A pending wait gates the per-step inline delta only if it can fire within
+   * this invocation's inline window. The fake World reports no runtime
+   * deadline, so the window is the runtime's 2-minute fallback plus the skew
+   * allowance, and a 1h sleep sits far outside it. Both the log scan and the
+   * suspension's own queue name the losing sleep; either one gating would put
+   * the run back on the fetch path.
+   */
+  describe('far-future open wait and the inline delta', () => {
+    it('a sleep that lost a race does not cost an events.list per step boundary', async () => {
+      const { result, listCalls, createParams } = await drive(
+        'wrun_far_wait_delta',
+        openWaitRaceWorkflow
+      );
+      expect(result).toBe(30);
+      // Both steps' terminal writes asked for the delta, so neither boundary
+      // read: one list, the invocation's initial load, exactly as for two
+      // plain steps with no sleep in the picture.
+      expect(
+        createParams.filter(
+          (p) => p.eventType === 'step_completed' && p.sinceCursor !== undefined
+        )
+      ).toHaveLength(2);
+      expect(listCalls).toBe(1);
+    });
+
+    it('the same sleep gates when the skew allowance pulls it into the window', async () => {
+      vi.stubEnv(
+        'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
+        String(365 * 24 * 3600_000)
+      );
+      const { result, listCalls } = await drive(
+        'wrun_far_wait_delta_gated',
+        openWaitRaceWorkflow
+      );
+      expect(result).toBe(30);
+      expect(listCalls).toBeGreaterThan(1);
+    });
+
+    it('re-reads before parking on the sleep, so a wakeUp completion above the delta is not missed', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_wakeup_above_delta',
+        sleepAfterStepWorkflow,
+        { type: 'inject-wait-after-step-completed' }
+      );
+      // The completion landed after s1's terminal write, above the delta that
+      // write returned. Parking on that view would have armed a continuation
+      // for the original 1h `resumeAt`; the re-read saw the completion and the
+      // run finished in this invocation instead.
+      expect(result).toBe(17);
+      expect(committedTypes.filter((t) => t === 'wait_completed')).toHaveLength(
+        1
+      );
+      // Initial load plus the one pre-park read.
+      expect(listCalls).toBe(2);
+      // The first suspension (sleep and s1 together) armed the wait's
+      // continuation, as every suspension holding a pending wait does. The
+      // park pass that would have re-armed it for the original 1h never ran.
+      expect(queueSends).toBe(1);
+    });
+
+    it('does not re-read when the wait was created by the parking suspension itself', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_step_then_sleep',
+        stepThenSleepWorkflow
+      );
+      expect(result).toBeUndefined();
+      expect(committedTypes).not.toContain('run_completed');
+      // s1's terminal write carried the delta; the sleep came after it, so
+      // the park reads nothing: the initial load is the only list.
+      expect(listCalls).toBe(1);
+      // The wait continuation, armed once at the park.
+      expect(queueSends).toBe(1);
+    });
+
+    it('parks on an unchanged log after the pre-park read, arming the continuation once', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_park_after_reread',
+        sleepAfterStepWorkflow
+      );
+      // Nothing completed the wait, so the run is parked, not finished.
+      expect(result).toBeUndefined();
+      expect(committedTypes).not.toContain('wait_completed');
+      expect(committedTypes).not.toContain('run_completed');
+      // Initial load, then one read before parking; the second pass over the
+      // same log parks without reading again.
+      expect(listCalls).toBe(2);
+      // The wait continuation: once from the first suspension, once from the
+      // park (the World dedupes the two on the wait's idempotency key).
+      expect(queueSends).toBe(2);
+    });
   });
 
   it('retains one VM while an open sleep loses to inline steps', async () => {
@@ -1455,5 +1634,80 @@ describe('retained VM through the inline replay loop', () => {
         ).toHaveLength(2);
       });
     });
+  });
+});
+
+/**
+ * Replay recomputes every step's arguments by re-running workflow code, so a
+ * World may leave the recorded inputs out of the replay events it returns
+ * (`resolveData: 'skip-step-inputs'`). This loop passes growing state rebuilt from earlier step
+ * results — exactly the inputs that are omitted — so any replay path that
+ * still depended on a recorded input would hand a step the wrong state.
+ */
+describe('replay without recorded step inputs', () => {
+  const seenStates: unknown[] = [];
+  registerStepFunction(
+    'r_omit_append',
+    async (state: { items: number[] }, i: number) => {
+      seenStates.push(structuredClone(state));
+      return state.items.length * 10 + i;
+    }
+  );
+  const growingStateWorkflow = `const append = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_omit_append");
+  async function workflow() {
+    let state = { items: [] };
+    for (let i = 0; i < 3; i++) {
+      const next = await append(state, i);
+      state = { items: [...state.items, next] };
+    }
+    return state.items;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+  const expectedStates = [{ items: [] }, { items: [0] }, { items: [0, 11] }];
+
+  beforeEach(() => {
+    seenStates.length = 0;
+  });
+
+  it.each([
+    ['node:vm, inline deltas', {}, { type: 'normal' }],
+    ['node:vm, list reads', { withholdDelta: true }, { type: 'normal' }],
+    [
+      'node:vm, fresh replay after a 412',
+      {},
+      { type: 'fail-event', eventType: 'run_completed' },
+    ],
+  ] as Array<
+    [string, DriveWorldOptions, DriveMode]
+  >)('completes with the same step inputs (%s)', async (_label, worldOptions, mode) => {
+    const skipStepInputs = { stripped: 0 };
+    const { result, listParams, createParams, durableLog } = await drive(
+      `wrun_omit_${_label.replace(/\W+/g, '_')}`,
+      growingStateWorkflow,
+      mode,
+      { ...worldOptions, skipStepInputs }
+    );
+
+    expect(result).toEqual([0, 11, 22]);
+    expect(seenStates).toEqual(expectedStates);
+    // The World really served replay events without step inputs...
+    expect(skipStepInputs.stripped).toBeGreaterThan(0);
+    expect(listParams.every((p) => p?.resolveData === 'skip-step-inputs')).toBe(
+      true
+    );
+    // ...because every replay read, and every write that asks for replay
+    // events back (an inline delta or the run_started preload), asked for it.
+    expect(
+      createParams
+        .filter(
+          (p) => p.sinceCursor !== undefined || p.eventType === 'run_started'
+        )
+        .every((p) => p.resolveData === 'skip-step-inputs')
+    ).toBe(true);
+    // The recorded log itself still holds each step exactly once.
+    expect(
+      durableLog.filter((e) => e.eventType === 'step_completed')
+    ).toHaveLength(3);
   });
 });

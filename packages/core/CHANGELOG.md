@@ -1,5 +1,99 @@
 # @workflow/core
 
+## 5.0.0-beta.58
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+- [#4440](https://github.com/vercel/workflow/pull/4440) [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add the optional `world.telemetry.recordStepExecution` hook so Worlds can correlate flow requests with inline-executed workflow steps.
+
+### Patch Changes
+
+- [#4478](https://github.com/vercel/workflow/pull/4478) [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Worlds declare dynamic workflow support with `capabilities.dynamicWorkflowCode`, replacing `getBackendCapabilities()`
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`29bc3e0`](https://github.com/vercel/workflow/commit/29bc3e0ee4f05b7f2fa9944b93a37fc1e199126b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serialize a `DataView` as the bytes it views. It previously fell through to devalue's built-in encoding, which persists the whole backing `ArrayBuffer` — for a view onto Node's pooled `Buffer` allocator, unrelated process memory.
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940), [`bf4b45c`](https://github.com/vercel/workflow/commit/bf4b45cc7832a50ccbccaa2cb05d73b9fe019cf1), [`f58ab84`](https://github.com/vercel/workflow/commit/f58ab8452966b6ce759942e41dc00bfdbf1f1b75), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940), [`2d8b8a3`](https://github.com/vercel/workflow/commit/2d8b8a33d57d9b9aa90f15d3f7b6372f01e5799e)]:
+  - @workflow/world@5.0.0-beta.40
+  - @workflow/world-vercel@5.0.0-beta.53
+  - @workflow/world-local@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.25
+
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- [#4327](https://github.com/vercel/workflow/pull/4327) [`c0aad6d`](https://github.com/vercel/workflow/commit/c0aad6d01b65921a089174ded374bd6a2b515c78) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - When running `start({ deploymentId })` cross-deploy, stamp the new run with the spec version that the target deployment reports on its capability probe, instead of the caller's own
+
+- [#4398](https://github.com/vercel/workflow/pull/4398) [`ff80d62`](https://github.com/vercel/workflow/commit/ff80d62a59c7bf0f45c4552d7b0cde82beb2ebc4) Thanks [@pranaygp](https://github.com/pranaygp)! - Republish a force-claimed hook's victim wake on every replay within 24 hours of the takeover instead of only while the forced `hook_created` is the claimer's last own event, ensuring resilience against crashes
+
+- [#4415](https://github.com/vercel/workflow/pull/4415) [`20aa656`](https://github.com/vercel/workflow/commit/20aa6562f1f70917013ddad5716eb40661435fdc) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Stamp events written to another runtime's run (`hook_received` from `resumeHook`, `run_cancelled` from `Run.cancel()`, and the deployment-mismatch `run_failed`) with the run's spec version when it is older than the SDK's.
+
+- [#4392](https://github.com/vercel/workflow/pull/4392) [`35ebeb4`](https://github.com/vercel/workflow/commit/35ebeb4c5afa263bb37cd870a79c608fa237510a) Thanks [@pranaygp](https://github.com/pranaygp)! - Parallelize a suspension's hook event writes alongside its step, wait, and attribute events, so a step no longer waits for the hooks created with it to be registered before it can start
+
+- [#4216](https://github.com/vercel/workflow/pull/4216) [`25ec4ba`](https://github.com/vercel/workflow/commit/25ec4ba7edb2cb96d792cab7e9f74c88bf86c472) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Isolate lifecycle hook getters and reporting failures from terminal writes, and keep background stream operations alive until they settle.
+
+- [#4421](https://github.com/vercel/workflow/pull/4421) [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Retry the max-deliveries `run_failed` write through queue redelivery when it fails transiently (429, 5xx, transport) instead of acking and leaving the run stuck `running`.
+
+- [#4348](https://github.com/vercel/workflow/pull/4348) [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6) Thanks [@pranaygp](https://github.com/pranaygp)! - Added a `resolveData: 'skip-step-inputs'` option, which directs the World to leave out `input` from `step_created` and `step_started` events. Replay recomputes step arguments by re-running workflow code, and steps take their input from the `step_started` response or from memory, never from the replay log, so replay now reads the event log with this option and no longer downloads recorded step inputs. For workflows that pass growing state into their steps, this removes the part of the replay transfer that grows quadratically. A World that doesn't implement the option must treat it as `'all'`.
+
+- [#4421](https://github.com/vercel/workflow/pull/4421) [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04) Thanks [@TooTallNate](https://github.com/TooTallNate)! - QuickJS VM: defer a replay after a throttled lazy inline step's backoff, like the node engine, instead of queueing the never-created step as a background step that fails "step not found" until the delivery ceiling.
+
+- [#4408](https://github.com/vercel/workflow/pull/4408) [`bc18326`](https://github.com/vercel/workflow/commit/bc18326bb68974b00e71abac7d39673152d09099) Thanks [@pranaygp](https://github.com/pranaygp)! - `start()` with an explicit `deploymentId` (and so `recreateRunFromExisting`, i.e. Replay Run) no longer fails in a process that is not itself a deployment; it takes the cross-deployment path instead.
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+
+- [#4387](https://github.com/vercel/workflow/pull/4387) [`548147a`](https://github.com/vercel/workflow/commit/548147ac691a6f6c8114b2b1282208691a7d7e8a) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Avoid unnecessary queued continuations when released step streams finish draining after the inline wait budget expires.
+- Updated dependencies [[`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b), [`12fcca0`](https://github.com/vercel/workflow/commit/12fcca0bcd187269654bcb921a1aa63d91e71ac9)]:
+  - @workflow/world-vercel@5.0.0-beta.52
+  - @workflow/world@5.0.0-beta.39
+  - @workflow/world-local@5.0.0-beta.48
+  - @workflow/errors@5.0.0-beta.24
+
+## 5.0.0-beta.56
+
+### Minor Changes
+
+- [#4193](https://github.com/vercel/workflow/pull/4193) [`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `createHook({ experimental_force: true })` option, which takes a hook token over from the run that currently holds it instead of rejecting with `HookConflictError`. Previous runs awaiting the hook are rejected with `HookForceClaimedError` naming the run that took the token. See [`experimental_force` docs](https://workflow-sdk.dev/v5/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for details.
+
+### Patch Changes
+
+- [#4124](https://github.com/vercel/workflow/pull/4124) [`873b70b`](https://github.com/vercel/workflow/commit/873b70b5c7808bc48539df1d35b1fa97a0363826) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - A pending `sleep()` that cannot fire during the current invocation (for example one that lost a `Promise.race()` against a hook) no longer costs an extra event-log read per step boundary. The window follows the invocation's inline budget plus `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`; a wait completed early via `run.wakeUp()` is picked up by a read before the run parks on it.
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734)]:
+  - @workflow/world@5.0.0-beta.38
+  - @workflow/world-vercel@5.0.0-beta.51
+  - @workflow/world-local@5.0.0-beta.47
+  - @workflow/errors@5.0.0-beta.23
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- [#4266](https://github.com/vercel/workflow/pull/4266) [`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Stop warning about expected overlapping inline step executions in the QuickJS runtime, debug log instead
+- Updated dependencies [[`39f1d5c`](https://github.com/vercel/workflow/commit/39f1d5c0a17ad8912efc6a0cd329cf6c66173e50)]:
+  - @workflow/world-vercel@5.0.0-beta.50
+
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+
+- [#3678](https://github.com/vercel/workflow/pull/3678) [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `registerLifecycleHooks` from `workflow/api` for best-effort completion and failure reporting with a read-free workflow name, lazy `Run` instance, and failure cause hydrated from the persisted payload. Run metadata getters avoid resolving input/output payloads.
+
+### Patch Changes
+
+- [#4213](https://github.com/vercel/workflow/pull/4213) [`d3ea4a6`](https://github.com/vercel/workflow/commit/d3ea4a6275a7782df44ea92dac2da51aa064cb75) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an issue with the workflow's deterministic clock tracking advancement on consumption, not on write, which could lead to a determinism issue when concurrent replays called `Date.now` with different amounts of events read from the log
+
+- [#4215](https://github.com/vercel/workflow/pull/4215) [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d) Thanks [@gaojude](https://github.com/gaojude)! - Order hook registration and conflict settlements with earlier workflow deliveries so replay preserves concurrent step correlation IDs.
+
+- [#4082](https://github.com/vercel/workflow/pull/4082) [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050) Thanks [@shalabhc](https://github.com/shalabhc)! - Validate complete attribute event data against the World's 8KiB UTF-8 JSON limit before new writes, with catchable SDK errors and unchanged replay of persisted events.
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/world-vercel@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.46
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

@@ -143,6 +143,35 @@ async function processOrder(orderId: string) {
 
 Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration. To receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
+### Registering a hook before a step uses it
+
+A hook's registration is committed alongside everything else the workflow started before it suspended, not ahead of it. When a workflow creates a hook and calls a step without awaiting anything in between, the step can start running before the hook is registered, and it can run even if the registration turns out to conflict. That matters in two cases:
+
+- The step hands the token to something that may call `resumeHook()` right away, which throws `HookNotFoundError` until the hook exists.
+- The hook guards against duplicate runs. A run that only learns of the conflict after calling the step, for example by awaiting the hook and letting `HookConflictError` end the run, may already have started that step.
+
+In either case, await `hook.getConflict()` before calling the step:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function requestApproval(token: string): Promise<void>; // @setup
+
+async function approvalWorkflow() {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>();
+  await hook.getConflict(); // [!code highlight]
+
+  // The hook is registered, so an approver that resumes it immediately
+  // finds it.
+  await requestApproval(hook.token);
+
+  const { approved } = await hook;
+  return approved;
+}
+```
+
 On a conflict, the resolved value is a `Run` handle for the run that owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
 
 <Callout type="info">
@@ -188,6 +217,54 @@ After the workflow ends, [`getHookByToken()`](/docs/api-reference/workflow-api/g
 
 <Callout type="warn">
 This option is experimental. Worlds can limit how long tokens are retained; see [World configuration](/docs/configuration/worlds) for each World's limit. If the configured World does not support minimum retention, the workflow fails when registering the Hook. `createWebhook()` does not accept this option.
+</Callout>
+
+### Take over a token another run holds
+
+By default, a token that another active run already registered makes the new Hook reject with [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error). Set `experimental_force` when the newest run should own the token instead, for example when a fresh deployment or a restarted conversation must replace a run that is still waiting:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function processMessage(message: SlackMessage): Promise<void>; // @setup
+type SlackMessage = { text: string }; // @setup
+
+export async function slackChannelWorkflow(channelId: string) {
+  "use workflow";
+
+  // Whichever run for this channel started most recently owns the token.
+  const hook = createHook<SlackMessage>({ // [!code highlight]
+    token: `slack_messages:${channelId}`, // [!code highlight]
+    experimental_force: true, // [!code highlight]
+  }); // [!code highlight]
+
+  for await (const message of hook) {
+    await processMessage(message);
+  }
+}
+```
+
+With `experimental_force`, this run always ends up owning the token:
+
+- The previous owner's Hook is disposed, recorded in that run's event log, and the previous owner is woken. If it was awaiting the Hook, that `await` rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error), which names the run that took the token. Payloads it received before the takeover stay with it; a `for await...of` loop drains them before it throws.
+- Every [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) for the token from then on reaches this run, including a call that was already in flight when the takeover happened. Callers never see the token move; a delivery aimed at the previous owner is redirected to this run inside `resumeHook()`.
+- Any number of runs forcing the same token at the same time converge on a single owner. The takeovers form a chain: each run that loses the token gets `HookForceClaimedError`, exactly one run ends up owning it, and none of them can get stuck. Which run wins among simultaneous claimers is not defined; if the order matters, start them in order.
+- A finished run that still holds the token under [`experimental_minRetention`](#keep-a-token-unavailable-after-the-run-ends) is taken over silently, since there is nothing left to wake. A run can also take over a token held by its own earlier Hook.
+
+The takeover is durable. If either run's compute fails partway through, the next request for the token completes it, so the token never ends up held by nobody or by both runs. The previous owner's wake is durable too: if the new owner's compute fails between registering the Hook and waking the previous owner, the new owner's next invocation republishes the wake, whatever else the new owner has recorded since (a step it started alongside the Hook, for example). Every invocation of the new owner within 24 hours of the takeover republishes it under the same idempotency key, which collapses the repeats into one wake; a repeat that does get through only replays the previous owner, which finds nothing new.
+
+<Callout type="info">
+A token can only be taken from a run whose runtime understands being taken from. Runs started at a Workflow spec version below 8, which includes every run started by an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SEALED_LOG=0`, would never learn that their Hook was disposed. The World declines to take their token and the forced Hook rejects with the ordinary [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) instead, exactly as if `experimental_force` had not been set. Finished runs holding a retained token are taken over at any version.
+</Callout>
+
+`hook.getConflict()` on a forced Hook resolves with `null` once the takeover succeeds: the token is this run's by construction. If the World declines the takeover because the current owner predates spec version 8, `getConflict()` behaves as it does for an ordinary conflict and resolves with that owner's `Run`. Read `hook.claimedFrom` on the value returned by [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to find out which run, if any, the token was taken from.
+
+<Callout type="warn">
+This option is experimental. It requires an explicit `token` (a generated token can never conflict) and is not accepted by `createWebhook()`. If the configured World does not support force-claiming at all, the workflow fails when registering the Hook; a World that declines a specific takeover because the current owner cannot be woken answers with `HookConflictError` instead.
+
+Senders on an older SDK release are not redirected. A `resumeHook()` from a deployment that predates this option and that looked the token up inside the short handoff window gets an error (`EntityConflictError`) instead of following the token; the payload is refused, never delivered to the wrong run, and a retry resolves the new owner. Upgrade the sending deployment for the transparent redirect.
+
+Webhook requests are not redirected either. [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) streams the request body once, and buffering a copy of every webhook body on the chance that its token is being taken over at that moment would be a cost paid by everyone who never uses this option. A webhook delivery that lands inside the handoff window fails with a retryable error naming the takeover; nothing is delivered anywhere, and the sender's retry reaches the new owner. A forced `createHook()` can take over a token that a webhook holds, but the token then belongs to a Hook that is not a webhook, so `resumeWebhook()` answers every later request for it as not found, exactly as it does for any `createHook()` token, and never redirects one into it.
 </Callout>
 
 ### Waiting for multiple payloads

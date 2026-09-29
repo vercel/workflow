@@ -1,7 +1,15 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { TooltipProvider } from '@workflow/web-shared';
 import { afterEach, describe, expect, it } from 'vitest';
-import { TooltipProvider } from '~/components/ui/tooltip';
 import { StatusBadge } from './status-badge';
+
+// The tooltip arrow measures itself with ResizeObserver, which jsdom does not
+// implement. A no-op stub is enough for these assertions.
+globalThis.ResizeObserver ??= class {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+};
 
 afterEach(cleanup);
 

@@ -9,6 +9,9 @@ import {
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
   TraceViewer,
 } from '@workflow/web-shared';
 import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
@@ -43,11 +46,6 @@ import {
   BreadcrumbSeparator,
 } from '~/components/ui/breadcrumb';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import { useCancellationReason } from '~/lib/client/hooks/use-cancellation-reason';
 import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
@@ -459,12 +457,15 @@ export function RunDetailView({
     }
   };
 
+  const isDynamicRun = Boolean(run.executionContext?.dynamicWorkflow);
+
   const handleRerunClick = () => {
+    if (isDynamicRun) return;
     setShowRerunDialog(true);
   };
 
   const handleConfirmRerun = async () => {
-    if (rerunning) return;
+    if (rerunning || isDynamicRun) return;
 
     try {
       setRerunning(true);
@@ -592,6 +593,11 @@ export function RunDetailView({
                   events={allEvents}
                   eventsLoading={loading}
                   loading={loading}
+                  replayDisabledReason={
+                    isDynamicRun
+                      ? 'Dynamic runs cannot be replayed as a new run.'
+                      : undefined
+                  }
                   onRerunClick={handleRerunClick}
                   onCancelClick={handleCancelClick}
                   callbacks={{ onSuccess: update }}

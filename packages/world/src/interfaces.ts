@@ -448,7 +448,8 @@ export interface Storage {
      * batch). Events outside this list keep their own ordering requirements:
      * a caller mixing a batch with single writes (hook or attribute events)
      * owns those barriers itself: the core runtime never batches a
-     * suspension that carries hook or attribute writes.
+     * suspension that carries attribute writes, and writes a suspension's
+     * hook events through the single path concurrently with its batch.
      */
     createBatch?(
       runId: string,
@@ -568,6 +569,31 @@ export interface WorldCapabilities {
   hookResumeDedup?: boolean;
 
   /**
+   * Supports `createHook({ experimental_force: true })`: a `hook_created`
+   * carrying `eventData.force` whose token is held by another live run takes
+   * the token over instead of returning `hook_conflict`. The World must:
+   *
+   *   1. append `hook_disposed{forceClaimedBy: { runId, hookId }}` to the
+   *      current owner's log — atomically with whatever that World uses to
+   *      refuse later `hook_received` writes to it — BEFORE re-pointing the
+   *      token, so a delivery that already resolved the old owner is refused
+   *      rather than landing in a run that no longer holds the token;
+   *   2. re-point the token to the claimer atomically, recording
+   *      `Hook.claimedFrom` on the claimer's hook;
+   *   3. journal the claimer's `hook_created{force, forceClaimedFrom}`,
+   *      refusing it if the claimer's own hook was taken over in between;
+   *   4. answer a `hook_received` refused by a takeover with
+   *      `HookForceClaimedError` (not `HookNotFoundError`), after completing
+   *      the re-pointing if the claimer had not, so `resumeHook()` can follow
+   *      the token to its new owner and retry with the same `resumeId`.
+   *
+   * Formalised in `workflow-server/specs/HookForceClaim.tla`. A World that
+   * cannot give these guarantees must leave this unset; the runtime then
+   * rejects `experimental_force` at `createHook()` time.
+   */
+  hookForceClaim?: boolean;
+
+  /**
    * Deployments are atomic and immutable: a deployment id names one fixed
    * build for its whole lifetime, so a run pinned to one may only execute
    * there. Worlds that declare this get the runtime's deployment-affinity
@@ -581,6 +607,20 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
+
+  /**
+   * Stores a dynamic run's workflow code with the run. The World must persist
+   * `dynamicWorkflowCode` from `run_created` (and from a resilient
+   * `run_started` that creates the run), echo it on the created run, and
+   * return it from `runs.get` with `resolveData: 'all'` for the run's
+   * lifetime, because every replay evaluates that code and it exists nowhere
+   * else. `start()` refuses a dynamic start on a World that leaves this unset.
+   *
+   * Code too large for the creating write goes through
+   * {@link World.uploadDynamicWorkflowCode} when the World implements it;
+   * otherwise it is always sent inline.
+   */
+  dynamicWorkflowCode?: boolean;
 }
 
 /**
@@ -616,6 +656,14 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
+
+  /**
+   * Validates a dynamic run's complete execution context against
+   * World-specific limits. `start()` calls it only for dynamic starts, before
+   * any durable start side effect, so implementations throw to refuse the
+   * start.
+   */
+  validateRunExecutionContext?(value: Record<string, unknown>): void;
 
   /**
    * Absolute wall-clock time when the current function invocation will be
@@ -704,6 +752,41 @@ export interface World extends Queue, Streamer, Storage {
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
 
   /**
+   * Upload a dynamic run's serialized workflow VM code to the World's blob
+   * storage ahead of `run_created`, returning the ref key to attach to the
+   * run.
+   *
+   * The inline path — sending the bytes on `run_created` itself — is the
+   * common case and needs nothing from this method: a generated orchestration
+   * function is usually a couple of KB, and keeping it on the creating write
+   * costs no extra round-trip. This exists for the tail: a definition too
+   * large to ride the event wire, which has to be streamed separately and
+   * referenced.
+   *
+   * Worlds that store run records whole (local, Postgres) have no size
+   * pressure and leave this unset; `start()` then always sends inline, and a
+   * definition over its own source limit is rejected client-side rather than
+   * silently truncated.
+   *
+   * The upload necessarily precedes the run it belongs to, so implementations
+   * must accept a `runId` that does not exist yet, and must scope the stored
+   * object to the caller's tenant and that run so it is reclaimed with the
+   * run's other storage.
+   *
+   * @param runId - The client-minted ID of the run being started.
+   * @param params.workflowName - The run's generated dynamic workflow name.
+   *   Worlds that embed it in the storage key need it passed in, because the
+   *   run record does not exist yet to read it from.
+   * @param params.code - Serialized (compressed + encrypted) workflow code.
+   * @returns The ref key to send as `run_created`'s
+   *   `eventData.dynamicWorkflowCodeRef`.
+   */
+  uploadDynamicWorkflowCode?(
+    runId: string,
+    params: { workflowName: string; code: Uint8Array }
+  ): Promise<string>;
+
+  /**
    * The environment this World's writes are attributed to by the backend
    * (`@workflow/world-vercel`: `'production' | 'preview' | 'development'`).
    *
@@ -755,4 +838,19 @@ export interface World extends Queue, Streamer, Storage {
     | Record<string, string | null>
     | null
     | Promise<Record<string, string | null> | null>;
+
+  /**
+   * Optional telemetry write namespace for non-critical observability signals.
+   */
+  telemetry?: Telemetry;
+}
+
+export interface Telemetry {
+  /**
+   * Called immediately before a step's user code begins executing.
+   *
+   * Worlds may use this synchronous hook to correlate step execution with the
+   * current platform invocation. Implementations must not throw.
+   */
+  recordStepExecution?(stepId: string): void;
 }

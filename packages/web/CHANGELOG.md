@@ -1,5 +1,46 @@
 # @workflow/web
 
+## 5.0.0-beta.58
+
+### Major Changes
+
+- [#3193](https://github.com/vercel/workflow/pull/3193) [`ad0fcc7`](https://github.com/vercel/workflow/commit/ad0fcc7e52cf27247daed86edad9f6635a23fc08) Thanks [@RihanArfan](https://github.com/RihanArfan)! - Replace Express with `srvx` in the standalone server, adding ETag/`304`, `Last-Modified`, byte ranges and on-the-fly compression.
+
+### Patch Changes
+
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940)]:
+  - @workflow/world-local@5.0.0-beta.49
+
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- Updated dependencies [[`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`12fcca0`](https://github.com/vercel/workflow/commit/12fcca0bcd187269654bcb921a1aa63d91e71ac9)]:
+  - @workflow/world-local@5.0.0-beta.48
+
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734)]:
+  - @workflow/world-local@5.0.0-beta.47
+
+## 5.0.0-beta.55
+
+No changes in this release.
+
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- [#4250](https://github.com/vercel/workflow/pull/4250) [`7840c15`](https://github.com/vercel/workflow/commit/7840c15617c801e0df8f0a85145f43de25f96cc4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Align run and event status colors with Workflow Observability and show a cancelled run's reason in a tooltip on its top status.
+
+- [#4271](https://github.com/vercel/workflow/pull/4271) [`6c1b1e8`](https://github.com/vercel/workflow/commit/6c1b1e881b68f44244bdcf7c8e2cc12225dc946c) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix the `--ds-*` colour tokens in the web UI. `packages/web/app/globals.css` redefined about 27 of them with unrelated values that shadowed the ones it imports from `@workflow/web-shared`, so `text-pink-600` rendered a different palette than the `text-blue-600` next to it. Its `prefers-color-scheme: dark` rule also carried a stale palette on a selector that out-specified `.dark`, which meant a dark-mode browser got those values whatever theme the user had picked.
+
+- [#4272](https://github.com/vercel/workflow/pull/4272) [`f160d64`](https://github.com/vercel/workflow/commit/f160d64c1b2912d4898cb78921212cd7a17a23dd) Thanks [@mitul-s](https://github.com/mitul-s)! - Use a single Geist tooltip everywhere in the observability UI. `@workflow/web-shared` now exports `Tooltip`, `TooltipTrigger`, `TooltipContent`, and `TooltipProvider`, and `@workflow/web` consumes them instead of its own shadcn copy, so every tooltip matches the one used by the trace detail panel's "Navigate up"/"Navigate down" controls.
+- Updated dependencies [[`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world-local@5.0.0-beta.46
+
 ## 5.0.0-beta.53
 
 No changes in this release.

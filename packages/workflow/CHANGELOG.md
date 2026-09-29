@@ -1,5 +1,97 @@
 # workflow
 
+## 5.0.0-beta.58
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+### Patch Changes
+
+- Updated dependencies [[`ad0fcc7`](https://github.com/vercel/workflow/commit/ad0fcc7e52cf27247daed86edad9f6635a23fc08), [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`29bc3e0`](https://github.com/vercel/workflow/commit/29bc3e0ee4f05b7f2fa9944b93a37fc1e199126b), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef)]:
+  - @workflow/cli@5.0.0-beta.58
+  - @workflow/core@5.0.0-beta.58
+  - @workflow/errors@5.0.0-beta.25
+  - @workflow/next@5.0.0-beta.58
+  - @workflow/nitro@5.0.0-beta.58
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.58
+  - @workflow/nest@5.0.0-beta.58
+  - @workflow/rollup@5.0.0-beta.58
+  - @workflow/sveltekit@5.0.0-beta.58
+  - @workflow/nuxt@5.0.0-beta.58
+
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- Updated dependencies [[`c0aad6d`](https://github.com/vercel/workflow/commit/c0aad6d01b65921a089174ded374bd6a2b515c78), [`ff80d62`](https://github.com/vercel/workflow/commit/ff80d62a59c7bf0f45c4552d7b0cde82beb2ebc4), [`20aa656`](https://github.com/vercel/workflow/commit/20aa6562f1f70917013ddad5716eb40661435fdc), [`35ebeb4`](https://github.com/vercel/workflow/commit/35ebeb4c5afa263bb37cd870a79c608fa237510a), [`25ec4ba`](https://github.com/vercel/workflow/commit/25ec4ba7edb2cb96d792cab7e9f74c88bf86c472), [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04), [`0547d9d`](https://github.com/vercel/workflow/commit/0547d9d890b7ede7aadfd28e8c64b0f32b23ce3e), [`f20be08`](https://github.com/vercel/workflow/commit/f20be088155a388c6b4b195e8b62effce1470966), [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04), [`bc18326`](https://github.com/vercel/workflow/commit/bc18326bb68974b00e71abac7d39673152d09099), [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b), [`548147a`](https://github.com/vercel/workflow/commit/548147ac691a6f6c8114b2b1282208691a7d7e8a)]:
+  - @workflow/core@5.0.0-beta.57
+  - @workflow/cli@5.0.0-beta.57
+  - @workflow/next@5.0.0-beta.57
+  - @workflow/errors@5.0.0-beta.24
+  - @workflow/nitro@5.0.0-beta.57
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.57
+  - @workflow/sveltekit@5.0.0-beta.57
+  - @workflow/nest@5.0.0-beta.57
+  - @workflow/rollup@5.0.0-beta.57
+  - @workflow/nuxt@5.0.0-beta.57
+
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734), [`873b70b`](https://github.com/vercel/workflow/commit/873b70b5c7808bc48539df1d35b1fa97a0363826)]:
+  - @workflow/core@5.0.0-beta.56
+  - @workflow/errors@5.0.0-beta.23
+  - @workflow/cli@5.0.0-beta.56
+  - @workflow/next@5.0.0-beta.56
+  - @workflow/nitro@5.0.0-beta.56
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.56
+  - @workflow/nest@5.0.0-beta.56
+  - @workflow/rollup@5.0.0-beta.56
+  - @workflow/sveltekit@5.0.0-beta.56
+  - @workflow/nuxt@5.0.0-beta.56
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies [[`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c)]:
+  - @workflow/core@5.0.0-beta.55
+  - @workflow/cli@5.0.0-beta.55
+  - @workflow/next@5.0.0-beta.55
+  - @workflow/nitro@5.0.0-beta.55
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.55
+  - @workflow/nest@5.0.0-beta.55
+  - @workflow/rollup@5.0.0-beta.55
+  - @workflow/sveltekit@5.0.0-beta.55
+  - @workflow/nuxt@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#3678](https://github.com/vercel/workflow/pull/3678) [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `registerLifecycleHooks` from `workflow/api` for best-effort completion and failure reporting with a read-free workflow name, lazy `Run` instance, and failure cause hydrated from the persisted payload. Run metadata getters avoid resolving input/output payloads.
+
+### Patch Changes
+
+- Updated dependencies [[`d3ea4a6`](https://github.com/vercel/workflow/commit/d3ea4a6275a7782df44ea92dac2da51aa064cb75), [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d), [`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d), [`426bdb6`](https://github.com/vercel/workflow/commit/426bdb6ab98e08902c4cab4cf9a7e1983add55f6), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`f1f5b7d`](https://github.com/vercel/workflow/commit/f1f5b7d0c2e7a445766702e7dacfbb53d28358b5), [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390)]:
+  - @workflow/core@5.0.0-beta.54
+  - @workflow/nest@5.0.0-beta.54
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/cli@5.0.0-beta.54
+  - @workflow/nitro@5.0.0-beta.54
+  - @workflow/next@5.0.0-beta.54
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.54
+  - @workflow/rollup@5.0.0-beta.54
+  - @workflow/sveltekit@5.0.0-beta.54
+  - @workflow/nuxt@5.0.0-beta.54
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

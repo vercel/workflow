@@ -69,6 +69,22 @@ export function normalizeSerializedData(value: unknown): unknown {
   return decompress(format, bytes.subarray(FORMAT_PREFIX_LENGTH));
 }
 
+/**
+ * Corrupt stored code is a permanent contract failure rather than a transport
+ * failure, so delivery fails the run instead of retrying it.
+ */
+function normalizeDynamicWorkflowCode(value: unknown): unknown {
+  try {
+    return normalizeSerializedData(value);
+  } catch (cause) {
+    if (WorkflowWorldError.is(cause)) throw cause;
+    throw new WorkflowWorldError(
+      'Stored dynamic workflow code could not be decompressed.',
+      { code: 'WORLD_CONTRACT_ERROR', cause }
+    );
+  }
+}
+
 export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
   run: T
 ): T {
@@ -77,6 +93,18 @@ export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
     input: normalizeSerializedData(run.input),
     output: normalizeSerializedData(run.output),
     error: normalizeSerializedData(run.error),
+    // A dynamic run's workflow code is a run payload like the others, so it
+    // can carry a compression wrapper and gets unwrapped the same way. Only
+    // reachable when encryption is off — with it on, the outermost prefix is
+    // `encr` and unwrapping happens after decryption instead. Absent stays
+    // absent, so a run without code does not gain the key.
+    ...(run.dynamicWorkflowCode !== undefined
+      ? {
+          dynamicWorkflowCode: normalizeDynamicWorkflowCode(
+            run.dynamicWorkflowCode
+          ),
+        }
+      : {}),
   };
 }
 

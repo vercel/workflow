@@ -1,9 +1,5 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import { RotateCw } from 'lucide-react';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import { Button } from '../ui/button';
 
 interface RerunButtonProps {

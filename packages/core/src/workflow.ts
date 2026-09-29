@@ -1,4 +1,4 @@
-import type { Script } from 'node:vm';
+import { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
   ERROR_SLUGS,
@@ -151,17 +151,30 @@ export interface CompiledWorkflowScripts {
  * this promise while `run_started` loads the replay snapshot, then evaluates
  * the scripts only after it has created the fresh context.
  */
-export function compileWorkflowBundle(
+function compileWorkflowScripts(
   workflowCode: string,
-  workflowName: string
+  workflowName: string,
+  cache: 'shared' | 'none'
 ): Promise<CompiledWorkflowScripts> {
   const parsedName = parseWorkflowName(workflowName);
   const filename = parsedName?.moduleSpecifier || workflowName;
   const workflowLookupCode = `globalThis.__private_workflows?.get(${JSON.stringify(workflowName)})`;
 
   return trace('workflow.bundle.compile', async (span) => {
-    const bundle = getCachedWorkflowScript(workflowCode, filename);
-    const lookup = getCachedWorkflowScript(workflowLookupCode, filename);
+    const bundle =
+      cache === 'shared'
+        ? getCachedWorkflowScript(workflowCode, filename)
+        : {
+            script: new Script(workflowCode, { filename }),
+            cacheHit: false,
+          };
+    const lookup =
+      cache === 'shared'
+        ? getCachedWorkflowScript(workflowLookupCode, filename)
+        : {
+            script: new Script(workflowLookupCode, { filename }),
+            cacheHit: false,
+          };
     span?.setAttributes({
       // This attribute intentionally describes the workflow bundle. The tiny
       // lookup script may miss when another workflow from the same source file
@@ -173,6 +186,21 @@ export function compileWorkflowBundle(
       workflowLookupScript: lookup.script,
     };
   });
+}
+
+export function compileWorkflowBundle(
+  workflowCode: string,
+  workflowName: string
+): Promise<CompiledWorkflowScripts> {
+  return compileWorkflowScripts(workflowCode, workflowName, 'shared');
+}
+
+/** Compile invocation-scoped dynamic source without touching the static cache. */
+export function compileDynamicWorkflowBundle(
+  workflowCode: string,
+  workflowName: string
+): Promise<CompiledWorkflowScripts> {
+  return compileWorkflowScripts(workflowCode, workflowName, 'none');
 }
 
 /**
@@ -383,8 +411,8 @@ async function createWorkflowSessionInner(
   }
 
   // Seed and initial clock must be available before I/O and remain stable on
-  // replay. After the first event, EventsConsumer advances the VM clock from
-  // each event's `createdAt`.
+  // replay. The clock then advances as deliveries reach the workflow (see
+  // `advanceClock` below).
   const fixedTimestamp =
     runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
@@ -477,21 +505,24 @@ async function createWorkflowSessionInner(
   // is before any delivery can be registered against it.
   const deliveryIdleHolder = { current: (): boolean => true };
 
-  // The VM clock only ever moves forward. Consumption order is log order for
-  // everything whose order the replay decides, but an event the consumer
-  // parked is delivered after the walk has already passed events written after
-  // it, and letting its `createdAt` set the clock would make `Date.now()` go
-  // backwards inside a single replay.
+  // The VM clock only ever moves forward, and it moves when a branch-deciding
+  // delivery (a step result, a hook payload, a wait completion, an abort, a
+  // hook's registration outcome) is handed to the workflow, not when the
+  // consumer walk reads an event. See `WorkflowOrchestratorContext.advanceClock` for
+  // why consumption is the wrong anchor: the walk runs ahead of delivery, so
+  // a later event's time would leak into an earlier delivery's cascade and
+  // `Date.now()` would depend on how much log this replay loaded. Deliveries
+  // reach the workflow in log order (the barrier registry), so the clock a
+  // cascade observes is a function of the log prefix alone.
   let clock = fixedTimestamp;
+  const advanceClock = (at: number) => {
+    if (at > clock) {
+      clock = at;
+      updateTimestamp(at);
+    }
+  };
 
   const eventsConsumer = new EventsConsumer(events, {
-    onConsumedEvent: (event) => {
-      const at = +event.createdAt;
-      if (at > clock) {
-        clock = at;
-        updateTimestamp(at);
-      }
-    },
     onUnconsumedEvent: (event) => {
       // `workflowContext` is assigned below, before any event can be offered,
       // so it is always populated by the time this fires. The appended detail
@@ -570,6 +601,7 @@ async function createWorkflowSessionInner(
     pendingDeliveries: 0,
     suspensionGeneration: 0,
     pendingDeliveryBarriers: new Map(),
+    advanceClock,
     replayPayloadCache,
   };
 
