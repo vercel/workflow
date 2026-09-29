@@ -1,5 +1,17 @@
 # @workflow/world
 
+## 5.0.0-beta.40
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+- [#4440](https://github.com/vercel/workflow/pull/4440) [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add the optional `world.telemetry.recordStepExecution` hook so Worlds can correlate flow requests with inline-executed workflow steps.
+
+### Patch Changes
+
+- [#4478](https://github.com/vercel/workflow/pull/4478) [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Worlds declare dynamic workflow support with `capabilities.dynamicWorkflowCode`, replacing `getBackendCapabilities()`
+
 ## 5.0.0-beta.39
 
 ### Patch Changes

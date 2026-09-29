@@ -1,5 +1,30 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.53
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+- [#4488](https://github.com/vercel/workflow/pull/4488) [`bf4b45c`](https://github.com/vercel/workflow/commit/bf4b45cc7832a50ccbccaa2cb05d73b9fe019cf1) Thanks [@shalabhc](https://github.com/shalabhc)! - Default the events transport back to HTTP. The WebSocket events transport is now opt-in with `WORKFLOW_EVENTS_TRANSPORT=ws`; any other value, including unset or `http`, uses HTTP.
+
+- [#4440](https://github.com/vercel/workflow/pull/4440) [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add the optional `world.telemetry.recordStepExecution` hook so Worlds can correlate flow requests with inline-executed workflow steps.
+
+### Patch Changes
+
+- [#4478](https://github.com/vercel/workflow/pull/4478) [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Worlds declare dynamic workflow support with `capabilities.dynamicWorkflowCode`, replacing `getBackendCapabilities()`
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940) Thanks [@pranaygp](https://github.com/pranaygp)! - Send event requests with bodies too large to re-buffer over HTTP/1.1 so they no longer stall behind in-flight HTTP/2 streams, bound events requests at 60s instead of 300s, and retry event-log reads whose HTTP/2 stream the peer reset.
+
+- [#4483](https://github.com/vercel/workflow/pull/4483) [`f58ab84`](https://github.com/vercel/workflow/commit/f58ab8452966b6ce759942e41dc00bfdbf1f1b75) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Limit inline workflow request correlation to the first 10 unique step IDs.
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade undici to 7.30.0, which stops a failed HTTP/2 stream from leaving a phantom in-flight request on its connection.
+
+- [#4469](https://github.com/vercel/workflow/pull/4469) [`2d8b8a3`](https://github.com/vercel/workflow/commit/2d8b8a33d57d9b9aa90f15d3f7b6372f01e5799e) Thanks [@pranaygp](https://github.com/pranaygp)! - Export `openEventsChannel` so code writing a run's events outside a queue delivery can use the WebSocket events transport.
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef)]:
+  - @workflow/world@5.0.0-beta.40
+  - @workflow/errors@5.0.0-beta.25
+
 ## 5.0.0-beta.52
 
 ### Patch Changes

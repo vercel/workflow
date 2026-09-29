@@ -1,5 +1,23 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.48
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+### Patch Changes
+
+- [#4478](https://github.com/vercel/workflow/pull/4478) [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Worlds declare dynamic workflow support with `capabilities.dynamicWorkflowCode`, replacing `getBackendCapabilities()`
+
+- [#4428](https://github.com/vercel/workflow/pull/4428) [`efb58a0`](https://github.com/vercel/workflow/commit/efb58a0523d9dae11051729958af474237ab7d7e) Thanks [@pranaygp](https://github.com/pranaygp)! - Leave job attempts past core's max-deliveries ceiling, so a run whose terminal `run_failed` write fails transiently at the ceiling is retried instead of stranded when the job runs out of attempts. Jobs enqueued before this release keep their stored cap of 49 attempts (executor transfers carry it forward); only jobs enqueued after upgrading get the headroom.
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade undici to 7.30.0, which stops a failed HTTP/2 stream from leaving a phantom in-flight request on its connection.
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940)]:
+  - @workflow/world@5.0.0-beta.40
+  - @workflow/world-local@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.25
+
 ## 5.0.0-beta.47
 
 ### Patch Changes
