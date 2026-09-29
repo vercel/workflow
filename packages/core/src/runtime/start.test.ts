@@ -32,6 +32,8 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
+import { serializeTraceCarrier } from '../telemetry.js';
+import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
@@ -50,7 +52,527 @@ vi.mock('../telemetry.js', () => ({
 }));
 
 describe('start', () => {
+  describe('dynamic workflow preflight', () => {
+    const source = 'async function workflow() { "use workflow"; return 1; }';
+    let eventsCreate: ReturnType<typeof vi.fn>;
+    let queue: ReturnType<typeof vi.fn>;
+    let upload: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      eventsCreate = vi.fn();
+      queue = vi.fn();
+      upload = vi.fn();
+      vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, '1');
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+      vi.unstubAllEnvs();
+    });
+
+    describe('deployment opt-in', () => {
+      function optInWorld() {
+        return {
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          getBackendCapabilities: vi
+            .fn()
+            .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          getEncryptionKeyForRun: vi.fn(),
+          uploadDynamicWorkflowCode: upload,
+          events: { create: eventsCreate },
+          queue,
+        } as any;
+      }
+
+      it.each([
+        ['unset', undefined],
+        ['empty', ''],
+        ['0', '0'],
+        ['false', 'false'],
+        ['yes', 'yes'],
+      ])('refuses a dynamic start with the opt-in %s, before any world call', async (_label, value) => {
+        if (value === undefined) {
+          vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+        } else {
+          vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, value);
+        }
+        const world = optInWorld();
+        setWorld(world);
+
+        const error = await start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        }).catch((err: unknown) => err);
+
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
+        expect((error as Error).message).toMatch(
+          /Dynamic workflows are disabled on this deployment.*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1/
+        );
+        expect(world.getDeploymentId).not.toHaveBeenCalled();
+        expect(world.getBackendCapabilities).not.toHaveBeenCalled();
+        expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+        expect(upload).not.toHaveBeenCalled();
+        expect(eventsCreate).not.toHaveBeenCalled();
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        '1',
+        'true',
+        'TRUE',
+      ])('accepts the opt-in value %s', async (value) => {
+        vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, value);
+        eventsCreate.mockImplementation(async (runId, event) => ({
+          run: {
+            runId,
+            status: 'pending',
+            dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+          },
+        }));
+        queue.mockResolvedValue(undefined);
+        setWorld(optInWorld());
+
+        await expect(
+          start(source, {
+            experimental_dynamic: {
+              steps: { noop: { stepId: 'step//./test//noop' } },
+            },
+          })
+        ).resolves.toBeDefined();
+        expect(eventsCreate).toHaveBeenCalledOnce();
+        expect(queue).toHaveBeenCalledOnce();
+      });
+    });
+
+    it.each([
+      [
+        'explicit resource management syntax',
+        `async function workflow() {
+  "use workflow";
+  using resource = null;
+  return resource;
+}`,
+      ],
+      [
+        'regular expression modifiers',
+        `async function workflow() {
+  "use workflow";
+  return /(?i:a)/.test("A");
+}`,
+      ],
+    ])('rejects unsupported %s before start side effects', async (_label, unsupportedSource) => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(unsupportedSource, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/not valid JavaScript/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('rejects a $-prefixed export name before start side effects', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start('async function $workflow() { "use workflow"; return 1; }', {
+          experimental_dynamic: {
+            exportName: '$workflow',
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/cannot appear in workflow queue names/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('validates the queue name before start side effects', async () => {
+      const getDeploymentId = vi.fn().mockResolvedValue('deploy_123');
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      const invalidQueueWorkflow = Object.assign(async () => undefined, {
+        workflowId: 'workflow//./test//$invalid',
+      });
+
+      await expect(start(invalidQueueWorkflow as never, [])).rejects.toThrow(
+        /Invalid workflow name/
+      );
+      expect(getDeploymentId).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    describe('same-deployment only', () => {
+      const dynamicSteps = {
+        steps: { noop: { stepId: 'step//./test//noop' } },
+      };
+
+      function dynamicWorld(overrides: Record<string, unknown>) {
+        return {
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          getBackendCapabilities: vi
+            .fn()
+            .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          getEncryptionKeyForRun: vi.fn(),
+          uploadDynamicWorkflowCode: upload,
+          events: { create: eventsCreate },
+          queue,
+          streams: { get: vi.fn() },
+          ...overrides,
+        } as any;
+      }
+
+      function expectNoSideEffects(world: any) {
+        // No capability probe (a queue call), no key lookup, no upload, and
+        // no run creation.
+        expect(queue).not.toHaveBeenCalled();
+        expect(world.streams.get).not.toHaveBeenCalled();
+        expect(world.getBackendCapabilities).not.toHaveBeenCalled();
+        expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+        expect(upload).not.toHaveBeenCalled();
+        expect(eventsCreate).not.toHaveBeenCalled();
+      }
+
+      it('rejects an explicit other deployment before probing it', async () => {
+        const world = dynamicWorld({});
+        setWorld(world);
+
+        const error = await start(source, {
+          deploymentId: 'dpl_other',
+          experimental_dynamic: dynamicSteps,
+        }).catch((err: unknown) => err);
+
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
+        expect((error as Error).message).toMatch(
+          /only start on the current deployment.*"dpl_other" from "deploy_123"/
+        );
+        expectNoSideEffects(world);
+      });
+
+      it("rejects 'latest' when it resolves to another deployment", async () => {
+        const world = dynamicWorld({
+          resolveLatestDeploymentId: vi.fn().mockResolvedValue('dpl_newer'),
+        });
+        setWorld(world);
+
+        await expect(
+          start(source, {
+            deploymentId: 'latest',
+            experimental_dynamic: dynamicSteps,
+          })
+        ).rejects.toThrow(/only start on the current deployment.*"dpl_newer"/);
+        expectNoSideEffects(world);
+      });
+
+      it('rejects a concrete target when the current deployment is unknown', async () => {
+        const world = dynamicWorld({
+          getDeploymentId: vi
+            .fn()
+            .mockRejectedValue(new Error('no current deployment')),
+        });
+        setWorld(world);
+
+        await expect(
+          start(source, {
+            deploymentId: 'deploy_123',
+            experimental_dynamic: dynamicSteps,
+          })
+        ).rejects.toThrow(
+          /only start on the current deployment.*an unknown current deployment/
+        );
+        expectNoSideEffects(world);
+      });
+
+      it('accepts an explicit deploymentId naming the current deployment', async () => {
+        eventsCreate.mockImplementation(async (runId, event) => ({
+          run: {
+            runId,
+            status: 'pending',
+            dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+          },
+        }));
+        queue.mockResolvedValue(undefined);
+        const world = dynamicWorld({});
+        setWorld(world);
+
+        await expect(
+          start(source, {
+            deploymentId: 'deploy_123',
+            experimental_dynamic: dynamicSteps,
+          })
+        ).resolves.toBeDefined();
+        // Same deployment: no capability probe, only the run's own queue
+        // message.
+        expect(world.streams.get).not.toHaveBeenCalled();
+        expect(queue).toHaveBeenCalledOnce();
+        expect(queue.mock.calls[0][0]).toContain('workflow//dynamic/');
+      });
+    });
+
+    it.each([
+      [
+        'nested declaration',
+        'function outer() { async function workflow() { "use workflow"; } }',
+      ],
+      [
+        'comment spoof',
+        '// async function workflow() { "use workflow"; }\nconst value = 1;',
+      ],
+      [
+        'string spoof',
+        'const value = `async function workflow() { "use workflow"; }`;',
+      ],
+    ])('rejects a %s before start side effects', async (_label, invalidSource) => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(invalidSource, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/at top level/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['Object', 'const Object = null;'],
+      ['Map', 'let Map = null;'],
+      ['Symbol', 'function Symbol() {}'],
+      ['globalThis', 'var globalThis = null;'],
+      ['__dynamicUseStep', 'const __dynamicUseStep = null;'],
+      ['__dynamicWorkflow', 'let __dynamicWorkflow = null;'],
+      ['__dynamicGlobalThis', 'function __dynamicGlobalThis() {}'],
+      ['steps', 'var steps = null;'],
+      ['sleep', 'const sleep = null;'],
+      ['createHook', 'let createHook = null;'],
+      ['Error', 'class Error {}'],
+    ])('starts safely with caller %s declarations', async (_binding, declaration) => {
+      eventsCreate.mockImplementation(async (runId, event) => ({
+        run: {
+          runId,
+          status: 'pending',
+          dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+        },
+      }));
+      queue.mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      const isolatedSource = `
+${declaration}
+async function workflow() {
+  "use workflow";
+  return 1;
+}
+`;
+
+      await expect(
+        start(isolatedSource, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).resolves.toBeDefined();
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(queue).toHaveBeenCalledOnce();
+    });
+
+    it('allows a genuine top-level declaration to reach start side effects', async () => {
+      eventsCreate.mockImplementation(async (runId, event) => ({
+        run: {
+          runId,
+          status: 'pending',
+          dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+        },
+      }));
+      queue.mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).resolves.toBeDefined();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(queue).toHaveBeenCalledOnce();
+    });
+
+    it('rejects absent backend attestation before start side effects', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getEncryptionKeyForRun: vi.fn(),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/backend storage capability version 1/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('rejects an empty backend capability set before start side effects', async () => {
+      // world-vercel maps a backend without the capabilities route (404) to
+      // an empty set, which must fail closed like an absent attestation.
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi.fn().mockResolvedValue({}),
+        getEncryptionKeyForRun: vi.fn(),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/backend storage capability version 1/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('rejects execution-context validation before upload, create, or queue', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        validateRunExecutionContext: vi.fn(() => {
+          throw new Error('execution context too large');
+        }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow('execution context too large');
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('does not apply execution-context validation to static starts', async () => {
+      const validateRunExecutionContext = vi.fn(() => {
+        throw new Error('execution context too large');
+      });
+      eventsCreate.mockImplementation(async (runId) => ({
+        run: { runId, status: 'pending' },
+      }));
+      queue.mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        validateRunExecutionContext,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      const staticWorkflow = Object.assign(async () => undefined, {
+        workflowId: 'workflow//./test//staticWorkflow',
+      });
+
+      // A large trace carrier (baggage / tracestate) is the static-start
+      // shape that could approach a World's execution-context limit.
+      const traceCarrier = { tracestate: 'x'.repeat(4096) };
+      vi.mocked(serializeTraceCarrier).mockResolvedValueOnce(traceCarrier);
+
+      await expect(start(staticWorkflow as never, [])).resolves.toBeDefined();
+      expect(validateRunExecutionContext).not.toHaveBeenCalled();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(
+        eventsCreate.mock.calls[0][1].eventData.executionContext.traceCarrier
+      ).toEqual(traceCarrier);
+      expect(queue).toHaveBeenCalledOnce();
+    });
+  });
+
   describe('error handling', () => {
+    it('requires experimental_dynamic for source at runtime', async () => {
+      await expect(
+        start('async function workflow() { "use workflow"; }' as never, [])
+      ).rejects.toThrow(/no `experimental_dynamic` options/);
+    });
+
     it('should throw WorkflowRuntimeError when workflow is undefined', async () => {
       await expect(
         // @ts-expect-error - intentionally passing undefined

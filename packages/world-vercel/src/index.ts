@@ -1,8 +1,11 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
+import { createGetBackendCapabilities } from './backend-capabilities.js';
 import { createRunId, describeRun } from './create-run-id.js';
+import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { validateRunExecutionContext } from './execution-context.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -12,16 +15,31 @@ import { createStreamer } from './streamer.js';
 import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
+export { createGetBackendCapabilities } from './backend-capabilities.js';
 export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
+export { uploadDynamicWorkflowCode } from './dynamic-code.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
   fetchRunKey,
 } from './encryption.js';
+export {
+  MAX_EXECUTION_CONTEXT_BYTES,
+  validateRunExecutionContext,
+} from './execution-context.js';
 export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
+/**
+ * Open a run's WebSocket events channel and return its release (or
+ * `undefined` when the World writes over HTTP). Event writes for that run go
+ * over the socket while at least one claim is held. The flow route already
+ * does this for queue deliveries; call it yourself when you write a run's
+ * events from anywhere else, and call the release when you are done, or the
+ * open socket keeps the process alive.
+ */
+export { openWsChannel as openEventsChannel } from './ws-transport.js';
 
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
@@ -69,6 +87,8 @@ export function createWorld(config?: APIConfig): World {
       // rollback or kill switch drop new resumes to the sequential path
       // immediately, without a redeploy of this adapter.
     },
+    getBackendCapabilities: createGetBackendCapabilities(config),
+    validateRunExecutionContext,
     getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
@@ -87,6 +107,10 @@ export function createWorld(config?: APIConfig): World {
     // stamp it into the queue message and the consuming deployment can detect
     // that it was handed a run created against a different environment.
     getEnvironment: () => resolveClientEnvironment(config),
+    // Deferred storage for a dynamic run's workflow code, used only when the
+    // definition is too large to ride the `run_created` frame inline.
+    uploadDynamicWorkflowCode: (runId, params) =>
+      uploadDynamicWorkflowCode(runId, params, config),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,
