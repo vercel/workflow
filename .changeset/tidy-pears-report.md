@@ -4,4 +4,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Let Vercel correlate flow requests with every workflow step executed inline.
+Add `world.recordStepExecution?` interface to let Worlds correlate flow requests with inline-executed workflow steps.
