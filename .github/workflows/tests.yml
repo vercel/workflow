@@ -844,7 +844,7 @@ jobs:
         run: |
           export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
           rm -f "$DEV_SERVER_LOG_PATH"
-          (cd "$WORKBENCH_APP_PATH" && pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
+          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
@@ -857,6 +857,8 @@ jobs:
           WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          # The server above opts in, so a dynamic E2E opt-in refusal fails.
+          WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
 
       - name: Generate E2E summary
         if: always()
@@ -946,7 +948,7 @@ jobs:
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
-          (cd "$WORKBENCH_APP_PATH" && pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
+          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
@@ -956,6 +958,8 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          # The server above opts in, so a dynamic E2E opt-in refusal fails.
+          WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
 
       - name: Generate E2E summary
         if: always()
@@ -1055,7 +1059,7 @@ jobs:
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
-          (cd "$WORKBENCH_APP_PATH" && pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
+          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
@@ -1065,6 +1069,8 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          # The server above opts in, so a dynamic E2E opt-in refusal fails.
+          WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
 
       - name: Generate E2E summary
         if: always()
