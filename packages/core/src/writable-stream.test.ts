@@ -483,6 +483,17 @@ describe('WorkflowServerWritableStream', () => {
       // The review scenario: an AI stream emits a prefix of deltas whose
       // write()s all acked (inside the commit window), then throws. pipeTo
       // aborts the sink — the accepted prefix must still reach the World.
+      const delivered: number[] = [];
+      mockStreams.write.mockImplementation(
+        async (_runId: string, _name: string, chunk: Uint8Array) => {
+          delivered.push(chunk[0]);
+        }
+      );
+      mockStreams.writeMulti.mockImplementation(
+        async (_runId: string, _name: string, chunks: Uint8Array[]) => {
+          delivered.push(...chunks.map((chunk) => chunk[0]));
+        }
+      );
       const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       let controller!: ReadableStreamDefaultController<Uint8Array>;
       const source = new ReadableStream<Uint8Array>({
@@ -501,18 +512,11 @@ describe('WorkflowServerWritableStream', () => {
       controller.error(new Error('producer failed'));
 
       await expect(piped).rejects.toThrow('producer failed');
-      await new Promise((r) => setTimeout(r, 25));
 
-      // Every accepted chunk was delivered; the stream was not closed.
-      const delivered = [
-        ...mockStreams.write.mock.calls.map(
-          (call: unknown[]) => (call[2] as Uint8Array)[0]
-        ),
-        ...mockStreams.writeMulti.mock.calls.flatMap((call: unknown[]) =>
-          (call[2] as Uint8Array[]).map((c) => c[0])
-        ),
-      ];
-      expect(delivered).toEqual([1, 2, 3]);
+      // Every accepted chunk was delivered; the stream was not closed. Use
+      // the bounded poll helper because native pipeTo scheduling can take
+      // longer than a fixed sleep on Node 24/Linux.
+      await waitFor(() => expect(delivered).toEqual([1, 2, 3]));
       expect(mockStreams.close).not.toHaveBeenCalled();
     });
   });

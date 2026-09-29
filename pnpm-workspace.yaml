@@ -94,3 +94,6 @@ allowBuilds:
   protobufjs: false
   sharp: false
   ssh2: false
+
+patchedDependencies:
+  devalue@5.9.2: patches/devalue@5.9.2.patch

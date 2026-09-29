@@ -48,11 +48,19 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
       ctx.invocationsQueue.set(correlationId, queueItem);
 
-      stepLogger.debug('Step consumer setup', {
-        correlationId,
-        stepName,
-        args,
-      });
+      // Sampled once per step invocation: the per-event consumer below runs
+      // O(steps × events) per session, and even the memoized enabled check
+      // costs a process.env read per call, which profiled at ~6% of raw app
+      // CPU at fanout(50). A DEBUG toggle mid-session takes effect on the
+      // next step invocation rather than on already-subscribed consumers.
+      const debugEnabled = stepLogger.debugEnabled();
+      if (debugEnabled) {
+        stepLogger.debug('Step consumer setup', {
+          correlationId,
+          stepName,
+          args,
+        });
+      }
       ctx.eventsConsumer.subscribe((event) => {
         if (!event) {
           // We've reached the end of the events, so this step has either not been run or is currently running.
@@ -63,14 +71,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
-        stepLogger.debug('Step consumer event processing', {
-          correlationId,
-          stepName,
-          args: args.join(', '),
-          incomingCorrelationId: event.correlationId,
-          isMatch: correlationId === event.correlationId,
-          eventType: event.eventType,
-        });
+        // Runs once per registered step per replayed event — O(steps ×
+        // events) per session. Gate on the invocation-sampled flag so the
+        // metadata literal and args.join are not built when debug output
+        // is off.
+        if (debugEnabled) {
+          stepLogger.debug('Step consumer event processing', {
+            correlationId,
+            stepName,
+            args: args.join(', '),
+            incomingCorrelationId: event.correlationId,
+            isMatch: correlationId === event.correlationId,
+            eventType: event.eventType,
+          });
+        }
 
         if (event.correlationId !== correlationId) {
           // We're not interested in this event - the correlationId belongs to a different entity

@@ -1,0 +1,19 @@
+diff --git a/src/utils.js b/src/utils.js
+index 6f66da204c5d82ff49cd9d7be1f43540a4f7678b..076d64933a9f3b48ea3392138f2e0b4793c87279 100644
+--- a/src/utils.js
++++ b/src/utils.js
+@@ -85,6 +85,14 @@
+ 
++const NEEDS_MANUAL_ESCAPE = /[\u2028\u2029\ud800-\udfff]/;
++
+ /** @param {string} str */
+ export function stringify_string(str) {
++	// Fast path for the large ordinary strings that dominate workflow payloads.
++	// Keep U+2028/U+2029 and surrogate-containing strings on the legacy path.
++	if (str.length >= 64 && !NEEDS_MANUAL_ESCAPE.test(str)) {
++		const json = JSON.stringify(str);
++		return json.indexOf('<') === -1 ? json : json.replaceAll('<', '\\u003C');
++	}
+ 	let result = '';
+ 	let last_pos = 0;
+ 	const len = str.length;
