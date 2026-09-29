@@ -119,8 +119,7 @@ afterEach(() => {
  * The gate is the whole safety story for this feature: everything else in
  * the PR is dead code for anyone who hasn't opted in. `events-v4.test.ts`
  * covers the HTTP path itself in depth, but nothing there pins the
- * *choice* of path — so a future edit that flipped the default (as an
- * earlier revision of this branch did deliberately, for benchmarking)
+ * *choice* of path — so a future edit that flipped the default
  * would sail through with every HTTP assertion still green, because the
  * two transports are built to be indistinguishable at the result layer.
  */
@@ -210,9 +209,9 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
 
 describe('transport gate', () => {
   it('goes over HTTP, never touching the WS transport, when the gate is off', async () => {
-    // "Off" is now an explicit opt-out rather than an absent variable, since
-    // the default flipped. Deleting it here would assert the opposite of what
-    // this test is named for.
+    // An explicit `http` rather than an absent variable, so this pins the
+    // opt-out value as well as the default; `beforeEach` sets `ws` for the
+    // rest of the file.
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

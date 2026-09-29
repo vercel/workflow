@@ -528,7 +528,7 @@ describe('failures are never silent', () => {
 
   it('stays silent on a drain notice without DEBUG', async () => {
     // Both drain reasons — the socket outliving the server's max duration, and
-    // its bearer nearing expiry — are routine on the WS default, and the
+    // its bearer nearing expiry — are routine on the WS transport, and the
     // transport reconnects from the close that follows. A healthy long-lived
     // run must not narrate that.
     const transport = getWsEventsTransport(WS_URL, headers);
@@ -985,39 +985,37 @@ describe('transport selection', () => {
   const directConfig = { token: 'test-token' };
 
   /**
-   * The gate is the whole safety story for this feature, and since the default
-   * flipped it is the HTTP path that is now reached only by opting out.
-   * Nothing on either side pins the *choice* of path — the two transports are
-   * built to be indistinguishable at the result layer, so a future edit that
-   * moved the default again would sail through with every other assertion in
-   * this file still green. This table is the only thing that would fail, which
-   * is why it enumerates the boundary rather than spot-checking two values.
+   * The gate is the whole safety story for this feature: the WebSocket path is
+   * reached only by opting in. Nothing on either side pins the *choice* of
+   * path — the two transports are built to be indistinguishable at the result
+   * layer, so a future edit that moved the default would sail through with
+   * every other assertion in this file still green. This table is the only
+   * thing that would fail, which is why it enumerates the boundary rather than
+   * spot-checking two values.
    */
   describe('isWsEventsTransportEnabled', () => {
     it.each([
-      // `http` opts out, case-insensitively and trimmed: whoever reaches for
-      // the escape hatch is the last person who should have it silently
-      // ignored over a capital letter.
-      ['http', false],
-      ['HTTP', false],
-      ['Http', false],
-      ['  http  ', false],
-      // Everything else takes the default, including values that look like a
-      // half-remembered opt-out. Unrecognized input resolving to `ws` is the
-      // deliberate half of the asymmetry above.
+      // `ws` opts in, case-insensitively and trimmed.
       ['ws', true],
       ['WS', true],
-      ['', true],
-      ['https', true],
-      ['off', true],
-      ['false', true],
+      ['Ws', true],
+      ['  ws  ', true],
+      // Everything else stays on the HTTP default, including values that look
+      // like a half-remembered opt-in.
+      ['http', false],
+      ['HTTP', false],
+      ['', false],
+      ['wss', false],
+      ['websocket', false],
+      ['on', false],
+      ['true', false],
     ])('%o resolves to ws=%o', (value, expected) => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = value;
       expect(isWsEventsTransportEnabled()).toBe(expected);
     });
 
-    it('defaults to ws when unset', () => {
-      expect(isWsEventsTransportEnabled()).toBe(true);
+    it('defaults to http when unset', () => {
+      expect(isWsEventsTransportEnabled()).toBe(false);
     });
   });
 
@@ -1090,11 +1088,11 @@ describe('transport selection', () => {
     });
 
     it('says nothing about the transport it selected without DEBUG', () => {
-      // The regression this pins: both lines were written while WS was opt-in,
-      // where "using ws" and "you asked for ws but this World can't" reported a
-      // choice the caller had made. On the WS default nobody asked, so every
-      // deployment printed the first after each cold start and every CLI
-      // command — all `projectConfig` Worlds — printed the second.
+      // The regression this pins: while WS was the default, nobody had asked
+      // for it, so every deployment printed "using ws" after each cold start
+      // and every CLI command — all `projectConfig` Worlds — printed the
+      // proxy fallback. Both stay debug-gated so a future default flip cannot
+      // bring that noise back.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
 
       openWsChannel('wrun_1', proxyConfig);
@@ -1124,10 +1122,8 @@ describe('transport selection', () => {
     });
 
     it('does nothing when the gate is off', async () => {
-      // Explicitly off. Before the default flipped this was the ambient state
-      // of the suite, so the test read as if it were asserting nothing in
-      // particular; it is in fact the only thing pinning "gate off means no
-      // socket is ever opened".
+      // Explicitly off via the opt-out value, not just unset: this is the
+      // only thing pinning "gate off means no socket is ever opened".
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
       openWsChannel('wrun_1', directConfig);
       await tick();

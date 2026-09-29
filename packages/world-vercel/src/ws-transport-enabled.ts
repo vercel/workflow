@@ -8,34 +8,26 @@
  */
 
 /**
- * WS unless `WORKFLOW_EVENTS_TRANSPORT=http`. Only `createWorkflowRunEventV4`
+ * HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws`. Only `createWorkflowRunEventV4`
  * (POST) is wired to it. GET/LIST aren't on the hot per-step path, and LIST's
  * streamed, sentinel-terminated multi-frame response doesn't map onto a single
  * WS message.
  *
- * This file used to name a prerequisite for defaulting on: that a WS write opens
- * no client span. That is met. `postEventFrameOverWs` opens one per frame,
- * carrying `workflow.events.transport: 'ws'`, `network.protocol.name` and the
- * `workflow.events.ws.req_id` that joins it to the server's log line. What
- * remains absent is Vercel's *outgoing requests* view, which is built by
+ * A WS write still opens a client span: `postEventFrameOverWs` opens one per
+ * frame, carrying `workflow.events.transport: 'ws'`, `network.protocol.name`
+ * and the `workflow.events.ws.req_id` that joins it to the server's log line.
+ * What remains absent is Vercel's *outgoing requests* view, which is built by
  * instrumenting the global `fetch` rather than by reading spans, and which a
  * transport whose purpose is to issue no request cannot appear in.
  *
- * `http` is the only value that opts out, rather than "anything that isn't
- * `ws`". An unrecognized value takes the default instead of quietly pinning a
- * deployment to the old transport.
- *
- * That opt-out is matched case-insensitively and trimmed, which is the one
- * place this gate deliberately does *not* fail toward the default. Everything
- * else here is written on the assumption that being quietly on the wrong
- * transport is the failure mode to design against, and the reader most exposed
- * to it is whoever is reaching for the escape hatch: plausibly mid-incident,
- * plausibly typing `HTTP` into a dashboard field. Silently ignoring their
- * opt-out because of case is the same bug this default flip is trying to stop
- * shipping, pointed at the person least able to afford it.
+ * `ws` is the only value that opts in. Anything else — unset, empty, `http`,
+ * or an unrecognized value — stays on HTTP, so a typo fails toward the
+ * default rather than enabling a transport nobody asked for. The opt-in is
+ * matched case-insensitively and trimmed, so `WS` typed into a dashboard field
+ * is not silently ignored.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT?.trim().toLowerCase() !== 'http';
+  return process.env.WORKFLOW_EVENTS_TRANSPORT?.trim().toLowerCase() === 'ws';
 }
 
 /**
@@ -43,10 +35,7 @@ export function isWsEventsTransportEnabled(): boolean {
  * quietly writing over HTTP. Internal, undocumented, and meant for the WS e2e
  * lane, which otherwise passes whether or not the socket carried anything.
  *
- * Note the asymmetry with the gate above, which is deliberate and the opposite
- * way round. There, an unrecognized value takes the default, because the risk
- * is a deployment quietly sitting on the wrong transport. Here an unrecognized
- * value means *off*, because the risk runs the other way: this turns a silent
+ * Like the gate above, an unrecognized value means *off*: this turns a silent
  * degradation into a failed run, and nobody should acquire that by typo.
  */
 export function isWsEventsTransportStrict(): boolean {
@@ -60,10 +49,11 @@ export function isWsEventsTransportStrict(): boolean {
  * server authoritatively accepts or declines every upgrade, and a decline
  * falls back directly to the HTTP stream writer.
  *
- * HTTP is the compatibility path and the default. Unlike the default-on events
- * gate above, this opt-in is exact-match: a typo must fail toward HTTP rather
- * than unexpectedly enabling an experimental transport. This deliberately has
- * no package-version or tenant-policy heuristic; rollout policy belongs to the
+ * HTTP is the compatibility path and the default. Unlike the events gate
+ * above, this opt-in is exact-match (case-sensitive, untrimmed): a typo must
+ * fail toward HTTP rather than unexpectedly enabling an experimental
+ * transport. This deliberately has no package-version or tenant-policy
+ * heuristic; rollout policy belongs to the
  * server. v1 is `/websockets/v1`, independently versioned from REST v2/v4 and
  * persisted workflow spec versions.
  */
