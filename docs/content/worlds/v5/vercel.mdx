@@ -258,6 +258,24 @@ Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables 
 
 The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent — now that the WebSocket is the default, nothing asked for it — and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
 
+Event writes use the WebSocket only while that run's events channel is open. The queue handler opens it for every delivery, so workflows need nothing extra. Code that writes a run's events outside a delivery, such as a custom driver or a long-lived process, opens the channel with `openEventsChannel(runId)`, or those writes go over HTTP. Call the returned release when you're done, because an open socket keeps the process alive:
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript title="write-events.ts" lineNumbers
+import { createWorld, openEventsChannel } from "@workflow/world-vercel";
+
+const world = createWorld();
+const release = openEventsChannel(runId);
+try {
+  await world.events.create(runId, event);
+} finally {
+  release?.();
+}
+```
+
+`openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
+
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 
 | Attribute | HTTP | WebSocket |
