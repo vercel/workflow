@@ -62,7 +62,11 @@ import {
   AttributeValidationError,
   validateAttributeEventDataSize,
 } from '@workflow/world/attributes-validation';
-import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
+import {
+  AfterCommitError,
+  ReplayEventObserverError,
+  withEventPostRetry,
+} from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
@@ -697,6 +701,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     return result as EventResult<T['eventType']>;
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
+    if (err instanceof AfterCommitError) throw err.error;
     // 409 hook-force-claimed on hook_received: the hook's token was taken
     // over by another run and the server has already re-pointed it. Re-key
     // with the token this write carried so `resumeHook()` can follow it.

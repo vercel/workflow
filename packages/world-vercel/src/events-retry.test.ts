@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   HookNotFoundError,
+  ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,15 +13,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // refactor that wrapped the wrong layer (or passed the wrong event type) would
 // keep those green but break here. We mock the v4 wire client so we can assert
 // attempt counts and error mapping without standing up a real transport.
-const { createV4Mock } = vi.hoisted(() => ({ createV4Mock: vi.fn() }));
+const { createV4Mock, createRunStartedV4Mock } = vi.hoisted(() => ({
+  createV4Mock: vi.fn(),
+  createRunStartedV4Mock: vi.fn(),
+}));
 
 vi.mock('./events-v4.js', () => ({
   createWorkflowRunEventV4: createV4Mock,
+  createWorkflowRunStartedEventV4: createRunStartedV4Mock,
   getEventV4: vi.fn(),
   getWorkflowRunEventsV4: vi.fn(),
   getEventsByCorrelationIdV4: vi.fn(),
 }));
 
+import { AfterCommitError } from './event-retry.js';
 import { createWorkflowRunEvent } from './events.js';
 
 const RUN_ID = 'wrun_test';
@@ -56,6 +62,23 @@ describe('createWorkflowRunEvent retry wiring', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('surfaces a throttled run_started suffix read without re-sending the POST', async () => {
+    const throttled = new ThrottleError('429', { retryAfter: 1 });
+    createRunStartedV4Mock.mockReset();
+    createRunStartedV4Mock.mockRejectedValue(new AfterCommitError(throttled));
+
+    const p = createWorkflowRunEvent(
+      RUN_ID,
+      { eventType: 'run_started', specVersion: 2 },
+      undefined,
+      CONFIG
+    ).catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+
+    expect(await p).toBe(throttled);
+    expect(createRunStartedV4Mock).toHaveBeenCalledTimes(1);
   });
 
   it('retries a transient 5xx on step_completed and then succeeds', async () => {

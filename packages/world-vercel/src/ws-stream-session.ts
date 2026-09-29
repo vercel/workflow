@@ -1002,8 +1002,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
     writeMetadata?: WriteMetadata,
     maxMessageBytes?: number
   ): Promise<Record<string, unknown>> {
+    // `bounded`: past the budget the request falls back to HTTP, whose
+    // dispatcher has its own 429 policy, rather than failing the write, so a
+    // longer wait on the socket would buy little.
     const waitOutThrottle = createThrottleWaiter(
-      operation === 'write' ? 'stream chunks' : 'stream close'
+      operation === 'write' ? 'writing stream chunks' : 'writing stream close',
+      'bounded'
     );
     for (let attempt = 0; ; attempt++) {
       try {

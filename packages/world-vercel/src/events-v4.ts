@@ -26,6 +26,7 @@ import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
   StreamError,
+  ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
@@ -44,7 +45,11 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
-import { ReplayEventObserverError } from './event-retry.js';
+import {
+  AfterCommitError,
+  createThrottleWaiter,
+  ReplayEventObserverError,
+} from './event-retry.js';
 import {
   type DecodedFrame,
   decodeFrames,
@@ -1889,19 +1894,27 @@ async function consumeReplayLogResponse(
     );
   }
 
-  const suffix = await getWorkflowRunEventsV4(
-    runId,
-    {
-      cursor: page.cursor,
-      // The suffix of a replay log is the same replay log.
-      remoteRefBehavior:
-        eventsRemoteRefBehavior === 'skip-step-inputs'
-          ? 'skip-step-inputs'
-          : 'resolve',
-    },
-    config,
-    replayEventObserver
-  );
+  let suffix: ListEventsV4Result;
+  try {
+    suffix = await getWorkflowRunEventsV4(
+      runId,
+      {
+        cursor: page.cursor,
+        // The suffix of a replay log is the same replay log.
+        remoteRefBehavior:
+          eventsRemoteRefBehavior === 'skip-step-inputs'
+            ? 'skip-step-inputs'
+            : 'resolve',
+      },
+      config,
+      replayEventObserver
+    );
+  } catch (err) {
+    // The POST committed and the suffix GET already waited out its own
+    // throttle budget. Re-sending the POST would only re-stream the prefix.
+    if (ThrottleError.is(err)) throw new AfterCommitError(err);
+    throw err;
+  }
   return {
     events: [...page.events, ...suffix.events],
     cursor: suffix.cursor ?? page.cursor,
@@ -2079,20 +2092,35 @@ export async function getWorkflowRunEventsV4(
   let cursor = params.cursor ?? null;
   let partialStreamRetries = 0;
   let consumed: EventFrameStreamResult;
+  // A full-log read resends a throttled page from the cursor it asked for,
+  // keeping the events already read, instead of failing the delivery and
+  // reading the log again from the start on redelivery.
+  const fullLog = params.limit === undefined;
+  const waitOutThrottle = createThrottleWaiter('reading events', 'bounded');
 
-  do {
+  for (;;) {
     const pageCursor = cursor ?? undefined;
-    consumed = await consumeListWithSkipFallback(
-      baseUrl,
-      params.remoteRefBehavior,
-      (remoteRefBehavior) =>
-        `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-        paginationToQuery({ ...params, remoteRefBehavior, cursor: pageCursor }),
-      headers,
-      config,
-      'listEvents',
-      replayEventObserver
-    );
+    try {
+      consumed = await consumeListWithSkipFallback(
+        baseUrl,
+        params.remoteRefBehavior,
+        (remoteRefBehavior) =>
+          `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+          paginationToQuery({
+            ...params,
+            remoteRefBehavior,
+            cursor: pageCursor,
+          }),
+        headers,
+        config,
+        'listEvents',
+        replayEventObserver
+      );
+    } catch (err) {
+      if (!fullLog || !ThrottleError.is(err)) throw err;
+      await waitOutThrottle(err);
+      continue;
+    }
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
     if (consumed.kind === 'partial') {
       if (
@@ -2116,7 +2144,8 @@ export async function getWorkflowRunEventsV4(
     for (const event of consumed.events) {
       events.push(event);
     }
-  } while (consumed.kind === 'partial');
+    if (consumed.kind !== 'partial') break;
+  }
 
   return {
     events,

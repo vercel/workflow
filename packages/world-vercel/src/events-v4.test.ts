@@ -14,6 +14,7 @@ import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AfterCommitError } from './event-retry.js';
 import { createWorkflowRunEventBatch, splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventsBatchV4,
@@ -25,11 +26,16 @@ import {
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { getDeadline } from './get-deadline.js';
 import {
   EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
   getEventsDispatcher,
 } from './http-client.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+
+vi.mock('./get-deadline.js', () => ({
+  getDeadline: vi.fn(async () => undefined),
+}));
 
 const CREATED_AT = '2026-06-10T00:00:00.000Z';
 
@@ -2489,5 +2495,151 @@ describe('V4 event-write retries after interrupted response bodies', () => {
       expect(StreamError.is(rejection)).toBe(true);
       expect(rejection).toHaveProperty('cause', cause);
     }
+  });
+});
+
+describe('throttled (429) event-log reads', () => {
+  const frameResponse = (...frames: Uint8Array[]) =>
+    new Response(Buffer.concat(frames), {
+      headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+    });
+  const throttled = (retryAfter: number) =>
+    new Response('{"message":"slow down"}', {
+      status: 429,
+      headers: { 'retry-after': String(retryAfter) },
+    });
+  const event = (eventId: string, eventType = 'run_started') =>
+    encodeFrame(
+      {
+        eventId,
+        runId: 'wrun_1',
+        eventType,
+        createdAt: CREATED_AT,
+        ...(eventType === 'run_created'
+          ? {
+              eventData: {
+                deploymentId: 'dpl_1',
+                workflowName: 'workflow',
+                input: null,
+              },
+            }
+          : {}),
+      },
+      new Uint8Array()
+    );
+  const end = (next?: string) =>
+    encodeFrame(
+      { _end: 1, ...(next ? { next } : {}), hasMore: false },
+      new Uint8Array()
+    );
+  const config = { token: 'test-token', dispatcher: {} };
+  /** Advance fake time until `promise` settles (reads mix I/O and timers). */
+  const settle = async <T>(promise: Promise<T>): Promise<T> => {
+    let settled = false;
+    const tracked = promise.finally(() => {
+      settled = true;
+    });
+    for (let i = 0; i < 2_000 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    return tracked;
+  };
+  const requestedUrls = () =>
+    vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(getDeadline).mockResolvedValue(undefined);
+    vi.restoreAllMocks();
+  });
+
+  it('resends a throttled continuation from its cursor, keeping the prefix', async () => {
+    let pull = 0;
+    const streamFailure = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('stream reset'), {
+        code: 'UND_ERR_SOCKET',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (pull++ === 0) controller.enqueue(event('evnt_1'));
+              else controller.error(streamFailure);
+            },
+          }),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        )
+      )
+      .mockResolvedValueOnce(throttled(2))
+      .mockResolvedValueOnce(frameResponse(event('evnt_2'), end('eid:evnt_2')));
+
+    const result = getWorkflowRunEventsV4('wrun_1', {}, config);
+
+    expect((await settle(result)).events.map((e) => e.eventId)).toEqual([
+      'evnt_1',
+      'evnt_2',
+    ]);
+    const urls = requestedUrls();
+    expect(urls).toHaveLength(3);
+    expect(urls[1]).toContain('cursor=eid%3Aevnt_1');
+    expect(urls[2]).toContain('cursor=eid%3Aevnt_1');
+  });
+
+  it.each([
+    ['from the start of the log', {}],
+    ['past a held prefix', { cursor: 'eid:evnt_1' }],
+  ])('keeps a read %s on the 30s budget', async (_name, params) => {
+    vi.mocked(getDeadline).mockResolvedValue(new Date(Date.now() + 300_000));
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => throttled(14));
+
+    const result = getWorkflowRunEventsV4('wrun_1', params, config).catch(
+      (e: unknown) => e
+    );
+
+    expect(ThrottleError.is(await settle(result))).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('leaves an explicitly paginated read to its caller', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => throttled(1));
+
+    await expect(
+      getWorkflowRunEventsV4('wrun_1', { limit: 10 }, config)
+    ).rejects.toSatisfy((e) => ThrottleError.is(e));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a throttled run_started suffix as after-commit', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(event('evnt_1', 'run_created'), {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        })
+      )
+      .mockImplementation(async () => throttled(20));
+
+    const result = createWorkflowRunStartedEventV4(
+      { runId: 'wrun_1', specVersion: 5 },
+      config
+    ).catch((e: unknown) => e);
+
+    const err = await settle(result);
+    expect(err).toBeInstanceOf(AfterCommitError);
+    expect(ThrottleError.is((err as AfterCommitError).error)).toBe(true);
+    const urls = requestedUrls();
+    expect(urls[0]).toContain('/events/run_started');
+    expect(urls.slice(1).every((url) => url.includes('cursor='))).toBe(true);
   });
 });
