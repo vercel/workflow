@@ -152,10 +152,43 @@ class DualTransport implements Transport<unknown> {
   }
 }
 
-// per-copy-ok: both ends of this store live in the same `createQueueHandler`
-// closure: the `run()` wrapper and the `getStore()` read always come from the
-// same module copy, so the context never has to cross a copy boundary.
-const requestIdStorage = new AsyncLocalStorage<string | undefined>();
+interface QueueInvocationContext {
+  collectStepIds: boolean;
+  requestId?: string;
+  stepIds: Set<string>;
+}
+
+// per-copy-ok: the route wrapper and the World hook exported from this module
+// share the same module copy through the World instance, so the context never
+// has to cross a copy boundary.
+const invocationStorage = new AsyncLocalStorage<QueueInvocationContext>();
+
+const WORKFLOW_STEP_IDS_HEADER = 'x-vercel-internal-workflow-step-ids';
+
+export function recordStepExecution(stepId: string): void {
+  const invocation = invocationStorage.getStore();
+  if (invocation?.collectStepIds) {
+    invocation.stepIds.add(stepId);
+  }
+}
+
+function attachStepIds(
+  response: Response,
+  invocation: QueueInvocationContext
+): Response {
+  if (invocation.stepIds.size === 0) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set(
+    WORKFLOW_STEP_IDS_HEADER,
+    JSON.stringify(Array.from(invocation.stepIds))
+  );
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
 
 const MessageWrapper = z.compile(
   z.object({
@@ -731,7 +764,8 @@ export function createQueue(config?: APIConfig): Queue {
           return;
         }
 
-        const requestId = requestIdStorage.getStore();
+        const invocation = invocationStorage.getStore();
+        const requestId = invocation?.requestId;
         // The CborTransport handles CBOR decoding inside deserialize(),
         // so message is already a plain object with Uint8Array values intact.
         const { payload, queueName, deploymentId } =
@@ -745,15 +779,25 @@ export function createQueue(config?: APIConfig): Queue {
           getRunIdFromPayload(payload),
           config
         );
+        const collectStepIds = !(
+          'stepId' in payload && typeof payload.stepId === 'string'
+        );
         wsEvents.open();
 
         try {
-          const result = await handler(payload, {
-            queueName,
-            messageId: MessageId.parse(metadata.messageId),
-            attempt: metadata.deliveryCount,
-            requestId,
-          });
+          const runHandler = () =>
+            handler(payload, {
+              queueName,
+              messageId: MessageId.parse(metadata.messageId),
+              attempt: metadata.deliveryCount,
+              requestId,
+            });
+          const result = await (invocation
+            ? invocationStorage.run(
+                { ...invocation, collectStepIds },
+                runHandler
+              )
+            : runHandler());
 
           if (
             !('invoke' in payload && payload.invoke === true) &&
@@ -806,7 +850,15 @@ export function createQueue(config?: APIConfig): Queue {
     return async (req: Request) => {
       const rawId = req.headers.get('x-vercel-id');
       const requestId = rawId?.trim() || undefined;
-      return requestIdStorage.run(requestId, () => vqsHandler(req));
+      const invocation: QueueInvocationContext = {
+        collectStepIds: false,
+        requestId,
+        stepIds: new Set(),
+      };
+      const response = await invocationStorage.run(invocation, () =>
+        vqsHandler(req)
+      );
+      return attachStepIds(response, invocation);
     };
   };
 

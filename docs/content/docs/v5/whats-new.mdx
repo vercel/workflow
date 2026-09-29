@@ -177,6 +177,7 @@ All three first-party Worlds now implement it: Vercel accepts up to 30 days, and
 | `NestLocalBuilder` moved out of `@workflow/nest` root | Import it from `workflow/nest/builder`, so `WorkflowModule` no longer pulls the build toolchain into the runtime bundle. `NestVercelBuilder` lives at `workflow/nest/vercel-builder`. |
 | `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
 | The legacy trace viewer is gone from `@workflow/web-shared` | Only affects apps embedding the observability UI. `RunTraceView` and `WorkflowTraceViewer` are removed, and `NewTraceViewer` is now `TraceViewer` (module path `trace-viewer`). `Span`, `SpanEvent`, and `Trace` are still exported from the package root. |
+| `startServer()` from `@workflow/web/server` resolves a `srvx` `Server` | Only affects apps that self-host the observability UI with it. Stop the server with `await server.close()`, and reach the Node `http.Server` at `server.node.server` to listen for its events. The server now also answers conditional and range requests and compresses responses. |
 
 Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
 
