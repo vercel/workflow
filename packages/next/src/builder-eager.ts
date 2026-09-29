@@ -706,7 +706,7 @@ export async function getNextBuilderEager(
       const generatedConfig = {
         version: '0',
         workflows: {
-          maxDuration: 'max',
+          maxDuration: this.config.maxDuration ?? 'max',
           experimentalTriggers: [getWorkflowQueueTrigger()],
         },
       };

@@ -456,6 +456,8 @@ export function withWorkflow(
     workflows,
   }: {
     workflows?: {
+      /** Maximum duration in seconds for the combined workflow function on Vercel. Defaults to 'max'. */
+      maxDuration?: number | 'max';
       local?: {
         port?: number;
       };
@@ -470,6 +472,17 @@ export function withWorkflow(
     };
   } = {}
 ) {
+  const maxDuration = workflows?.maxDuration;
+  if (
+    maxDuration !== undefined &&
+    maxDuration !== 'max' &&
+    (!Number.isSafeInteger(maxDuration) || maxDuration <= 0)
+  ) {
+    throw new Error(
+      'workflows.maxDuration must be a positive integer or "max"'
+    );
+  }
+
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'local';
@@ -626,6 +639,7 @@ export function withWorkflow(
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
             sourcemap: workflows?.sourcemap,
+            maxDuration,
             externalPackages: [
               // server-only and client-only are pseudo-packages handled by Next.js
               // during its build process. We mark them as external to prevent esbuild

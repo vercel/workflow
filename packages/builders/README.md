@@ -16,6 +16,10 @@ This package contains the core build logic for transforming workflow source file
 - **Build plugins**: esbuild plugins for workflow transformations
 - **SWC integration**: Compiler plugin integration for workflow directives
 
+The Next.js builder configuration accepts `maxDuration` (a positive integer in
+seconds or `'max'`) for the generated combined workflow function. The Next.js
+integration exposes it as `withWorkflow(nextConfig, { workflows: { maxDuration } })`.
+
 ## Usage
 
 This package is typically not used directly. Instead, use one of the framework-specific packages that extend `BaseBuilder`:
