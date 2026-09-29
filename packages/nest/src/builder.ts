@@ -106,6 +106,7 @@ export class NestLocalBuilder extends BaseBuilder {
       format: 'esm',
       bundleFinalOutput: false,
       externalizeNonSteps: true,
+      shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
     });
 
     // When the NestJS project compiles to CJS via SWC, the ESM steps bundle

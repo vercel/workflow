@@ -741,6 +741,7 @@ export async function getNextBuilderEager(
         externalizeNonSteps: true,
         sourceStepRegistrationImports: true,
         tsconfigPath,
+        shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
       });
     }
 

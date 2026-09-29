@@ -32,6 +32,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       flowOutfile: join(workflowsFuncDir, 'index.mjs'),
       tsconfigPath,
       bundleFinalOutput: true,
+      shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
     });
 
     // Create package.json and .vc-config.json for combined function

@@ -34,6 +34,7 @@ export class StandaloneBuilder extends BaseBuilder {
       flowOutfile: workflowBundlePath,
       tsconfigPath,
       bundleFinalOutput: true,
+      shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
     });
 
     await this.buildWebhookFunction();

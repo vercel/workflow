@@ -81,7 +81,11 @@
       "types": "./dist/describe-error.d.ts",
       "default": "./dist/describe-error.js"
     },
-    "./_workflow": "./dist/workflow/index.js"
+    "./_workflow": "./dist/workflow/index.js",
+    "./runtime/workflow-code": {
+      "types": "./dist/runtime/workflow-code.d.ts",
+      "default": "./dist/runtime/workflow-code.js"
+    }
   },
   "scripts": {
     "build": "genversion --es6 src/version.ts && node scripts/build-quickjs-assets.js && tsc",

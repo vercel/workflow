@@ -68,6 +68,7 @@ class VitestBuilder extends BaseBuilder {
       // Node's native ESM loader can only handle with erasable-syntax-only
       // type stripping (and not at all on older Node versions).
       bundleTransitiveLocalStepDependencies: true,
+      shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
     });
 
     // Emit the same manifest.json every other builder writes, next to the

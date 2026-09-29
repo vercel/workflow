@@ -74,6 +74,7 @@ class SimBuilder extends BaseBuilder {
       // project-local imports have to be inlined rather than left as bare `.ts`
       // specifiers.
       bundleTransitiveLocalStepDependencies: true,
+      shardWorkflowBundles: this.shardWorkflowBundlesEnabled,
     });
     this.manifest = manifest;
   }
