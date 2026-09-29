@@ -459,6 +459,45 @@ describe('createWorkflowRunEventBatch', () => {
   });
 });
 
+describe('createWorkflowRunEventBatch — omitStepEntity', () => {
+  it('sends omitStepEntity on no batch frame, not even a step_completed', async () => {
+    // The single-event POST declines the response `step` on step_completed;
+    // a batch must not. The server's batch path does not honour the field,
+    // and a batch carries the pre-claimed start whose `step` the runtime reads.
+    const agent = mockAgent();
+    let requestBody: Uint8Array | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+        body: (raw) => {
+          requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
+          return true;
+        },
+      })
+      .reply(200, fullSuccessBody(), {
+        headers: { 'content-type': 'application/cbor' },
+      });
+
+    await createWorkflowRunEventBatch(RUN_ID, transitionEvents(), undefined, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const frames = decodeBatchFrames(requestBody ?? new Uint8Array());
+    expect(frames.map((f) => f.meta.eventType)).toEqual([
+      'step_completed',
+      'step_created',
+      'step_started',
+    ]);
+    for (const { meta } of frames) {
+      expect('omitStepEntity' in meta).toBe(false);
+    }
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('createWorkflowRunEventBatch — retry-convergence and attribution', () => {
   it('rejects hook_received without touching the network', async () => {
     await expect(

@@ -366,6 +366,18 @@ interface CreateEventV4InputBase {
    *  defense-in-depth when it recorded a 412 rejection for this correlation
    *  id and no step entity exists. Older servers ignore it. */
   viaStepDispatch?: boolean;
+  /** Response directive: the caller does not read `step` off this write's
+   *  response, so the server may answer without it. Sent only on
+   *  `step_completed` / `step_failed` / `step_retrying` (see
+   *  `eventsOmittingStepEntity` in events.ts); a supporting server honours it
+   *  on exactly those three kinds and ignores it everywhere else, in
+   *  particular on `step_started`, whose `step` the runtime does read.
+   *  Skipping the entity lets the server take its post-commit step readback
+   *  off the response path (it still does the same consistent read after the
+   *  response, for usage facts). Older servers ignore the key and return
+   *  `step` as before, which the runtime equally never reads, so the only
+   *  difference against an old server is the missing speedup. */
+  omitStepEntity?: boolean;
 }
 
 export type CreateEventV4Input = CreateEventV4InputBase &
@@ -685,6 +697,9 @@ function buildPostFrameMeta(
   if (input.viaStepDispatch !== undefined) {
     meta.viaStepDispatch = input.viaStepDispatch;
   }
+  // Only ever `true` on the wire: the server parses it as a strict boolean
+  // and `false` is its default, so there is nothing to say for `false`.
+  if (input.omitStepEntity) meta.omitStepEntity = true;
   return meta;
 }
 
