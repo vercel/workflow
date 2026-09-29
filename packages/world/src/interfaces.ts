@@ -488,12 +488,6 @@ export interface Storage {
   };
 }
 
-/** Durable storage capabilities advertised by a World backend. */
-export interface BackendCapabilities {
-  /** Version of durable dynamic-workflow storage supported by the backend. */
-  dynamicWorkflowStorageVersion?: number;
-}
-
 /**
  * Optional feature capabilities a World implementation declares so the core
  * runtime can enable optimizations that depend on backend behavior, instead
@@ -613,6 +607,20 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
+
+  /**
+   * Stores a dynamic run's workflow code with the run. The World must persist
+   * `dynamicWorkflowCode` from `run_created` (and from a resilient
+   * `run_started` that creates the run), echo it on the created run, and
+   * return it from `runs.get` with `resolveData: 'all'` for the run's
+   * lifetime, because every replay evaluates that code and it exists nowhere
+   * else. `start()` refuses a dynamic start on a World that leaves this unset.
+   *
+   * Code too large for the creating write goes through
+   * {@link World.uploadDynamicWorkflowCode} when the World implements it;
+   * otherwise it is always sent inline.
+   */
+  dynamicWorkflowCode?: boolean;
 }
 
 /**
@@ -648,12 +656,6 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
-
-  /**
-   * Fetches live backend capabilities. Dynamic starts require exact version
-   * support and fail closed when this method or its attestation is absent.
-   */
-  getBackendCapabilities?(): Promise<BackendCapabilities>;
 
   /**
    * Validates a dynamic run's complete execution context against

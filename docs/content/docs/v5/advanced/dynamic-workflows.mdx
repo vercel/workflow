@@ -79,7 +79,7 @@ Only `1` or `true` (case-insensitive) enables them; any other value, or no value
 
 ### Same deployment only
 
-A dynamic run must execute on the deployment that started it. `start()` rejects a dynamic start whose target differs from the current deployment. That includes an explicit `deploymentId` for another deployment, `deploymentId: 'latest'` when it resolves to a different deployment, and any concrete target when the current deployment cannot be determined. The rejection happens before any capability probe, key lookup, upload, run creation, or queue message.
+A dynamic run must execute on the deployment that started it. `start()` rejects a dynamic start whose target differs from the current deployment. That includes an explicit `deploymentId` for another deployment, `deploymentId: 'latest'` when it resolves to a different deployment, and any concrete target when the current deployment cannot be determined. The rejection happens before any capability check, key lookup, upload, run creation, or queue message.
 
 ## What the source can use
 
@@ -188,12 +188,12 @@ Dynamic workflows need a World that can store the run's workflow code.
 
 | World | Support |
 | --- | --- |
-| [Vercel](/worlds/vercel) | Encrypted, ref-backed storage (small definitions transported inline; large definitions uploaded first). Requires a backend that advertises dynamic-source storage. |
+| [Vercel](/worlds/vercel) | Encrypted, ref-backed storage (small definitions transported inline; large definitions uploaded first). If dynamic-source storage is not enabled for the project, the backend rejects the run's creation and `start()` throws. |
 | [Local](/worlds/local) | Stored in plaintext on the run record in the local filesystem store. |
 | [Postgres](/worlds/postgres) | Stored in plaintext on the run row. |
-| Others | Whatever the World explicitly attests through the versioned dynamic-workflow storage capability. |
+| Others | Supported when the World declares [`capabilities.dynamicWorkflowCode`](/worlds/building-a-world). |
 
-After the opt-in and same-deployment checks, `start()` checks the backend's dynamic-workflow storage capability. A backend that does not advertise it, including one that predates the capability endpoint, fails the start. On Vercel, `start()` then validates the final execution context against the 2,048-byte limit. All of this happens before serializing or uploading code, creating an event, or publishing a queue message.
+After the opt-in and same-deployment checks, `start()` fails a dynamic start on a World that does not declare `capabilities.dynamicWorkflowCode`. On Vercel, `start()` then validates the final execution context against the 2,048-byte limit. All of this happens before serializing or uploading code, creating an event, or publishing a queue message.
 
 ## Security
 

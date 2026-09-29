@@ -1,7 +1,6 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
-import { createGetBackendCapabilities } from './backend-capabilities.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -15,7 +14,6 @@ import { createStreamer } from './streamer.js';
 import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
-export { createGetBackendCapabilities } from './backend-capabilities.js';
 export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 export { uploadDynamicWorkflowCode } from './dynamic-code.js';
 export {
@@ -79,6 +77,10 @@ export function createWorld(config?: APIConfig): World {
       // a forced creation is answered with `hook_conflict`, which the
       // runtime reports as an unsupported-World failure rather than a win.
       hookForceClaim: true,
+      // Stored with the run (inline, or behind `uploadDynamicWorkflowCode`
+      // for large definitions). The server refuses a dynamic `run_created`
+      // for a project outside its rollout, so `start()` fails at the write.
+      dynamicWorkflowCode: true,
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by
@@ -87,7 +89,6 @@ export function createWorld(config?: APIConfig): World {
       // rollback or kill switch drop new resumes to the sequential path
       // immediately, without a redeploy of this adapter.
     },
-    getBackendCapabilities: createGetBackendCapabilities(config),
     validateRunExecutionContext,
     getRuntimeDeadline: getDeadline,
     ...createQueue(config),
