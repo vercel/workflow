@@ -1,5 +1,24 @@
 # @workflow/core
 
+## 5.0.0-beta.58
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+- [#4440](https://github.com/vercel/workflow/pull/4440) [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add the optional `world.telemetry.recordStepExecution` hook so Worlds can correlate flow requests with inline-executed workflow steps.
+
+### Patch Changes
+
+- [#4478](https://github.com/vercel/workflow/pull/4478) [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Worlds declare dynamic workflow support with `capabilities.dynamicWorkflowCode`, replacing `getBackendCapabilities()`
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`29bc3e0`](https://github.com/vercel/workflow/commit/29bc3e0ee4f05b7f2fa9944b93a37fc1e199126b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serialize a `DataView` as the bytes it views. It previously fell through to devalue's built-in encoding, which persists the whole backing `ArrayBuffer` — for a view onto Node's pooled `Buffer` allocator, unrelated process memory.
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940), [`bf4b45c`](https://github.com/vercel/workflow/commit/bf4b45cc7832a50ccbccaa2cb05d73b9fe019cf1), [`f58ab84`](https://github.com/vercel/workflow/commit/f58ab8452966b6ce759942e41dc00bfdbf1f1b75), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef), [`35bc428`](https://github.com/vercel/workflow/commit/35bc42888164a3ff8a78041bf7b218cc3516f940), [`2d8b8a3`](https://github.com/vercel/workflow/commit/2d8b8a33d57d9b9aa90f15d3f7b6372f01e5799e)]:
+  - @workflow/world@5.0.0-beta.40
+  - @workflow/world-vercel@5.0.0-beta.53
+  - @workflow/world-local@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.25
+
 ## 5.0.0-beta.57
 
 ### Patch Changes

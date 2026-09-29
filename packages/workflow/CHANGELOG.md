@@ -1,5 +1,26 @@
 # workflow
 
+## 5.0.0-beta.58
+
+### Minor Changes
+
+- [#2062](https://github.com/vercel/workflow/pull/2062) [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e) Thanks [@pranaygp](https://github.com/pranaygp)! - Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `experimental_dynamic.steps` map, which is not a security boundary: dynamic source runs with the deployment's full privileges. Off by default; a deployment opts in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+
+### Patch Changes
+
+- Updated dependencies [[`ad0fcc7`](https://github.com/vercel/workflow/commit/ad0fcc7e52cf27247daed86edad9f6635a23fc08), [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`29bc3e0`](https://github.com/vercel/workflow/commit/29bc3e0ee4f05b7f2fa9944b93a37fc1e199126b), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef)]:
+  - @workflow/cli@5.0.0-beta.58
+  - @workflow/core@5.0.0-beta.58
+  - @workflow/errors@5.0.0-beta.25
+  - @workflow/next@5.0.0-beta.58
+  - @workflow/nitro@5.0.0-beta.58
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.58
+  - @workflow/nest@5.0.0-beta.58
+  - @workflow/rollup@5.0.0-beta.58
+  - @workflow/sveltekit@5.0.0-beta.58
+  - @workflow/nuxt@5.0.0-beta.58
+
 ## 5.0.0-beta.57
 
 ### Patch Changes
