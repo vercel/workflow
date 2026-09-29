@@ -4,4 +4,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Add `world.recordStepExecution?` interface to let Worlds correlate flow requests with inline-executed workflow steps.
+Add the optional `world.telemetry.recordStepExecution` hook so Worlds can correlate flow requests with inline-executed workflow steps.
