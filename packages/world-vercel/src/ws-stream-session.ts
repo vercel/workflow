@@ -664,7 +664,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
               fallback();
               return;
             }
-            this.failUnknown(error);
+            // Like close, let an already-delivered reply finish decoding so
+            // a reset right behind a 429 sees the throttled state.
+            void this.inbound.then(() => {
+              if (this.isIdleThrottledSocket(ws)) {
+                this.leaveThrottledSocketForHttp();
+                return;
+              }
+              this.failUnknown(error);
+            });
           });
           ws.once('close', (code) => {
             if (!opened) {
@@ -780,13 +788,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
       this.failUnknown(new Error('stream WebSocket closed before reply'));
       return;
     }
-    if (socket && socket === this.throttledSocket) {
-      // The server ended the connection after a retryable rejection. Resend
-      // it, and everything after it, over HTTP rather than reconnecting.
-      this.drainReason = undefined;
-      this.mode = 'http';
-      this.socket = undefined;
-      this.finishDrainWait();
+    if (socket && this.isIdleThrottledSocket(socket) && this.mode === 'ws') {
+      // The server ended the connection after a retryable rejection. A
+      // draining connection instead takes the normal drain path below.
+      this.leaveThrottledSocketForHttp();
       return;
     }
     if (this.mode === 'draining' && code !== 1001) {
@@ -991,9 +996,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
   /**
    * Sends one request, resending it (same frame contents, new reqId) after
    * each correlated 429 on the shared event-write throttle budget. A resend
-   * whose socket closed meanwhile throws StreamWsRequestNotSentError, which
-   * callers already turn into an HTTP fallback. Past the budget the writer
-   * fails with the throttle.
+   * whose socket closed meanwhile, or one past the budget, throws
+   * StreamWsRequestNotSentError, which callers turn into an HTTP fallback.
    */
   private async requestRetryingThrottle(
     operation: Operation,
@@ -1014,34 +1018,50 @@ class VercelStreamWriteSession implements StreamWriteSession {
         );
       } catch (error) {
         if (!(error instanceof StreamWsThrottledError)) throw error;
-        await this.waitOutThrottle(waitOutThrottle, error, operation);
+        await this.waitOutThrottle(waitOutThrottle, error);
       }
     }
   }
 
   private async waitOutThrottle(
     wait: (error: StreamWsThrottledError, signal: AbortSignal) => Promise<void>,
-    error: StreamWsThrottledError,
-    operation: Operation
+    error: StreamWsThrottledError
   ): Promise<void> {
     try {
       await wait(error, this.terminated.signal);
     } catch {
       // Disposed or poisoned during the wait.
       this.assertUsable();
-      const poisoned = this.poison(
-        new Error(
-          `${error.message} (retry budget exhausted before the ${operation} was accepted)`,
-          { cause: error }
-        )
-      );
-      this.finishDrainWait();
-      this.socket?.close(1000, 'stream request throttled');
-      throw poisoned;
+      // Budget exhausted. The request did not apply and nothing is
+      // outstanding, so hand it to HTTP, whose dispatcher applies its own
+      // 429 policy, rather than failing a write HTTP would complete.
+      this.fallbackToHttpBeforeSend('stream request throttled');
+      throw new StreamWsRequestNotSentError(error);
     } finally {
       this.throttledSocket = undefined;
     }
+    // A drain during the wait parks here until its reconnect is decided; the
+    // resend then goes over the new socket, or over HTTP.
+    await this.transportDecision;
     this.assertUsable();
+  }
+
+  private isIdleThrottledSocket(socket: WebSocket): boolean {
+    return (
+      !this.pending && socket === this.throttledSocket && socket === this.socket
+    );
+  }
+
+  /**
+   * The connection ended after a retryable rejection with nothing outstanding:
+   * the rejected request did not apply, so it and everything after it can go
+   * over HTTP rather than reconnecting.
+   */
+  private leaveThrottledSocketForHttp(): void {
+    this.drainReason = undefined;
+    this.mode = 'http';
+    this.socket = undefined;
+    this.finishDrainWait();
   }
 
   private failUnknown(error: unknown): void {

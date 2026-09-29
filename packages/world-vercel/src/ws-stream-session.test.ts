@@ -883,6 +883,23 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(writeHttp).not.toHaveBeenCalled();
   });
 
+  it('fails a declined writer for good after an HTTP write fails', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp, closeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].emit('unexpected-response', {}, {});
+    const error = new Error('Stream write failed: HTTP 503');
+    writeHttp.mockRejectedValueOnce(error);
+
+    // Its outcome is unknown, so no later write may apply ahead of a retry of
+    // it; core's sink never reaches close() after a failed write either.
+    await expect(session.write(0, ['one'])).rejects.toBe(error);
+    await expect(session.write(1, ['two'])).rejects.toBe(error);
+    await expect(session.close()).rejects.toBe(error);
+    expect(writeHttp.mock.calls).toEqual([[['one']]]);
+    expect(closeHttp).not.toHaveBeenCalled();
+  });
+
   it('tombstones and cleans up a pre-OPEN decline', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp } = makeSession();
@@ -1092,12 +1109,9 @@ describe('v1 stream WebSocket throttling', () => {
     expect(socket.sent).toHaveLength(1);
   });
 
-  it('fails the writer once throttling outlasts the retry budget', async () => {
+  it('hands a write to HTTP once throttling outlasts the retry budget', async () => {
     const { session, socket, writeHttp } = await openSession();
     const writing = session.write(0, ['one']);
-    const failed = expect(writing).rejects.toThrow(
-      'stream WebSocket write throttled (429): slow down (retry budget exhausted'
-    );
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
 
     vi.useFakeTimers();
@@ -1117,12 +1131,78 @@ describe('v1 stream WebSocket throttling', () => {
       message: 'slow down',
       retryAfter: '20',
     });
-    await failed;
+    await writing;
+    await session.write(1, ['two']);
 
-    await expect(session.write(1, ['two'])).rejects.toThrow('throttled (429)');
     expect(socket.sent).toHaveLength(2);
     expect(socket.closed).toContainEqual([1000, 'stream request throttled']);
+    expect(writeHttp.mock.calls).toEqual([[['one']], [['two']]]);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('hands a write to HTTP when retryAfter alone exceeds the budget, even after close', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '60' });
+    socket.emit('close', 1011);
+    await writing;
+
+    expect(socket.sent).toHaveLength(1);
+    expect(writeHttp.mock.calls).toEqual([[['one']]]);
+  });
+
+  it('reconnects through a drain that arrives during the wait', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(3, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '1' });
+    reply(socket, { type: 'drain', reason: 'max_duration', graceMs: 10_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Parked behind the drain: nothing is resent on the draining socket.
+    expect(socket.sent).toHaveLength(1);
+
+    socket.emit('close', 1001);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    const next = sockets[1];
+    next.open();
+    await vi.waitFor(() => expect(next.sent).toHaveLength(1));
+    expect((await decodeOne(next.sent[0])).meta).toEqual({
+      type: 'write',
+      reqId: 2,
+      chunkSeq: 3,
+      numChunks: 1,
+    });
+    reply(next, { type: 'write_ack', reqId: 2 });
+    await writing;
+
     expect(writeHttp).not.toHaveBeenCalled();
+    expect(socket.closed).toEqual([]);
+  });
+
+  it('falls back to HTTP when the socket resets during the wait', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '1' });
+    socket.emit(
+      'error',
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    );
+    socket.emit('close', 1006);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await writing;
+    await session.write(1, ['two']);
+
+    expect(socket.sent).toHaveLength(1);
+    expect(writeHttp.mock.calls).toEqual([[['one']], [['two']]]);
+    expect(sockets).toHaveLength(1);
   });
 
   it('resends a throttled close', async () => {
