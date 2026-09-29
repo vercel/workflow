@@ -1044,8 +1044,28 @@ export interface CreateEventParams {
    * must therefore be idempotent. Throwing aborts the operation and the World
    * must surface the original error without retrying or reclassifying it.
    */
-  replayEventObserver?: (event: Event) => void;
+  replayEventObserver?: ReplayEventObserver;
 }
+
+/**
+ * What a World knows about the wire frame an observed replay event arrived in.
+ * Measurement only: nothing about replay may depend on it, and a World that
+ * does not stream frames passes nothing (see
+ * `WorldCapabilities.replayEventFrameBytes`).
+ */
+export interface ReplayEventFrame {
+  /**
+   * Bytes the event occupied on the wire, framing included: what the response
+   * body spent on this one event.
+   */
+  byteLength: number;
+}
+
+/** See {@link CreateEventParams.replayEventObserver}. */
+export type ReplayEventObserver = (
+  event: Event,
+  frame?: ReplayEventFrame
+) => void;
 
 /**
  * Result of creating an event. Includes the created event and optionally

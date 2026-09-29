@@ -117,6 +117,63 @@ export type WorkflowReplayLoadSource =
 export const WorkflowReplayLoadSource =
   SemanticConvention<WorkflowReplayLoadSource>('workflow.replay.load.source');
 
+/*
+ * Event-log prefix shadow (runtime/event-log-prefix-shadow.ts), on the
+ * `workflow.replay.load` span of a `run_started` / `hook_preload` load. Only
+ * set when WORKFLOW_EVENT_LOG_PREFIX_SHADOW is on. Metadata about what a
+ * cross-invocation prefix cache would have met; nothing here is a payload.
+ */
+
+/** What a prefix cache would have met (`PrefixShadowOutcome`). */
+export const WorkflowReplayPrefixShadowOutcome = SemanticConvention<string>(
+  'workflow.replay.prefix_shadow.outcome'
+);
+/** A complete hit long enough to pass the claim gate. */
+export const WorkflowReplayPrefixShadowWouldClaim = SemanticConvention<boolean>(
+  'workflow.replay.prefix_shadow.would_claim'
+);
+/** Dense prefix length (N) of the entry an earlier invocation left. */
+export const WorkflowReplayPrefixShadowCachedSlots = SemanticConvention<number>(
+  'workflow.replay.prefix_shadow.cached_slots'
+);
+/** Bytes a real cache would have held for that entry. */
+export const WorkflowReplayPrefixShadowCachedBytes = SemanticConvention<number>(
+  'workflow.replay.prefix_shadow.cached_bytes'
+);
+/** Time since the entry was last filled or hit. */
+export const WorkflowReplayPrefixShadowEntryAgeMs = SemanticConvention<number>(
+  'workflow.replay.prefix_shadow.entry_age_ms'
+);
+/** Distinct events the preload stream carried. */
+export const WorkflowReplayPrefixShadowStreamEvents =
+  SemanticConvention<number>('workflow.replay.prefix_shadow.stream_events');
+/** Wire bytes of those events. */
+export const WorkflowReplayPrefixShadowStreamBytes = SemanticConvention<number>(
+  'workflow.replay.prefix_shadow.stream_bytes'
+);
+/** Wire bytes of streamed events at or below N, on a hit. */
+export const WorkflowReplayPrefixShadowWouldSkipBytes =
+  SemanticConvention<number>('workflow.replay.prefix_shadow.would_skip_bytes');
+/** Request start to the frame at slot N, on a hit. */
+export const WorkflowReplayPrefixShadowTimeToPrefixEndMs =
+  SemanticConvention<number>(
+    'workflow.replay.prefix_shadow.time_to_prefix_end_ms'
+  );
+/** Request start to the frame at slot N + 1. */
+export const WorkflowReplayPrefixShadowTimeToFirstTailFrameMs =
+  SemanticConvention<number>(
+    'workflow.replay.prefix_shadow.time_to_first_tail_frame_ms'
+  );
+/** Request start to the end of the load. */
+export const WorkflowReplayPrefixShadowStreamDurationMs =
+  SemanticConvention<number>(
+    'workflow.replay.prefix_shadow.stream_duration_ms'
+  );
+/** Dense prefix length of what this load returned (this invocation's fill). */
+export const WorkflowReplayPrefixShadowDenseSlots = SemanticConvention<number>(
+  'workflow.replay.prefix_shadow.dense_slots'
+);
+
 /**
  * Events the replay walked past that no consumer claimed, still held when the
  * replay stopped.

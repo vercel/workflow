@@ -37,6 +37,7 @@ import {
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
+  type ReplayEventObserver,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -1069,7 +1070,7 @@ async function decodeCreateEventResponse<T extends EventType>(
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
@@ -1555,7 +1556,7 @@ export type HookReceivedPreloadV4Result =
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1751,7 +1752,7 @@ function partialEventFrameStream(
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1787,7 +1788,7 @@ async function consumeEventFrameStream(
       const event = decodeEventFrame(frame);
       events.push(event);
       try {
-        replayEventObserver?.(event);
+        replayEventObserver?.(event, { byteLength: frame.byteLength });
       } catch (error) {
         throw new ReplayEventObserverError(error);
       }
@@ -1840,7 +1841,7 @@ async function consumeReplayLogResponse(
     eventsRemoteRefBehavior,
   }: Pick<CreateEventV4InputBase, 'runId' | 'eventsRemoteRefBehavior'>,
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ): Promise<ListEventsV4Result> {
   const page = await consumeEventFrameStream(
     response,
@@ -1895,7 +1896,7 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
     url,
@@ -1970,7 +1971,7 @@ async function consumeListWithSkipFallback(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ): Promise<EventFrameStreamResult> {
   if (
     requested === 'skip-step-inputs' &&
@@ -2044,7 +2045,7 @@ export async function getWorkflowRunEventsV4(
   runId: string,
   params: ListEventsV4Params = {},
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: ReplayEventObserver
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];

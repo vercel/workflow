@@ -29,6 +29,7 @@ import {
   isSealedNoopEvent,
   isTerminalRunEventType,
   isTerminalWorkflowRunStatus,
+  type ReplayEventObserver,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -76,6 +77,7 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import { PrefixShadowSession } from './runtime/event-log-prefix-shadow.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -1179,6 +1181,17 @@ export function workflowEntrypoint(
                     }
                     replayPayloadCache?.prepareEvent(event);
                   };
+                  // Event-log prefix shadow (runtime/event-log-prefix-shadow.ts):
+                  // measures what a cross-invocation prefix cache would have
+                  // saved this invocation's preload, and records this
+                  // invocation's dense prefix for the next one. Undefined
+                  // (and every use below a no-op) unless
+                  // WORKFLOW_EVENT_LOG_PREFIX_SHADOW is on and the World
+                  // reports frame sizes. Metadata only; nothing it does can
+                  // reach replay, and every call into it is guarded so a bug
+                  // in the measurement cannot fail a run.
+                  const prefixShadow = PrefixShadowSession.open(world, runId);
+
                   // Every write this loop makes carries the cursor of the log
                   // it was computed against, and folds a complete returned
                   // delta into that log.
@@ -1195,22 +1208,38 @@ export function workflowEntrypoint(
                       resolveData: REPLAY_RESOLVE_DATA,
                       ...params,
                     };
-                    const result = await replayRecoveryReporter.withEventCreate(
-                      sinceCursor === undefined
-                        ? withSnapshot
-                        : { ...withSnapshot, sinceCursor },
-                      (p) => world.events.create(runId, data, p)
-                    );
+                    const result = await replayRecoveryReporter
+                      .withEventCreate(
+                        sinceCursor === undefined
+                          ? withSnapshot
+                          : { ...withSnapshot, sinceCursor },
+                        (p) => world.events.create(runId, data, p)
+                      )
+                      .catch((err: unknown) => {
+                        prefixShadow?.noteWriteRefused(
+                          data.eventType,
+                          err,
+                          params?.preloadEvents === true
+                        );
+                        throw err;
+                      });
+                    prefixShadow?.noteWrite(data.eventType);
                     if (sinceCursor !== undefined) {
                       absorbCreateDelta(sinceCursor, result);
                     }
                     return result;
                   };
 
-                  const traceReplayLoad = <T extends { events?: Event[] }>(
+                  const traceReplayLoad = <
+                    T extends {
+                      events?: Event[];
+                      run?: { specVersion?: number };
+                      hasMore?: boolean;
+                    },
+                  >(
                     source: Attribute.WorkflowReplayLoadSource,
                     load: (
-                      replayEventObserver: (event: Event) => void
+                      replayEventObserver: ReplayEventObserver
                     ) => Promise<T>
                   ): Promise<T> =>
                     trace('workflow.replay.load', async (loadSpan) => {
@@ -1219,12 +1248,15 @@ export function workflowEntrypoint(
                         ...Attribute.WorkflowRunId(runId),
                         ...Attribute.WorkflowReplayLoadSource(source),
                       });
+                      const shadowLoad = prefixShadow?.tryBeginLoad(source);
                       try {
-                        const result = await load((event) => {
+                        const result = await load((event, frame) => {
                           eventsCount++;
+                          shadowLoad?.tryObserve(event, frame);
                           prepareReplayEvent(event);
                         });
                         eventsCount = result.events?.length ?? eventsCount;
+                        shadowLoad?.tryConclude(result, loadSpan);
                         return result;
                       } finally {
                         loadSpan?.setAttributes(
@@ -3501,11 +3533,24 @@ export function workflowEntrypoint(
                           type: 'ready',
                         };
                         if (settled.gap !== undefined) {
+                          prefixShadow?.tryEvict();
                           throw new CorruptedEventLogError(
                             `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
                           );
                         }
                       }
+
+                      // The log this replay turn is about to consume is the
+                      // fill a real prefix cache would make: settled, and
+                      // assembled from World responses only. Recording it
+                      // here (not just after the preload) is what lets the
+                      // next invocation's measurement see everything this
+                      // one learned, as a real cache would. It evicts instead
+                      // when the log records the run's end.
+                      prefixShadow?.tryRecordLog(
+                        eventLog.events,
+                        workflowRun?.specVersion
+                      );
 
                       // Completing elapsed waits refreshes the event snapshot.
                       // A concurrent handler may have written the terminal run

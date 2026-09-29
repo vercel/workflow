@@ -3,6 +3,7 @@ import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
 import { globalSingleton, once } from '@workflow/utils';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import type { PrefixShadowMeasurement } from './runtime/event-log-prefix-shadow.js';
 import * as Attr from './telemetry/semantic-conventions.js';
 
 // ============================================================
@@ -387,6 +388,66 @@ export async function recordStepExecutionDuration(
 ): Promise<void> {
   const histogram = await StepExecutionDurationHistogram.value;
   histogram?.record(durationMs, { 'workflow.step.status': status });
+}
+
+const PrefixShadowInstruments = once(async () => {
+  const otel = await OtelApi.value;
+  if (!otel) return null;
+  const meter = otel.metrics.getMeter('workflow');
+  return {
+    loads: meter.createCounter('workflow.replay.prefix_shadow.loads', {
+      description:
+        'Replay preloads measured by the event-log prefix shadow, by what a prefix cache would have met',
+    }),
+    bytes: meter.createCounter('workflow.replay.prefix_shadow.bytes', {
+      description:
+        'Preload stream bytes (kind=stream) and the share a prefix cache would have skipped (kind=would_skip)',
+      unit: 'By',
+    }),
+    prefixStreamDuration: meter.createHistogram(
+      'workflow.replay.prefix_shadow.prefix_stream_duration',
+      {
+        description:
+          'Time from a preload request to the last frame a prefix cache would have skipped, on would-hit loads',
+        unit: 'ms',
+      }
+    ),
+  };
+});
+
+/**
+ * Emit one event-log prefix shadow measurement as metrics. Spans are sampled,
+ * and the decision the shadow exists for is a ratio of byte sums and a p90, so
+ * it needs the full population. Every dimension is bounded (source, outcome,
+ * would_claim, kind); nothing identifying a run or tenant is attached.
+ */
+export async function recordEventLogPrefixShadow(
+  measurement: PrefixShadowMeasurement
+): Promise<void> {
+  const instruments = await PrefixShadowInstruments.value;
+  if (!instruments) return;
+  const attributes = {
+    'workflow.replay.load.source': measurement.source,
+    'workflow.replay.prefix_shadow.outcome': measurement.outcome,
+    'workflow.replay.prefix_shadow.would_claim': measurement.wouldClaim,
+  };
+  instruments.loads.add(1, attributes);
+  instruments.bytes.add(measurement.streamBytes, {
+    ...attributes,
+    'workflow.replay.prefix_shadow.kind': 'stream',
+  });
+  if (measurement.wouldSkipBytes > 0) {
+    instruments.bytes.add(measurement.wouldSkipBytes, {
+      ...attributes,
+      'workflow.replay.prefix_shadow.kind': 'would_skip',
+    });
+  }
+  if (measurement.timeToPrefixEndMs !== undefined) {
+    instruments.prefixStreamDuration.record(
+      measurement.timeToPrefixEndMs,
+      attributes
+    );
+  }
 }
 
 /**

@@ -63,6 +63,7 @@ describe('workflow-stream-ws/v1 contract', () => {
       expect(decoded).toEqual({
         meta: frame.meta,
         body: fromHex(frame.bodyHex),
+        byteLength: raw.byteLength,
       });
 
       const type = decoded.meta.type;
@@ -164,11 +165,11 @@ describe('workflow-stream-ws/v1 contract', () => {
   });
 
   it('encodes close with an empty body', async () => {
-    await expect(
-      decodeOne(encodeStreamWsCloseRequest({ type: 'close', reqId: 2 }))
-    ).resolves.toEqual({
+    const raw = encodeStreamWsCloseRequest({ type: 'close', reqId: 2 });
+    await expect(decodeOne(raw)).resolves.toEqual({
       meta: { type: 'close', reqId: 2 },
       body: new Uint8Array(),
+      byteLength: raw.byteLength,
     });
   });
 
