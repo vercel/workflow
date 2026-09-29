@@ -204,6 +204,21 @@ function executorInput(message: unknown) {
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * Stop claiming jobs without closing the queue. The Graphile Worker runner
+   * is stopped gracefully: jobs already running finish and are recorded as
+   * usual. Until `resumeClaims()`, neither `start()` nor `queue()` starts
+   * another runner, while enqueueing keeps working. Resolves once the stop
+   * has begun, not once the stopped runner's jobs are done; `close()` waits
+   * for those.
+   */
+  pauseClaims(): Promise<void>;
+  /**
+   * Start claiming again after `pauseClaims()`. Starts only the runner: the
+   * active-run recovery that `world.start()` performs is not repeated. Before
+   * `start()` has run, this only lifts the pause.
+   */
+  resumeClaims(): Promise<void>;
 };
 
 export function createQueue(
@@ -389,6 +404,14 @@ export function createQueue(
   let runnerStart: RunnerStart | null = null;
   let closing = false;
   let startPromise: Promise<void> | null = null;
+  // While true, no runner is started: not by start(), and not by queue(),
+  // which calls start() on every enqueue.
+  let claimsPaused = false;
+  // Stops that pauseClaims() began; each waits for the jobs its runner had in
+  // flight, and close() waits for them.
+  const stoppingRunners = new Set<Promise<void>>();
+  // pauseClaims() and resumeClaims() apply one at a time, in call order.
+  let claimsTransition: Promise<void> = Promise.resolve();
 
   function markMessageCompleted(idempotencyKey: string) {
     completedMessages.delete(idempotencyKey);
@@ -725,7 +748,7 @@ export function createQueue(
   }
 
   async function startRunnerWhenExecutorIsReady(): Promise<void> {
-    if (closing || runner || runnerStart) {
+    if (closing || claimsPaused || runner || runnerStart) {
       return;
     }
 
@@ -781,6 +804,67 @@ export function createQueue(
     if (!closing && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
+  }
+
+  /** Apply a claims change after the one before it. The chain never rejects,
+   *  so a failed change cannot wedge the next; the caller still gets its own
+   *  change's outcome. */
+  function changeClaims(change: () => Promise<void>): Promise<void> {
+    const next = claimsTransition.then(change);
+    claimsTransition = next.catch(() => {});
+    return next;
+  }
+
+  /** Stop a runner gracefully without waiting for it here; close() waits. */
+  function stopInBackground(stopping: Runner): void {
+    const stopped: Promise<void> = (async () => {
+      try {
+        await stopping.stop();
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== 'Runner is already stopped'
+        ) {
+          console.warn(
+            '[world-postgres] Graphile Worker failed to stop while pausing claims:',
+            error
+          );
+        }
+      }
+      await stopping.promise.catch(() => {});
+    })().finally(() => {
+      stoppingRunners.delete(stopped);
+    });
+    stoppingRunners.add(stopped);
+  }
+
+  function pauseClaims(): Promise<void> {
+    return changeClaims(async () => {
+      claimsPaused = true;
+      if (runnerStart) {
+        runnerStart.controller.abort();
+        await runnerStart.promise.catch(() => {});
+      }
+      // Read after that start settled: one already past its abort check sets
+      // `runner` anyway.
+      const stopping = runner;
+      runner = null;
+      if (stopping) {
+        stopInBackground(stopping);
+      }
+    });
+  }
+
+  function resumeClaims(): Promise<void> {
+    return changeClaims(async () => {
+      claimsPaused = false;
+      const started = startPromise;
+      if (closing || !started) {
+        return;
+      }
+      await started;
+      await startRunnerWhenExecutorIsReady();
+    });
   }
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
@@ -999,8 +1083,12 @@ export function createQueue(
     queue,
     ...(invocations ? { invoke } : {}),
     start,
+    pauseClaims,
+    resumeClaims,
     async close() {
       closing = true;
+      // A pause or resume under way can still leave a runner behind.
+      await claimsTransition;
       await invocations?.close();
       if (runnerStart) {
         runnerStart.controller.abort();
@@ -1023,6 +1111,10 @@ export function createQueue(
         await activeRunner.promise.catch(() => {});
         runner = null;
       }
+      // A runner pauseClaims() stopped can still be running jobs, and a job
+      // that finishes after the worker utils are released cannot enqueue its
+      // reschedule.
+      await Promise.all(stoppingRunners);
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;
