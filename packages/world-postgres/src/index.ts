@@ -56,7 +56,13 @@ export function createWorld(
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
   }
-): World & { start(): Promise<void> } {
+): World & {
+  start(): Promise<void>;
+  /** See `PostgresQueue.pauseClaims`. */
+  pauseClaims(): Promise<void>;
+  /** See `PostgresQueue.resumeClaims`. */
+  resumeClaims(): Promise<void>;
+} {
   const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
   const pool =
     config.pool ||
