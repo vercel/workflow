@@ -1164,6 +1164,36 @@ describe('createQueue', () => {
       );
     });
 
+    it('reports at most 10 unique step IDs per flow request', async () => {
+      mockHandleCallback.mockImplementation((handler) => {
+        return async () => {
+          await handler(
+            {
+              payload: { runId: 'run-123' },
+              queueName: '__wkf_workflow_test',
+            },
+            { messageId: 'msg-123', deliveryCount: 1 }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const stepIds = Array.from({ length: 12 }, (_, index) => `step-${index}`);
+      const routeHandler = createQueue().createQueueHandler(
+        '__wkf_workflow_',
+        async () => {
+          for (const stepId of stepIds) recordStepExecution(stepId);
+          recordStepExecution(stepIds[0]);
+        }
+      );
+
+      const response = await routeHandler(new Request('http://localhost'));
+
+      expect(response.headers.get('x-vercel-internal-workflow-step-ids')).toBe(
+        JSON.stringify(stepIds.slice(0, 10))
+      );
+    });
+
     it('isolates step IDs between concurrent flow requests', async () => {
       mockHandleCallback.mockImplementation((handler) => {
         return async (request: Request) => {
