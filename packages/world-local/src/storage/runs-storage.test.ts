@@ -6,6 +6,7 @@ import {
   ATTRIBUTE_KEY_MAX_LENGTH,
   AttributeValidationError,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
+  SPEC_VERSION_CURRENT,
   type Storage,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -230,5 +231,61 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
     const refreshed = await storage.runs.get(run.runId);
     expect(Object.keys(refreshed.attributes ?? {})).toHaveLength(20);
+  });
+});
+
+describe("runs resolveData: 'none' (world-local)", () => {
+  let testDir: string;
+  let storage: Storage;
+  const DYNAMIC_CODE = new Uint8Array([10, 10, 10]);
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'resolve-none-test-'));
+    storage = createStorage(testDir);
+  });
+
+  afterEach(async () => {
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  async function dynamicRun() {
+    const created = await storage.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName:
+          'workflow//dynamic/0123456789abcdef0123456789abcdef//workflow',
+        input: new Uint8Array([1]),
+        dynamicWorkflowCode: DYNAMIC_CODE,
+      },
+    });
+    if (!created.run) throw new Error('Expected run to be created');
+    return created.run;
+  }
+
+  it("omits a dynamic run's stored code from get, getMany, and list", async () => {
+    const run = await dynamicRun();
+
+    const got = await storage.runs.get(run.runId, { resolveData: 'none' });
+    expect(got).not.toHaveProperty('dynamicWorkflowCode');
+    expect(got.input).toBeUndefined();
+
+    const [many] = await storage.runs.getMany!([run.runId], {
+      resolveData: 'none',
+    });
+    expect(many).not.toHaveProperty('dynamicWorkflowCode');
+
+    const listed = await storage.runs.list({ resolveData: 'none' });
+    const found = listed.data.find((r) => r.runId === run.runId);
+    expect(found).toBeDefined();
+    expect(found).not.toHaveProperty('dynamicWorkflowCode');
+  });
+
+  it("returns a dynamic run's stored code with resolveData: 'all'", async () => {
+    const run = await dynamicRun();
+
+    const got = await storage.runs.get(run.runId, { resolveData: 'all' });
+    expect(got.dynamicWorkflowCode).toEqual(DYNAMIC_CODE);
   });
 });

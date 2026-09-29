@@ -47,6 +47,7 @@ async function createRun(
     input: Uint8Array;
     executionContext?: Record<string, unknown>;
     attributes?: Record<string, string>;
+    dynamicWorkflowCode?: Uint8Array;
   }
 ): Promise<WorkflowRun> {
   const result = await events.create(null, {
@@ -319,6 +320,31 @@ describe('Storage (Postgres integration)', () => {
         await expect(runs.get('missing')).rejects.toMatchObject({
           name: 'WorkflowRunNotFoundError',
         });
+      });
+
+      it("omits a dynamic run's stored code with resolveData: 'none'", async () => {
+        const code = new Uint8Array([10, 10, 10]);
+        const created = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName:
+            'workflow//dynamic/0123456789abcdef0123456789abcdef//workflow',
+          input: new Uint8Array([1]),
+          dynamicWorkflowCode: code,
+        });
+
+        const none = await runs.get(created.runId, { resolveData: 'none' });
+        expect(none).not.toHaveProperty('dynamicWorkflowCode');
+        const [many] = await runs.getMany!([created.runId], {
+          resolveData: 'none',
+        });
+        expect(many).not.toHaveProperty('dynamicWorkflowCode');
+        const listed = await runs.list({ resolveData: 'none' });
+        expect(
+          listed.data.find((run) => run.runId === created.runId)
+        ).not.toHaveProperty('dynamicWorkflowCode');
+
+        const all = await runs.get(created.runId, { resolveData: 'all' });
+        expect(all.dynamicWorkflowCode).toEqual(code);
       });
     });
 

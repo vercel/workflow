@@ -419,6 +419,27 @@ export function isVmRetentionEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
+/** Environment variable that opts a deployment into dynamic workflows. */
+export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
+
+/**
+ * Whether this deployment executes dynamic workflows (default OFF).
+ *
+ * Dynamic source runs with the full privileges of the deployment's functions,
+ * so a deployment must opt in before it starts a dynamic run, advertises
+ * dynamic support in its health check, or executes stored dynamic code on a
+ * delivery. Only `1` or `true` (case-insensitive) enables it; any other value
+ * leaves it off.
+ *
+ * Reads `process.env.WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` on every call so
+ * the deployment's runtime environment decides, not the build.
+ */
+export function isDynamicWorkflowsEnabled(): boolean {
+  const raw = process.env[DYNAMIC_WORKFLOWS_ENV];
+  if (raw === undefined) return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
 /**
  * Whether inline step ownership is enabled (default ON). When on, the lazy
  * `step_started` that creates an inline step records the owning queue

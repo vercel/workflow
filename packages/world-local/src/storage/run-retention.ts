@@ -56,6 +56,10 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
     input: undefined,
     output: undefined,
     error: undefined,
+    // A dynamic run's stored workflow code is application source, and as
+    // much user data as the input it ran on. The run is terminal, so nothing
+    // replays it again.
+    dynamicWorkflowCode: undefined,
     expiredAt: purgedAt,
   };
 }
@@ -95,6 +99,13 @@ export async function purgeRunEntityData(
       if (!eventData || typeof eventData !== 'object') return;
       for (const field of getEventDataRefFields(String(event.eventType))) {
         delete (eventData as Record<string, unknown>)[field];
+      }
+      if (
+        event.eventType === 'run_created' ||
+        event.eventType === 'run_started'
+      ) {
+        delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
+        delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
       }
     }),
     scrubHookMetadata(basedir, runId),
