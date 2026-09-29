@@ -1635,7 +1635,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      recordStepExecution,
+      telemetry: { recordStepExecution },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (

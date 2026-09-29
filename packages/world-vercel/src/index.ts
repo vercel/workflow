@@ -70,7 +70,6 @@ export function createWorld(config?: APIConfig): World {
       // immediately, without a redeploy of this adapter.
     },
     getRuntimeDeadline: getDeadline,
-    recordStepExecution,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.
@@ -95,5 +94,6 @@ export function createWorld(config?: APIConfig): World {
       config?.dispatcher
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
+    telemetry: { recordStepExecution },
   };
 }
