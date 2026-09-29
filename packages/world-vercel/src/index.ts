@@ -31,6 +31,15 @@ export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
+/**
+ * Open a run's WebSocket events channel and return its release (or
+ * `undefined` when the World writes over HTTP). Event writes for that run go
+ * over the socket while at least one claim is held. The flow route already
+ * does this for queue deliveries; call it yourself when you write a run's
+ * events from anywhere else, and call the release when you are done, or the
+ * open socket keeps the process alive.
+ */
+export { openWsChannel as openEventsChannel } from './ws-transport.js';
 
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
