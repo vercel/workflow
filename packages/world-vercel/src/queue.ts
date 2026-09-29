@@ -164,10 +164,15 @@ interface QueueInvocationContext {
 const invocationStorage = new AsyncLocalStorage<QueueInvocationContext>();
 
 const WORKFLOW_STEP_IDS_HEADER = 'x-vercel-internal-workflow-step-ids';
+// Keep the response header and downstream request-log cardinality bounded.
+const MAX_WORKFLOW_STEP_IDS = 10;
 
 export function recordStepExecution(stepId: string): void {
   const invocation = invocationStorage.getStore();
-  if (invocation?.collectStepIds) {
+  if (
+    invocation?.collectStepIds &&
+    invocation.stepIds.size < MAX_WORKFLOW_STEP_IDS
+  ) {
     invocation.stepIds.add(stepId);
   }
 }
