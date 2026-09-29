@@ -7,7 +7,7 @@ import { createGetEncryptionKeyForRun } from './encryption.js';
 import { validateRunExecutionContext } from './execution-context.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
-import { createQueue } from './queue.js';
+import { createQueue, recordStepExecution } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -119,5 +119,6 @@ export function createWorld(config?: APIConfig): World {
       config?.dispatcher
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
+    telemetry: { recordStepExecution },
   };
 }

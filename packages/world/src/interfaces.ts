@@ -838,4 +838,19 @@ export interface World extends Queue, Streamer, Storage {
     | Record<string, string | null>
     | null
     | Promise<Record<string, string | null> | null>;
+
+  /**
+   * Optional telemetry write namespace for non-critical observability signals.
+   */
+  telemetry?: Telemetry;
+}
+
+export interface Telemetry {
+  /**
+   * Called immediately before a step's user code begins executing.
+   *
+   * Worlds may use this synchronous hook to correlate step execution with the
+   * current platform invocation. Implementations must not throw.
+   */
+  recordStepExecution?(stepId: string): void;
 }
