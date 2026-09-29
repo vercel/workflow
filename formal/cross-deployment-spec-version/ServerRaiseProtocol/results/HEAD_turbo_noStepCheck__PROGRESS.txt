@@ -1,0 +1,564 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 26 and seed 3656031620620718147 with 3 workers on 8 cores with 2731MB heap and 64MB offheap memory [pid: 71269] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.aUoipbd3Fj/ServerRaiseProtocol.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ServerRaiseProtocol
+Starting... (2026-09-25 19:34:07)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Finished computing initial states: 48 distinct states generated at 2026-09-25 19:34:08.
+Checking temporal properties for the current state space with 99130 total distinct states at (2026-09-25 19:34:11)
+Finished checking temporal properties in 00s at 2026-09-25 19:34:11
+Progress(10) at 2026-09-25 19:34:11: 230,183 states generated (230,183 s/min), 99,251 distinct states found (99,251 ds/min), 38,929 states left on queue.
+Error: Invariant GoodOutcome is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {}
+/\ peak = 0
+/\ row = [st |-> "none", sp |-> 0, ex |-> FALSE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 2: <CallerRow line 409, col 3 to line 437, col 65 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"]}
+/\ peak = 3
+/\ row = [st |-> "pending", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"fetch", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 3: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"]}
+/\ peak = 3
+/\ row = [st |-> "pending", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"fetch", "upg_check">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 4: <ExUpgCheck line 563, col 3 to line 572, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"]}
+/\ peak = 3
+/\ row = [st |-> "pending", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"fetch", "upg_head">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 5: <ExUpgHead line 575, col 3 to line 603, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"]}
+/\ peak = 3
+/\ row = [st |-> "pending", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"fetch", "upg_tx">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 6: <ExUpgTx line 628, col 3 to line 650, col 41 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 7
+/\ row = [st |-> "pending", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 7]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"fetch", "upg_reread">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 7: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 7
+/\ row = [st |-> "pending", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 7]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"upg_check", "upg_reread">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 8: <ExUpgCheck line 563, col 3 to line 572, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 7
+/\ row = [st |-> "pending", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 7]}
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"trans", "upg_reread">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 9: <ExTrans line 676, col 3 to line 728, col 41 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"rs_insert", "upg_reread">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 10: <ExUpgReread line 653, col 3 to line 662, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "running", sp |-> 7]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"rs_insert", "trans">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 11: <ExTrans line 676, col 3 to line 728, col 41 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = {[sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "running", sp |-> 7]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"rs_insert", "tstep">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 12: <ExRsInsert line 731, col 3 to line 739, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "running", sp |-> 7]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"replay", "tstep">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 13: <ExTStep line 755, col 3 to line 764, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"replay", "tstep_ins">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 14: <ExTStepIns line 767, col 3 to line 774, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 0, k |-> "U", n |-> 101, t |-> "step_created"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"replay", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 15: <ExReplay line 777, col 3 to line 787, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 0, k |-> "U", n |-> 101, t |-> "step_created"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = TRUE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"rf_read", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 16: <ExRfRead line 821, col 3 to line 831, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 0, k |-> "U", n |-> 101, t |-> "step_created"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "running", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = TRUE
+/\ hist = { [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"rf_write", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 17: <ExRfWrite line 834, col 3 to line 861, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 0, k |-> "S", n |-> 3, t |-> "run_failed"],
+  [sp |-> 0, k |-> "U", n |-> 101, t |-> "step_created"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "failed", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = TRUE
+/\ hist = { [st |-> "failed", sp |-> 7],
+  [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"done", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 18: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 0, k |-> "S", n |-> 3, t |-> "run_failed"],
+  [sp |-> 0, k |-> "U", n |-> 101, t |-> "step_created"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "failed", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = TRUE
+/\ hist = { [st |-> "failed", sp |-> 7],
+  [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"done", "gone">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 19: <KRead line 869, col 3 to line 877, col 20 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"S", "S">>
+/\ eatt = <<1, 2>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_started"],
+  [sp |-> 0, k |-> "S", n |-> 3, t |-> "run_failed"],
+  [sp |-> 0, k |-> "U", n |-> 101, t |-> "step_created"],
+  [sp |-> 7, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 7
+/\ row = [st |-> "failed", sp |-> 7, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "pending", sp |-> 7], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = TRUE
+/\ hist = { [st |-> "failed", sp |-> 7],
+  [st |-> "pending", sp |-> 3],
+  [st |-> "pending", sp |-> 7],
+  [st |-> "running", sp |-> 7] }
+/\ eturbo = <<FALSE, TRUE>>
+/\ exec = 7
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"done", "gone">>
+/\ ersp = <<0, 0>>
+/\ rraised = TRUE
+/\ stamp = 3
+/\ kpc = "done"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] >>
+/\ erf = <<FALSE, FALSE>>
+
+3070797 states generated, 1308037 distinct states found, 215032 states left on queue.
+The depth of the complete state graph search is 19.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 9 and the 95th percentile is 3).
+Finished in 36s at (2026-09-25 19:34:44)

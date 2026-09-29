@@ -1,0 +1,142 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 54 and seed -8096743991385952523 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 105736] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module MidRunRaiseGates
+Starting... (2026-09-25 01:36:41)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Finished computing initial states: 28 distinct states generated at 2026-09-25 01:36:41.
+Error: Invariant ExecutorCanReplay is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 6>>
+/\ hist = {}
+/\ rv = 0
+/\ rowEx = FALSE
+/\ st = "none"
+/\ turbo = <<FALSE, FALSE>>
+/\ replayFail = FALSE
+/\ cpc = "row"
+/\ stamp = 3
+/\ kpc = "done"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 2: <SFetch line 272, col 3 to line 284, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"rs_create", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 6>>
+/\ hist = {}
+/\ rv = 0
+/\ rowEx = FALSE
+/\ st = "none"
+/\ turbo = <<FALSE, FALSE>>
+/\ replayFail = FALSE
+/\ cpc = "row"
+/\ stamp = 3
+/\ kpc = "done"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 3: <SRsCreate line 287, col 3 to line 294, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"rs_evt", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 6>>
+/\ hist = {[v |-> 3, st |-> "pending"]}
+/\ rv = 3
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, FALSE>>
+/\ replayFail = FALSE
+/\ cpc = "row"
+/\ stamp = 3
+/\ kpc = "done"
+/\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 4: <SRsEvt line 297, col 3 to line 304, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"trans", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 6>>
+/\ hist = {[v |-> 3, st |-> "pending"]}
+/\ rv = 3
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, FALSE>>
+/\ replayFail = FALSE
+/\ cpc = "row"
+/\ stamp = 3
+/\ kpc = "done"
+/\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 5: <STrans line 383, col 3 to line 396, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"ins", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 6>>
+/\ hist = {[v |-> 3, st |-> "pending"], [v |-> 3, st |-> "running"]}
+/\ rv = 3
+/\ rowEx = TRUE
+/\ st = "running"
+/\ turbo = <<FALSE, FALSE>>
+/\ replayFail = FALSE
+/\ cpc = "row"
+/\ stamp = 3
+/\ kpc = "done"
+/\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+1222 states generated, 598 distinct states found, 204 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 4).
+Finished in 01s at (2026-09-25 01:36:42)

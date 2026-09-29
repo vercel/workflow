@@ -1,0 +1,29 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 111 and seed -3820377929395957087 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 141496] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.94Pf5RJVRV/ServerRaiseProtocol.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ServerRaiseProtocol
+Starting... (2026-09-25 03:11:11)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Finished computing initial states: 6 distinct states generated at 2026-09-25 03:11:11.
+Progress(11) at 2026-09-25 03:11:14: 415,946 states generated (415,946 s/min), 137,824 distinct states found (137,824 ds/min), 61,204 states left on queue.
+Progress(20) at 2026-09-25 03:12:14: 10,739,714 states generated (10,323,768 s/min), 3,071,495 distinct states found (2,933,671 ds/min), 671,288 states left on queue.
+Progress(23) at 2026-09-25 03:13:14: 20,167,132 states generated (9,427,418 s/min), 5,784,180 distinct states found (2,712,685 ds/min), 888,885 states left on queue.
+Progress(26) at 2026-09-25 03:14:14: 29,136,123 states generated (8,968,991 s/min), 8,431,438 distinct states found (2,647,258 ds/min), 867,991 states left on queue.
+Progress(29) at 2026-09-25 03:15:14: 37,474,726 states generated (8,338,603 s/min), 11,009,593 distinct states found (2,578,155 ds/min), 641,466 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 2.1E-5
+  based on the actual fingerprints:  val = 1.9E-6
+43415000 states generated, 12833511 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 41.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 10 and the 95th percentile is 3).
+Finished in 04min 50s at (2026-09-25 03:16:01)

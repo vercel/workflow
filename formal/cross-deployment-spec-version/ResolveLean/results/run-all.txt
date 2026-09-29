@@ -1,0 +1,15 @@
+Lean (version 4.34.1, x86_64-unknown-linux-gnu, commit 5045d0056413266e57c625dcd7c365b10e377c52, Release)
+== CrossDeploy.Spec (19:09:32) ==
+   ok in 1s (1 theorems checked)
+== CrossDeploy.Resolve (19:09:33) ==
+   ok in 0s (28 theorems checked)
+== CrossDeploy.Raise (19:09:33) ==
+   ok in 3s (29 theorems checked)
+== CrossDeploy.StaleSkip (19:09:36) ==
+   ok in 93s (34 theorems checked)
+== CrossDeploy.Combined (19:11:09) ==
+   ok in 72s (39 theorems checked)
+
+real	2m49.110s
+user	2m51.906s
+sys	0m2.426s

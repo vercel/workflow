@@ -1,0 +1,28 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 35 and seed -2241924195011820014 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 113802] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.0aq8vJ1EXQ/ServerRaiseProtocol.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ServerRaiseProtocol
+Starting... (2026-09-25 01:44:44)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Finished computing initial states: 6 distinct states generated at 2026-09-25 01:44:45.
+Progress(15) at 2026-09-25 01:44:48: 612,790 states generated (612,790 s/min), 225,923 distinct states found (225,923 ds/min), 82,611 states left on queue.
+Progress(26) at 2026-09-25 01:45:48: 16,911,055 states generated (16,298,265 s/min), 6,398,398 distinct states found (6,172,475 ds/min), 1,067,659 states left on queue.
+Progress(31) at 2026-09-25 01:46:48: 31,767,021 states generated (14,855,966 s/min), 12,436,450 distinct states found (6,038,052 ds/min), 1,415,223 states left on queue.
+Progress(36) at 2026-09-25 01:47:48: 45,201,484 states generated (13,434,463 s/min), 18,035,469 distinct states found (5,599,019 ds/min), 789,822 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 3.1E-5
+  based on the actual fingerprints:  val = 4.2E-5
+49058681 states generated, 19555922 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 43.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 12 and the 95th percentile is 3).
+Finished in 03min 23s at (2026-09-25 01:48:08)
