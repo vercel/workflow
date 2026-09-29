@@ -607,6 +607,20 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
+
+  /**
+   * Stores a dynamic run's workflow code with the run. The World must persist
+   * `dynamicWorkflowCode` from `run_created` (and from a resilient
+   * `run_started` that creates the run), echo it on the created run, and
+   * return it from `runs.get` with `resolveData: 'all'` for the run's
+   * lifetime, because every replay evaluates that code and it exists nowhere
+   * else. `start()` refuses a dynamic start on a World that leaves this unset.
+   *
+   * Code too large for the creating write goes through
+   * {@link World.uploadDynamicWorkflowCode} when the World implements it;
+   * otherwise it is always sent inline.
+   */
+  dynamicWorkflowCode?: boolean;
 }
 
 /**
@@ -650,6 +664,14 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
+
+  /**
+   * Validates a dynamic run's complete execution context against
+   * World-specific limits. `start()` calls it only for dynamic starts, before
+   * any durable start side effect, so implementations throw to refuse the
+   * start.
+   */
+  validateRunExecutionContext?(value: Record<string, unknown>): void;
 
   /**
    * Absolute wall-clock time when the current function invocation will be
@@ -736,6 +758,41 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * Upload a dynamic run's serialized workflow VM code to the World's blob
+   * storage ahead of `run_created`, returning the ref key to attach to the
+   * run.
+   *
+   * The inline path — sending the bytes on `run_created` itself — is the
+   * common case and needs nothing from this method: a generated orchestration
+   * function is usually a couple of KB, and keeping it on the creating write
+   * costs no extra round-trip. This exists for the tail: a definition too
+   * large to ride the event wire, which has to be streamed separately and
+   * referenced.
+   *
+   * Worlds that store run records whole (local, Postgres) have no size
+   * pressure and leave this unset; `start()` then always sends inline, and a
+   * definition over its own source limit is rejected client-side rather than
+   * silently truncated.
+   *
+   * The upload necessarily precedes the run it belongs to, so implementations
+   * must accept a `runId` that does not exist yet, and must scope the stored
+   * object to the caller's tenant and that run so it is reclaimed with the
+   * run's other storage.
+   *
+   * @param runId - The client-minted ID of the run being started.
+   * @param params.workflowName - The run's generated dynamic workflow name.
+   *   Worlds that embed it in the storage key need it passed in, because the
+   *   run record does not exist yet to read it from.
+   * @param params.code - Serialized (compressed + encrypted) workflow code.
+   * @returns The ref key to send as `run_created`'s
+   *   `eventData.dynamicWorkflowCodeRef`.
+   */
+  uploadDynamicWorkflowCode?(
+    runId: string,
+    params: { workflowName: string; code: Uint8Array }
+  ): Promise<string>;
 
   /**
    * The environment this World's writes are attributed to by the backend

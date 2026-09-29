@@ -35,6 +35,7 @@ import {
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -78,6 +79,9 @@ const generateId = monotonicFactory();
 function getHealthCheckStreamName(correlationId: string): string {
   return `__health_check__${correlationId}`;
 }
+
+/** Version of the dynamic-workflow runtime contract advertised by deployments. */
+export const DYNAMIC_WORKFLOW_VERSION = 1;
 
 /**
  * Result of a health check operation.
@@ -127,6 +131,11 @@ export interface HealthCheckResult {
    * field is missing or malformed.
    */
   format?: 'json' | 'text';
+  /**
+   * Version of dynamic-workflow execution supported by the target runtime.
+   * Present only when the target has opted in to dynamic workflows.
+   */
+  dynamicWorkflowVersion?: number;
 }
 
 /**
@@ -205,6 +214,11 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    // Advertised only when this deployment has opted in to executing
+    // dynamic workflow code; an absent field reads as "unsupported".
+    ...(isDynamicWorkflowsEnabled()
+      ? { dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION }
+      : {}),
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -364,6 +378,9 @@ function parseHealthCheckResponse(
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.dynamicWorkflowVersion === 'number') {
+    parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
   }
   return parsed;
 }
