@@ -246,6 +246,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Short-lived runs below the threshold never pay the snapshot cost; long-running or unbounded runs stop scaling their resume cost with total event-log length. `1` snapshots at every qualifying suspension.
 - Snapshots are an optimization, not a source of truth: the event log remains authoritative, and a missing, corrupt, or incompatible snapshot automatically falls back to a full replay.
 - Snapshot bytes are compressed (zstd, gzip fallback) and encrypted with the run's encryption key (when configured) before being handed to the World's `snapshots` storage. They are deleted when the run reaches a terminal state.
+- A snapshot can only be restored by the exact QuickJS engine build that captured it. On Vercel, runs keep executing on the deployment they started on, so deploys don't affect in-flight snapshots. If your deployment serves in-flight runs from new code (for example, a self-hosted rolling update), an upgrade that changes the embedded engine makes every in-flight run fall back to a full replay at its next resume, all at once, before re-snapshotting at its next qualifying suspension. Plan for that one-time replay load when upgrading.
 - Like `WORKFLOW_VM`, the policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with.
 - Invalid values throw at startup.
 

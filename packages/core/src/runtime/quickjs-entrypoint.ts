@@ -21,6 +21,7 @@ import {
   RunExpiredError,
   WorkflowNotRegisteredError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type CreateEventParams,
@@ -246,7 +247,11 @@ const MAX_SNAPSHOT_PLAINTEXT_BYTES = 32 * 1024 * 1024;
  * Bounded defensively (a process rarely sees many distinct oversized
  * runs).
  */
-const oversizedSnapshotRuns = new Set<string>();
+const oversizedSnapshotRuns = globalSingleton(
+  '@workflow/core//quickjsOversizedSnapshotRuns',
+  1,
+  () => new Set<string>()
+);
 const OVERSIZED_SNAPSHOT_RUNS_MAX = 1024;
 
 function latchOversizedSnapshotRun(runId: string): void {
@@ -254,6 +259,49 @@ function latchOversizedSnapshotRun(runId: string): void {
     oversizedSnapshotRuns.clear();
   }
   oversizedSnapshotRuns.add(runId);
+}
+
+/**
+ * Runs this process has observed with a log still below the snapshot
+ * threshold at the end of an invocation, and no snapshot restored or
+ * saved. A snapshot is only ever saved once a run's log has reached the
+ * threshold (the save gate counts every event the saving VM processed),
+ * so for these runs the next invocation's `snapshots.load` would be a
+ * guaranteed miss: an awaited round-trip on the resume's critical path
+ * that short runs, by design, should never pay. The next invocation in
+ * this process skips the probe instead.
+ *
+ * Staleness is safe in the only direction it can go: another instance may
+ * have grown the log past the threshold and saved a snapshot since, and
+ * skipping the load then costs one full replay (always correct). That
+ * invocation sees a log at or above the threshold and clears the entry,
+ * so the next one probes again. Bounded like the oversized latch.
+ */
+const runsBelowSnapshotThreshold = globalSingleton(
+  '@workflow/core//quickjsRunsBelowSnapshotThreshold',
+  1,
+  () => new Set<string>()
+);
+const RUNS_BELOW_SNAPSHOT_THRESHOLD_MAX = 4096;
+
+function noteSnapshotThresholdProgress(
+  runId: string,
+  belowThreshold: boolean
+): void {
+  if (!belowThreshold) {
+    runsBelowSnapshotThreshold.delete(runId);
+    return;
+  }
+  if (runsBelowSnapshotThreshold.size >= RUNS_BELOW_SNAPSHOT_THRESHOLD_MAX) {
+    runsBelowSnapshotThreshold.clear();
+  }
+  runsBelowSnapshotThreshold.add(runId);
+}
+
+/** Test-only: forget the process-local snapshot latches. */
+export function __resetSnapshotLatchesForTests(): void {
+  oversizedSnapshotRuns.clear();
+  runsBelowSnapshotThreshold.clear();
 }
 
 /**
@@ -1135,10 +1183,19 @@ export async function runWorkflowWithQuickJS(params: {
     data: Uint8Array;
     metadata: import('@workflow/world').SnapshotMetadata;
   } | null = null;
+  // A complete preloaded log shorter than the threshold, or this process
+  // having just seen the run below it, means no snapshot can exist yet
+  // (see runsBelowSnapshotThreshold): skip the guaranteed-miss probe.
+  const preloadBelowThreshold =
+    preloadedEventsComplete === true &&
+    Array.isArray(preloadedEvents) &&
+    preloadedEvents.length < snapshotThreshold;
   if (
     snapshotsStorage &&
     snapshotThreshold > 0 &&
-    !isFirstInvocation(preloadedEvents)
+    !isFirstInvocation(preloadedEvents) &&
+    !preloadBelowThreshold &&
+    !runsBelowSnapshotThreshold.has(runId)
   ) {
     try {
       const loaded = await snapshotsStorage.load(runId);
@@ -2258,6 +2315,15 @@ export async function runWorkflowWithQuickJS(params: {
             : 'suspended',
         budgetExhausted: budget.isExhausted(),
       });
+    }
+    if (snapshotThreshold > 0 && result.suspended) {
+      // Remember whether a snapshot can exist for this run yet, so the
+      // next invocation in this process can skip a guaranteed-miss load.
+      noteSnapshotThresholdProgress(
+        runId,
+        !existingSnapshot &&
+          restoredEventCount + seenEventIds.size < snapshotThreshold
+      );
     }
     // Capture the VM memory for persistence while the session is still
     // alive. The (compress → encrypt → save) pipeline runs after the VM
