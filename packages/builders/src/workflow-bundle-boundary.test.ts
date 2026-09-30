@@ -57,6 +57,8 @@ describe('workflow bundle boundary', () => {
       discoveredSteps: new Set(),
       discoveredWorkflows: new Set([inputFile]),
       discoveredSerdeFiles: new Set(),
+      discoveredFiles: new Set([inputFile]),
+      importParents: new Map(),
     };
 
     const { interimBundleMetafile } = await new TestBuilder(

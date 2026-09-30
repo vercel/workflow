@@ -615,6 +615,7 @@ export function withWorkflow(
               'jsx',
               'js',
             ],
+            globalNotFound: nextConfig.experimental?.globalNotFound === true,
             projectRoot,
             moduleSpecifierRoot: workingDir,
             workingDir,

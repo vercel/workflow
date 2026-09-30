@@ -5,7 +5,10 @@ import { promisify } from 'node:util';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import { importParents } from './discover-entries-esbuild-plugin.js';
+import {
+  type ImportParents,
+  importParents as legacyImportParents,
+} from './discover-entries-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 
 const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
@@ -49,17 +52,19 @@ export interface DiscoveredEntries {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
-  /**
-   * All JS/TS files visited while walking the workflow import graph.
-   * Watch-mode integrations use this to distinguish relevant HMR changes from
-   * unrelated application file edits.
-   */
+  importParents?: ImportParents;
+  /** Source files visited by discovery or consumed by the workflow bundle. */
   discoveredFiles?: Set<string>;
+}
+
+export interface CompleteDiscoveredEntries extends DiscoveredEntries {
+  importParents: ImportParents;
+  discoveredFiles: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
   entryPoints: string[];
-  state: DiscoveredEntries;
+  state: CompleteDiscoveredEntries;
   defaultTsconfigPath: string | undefined;
   workingDir: string;
   /**
@@ -240,7 +245,11 @@ function isNodeModulesPath(filePath: string): boolean {
   );
 }
 
-function addImportParent(parent: string, child: string): void {
+function addImportParent(
+  importParents: ImportParents,
+  parent: string,
+  child: string
+): void {
   const normalizedParent = normalizePath(parent);
   const normalizedChild = normalizePath(child);
   let children = importParents.get(normalizedParent);
@@ -372,8 +381,7 @@ function stripCommentsFromSource(source: string): string {
   return output;
 }
 
-function extractImportSpecifiers(source: string): string[] {
-  const sourceWithoutComments = stripCommentsFromSource(source);
+function collectImportSpecifiers(sourceWithoutComments: string): string[] {
   if (
     !sourceWithoutComments.includes('import') &&
     !sourceWithoutComments.includes('require') &&
@@ -394,6 +402,14 @@ function extractImportSpecifiers(source: string): string[] {
   }
 
   return Array.from(specifiers);
+}
+
+export function analyzeWorkflowSource(source: string) {
+  const sourceWithoutComments = stripCommentsFromSource(source);
+  return {
+    ...detectWorkflowPatterns(sourceWithoutComments),
+    importSpecifiers: collectImportSpecifiers(sourceWithoutComments),
+  };
 }
 
 function hasWorkflowDependency(dependencies: unknown): boolean {
@@ -959,7 +975,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    addImportParent(filePath, resolved);
+    addImportParent(state.importParents, filePath, resolved);
     if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
       return;
     }
@@ -983,7 +999,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const patterns = detectWorkflowPatterns(source);
+    const patterns = analyzeWorkflowSource(source);
     if (patterns.hasUseWorkflow) {
       state.discoveredWorkflows.add(filePath);
     }
@@ -1003,7 +1019,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const specifiers = extractImportSpecifiers(source);
+    const specifiers = patterns.importSpecifiers;
     if (specifiers.length === 0) {
       return;
     }
@@ -1044,4 +1060,9 @@ export async function fastDiscoverEntries({
   }
 
   state.discoveredFiles = processedFiles;
+
+  legacyImportParents.clear();
+  for (const [parent, children] of state.importParents) {
+    legacyImportParents.set(parent, new Set(children));
+  }
 }

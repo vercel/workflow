@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { createNextEntrypointMatcher } from './builder-eager.js';
 
 const pageExtensions = ['js', 'jsx', 'ts', 'tsx', 'mts', 'cts'];
-const isNextEntrypoint = createNextEntrypointMatcher(pageExtensions);
+const isNextEntrypoint = createNextEntrypointMatcher({
+  pageExtensions,
+  bundler: 'webpack',
+  globalNotFound: false,
+});
 
 describe('isNextEntrypoint', () => {
   it.each([
@@ -20,10 +24,7 @@ describe('isNextEntrypoint', () => {
     'instrumentation-client.ts',
     'instrumentation-client.mjs',
     'proxy.ts',
-    'mdx-components.tsx',
-    'mdx-components.mjs',
     'src/instrumentation-client.ts',
-    'src/mdx-components.tsx',
   ])('includes %s', (entry) => {
     expect(isNextEntrypoint(entry)).toBe(true);
   });
@@ -35,6 +36,9 @@ describe('isNextEntrypoint', () => {
     'app/blog/global-error.tsx',
     'app/blog/robots.ts',
     'app/blog/opengraph-image12.tsx',
+    'app/global-not-found.tsx',
+    'mdx-components.tsx',
+    'src/mdx-components.tsx',
     'pages/types.d.ts',
     'pages/types.d.mts',
     'pages/types.d.cts',
@@ -46,7 +50,32 @@ describe('isNextEntrypoint', () => {
 
   it('supports compound page extensions', () => {
     expect(
-      createNextEntrypointMatcher(['tsx', 'page.tsx'])('app/error.page.tsx')
+      createNextEntrypointMatcher({
+        pageExtensions: ['tsx', 'page.tsx'],
+        bundler: 'webpack',
+        globalNotFound: false,
+      })('app/error.page.tsx')
     ).toBe(true);
+  });
+
+  it('supports Turbopack numbered metadata', () => {
+    const isTurbopackEntrypoint = createNextEntrypointMatcher({
+      pageExtensions,
+      bundler: 'turbopack',
+      globalNotFound: false,
+    });
+
+    expect(isTurbopackEntrypoint('app/blog/opengraph-image12.tsx')).toBe(true);
+  });
+
+  it('includes enabled optional conventions', () => {
+    const isOptionalEntrypoint = createNextEntrypointMatcher({
+      pageExtensions: [...pageExtensions, 'mdx'],
+      bundler: 'webpack',
+      globalNotFound: true,
+    });
+
+    expect(isOptionalEntrypoint('app/global-not-found.tsx')).toBe(true);
+    expect(isOptionalEntrypoint('mdx-components.tsx')).toBe(true);
   });
 });
