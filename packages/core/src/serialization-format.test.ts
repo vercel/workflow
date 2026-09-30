@@ -391,6 +391,36 @@ describe('hydrateResourceIO', () => {
 // ---------------------------------------------------------------------------
 
 describe('observabilityRevivers', () => {
+  it('should hydrate a flattened custom Date payload with the default revivers', () => {
+    const date = new Date('2026-01-01T00:00:00.000Z');
+    const input = makeDevlPayload(
+      { args: [date] },
+      {
+        Date: (value) => (value instanceof Date ? value.toISOString() : false),
+      }
+    );
+    const hydrated = hydrateResourceIO(
+      { stepId: 'step_date', input },
+      observabilityRevivers
+    );
+
+    expect(hydrated.input.args[0]).toBeInstanceOf(Date);
+    expect(hydrated.input.args[0].getTime()).toBe(date.getTime());
+    expect(hydrated.input.args[0].toISOString()).toBe(date.toISOString());
+  });
+
+  it('should preserve built-in Date payload hydration with the default revivers', () => {
+    const date = new Date('2026-01-01T00:00:00.000Z');
+    const input = makeDevlPayload({ args: [date] });
+    const hydrated = hydrateResourceIO(
+      { stepId: 'step_date', input },
+      observabilityRevivers
+    );
+
+    expect(hydrated.input.args[0]).toBeInstanceOf(Date);
+    expect(hydrated.input.args[0].getTime()).toBe(date.getTime());
+  });
+
   it('should convert ReadableStream to StreamRef', () => {
     const ref = observabilityRevivers.ReadableStream({
       name: 'strm_abc123',
