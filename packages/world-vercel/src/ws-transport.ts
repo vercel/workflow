@@ -13,6 +13,14 @@
  * re-sent is `event-retry.ts`'s decision, not this file's: `WsTransportError`
  * is mapped to the same `code: 'TRANSPORT'` shape a failed `fetch` produces.
  *
+ * The one exception is a request marked `resumable` (`step_started`, which
+ * the caller can't retry as a new write): if its connection is lost before
+ * the reply arrives, this file keeps it pending, reconnects, and resends it
+ * byte-identical with `retransmit: true`, provided the new connection's
+ * server announced `resumable-step-started` in a `features` frame. The server
+ * answers it as it answered, or would have answered, the original. Without
+ * that announcement, the request fails as any other would.
+ *
  * Uses the `ws` package rather than the WHATWG global `WebSocket`, which cannot
  * set headers on the upgrade request; auth rides the handshake, once per
  * connection instead of once per message.
@@ -62,7 +70,38 @@ export class WsTransportError extends Error {
   }
 }
 
+/**
+ * Builds one request frame. `retransmit` is true when the frame is being
+ * resent on a new connection after the previous one was lost before the reply
+ * arrived; the frame must otherwise be byte-identical to the original.
+ */
+export type WsFrameBuilder = (
+  reqId: number,
+  opts: { retransmit: boolean }
+) => Uint8Array;
+
+export interface WsRequestOptions {
+  /**
+   * Keep the request pending when its connection is lost before the reply
+   * arrives, and resend it on the next connection, provided that connection
+   * negotiated {@link RESUMABLE_STEP_STARTED_FEATURE}. For writes that can't
+   * simply be retried by the caller (today: `step_started`). Without it, a
+   * lost connection fails the request, as for every other write.
+   */
+  resumable?: boolean;
+}
+
+/**
+ * One logical request, possibly sent on more than one connection. Settles
+ * exactly once; every path that could settle it checks `settled` first.
+ */
 interface PendingRequest {
+  readonly buildFrame: WsFrameBuilder;
+  readonly resumable: boolean;
+  settled: boolean;
+  /** The connection and reqId it was last sent under. */
+  conn: Connection | null;
+  reqId: number;
   resolve: (reply: WsFrameReply) => void;
   reject: (err: unknown) => void;
 }
@@ -77,11 +116,34 @@ interface Connection {
   ws: WebSocket;
   nextReqId: number;
   pending: Map<number, PendingRequest>;
+  /** Features the server announced in its `features` frame; `null` until
+   *  one arrives (servers that don't support any never send it). */
+  features: Set<string> | null;
+  /** Woken when `features` arrives or the connection closes. */
+  featureWaiters: Array<() => void>;
 }
 
 /** Reserved reqId the server replies under when a frame was too malformed to
  *  recover a real one from. Client-issued ids start at 1 and only increase. */
 const MALFORMED_FRAME_REQ_ID = -1;
+
+/** Upgrade request header listing the protocol features this client supports. */
+const WS_FEATURES_HEADER = 'x-workflow-ws-features';
+
+/**
+ * Feature: a `step_started` whose connection is lost before its reply arrives
+ * is resent on the next connection, marked `retransmit: true`, and the server
+ * answers it as it answered (or would have answered) the original.
+ */
+export const RESUMABLE_STEP_STARTED_FEATURE = 'resumable-step-started';
+
+/**
+ * How long a new connection waits for the server's `features` frame before
+ * concluding the server doesn't support resends. The frame is the first thing
+ * a supporting server sends, so this only runs out against a server that
+ * doesn't send one at all, and only on the recovery path.
+ */
+const FEATURES_WAIT_MS = 2_000;
 
 // Bounded so a server that is down, or an upgrade being rejected outright,
 // can't become a hot reconnect loop. Once exhausted the transport goes quiet
@@ -101,6 +163,11 @@ function readAuthorization(headers: Record<string, string>): string | null {
     if (key.toLowerCase() === 'authorization') return value;
   }
   return null;
+}
+
+/** Wake whoever is waiting on `conn`'s `features` frame. */
+function wakeFeatureWaiters(conn: Connection): void {
+  for (const wake of conn.featureWaiters.splice(0)) wake();
 }
 
 async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
@@ -154,6 +221,12 @@ class WsEventsTransport {
   /** Authorization the current socket was opened with, so a forced refresh can
    *  tell whether it actually produced a new one. */
   private lastAuthorization: string | null = null;
+  /**
+   * Resumable requests whose connection was lost before their reply arrived,
+   * with the error they fail with if they can't be resent. Resent in
+   * insertion (original send) order once the next connection is up.
+   */
+  private readonly awaitingResend = new Map<PendingRequest, unknown>();
 
   constructor(
     private readonly wsUrl: string,
@@ -165,7 +238,8 @@ class WsEventsTransport {
   /** Send one request frame and wait for its matching reply. `buildFrame`
    *  receives the reqId to embed in the meta before framing. */
   async request(
-    buildFrame: (reqId: number) => Uint8Array
+    buildFrame: WsFrameBuilder,
+    options: WsRequestOptions = {}
   ): Promise<WsFrameReply> {
     if (this.closed) {
       // Unreachable through `resolveWsTransport`, which only hands back a
@@ -178,54 +252,154 @@ class WsEventsTransport {
     }
     const conn = await this.ensureConnected();
 
-    const reqId = conn.nextReqId++;
-    const frame = buildFrame(reqId);
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
       return await new Promise<WsFrameReply>((resolve, reject) => {
-        conn.pending.set(reqId, { resolve, reject });
-        // Deliberately the same knob the HTTP path uses. Without it, a reply
-        // that never arrives for a reason the error/close handling doesn't
-        // cover blocks the caller until the platform's `maxDuration`
-        // SIGTERM, including a server that accepts a frame and never
-        // answers it.
+        const request: PendingRequest = {
+          buildFrame,
+          resumable: options.resumable === true,
+          settled: false,
+          conn: null,
+          reqId: 0,
+          resolve: (reply) => {
+            if (request.settled) return;
+            request.settled = true;
+            resolve(reply);
+          },
+          reject: (err) => {
+            if (request.settled) return;
+            request.settled = true;
+            reject(err);
+          },
+        };
+        // Deliberately the same knob the HTTP path uses, and measured from the
+        // first send, so a request resent after a lost connection still has
+        // one overall deadline. Without it, a reply that never arrives for a
+        // reason the error/close handling doesn't cover blocks the caller
+        // until the platform's `maxDuration` SIGTERM, including a server that
+        // accepts a frame and never answers it.
         deadline = setTimeout(() => {
-          if (!conn.pending.delete(reqId)) return;
-          reject(
+          if (request.settled) return;
+          this.awaitingResend.delete(request);
+          const current = request.conn;
+          const onConnection =
+            current !== null && current.pending.get(request.reqId) === request;
+          if (onConnection) current.pending.delete(request.reqId);
+          request.reject(
             new WsTransportError(
-              `workflow-server events WS request ${reqId} to ${this.wsUrl} ` +
+              `workflow-server events WS request ${request.reqId} to ${this.wsUrl} ` +
                 `timed out after ${timeoutMs}ms with no reply`
             )
           );
           // A socket that accepted a frame and never answered it is not one
           // the next write should be handed.
-          this.failConnection(
-            conn,
-            `workflow-server events WS connection to ${this.wsUrl} ` +
-              `abandoned after request ${reqId} timed out`
-          );
-        }, timeoutMs);
-        deadline.unref?.();
-        conn.ws.send(frame, (err) => {
-          if (!err) return;
-          // `ws.send()` does not throw when the socket isn't OPEN; it
-          // reports here instead, so without this callback the request would
-          // wait for a reply that is never coming. `delete` doubles as the
-          // already-settled guard.
-          if (conn.pending.delete(reqId)) {
-            reject(
-              new WsTransportError(
-                `workflow-server events WS send failed: ${describeError(err)}`,
-                { cause: err }
-              )
+          if (onConnection) {
+            this.failConnection(
+              current,
+              `workflow-server events WS connection to ${this.wsUrl} ` +
+                `abandoned after request ${request.reqId} timed out`
             );
           }
-        });
+        }, timeoutMs);
+        deadline.unref?.();
+        this.sendOn(conn, request, false);
       });
     } finally {
       if (deadline !== undefined) clearTimeout(deadline);
     }
+  }
+
+  /** Put `request` on the wire over `conn` under a fresh reqId. */
+  private sendOn(
+    conn: Connection,
+    request: PendingRequest,
+    retransmit: boolean
+  ): void {
+    const reqId = conn.nextReqId++;
+    request.conn = conn;
+    request.reqId = reqId;
+    conn.pending.set(reqId, request);
+    let frame: Uint8Array;
+    try {
+      frame = request.buildFrame(reqId, { retransmit });
+    } catch (err) {
+      conn.pending.delete(reqId);
+      request.reject(err);
+      return;
+    }
+    conn.ws.send(frame, (err) => {
+      if (!err) return;
+      // `ws.send()` does not throw when the socket isn't OPEN; it
+      // reports here instead, so without this callback the request would
+      // wait for a reply that is never coming.
+      if (conn.pending.get(reqId) !== request) return;
+      conn.pending.delete(reqId);
+      const error = new WsTransportError(
+        `workflow-server events WS send failed: ${describeError(err)}`,
+        { cause: err }
+      );
+      // The frame never left, but the socket is going away: a resumable
+      // request waits for the next connection like any other lost one.
+      if (request.resumable && !this.closed) {
+        this.awaitingResend.set(request, error);
+      } else {
+        request.reject(error);
+      }
+    });
+  }
+
+  /**
+   * Resend the resumable requests lost with the previous connection over
+   * `conn`, once it has announced it supports that. If it doesn't, fail them
+   * with the error they were lost with, which is where they'd have ended up
+   * without the feature.
+   */
+  private async resendAwaiting(conn: Connection): Promise<void> {
+    if (this.awaitingResend.size === 0) return;
+    const supported = await this.waitForFeature(
+      conn,
+      RESUMABLE_STEP_STARTED_FEATURE
+    );
+    // Lost this connection too while waiting: whatever is still awaiting
+    // goes out on the next one.
+    if (this.connection !== conn || conn.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const entries = [...this.awaitingResend];
+    this.awaitingResend.clear();
+    for (const [request, lostWith] of entries) {
+      if (request.settled) continue;
+      if (supported) {
+        debugLog(
+          `world-vercel: ws events transport resending a request lost with ` +
+            `its connection to ${this.wsUrl}.`
+        );
+        this.sendOn(conn, request, true);
+      } else {
+        request.reject(lostWith);
+      }
+    }
+  }
+
+  private waitForFeature(conn: Connection, feature: string): Promise<boolean> {
+    if (conn.features !== null)
+      return Promise.resolve(conn.features.has(feature));
+    return new Promise<boolean>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        resolve(conn.features?.has(feature) ?? false);
+      };
+      const timer = setTimeout(done, FEATURES_WAIT_MS);
+      timer.unref?.();
+      conn.featureWaiters.push(done);
+    });
+  }
+
+  private rejectAwaitingResend(err: unknown): void {
+    const entries = [...this.awaitingResend];
+    this.awaitingResend.clear();
+    for (const [request] of entries) request.reject(err);
   }
 
   /**
@@ -298,6 +472,12 @@ class WsEventsTransport {
     }
     const conn = this.connection;
     this.connection = null;
+    this.rejectAwaitingResend(
+      new WsTransportError(
+        `workflow-server events WS channel for ${this.wsUrl} closed (${reason}) ` +
+          `before a request lost with its connection could be resent`
+      )
+    );
     // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
   }
@@ -349,6 +529,10 @@ class WsEventsTransport {
 
     this.lastAuthorization = authorization;
     this.needsFreshToken = false;
+
+    // Offer resumable writes; a server that supports them answers with a
+    // `features` frame, and one that doesn't ignores the header.
+    headers[WS_FEATURES_HEADER] = RESUMABLE_STEP_STARTED_FEATURE;
 
     // `injectTraceContextIntoHeaders` writes into a `Headers`; the upgrade takes
     // a plain record, so carry the propagator's output across. No-op when no
@@ -416,7 +600,13 @@ class WsEventsTransport {
           const headers = await this.resolveUpgradeHeaders();
           const ws = new WebSocket(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
-          conn = { ws, nextReqId: 1, pending: new Map() };
+          conn = {
+            ws,
+            nextReqId: 1,
+            pending: new Map(),
+            features: null,
+            featureWaiters: [],
+          };
         } catch (err) {
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
@@ -457,6 +647,7 @@ class WsEventsTransport {
           this.connection = conn;
           this.reconnectAttempts = 0;
           resolve(conn);
+          void this.resendAwaiting(conn);
         });
 
         ws.on('message', (raw: Buffer) => {
@@ -497,8 +688,10 @@ class WsEventsTransport {
           // Unconditional because `pending` is per-connection: a superseded
           // socket's late close can only reach its own waiters. The frame was
           // in flight when the socket died, so the server either never saw it
-          // or never acked it, so re-sending is safe, createEvent writes are
-          // conditional on the entity server-side.
+          // or never acked it. Resumable requests wait to be resent on the
+          // next connection; the rest fail, and whether they're re-sent is
+          // `event-retry.ts`'s call.
+          wakeFeatureWaiters(conn);
           this.failAllPending(
             conn,
             new WsTransportError(
@@ -533,6 +726,13 @@ class WsEventsTransport {
     if (this.reconnectTimer !== null) return;
 
     if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      this.rejectAwaitingResend(
+        new WsTransportError(
+          `workflow-server events WS connection to ${this.wsUrl} could not be ` +
+            `re-established (last close code ${closeCode}) to resend a request ` +
+            `lost with the previous connection`
+        )
+      );
       console.error(
         `world-vercel: ws events transport giving up eager reconnect to ` +
           `${this.wsUrl} after ${RECONNECT_MAX_ATTEMPTS} attempts ` +
@@ -598,6 +798,19 @@ class WsEventsTransport {
       return;
     }
 
+    if (decoded.meta.type === 'features') {
+      // Unsolicited, no reqId: sent once right after the upgrade, and only
+      // because the upgrade offered a feature this server supports.
+      const features = Array.isArray(decoded.meta.features)
+        ? decoded.meta.features.filter(
+            (f): f is string => typeof f === 'string'
+          )
+        : [];
+      conn.features = new Set(features);
+      wakeFeatureWaiters(conn);
+      return;
+    }
+
     const reqId = decoded.meta.reqId;
 
     if (reqId === MALFORMED_FRAME_REQ_ID) {
@@ -649,7 +862,11 @@ class WsEventsTransport {
 
   private failAllPending(conn: Connection, err: unknown): void {
     for (const pending of conn.pending.values()) {
-      pending.reject(err);
+      if (pending.resumable && !this.closed && !pending.settled) {
+        this.awaitingResend.set(pending, err);
+      } else {
+        pending.reject(err);
+      }
     }
     conn.pending.clear();
   }

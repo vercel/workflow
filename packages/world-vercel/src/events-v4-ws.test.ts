@@ -14,7 +14,7 @@ import {
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -254,6 +254,43 @@ describe('createWorkflowRunEventV4 over ws', () => {
     expect(result.event.runId).toBe('wrun_1');
     expect(result.event.eventType).toBe('step_completed');
     expect(result.step).toMatchObject({ stepId: 'step_1' });
+  });
+
+  it('marks step_started resumable and rebuilds a resend from the same input', async () => {
+    requestMock.mockResolvedValueOnce(ack());
+    // Only the request this sends matters here, not parsing the canned reply
+    // (a step_completed body, which a step_started result doesn't accept).
+    await createWorkflowRunEventV4(
+      {
+        ...input,
+        eventType: 'step_started',
+        occurredAt: new Date(CREATED_AT),
+      },
+      { token: 'test-token' }
+    ).catch(() => {});
+
+    const [buildFrame, options] = requestMock.mock.calls[0] as unknown as [
+      (reqId: number, opts: { retransmit: boolean }) => Uint8Array,
+      { resumable?: boolean },
+    ];
+    expect(options).toEqual({ resumable: true });
+
+    const meta = (frame: Uint8Array) => {
+      const len = new DataView(frame.buffer, frame.byteOffset).getUint32(0);
+      return decode(frame.subarray(4, 4 + len)) as Record<string, unknown>;
+    };
+    const first = meta(buildFrame(1, { retransmit: false }));
+    const resent = meta(buildFrame(4, { retransmit: true }));
+    expect(first.retransmit).toBeUndefined();
+    expect(resent).toMatchObject({ reqId: 4, retransmit: true });
+    // Everything the server matches the original by is unchanged.
+    expect(resent.event).toEqual(first.event);
+  });
+
+  it('leaves other event types non-resumable', async () => {
+    requestMock.mockResolvedValueOnce(ack());
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    expect(requestMock.mock.calls[0]?.[1]).toEqual({ resumable: false });
   });
 
   it('falls back to HTTP when this World has no usable WS transport', async () => {

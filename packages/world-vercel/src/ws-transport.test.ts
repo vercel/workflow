@@ -659,6 +659,139 @@ describe('eager reconnect', () => {
  * channel nobody releases is a socket, and a server invocation, held until the
  * platform kills the process.
  */
+describe('resumable requests', () => {
+  const featuresFrame = (features: string[] = ['resumable-step-started']) =>
+    encodeFrame({ type: 'features', features }, EMPTY);
+
+  /** Decoded meta of every frame this socket put on the wire. */
+  const sentMetas = (socket: { sent: Uint8Array[] }) =>
+    socket.sent.map((raw) => {
+      const metaLen = new DataView(
+        raw.buffer,
+        raw.byteOffset,
+        raw.byteLength
+      ).getUint32(0, false);
+      return decode(raw.subarray(4, 4 + metaLen)) as Record<string, unknown>;
+    });
+
+  const stepStartedFrame = (reqId: number, opts: { retransmit: boolean }) =>
+    encodeFrame(
+      {
+        reqId,
+        type: 'event',
+        ...(opts.retransmit ? { retransmit: true } : {}),
+        event: { eventType: 'step_started', occurredAt: 1234 },
+      },
+      EMPTY
+    );
+
+  async function sendResumable(
+    transport: ReturnType<typeof getWsEventsTransport>
+  ) {
+    const promise = transport.request(stepStartedFrame, { resumable: true });
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+    socket.open();
+    await tick();
+    return { promise, socket };
+  }
+
+  it('offers the feature on every upgrade', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { socket } = await connectAndSend(transport);
+    expect(socket.headers['x-workflow-ws-features']).toBe(
+      'resumable-step-started'
+    );
+  });
+
+  it('resends a request lost with its connection on the next one', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await sendResumable(transport);
+    socket.deliver(featuresFrame());
+    await tick();
+
+    socket.close(1006);
+    await tick();
+
+    // Reconnect off the backoff timer; the new server announces the feature.
+    await vi.advanceTimersByTimeAsync(200);
+    const next = latest();
+    expect(next).not.toBe(socket);
+    next.open();
+    next.deliver(featuresFrame());
+    await tick();
+
+    const [resent] = sentMetas(next);
+    expect(resent).toMatchObject({
+      reqId: 1,
+      type: 'event',
+      retransmit: true,
+      event: { eventType: 'step_started', occurredAt: 1234 },
+    });
+
+    next.deliver(
+      encodeFrame(
+        { reqId: 1, type: 'event_ack', status: 200, replayed: true },
+        new Uint8Array([7])
+      )
+    );
+    await tick();
+    await expect(promise).resolves.toMatchObject({
+      meta: { status: 200, replayed: true },
+    });
+  });
+
+  it('fails the request if the new connection does not support resending', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await sendResumable(transport);
+
+    socket.close(1006);
+    await tick();
+    await vi.advanceTimersByTimeAsync(200);
+    const next = latest();
+    next.open();
+    await tick();
+    // No features frame arrives from this server.
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(promise).rejects.toThrow('closed (code 1006)');
+    expect(next.sent).toHaveLength(0);
+  });
+
+  it('still fails a non-resumable request when its connection is lost', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.deliver(featuresFrame());
+    socket.close(1006);
+    await tick();
+    await expect(promise).rejects.toThrow('closed (code 1006)');
+  });
+
+  it('fails a request still waiting to be resent when the channel is released', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const { promise, socket } = await sendResumable(transport);
+    socket.close(1006);
+    await tick();
+
+    transport.release('invocation complete');
+    await tick();
+    await expect(promise).rejects.toThrow('before a request lost');
+  });
+
+  it('keeps one deadline from the first send across the resend', async () => {
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '10000';
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await sendResumable(transport);
+    socket.close(1006);
+    await tick();
+
+    // The reconnect never completes its handshake.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).rejects.toThrow('timed out after 10000ms');
+  });
+});
+
 describe('open/close lifecycle', () => {
   /** Run one request through to its ack, as a writing invocation would. */
   async function completeRequest(

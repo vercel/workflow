@@ -371,6 +371,23 @@ export const WorkflowWsRequestId = SemanticConvention<number>(
 );
 
 /**
+ * Set when this write was resent on a new connection because the connection
+ * it was first sent on was lost before the reply arrived
+ * (workflow.events.ws.retransmitted).
+ */
+export const WorkflowWsRetransmitted = SemanticConvention<boolean>(
+  'workflow.events.ws.retransmitted'
+);
+
+/**
+ * Set when the server answered a resent write from its record of the
+ * original instead of applying it again (workflow.events.ws.replayed).
+ */
+export const WorkflowWsReplayed = SemanticConvention<boolean>(
+  'workflow.events.ws.replayed'
+);
+
+/**
  * Which eager-reconnect attempt opened this socket
  * (workflow.events.ws.reconnect_attempt); 0 for the invocation's first connect.
  */

@@ -77,7 +77,9 @@ import {
   WorkflowEventType,
   WorkflowStepStartMode,
   WorkflowStepStartOwnerStamped,
+  WorkflowWsReplayed,
   WorkflowWsRequestId,
+  WorkflowWsRetransmitted,
   WorkflowWsUrl,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
@@ -1447,17 +1449,38 @@ async function postEventFrameOverWs(
         // discriminated union on
         // `type` with each type's payload nested under its own name, so a future
         // request type is a new variant rather than a reshape of this one.
-        reply = await transport.request((reqId) => {
-          // Recorded before the frame is sent so a request that fails, or one
-          // that never gets a reply, still carries the id the server logged it
-          // under. Assigned per attempt and per connection, so a retry or a
-          // reconnect legitimately re-uses low numbers.
-          span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
-          return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
-            input.payload ?? new Uint8Array(0)
-          );
-        });
+        reply = await transport.request(
+          (reqId, { retransmit }) => {
+            // Recorded before the frame is sent so a request that fails, or one
+            // that never gets a reply, still carries the id the server logged it
+            // under. Assigned per attempt and per connection, so a retry or a
+            // reconnect legitimately re-uses low numbers.
+            span?.setAttributes({
+              ...WorkflowWsRequestId(reqId),
+              ...(retransmit ? WorkflowWsRetransmitted(true) : {}),
+            });
+            // A resend must be byte-identical to the original apart from
+            // `reqId` and the marker: the server recognises the original by
+            // the fields `buildPostFrameMeta` stamped once (occurredAt,
+            // ownerMessageId), so this rebuilds from the same `input`.
+            return encodeFrame(
+              {
+                reqId,
+                type: 'event',
+                ...(retransmit ? { retransmit: true } : {}),
+                event: buildPostFrameMeta(input),
+              },
+              input.payload ?? new Uint8Array(0)
+            );
+          },
+          // `step_started` can't be retried as a new write (it would count as
+          // another attempt), so a connection lost mid-request keeps it
+          // pending and resends it on the next connection instead.
+          { resumable: input.eventType === 'step_started' }
+        );
+        if (reply.meta.replayed === true) {
+          span?.setAttributes({ ...WorkflowWsReplayed(true) });
+        }
       } catch (err) {
         // Anything `transport.request()` throws means the frame was never acked.
         // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
