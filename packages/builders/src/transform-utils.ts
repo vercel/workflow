@@ -202,6 +202,11 @@ const findTemplateTextEnd = (source: string, start: number) => {
  * Directive detection uses this so a directive quoted inside a template
  * literal is not mistaken for a real one.
  *
+ * With `maskQuotedStrings`, the contents of single- and double-quoted strings
+ * are replaced with spaces too, and the quotes stay. Serde discovery uses this
+ * so code quoted in a string, such as an error message showing
+ * `static [WORKFLOW_SERIALIZE](...)`, is not mistaken for a class.
+ *
  * The output always has the same length as the source.
  *
  * Whether a `/` starts a regex is decided from the previous character, which
@@ -212,7 +217,8 @@ const findTemplateTextEnd = (source: string, start: number) => {
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
 export function stripCommentsFromSource(
   source: string,
-  maskTemplateLiterals = false
+  maskTemplateLiterals = false,
+  maskQuotedStrings = false
 ): string {
   const length = source.length;
   let output = '';
@@ -274,6 +280,14 @@ export function stripCommentsFromSource(
         index,
         char === "'" ? singleQuoteSpecialPattern : doubleQuoteSpecialPattern
       );
+      if (maskQuotedStrings) {
+        const contentEnd =
+          end - 1 > index && source[end - 1] === char ? end - 1 : end;
+        output += `${char}${blankExceptNewlines(source.slice(index + 1, contentEnd))}${source.slice(contentEnd, end)}`;
+        index = end;
+        significantEnd = end;
+        continue;
+      }
     } else if (char === '`') {
       inTemplate = true;
     } else if (char === '{') {

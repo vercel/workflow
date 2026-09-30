@@ -766,11 +766,35 @@ const y = 1;
 
     it('keeps the output the same length as the source', () => {
       const source = `const a = 'x' // c\r\n/* b\r\n */ const t = \`a \${\`b \${c}\`} /* d */\`;\r\nconst r = /[/]\`/; const u = \`unterminated /* `;
-      for (const mask of [false, true]) {
-        const output = stripCommentsFromSource(source, mask);
-        expect(output.length).toBe(source.length);
-        expect(output.split('\n').length).toBe(source.split('\n').length);
+      for (const maskTemplates of [false, true]) {
+        for (const maskQuoted of [false, true]) {
+          const output = stripCommentsFromSource(
+            source,
+            maskTemplates,
+            maskQuoted
+          );
+          expect(output.length).toBe(source.length);
+          expect(output.split('\n').length).toBe(source.split('\n').length);
+        }
       }
+    });
+
+    it('blanks quoted string contents but keeps the quotes when masking', () => {
+      const source = `const a = 'static [X](v)'; const b = "it's // not a comment";
+const c = 'unterminated
+const d = 1; // tail
+`;
+      expect(stripCommentsFromSource(source, false, true)).toBe(
+        `const a = '             '; const b = "                     ";
+const c = '            
+const d = 1;        
+`
+      );
+    });
+
+    it('keeps quoted string contents when only masking templates', () => {
+      const source = `const a = 'static [X](v)';\n`;
+      expect(stripCommentsFromSource(source, true)).toBe(source);
     });
 
     it('blanks template contents but keeps delimiters when masking', () => {
