@@ -1229,6 +1229,117 @@ export interface EventBatchResult {
   results: BatchEventItemResult[];
 }
 
+/**
+ * A fenced, atomic commit ({@link Storage.events.commit}): events a client
+ * derived from a replay over the log's prefix through `after` plus the events
+ * in `own`, which land WHOLE or not at all, and only if nothing but `own`
+ * sits between `after` and the first committed event.
+ *
+ * Two shapes, and nothing else:
+ *
+ * - `[step_completed | step_failed (A), step_created (B), step_started (B)]`:
+ *   A's completion together with the next step the replay derived from it,
+ *   created born-running and owned by the writer (`step_started` carries no
+ *   payload and names `ownerMessageId`);
+ * - `[step_completed | step_failed (A), run_completed | run_failed]`: the last
+ *   step's completion together with the run's outcome.
+ *
+ * Every event must carry `occurredAt`: it becomes the committed row's
+ * `createdAt` verbatim (a World that would clamp it rejects instead), because
+ * the replay that derived the later events already observed that timestamp.
+ */
+export interface CommitEventsRequest {
+  /**
+   * Highest position of the dense prefix the replay consumed: every slot in
+   * `1..after` was loaded and replayed.
+   */
+  after: number;
+  /**
+   * Ids of events above `after` that the replay consumed too (typically the
+   * writer's own `step_created` / `step_started` of A, known from the write
+   * that committed them). Computed from the replay's input, never from what
+   * the process has had acknowledged: an acknowledged write the replay did not
+   * see must fence the commit, not be exempted from it.
+   */
+  own: string[];
+  /** The events, in the order they land (one of the two shapes above). */
+  events: BatchEventRequest[];
+}
+
+/** Per-commit parameters for {@link Storage.events.commit}. */
+export interface CommitEventsParams {
+  resolveData?: ResolveData;
+  /** Request id for per-write attribution, as on {@link CreateEventBatchParams}. */
+  requestId?: string;
+}
+
+/**
+ * Why a fenced commit was definitely not applied. Nothing it carried is
+ * durable; the caller writes the held completion alone and continues the way
+ * it would have without the commit.
+ *
+ * `fence` (the log moved under the replay), `entity` (an event's entity was
+ * not in the state it requires), `run-state` (the run is not running),
+ * `clock-skew` (a timestamp the World would not store verbatim),
+ * `gap-too-wide`, and `unsupported` (the World, the run, or this deployment
+ * cannot commit this way) are the typed reasons; any other refusal the World
+ * reports with a definite no-commit carries its own `http-<status>` reason.
+ */
+export type CommitRejectionReason =
+  | 'fence'
+  | 'entity'
+  | 'run-state'
+  | 'clock-skew'
+  | 'gap-too-wide'
+  | 'unsupported'
+  | (string & {});
+
+/** One committed event of a fenced commit, index-aligned with the request. */
+export interface CommittedEventResult {
+  event: Event;
+  run?: WorkflowRun;
+  step?: Step;
+  wait?: Wait;
+}
+
+/**
+ * Result of {@link Storage.events.commit}. A commit whose outcome the World
+ * cannot vouch for (a transport failure, an unclassified server error, a
+ * response lost after the request was sent) is not a result: the World throws
+ * `AmbiguousCommitError` from `@workflow/errors` instead.
+ */
+export type CommitEventsResult =
+  | {
+      status: 'committed';
+      /** One per submitted event, in request order. */
+      results: CommittedEventResult[];
+      /**
+       * The highest committed position. The World proved every position up to
+       * it is settled, so the caller may treat its log as dense through it.
+       */
+      denseThrough: number;
+      /**
+       * The World's opaque list cursor positioned after `denseThrough`, in the
+       * same encoding as {@link EventResult.cursor}.
+       */
+      cursor: string;
+    }
+  | {
+      status: 'rejected';
+      reason: CommitRejectionReason;
+      /** HTTP-equivalent status of the refusal, when the World has one. */
+      httpStatus?: number;
+      /** Lowest position that fenced the commit (`reason: 'fence'`). */
+      conflictSlot?: number;
+      /**
+       * Set when the World has concluded the capability is unavailable (for
+       * example, a server without the route) and will keep answering
+       * `unsupported` without a request for this many more milliseconds. A
+       * caller may skip offering commits until then.
+       */
+      unsupportedForMs?: number;
+    };
+
 export interface GetEventParams {
   resolveData?: ResolveData;
 }

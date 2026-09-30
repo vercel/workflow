@@ -114,6 +114,13 @@ export function eventIdToSlot(eventId: string): number | null {
  * allocate slots.
  */
 export function requireEventSlot(eventId: string): number {
+  if (eventId === PIGGYBACK_HELD_EVENT_ID) {
+    throw new Error(
+      `A held (not yet durable) step completion reached a slot helper: ${eventId}. ` +
+        'The piggyback commit replays over a transient tail that must never ' +
+        'enter the loaded event log, a slot snapshot, or a cursor.'
+    );
+  }
   const slot = eventIdToSlot(eventId);
   if (slot === null) {
     throw new Error(
@@ -122,3 +129,19 @@ export function requireEventSlot(eventId: string): number {
   }
   return slot;
 }
+
+/**
+ * The event id a held step completion carries while it exists only in memory.
+ *
+ * The piggyback commit (`docs/fenced-commit.md` in workflow-server) holds a
+ * step's completion instead of writing it, replays the workflow over the
+ * durable prefix plus that completion, and commits the completion together
+ * with what the replay derived as one fenced, atomic request. The completion
+ * the replay consumes is therefore not an event yet: it has no position in the
+ * log, and the id says so. It is not a slot id (it fails {@link isSlotBody}),
+ * and {@link requireEventSlot} refuses it by name, so the synthetic event can
+ * never be counted as a position the client has seen: not by a slot snapshot,
+ * a density audit, or a cursor. On a successful commit the runtime renames it to
+ * the committed row's id before the event joins the loaded log.
+ */
+export const PIGGYBACK_HELD_EVENT_ID = 'evnt_piggyback_held_completion';

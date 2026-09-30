@@ -212,6 +212,22 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
 
+### `WORKFLOW_PIGGYBACK_RUN_END`
+
+- Default: disabled
+- Node.js VM engine only, on a World that implements `events.commit` (the Vercel World) and a run with a sealed event log. Holds the last step's completion instead of writing it, replays the workflow over it, and when the run finishes commits the completion and the run's outcome as one atomic request, saving one round trip at the end of a run.
+- Any other outcome of that replay (more work to schedule, hooks or waits left for the end-of-run drain, a rejected or ambiguous commit) writes the completion on its own first, exactly as without the setting, and continues as usual.
+- Not used during the first delivery of a run under `WORKFLOW_TURBO`, so a run that finishes within that delivery ends as without the setting.
+- Not used for [dynamic workflows](/docs/advanced/dynamic-workflows) or for eve subagent runs, which take the same path as without the setting.
+- Set `1` or `true` to enable.
+
+### `WORKFLOW_PIGGYBACK_COMMIT`
+
+- Default: disabled
+- Same requirements as `WORKFLOW_PIGGYBACK_RUN_END`. When a sequential step completes and the workflow's only new work is the next step, commits the completion together with that step's creation, so the next step's body starts one round trip earlier. Applies to one inline step at a time, never to parallel steps, and not to the first delivery of a run under `WORKFLOW_TURBO`.
+- A commit is rejected whenever anything else was written to the run since the workflow read its event log, and the step then continues as without the setting.
+- Set `1` or `true` to enable. Independent of `WORKFLOW_PIGGYBACK_RUN_END`.
+
 ## Workflow VM engine
 
 ### `WORKFLOW_VM`

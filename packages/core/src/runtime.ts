@@ -29,6 +29,7 @@ import {
   isSealedNoopEvent,
   isTerminalRunEventType,
   isTerminalWorkflowRunStatus,
+  PIGGYBACK_HELD_EVENT_ID,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -110,6 +111,14 @@ import {
   openHookAndWaitState,
 } from './runtime/open-hook-wait-state.js';
 import {
+  type PiggybackChainOutcome,
+  type PiggybackRunFailure,
+  piggybackHoldIneligibleReason,
+  piggybackPreSendExitReason,
+  piggybackUnavailableReason,
+  runPiggybackChain,
+} from './runtime/piggyback.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -133,6 +142,7 @@ import {
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import {
+  buildPiggybackStepPair,
   handleSuspension,
   type SuspensionSerializationBlocker,
 } from './runtime/suspension-handler.js';
@@ -1106,6 +1116,14 @@ export function workflowEntrypoint(
                   // completion that already exists is acted on now rather
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
+                  // Whether the loaded log was produced by the World (a list,
+                  // a preload, an inline delta, a commit response) rather than
+                  // synthesized here. Only turbo's first iteration synthesizes
+                  // one (empty, no cursor), and a piggyback commit derived from
+                  // it would not be derived from the durable prefix: the
+                  // model's `pre` is only ever assigned by a durable read. See
+                  // `PiggybackHoldGate.prefixLoaded`.
+                  let prefixLoaded = true;
                   let loopIteration = 0;
                   // Hooks whose force-claim victim wake this invocation has
                   // already sent (its own forced creations, and the replay's
@@ -2715,6 +2733,7 @@ export function workflowEntrypoint(
                         events: [],
                         cursor: null,
                       };
+                      prefixLoaded = false;
                       const now = new Date();
                       workflowRun = {
                         runId,
@@ -3116,6 +3135,26 @@ export function workflowEntrypoint(
                         )
                       : undefined;
 
+                  // Piggyback commit availability for this run (see
+                  // `piggybackUnavailableReason`), plus two exclusions the
+                  // World cannot see. The QuickJS engine runs its own loop
+                  // and never reaches the inline batch below; the check keeps
+                  // that true if it ever does. A dynamic run replays stored
+                  // code the hold's replay was never exercised against, so it
+                  // keeps today's path until it is. Declining is always safe:
+                  // the step writes its completion exactly as today.
+                  const piggybackUnavailable = (): string | undefined => {
+                    const reason = piggybackUnavailableReason(
+                      world,
+                      workflowRun
+                    );
+                    // Both flags off: nothing to report, whatever the run.
+                    if (reason === 'disabled') return reason;
+                    if (useQuickJSVm(workflowRun)) return 'quickjs';
+                    if (dynamicWorkflowMetadata) return 'dynamic_workflow';
+                    return reason;
+                  };
+
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
                   // replays. Invocation-scoped: dies with this delivery.
@@ -3163,6 +3202,92 @@ export function workflowEntrypoint(
                   // as before, and only knowledge of this process's own
                   // sends is used to skip. Dies with this delivery.
                   const publishedStepCorrelationIds = new Set<string>();
+
+                  /**
+                   * A piggyback replay's failure as a committable `run_failed`
+                   * (the run-end pair's second half), or `undefined` when it
+                   * must take today's terminal path instead: only a plain user
+                   * error qualifies. Divergence, stale-snapshot rejections,
+                   * transient world errors and runtime errors all have their
+                   * own handling below, which a flush-then-replay reaches
+                   * unchanged. Mirrors that path's classification, stack
+                   * remapping, dehydration and (on commit) logging, hooks and
+                   * span status.
+                   */
+                  const buildPiggybackRunFailure = async (
+                    terminalError: unknown
+                  ): Promise<PiggybackRunFailure | undefined> => {
+                    if (
+                      WorkflowSuspension.is(terminalError) ||
+                      ReplayDivergenceError.is(terminalError) ||
+                      PreconditionFailedError.is(terminalError) ||
+                      isRetryableWorldError(terminalError)
+                    ) {
+                      return undefined;
+                    }
+                    const errorCode = classifyRunError(terminalError);
+                    if (errorCode !== RUN_ERROR_CODES.USER_ERROR) {
+                      return undefined;
+                    }
+                    const normalizedError =
+                      await normalizeUnknownError(terminalError);
+                    const errorName =
+                      normalizedError.name || getErrorName(terminalError);
+                    const errorMessage = normalizedError.message;
+                    let errorStack =
+                      normalizedError.stack || getErrorStack(terminalError);
+                    if (errorStack) {
+                      const parsedName = parseWorkflowName(workflowName);
+                      errorStack = remapErrorStack(
+                        errorStack,
+                        parsedName?.moduleSpecifier || workflowName,
+                        effectiveWorkflowCode
+                      );
+                    }
+                    if (types.isNativeError(terminalError) && errorStack) {
+                      (terminalError as Error).stack = errorStack;
+                    }
+                    const failureKey = await encryptionKey.value;
+                    const dehydratedError = await dehydrateRunError(
+                      terminalError,
+                      runId,
+                      failureKey,
+                      globalThis,
+                      (workflowRun?.specVersion ?? 0) >=
+                        SPEC_VERSION_SUPPORTS_COMPRESSION
+                    );
+                    return {
+                      eventData: { error: dehydratedError, errorCode },
+                      onCommitted: () => {
+                        if (terminalError instanceof Error) {
+                          span?.recordException?.(terminalError);
+                        }
+                        runtimeLogger.error('Error while running workflow', {
+                          workflowRunId: runId,
+                          errorCode,
+                          errorName,
+                          errorMessage,
+                          errorStack,
+                          errorCause:
+                            formatErrorCauseChain(terminalError) || undefined,
+                        });
+                        dispatchRunFailedHooks(
+                          runId,
+                          workflowName,
+                          dehydratedError,
+                          failureKey,
+                          errorCode
+                        );
+                        span?.setAttributes({
+                          ...Attribute.WorkflowRunStatus('failed'),
+                          ...Attribute.WorkflowErrorCode(errorCode),
+                          ...Attribute.WorkflowErrorName(errorName),
+                          ...Attribute.WorkflowErrorMessage(errorMessage),
+                          ...Attribute.ErrorType(errorName),
+                        });
+                      },
+                    };
+                  };
 
                   // Main replay loop
                   while (true) {
@@ -3322,6 +3447,7 @@ export function workflowEntrypoint(
 
                       if (eventLog.type !== 'ready') {
                         eventLogFromInlineDelta = false;
+                        prefixLoaded = true;
                         const page = await loadWorkflowRunEvents(
                           runId,
                           eventLog.type === 'loadAfter'
@@ -3767,6 +3893,24 @@ export function workflowEntrypoint(
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
+                        // Piggyback commit: a lone new step whose completion
+                        // may later be held is claimed through the batch pair
+                        // rather than the lazy start, so its own rows come
+                        // back and a replay over its held completion can
+                        // consume them. Same round trip, same two rows. Only
+                        // for the clean single-step suspension outside turbo
+                        // (whose forced optimistic start the pair would
+                        // give up) over a server-loaded log.
+                        const foldLoneInlinePair =
+                          err.items.length === 1 &&
+                          err.stepCount === 1 &&
+                          !turbo &&
+                          prefixLoaded &&
+                          typeof eventLog.cursor === 'string' &&
+                          // The fold IS a createBatch call; a World with
+                          // `commit` but no batch cannot take it.
+                          typeof world.events.createBatch === 'function' &&
+                          piggybackUnavailable() === undefined;
                         try {
                           suspensionResult = await handleSuspension({
                             suspension: err,
@@ -3806,6 +3950,7 @@ export function workflowEntrypoint(
                             // dispatch join), so the durability contract
                             // is unchanged while the bodies start earlier.
                             allowDeferredBatchWork: true,
+                            foldLoneInlinePair,
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -4985,15 +5130,268 @@ export function workflowEntrypoint(
                         const batchResumeTracking = resumeTracking;
                         resumeTracking = undefined;
 
+                        // Piggyback commit (runtime/piggyback.ts): hold the
+                        // lone inline execution's completion instead of
+                        // writing it, replay over it, and commit it together
+                        // with what that replay derives. Decided here, where
+                        // the batch's shape is final; declining is always
+                        // safe (the step writes exactly as today).
+                        const piggybackIneligible =
+                          piggybackHoldIneligibleReason({
+                            unavailableReason: piggybackUnavailable(),
+                            prefixLoaded:
+                              prefixLoaded &&
+                              typeof eventLog.cursor === 'string',
+                            inlineExecutions: inlineExecutions.length,
+                            requestInlineDelta,
+                            forceOptimisticStart,
+                            preclaimedStart:
+                              inlineExecutions[0]?.preclaimedStart,
+                          });
+                        if (
+                          piggybackIneligible !== undefined &&
+                          piggybackIneligible !== 'disabled'
+                        ) {
+                          span?.setAttributes(
+                            Attribute.WorkflowPiggybackIneligibleReason(
+                              piggybackIneligible
+                            )
+                          );
+                        }
+                        // Set when a run-end pair committed: the run is over
+                        // and this delivery is done once the batch settles.
+                        let piggybackRunFinished = false;
+                        const runHeldChain = (
+                          execution: (typeof inlineExecutions)[number],
+                          held: Extract<
+                            Awaited<ReturnType<typeof executeStep>>,
+                            { type: 'held' }
+                          >
+                        ): Promise<PiggybackChainOutcome> => {
+                          assert(eventLog.type === 'ready');
+                          const log = eventLog;
+                          // Whether the last piggyback replay resumed the
+                          // retained VM, for the next step's telemetry.
+                          let lastReplayRetained = false;
+                          const preSendExitReason = () =>
+                            piggybackPreSendExitReason({
+                              replayBudgetExhausted: replayBudget.isExhausted(),
+                              elapsedMs: Date.now() - invocationStartTime,
+                              inlineReplayLimitMs: noInlineReplayAfterMs,
+                              activityRevision: activity?.revision,
+                              iterationRevision: invocationRevision,
+                            });
+                          return runPiggybackChain(
+                            {
+                              runId,
+                              world,
+                              requestId,
+                              ownerMessageId: metadata.messageId,
+                              eventLog: log,
+                              inFlightOwnedSteps,
+                              span,
+                              replay: async (events, drainHold) => {
+                                // Non-step time: charge it like any replay.
+                                replayBudget.resume();
+                                try {
+                                  const cache =
+                                    startReplayPayloadCache(workflowRun);
+                                  assert(
+                                    cache,
+                                    'Node workflow replay requires payload preparation'
+                                  );
+                                  // Exactly the code and scripts the main
+                                  // replay uses (a dynamic run replays its
+                                  // stored code, not the deployment bundle).
+                                  // Resolved OUTSIDE the catch below: a
+                                  // missing script is this process's fault,
+                                  // and it must end the hold as an exit
+                                  // (`replay_error`), never reach
+                                  // `buildRunFailure` as the workflow's own
+                                  // failure and be committed as `run_failed`.
+                                  const compiled =
+                                    startWorkflowCompile(workflowRun) ??
+                                    dynamicWorkflowScripts;
+                                  assert(
+                                    compiled,
+                                    'Node workflow replay requires compiled scripts'
+                                  );
+                                  const scripts = await compiled;
+                                  const key = await encryptionKey.value;
+                                  lastReplayRetained = retainedSession !== null;
+                                  let replayed: WorkflowResumeResult;
+                                  try {
+                                    replayed = retainedSession
+                                      ? await resumeWorkflow(
+                                          retainedSession,
+                                          events,
+                                          { endOfRunDrainHold: drainHold }
+                                        )
+                                      : { type: 'replay' };
+                                    if (replayed.type === 'replay') {
+                                      retainedSession = null;
+                                      lastReplayRetained = false;
+                                      replayed = await replayWorkflow({
+                                        workflowCode: effectiveWorkflowCode,
+                                        workflowRun,
+                                        events,
+                                        encryptionKey: key,
+                                        replayPayloadCache: cache,
+                                        compiledWorkflowScripts: scripts,
+                                        runReadyBarrier,
+                                        worldCapabilities: world.capabilities,
+                                        endOfRunDrainHold: drainHold,
+                                      });
+                                    }
+                                  } catch (error) {
+                                    retainedSession = null;
+                                    return { type: 'failed', error };
+                                  }
+                                  if (replayed.type === 'suspended') {
+                                    retainedSession = replayed.session;
+                                    return {
+                                      type: 'suspended',
+                                      suspension: replayed.suspension,
+                                    };
+                                  }
+                                  retainedSession = null;
+                                  return {
+                                    type: 'completed',
+                                    output: replayed.output,
+                                  };
+                                } finally {
+                                  replayBudget.pause();
+                                }
+                              },
+                              discardReplay: () => {
+                                retainedSession = null;
+                                replayPayloadCache?.dropEvent(
+                                  PIGGYBACK_HELD_EVENT_ID
+                                );
+                                replayPayloadCache?.resetScan();
+                              },
+                              retainAfterCommit: (
+                                suspension,
+                                serializationBlockerCount
+                              ) => {
+                                if (!retainedSession) return;
+                                const decision = getRetentionDecision({
+                                  suspension,
+                                  serializationBlockerCount,
+                                  invocationContinuation:
+                                    activity !== undefined,
+                                });
+                                if (!decision.retain) retainedSession = null;
+                              },
+                              rekeyHeldEvent: (committedEventId) => {
+                                replayPayloadCache?.rekeyEvent(
+                                  PIGGYBACK_HELD_EVENT_ID,
+                                  committedEventId
+                                );
+                              },
+                              buildStepPair: (suspension) =>
+                                buildPiggybackStepPair({
+                                  suspension,
+                                  world,
+                                  run: workflowRun,
+                                  // Checked by the chain before it asks.
+                                  ownerMessageId: metadata.messageId ?? '',
+                                }),
+                              buildRunFailure: (error) =>
+                                buildPiggybackRunFailure(error),
+                              onRunCompleted: () => {
+                                dispatchRunCompletedHooks(runId, workflowName);
+                                span?.setAttributes({
+                                  ...Attribute.WorkflowRunStatus('completed'),
+                                });
+                              },
+                              preSendExitReason,
+                              mayHoldNext: () =>
+                                piggybackUnavailable() === undefined &&
+                                preSendExitReason() === undefined,
+                              runStep: (next) => {
+                                // The pair created and claimed B; nothing but
+                                // its body stands between the commit and this
+                                // call (no exit after a committed answer).
+                                assert(eventLog.type === 'ready');
+                                const nextLatencyTracking =
+                                  computeStepLatencyTracking({
+                                    events: eventLog.events,
+                                    invocationStartedClean:
+                                      invocationStartedClean === true,
+                                    runCreatedAtMs:
+                                      runIdCreatedAt(runId) ??
+                                      (turbo
+                                        ? undefined
+                                        : +workflowRun.createdAt),
+                                    runStartedReceivedAtMs,
+                                    replayMs: next.replayMs,
+                                    preStepBlockingMs,
+                                    preStepBlockingBeforeAttrMs,
+                                    suspensionHasWaits: false,
+                                    suspensionCreatedHooks: false,
+                                    turbo,
+                                    retained: lastReplayRetained,
+                                  });
+                                return executeStep({
+                                  world,
+                                  workflowRunId: runId,
+                                  workflowDeploymentId:
+                                    workflowRun.deploymentId,
+                                  workflowName,
+                                  workflowStartedAt,
+                                  requestId,
+                                  rootRunId: rootRunIdFrom(
+                                    workflowRun.attributes,
+                                    runId
+                                  ),
+                                  stepId: next.correlationId,
+                                  stepName: next.stepName,
+                                  runSpecVersion: workflowRun.specVersion,
+                                  // Born running by the pair: attempt 1.
+                                  authoritativeAttempt: 1,
+                                  preclaimedStart: next.preclaimedStart,
+                                  ownerMessageId: metadata.messageId,
+                                  runReadyBarrier,
+                                  ...(nextLatencyTracking
+                                    ? { latencyTracking: nextLatencyTracking }
+                                    : {}),
+                                  ...(typeof eventLog.cursor === 'string'
+                                    ? {
+                                        inlineDeltaSinceCursor: eventLog.cursor,
+                                      }
+                                    : {}),
+                                  replayRecoveryReporter,
+                                  holdTerminal: next.holdTerminal,
+                                });
+                              },
+                            },
+                            {
+                              correlationId: execution.correlationId,
+                              stepName: execution.stepName,
+                              result: held,
+                              ownTail:
+                                execution.preclaimedStart?.owned === true
+                                  ? [
+                                      ...(execution.preclaimedStart.events ??
+                                        []),
+                                    ]
+                                  : [],
+                            }
+                          );
+                        };
+
                         replayBudget.pause();
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
-                            const run = () => {
+                            const run = async (): Promise<
+                              Awaited<ReturnType<typeof executeStep>>
+                            > => {
                               assert(eventLog.type === 'ready');
-                              return executeStep({
+                              const executed = await executeStep({
                                 world,
                                 workflowRunId: runId,
                                 workflowDeploymentId: workflowRun.deploymentId,
@@ -5087,7 +5485,28 @@ export function workflowEntrypoint(
                                     }
                                   : {}),
                                 replayRecoveryReporter,
+                                // Piggyback: hold the completion (the gate
+                                // above admits only a lone execution).
+                                holdTerminal:
+                                  piggybackIneligible === undefined &&
+                                  stepIndex === 0,
                               });
+                              if (executed.type !== 'held') return executed;
+                              const outcome = await runHeldChain(s, executed);
+                              if (outcome.type === 'run_finished') {
+                                piggybackRunFinished = true;
+                                return { type: 'completed' };
+                              }
+                              // The chain may have moved on to later steps;
+                              // the bookkeeping below (retry re-queue) must
+                              // name the step this result belongs to.
+                              if (outcome.correlationId !== s.correlationId) {
+                                inlineExecutions[stepIndex] = {
+                                  correlationId: outcome.correlationId,
+                                  stepName: outcome.stepName,
+                                };
+                              }
+                              return outcome.result;
                             };
                             // Invariant bookkeeping: this invocation owns
                             // these bodies until they settle. See
@@ -5200,6 +5619,14 @@ export function workflowEntrypoint(
                           throw stepErr;
                         } finally {
                           replayBudget.resume();
+                        }
+
+                        // A run-end piggyback pair committed the last step's
+                        // completion together with the run's outcome: the run
+                        // is finished, and everything this invocation
+                        // launched has been joined above.
+                        if (piggybackRunFinished) {
+                          return;
                         }
 
                         // Aggregate the batch results. `retry` steps (which

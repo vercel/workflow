@@ -296,7 +296,7 @@ Both save a reload, so the rule for which writes send them is not about the even
 | `attr_set` | `setAttributes()` outside a workflow | Nothing | Out-of-band. |
 | `run_completed`, `run_failed`, `run_cancelled` | Replay, or `cancel()` | Never `sinceCursor` | Terminal. Nothing replays the log afterwards, so a page would be read by no one. |
 
-Batched writes (`events.createBatch()`) carry no position and get no page. Both runtime engines follow this table: the `node:vm` engine merges a returned page into the log it replays from, and the QuickJS engine queues it for delivery to its live VM, in position order, ahead of its next `events.list()`.
+Batched writes (`events.createBatch()`) carry no position and get no page. A fenced commit (`events.commit()`, used by the opt-in piggyback commit) names a position differently: its `after` is the top of the dense prefix its replay consumed, it lands only if nothing but its own earlier writes sits above that, and its answer carries the cursor past the rows it committed. Both runtime engines follow this table: the `node:vm` engine merges a returned page into the log it replays from, and the QuickJS engine queues it for delivery to its live VM, in position order, ahead of its next `events.list()`.
 
 A World that supports this returns the page in `events`, `cursor`, and `hasMore` on the `EventResult`. A World that does not simply returns the created event, and the runtime lists. See [Building a World](/worlds/building-a-world#event-id-allocation) for the World-side contract.
 

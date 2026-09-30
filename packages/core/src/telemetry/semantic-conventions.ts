@@ -201,6 +201,27 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
 /** Whether this workflow invocation is using the turbo first-delivery path */
 export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
 
+/**
+ * Piggyback commit (`runtime/piggyback.ts`): why this invocation's last
+ * eligible step completion was not committed as a pair: the reason it was
+ * never held (`turbo_synth_prefix`, `siblings`, `pre_completion_ops`, …) or
+ * the exit it took after the hold (`rejected_fence`, `shape_hook`, …). Set so
+ * the eligible share of steps is measured rather than assumed.
+ */
+export const WorkflowPiggybackIneligibleReason = SemanticConvention<string>(
+  'workflow.piggyback.ineligible_reason'
+);
+
+/** Piggyback commits this invocation committed (step and run-end pairs). */
+export const WorkflowPiggybackCommits = SemanticConvention<number>(
+  'workflow.piggyback.commits'
+);
+
+/** Piggyback holds this invocation exited through `flushAlone()`. */
+export const WorkflowPiggybackExits = SemanticConvention<number>(
+  'workflow.piggyback.exits'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'
@@ -378,7 +399,11 @@ export const StepLatencyOptimizations = SemanticConvention<string[]>(
  * inline create claims; ordinary background starts and owned recovery remain
  * unlabeled.
  */
-export type StepStartStrategy = 'awaited' | 'optimistic' | 'batch_preclaimed';
+export type StepStartStrategy =
+  | 'awaited'
+  | 'optimistic'
+  | 'batch_preclaimed'
+  | 'piggyback_preclaimed';
 export const StepStartStrategy = SemanticConvention<StepStartStrategy>(
   'workflow.step_start.strategy'
 );

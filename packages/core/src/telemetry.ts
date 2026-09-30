@@ -389,6 +389,32 @@ export async function recordStepExecutionDuration(
   histogram?.record(durationMs, { 'workflow.step.status': status });
 }
 
+const PiggybackHoldDurationHistogram = once(async () => {
+  const otel = await OtelApi.value;
+  if (!otel) return null;
+  return otel.metrics
+    .getMeter('workflow')
+    .createHistogram('workflow.piggyback.hold.duration', {
+      description:
+        'Time a held step completion spent in memory before it was committed or written alone',
+      unit: 'ms',
+    });
+});
+
+/**
+ * Records how long a held step completion stayed in memory (the piggyback
+ * commit's replay plus its commit, or its fallback write): the stretch by
+ * which holding extends a step's apparent in-flight time against its lease.
+ * `outcome` is `committed`, or the exit that flushed it.
+ */
+export async function recordPiggybackHoldDuration(
+  durationMs: number,
+  outcome: string
+): Promise<void> {
+  const histogram = await PiggybackHoldDurationHistogram.value;
+  histogram?.record(durationMs, { 'workflow.piggyback.outcome': outcome });
+}
+
 /**
  * Applies the workflow suspension algebraic effect to an active span.
  */

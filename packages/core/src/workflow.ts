@@ -135,6 +135,33 @@ interface WorkflowSessionOptions {
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
+  /** See {@link EndOfRunDrainHold}: set only for a piggyback replay. */
+  readonly endOfRunDrainHold?: EndOfRunDrainHold;
+}
+
+/**
+ * Keeps a replay from writing anything when the workflow finishes.
+ *
+ * A finished workflow normally drains its pending queue (hooks, waits,
+ * attributes, and steps it never awaited) through the suspension handler
+ * before its outcome is returned, which writes events from inside the replay.
+ * The piggyback commit replays over a held step completion that is not durable
+ * yet, and nothing derived from that view may leave the process before the
+ * completion does (`NoFlushOnExit` in workflow-server's `PiggybackCommit.tla`).
+ * With a hold in place the pass skips the drain and records whether there was
+ * anything to drain: a run with an empty drain can commit its outcome as a
+ * pair; one with a pending drain cannot, and the runtime discards this VM and
+ * replays again without the hold, which drains as usual.
+ */
+export interface EndOfRunDrainHold {
+  /** Set when the workflow finished with pending queue items it did not drain. */
+  drainPending: boolean;
+}
+
+/** Per-resume options for {@link WorkflowSession.resume}. */
+export interface WorkflowResumeOptions {
+  /** See {@link EndOfRunDrainHold}. Applies to this resume only. */
+  readonly endOfRunDrainHold?: EndOfRunDrainHold;
 }
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
@@ -210,7 +237,10 @@ export function compileDynamicWorkflowBundle(
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
-  resume(events: Event[]): Promise<WorkflowResumeResult>;
+  resume(
+    events: Event[],
+    options?: WorkflowResumeOptions
+  ): Promise<WorkflowResumeResult>;
 }
 
 /** A finished execution attempt: the workflow's output or a live boundary. */
@@ -274,7 +304,8 @@ export function replayWorkflow(
 /** Warm-start: advance a retained session by appending events. */
 export function resumeWorkflow(
   session: WorkflowSession,
-  events: Event[]
+  events: Event[],
+  options?: WorkflowResumeOptions
 ): Promise<WorkflowResumeResult> {
   return traceExecution(
     'retained',
@@ -284,7 +315,7 @@ export function resumeWorkflow(
       span?.setAttributes({
         ...Attribute.WorkflowArgumentsCount(session.argumentCount),
       });
-      const result = await session.resume(events);
+      const result = await session.resume(events, options);
       return result.type === 'replay' ? result : recordResult(result, span);
     }
   );
@@ -397,6 +428,7 @@ async function createWorkflowSessionInner(
     compiledWorkflowScripts,
     runReadyBarrier,
     worldCapabilities,
+    endOfRunDrainHold: initialEndOfRunDrainHold,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
 ): Promise<{
@@ -1208,6 +1240,20 @@ async function createWorkflowSessionInner(
   });
   await workflowContext.promiseQueue;
 
+  // The drain hold in force for the pass now running: the initial replay's
+  // (from the session options) or the current resume's. See EndOfRunDrainHold.
+  let endOfRunDrainHold = initialEndOfRunDrainHold;
+  /**
+   * True when this pass must not drain: records whether there was anything to
+   * drain on the hold so the runtime can tell an empty drain from a skipped
+   * one. Drains nothing either way: the drain is only ever skipped.
+   */
+  const holdEndOfRunDrain = (): boolean => {
+    if (!endOfRunDrainHold) return false;
+    endOfRunDrainHold.drainPending = workflowContext.invocationsQueue.size > 0;
+    return true;
+  };
+
   const failWorkflow = async (error: unknown): Promise<never> => {
     // Control-flow signals are handled by the runtime and do not mean the
     // workflow has terminally failed. `onWorkflowError` usually already moved
@@ -1221,14 +1267,16 @@ async function createWorkflowSessionInner(
     }
     state = { type: 'completed' };
 
-    await drainPendingQueueItems(
-      workflowRun.runId,
-      workflowContext.invocationsQueue,
-      vmGlobalThis,
-      workflowRun,
-      'failed',
-      runReadyBarrier
-    );
+    if (!holdEndOfRunDrain()) {
+      await drainPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
+        'failed',
+        runReadyBarrier
+      );
+    }
 
     throw error;
   };
@@ -1282,14 +1330,16 @@ async function createWorkflowSessionInner(
         (workflowRun.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
 
-      await drainPendingQueueItems(
-        workflowRun.runId,
-        workflowContext.invocationsQueue,
-        vmGlobalThis,
-        workflowRun,
-        'completed',
-        runReadyBarrier
-      );
+      if (!holdEndOfRunDrain()) {
+        await drainPendingQueueItems(
+          workflowRun.runId,
+          workflowContext.invocationsQueue,
+          vmGlobalThis,
+          workflowRun,
+          'completed',
+          runReadyBarrier
+        );
+      }
 
       return { type: 'completed', output, resultType: typeof result };
     } catch (error) {
@@ -1306,9 +1356,10 @@ async function createWorkflowSessionInner(
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
-    async resume(nextEvents) {
+    async resume(nextEvents, options) {
       switch (state.type) {
         case 'suspended': {
+          endOfRunDrainHold = options?.endOfRunDrainHold;
           // The full O(known events) prefix compare is required: the runtime
           // usually grows one array in place, but its wait-completion and
           // stale-reload paths REPLACE the array with a fresh full fetch, so

@@ -7,6 +7,11 @@ import {
 } from './serialization.js';
 
 type ReplayPayloadField = 'result' | 'error' | 'payload';
+const REPLAY_PAYLOAD_FIELDS: readonly ReplayPayloadField[] = [
+  'result',
+  'error',
+  'payload',
+];
 
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
@@ -82,6 +87,49 @@ export class ReplayPayloadCache {
   /** Rescan the next event log after an authoritative replacement. */
   resetScan(): void {
     this.nextUnscannedEventIndex = 0;
+  }
+
+  /**
+   * Move an event's cached preparation and memoized result to a new id.
+   *
+   * The piggyback commit replays over a held step completion under a sentinel
+   * id and, once the completion commits, renames that very event object to the
+   * committed row's id. The payload bytes are the ones that committed, so the
+   * work already done for them carries over instead of being redone under the
+   * new key.
+   */
+  rekeyEvent(fromEventId: string, toEventId: string): void {
+    for (const field of REPLAY_PAYLOAD_FIELDS) {
+      const from = this.eventPayloadKey(fromEventId, field);
+      const preparation = this.preparedPayloads.get(from);
+      if (preparation) {
+        this.preparedPayloads.delete(from);
+        this.preparedPayloads.set(
+          this.eventPayloadKey(toEventId, field),
+          preparation
+        );
+      }
+    }
+    if (this.primitiveStepResults.has(fromEventId)) {
+      this.primitiveStepResults.set(
+        toEventId,
+        this.primitiveStepResults.get(fromEventId)
+      );
+      this.primitiveStepResults.delete(fromEventId);
+    }
+  }
+
+  /**
+   * Forget everything cached under an event id: the piggyback commit's
+   * sentinel, once the held completion it stood for was written some other way
+   * (its committed row has a different id and time, so nothing may be read
+   * back under the old one).
+   */
+  dropEvent(eventId: string): void {
+    for (const field of REPLAY_PAYLOAD_FIELDS) {
+      this.preparedPayloads.delete(this.eventPayloadKey(eventId, field));
+    }
+    this.primitiveStepResults.delete(eventId);
   }
 
   /** Return the workflow input after shared host-side preparation. */
