@@ -314,3 +314,11 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Default: `http`
 - Set to `ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Only `ws` (case-insensitive) opts in; any other value, including unset, empty, or `http`, keeps HTTP.
 - Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
+
+### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
+
+- Factory option: none
+- CLI flag: none
+- Default: `12582912` (12 MiB)
+- Clamp: `2097152` to `16777216` (values outside are clamped, with a warning)
+- Largest events WebSocket message, header included. A larger frame is sent as several messages and rebuilt on the other side. The ceiling is the 16 MiB WebSocket message limit.
