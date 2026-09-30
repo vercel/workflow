@@ -212,11 +212,24 @@ interface OpenFrame {
   bytes: number;
   /** Nobody wants this frame: its parts are checked and counted, not kept. */
   discard: boolean;
+  /** Its body passed `maxBodyBytes`: read through like a discarded frame,
+   *  then reported through `onTooLarge`. */
+  tooLarge: boolean;
 }
 
 export interface WsPartAssemblerOptions {
-  /** Largest frame to rebuild. Default {@link WS_MAX_FRAME_BYTES}. */
+  /** Largest frame to rebuild. Default {@link WS_MAX_FRAME_BYTES}. A frame
+   *  over it is a protocol error. */
   maxFrameBytes?: number;
+  /**
+   * Largest body a caller will accept, at most `maxFrameBytes`. A frame whose
+   * body passes it stops being buffered at that point and is read through;
+   * `onTooLarge` is called once its last part arrives, and it is never
+   * returned. Lets a receiver refuse an oversized request without holding it
+   * or dropping the connection. Default: `maxFrameBytes`.
+   */
+  maxBodyBytes?: number;
+  onTooLarge?: (reqId: number, bytes: number) => void;
   /** Most open split frames. Default {@link WS_MAX_OPEN_FRAMES}. */
   maxOpenFrames?: number;
   /** Most parts per frame. Default {@link WS_MAX_PART_COUNT}. */
@@ -246,6 +259,8 @@ export interface WsPartAssemblerOptions {
 export class WsPartAssembler {
   private readonly open = new Map<number, OpenFrame>();
   private readonly maxFrameBytes: number;
+  private readonly maxBodyBytes: number;
+  private readonly onTooLarge: (reqId: number, bytes: number) => void;
   private readonly maxOpenFrames: number;
   private readonly maxPartCount: number;
   private readonly wanted: (reqId: number) => boolean;
@@ -253,6 +268,11 @@ export class WsPartAssembler {
 
   constructor(options: WsPartAssemblerOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? WS_MAX_FRAME_BYTES;
+    this.maxBodyBytes = Math.min(
+      options.maxBodyBytes ?? this.maxFrameBytes,
+      this.maxFrameBytes
+    );
+    this.onTooLarge = options.onTooLarge ?? (() => {});
     this.maxOpenFrames = options.maxOpenFrames ?? WS_MAX_OPEN_FRAMES;
     this.maxPartCount = options.maxPartCount ?? WS_MAX_PART_COUNT;
     this.wanted = options.wanted ?? (() => true);
@@ -308,6 +328,7 @@ export class WsPartAssembler {
       chunks: [],
       bytes: 0,
       discard: !this.wanted(reqId),
+      tooLarge: false,
     };
     this.open.set(reqId, entry);
     this.addChunk(reqId, entry, body);
@@ -360,6 +381,10 @@ export class WsPartAssembler {
     if (!last) return undefined;
 
     this.close(reqId);
+    if (entry.tooLarge) {
+      this.onTooLarge(reqId, entry.bytes);
+      return undefined;
+    }
     if (entry.discard) {
       this.onDiscarded(reqId);
       return undefined;
@@ -381,6 +406,12 @@ export class WsPartAssembler {
       );
     }
     entry.bytes += body.byteLength;
+    if (!entry.discard && entry.bytes > this.maxBodyBytes) {
+      // Too large for the caller: stop buffering and release what was held.
+      entry.discard = true;
+      entry.tooLarge = true;
+      entry.chunks = [];
+    }
     if (entry.discard) return;
     // Copy: the decoded body may be a view over a buffer `ws` reuses.
     entry.chunks.push(body.slice());

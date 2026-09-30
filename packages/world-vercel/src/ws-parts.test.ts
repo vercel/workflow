@@ -219,6 +219,40 @@ describe('WsPartAssembler', () => {
     expect(frame?.body).toEqual(body(1));
   });
 
+  it('reads through a frame over maxBodyBytes and reports it instead of returning it', () => {
+    const tooLarge: Array<[number, number]> = [];
+    const assembler = newAssembler({
+      maxBodyBytes: LIMIT * 2,
+      onTooLarge: (reqId, bytes) => tooLarge.push([reqId, bytes]),
+    });
+    const big = split(1, LIMIT * 4);
+    const done = big.flatMap((part) => {
+      const frame = assembler.accept(part);
+      return frame ? [frame] : [];
+    });
+    expect(done).toEqual([]);
+    expect(tooLarge).toEqual([[1, LIMIT * 4]]);
+    expect(assembler.openFrames).toBe(0);
+
+    // The connection carries on: the next frame is rebuilt normally.
+    const next = split(2, LIMIT);
+    const rebuilt = next.flatMap((part) => {
+      const frame = assembler.accept(part);
+      return frame ? [frame] : [];
+    });
+    expect(rebuilt.map((f) => f.meta.reqId)).toEqual([2]);
+  });
+
+  it('still treats a frame over maxFrameBytes as a protocol error', () => {
+    const assembler = newAssembler({
+      maxBodyBytes: LIMIT,
+      maxFrameBytes: LIMIT * 2,
+    });
+    expect(() => {
+      for (const part of split(1, LIMIT * 4)) assembler.accept(part);
+    }).toThrow(/exceeds/);
+  });
+
   it('rejects a continuation with no open frame', () => {
     const parts = split(1, LIMIT * 2);
     expect(() => newAssembler().accept(at(parts, 1))).toThrow(/no open frame/);
