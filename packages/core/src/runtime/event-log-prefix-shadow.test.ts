@@ -307,6 +307,17 @@ describe('event-log prefix shadow', () => {
     });
   });
 
+  it('flags a bounded page missing a slot below the highest one it carried', () => {
+    // hasMore says the page stopped early, but slot 3 is a hole INSIDE it (the
+    // page carried 1, 2, 4..6): that is a mismatch, not a truncated hit.
+    stream(open(), log(5));
+    const holey = log(6).filter((e) => e.eventId !== slotToEventId(3));
+    expect(stream(open(), holey, { hasMore: true })).toMatchObject({
+      outcome: 'prefix_mismatch',
+      wouldSkipBytes: 0,
+    });
+  });
+
   it('flags a complete log missing a slot the entry held', () => {
     stream(open(), log(5));
     const holey = log(6).filter((e) => e.eventId !== slotToEventId(3));
@@ -395,6 +406,39 @@ describe('event-log prefix shadow', () => {
       {}
     );
     expect(store.size).toBe(0);
+  });
+
+  it('never fills an invocation whose first load lacked run_started', () => {
+    // A run_started wedge: the preload streams run_created alone, the run is
+    // reset to pending and its run_created may be rewritten while this
+    // invocation lives on. When run_started later arrives in a delta, the
+    // dense prefix holds it, but slot 1 may be the replaced row
+    // (LogPrefixCacheRewriteAfterLoad), so this invocation fills nothing.
+    const session = open();
+    stream(session, log(1));
+    expect(store.size).toBe(0);
+    expect(session.recordLog(log(4), SEALED)).toBeUndefined();
+    expect(store.size).toBe(0);
+    // A later invocation that starts from a started log fills as usual.
+    expect(open().recordLog(log(4), SEALED)).toBe(4);
+  });
+
+  it('decides first-load eligibility even when the preload was unmeasured', () => {
+    const session = open();
+    const load = session.beginLoad('run_started');
+    const wedged = log(1);
+    for (const event of wedged) load.observe(event, undefined);
+    expect(
+      load.finish({ events: wedged, run: { specVersion: SEALED } })
+    ).toMatchObject({ outcome: 'unmeasured' });
+    expect(session.recordLog(log(4), SEALED)).toBeUndefined();
+    expect(store.size).toBe(0);
+  });
+
+  it("does not let turbo's synthesized empty log decide eligibility", () => {
+    const session = open();
+    expect(session.recordLog([], SEALED)).toBeUndefined();
+    expect(session.recordLog(log(4), SEALED)).toBe(4);
   });
 
   it('forgets a run whose log records its end', () => {

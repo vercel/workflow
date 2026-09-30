@@ -57,6 +57,19 @@
  *   deliberately does NOT inherit `findEventSlotGap`'s slot-1 exemption, and
  *   only when `run_started` is inside it. Noops occupy their slot like any
  *   event.
+ * - **The invocation started from a started log (`StartInFirstLoad`).** An
+ *   invocation fills only if the first non-empty log it received (its preload,
+ *   or its first list when turbo synthesized an empty one) already held
+ *   `run_started`. During a `run_started` wedge the server streams a preload of
+ *   `run_created` alone to a run it believes is running; wedge recovery can
+ *   then move the run back to pending, where its `run_created` may be rewritten
+ *   (a rekey, or an incident delete and recreate), while this invocation keeps
+ *   the old row. Once `run_started` commits, a later delta read would hand the
+ *   invocation a dense prefix holding `run_started`, which passes the rule
+ *   above and whose slot N (`run_started` itself) never changed, so neither
+ *   that rule nor the anchor sees the stale slot 1. The model
+ *   (`LogPrefixCacheRewriteAfterLoad`) makes this the load-bearing fill rule;
+ *   the one above is kept because it costs nothing.
  * - **Server-returned events only.** Fills come from the preload stream and the
  *   replay loop's settled log, both assembled from World responses; the turbo
  *   path's empty synthesized log fills nothing.
@@ -146,8 +159,9 @@ export type PrefixShadowSource = 'run_started' | 'hook_preload';
  *   real claim would be refused (VersionCheck).
  * - `anchor_mismatch`: the stream's event at slot N is not the one the entry
  *   recorded. The model says this is unreachable; seeing it is a bug.
- * - `prefix_mismatch`: a complete stream is missing a slot the entry claimed
- *   to hold. Also unreachable per the model (`CacheIsPrefix`).
+ * - `prefix_mismatch`: the stream is missing a slot the entry claimed to hold,
+ *   either a complete stream or a bounded page with the slot missing below the
+ *   highest slot it carried. Also unreachable per the model (`CacheIsPrefix`).
  * - `ineligible_spec`: the run is below the sealed-log spec, or its version is
  *   unknown. Never claimable.
  * - `ineligible_ids`: the log is not slot-numbered (a pre-slot run).
@@ -365,6 +379,13 @@ export class PrefixShadowSession {
     | { found: false; expired: boolean }
     | undefined;
   private readonly now: () => number;
+  /**
+   * Whether the first non-empty log this invocation received held
+   * `run_started` (see `StartInFirstLoad` above). Undefined until one arrives.
+   * Decided once: a later log of the same invocation, even a full reload, does
+   * not change it, as in the model.
+   */
+  private startedAtFirstLoad: boolean | undefined;
 
   private constructor(
     private readonly store: PrefixShadowStore,
@@ -419,6 +440,18 @@ export class PrefixShadowSession {
     return this.now();
   }
 
+  /**
+   * @internal Note a log this invocation received from the World. The first
+   * non-empty one decides whether the invocation may fill at all. Turbo's
+   * synthesized empty log is not a load and decides nothing.
+   */
+  noteLoadedLog(events: readonly Event[]): void {
+    if (this.startedAtFirstLoad !== undefined || events.length === 0) return;
+    this.startedAtFirstLoad = events.some(
+      (event) => event.eventType === 'run_started'
+    );
+  }
+
   /** @internal Refresh an entry a load would have hit. */
   touchPrior(): void {
     this.store.touch(this.key, this.now());
@@ -436,6 +469,7 @@ export class PrefixShadowSession {
     events: readonly Event[],
     runSpecVersion: number | undefined
   ): number | undefined {
+    this.noteLoadedLog(events);
     // The version a claim would carry is the one `run_created` holds as read
     // (the model's knownVer, and what world-vercel reconstructs a preloaded
     // run from). The run the caller passes can lag it: on the turbo first
@@ -444,9 +478,10 @@ export class PrefixShadowSession {
     // still shows the pre-raise version. Prefer the event; fall back to the
     // run only when the log does not carry `run_created`.
     const specVersion = runCreatedSpecVersion(events) ?? runSpecVersion;
-    const fill = isSealedSpec(specVersion)
-      ? this.fillFor(events, specVersion)
-      : undefined;
+    const fill =
+      this.startedAtFirstLoad === true && isSealedSpec(specVersion)
+        ? this.fillFor(events, specVersion)
+        : undefined;
     if (fill === undefined) {
       this.evict();
       return undefined;
@@ -708,6 +743,9 @@ export class PrefixShadowLoad {
     hasMore?: boolean;
   }): PrefixShadowMeasurement {
     const events = result.events ?? [];
+    // Before anything that can skip the fill: an unmeasured preload is still
+    // the load this invocation started from.
+    this.session.noteLoadedLog(events);
     // Same version rule as the fill (see recordLog), so a claim check and the
     // entry it is checked against never read the version from different
     // places.
@@ -810,13 +848,20 @@ function matchEntry(
   hasMore: boolean
 ): PrefixShadowOutcome {
   const bySlot = new Map<number, Event>();
+  let maxSlot = 0;
   for (const event of events) {
     const slot = eventIdToSlot(event.eventId);
-    if (slot !== null && slot <= entry.denseSlots) bySlot.set(slot, event);
+    if (slot === null) continue;
+    if (slot > maxSlot) maxSlot = slot;
+    if (slot <= entry.denseSlots) bySlot.set(slot, event);
   }
   for (let slot = FIRST_EVENT_SLOT; slot <= entry.denseSlots; slot++) {
     if (!bySlot.has(slot)) {
-      return hasMore ? 'hit_truncated' : 'prefix_mismatch';
+      // A bounded page that simply ended before N is a truncated hit. A slot
+      // missing BELOW the highest one the page carried is a hole inside the
+      // stream, which the model says a sealed reader never returns below a
+      // cached prefix: report it as the bug signal, never as a would-hit.
+      return hasMore && slot > maxSlot ? 'hit_truncated' : 'prefix_mismatch';
     }
   }
   const anchor = bySlot.get(entry.denseSlots);
