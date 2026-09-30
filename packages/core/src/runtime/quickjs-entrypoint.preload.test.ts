@@ -184,6 +184,13 @@ describe('QuickJS lazy hook preload sourcing', () => {
     expect(listEvents).toHaveBeenCalled();
     // ...and replayed what the fetch returned.
     expect(vmEvents.map((e) => e.eventId)).toEqual(log.map((e) => e.eventId));
+    // Replay never reads recorded step inputs, so every fetch lets the World
+    // leave them out.
+    for (const [params] of listEvents.mock.calls as unknown as Array<
+      [{ resolveData?: string }]
+    >) {
+      expect(params.resolveData).toBe('skip-step-inputs');
+    }
   });
 
   it('does not trust an attested but empty preload: fetches via events.list', async () => {

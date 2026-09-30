@@ -138,6 +138,7 @@ export type {
   StreamInfoResponse,
 } from './shared.js';
 export {
+  entityResolveData,
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
@@ -154,6 +155,8 @@ export {
 } from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
 export {
+  CAPABILITY_ONLY_SPEC_VERSIONS,
+  crossesStructuralSpecVersion,
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
@@ -168,6 +171,7 @@ export {
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  STRUCTURAL_SPEC_VERSIONS,
 } from './spec-version.js';
 export type * from './steps.js';
 export {

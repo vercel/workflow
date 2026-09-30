@@ -17,11 +17,11 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
+  EventsResolveData,
   Hook,
   HookCreatedEventRequest,
   PaginatedResponse,
   PaginationOptions,
-  ResolveData,
   SerializedData,
   Step,
   Storage,
@@ -30,6 +30,7 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  entityResolveData,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
@@ -1126,6 +1127,7 @@ export function createEventsStorage(
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
               encryptionPublicKey?: string;
+              dynamicWorkflowCode?: SerializedData;
             };
             if (
               runInputData.deploymentId &&
@@ -1162,6 +1164,9 @@ export function createEventsStorage(
                 // run from the queued message, which is exactly when the key
                 // would otherwise be lost for the rest of the run's life.
                 encryptionPublicKey: runInputData.encryptionPublicKey,
+                // Same reasoning: a dynamic run recreated without its code
+                // would be created unable to replay.
+                dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
                 createdAt: now,
                 updatedAt: now,
               };
@@ -1252,7 +1257,7 @@ export function createEventsStorage(
               effectiveRunId,
               data,
               currentRun,
-              params
+              params && { resolveData: entityResolveData(params.resolveData) }
             );
           }
         }
@@ -1642,6 +1647,16 @@ export function createEventsStorage(
         if (data.eventType === 'run_started' && 'eventData' in event) {
           delete (event as any).eventData;
         }
+        // Dynamic source is materialized onto the run and never retained on
+        // the creation event as a second durable copy.
+        if (event.eventType === 'run_created' && event.eventData) {
+          const {
+            dynamicWorkflowCode: _dynamicWorkflowCode,
+            dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
+            ...eventData
+          } = event.eventData;
+          event = { ...event, eventData };
+        }
         // Strip only the step `input` from the lazy step_started event row:
         // it belongs on the synthetic step_created written above. stepName is
         // preserved for the client replay consumer's step-name divergence
@@ -1740,6 +1755,7 @@ export function createEventsStorage(
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
+            dynamicWorkflowCode?: SerializedData;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1765,6 +1781,13 @@ export function createEventsStorage(
             completedAt: undefined,
             attributes: runData.attributes ?? {},
             encryptionPublicKey: runData.encryptionPublicKey,
+            // A dynamic run's own workflow code. Stored on the run record
+            // rather than the event because the run is what replay reads;
+            // there is no ref layer here, so the bytes sit inline in the
+            // record's JSON. `start()` never sends a ref against this world —
+            // it has no upload path to send one to — so the inline field is
+            // the only shape to handle.
+            dynamicWorkflowCode: runData.dynamicWorkflowCode,
             createdAt: now,
             updatedAt: now,
           };
@@ -1828,6 +1851,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             run = written.run;
@@ -1858,6 +1887,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             run = written.run;
@@ -1899,6 +1934,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             run = written.run;
@@ -1932,6 +1973,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             run = written.run;
@@ -3478,7 +3525,7 @@ export function createEventsStorage(
   async function reportSkippedSlots(
     result: EventResult,
     askedFor: number,
-    resolveData: ResolveData
+    resolveData: EventsResolveData
   ): Promise<EventResult> {
     if (!result.event) {
       return result;

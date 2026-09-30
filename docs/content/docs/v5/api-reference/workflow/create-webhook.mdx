@@ -14,7 +14,7 @@ Creates a webhook that can be used to suspend and resume a workflow run upon rec
 Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
 
 <Callout type="warn">
-`createWebhook()` creates a public endpoint at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests resuming that webhook. This is convenient for prototypes and basic resume links because it avoids creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+`createWebhook()` creates a public endpoint at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests resuming that webhook. Anyone who has the URL can resume the workflow with a request of their choosing, so verify requests before acting on them or use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authorized route. See [Hook and webhook security](/docs/foundations/hooks#security).
 </Callout>
 
 ```ts lineNumbers
@@ -55,7 +55,7 @@ The returned `Webhook` object has:
 
 - `url`: The HTTP endpoint URL that external systems can call
 - `token`: The unique token identifying this webhook
-- `getConflict()`: A promise that resolves with the conflicting run if another active hook already owns this token, or `null` once the webhook endpoint has been registered
+- `getConflict()`: A promise that resolves with the conflicting run if another active hook already owns this token, or `null` once the webhook endpoint has been registered. The endpoint is registered alongside the steps the workflow starts at the same time, not ahead of them, so await `getConflict()` before a step that hands `url` to a caller who may request it right away. See [Registering a hook before a step uses it](/docs/api-reference/workflow/create-hook#registering-a-hook-before-a-step-uses-it).
 - Implements `AsyncIterable<T>` for handling multiple requests, where `T` is `Request` (default) or `RequestWithResponse` (manual mode)
 
 When using `createWebhook({ respondWith: 'manual' })`, the resolved request type is `RequestWithResponse`, which extends the standard `Request` interface with a `respondWith(response: Response): Promise<void>` method for sending custom responses back to the caller.

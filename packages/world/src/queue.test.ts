@@ -284,6 +284,32 @@ describe('RunInputSchema environment', () => {
   // and processes the message normally. If this ever becomes `.strict()`, every
   // in-flight message from a newer client starts failing validation on older
   // deployments.
+  it('accepts neither, inline code only, or a code ref only', () => {
+    expect(RunInputSchema.safeParse(baseRunInput).success).toBe(true);
+    expect(
+      RunInputSchema.safeParse({
+        ...baseRunInput,
+        dynamicWorkflowCode: new Uint8Array([1]),
+      }).success
+    ).toBe(true);
+    expect(
+      RunInputSchema.safeParse({
+        ...baseRunInput,
+        dynamicWorkflowCodeRef: 'ref_1',
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects inline code and a code ref together', () => {
+    expect(
+      RunInputSchema.safeParse({
+        ...baseRunInput,
+        dynamicWorkflowCode: new Uint8Array([1]),
+        dynamicWorkflowCodeRef: 'ref_1',
+      }).success
+    ).toBe(false);
+  });
+
   it('tolerates unknown keys by stripping them, so old consumers keep working', () => {
     const parsed = RunInputSchema.parse({
       ...baseRunInput,

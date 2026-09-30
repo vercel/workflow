@@ -82,6 +82,27 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
 
+/**
+ * Whether the run executes dynamic workflow code stored with the run rather
+ * than the deployment's workflow bundle.
+ */
+export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
+
+/** SHA-256 of a dynamic run's source and step bindings. */
+export const WorkflowDynamicSourceHash = SemanticConvention<string>(
+  'workflow.dynamic.source_hash'
+);
+
+/** Size in bytes of a dynamic run's serialized workflow code. */
+export const WorkflowDynamicCodeBytes = SemanticConvention<number>(
+  'workflow.dynamic.code_bytes'
+);
+
+/** Whether a dynamic run's code was stored inline or behind a ref. */
+export const WorkflowDynamicCodeStorage = SemanticConvention<'inline' | 'ref'>(
+  'workflow.dynamic.code_storage'
+);
+
 /** Whether the compiled application workflow bundle was cached. */
 export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
   'workflow.bundle.compile.cache_hit'
@@ -455,6 +476,40 @@ export const WorkflowDeploymentMismatchRetryCount = SemanticConvention<number>(
 /** Whether the misrouted delivery was re-routed instead of failing the run. */
 export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
   'workflow.deployment_mismatch.recovered'
+);
+
+/** The spec version `start()` stamped on the new run. */
+export const WorkflowRunSpecVersion = SemanticConvention<number>(
+  'workflow.run.spec_version'
+);
+
+/**
+ * Where the stamped spec version came from: the caller's own World
+ * (`same-deployment`), the caller (`explicit`), or, for a cross-deployment
+ * start, the target's capability probe (`probe`, `probe-unversioned`,
+ * `probe-malformed`) or a
+ * fallback when it did not answer (`probe-miss`, `no-probe-channel`).
+ */
+export const WorkflowRunSpecVersionSource = SemanticConvention<string>(
+  'workflow.run.spec_version_source'
+);
+
+/** Round-trip time of a cross-deployment capability probe that answered. */
+export const WorkflowCapabilityProbeLatencyMs = SemanticConvention<number>(
+  'workflow.capability_probe.latency_ms'
+);
+
+/**
+ * Whether a cross-deployment start reused an earlier answer from the same
+ * target deployment instead of probing it again.
+ */
+export const WorkflowCapabilityProbeCached = SemanticConvention<boolean>(
+  'workflow.capability_probe.cached'
+);
+
+/** Why a cross-deployment capability probe failed (e.g. a timeout). */
+export const WorkflowCapabilityProbeError = SemanticConvention<string>(
+  'workflow.capability_probe.error'
 );
 
 // Hook attributes

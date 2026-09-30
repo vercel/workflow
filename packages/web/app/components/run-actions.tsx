@@ -44,6 +44,7 @@ export interface RunActionsBaseProps {
   runStatus: WorkflowRunStatus | undefined;
   events?: Event[];
   eventsLoading?: boolean;
+  replayDisabledReason?: string;
   callbacks?: RunActionCallbacks;
 }
 
@@ -56,6 +57,7 @@ interface UseRunActionsOptions {
   runId: string;
   runStatus: WorkflowRunStatus | undefined;
   events?: Event[];
+  replayDisabledReason?: string;
   callbacks?: RunActionCallbacks;
 }
 
@@ -64,6 +66,7 @@ function useRunActions({
   runId,
   runStatus,
   events,
+  replayDisabledReason,
   callbacks,
 }: UseRunActionsOptions) {
   const [rerunning, setRerunning] = useState(false);
@@ -75,7 +78,7 @@ function useRunActions({
   const hasPendingSleeps = eventAnalysis.hasPendingSleeps;
 
   const handleReplay = useCallback(async () => {
-    if (rerunning) return null;
+    if (rerunning || replayDisabledReason) return null;
 
     try {
       setRerunning(true);
@@ -94,7 +97,7 @@ function useRunActions({
     } finally {
       setRerunning(false);
     }
-  }, [env, runId, rerunning, callbacks]);
+  }, [env, runId, rerunning, replayDisabledReason, callbacks]);
 
   const handleReenqueue = useCallback(async () => {
     if (reenqueuing) return;
@@ -224,6 +227,7 @@ export function RunActionsDropdownItems({
   events,
   eventsLoading,
   callbacks,
+  replayDisabledReason,
   stopPropagation = false,
 }: RunActionsDropdownItemsProps) {
   const {
@@ -236,7 +240,14 @@ export function RunActionsDropdownItems({
     handleReenqueue,
     handleWakeUp,
     handleCancel,
-  } = useRunActions({ env, runId, runStatus, events, callbacks });
+  } = useRunActions({
+    env,
+    runId,
+    runStatus,
+    events,
+    replayDisabledReason,
+    callbacks,
+  });
 
   const onReplay = (e: React.MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
@@ -262,10 +273,22 @@ export function RunActionsDropdownItems({
 
   return (
     <>
-      <DropdownMenuItem onClick={onReplay} disabled={rerunning}>
-        <RotateCw className="h-4 w-4 mr-2" />
-        {rerunning ? 'Replaying...' : 'Replay Run'}
-      </DropdownMenuItem>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuItem
+            onClick={onReplay}
+            disabled={rerunning || Boolean(replayDisabledReason)}
+          >
+            <RotateCw className="h-4 w-4 mr-2" />
+            {rerunning ? 'Replaying...' : 'Replay Run'}
+          </DropdownMenuItem>
+        </TooltipTrigger>
+        {replayDisabledReason ? (
+          <TooltipContent side="left" className="max-w-xs">
+            {replayDisabledReason}
+          </TooltipContent>
+        ) : null}
+      </Tooltip>
 
       {/* Re-enqueue - always shown */}
       <Tooltip>
@@ -330,6 +353,7 @@ export function RunActionsButtons({
   eventsLoading,
   loading,
   callbacks,
+  replayDisabledReason,
   onCancelClick,
   onRerunClick,
 }: RunActionsButtonsProps) {
@@ -345,12 +369,14 @@ export function RunActionsButtons({
   const canCancel = isRunActive;
 
   // Rerun button logic
-  const canRerun = !loading && !isRunActive;
-  const rerunDisabledReason = loading
-    ? 'Loading run data...'
-    : isRunActive
-      ? 'Cannot re-run while workflow is still running'
-      : '';
+  const canRerun = !loading && !isRunActive && !replayDisabledReason;
+  const rerunDisabledReason = replayDisabledReason
+    ? replayDisabledReason
+    : loading
+      ? 'Loading run data...'
+      : isRunActive
+        ? 'Cannot re-run while workflow is still running'
+        : '';
 
   // Cancel button logic
   const cancelDisabledReason =

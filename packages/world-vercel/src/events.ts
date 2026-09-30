@@ -47,11 +47,13 @@ import {
   type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
+  entityResolveData,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
+  mintedSpecVersion,
   type PaginatedResponse,
   validateUlidTimestamp,
   type WorkflowRun,
@@ -157,6 +159,16 @@ interface SplitEventData {
      * it without holding the run's symmetric key.
      */
     encryptionPublicKey?: string;
+    /**
+     * A dynamic run's serialized workflow VM code, inline on run_created (and
+     * on run_started for resilient start). Rides the meta rather than the
+     * frame body because the body slot already carries the run's `input`; the
+     * backend stores it behind a ref on the run and never decodes it.
+     */
+    dynamicWorkflowCode?: Uint8Array;
+    /** Ref key of dynamic workflow code uploaded ahead of the write, for
+     *  definitions too large to send inline. */
+    dynamicWorkflowCodeRef?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -211,6 +223,8 @@ type MetaSourceField =
   | 'writer'
   | 'allowReservedAttributes'
   | 'encryptionPublicKey'
+  | 'dynamicWorkflowCode'
+  | 'dynamicWorkflowCodeRef'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -381,6 +395,16 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.encryptionPublicKey === 'string') {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
   }
+  // Dynamic workflow code arrives one of two ways and never both: the bytes
+  // inline for a small definition, or a ref to an earlier upload for a large
+  // one. Both are metadata as far as the frame is concerned — the single body
+  // slot on run_created/run_started is the run's input.
+  if (eventData.dynamicWorkflowCode instanceof Uint8Array) {
+    meta.dynamicWorkflowCode = eventData.dynamicWorkflowCode;
+  }
+  if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
+    meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
+  }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
   if (typeof eventData.ttfs === 'number') {
@@ -474,7 +498,12 @@ export async function getWorkflowRunEvents(
   // remain on the returned events.
   const listParams: ListEventsV4Params = {
     ...pagination,
-    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
+    remoteRefBehavior:
+      resolveData === 'none'
+        ? 'lazy'
+        : resolveData === 'skip-step-inputs'
+          ? 'skip-step-inputs'
+          : 'resolve',
   };
 
   const result = await ('correlationId' in params
@@ -703,7 +732,11 @@ async function createWorkflowRunEventInner(
   // of this on v1 routes, since the v4 protocol does not cover legacy runs.
   if (params?.v1Compat) {
     if (data.eventType === 'run_cancelled' && id) {
-      const run = await cancelWorkflowRunV1(id, params, config);
+      const run = await cancelWorkflowRunV1(
+        id,
+        { ...params, resolveData: entityResolveData(params.resolveData) },
+        config
+      );
       return { run: run as WorkflowRun };
     }
     if (data.eventType === 'run_created') {
@@ -764,6 +797,11 @@ async function createWorkflowRunEventInner(
   const input = {
     runId: id,
     specVersion: data.specVersion ?? 2,
+    ...(data.eventType === 'run_started'
+      ? {
+          executorSpecVersion: config?.mintedSpecVersion ?? mintedSpecVersion(),
+        }
+      : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
     ...(params?.requestId ? { vercelId: params.requestId } : {}),
     ...(params?.computeInstanceId
@@ -792,6 +830,12 @@ async function createWorkflowRunEventInner(
     // defense-in-depth when it recorded a 412 rejection for this correlation
     // id and no step entity exists.
     ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
+    // The event-log page this POST returns (a preload or a `sinceCursor`
+    // delta) may leave out step inputs; the created event and step entity
+    // follow `remoteRefBehavior` and never do.
+    ...(params?.resolveData === 'skip-step-inputs'
+      ? { eventsRemoteRefBehavior: 'skip-step-inputs' as const }
+      : {}),
     remoteRefBehavior,
     payload,
     ...meta,

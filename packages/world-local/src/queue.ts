@@ -68,11 +68,16 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
-/** Default time-to-first-byte deadline for local queue deliveries. */
-export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+/**
+ * Default time-to-first-byte deadline for local queue deliveries: none. A
+ * delivery runs inline steps before it responds, so any client-side deadline
+ * shorter than the longest step redelivers a live message and re-executes the
+ * step while the original is still running (workflow#3909).
+ */
+export const DEFAULT_HEADERS_TIMEOUT_MS = 0;
 
 /** Default maximum gap between response body chunks for local deliveries. */
-export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+export const DEFAULT_BODY_TIMEOUT_MS = 0;
 
 function envTimeoutMs(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -82,9 +87,10 @@ function envTimeoutMs(name: string, fallback: number): number {
 }
 
 /**
- * Bounds a stalled delivery below the queue handler's retry horizon. A
- * transport timeout is retried by the delivery loop with the same durable
- * message; `0` remains available for applications that need unbounded calls.
+ * Deliveries are unbounded by default. Operators who would rather a hung
+ * handler be redelivered can opt in to a deadline; a transport timeout is then
+ * retried by the delivery loop with the same durable message, so the deadline
+ * must exceed the longest inline step.
  *
  * Both transports honor every field. Over undici this is the `Agent`'s own
  * configuration; over `node:http` (`WORKFLOW_NODE_HTTP`) the two timeouts are

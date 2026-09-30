@@ -4,7 +4,7 @@ description: >-
   Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `hook.metadata` read synchronously off a `getHookByToken()` result, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.10'
+  version: '0.2.11'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -133,7 +133,9 @@ const step = await world.steps.get(runId, stepId);
 
 ### `events.listByCorrelationId()` requires a `runId`
 
-A correlation ID identifies a step, hook or wait within its run, not across runs. The lookup is scoped to one run, so pass the run that owns the ID. The same applies to `analytics.events.listByCorrelationId()`.
+A correlation ID identifies a step, hook or wait within its run, not across runs. The lookup is scoped to one run, so pass the run that owns the ID.
+
+`analytics.events.listByCorrelationId()` took the same `runId`, and is deprecated on top of it: with a `runId` required it is a special case of `analytics.events.list({ runId, correlationId })`, and it goes away in the next major. Add the `runId` for now and move the call to `list` while you are in the file. The **storage** `events.listByCorrelationId()` is not deprecated.
 
 ```ts
 // v4

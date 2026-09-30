@@ -2,6 +2,10 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+Steps wait for released stream writers to drain before recording completion.
+Streams that finish draining after the inline wait budget expires do not force
+an extra queued continuation unless other background operations remain pending.
+
 Hook registration acknowledgements and token conflicts participate in replay
 delivery ordering alongside step results, hook payloads, and sleep completions.
 Concurrent branches awaiting `hook.getConflict()` preserve their step correlation
@@ -35,3 +39,6 @@ from `workflow/api` for best-effort reporting of terminal transitions written by
 your app. Handlers receive the workflow name without a backend read, a lazy `Run`
 instance, and, for failures, an error hydrated from the persisted payload.
 Callbacks are not retried; the event log remains the system of record.
+Hook-property getters and reporting failures are isolated from terminal writes.
+The callback's `waitUntil` scope also drains background operations for streams
+hydrated from the persisted failure, including when a handler throws.

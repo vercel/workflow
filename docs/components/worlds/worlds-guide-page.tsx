@@ -4,27 +4,22 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import type { ComponentProps, ComponentType, ReactNode } from 'react';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
-import { v5WorldsSource, worldsSource } from '@/lib/geistdocs/source';
+import { v4WorldsSource, worldsSource } from '@/lib/geistdocs/source';
 import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
 import type { DocsVersionId } from '@/lib/geistdocs/versions';
 import { WorldDetailToc } from './WorldDetailToc';
 import { WorldVersionSelect } from './WorldVersionSelect';
 
 const VERSION_SOURCES = {
-  v4: worldsSource,
-  v5: v5WorldsSource,
+  v5: worldsSource,
+  v4: v4WorldsSource,
 } as const;
 
 const VERSION_PREFIXES = {
-  v4: '',
-  v5: '/v5',
+  v5: '',
+  v4: '/v4',
 } as const;
 
-/**
- * Standalone guide pages in the worlds tree — the ones that are not a world
- * detail page. They render outside the docs sidebar, so each is a bespoke
- * route passing its own slug.
- */
 export async function generateWorldsGuideMetadata(
   slug: string,
   version: DocsVersionId
@@ -36,10 +31,10 @@ export async function generateWorldsGuideMetadata(
   }
 
   const versionPrefix = VERSION_PREFIXES[version];
-  const isPreRelease = version === 'v5';
+  const isMaintenance = version === 'v4';
 
   return {
-    title: `${page.data.title}${isPreRelease ? ' · Pre-release' : ''} | Workflow SDK`,
+    title: `${page.data.title}${isMaintenance ? ' · v4' : ''} | Workflow SDK`,
     description: page.data.description,
     openGraph: {
       images: ['/og/worlds'],
@@ -50,7 +45,7 @@ export async function generateWorldsGuideMetadata(
         'text/markdown': `${versionPrefix}/worlds/${slug}.md`,
       },
     },
-    ...(isPreRelease
+    ...(isMaintenance
       ? {
           robots: {
             index: false,
@@ -90,7 +85,7 @@ export async function WorldsGuidePage({
     }));
 
   // Content links are authored against the raw /docs/... and /worlds/... URL
-  // spaces; on the pre-release route they are rewritten into the /v5 view.
+  // spaces; on the maintenance route they are rewritten into the /v4 view.
   const RelativeLink = createRelativeLink(source, page);
   const VersionedLink = (props: ComponentProps<'a'>) => (
     <RelativeLink

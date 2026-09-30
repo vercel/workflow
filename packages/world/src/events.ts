@@ -4,7 +4,11 @@ import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import type {
+  EventsResolveData,
+  PaginationOptions,
+  ResolveData,
+} from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -178,7 +182,7 @@ export function isChildEntityCreationEventType(
  */
 export function stripEventDataRefs(
   event: Event,
-  resolveData: ResolveData
+  resolveData: EventsResolveData
 ): Event {
   if (resolveData !== 'none') return event;
   if (!('eventData' in event)) return event;
@@ -560,21 +564,43 @@ const AttrSetEventSchema = z.compile(
 const RunCreatedEventSchema = z.compile(
   BaseEventSchema.extend({
     eventType: z.literal('run_created'),
-    eventData: z.object({
-      deploymentId: z.string(),
-      workflowName: z.string(),
-      input: SerializedDataSchema,
-      executionContext: z.record(z.string(), z.any()).optional(),
-      attributes: z.record(z.string(), z.string()).optional(),
-      allowReservedAttributes: z.literal(true).optional(),
-      /**
-       * The run's X25519 public key (base64), stamped by SDKs that support
-       * sealed (`encp`) envelopes. Persisted onto the run entity so that
-       * cross-run writers can seal payloads to this run without holding its
-       * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
-       */
-      encryptionPublicKey: z.string().optional(),
-    }),
+    eventData: z
+      .object({
+        deploymentId: z.string(),
+        workflowName: z.string(),
+        input: SerializedDataSchema,
+        executionContext: z.record(z.string(), z.any()).optional(),
+        attributes: z.record(z.string(), z.string()).optional(),
+        allowReservedAttributes: z.literal(true).optional(),
+        /**
+         * A dynamic run's serialized workflow VM code. The World materializes it
+         * onto the run record and does not keep a second copy on the event.
+         * Mutually exclusive with `dynamicWorkflowCodeRef`.
+         */
+        dynamicWorkflowCode: SerializedDataSchema.optional(),
+        /**
+         * Ref for dynamic workflow code uploaded before this write. Worlds must
+         * validate it against the caller and run before attaching it.
+         */
+        dynamicWorkflowCodeRef: z.string().optional(),
+        /**
+         * The run's X25519 public key (base64), stamped by SDKs that support
+         * sealed (`encp`) envelopes. Persisted onto the run entity so that
+         * cross-run writers can seal payloads to this run without holding its
+         * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
+         */
+        encryptionPublicKey: z.string().optional(),
+      })
+      .refine(
+        (value) =>
+          value.dynamicWorkflowCode === undefined ||
+          value.dynamicWorkflowCodeRef === undefined,
+        {
+          path: ['dynamicWorkflowCodeRef'],
+          message:
+            'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+        }
+      ),
   })
 );
 
@@ -605,7 +631,20 @@ const RunStartedEventSchema = z.compile(
          * the run would silently lose its ability to receive sealed writes.
          */
         encryptionPublicKey: z.string().optional(),
+        /** Dynamic code carried for resilient run creation. */
+        dynamicWorkflowCode: SerializedDataSchema.optional(),
+        dynamicWorkflowCodeRef: z.string().optional(),
       })
+      .refine(
+        (value) =>
+          value.dynamicWorkflowCode === undefined ||
+          value.dynamicWorkflowCodeRef === undefined,
+        {
+          path: ['dynamicWorkflowCodeRef'],
+          message:
+            'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+        }
+      )
       .optional(),
   })
 );
@@ -795,7 +834,17 @@ export type CreateEventRequest = Exclude<
 
 export interface CreateEventParams {
   v1Compat?: boolean;
-  resolveData?: ResolveData;
+  /**
+   * `'skip-step-inputs'` applies only to the event-log page this create
+   * returns (the `sinceCursor` delta or a replay preload), never to the
+   * created `event` or the returned `step` entity, whose `input` is what step
+   * execution reads. See {@link EventsResolveData}.
+   *
+   * Code that forwards these params to an entity read (runs, steps, hooks,
+   * whose `resolveData` is a plain {@link ResolveData}) must map them with
+   * `entityResolveData()` first.
+   */
+  resolveData?: EventsResolveData;
   /**
    * Lazy hook resume idempotency key. Set only by `resumeHook()` when it
    * persists a `hook_received` event whose creation must be deduplicated
@@ -1188,7 +1237,7 @@ export interface ListEventsParams {
   runId: string;
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
-  resolveData?: ResolveData;
+  resolveData?: EventsResolveData;
 }
 
 export interface ListEventsByCorrelationIdParams {
