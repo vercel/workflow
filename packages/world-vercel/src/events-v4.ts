@@ -1323,14 +1323,13 @@ function replyMetaToHeaderRecord(
  * `transport.request()`, which reconnects on the way through.
  */
 
-/** Part counts for a write whose request or reply was split; see
- *  `ws-parts.ts`. Absent for the usual single-message case. */
-function recordWsPartCounts(span: Span | undefined, reply: WsFrameReply): void {
-  const { requestParts = 1, replyParts = 1 } = reply;
-  span?.setAttributes({
-    ...(requestParts > 1 ? WorkflowWsRequestParts(requestParts) : {}),
-    ...(replyParts > 1 ? WorkflowWsReplyParts(replyParts) : {}),
-  });
+/** Part count for a write whose reply was split; see `ws-parts.ts`. Absent
+ *  for the usual single-message reply. The request's own count is recorded
+ *  before it is sent. */
+function recordWsReplyParts(span: Span | undefined, reply: WsFrameReply): void {
+  const { replyParts = 1 } = reply;
+  if (replyParts > 1)
+    span?.setAttributes({ ...WorkflowWsReplyParts(replyParts) });
 }
 
 /**
@@ -1460,17 +1459,28 @@ async function postEventFrameOverWs(
         // discriminated union on
         // `type` with each type's payload nested under its own name, so a future
         // request type is a new variant rather than a reshape of this one.
-        reply = await transport.request((reqId) => {
-          // Recorded before the frame is sent so a request that fails, or one
-          // that never gets a reply, still carries the id the server logged it
-          // under. Assigned per attempt and per connection, so a retry or a
-          // reconnect legitimately re-uses low numbers.
-          span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
-          return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
-            input.payload ?? new Uint8Array(0)
-          );
-        });
+        reply = await transport.request(
+          (reqId) => {
+            // Recorded before the frame is sent so a request that fails, or
+            // one that never gets a reply, still carries the id the server
+            // logged it under. Assigned per attempt and per connection, so a
+            // retry or a reconnect legitimately re-uses low numbers.
+            span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
+            return encodeFrame(
+              { reqId, type: 'event', event: buildPostFrameMeta(input) },
+              input.payload ?? new Uint8Array(0)
+            );
+          },
+          {
+            // Also before sending, for the same reason: a split request that
+            // ends in a close or a timeout is the case worth spotting.
+            onMessages: (count) => {
+              if (count > 1) {
+                span?.setAttributes({ ...WorkflowWsRequestParts(count) });
+              }
+            },
+          }
+        );
       } catch (err) {
         // Anything `transport.request()` throws means the frame was never acked.
         // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
@@ -1493,7 +1503,7 @@ async function postEventFrameOverWs(
         throw error;
       }
       const ms = Date.now() - start;
-      recordWsPartCounts(span, reply);
+      recordWsReplyParts(span, reply);
 
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);

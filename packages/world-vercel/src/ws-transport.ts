@@ -170,7 +170,12 @@ class WsEventsTransport {
   /** Send one request frame and wait for its matching reply. `buildFrame`
    *  receives the reqId to embed in the meta before framing. */
   async request(
-    buildFrame: (reqId: number) => Uint8Array
+    buildFrame: (reqId: number) => Uint8Array,
+    options: {
+      /** Called with the number of messages the frame goes out as, before
+       *  the first is sent, so a caller can record it even if no reply comes. */
+      onMessages?: (count: number) => void;
+    } = {}
   ): Promise<WsFrameReply> {
     if (this.closed) {
       // Unreachable through `resolveWsTransport`, which only hands back a
@@ -187,6 +192,7 @@ class WsEventsTransport {
     // A frame over the message limit goes out as several messages; see
     // `ws-parts.ts`.
     const messages = splitEncodedFrame(buildFrame(reqId), wsMaxMessageBytes());
+    options.onMessages?.(messages.length);
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
