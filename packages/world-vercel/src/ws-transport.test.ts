@@ -424,6 +424,22 @@ describe('large frames', () => {
     });
   });
 
+  it('fails the connection on a whole reply for a reqId whose split reply is open', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    const [head] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    );
+    if (head) socket.deliver(head);
+    socket.deliver(ackFrame(1));
+    await tick();
+
+    await expect(promise).rejects.toThrow(/while its split frame is open/);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
   it('fails the connection on a part that breaks the protocol', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
     const { promise, socket } = await connectAndSend(transport);

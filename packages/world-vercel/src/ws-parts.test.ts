@@ -147,6 +147,68 @@ describe('WsPartAssembler', () => {
     expect(assembler.openFrames).toBe(0);
   });
 
+  it('rejects a whole frame for a reqId whose split frame is open', () => {
+    const parts = split(1, LIMIT * 2);
+    const assembler = new WsPartAssembler();
+    assembler.accept(at(parts, 0));
+    expect(() =>
+      assembler.accept({ meta: { ...META, reqId: 1 }, body: body(3) })
+    ).toThrow(/whole frame for reqId 1 while its split frame is open/);
+    // Other reqIds still pass through.
+    const other = { meta: { ...META, reqId: 2 }, body: body(3) };
+    expect(assembler.accept(other)).toBe(other);
+  });
+
+  it('bounds the number of open split frames', () => {
+    const assembler = new WsPartAssembler({ maxOpenFrames: 2 });
+    assembler.accept(at(split(1, LIMIT * 2), 0));
+    assembler.accept(at(split(2, LIMIT * 2), 0));
+    expect(() => assembler.accept(at(split(3, LIMIT * 2), 0))).toThrow(
+      /more than 2 split frames open/
+    );
+  });
+
+  it('bounds partCount', () => {
+    const assembler = new WsPartAssembler({ maxPartCount: 4 });
+    expect(() =>
+      assembler.accept({
+        meta: { ...META, partIndex: 0, partCount: 5 },
+        body: body(10),
+      })
+    ).toThrow(/invalid partCount 5 \(2\.\.4\)/);
+  });
+
+  it('rejects an empty part before the last one', () => {
+    const assembler = new WsPartAssembler();
+    assembler.accept({
+      meta: { ...META, partIndex: 0, partCount: 3 },
+      body: body(10),
+    });
+    expect(() =>
+      assembler.accept({
+        meta: { type: 'part', reqId: 7, partIndex: 1, partCount: 3 },
+        body: new Uint8Array(0),
+      })
+    ).toThrow(/part 1 for reqId 7 is empty but is not the last part/);
+    expect(assembler.openFrames).toBe(0);
+  });
+
+  it('bounds the bytes held across open frames and releases them when a frame completes', () => {
+    const assembler = new WsPartAssembler({ maxHeldBytes: LIMIT * 3 });
+    const a = split(1, LIMIT * 2);
+    const b = split(2, LIMIT * 2);
+    assembler.accept(at(a, 0));
+    assembler.accept(at(b, 0));
+    for (const part of a.slice(1)) assembler.accept(part);
+    expect(assembler.openFrames).toBe(1);
+    expect(assembler.heldBytes).toBe(at(b, 0).body.byteLength);
+
+    const c = split(3, LIMIT * 4);
+    expect(() => {
+      for (const part of c) assembler.accept(part);
+    }).toThrow(/exceed .* buffered bytes/);
+  });
+
   it('rejects a continuation with no open frame', () => {
     const parts = split(1, LIMIT * 2);
     expect(() => new WsPartAssembler().accept(at(parts, 1))).toThrow(
