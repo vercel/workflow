@@ -267,8 +267,16 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |
 | `workflow.events.ws.req_id` | — | per-connection request id, matching the server's log line |
+| `workflow.events.ws.request_parts` | — | messages the request was sent as, when it was split |
+| `workflow.events.ws.reply_parts` | — | messages the reply arrived as, when it was split |
 
 The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the cost of opening (or eagerly reopening) a connection is attributable rather than showing up as unexplained time inside the first write.
+
+### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
+
+Largest WebSocket message the events transport sends, header included. Default: `12582912` (12 MiB).
+
+Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it, in both directions. Frames at or under the limit are unaffected. Values below 1024 or that are not integers are ignored.
 
 ### Programmatic configuration
 

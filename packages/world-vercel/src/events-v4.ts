@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
+import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
   StreamError,
@@ -77,7 +78,9 @@ import {
   WorkflowEventType,
   WorkflowStepStartMode,
   WorkflowStepStartOwnerStamped,
+  WorkflowWsReplyParts,
   WorkflowWsRequestId,
+  WorkflowWsRequestParts,
   WorkflowWsUrl,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
@@ -1328,6 +1331,16 @@ function replyMetaToHeaderRecord(
  * for an unreadable HTTP body (the same situation), and unlike a bare `Error`
  * it satisfies `WorkflowWorldError.is()` instead of surfacing as a USER_ERROR.
  */
+/** Part counts for a write whose request or reply was split; see
+ *  `ws-parts.ts`. Absent for the usual single-message case. */
+function recordWsPartCounts(span: Span | undefined, reply: WsFrameReply): void {
+  const { requestParts = 1, replyParts = 1 } = reply;
+  span?.setAttributes({
+    ...(requestParts > 1 ? WorkflowWsRequestParts(requestParts) : {}),
+    ...(replyParts > 1 ? WorkflowWsReplyParts(replyParts) : {}),
+  });
+}
+
 function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
   const { status } = reply.meta;
   if (typeof status !== 'number') {
@@ -1480,6 +1493,7 @@ async function postEventFrameOverWs(
         throw error;
       }
       const ms = Date.now() - start;
+      recordWsPartCounts(span, reply);
 
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);

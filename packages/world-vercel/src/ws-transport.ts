@@ -25,7 +25,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrames } from './frames.js';
+import type { DecodedFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -40,11 +40,22 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
+import {
+  decodeFrame,
+  splitEncodedFrame,
+  WsPartAssembler,
+  WsPartProtocolError,
+  wsMaxMessageBytes,
+} from './ws-parts.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
   body: Uint8Array;
+  /** Messages the request went out as: 1, or its part count when split. */
+  requestParts?: number;
+  /** Messages the reply arrived as: 1, or its part count when split. */
+  replyParts?: number;
 }
 
 /**
@@ -77,6 +88,9 @@ interface Connection {
   ws: WebSocket;
   nextReqId: number;
   pending: Map<number, PendingRequest>;
+  /** Rebuilds replies the server sent as parts. Per connection, since a
+   *  frame's parts all travel on one socket. */
+  parts: WsPartAssembler;
 }
 
 /** Reserved reqId the server replies under when a frame was too malformed to
@@ -101,16 +115,6 @@ function readAuthorization(headers: Record<string, string>): string | null {
     if (key.toLowerCase() === 'authorization') return value;
   }
   return null;
-}
-
-async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
-  const source = (async function* () {
-    yield raw;
-  })();
-  for await (const frame of decodeFrames(source)) {
-    return frame;
-  }
-  throw new Error('ws-transport: received an empty/unframed message');
 }
 
 /** Pull the `{ "message": string }` JSON an `error` frame carries as its body,
@@ -179,11 +183,13 @@ class WsEventsTransport {
     const conn = await this.ensureConnected();
 
     const reqId = conn.nextReqId++;
-    const frame = buildFrame(reqId);
+    // A frame over the message limit goes out as several messages; see
+    // `ws-parts.ts`.
+    const messages = splitEncodedFrame(buildFrame(reqId), wsMaxMessageBytes());
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await new Promise<WsFrameReply>((resolve, reject) => {
+      const reply = await new Promise<WsFrameReply>((resolve, reject) => {
         conn.pending.set(reqId, { resolve, reject });
         // Deliberately the same knob the HTTP path uses. Without it, a reply
         // that never arrives for a reason the error/close handling doesn't
@@ -207,7 +213,7 @@ class WsEventsTransport {
           );
         }, timeoutMs);
         deadline.unref?.();
-        conn.ws.send(frame, (err) => {
+        const onSent = (err?: Error) => {
           if (!err) return;
           // `ws.send()` does not throw when the socket isn't OPEN; it
           // reports here instead, so without this callback the request would
@@ -221,8 +227,12 @@ class WsEventsTransport {
               )
             );
           }
-        });
+        };
+        // Back to back, in order: nothing else can be queued on the socket
+        // between them because `send` only enqueues.
+        for (const message of messages) conn.ws.send(message, onSent);
       });
+      return { ...reply, requestParts: messages.length };
     } finally {
       if (deadline !== undefined) clearTimeout(deadline);
     }
@@ -416,7 +426,12 @@ class WsEventsTransport {
           const headers = await this.resolveUpgradeHeaders();
           const ws = new WebSocket(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
-          conn = { ws, nextReqId: 1, pending: new Map() };
+          conn = {
+            ws,
+            nextReqId: 1,
+            pending: new Map(),
+            parts: new WsPartAssembler(),
+          };
         } catch (err) {
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
@@ -460,7 +475,7 @@ class WsEventsTransport {
         });
 
         ws.on('message', (raw: Buffer) => {
-          void this.handleMessage(conn, new Uint8Array(raw));
+          this.handleMessage(conn, new Uint8Array(raw));
         });
 
         ws.on('error', (err) => {
@@ -555,13 +570,12 @@ class WsEventsTransport {
     this.reconnectTimer = timer;
   }
 
-  private async handleMessage(
-    conn: Connection,
-    raw: Uint8Array
-  ): Promise<void> {
-    let decoded: DecodedFrame;
+  /** Synchronous so parts of a split reply are always assembled in arrival
+   *  order. */
+  private handleMessage(conn: Connection, raw: Uint8Array): void {
+    let message: DecodedFrame;
     try {
-      decoded = await decodeOneFrame(raw);
+      message = decodeFrame(raw);
     } catch (err) {
       // Uncorrelatable, and it says the framing on this socket is no longer
       // trustworthy, so the connection goes rather than leaving its waiters
@@ -576,6 +590,12 @@ class WsEventsTransport {
       );
       return;
     }
+
+    const assembled = this.assemble(conn, message);
+    // A part of a reply that is still arriving, or a protocol error that
+    // already failed the connection.
+    if (assembled === undefined) return;
+    const { frame: decoded, parts: replyParts } = assembled;
 
     if (decoded.meta.type === 'drain') {
       // Unsolicited server push, no reqId. Informational on its own: the
@@ -644,7 +664,40 @@ class WsEventsTransport {
       return;
     }
     conn.pending.delete(reqId);
-    pending.resolve({ meta: decoded.meta, body: decoded.body });
+    pending.resolve({ meta: decoded.meta, body: decoded.body, replyParts });
+  }
+
+  /**
+   * Feed one decoded message to the connection's part assembler. Returns the
+   * complete frame with the number of messages it arrived as, or `undefined`
+   * while a split frame is still arriving. A part that breaks the protocol
+   * leaves the rest of the stream unmatchable, the same as an undecodable
+   * frame, so it fails the connection and also returns `undefined`.
+   */
+  private assemble(
+    conn: Connection,
+    message: DecodedFrame
+  ): { frame: DecodedFrame; parts: number } | undefined {
+    let frame: DecodedFrame | undefined;
+    try {
+      frame = conn.parts.accept(message);
+    } catch (err) {
+      const detail =
+        err instanceof WsPartProtocolError
+          ? `received a split reply from ${this.wsUrl} that breaks the part protocol: ${err.message}`
+          : `could not assemble a split reply from ${this.wsUrl}: ${describeError(err)}`;
+      console.error(`world-vercel: ws events transport ${detail}`);
+      this.failConnection(
+        conn,
+        `workflow-server events WS transport ${detail}`
+      );
+      return undefined;
+    }
+    if (frame === undefined) return undefined;
+    const { type, partCount } = message.meta;
+    const parts =
+      type === 'part' && typeof partCount === 'number' ? partCount : 1;
+    return { frame, parts };
   }
 
   private failAllPending(conn: Connection, err: unknown): void {

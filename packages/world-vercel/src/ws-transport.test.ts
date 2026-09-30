@@ -27,6 +27,11 @@ import { encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import {
+  decodeFrame,
+  encodeWsFrameMessages,
+  WsPartAssembler,
+} from './ws-parts.js';
+import {
   getWsEventsTransport,
   isWsEventsTransportEnabled,
   openWsChannel,
@@ -216,6 +221,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
   delete process.env.DEBUG;
 });
 
@@ -278,6 +284,99 @@ describe('request/reply', () => {
 
     await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
     await expect(first).resolves.toMatchObject({ meta: { reqId: 1 } });
+  });
+});
+
+describe('large frames', () => {
+  const LIMIT = 4096;
+  const bytes = (size: number) =>
+    Uint8Array.from({ length: size }, (_, i) => (i * 7 + 3) & 0xff);
+
+  beforeEach(() => {
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
+  });
+
+  it('sends a request over the limit as parts that rebuild to the frame', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const payload = bytes(LIMIT * 3 + 5);
+    const event = { eventType: 'step_completed', specVersion: 4 };
+    const promise = transport.request((reqId) =>
+      encodeFrame({ reqId, type: 'event', event }, payload)
+    );
+    const socket = await nextSocket();
+    socket.open();
+    await tick();
+
+    expect(socket.sent.length).toBeGreaterThan(2);
+    for (const message of socket.sent) {
+      expect(message.byteLength).toBeLessThanOrEqual(LIMIT);
+    }
+    const assembler = new WsPartAssembler();
+    const frames = socket.sent.flatMap((message) => {
+      const frame = assembler.accept(decodeFrame(message));
+      return frame ? [frame] : [];
+    });
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.meta).toEqual({ reqId: 1, type: 'event', event });
+    expect(frames[0]?.body).toEqual(payload);
+
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({
+      meta: { reqId: 1, status: 201 },
+      requestParts: socket.sent.length,
+      replyParts: 1,
+    });
+  });
+
+  it('sends a request under the limit as one message', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    expect(socket.sent).toHaveLength(1);
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({ requestParts: 1 });
+  });
+
+  it('rebuilds a reply sent as parts and resolves the matching request', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise: first, socket } = await connectAndSend(transport);
+    const second = transport.request(eventFrame);
+    await tick();
+
+    const replyBody = bytes(LIMIT * 4);
+    const parts = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      replyBody,
+      LIMIT
+    );
+    // A whole reply for another request can arrive between parts.
+    const [head, ...rest] = parts;
+    if (head) socket.deliver(head);
+    socket.deliver(ackFrame(2, 201));
+    for (const part of rest) socket.deliver(part);
+    await tick();
+
+    await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
+    await expect(first).resolves.toMatchObject({
+      meta: { reqId: 1, type: 'event_ack', status: 200 },
+      body: replyBody,
+      replyParts: parts.length,
+    });
+  });
+
+  it('fails the connection on a part that breaks the protocol', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+
+    const [, continuation] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    );
+    if (continuation) socket.deliver(continuation);
+    await tick();
+
+    await expect(promise).rejects.toThrow(/part protocol.*no open frame/);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 });
 
