@@ -489,11 +489,15 @@ export interface Storage {
   };
 
   /**
-   * VM snapshot storage for VM-memory snapshotting. OPTIONAL: a World
-   * that cannot (or chooses not to) store multi-MB blobs simply omits
-   * it, and the runtime falls back to full event replay — snapshots are
-   * an optimization, never a correctness requirement. Consumers must
-   * feature-detect (`world.snapshots?.…`).
+   * VM snapshot storage for the QuickJS engine's VM-memory snapshotting.
+   *
+   * @experimental The shape of this interface and of `SnapshotMetadata`
+   * may change without a major version bump. It is OPTIONAL and World
+   * implementations do not need to provide it: a World that omits it
+   * simply runs every invocation with full event replay, which is always
+   * correct (snapshots are an optimization, never a correctness
+   * requirement). Consumers must feature-detect
+   * (`world.experimental_snapshots?.…`).
    *
    * Snapshots capture the state of the QuickJS WASM VM at a suspension
    * point, allowing workflow execution to resume from the exact point of
@@ -510,7 +514,7 @@ export interface Storage {
    * write; worlds with transactional metadata storage may store the
    * fields natively instead.
    */
-  snapshots?: {
+  experimental_snapshots?: {
     /**
      * Save a VM snapshot for a workflow run.
      * Each save overwrites the previous snapshot for this run.

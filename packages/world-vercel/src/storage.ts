@@ -67,7 +67,7 @@ export function createStorage(config?: APIConfig): Storage {
       getByToken: (token) => getHookByToken(token, config),
       list: (params) => listHooks(params, config),
     },
-    snapshots,
+    experimental_snapshots: snapshots,
   };
 
   // Instrument all storage methods with tracing
@@ -77,6 +77,9 @@ export function createStorage(config?: APIConfig): Storage {
     steps: instrumentObject('world.steps', storage.steps),
     events: instrumentObject('world.events', storage.events),
     hooks: instrumentObject('world.hooks', storage.hooks),
-    snapshots: instrumentObject('world.snapshots', snapshots),
+    experimental_snapshots: instrumentObject(
+      'world.experimental_snapshots',
+      snapshots
+    ),
   };
 }

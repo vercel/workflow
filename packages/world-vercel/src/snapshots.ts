@@ -69,7 +69,7 @@ export const MAX_SNAPSHOT_ENVELOPE_BYTES = 64 * 1024 * 1024;
  */
 export function createSnapshotsStorage(
   config?: APIConfig
-): NonNullable<Storage['snapshots']> {
+): NonNullable<Storage['experimental_snapshots']> {
   return {
     async save(
       runId: string,

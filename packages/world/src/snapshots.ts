@@ -1,5 +1,14 @@
+/**
+ * VM snapshot storage types and helpers backing
+ * `Storage.experimental_snapshots`.
+ *
+ * @experimental Everything exported from this module may change without a
+ * major version bump. Worlds are not required to implement snapshot
+ * storage.
+ */
 import { z } from 'zod';
 
+/** @experimental See `Storage.experimental_snapshots`. */
 export const SnapshotMetadataSchema = z.object({
   /**
    * Pagination cursor for events.list() — the snapshot was taken at
@@ -11,6 +20,7 @@ export const SnapshotMetadataSchema = z.object({
   createdAt: z.coerce.date(),
 });
 
+/** @experimental See `Storage.experimental_snapshots`. */
 export type SnapshotMetadata = z.infer<typeof SnapshotMetadataSchema>;
 
 // ---------------------------------------------------------------------------
@@ -37,7 +47,11 @@ const ENVELOPE_MAGIC = [0x57, 0x53, 0x4e, 0x50]; // "WSNP"
 const ENVELOPE_VERSION = 1;
 const ENVELOPE_HEADER_LEN = 9;
 
-/** Encode a snapshot's metadata and bytes into one atomic blob. */
+/**
+ * Encode a snapshot's metadata and bytes into one atomic blob.
+ *
+ * @experimental See `Storage.experimental_snapshots`.
+ */
 export function encodeSnapshotEnvelope(
   metadata: SnapshotMetadata,
   data: Uint8Array
@@ -60,6 +74,8 @@ export function encodeSnapshotEnvelope(
  * truncated, invalid JSON, schema violation) — the caller treats that as
  * a clean miss (full replay) rather than restoring from fabricated or
  * torn state. Never invents metadata.
+ *
+ * @experimental See `Storage.experimental_snapshots`.
  */
 export function decodeSnapshotEnvelope(
   bytes: Uint8Array

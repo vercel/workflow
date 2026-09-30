@@ -40,7 +40,10 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
     steps: instrumentObject('world.steps', steps),
     events: instrumentObject('world.events', events),
     hooks: instrumentObject('world.hooks', hooks),
-    snapshots: instrumentObject('world.snapshots', snapshots),
+    experimental_snapshots: instrumentObject(
+      'world.experimental_snapshots',
+      snapshots
+    ),
     clearCache: () => events.clearCache(),
   };
 }

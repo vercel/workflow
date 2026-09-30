@@ -4,11 +4,11 @@ import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
-import { createSnapshotsStorage } from './snapshots.js';
 import {
   createRunStatusListener,
   type RunStatusListener,
 } from './run-status.js';
+import { createSnapshotsStorage } from './snapshots.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -26,7 +26,7 @@ function createStorage(
     events: createEventsStorage(drizzle),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
-    snapshots: createSnapshotsStorage(drizzle),
+    experimental_snapshots: createSnapshotsStorage(drizzle),
   };
 }
 

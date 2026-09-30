@@ -27,7 +27,7 @@ import { type Drizzle, Schema } from './drizzle/index.js';
  */
 export function createSnapshotsStorage(
   drizzle: Drizzle
-): NonNullable<Storage['snapshots']> {
+): NonNullable<Storage['experimental_snapshots']> {
   const { snapshots } = Schema;
 
   return {
