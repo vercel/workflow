@@ -76,4 +76,13 @@ Accepted values:
 - Dev-mode only (`next dev`). Comma-separated list of path fragments the file watcher should never watch, in addition to the built-in ignores and your project's `.gitignore`.
 - Each entry is matched as a substring of the absolute path (for example, `/fixtures/,/generated/`).
 - The watcher already respects `.gitignore` (walking from the app directory up to the workspace root). Use this variable only for large directories you cannot or do not want to add to `.gitignore`.
-- Useful when a project has thousands of non-ignored directories and `next dev` fails with `EMFILE: too many open files, watch`.
+
+#### What the dev watcher tracks
+
+In `next dev`, Workflow watches the modules your app actually imports, not your whole project:
+
+- Every file the workflow build reached from your Next.js entrypoints. Editing one rebuilds the affected workflow bundles.
+- The directories those files live in, so a module you add under an import you have already written is picked up.
+- The `app` and `pages` directories (`src/` variants included), so a route you create is noticed even though nothing imports it yet, along with root entrypoints such as `middleware.ts` and `instrumentation.ts`.
+
+A directory your app never imports is not watched at all, so files there never produce workflow bundles or rebuilds. Import one from a page and the next rebuild brings it into the watched set. Files are only ever watched through the directory that contains them, so the watcher's cost scales with the number of watched directories rather than the number of source files.

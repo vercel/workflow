@@ -38,9 +38,9 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "chokidar": "4.0.3",
     "ignore": "7.0.5",
-    "semver": "catalog:"
+    "semver": "catalog:",
+    "watchpack": "2.5.1"
   },
   "devDependencies": {
     "@types/node": "catalog:",
