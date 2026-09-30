@@ -30,6 +30,7 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-dynamic-workflow.test.ts
  */
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -405,6 +406,107 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
 });
 
 /**
+ * The mission runner in the "Dynamic Workflows" cookbook recipe.
+ *
+ * The deployment holds only the step catalog and the runner
+ * (`dynamicMissionRun` and friends in `workflows/99_e2e.ts`). The missions
+ * are published after deploy: this runner plays the operator, building each
+ * approved revision the way the recipe's publish route does and handing it to
+ * the unchanged deployment. Keep both sources in sync with the recipe.
+ */
+
+/** Mission A, as the recipe publishes it: every detection gets a review. */
+const REVIEW_ALL_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const detections = await steps.llm({ image: input.image, count: input.count });
+
+  const reviews = await Promise.all(
+    detections.map(async (detection) => {
+      const token = input.reviewTokenPrefix + ":" + detection.id;
+      const review = createHook({ token });
+      await steps.expertReview(detection, token);
+      const verdict = await review;
+      return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+    })
+  );
+
+  const confirmed = reviews.filter((review) => review.confirmed).length;
+  const result = { image: input.image, confirmed, reviews };
+  await steps.notify(input.image + ": " + confirmed + " of " + reviews.length + " confirmed");
+  if (input.parentToken) {
+    await steps.reportToParent(input.parentToken, result);
+  }
+  return result;
+}
+`;
+
+/**
+ * Mission B, published later: confident detections are accepted without a
+ * review, and a review nobody answers in time counts as unconfirmed.
+ */
+const TRIAGE_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const detections = await steps.llm({ image: input.image, count: input.count });
+
+  const reviews = await Promise.all(
+    detections.map(async (detection) => {
+      if (detection.confidence >= input.autoAcceptAbove) {
+        return { ...detection, confirmed: true, reviewedBy: "auto" };
+      }
+      const token = input.reviewTokenPrefix + ":" + detection.id;
+      const review = createHook({ token });
+      await steps.expertReview(detection, token);
+      const verdict = await Promise.race([
+        review,
+        sleep(input.reviewTimeout).then(() => null),
+      ]);
+      if (verdict === null) {
+        return { ...detection, confirmed: false, reviewedBy: "timeout" };
+      }
+      return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+    })
+  );
+
+  const confirmed = reviews.filter((review) => review.confirmed).length;
+  const result = { image: input.image, confirmed, reviews };
+  await steps.notify(input.image + ": " + confirmed + " of " + reviews.length + " confirmed");
+  if (input.parentToken) {
+    await steps.reportToParent(input.parentToken, result);
+  }
+  return result;
+}
+`;
+
+/** Alias the source calls -> catalog step name, for both missions. */
+const MISSION_STEPS = {
+  llm: 'detectBirds',
+  expertReview: 'requestExpertReview',
+  notify: 'notify',
+  reportToParent: 'reportToParent',
+};
+
+/** The operator path: an approved, immutable revision of a mission. */
+function publishRevision(missionId: string, revision: number, source: string) {
+  return {
+    missionId,
+    revision,
+    source,
+    sourceSha256: createHash('sha256').update(source).digest('hex'),
+    steps: MISSION_STEPS,
+    catalogVersion: 'birds@1',
+    approval: {
+      approvedBy: 'e2e-operator',
+      approvedAt: new Date().toISOString(),
+    },
+  };
+}
+
+const MISSION_A = publishRevision('review-all', 1, REVIEW_ALL_SOURCE);
+const MISSION_B = publishRevision('triage', 1, TRIAGE_SOURCE);
+
+/**
  * Resume a hook a dynamic mission creates, once it exists.
  *
  * Missions create their hooks deep inside a dynamic child, so there is no run
@@ -446,21 +548,15 @@ async function resumeMissionHook(
   );
 }
 
-/**
- * The mission runner in the "Dynamic Workflows" cookbook recipe. Its fixtures
- * (`dynamicBirdSurveyMission` and friends in `workflows/99_e2e.ts`) hold the
- * recipe's step catalog and mission sources.
- */
 describeJs(
   'dynamic workflows: mission runner recipe',
   { timeout: 120_000 },
   () => {
-    it('fans a bird survey out to one review hook per detection', async () => {
+    it('runs a published mission that reviews every detection', async () => {
       const prefix = `e2e-dynamic-review:${crypto.randomUUID()}`;
-      const { childRunId } = await startParent('dynamicBirdSurveyMission', [
-        'backyard.jpg',
-        3,
-        prefix,
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        MISSION_A,
+        { image: 'backyard.jpg', count: 3, reviewTokenPrefix: prefix },
       ]);
 
       // Every review waits on its own hook, in parallel; resume them out of
@@ -481,54 +577,123 @@ describeJs(
           {
             id: 0,
             species: 'American robin',
-            confidence: 0.9,
+            confidence: 0.97,
             confirmed: true,
+            reviewedBy: 'expert',
           },
-          { id: 1, species: 'Blue jay', confidence: 0.89, confirmed: false },
+          {
+            id: 1,
+            species: 'Blue jay',
+            confidence: 0.62,
+            confirmed: false,
+            reviewedBy: 'expert',
+          },
           {
             id: 2,
             species: 'Northern cardinal',
-            confidence: 0.88,
+            confidence: 0.91,
             confirmed: true,
+            reviewedBy: 'expert',
           },
         ],
       });
-      expect(child.record.workflowName).toMatch(
-        /^workflow\/\/dynamic\/[0-9a-f]{32}\/\/workflow$/
-      );
     });
 
-    it('resolves an approval mission when the hook is resumed', async () => {
-      const token = `e2e-dynamic-approval:${crypto.randomUUID()}`;
-      const { childRunId } = await startParent('dynamicApprovalMission', [
-        'release notes',
-        token,
-        '10m',
+    it('runs a mission published after deploy that only reviews uncertain detections', async () => {
+      const prefix = `e2e-dynamic-triage:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        MISSION_B,
+        {
+          image: 'feeder.jpg',
+          count: 4,
+          reviewTokenPrefix: prefix,
+          autoAcceptAbove: 0.9,
+          reviewTimeout: '10m',
+        },
       ]);
 
-      const hook = await resumeMissionHook(token, { approved: true });
-      expect(hook.runId).toBe(childRunId);
+      // Detections 1 and 3 are under the threshold; 0 and 2 never get a hook.
+      await resumeMissionHook(`${prefix}:1`, { confirmed: true });
+      await resumeMissionHook(`${prefix}:3`, { confirmed: false });
 
       const child = await awaitChildRun(childRunId);
-      expect(child.output).toEqual({ approved: true, timedOut: false });
+      expect(child.output).toMatchObject({
+        image: 'feeder.jpg',
+        confirmed: 3,
+        reviews: [
+          { id: 0, confirmed: true, reviewedBy: 'auto' },
+          { id: 1, confirmed: true, reviewedBy: 'expert' },
+          { id: 2, confirmed: true, reviewedBy: 'auto' },
+          { id: 3, confirmed: false, reviewedBy: 'expert' },
+        ],
+      });
+      await expect(getHookByToken(`${prefix}:0`)).rejects.toThrow(/not found/i);
     });
 
-    it('times out an approval mission nobody resumes', async () => {
-      const token = `e2e-dynamic-approval:${crypto.randomUUID()}`;
-      const { childRunId } = await startParent('dynamicApprovalMission', [
-        'release notes',
-        token,
-        '2s',
+    it('closes a review nobody answers when its timeout fires', async () => {
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        MISSION_B,
+        {
+          image: 'porch.jpg',
+          count: 2,
+          reviewTokenPrefix: `e2e-dynamic-triage:${crypto.randomUUID()}`,
+          autoAcceptAbove: 0.9,
+          reviewTimeout: '2s',
+        },
       ]);
 
       // The durable sleep wins the race, so the run completes with no resume.
       const child = await awaitChildRun(childRunId);
-      expect(child.output).toEqual({ approved: false, timedOut: true });
+      expect(child.output).toMatchObject({
+        confirmed: 1,
+        reviews: [
+          { id: 0, reviewedBy: 'auto' },
+          { id: 1, confirmed: false, reviewedBy: 'timeout' },
+        ],
+      });
+    });
+
+    it('gives a revision that differs only in whitespace a new workflow id', async () => {
+      // One confident detection, so both runs finish without a review.
+      const input = {
+        image: 'wire.jpg',
+        count: 1,
+        reviewTokenPrefix: `e2e-dynamic-triage:${crypto.randomUUID()}`,
+        autoAcceptAbove: 0.9,
+        reviewTimeout: '10m',
+      };
+      const reformatted = publishRevision('triage', 2, `${TRIAGE_SOURCE}\n`);
+      const [first, second] = await Promise.all([
+        startParent('dynamicMissionRun', [MISSION_B, input]),
+        startParent('dynamicMissionRun', [reformatted, input]),
+      ]);
+
+      const [a, b] = await Promise.all([
+        awaitChildRun(first.childRunId),
+        awaitChildRun(second.childRunId),
+      ]);
+      expect(a.output).toEqual(b.output);
+      expect(a.record.workflowName).not.toBe(b.record.workflowName);
+    });
+
+    it('refuses a stored revision whose source does not match its approval', async () => {
+      const tampered = {
+        ...MISSION_B,
+        source: TRIAGE_SOURCE.replace('>= input.autoAcceptAbove', '>= 0'),
+      };
+      const parent = await start(await e2e('dynamicMissionRun'), [
+        tampered,
+        { image: 'x.jpg', count: 1, reviewTokenPrefix: 'unused' },
+      ]);
+      await expect(parent.returnValue).rejects.toThrow(
+        /does not match its approved source/
+      );
     });
 
     it('fans missions out from a static parent and back in through hooks', async () => {
       const surveyKey = `e2e-dynamic-survey:${crypto.randomUUID()}`;
-      const parent = await start(await e2e('dynamicBirdSurveyFanOut'), [
+      const parent = await start(await e2e('dynamicMissionFanOut'), [
+        MISSION_A,
         surveyKey,
         ['north.jpg', 'south.jpg'],
       ]);

@@ -4246,11 +4246,12 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
 // Dynamic workflows: mission runner
 //
 // Backs the "Dynamic Workflows" cookbook recipe
-// (docs/content/docs/v5/cookbook/advanced/dynamic-workflows.mdx). The step
-// catalog, the two mission sources, their step bindings, and the fan-out
-// parent are the recipe's code; keep the two in sync. The recipe starts
-// missions from a route handler; here `startMission` is a step, because the
-// e2e runner can only reach the deployment through a static workflow.
+// (docs/content/docs/v5/cookbook/advanced/dynamic-workflows.mdx): the step
+// catalog, the start-time checks on a mission revision, and the fan-out parent
+// are the recipe's code; keep the two in sync. The mission sources themselves
+// are NOT here. As in the recipe, they are published after deploy: the e2e
+// runner plays the operator and store, and hands each revision to
+// `dynamicMissionRun`, which stands in for the recipe's start route.
 //////////////////////////////////////////////////////////
 
 interface BirdDetection {
@@ -4259,17 +4260,15 @@ interface BirdDetection {
   confidence: number;
 }
 
-const BIRD_SPECIES = [
-  'American robin',
-  'Blue jay',
-  'Northern cardinal',
-  'Mourning dove',
+/** Fixed detections, so the runner knows which reviews a mission will open. */
+const BIRD_DETECTIONS = [
+  { species: 'American robin', confidence: 0.97 },
+  { species: 'Blue jay', confidence: 0.62 },
+  { species: 'Northern cardinal', confidence: 0.91 },
+  { species: 'Mourning dove', confidence: 0.55 },
 ] as const;
 
-/**
- * Catalog step standing in for a vision-model call. Deterministic, so the
- * runner knows which review hooks the mission will create.
- */
+/** Catalog step standing in for a vision-model call. */
 async function detectBirds(request: {
   image: string;
   count: number;
@@ -4277,8 +4276,7 @@ async function detectBirds(request: {
   'use step';
   return Array.from({ length: request.count }, (_, id) => ({
     id,
-    species: BIRD_SPECIES[id % BIRD_SPECIES.length],
-    confidence: 0.9 - id / 100,
+    ...BIRD_DETECTIONS[id % BIRD_DETECTIONS.length],
   }));
 }
 
@@ -4301,147 +4299,116 @@ async function reportToParent(token: string, report: unknown) {
   await resumeHook(token, report);
 }
 
-/**
- * A reviewed mission template: detect birds in an image, fan out one expert
- * review per detection (each waiting on its own hook), then aggregate. Every
- * parameter arrives as `input`, so the source never changes and every run of
- * it shares one workflow ID.
- */
-const BIRD_SURVEY_SOURCE = `
-async function workflow(input) {
-  "use workflow";
-  const detections = await steps.llm({ image: input.image, count: input.count });
-
-  const reviews = await Promise.all(
-    detections.map(async (detection) => {
-      const token = input.reviewTokenPrefix + ":" + detection.id;
-      const review = createHook({ token });
-      await steps.expertReview(detection, token);
-      const verdict = await review;
-      return { ...detection, confirmed: verdict.confirmed === true };
-    })
-  );
-
-  const confirmed = reviews.filter((review) => review.confirmed).length;
-  const result = { image: input.image, confirmed, reviews };
-  await steps.notify(
-    input.image + ": " + confirmed + " of " + reviews.length + " confirmed"
-  );
-  if (input.parentToken) {
-    await steps.reportToParent(input.parentToken, result);
-  }
-  return result;
-}
-`;
-
-/** A reviewed approval template: a hook raced against a durable timeout. */
-const APPROVAL_SOURCE = `
-async function workflow(input) {
-  "use workflow";
-  await steps.notify("Approval requested: " + input.subject);
-
-  const approval = createHook({ token: input.approvalToken });
-  const decision = await Promise.race([
-    approval.then((payload) => ({
-      approved: payload.approved === true,
-      timedOut: false,
-    })),
-    sleep(input.timeout).then(() => ({ approved: false, timedOut: true })),
-  ]);
-
-  await steps.notify(
-    input.subject + ": " + (decision.approved ? "approved" : "not approved")
-  );
-  return decision;
-}
-`;
-
-/** Mission templates by ID: reviewed source plus the steps it may call. */
-const MISSIONS = {
-  birdSurvey: {
-    source: BIRD_SURVEY_SOURCE,
-    steps: {
-      llm: detectBirds,
-      expertReview: requestExpertReview,
-      notify,
-      reportToParent,
-    },
-  },
-  approval: {
-    source: APPROVAL_SOURCE,
-    steps: { notify },
-  },
+/** Every step a published mission may bind, by catalog name. */
+const MISSION_CATALOG = {
+  detectBirds,
+  requestExpertReview,
+  notify,
+  reportToParent,
 };
 
-type MissionId = keyof typeof MISSIONS;
+/** Bumped whenever a catalog step changes in a way old missions would notice. */
+const MISSION_CATALOG_VERSION = 'birds@1';
+
+type CatalogStepName = keyof typeof MISSION_CATALOG;
+
+/** One immutable, approved revision of a mission, as the store holds it. */
+interface MissionRevision {
+  missionId: string;
+  revision: number;
+  source: string;
+  sourceSha256: string;
+  steps: Record<string, CatalogStepName>;
+  catalogVersion: string;
+  approval: { approvedBy: string; approvedAt: string };
+}
+
+async function sha256Hex(text: string) {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(text)
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('');
+}
 
 /**
- * Starts one mission as a dynamic run. The recipe makes this same `start()`
- * call from its route handler; either way it needs the imported step
- * functions, which carry the `stepId` the source's aliases bind to.
+ * Start-time checks on a stored revision: it is approved, its bytes are the
+ * approved bytes, and it targets the catalog this deployment serves. Returns
+ * the step map `start()` needs, built from the imported step functions.
  */
-async function startMission(
-  mission: MissionId,
+async function bindMissionRevision(revision: MissionRevision) {
+  const label = `${revision.missionId}@${revision.revision}`;
+  if (!revision.approval?.approvedBy) {
+    throw new FatalError(`Mission ${label} has no approval record`);
+  }
+  if ((await sha256Hex(revision.source)) !== revision.sourceSha256) {
+    throw new FatalError(`Mission ${label} does not match its approved source`);
+  }
+  if (revision.catalogVersion !== MISSION_CATALOG_VERSION) {
+    throw new FatalError(
+      `Mission ${label} targets catalog ${revision.catalogVersion}, but this deployment serves ${MISSION_CATALOG_VERSION}`
+    );
+  }
+  const steps: Record<string, (typeof MISSION_CATALOG)[CatalogStepName]> = {};
+  for (const [alias, name] of Object.entries(revision.steps)) {
+    if (!Object.hasOwn(MISSION_CATALOG, name)) {
+      throw new FatalError(`Mission ${label} binds unknown step "${name}"`);
+    }
+    steps[alias] = MISSION_CATALOG[name];
+  }
+  return steps;
+}
+
+/** Starts one stored mission revision as a dynamic run. */
+async function startMissionRevision(
+  revision: MissionRevision,
   input: Record<string, unknown>
 ) {
   'use step';
-  const { source, steps } = MISSIONS[mission];
-  const run = await start(source, [input], { experimental_dynamic: { steps } });
-  return { runId: run.runId };
-}
-
-/** Starts a bird-survey mission and hands back the child's run ID. */
-export async function dynamicBirdSurveyMission(
-  image: string,
-  count: number,
-  reviewTokenPrefix: string
-) {
-  'use workflow';
-  const child = await startMission('birdSurvey', {
-    image,
-    count,
-    reviewTokenPrefix,
+  const steps = await bindMissionRevision(revision);
+  const run = await start(revision.source, [input], {
+    experimental_dynamic: { steps },
   });
-  return { childRunId: child.runId };
-}
-
-/** Starts an approval mission and hands back the child's run ID. */
-export async function dynamicApprovalMission(
-  subject: string,
-  approvalToken: string,
-  timeout: string
-) {
-  'use workflow';
-  const child = await startMission('approval', {
-    subject,
-    approvalToken,
-    timeout,
-  });
-  return { childRunId: child.runId };
-}
-
-interface BirdSurveyResult {
-  image: string;
-  confirmed: number;
-  reviews: Array<BirdDetection & { confirmed: boolean }>;
+  return { runId: run.runId, workflowName: await run.workflowName };
 }
 
 /**
- * Static parent that fans out one dynamic bird-survey mission per image and
- * fans back in through hooks: each child resumes the hook the parent created
- * for it, as in the child-workflows recipe.
+ * Starts a published mission revision and hands back the child's run ID. The
+ * recipe's start route makes the same calls.
  */
-export async function dynamicBirdSurveyFanOut(
+export async function dynamicMissionRun(
+  revision: MissionRevision,
+  input: Record<string, unknown>
+) {
+  'use workflow';
+  const child = await startMissionRevision(revision, input);
+  return { childRunId: child.runId, workflowName: child.workflowName };
+}
+
+interface MissionResult {
+  image: string;
+  confirmed: number;
+}
+
+/**
+ * Static parent that fans one mission run out per image and fans back in
+ * through hooks: each child resumes the hook the parent created for it, as in
+ * the child-workflows recipe.
+ */
+export async function dynamicMissionFanOut(
+  revision: MissionRevision,
   surveyKey: string,
   images: string[]
 ) {
   'use workflow';
   const hooks = images.map((_, index) =>
-    createHook<BirdSurveyResult>({ token: `${surveyKey}:mission:${index}` })
+    createHook<MissionResult>({ token: `${surveyKey}:mission:${index}` })
   );
   await Promise.all(
     images.map((image, index) =>
-      startMission('birdSurvey', {
+      startMissionRevision(revision, {
         image,
         count: 1,
         reviewTokenPrefix: `${surveyKey}:review:${index}`,

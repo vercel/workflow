@@ -190,7 +190,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'dynamic-workflows',
     title: 'Dynamic Workflows',
     description:
-      'Run reviewed mission templates over a fixed catalog of deployed steps: start them from a route handler, resume their review hooks, and fan them out from a static parent.',
+      'Publish reviewed workflow source after deploy and run it on an unchanged deployment, over a fixed catalog of deployed steps.',
     category: 'advanced',
     skipVersions: ['v4'],
   },
