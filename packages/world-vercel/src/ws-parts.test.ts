@@ -7,7 +7,6 @@ import {
   WS_MAX_FRAME_BYTES,
   WS_MAX_OPEN_FRAMES,
   WS_MAX_PART_COUNT,
-  WS_MIN_PART_BYTES,
   WsPartAssembler,
   type WsPartAssemblerOptions,
   WsPartProtocolError,
@@ -16,10 +15,8 @@ import {
 
 const LIMIT = 2048;
 
-/** An assembler for the small test limits: parts here are far below the
- *  production minimum part size. */
 function newAssembler(options: WsPartAssemblerOptions = {}) {
-  return new WsPartAssembler({ minPartBytes: 1, ...options });
+  return new WsPartAssembler(options);
 }
 
 function at<T>(items: T[], index: number): T {
@@ -104,6 +101,12 @@ describe('encodeWsFrameMessages', () => {
     expect(splitEncodedFrame(small, LIMIT)).toEqual([small]);
   });
 
+  it('refuses a frame that would need more than the part cap', () => {
+    expect(() => encodeWsFrameMessages(META, body(LIMIT * 300), LIMIT)).toThrow(
+      /at most 257 are allowed/
+    );
+  });
+
   it('refuses to split an oversized frame without a reqId', () => {
     expect(() =>
       encodeWsFrameMessages({ type: 'drain' }, body(LIMIT * 2), LIMIT)
@@ -179,11 +182,10 @@ describe('WsPartAssembler', () => {
     );
   });
 
-  it('derives the part-count bound from the frame and part sizes', () => {
+  it('bounds the number of parts a frame may declare', () => {
     expect(WS_MAX_FRAME_BYTES).toBe(256 * 1024 * 1024);
-    expect(WS_MIN_PART_BYTES).toBe(1024 * 1024);
     expect(WS_MAX_PART_COUNT).toBe(257);
-    const assembler = newAssembler({ maxFrameBytes: 10, minPartBytes: 4 });
+    const assembler = newAssembler({ maxPartCount: 3 });
     expect(() =>
       assembler.accept({
         meta: { ...META, partIndex: 0, partCount: 4 },
@@ -192,39 +194,21 @@ describe('WsPartAssembler', () => {
     ).toThrow(/invalid partCount 4 \(2\.\.3\)/);
   });
 
-  it('requires minPartBytes of every part but the last, which may be any size', () => {
-    const small = newAssembler({ minPartBytes: 8 });
-    small.accept({
+  it('accepts parts of any size, including an empty last part', () => {
+    const assembler = newAssembler();
+    assembler.accept({
       meta: { ...META, partIndex: 0, partCount: 3 },
-      body: body(8),
+      body: body(1),
     });
-    expect(() =>
-      small.accept({
-        meta: { type: 'part', reqId: 7, partIndex: 1, partCount: 3 },
-        body: body(3),
-      })
-    ).toThrow(/part 1 for reqId 7 carries 3 bytes/);
-    expect(small.openFrames).toBe(0);
-
-    const emptyLast = newAssembler({ minPartBytes: 8 });
-    emptyLast.accept({
-      meta: { ...META, partIndex: 0, partCount: 2 },
-      body: body(8),
-    });
-    const frame = emptyLast.accept({
-      meta: { type: 'part', reqId: 7, partIndex: 1, partCount: 2 },
+    assembler.accept({
+      meta: { type: 'part', reqId: 7, partIndex: 1, partCount: 3 },
       body: new Uint8Array(0),
     });
-    expect(frame?.body).toEqual(body(8));
-  });
-
-  it('rejects a first part smaller than minPartBytes', () => {
-    expect(() =>
-      newAssembler({ minPartBytes: 8 }).accept({
-        meta: { ...META, partIndex: 0, partCount: 2 },
-        body: body(3),
-      })
-    ).toThrow(/part 0 for reqId 7 carries 3 bytes/);
+    const frame = assembler.accept({
+      meta: { type: 'part', reqId: 7, partIndex: 2, partCount: 3 },
+      body: new Uint8Array(0),
+    });
+    expect(frame?.body).toEqual(body(1));
   });
 
   it('rejects a continuation with no open frame', () => {

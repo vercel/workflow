@@ -46,8 +46,9 @@ export const DEFAULT_WS_MAX_MESSAGE_BYTES = 12 * 1024 * 1024;
 /** Largest configurable message limit: the 16 MiB WebSocket message limit. */
 export const MAX_WS_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
-/** Smallest configurable message limit: room for a part of at least
- *  {@link WS_MIN_PART_BYTES} plus its header. */
+/** Smallest configurable message limit. At this limit
+ *  {@link WS_MAX_PART_COUNT} parts still carry a {@link WS_MAX_FRAME_BYTES}
+ *  frame, with room for a large first-part header. */
 export const MIN_WS_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -115,6 +116,11 @@ export function encodeWsFrameMessages(
   // is at least as large as the frame's own.
   const rest = body.byteLength - firstSlice;
   const partCount = 1 + Math.ceil(rest / continuationSlice);
+  if (partCount > WS_MAX_PART_COUNT) {
+    throw new Error(
+      `ws frame of ${whole.byteLength} bytes needs ${partCount} parts at a ${maxMessageBytes}-byte message limit; at most ${WS_MAX_PART_COUNT} are allowed`
+    );
+  }
   const messages: Uint8Array[] = [
     encodeFrame(
       { ...meta, partIndex: 0, partCount },
@@ -179,16 +185,13 @@ export const WS_MAX_FRAME_BYTES = 256 * 1024 * 1024;
 export const WS_MAX_OPEN_FRAMES = 1;
 
 /**
- * Smallest body a part other than the last may carry. Together with
- * {@link WS_MAX_FRAME_BYTES} this bounds a frame to {@link WS_MAX_PART_COUNT}
- * parts, so small parts can't pile up.
+ * Most parts a frame may declare. With {@link WS_MAX_OPEN_FRAMES} and
+ * {@link WS_MAX_FRAME_BYTES} bounding memory, this bounds the other cost a
+ * sender can impose: the number of messages handled per frame, so tiny parts
+ * can't pile up. 257 parts reach {@link WS_MAX_FRAME_BYTES} at any message
+ * limit of at least 1 MiB plus a header.
  */
-export const WS_MIN_PART_BYTES = 1024 * 1024;
-
-/** Most parts a frame may declare: {@link WS_MAX_FRAME_BYTES} in parts of
- *  {@link WS_MIN_PART_BYTES}, plus a last part. */
-export const WS_MAX_PART_COUNT =
-  Math.floor(WS_MAX_FRAME_BYTES / WS_MIN_PART_BYTES) + 1;
+export const WS_MAX_PART_COUNT = 257;
 
 interface OpenFrame {
   meta: Record<string, unknown>;
@@ -205,9 +208,8 @@ export interface WsPartAssemblerOptions {
   maxFrameBytes?: number;
   /** Most open split frames. Default {@link WS_MAX_OPEN_FRAMES}. */
   maxOpenFrames?: number;
-  /** Smallest body of a part other than the last. Default
-   *  {@link WS_MIN_PART_BYTES}. */
-  minPartBytes?: number;
+  /** Most parts per frame. Default {@link WS_MAX_PART_COUNT}. */
+  maxPartCount?: number;
   /**
    * Whether a split frame for `reqId` is still wanted, asked at its first
    * part. An unwanted frame's parts are still checked, so the stream stays in
@@ -226,16 +228,14 @@ export interface WsPartAssemblerOptions {
  * protocol doesn't allow. Open frames are keyed by `reqId`, so parts of
  * different frames may interleave.
  *
- * Memory is bounded per connection: at most `maxOpenFrames` open frames of
- * at most `maxFrameBytes` each. Every part but the last must carry at least
- * `minPartBytes`, which also bounds how many parts a frame can declare.
- * Breaking a bound is a protocol error.
+ * Bounded per connection: at most `maxOpenFrames` open frames of at most
+ * `maxFrameBytes` each, and at most `maxPartCount` parts per frame. Breaking a
+ * bound is a protocol error.
  */
 export class WsPartAssembler {
   private readonly open = new Map<number, OpenFrame>();
   private readonly maxFrameBytes: number;
   private readonly maxOpenFrames: number;
-  private readonly minPartBytes: number;
   private readonly maxPartCount: number;
   private readonly wanted: (reqId: number) => boolean;
   private readonly onDiscarded: (reqId: number) => void;
@@ -243,9 +243,7 @@ export class WsPartAssembler {
   constructor(options: WsPartAssemblerOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? WS_MAX_FRAME_BYTES;
     this.maxOpenFrames = options.maxOpenFrames ?? WS_MAX_OPEN_FRAMES;
-    this.minPartBytes = options.minPartBytes ?? WS_MIN_PART_BYTES;
-    this.maxPartCount =
-      Math.floor(this.maxFrameBytes / Math.max(this.minPartBytes, 1)) + 1;
+    this.maxPartCount = options.maxPartCount ?? WS_MAX_PART_COUNT;
     this.wanted = options.wanted ?? (() => true);
     this.onDiscarded = options.onDiscarded ?? (() => {});
   }
@@ -301,7 +299,7 @@ export class WsPartAssembler {
       discard: !this.wanted(reqId),
     };
     this.open.set(reqId, entry);
-    this.addChunk(reqId, entry, body, 0, false);
+    this.addChunk(reqId, entry, body);
     return undefined;
   }
 
@@ -346,7 +344,7 @@ export class WsPartAssembler {
       );
     }
     const last = entry.nextIndex === entry.partCount - 1;
-    this.addChunk(reqId, entry, body, entry.nextIndex, last);
+    this.addChunk(reqId, entry, body);
     entry.nextIndex++;
     if (!last) return undefined;
 
@@ -364,19 +362,7 @@ export class WsPartAssembler {
     return { meta: entry.meta, body: joined };
   }
 
-  private addChunk(
-    reqId: number,
-    entry: OpenFrame,
-    body: Uint8Array,
-    index: number,
-    last: boolean
-  ): void {
-    if (!last && body.byteLength < this.minPartBytes) {
-      this.close(reqId);
-      throw new WsPartProtocolError(
-        `part ${index} for reqId ${reqId} carries ${body.byteLength} bytes; every part but the last must carry at least ${this.minPartBytes}`
-      );
-    }
+  private addChunk(reqId: number, entry: OpenFrame, body: Uint8Array): void {
     if (entry.bytes + body.byteLength > this.maxFrameBytes) {
       this.close(reqId);
       throw new WsPartProtocolError(
