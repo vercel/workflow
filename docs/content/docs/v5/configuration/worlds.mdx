@@ -320,5 +320,5 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Factory option: none
 - CLI flag: none
 - Default: `12582912` (12 MiB)
-- Clamp: `1024` to `16777216` (values outside are clamped, with a warning)
+- Clamp: `2097152` to `16777216` (values outside are clamped, with a warning)
 - Largest events WebSocket message, header included. A larger frame is sent as several messages and rebuilt on the other side. The ceiling is the 16 MiB WebSocket message limit.

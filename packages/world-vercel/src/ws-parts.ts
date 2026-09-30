@@ -46,9 +46,9 @@ export const DEFAULT_WS_MAX_MESSAGE_BYTES = 12 * 1024 * 1024;
 /** Largest configurable message limit: the 16 MiB WebSocket message limit. */
 export const MAX_WS_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
-/** Smallest configurable message limit, so a part always has room for its
- *  header. */
-export const MIN_WS_MAX_MESSAGE_BYTES = 1024;
+/** Smallest configurable message limit: room for a part of at least
+ *  {@link WS_MIN_PART_BYTES} plus its header. */
+export const MIN_WS_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 
 /**
  * The message limit: `WORKFLOW_WS_MAX_MESSAGE_BYTES`, clamped to
@@ -166,27 +166,29 @@ export class WsPartProtocolError extends Error {
 }
 
 /**
- * Largest frame a receiver rebuilds from parts, and the most buffered part
- * bytes one connection may hold at once. 64 MiB matches the largest explicit
- * payload bounds elsewhere (VM snapshots, stream log payloads, stream page
- * bodies), well above the real step payloads that need splitting (tens of
- * MiB), and small enough that a connection can't pin much of a function's
- * memory.
+ * Largest frame a receiver rebuilds from parts. The receiver holds at most one
+ * unfinished split frame per connection (see {@link WS_MAX_OPEN_FRAMES}), so
+ * this also bounds the part bytes a connection can hold.
  */
-export const WS_MAX_FRAME_BYTES = 64 * 1024 * 1024;
+export const WS_MAX_FRAME_BYTES = 256 * 1024 * 1024;
 
 /**
- * Most split frames one connection may have open at once. A sender enqueues
- * each frame's parts back to back, so a well-behaved connection has at most
- * one open; the rest is headroom for senders that interleave.
+ * Most split frames one connection may have open at once. Senders send each
+ * frame's parts back to back and don't interleave frames, so one is enough.
  */
-export const WS_MAX_OPEN_FRAMES = 4;
+export const WS_MAX_OPEN_FRAMES = 1;
 
 /**
- * Most parts one frame may declare: {@link WS_MAX_FRAME_BYTES} split at the
- * smallest configurable message limit needs about this many.
+ * Smallest body a part other than the last may carry. Together with
+ * {@link WS_MAX_FRAME_BYTES} this bounds a frame to {@link WS_MAX_PART_COUNT}
+ * parts, so small parts can't pile up.
  */
-export const WS_MAX_PART_COUNT = 65_536;
+export const WS_MIN_PART_BYTES = 1024 * 1024;
+
+/** Most parts a frame may declare: {@link WS_MAX_FRAME_BYTES} in parts of
+ *  {@link WS_MIN_PART_BYTES}, plus a last part. */
+export const WS_MAX_PART_COUNT =
+  Math.floor(WS_MAX_FRAME_BYTES / WS_MIN_PART_BYTES) + 1;
 
 interface OpenFrame {
   meta: Record<string, unknown>;
@@ -201,13 +203,11 @@ interface OpenFrame {
 export interface WsPartAssemblerOptions {
   /** Largest frame to rebuild. Default {@link WS_MAX_FRAME_BYTES}. */
   maxFrameBytes?: number;
-  /** Most part bytes held across all open frames. Default
-   *  {@link WS_MAX_FRAME_BYTES}. */
-  maxHeldBytes?: number;
   /** Most open split frames. Default {@link WS_MAX_OPEN_FRAMES}. */
   maxOpenFrames?: number;
-  /** Most parts per frame. Default {@link WS_MAX_PART_COUNT}. */
-  maxPartCount?: number;
+  /** Smallest body of a part other than the last. Default
+   *  {@link WS_MIN_PART_BYTES}. */
+  minPartBytes?: number;
   /**
    * Whether a split frame for `reqId` is still wanted, asked at its first
    * part. An unwanted frame's parts are still checked, so the stream stays in
@@ -226,26 +226,26 @@ export interface WsPartAssemblerOptions {
  * protocol doesn't allow. Open frames are keyed by `reqId`, so parts of
  * different frames may interleave.
  *
- * Memory is bounded per connection: at most `maxOpenFrames` open frames,
- * `maxPartCount` parts per frame, `maxFrameBytes` per frame and
- * `maxHeldBytes` across them. Every part but the last must carry bytes, so
- * empty parts can't pile up. Breaking a bound is a protocol error.
+ * Memory is bounded per connection: at most `maxOpenFrames` open frames of
+ * at most `maxFrameBytes` each. Every part but the last must carry at least
+ * `minPartBytes`, which also bounds how many parts a frame can declare.
+ * Breaking a bound is a protocol error.
  */
 export class WsPartAssembler {
   private readonly open = new Map<number, OpenFrame>();
   private readonly maxFrameBytes: number;
-  private readonly maxHeldBytes: number;
   private readonly maxOpenFrames: number;
+  private readonly minPartBytes: number;
   private readonly maxPartCount: number;
   private readonly wanted: (reqId: number) => boolean;
   private readonly onDiscarded: (reqId: number) => void;
-  private held = 0;
 
   constructor(options: WsPartAssemblerOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? WS_MAX_FRAME_BYTES;
-    this.maxHeldBytes = options.maxHeldBytes ?? WS_MAX_FRAME_BYTES;
     this.maxOpenFrames = options.maxOpenFrames ?? WS_MAX_OPEN_FRAMES;
-    this.maxPartCount = options.maxPartCount ?? WS_MAX_PART_COUNT;
+    this.minPartBytes = options.minPartBytes ?? WS_MIN_PART_BYTES;
+    this.maxPartCount =
+      Math.floor(this.maxFrameBytes / Math.max(this.minPartBytes, 1)) + 1;
     this.wanted = options.wanted ?? (() => true);
     this.onDiscarded = options.onDiscarded ?? (() => {});
   }
@@ -310,11 +310,6 @@ export class WsPartAssembler {
     return this.open.size;
   }
 
-  /** Part bytes currently buffered across open frames. */
-  get heldBytes(): number {
-    return this.held;
-  }
-
   private continue(
     meta: Record<string, unknown>,
     body: Uint8Array
@@ -355,7 +350,7 @@ export class WsPartAssembler {
     entry.nextIndex++;
     if (!last) return undefined;
 
-    this.close(reqId, entry);
+    this.close(reqId);
     if (entry.discard) {
       this.onDiscarded(reqId);
       return undefined;
@@ -376,40 +371,27 @@ export class WsPartAssembler {
     index: number,
     last: boolean
   ): void {
-    if (!last && body.byteLength === 0) {
-      this.close(reqId, entry);
+    if (!last && body.byteLength < this.minPartBytes) {
+      this.close(reqId);
       throw new WsPartProtocolError(
-        `part ${index} for reqId ${reqId} is empty but is not the last part`
+        `part ${index} for reqId ${reqId} carries ${body.byteLength} bytes; every part but the last must carry at least ${this.minPartBytes}`
       );
     }
     if (entry.bytes + body.byteLength > this.maxFrameBytes) {
-      this.close(reqId, entry);
+      this.close(reqId);
       throw new WsPartProtocolError(
         `frame for reqId ${reqId} exceeds ${this.maxFrameBytes} bytes`
       );
     }
     entry.bytes += body.byteLength;
     if (entry.discard) return;
-    if (this.held + body.byteLength > this.maxHeldBytes) {
-      this.close(reqId, entry);
-      throw new WsPartProtocolError(
-        `split frames on this connection exceed ${this.maxHeldBytes} buffered bytes`
-      );
-    }
-    this.held += body.byteLength;
     // Copy: the decoded body may be a view over a buffer `ws` reuses.
     entry.chunks.push(body.slice());
   }
 
-  /** Forget an open frame and release its buffered bytes. */
-  private close(reqId: number, entry: OpenFrame): void {
+  /** Forget an open frame, releasing its buffered bytes. */
+  private close(reqId: number): void {
     this.open.delete(reqId);
-    if (!entry.discard) {
-      this.held -= entry.chunks.reduce(
-        (sum, chunk) => sum + chunk.byteLength,
-        0
-      );
-    }
   }
 }
 

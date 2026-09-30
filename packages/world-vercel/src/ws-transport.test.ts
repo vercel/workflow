@@ -285,9 +285,16 @@ describe('request/reply', () => {
 });
 
 describe('large frames', () => {
-  const LIMIT = 4096;
-  const bytes = (size: number) =>
-    Uint8Array.from({ length: size }, (_, i) => (i * 7 + 3) & 0xff);
+  /** Byte equality without a deep diff, which is slow on multi-MiB arrays. */
+  const sameBytes = (a: Uint8Array | undefined, b: Uint8Array) =>
+    a !== undefined && Buffer.from(a).equals(Buffer.from(b));
+  // The smallest message limit the env var allows.
+  const LIMIT = 2 * 1024 * 1024;
+  const bytes = (size: number) => {
+    const out = new Uint8Array(size);
+    for (let i = 0; i < size; i++) out[i] = (i * 7 + 3) & 0xff;
+    return out;
+  };
 
   beforeEach(() => {
     process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
@@ -315,7 +322,7 @@ describe('large frames', () => {
     });
     expect(frames).toHaveLength(1);
     expect(frames[0]?.meta).toEqual({ reqId: 1, type: 'event', event });
-    expect(frames[0]?.body).toEqual(payload);
+    expect(sameBytes(frames[0]?.body, payload)).toBe(true);
 
     socket.deliver(ackFrame(1));
     await expect(promise).resolves.toMatchObject({
@@ -419,9 +426,9 @@ describe('large frames', () => {
     await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
     await expect(first).resolves.toMatchObject({
       meta: { reqId: 1, type: 'event_ack', status: 200 },
-      body: replyBody,
       replyParts: parts.length,
     });
+    expect(sameBytes((await first).body, replyBody)).toBe(true);
   });
 
   it('fails the connection on a whole reply for a reqId whose split reply is open', async () => {

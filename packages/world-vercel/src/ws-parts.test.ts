@@ -4,12 +4,23 @@ import {
   DEFAULT_WS_MAX_MESSAGE_BYTES,
   encodeWsFrameMessages,
   splitEncodedFrame,
+  WS_MAX_FRAME_BYTES,
+  WS_MAX_OPEN_FRAMES,
+  WS_MAX_PART_COUNT,
+  WS_MIN_PART_BYTES,
   WsPartAssembler,
+  type WsPartAssemblerOptions,
   WsPartProtocolError,
   wsMaxMessageBytes,
 } from './ws-parts.js';
 
 const LIMIT = 2048;
+
+/** An assembler for the small test limits: parts here are far below the
+ *  production minimum part size. */
+function newAssembler(options: WsPartAssemblerOptions = {}) {
+  return new WsPartAssembler({ minPartBytes: 1, ...options });
+}
 
 function at<T>(items: T[], index: number): T {
   const item = items[index];
@@ -26,7 +37,7 @@ function body(size: number): Uint8Array {
 const META = { reqId: 7, type: 'event_ack', status: 200, eventId: 'evnt_1' };
 
 function roundTrip(messages: Uint8Array[]) {
-  const assembler = new WsPartAssembler();
+  const assembler = newAssembler();
   const out = [];
   for (const message of messages) {
     const frame = assembler.accept(decodeFrame(message));
@@ -108,10 +119,10 @@ describe('WsPartAssembler', () => {
 
   it('passes a whole frame straight through', () => {
     const frame = { meta: META, body: body(3) };
-    expect(new WsPartAssembler().accept(frame)).toBe(frame);
+    expect(newAssembler().accept(frame)).toBe(frame);
   });
 
-  it('rebuilds interleaved frames by reqId', () => {
+  it('rebuilds interleaved frames by reqId when more than one may be open', () => {
     const a = split(1, LIMIT * 3);
     const b = split(2, LIMIT * 2);
     const order = [];
@@ -119,7 +130,7 @@ describe('WsPartAssembler', () => {
       if (a[i]) order.push(at(a, i));
       if (b[i]) order.push(at(b, i));
     }
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler({ maxOpenFrames: 2 });
     const done = order.flatMap((part) => {
       const frame = assembler.accept(part);
       return frame ? [frame] : [];
@@ -132,7 +143,7 @@ describe('WsPartAssembler', () => {
 
   it('reads through a split frame nobody wants, keeping the stream in sync', () => {
     const discarded: number[] = [];
-    const assembler = new WsPartAssembler({
+    const assembler = newAssembler({
       wanted: (reqId) => reqId !== 1,
       onDiscarded: (reqId) => discarded.push(reqId),
     });
@@ -149,7 +160,7 @@ describe('WsPartAssembler', () => {
 
   it('rejects a whole frame for a reqId whose split frame is open', () => {
     const parts = split(1, LIMIT * 2);
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler();
     assembler.accept(at(parts, 0));
     expect(() =>
       assembler.accept({ meta: { ...META, reqId: 1 }, body: body(3) })
@@ -159,77 +170,82 @@ describe('WsPartAssembler', () => {
     expect(assembler.accept(other)).toBe(other);
   });
 
-  it('bounds the number of open split frames', () => {
-    const assembler = new WsPartAssembler({ maxOpenFrames: 2 });
+  it('allows one open split frame per connection by default', () => {
+    expect(WS_MAX_OPEN_FRAMES).toBe(1);
+    const assembler = newAssembler();
     assembler.accept(at(split(1, LIMIT * 2), 0));
-    assembler.accept(at(split(2, LIMIT * 2), 0));
-    expect(() => assembler.accept(at(split(3, LIMIT * 2), 0))).toThrow(
-      /more than 2 split frames open/
+    expect(() => assembler.accept(at(split(2, LIMIT * 2), 0))).toThrow(
+      /more than 1 split frames open/
     );
   });
 
-  it('bounds partCount', () => {
-    const assembler = new WsPartAssembler({ maxPartCount: 4 });
+  it('derives the part-count bound from the frame and part sizes', () => {
+    expect(WS_MAX_FRAME_BYTES).toBe(256 * 1024 * 1024);
+    expect(WS_MIN_PART_BYTES).toBe(1024 * 1024);
+    expect(WS_MAX_PART_COUNT).toBe(257);
+    const assembler = newAssembler({ maxFrameBytes: 10, minPartBytes: 4 });
     expect(() =>
       assembler.accept({
-        meta: { ...META, partIndex: 0, partCount: 5 },
-        body: body(10),
+        meta: { ...META, partIndex: 0, partCount: 4 },
+        body: body(4),
       })
-    ).toThrow(/invalid partCount 5 \(2\.\.4\)/);
+    ).toThrow(/invalid partCount 4 \(2\.\.3\)/);
   });
 
-  it('rejects an empty part before the last one', () => {
-    const assembler = new WsPartAssembler();
-    assembler.accept({
+  it('requires minPartBytes of every part but the last, which may be any size', () => {
+    const small = newAssembler({ minPartBytes: 8 });
+    small.accept({
       meta: { ...META, partIndex: 0, partCount: 3 },
-      body: body(10),
+      body: body(8),
     });
     expect(() =>
-      assembler.accept({
+      small.accept({
         meta: { type: 'part', reqId: 7, partIndex: 1, partCount: 3 },
-        body: new Uint8Array(0),
+        body: body(3),
       })
-    ).toThrow(/part 1 for reqId 7 is empty but is not the last part/);
-    expect(assembler.openFrames).toBe(0);
+    ).toThrow(/part 1 for reqId 7 carries 3 bytes/);
+    expect(small.openFrames).toBe(0);
+
+    const emptyLast = newAssembler({ minPartBytes: 8 });
+    emptyLast.accept({
+      meta: { ...META, partIndex: 0, partCount: 2 },
+      body: body(8),
+    });
+    const frame = emptyLast.accept({
+      meta: { type: 'part', reqId: 7, partIndex: 1, partCount: 2 },
+      body: new Uint8Array(0),
+    });
+    expect(frame?.body).toEqual(body(8));
   });
 
-  it('bounds the bytes held across open frames and releases them when a frame completes', () => {
-    const assembler = new WsPartAssembler({ maxHeldBytes: LIMIT * 3 });
-    const a = split(1, LIMIT * 2);
-    const b = split(2, LIMIT * 2);
-    assembler.accept(at(a, 0));
-    assembler.accept(at(b, 0));
-    for (const part of a.slice(1)) assembler.accept(part);
-    expect(assembler.openFrames).toBe(1);
-    expect(assembler.heldBytes).toBe(at(b, 0).body.byteLength);
-
-    const c = split(3, LIMIT * 4);
-    expect(() => {
-      for (const part of c) assembler.accept(part);
-    }).toThrow(/exceed .* buffered bytes/);
+  it('rejects a first part smaller than minPartBytes', () => {
+    expect(() =>
+      newAssembler({ minPartBytes: 8 }).accept({
+        meta: { ...META, partIndex: 0, partCount: 2 },
+        body: body(3),
+      })
+    ).toThrow(/part 0 for reqId 7 carries 3 bytes/);
   });
 
   it('rejects a continuation with no open frame', () => {
     const parts = split(1, LIMIT * 2);
-    expect(() => new WsPartAssembler().accept(at(parts, 1))).toThrow(
-      /no open frame/
-    );
+    expect(() => newAssembler().accept(at(parts, 1))).toThrow(/no open frame/);
   });
 
   it('rejects a second first part for an open reqId', () => {
     const parts = split(1, LIMIT * 2);
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler();
     assembler.accept(at(parts, 0));
     expect(() => assembler.accept(at(parts, 0))).toThrow(WsPartProtocolError);
   });
 
   it('rejects a skipped or repeated partIndex', () => {
     const parts = split(1, LIMIT * 3);
-    const skip = new WsPartAssembler();
+    const skip = newAssembler();
     skip.accept(at(parts, 0));
     expect(() => skip.accept(at(parts, 2))).toThrow(/expected 1/);
 
-    const repeat = new WsPartAssembler();
+    const repeat = newAssembler();
     repeat.accept(at(parts, 0));
     repeat.accept(at(parts, 1));
     expect(() => repeat.accept(at(parts, 1))).toThrow(/expected 2/);
@@ -237,7 +253,7 @@ describe('WsPartAssembler', () => {
 
   it('rejects a changed partCount', () => {
     const parts = split(1, LIMIT * 3);
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler();
     assembler.accept(at(parts, 0));
     const changed = {
       meta: { ...at(parts, 1).meta, partCount: 99 },
@@ -248,7 +264,7 @@ describe('WsPartAssembler', () => {
 
   it('rejects a continuation with extra fields', () => {
     const parts = split(1, LIMIT * 2);
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler();
     assembler.accept(at(parts, 0));
     const extra = {
       meta: { ...at(parts, 1).meta, status: 200 },
@@ -258,7 +274,7 @@ describe('WsPartAssembler', () => {
   });
 
   it('rejects a first part that does not start at 0 or claims one part', () => {
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler();
     expect(() =>
       assembler.accept({
         meta: { ...META, partIndex: 1, partCount: 3 },
@@ -275,7 +291,7 @@ describe('WsPartAssembler', () => {
 
   it('rejects a frame over the size cap', () => {
     const parts = split(1, LIMIT * 4);
-    const assembler = new WsPartAssembler({ maxFrameBytes: LIMIT * 2 });
+    const assembler = newAssembler({ maxFrameBytes: LIMIT * 2 });
     expect(() => {
       for (const part of parts) assembler.accept(part);
     }).toThrow(/exceeds/);
@@ -296,12 +312,13 @@ describe('wsMaxMessageBytes', () => {
 
   it.each([
     ['4194304', 4194304],
-    ['10', 1024],
+    [String(2 * 1024 * 1024 - 1), 2 * 1024 * 1024],
+    ['10', 2 * 1024 * 1024],
     [String(32 * 1024 * 1024), 16 * 1024 * 1024],
     ['abc', DEFAULT_WS_MAX_MESSAGE_BYTES],
     ['4096.5', DEFAULT_WS_MAX_MESSAGE_BYTES],
     ['', DEFAULT_WS_MAX_MESSAGE_BYTES],
-  ])('reads %s as %i, clamped to 1 KiB..16 MiB', (raw, expected) => {
+  ])('reads %s as %i, clamped to 2 MiB..16 MiB', (raw, expected) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = raw;
     expect(wsMaxMessageBytes()).toBe(expected);
@@ -334,7 +351,7 @@ describe('golden fixture', () => {
   });
 
   it('rebuilds the shared fixture', () => {
-    const assembler = new WsPartAssembler();
+    const assembler = newAssembler();
     const frames = GOLDEN_MESSAGES.flatMap((hex) => {
       const frame = assembler.accept(decodeFrame(Buffer.from(hex, 'hex')));
       return frame ? [frame] : [];
