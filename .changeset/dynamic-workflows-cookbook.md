@@ -1,4 +1,4 @@
 ---
 ---
 
-Docs: add a dynamic workflows cookbook recipe, backed by new mission-runner e2e fixtures.
+Docs: add a dynamic workflows cookbook recipe for publishing reviewed missions after deploy, backed by e2e fixtures.
