@@ -4241,3 +4241,218 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
 }
+
+//////////////////////////////////////////////////////////
+// Dynamic workflows: mission runner
+//
+// Backs the "Dynamic Workflows" cookbook recipe
+// (docs/content/docs/v5/cookbook/advanced/dynamic-workflows.mdx). The step
+// catalog, the two mission sources, their step bindings, and the fan-out
+// parent are the recipe's code; keep the two in sync. The recipe starts
+// missions from a route handler; here `startMission` is a step, because the
+// e2e runner can only reach the deployment through a static workflow.
+//////////////////////////////////////////////////////////
+
+interface BirdDetection {
+  id: number;
+  species: string;
+  confidence: number;
+}
+
+const BIRD_SPECIES = [
+  'American robin',
+  'Blue jay',
+  'Northern cardinal',
+  'Mourning dove',
+] as const;
+
+/**
+ * Catalog step standing in for a vision-model call. Deterministic, so the
+ * runner knows which review hooks the mission will create.
+ */
+async function detectBirds(request: {
+  image: string;
+  count: number;
+}): Promise<BirdDetection[]> {
+  'use step';
+  return Array.from({ length: request.count }, (_, id) => ({
+    id,
+    species: BIRD_SPECIES[id % BIRD_SPECIES.length],
+    confidence: 0.9 - id / 100,
+  }));
+}
+
+/** Catalog step: asks a reviewer to resume `token`. */
+async function requestExpertReview(detection: BirdDetection, token: string) {
+  'use step';
+  return { detectionId: detection.id, token };
+}
+
+/** Catalog step: posts a status message. */
+async function notify(message: string) {
+  'use step';
+  return { delivered: message };
+}
+
+/** Catalog step: fans a child mission's result back into its parent. */
+async function reportToParent(token: string, report: unknown) {
+  'use step';
+  // Throws, and so retries, until the parent has created its hook.
+  await resumeHook(token, report);
+}
+
+/**
+ * A reviewed mission template: detect birds in an image, fan out one expert
+ * review per detection (each waiting on its own hook), then aggregate. Every
+ * parameter arrives as `input`, so the source never changes and every run of
+ * it shares one workflow ID.
+ */
+const BIRD_SURVEY_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const detections = await steps.llm({ image: input.image, count: input.count });
+
+  const reviews = await Promise.all(
+    detections.map(async (detection) => {
+      const token = input.reviewTokenPrefix + ":" + detection.id;
+      const review = createHook({ token });
+      await steps.expertReview(detection, token);
+      const verdict = await review;
+      return { ...detection, confirmed: verdict.confirmed === true };
+    })
+  );
+
+  const confirmed = reviews.filter((review) => review.confirmed).length;
+  const result = { image: input.image, confirmed, reviews };
+  await steps.notify(
+    input.image + ": " + confirmed + " of " + reviews.length + " confirmed"
+  );
+  if (input.parentToken) {
+    await steps.reportToParent(input.parentToken, result);
+  }
+  return result;
+}
+`;
+
+/** A reviewed approval template: a hook raced against a durable timeout. */
+const APPROVAL_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  await steps.notify("Approval requested: " + input.subject);
+
+  const approval = createHook({ token: input.approvalToken });
+  const decision = await Promise.race([
+    approval.then((payload) => ({
+      approved: payload.approved === true,
+      timedOut: false,
+    })),
+    sleep(input.timeout).then(() => ({ approved: false, timedOut: true })),
+  ]);
+
+  await steps.notify(
+    input.subject + ": " + (decision.approved ? "approved" : "not approved")
+  );
+  return decision;
+}
+`;
+
+/** Mission templates by ID: reviewed source plus the steps it may call. */
+const MISSIONS = {
+  birdSurvey: {
+    source: BIRD_SURVEY_SOURCE,
+    steps: {
+      llm: detectBirds,
+      expertReview: requestExpertReview,
+      notify,
+      reportToParent,
+    },
+  },
+  approval: {
+    source: APPROVAL_SOURCE,
+    steps: { notify },
+  },
+};
+
+type MissionId = keyof typeof MISSIONS;
+
+/**
+ * Starts one mission as a dynamic run. The recipe makes this same `start()`
+ * call from its route handler; either way it needs the imported step
+ * functions, which carry the `stepId` the source's aliases bind to.
+ */
+async function startMission(
+  mission: MissionId,
+  input: Record<string, unknown>
+) {
+  'use step';
+  const { source, steps } = MISSIONS[mission];
+  const run = await start(source, [input], { experimental_dynamic: { steps } });
+  return { runId: run.runId };
+}
+
+/** Starts a bird-survey mission and hands back the child's run ID. */
+export async function dynamicBirdSurveyMission(
+  image: string,
+  count: number,
+  reviewTokenPrefix: string
+) {
+  'use workflow';
+  const child = await startMission('birdSurvey', {
+    image,
+    count,
+    reviewTokenPrefix,
+  });
+  return { childRunId: child.runId };
+}
+
+/** Starts an approval mission and hands back the child's run ID. */
+export async function dynamicApprovalMission(
+  subject: string,
+  approvalToken: string,
+  timeout: string
+) {
+  'use workflow';
+  const child = await startMission('approval', {
+    subject,
+    approvalToken,
+    timeout,
+  });
+  return { childRunId: child.runId };
+}
+
+interface BirdSurveyResult {
+  image: string;
+  confirmed: number;
+  reviews: Array<BirdDetection & { confirmed: boolean }>;
+}
+
+/**
+ * Static parent that fans out one dynamic bird-survey mission per image and
+ * fans back in through hooks: each child resumes the hook the parent created
+ * for it, as in the child-workflows recipe.
+ */
+export async function dynamicBirdSurveyFanOut(
+  surveyKey: string,
+  images: string[]
+) {
+  'use workflow';
+  const hooks = images.map((_, index) =>
+    createHook<BirdSurveyResult>({ token: `${surveyKey}:mission:${index}` })
+  );
+  await Promise.all(
+    images.map((image, index) =>
+      startMission('birdSurvey', {
+        image,
+        count: 1,
+        reviewTokenPrefix: `${surveyKey}:review:${index}`,
+        parentToken: `${surveyKey}:mission:${index}`,
+      })
+    )
+  );
+  const results = await Promise.all(hooks);
+  return {
+    images: results.length,
+    confirmed: results.reduce((total, result) => total + result.confirmed, 0),
+    results,
+  };
+}

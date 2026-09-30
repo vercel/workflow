@@ -36,7 +36,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { getCurrentTest } from '@vitest/runner';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Run, start as rawStart } from '../src/runtime';
-import { getRun, getWorld } from '../src/runtime';
+import { getHookByToken, getRun, getWorld, resumeHook } from '../src/runtime';
 import {
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -403,3 +403,162 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
     ).rejects.toThrow(/at least one registered step/);
   });
 });
+
+/**
+ * Resume a hook a dynamic mission creates, once it exists.
+ *
+ * Missions create their hooks deep inside a dynamic child, so there is no run
+ * to wait on first: poll the token until it resolves, then resume it once.
+ * When a `parent` is given (the fan-out case, where the runner never learns
+ * the children's run IDs up front), a failed parent is checked against the
+ * unsupported-deployment refusals, so a lane that cannot run dynamic
+ * workflows skips here instead of timing out on a hook that will never exist.
+ */
+async function resumeMissionHook(
+  token: string,
+  payload: unknown,
+  {
+    parent,
+    timeoutMs = 60_000,
+  }: { parent?: Run<unknown>; timeoutMs?: number } = {}
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const hook = await getHookByToken(token);
+      await resumeHook(hook, payload);
+      return hook;
+    } catch (error) {
+      lastError = error;
+    }
+    if (parent && (await parent.status) === 'failed') {
+      try {
+        await parent.returnValue;
+      } catch (error) {
+        skipIfUnsupportedDeployment(error);
+      }
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for hook ${token}. Last error: ${String(lastError)}`
+  );
+}
+
+/**
+ * The mission runner in the "Dynamic Workflows" cookbook recipe. Its fixtures
+ * (`dynamicBirdSurveyMission` and friends in `workflows/99_e2e.ts`) hold the
+ * recipe's step catalog and mission sources.
+ */
+describeJs(
+  'dynamic workflows: mission runner recipe',
+  { timeout: 120_000 },
+  () => {
+    it('fans a bird survey out to one review hook per detection', async () => {
+      const prefix = `e2e-dynamic-review:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicBirdSurveyMission', [
+        'backyard.jpg',
+        3,
+        prefix,
+      ]);
+
+      // Every review waits on its own hook, in parallel; resume them out of
+      // order to show nothing depends on arrival order.
+      const verdicts = [true, false, true];
+      for (const id of [2, 0, 1]) {
+        const hook = await resumeMissionHook(`${prefix}:${id}`, {
+          confirmed: verdicts[id],
+        });
+        expect(hook.runId).toBe(childRunId);
+      }
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toEqual({
+        image: 'backyard.jpg',
+        confirmed: 2,
+        reviews: [
+          {
+            id: 0,
+            species: 'American robin',
+            confidence: 0.9,
+            confirmed: true,
+          },
+          { id: 1, species: 'Blue jay', confidence: 0.89, confirmed: false },
+          {
+            id: 2,
+            species: 'Northern cardinal',
+            confidence: 0.88,
+            confirmed: true,
+          },
+        ],
+      });
+      expect(child.record.workflowName).toMatch(
+        /^workflow\/\/dynamic\/[0-9a-f]{32}\/\/workflow$/
+      );
+    });
+
+    it('resolves an approval mission when the hook is resumed', async () => {
+      const token = `e2e-dynamic-approval:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicApprovalMission', [
+        'release notes',
+        token,
+        '10m',
+      ]);
+
+      const hook = await resumeMissionHook(token, { approved: true });
+      expect(hook.runId).toBe(childRunId);
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toEqual({ approved: true, timedOut: false });
+    });
+
+    it('times out an approval mission nobody resumes', async () => {
+      const token = `e2e-dynamic-approval:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicApprovalMission', [
+        'release notes',
+        token,
+        '2s',
+      ]);
+
+      // The durable sleep wins the race, so the run completes with no resume.
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toEqual({ approved: false, timedOut: true });
+    });
+
+    it('fans missions out from a static parent and back in through hooks', async () => {
+      const surveyKey = `e2e-dynamic-survey:${crypto.randomUUID()}`;
+      const parent = await start(await e2e('dynamicBirdSurveyFanOut'), [
+        surveyKey,
+        ['north.jpg', 'south.jpg'],
+      ]);
+
+      // Each child mission makes one detection and waits on its review.
+      for (const [index, confirmed] of [true, false].entries()) {
+        const hook = await resumeMissionHook(
+          `${surveyKey}:review:${index}:0`,
+          { confirmed },
+          { parent }
+        );
+        trackRun(getRun(hook.runId), {
+          testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+        });
+      }
+
+      let output: unknown;
+      try {
+        output = await parent.returnValue;
+      } catch (error) {
+        skipIfUnsupportedDeployment(error);
+      }
+      expect(output).toMatchObject({
+        images: 2,
+        confirmed: 1,
+        results: [
+          { image: 'north.jpg', confirmed: 1 },
+          { image: 'south.jpg', confirmed: 0 },
+        ],
+      });
+    });
+  }
+);
