@@ -602,6 +602,40 @@ export async function run() {
       expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
     });
 
+    it('does not detect a directive in a code sample after an apostrophe in JSX text', () => {
+      const source = `export default function Page() {
+  return <p>Don't copy this</p>;
+}
+const code = \`
+export async function wf() {
+  'use workflow';
+}
+\`;
+`;
+      expect(stripCommentsFromSource(source, true)).not.toContain(
+        "'use workflow'"
+      );
+      expect(detectWorkflowPatterns(source).hasUseWorkflow).toBe(false);
+    });
+
+    it('does not detect a directive in a JSX template prop after an apostrophe in JSX text', () => {
+      const source = `export function Docs() {
+  return (
+    <section>
+      <p>It's easy to write a workflow:</p>
+      <CodeBlock code={\`export async function signup() {
+  "use workflow";
+}\`} />
+    </section>
+  );
+}
+`;
+      expect(stripCommentsFromSource(source, true)).not.toContain(
+        '"use workflow"'
+      );
+      expect(detectWorkflowPatterns(source).hasUseWorkflow).toBe(false);
+    });
+
     it('detects a directive after a division that follows a long block comment', () => {
       const source = `const pct = done /* number of completed items */ / total;
 const url = \`https://example.com\`;

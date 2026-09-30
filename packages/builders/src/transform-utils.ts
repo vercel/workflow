@@ -91,8 +91,8 @@ const canStartRegexLiteral = (source: string, significantEnd: number) => {
 const codeSpecialPattern = /['"`{}/]/g;
 const templateSpecialPattern = /[`\\$]/g;
 const regexSpecialPattern = /[\\[\]/]/g;
-const singleQuoteSpecialPattern = /['\\]/g;
-const doubleQuoteSpecialPattern = /["\\]/g;
+const singleQuoteSpecialPattern = /['\\\n]/g;
+const doubleQuoteSpecialPattern = /["\\\n]/g;
 
 // Every pattern above matches a single character, so the match starts one
 // before `lastIndex`.
@@ -116,13 +116,19 @@ const blankExceptNewlines = (text: string) => {
   return blanked + ' '.repeat(text.length - start);
 };
 
-// Returns the index just past the closing quote, or the source length.
+// Returns the index just past the closing quote, the index of the newline
+// that ends an unterminated string, or the source length. A quoted string
+// cannot contain an unescaped newline, so a stray quote (such as an
+// apostrophe in JSX text) only swallows the rest of its line.
 const findStringEnd = (source: string, start: number, pattern: RegExp) => {
   let from = start + 1;
   for (;;) {
     const at = findNext(pattern, source, from);
     if (at === -1) {
       return source.length;
+    }
+    if (source[at] === '\n') {
+      return at;
     }
     if (source[at] !== '\\') {
       return at + 1;
@@ -188,7 +194,8 @@ const findTemplateTextEnd = (source: string, start: number) => {
  *
  * Whether a `/` starts a regex is decided from the previous character, which
  * is a heuristic. Known gaps: a regex right after `)` is read as a division,
- * and JSX text is scanned as code, so an apostrophe in it opens a string.
+ * and JSX text is scanned as code, so an apostrophe in it opens a string that
+ * runs to the end of the line.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
 export function stripCommentsFromSource(
