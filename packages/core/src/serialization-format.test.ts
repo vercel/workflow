@@ -404,9 +404,10 @@ describe('observabilityRevivers', () => {
       observabilityRevivers
     );
 
-    expect(hydrated.input.args[0]).toBeInstanceOf(Date);
-    expect(hydrated.input.args[0].getTime()).toBe(date.getTime());
-    expect(hydrated.input.args[0].toISOString()).toBe(date.toISOString());
+    expect(hydrated).toEqual({
+      stepId: 'step_date',
+      input: { args: [date] },
+    });
   });
 
   it('should preserve built-in Date payload hydration with the default revivers', () => {
@@ -417,8 +418,10 @@ describe('observabilityRevivers', () => {
       observabilityRevivers
     );
 
-    expect(hydrated.input.args[0]).toBeInstanceOf(Date);
-    expect(hydrated.input.args[0].getTime()).toBe(date.getTime());
+    expect(hydrated).toEqual({
+      stepId: 'step_date',
+      input: { args: [date] },
+    });
   });
 
   it('should convert ReadableStream to StreamRef', () => {
