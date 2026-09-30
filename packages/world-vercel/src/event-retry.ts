@@ -53,10 +53,11 @@
  * instead (see isFirewallChallenge429), so throttle retries cannot hot-loop
  * against the firewall. Each retry honors the server's `retryAfter`. How long
  * a POST keeps waiting depends on what giving up would throw away (see
- * ThrottleBudget): a step's outcome waits for as long as the invocation has
- * time left, because giving up means re-running the step body on redelivery.
- * Every other write keeps the short THROTTLE_RETRY_BUDGET_MS. Beyond either,
- * the ThrottleError surfaces and the queue's redelivery takes over.
+ * ThrottleBudget): `step_completed` and `step_retrying` wait for as long as
+ * the invocation has time left, because giving up means re-running the step
+ * body on redelivery. Every other write keeps the short
+ * THROTTLE_RETRY_BUDGET_MS. Beyond either, the ThrottleError surfaces and the
+ * queue's redelivery takes over.
  *
  * This is the *only* retry loop on the event-write path, for both transports.
  * The WebSocket transport raises `code: 'TRANSPORT'` (the shape `utils.ts`
@@ -104,19 +105,23 @@ export class AfterCommitError extends Error {
 type WorkflowEventType = z.infer<typeof EventTypeSchema>;
 
 /**
- * Event types that record a step body's outcome. Once the body has run, a
- * write the queue redelivers is not a resend: redelivery finds the step still
- * `running`, runs the body again (repeating its side effects), and writes a
- * new `step_started` that counts toward its max retries. These are the writes
- * the `invocation` throttle budget exists for.
+ * Event types written only after a step body has run, from step execution
+ * (core's `executeStep`, which runs with the replay budget paused). Once the
+ * body has run, a write the queue redelivers is not a resend: redelivery finds
+ * the step still `running`, runs the body again (repeating its side effects),
+ * and writes a new `step_started` that counts toward its max retries. These
+ * are the writes the `invocation` throttle budget exists for.
+ *
+ * `step_failed` is left out: besides recording a body's failure, it is written
+ * on the replay path for a step whose arguments failed to serialize (no body
+ * ran), where a long wait would count against the replay budget.
  */
 const STEP_OUTCOME_EVENT_TYPES: ReadonlySet<WorkflowEventType> = new Set([
   'step_completed',
-  'step_failed',
   'step_retrying',
 ]);
 
-/** Whether a POST of this event type records a step body's outcome. */
+/** Whether a POST of this event type gets the `invocation` throttle budget. */
 export function recordsStepOutcome(eventType: WorkflowEventType): boolean {
   return STEP_OUTCOME_EVENT_TYPES.has(eventType);
 }
@@ -241,9 +246,10 @@ export const MAX_EVENT_POST_RETRIES = 2;
  */
 export const THROTTLE_RETRY_BUDGET_MS = 30_000;
 /**
- * Time an `invocation` throttle budget leaves before the function's deadline:
- * enough for the resent request itself and the work that follows a landed
- * write (acking the step, queueing the continuation).
+ * Time an `invocation` throttle budget leaves before the function's deadline,
+ * as headroom for the resent request and the work that follows a landed write
+ * (acking the step, queueing the continuation). It is not a bound on either:
+ * v4 event requests carry no overall request timeout.
  */
 export const THROTTLE_DEADLINE_RESERVE_MS = 15_000;
 /**
@@ -463,9 +469,9 @@ export interface EventPostRetryOptions {
  *   handlers (`start()`, `resumeHook()`) that should not be held for minutes.
  * - `invocation`: until the invocation's deadline, less
  *   THROTTLE_DEADLINE_RESERVE_MS, capped at THROTTLE_RETRY_MAX_BUDGET_MS. For
- *   a step's outcome (see STEP_OUTCOME_EVENT_TYPES), which is written from
- *   step execution, outside the replay budget. Falls back to `bounded` when
- *   the deadline is unknown.
+ *   a write that only step execution makes, outside the replay budget (see
+ *   STEP_OUTCOME_EVENT_TYPES). Falls back to `bounded` when the deadline is
+ *   unknown.
  *
  * Either budget also stops before the deadline: a wait that would outlast the
  * invocation surfaces the 429 instead, so the queue's redelivery (which honors

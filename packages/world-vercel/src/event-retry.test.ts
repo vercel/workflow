@@ -443,12 +443,12 @@ describe('withEventPostRetry', () => {
         throw new ThrottleError('429', { retryAfter });
       });
 
-    it('gives only step outcomes the invocation budget', () => {
+    it('gives only execution-only step outcomes the invocation budget', () => {
       expect(
         EventTypeSchema.options
           .filter((type) => recordsStepOutcome(type))
           .sort()
-      ).toEqual(['step_completed', 'step_failed', 'step_retrying']);
+      ).toEqual(['step_completed', 'step_retrying']);
     });
 
     it('keeps a step outcome waiting until the invocation deadline', async () => {
@@ -484,6 +484,7 @@ describe('withEventPostRetry', () => {
 
     it.each([
       'step_started',
+      'step_failed',
       'run_started',
       'run_completed',
       'hook_received',
@@ -522,7 +523,7 @@ describe('withEventPostRetry', () => {
       deadlineIn(24 * 60 * 60_000);
       const fn = alwaysThrottled(60);
 
-      const p = withEventPostRetry(fn, 'step_failed').catch((e) => e);
+      const p = withEventPostRetry(fn, 'step_retrying').catch((e) => e);
       await vi.runAllTimersAsync();
 
       expect(ThrottleError.is(await p)).toBe(true);
