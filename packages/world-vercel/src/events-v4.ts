@@ -1323,14 +1323,6 @@ function replyMetaToHeaderRecord(
  * `transport.request()`, which reconnects on the way through.
  */
 
-/**
- * Read the status off a reply frame, failing closed when there isn't one:
- * defaulting to 200 would report success for any frame this client doesn't
- * understand, and the protocol is designed to grow new response variants (see
- * the server's docs/ws-protocol.md). `PARSE_ERROR` is the code `utils.ts` uses
- * for an unreadable HTTP body (the same situation), and unlike a bare `Error`
- * it satisfies `WorkflowWorldError.is()` instead of surfacing as a USER_ERROR.
- */
 /** Part counts for a write whose request or reply was split; see
  *  `ws-parts.ts`. Absent for the usual single-message case. */
 function recordWsPartCounts(span: Span | undefined, reply: WsFrameReply): void {
@@ -1341,6 +1333,14 @@ function recordWsPartCounts(span: Span | undefined, reply: WsFrameReply): void {
   });
 }
 
+/**
+ * Read the status off a reply frame, failing closed when there isn't one:
+ * defaulting to 200 would report success for any frame this client doesn't
+ * understand, and the protocol is designed to grow new response variants (see
+ * the server's docs/ws-protocol.md). `PARSE_ERROR` is the code `utils.ts` uses
+ * for an unreadable HTTP body (the same situation), and unlike a bare `Error`
+ * it satisfies `WorkflowWorldError.is()` instead of surfacing as a USER_ERROR.
+ */
 function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
   const { status } = reply.meta;
   if (typeof status !== 'number') {

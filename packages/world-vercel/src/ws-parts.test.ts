@@ -1,8 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { encodeFrame } from './frames.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { decodeFrame, encodeFrame } from './frames.js';
 import {
   DEFAULT_WS_MAX_MESSAGE_BYTES,
-  decodeFrame,
   encodeWsFrameMessages,
   splitEncodedFrame,
   WsPartAssembler,
@@ -131,6 +130,23 @@ describe('WsPartAssembler', () => {
     expect(assembler.openFrames).toBe(0);
   });
 
+  it('reads through a split frame nobody wants, keeping the stream in sync', () => {
+    const discarded: number[] = [];
+    const assembler = new WsPartAssembler({
+      wanted: (reqId) => reqId !== 1,
+      onDiscarded: (reqId) => discarded.push(reqId),
+    });
+    const unwanted = split(1, LIMIT * 3);
+    const wanted = split(2, LIMIT * 2);
+    const done = [...unwanted, ...wanted].flatMap((part) => {
+      const frame = assembler.accept(part);
+      return frame ? [frame] : [];
+    });
+    expect(discarded).toEqual([1]);
+    expect(done.map((f) => f.meta.reqId)).toEqual([2]);
+    expect(assembler.openFrames).toBe(0);
+  });
+
   it('rejects a continuation with no open frame', () => {
     const parts = split(1, LIMIT * 2);
     expect(() => new WsPartAssembler().accept(at(parts, 1))).toThrow(
@@ -197,7 +213,7 @@ describe('WsPartAssembler', () => {
 
   it('rejects a frame over the size cap', () => {
     const parts = split(1, LIMIT * 4);
-    const assembler = new WsPartAssembler(LIMIT * 2);
+    const assembler = new WsPartAssembler({ maxFrameBytes: LIMIT * 2 });
     expect(() => {
       for (const part of parts) assembler.accept(part);
     }).toThrow(/exceeds/);
@@ -206,16 +222,27 @@ describe('WsPartAssembler', () => {
 });
 
 describe('wsMaxMessageBytes', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
+    vi.restoreAllMocks();
+  });
+
   it('defaults to 12 MiB', () => {
-    expect(wsMaxMessageBytes(undefined)).toBe(DEFAULT_WS_MAX_MESSAGE_BYTES);
+    expect(wsMaxMessageBytes()).toBe(DEFAULT_WS_MAX_MESSAGE_BYTES);
     expect(DEFAULT_WS_MAX_MESSAGE_BYTES).toBe(12 * 1024 * 1024);
   });
 
-  it('reads a positive integer and ignores anything else', () => {
-    expect(wsMaxMessageBytes('4194304')).toBe(4194304);
-    expect(wsMaxMessageBytes('abc')).toBe(DEFAULT_WS_MAX_MESSAGE_BYTES);
-    expect(wsMaxMessageBytes('10')).toBe(DEFAULT_WS_MAX_MESSAGE_BYTES);
-    expect(wsMaxMessageBytes('')).toBe(DEFAULT_WS_MAX_MESSAGE_BYTES);
+  it.each([
+    ['4194304', 4194304],
+    ['10', 1024],
+    [String(32 * 1024 * 1024), 16 * 1024 * 1024],
+    ['abc', DEFAULT_WS_MAX_MESSAGE_BYTES],
+    ['4096.5', DEFAULT_WS_MAX_MESSAGE_BYTES],
+    ['', DEFAULT_WS_MAX_MESSAGE_BYTES],
+  ])('reads %s as %i, clamped to 1 KiB..16 MiB', (raw, expected) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = raw;
+    expect(wsMaxMessageBytes()).toBe(expected);
   });
 });
 

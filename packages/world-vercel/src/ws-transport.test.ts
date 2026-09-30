@@ -23,14 +23,10 @@ import {
   it,
   vi,
 } from 'vitest';
-import { encodeFrame } from './frames.js';
+import { decodeFrame, encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
-import {
-  decodeFrame,
-  encodeWsFrameMessages,
-  WsPartAssembler,
-} from './ws-parts.js';
+import { encodeWsFrameMessages, WsPartAssembler } from './ws-parts.js';
 import {
   getWsEventsTransport,
   isWsEventsTransportEnabled,
@@ -56,8 +52,9 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     readonly url: string;
     readonly headers: Record<string, string>;
     readonly sent: Uint8Array[] = [];
-    /** Queued failures for upcoming `send` calls. */
-    readonly sendErrors: Error[] = [];
+    /** Queued outcomes for upcoming `send` calls: an error fails that send,
+     *  `undefined` lets it through. */
+    readonly sendErrors: Array<Error | undefined> = [];
     private readonly listeners = new Map<string, Listener[]>();
 
     constructor(url: string, options?: { headers?: Record<string, string> }) {
@@ -326,6 +323,70 @@ describe('large frames', () => {
       requestParts: socket.sent.length,
       replyParts: 1,
     });
+  });
+
+  it('offers the frame-parts flag on every upgrade', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { socket } = await connectAndSend(transport);
+    expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+  });
+
+  it('fails the request when a later part cannot be sent', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request((reqId) =>
+      encodeFrame(
+        { reqId, type: 'event', event: { eventType: 'step_completed' } },
+        bytes(LIMIT * 3)
+      )
+    );
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+    socket.sendErrors.push(undefined, new Error('EPIPE'));
+    socket.open();
+    await tick();
+
+    await expect(promise).rejects.toThrow(/send failed: EPIPE/);
+  });
+
+  it('fails the request when the socket closes partway through a split reply', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    const [head] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 3),
+      LIMIT
+    );
+    if (head) socket.deliver(head);
+    await tick();
+    socket.close(1006);
+    await tick();
+
+    await expect(promise).rejects.toThrow(/closed \(code 1006\)/);
+  });
+
+  it('reads through a split reply for a request that already settled', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise: first, socket } = await connectAndSend(transport);
+    const second = transport.request(eventFrame);
+    await tick();
+    socket.deliver(ackFrame(2));
+    await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
+
+    // A late split reply for reqId 2, which is no longer pending, then the
+    // reply request 1 is waiting for.
+    for (const part of encodeWsFrameMessages(
+      { reqId: 2, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    )) {
+      socket.deliver(part);
+    }
+    socket.deliver(ackFrame(1));
+    await tick();
+
+    await expect(first).resolves.toMatchObject({ meta: { reqId: 1 } });
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(loggedErrors()).toMatch(/split reply for unknown reqId 2/);
   });
 
   it('sends a request under the limit as one message', async () => {

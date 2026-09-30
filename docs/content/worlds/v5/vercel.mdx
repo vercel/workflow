@@ -276,7 +276,9 @@ The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the c
 
 Largest WebSocket message the events transport sends, header included. Default: `12582912` (12 MiB).
 
-Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it, in both directions. Frames at or under the limit are unaffected. Values below 1024 or that are not integers are ignored.
+Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it. Frames at or under the limit are unaffected. Integer values are clamped to `1024`-`16777216` with a warning; other values use the default.
+
+The client splits its own large requests, which needs a Vercel World backend that accepts split frames. It lists `frame-parts` in the `x-workflow-ws-flags` header of the WebSocket upgrade, and the backend splits large replies only for a client that does, so older clients keep receiving whole replies.
 
 ### Programmatic configuration
 

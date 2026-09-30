@@ -11,10 +11,30 @@
  *   with the next piece of the body.
  *
  * A frame that fits in one message carries neither field and is unchanged.
+ *
+ * Direction by direction:
+ * - Requests: this client splits any request over the limit. The server
+ *   always accepts parts, so this needs a server that supports them.
+ * - Replies: the server splits a reply only for a client whose upgrade
+ *   request lists `frame-parts` in {@link WS_FLAGS_HEADER}, which this client
+ *   always does. Older clients don't, and keep getting whole replies.
  */
 
-import { decode } from 'cbor-x';
-import { type DecodedFrame, encodeFrame } from './frames.js';
+import { envNumber } from '@workflow/world';
+import { type DecodedFrame, decodeFrame, encodeFrame } from './frames.js';
+
+/**
+ * Upgrade request header listing the protocol flags this client supports, as
+ * comma-separated tokens. A server only uses a behaviour an older client would
+ * misread when the client lists its flag.
+ */
+export const WS_FLAGS_HEADER = 'x-workflow-ws-flags';
+
+/** Flag: this client rebuilds replies the server sends as parts. */
+export const WS_FLAG_FRAME_PARTS = 'frame-parts';
+
+/** The flags this client sends on every upgrade. */
+export const WS_CLIENT_FLAGS = [WS_FLAG_FRAME_PARTS] as const;
 
 export const WS_PART_TYPE = 'part';
 
@@ -23,26 +43,31 @@ export const WS_PART_TYPE = 'part';
  *  deployments impose. */
 export const DEFAULT_WS_MAX_MESSAGE_BYTES = 12 * 1024 * 1024;
 
+/** Largest configurable message limit: the 16 MiB WebSocket message limit. */
+export const MAX_WS_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+
+/** Smallest configurable message limit, so a part always has room for its
+ *  header. */
+export const MIN_WS_MAX_MESSAGE_BYTES = 1024;
+
 /** Largest frame a receiver will rebuild from parts. */
 export const WS_MAX_FRAME_BYTES = 256 * 1024 * 1024;
 
-const MIN_WS_MAX_MESSAGE_BYTES = 1024;
-
 /**
- * The configured message limit: `WORKFLOW_WS_MAX_MESSAGE_BYTES` when set to
- * a positive integer, otherwise the default.
+ * The message limit: `WORKFLOW_WS_MAX_MESSAGE_BYTES`, clamped to
+ * {@link MIN_WS_MAX_MESSAGE_BYTES}..{@link MAX_WS_MAX_MESSAGE_BYTES} (with a
+ * one-time warning), or the default when unset or not an integer.
  */
-export function wsMaxMessageBytes(
-  raw: string | undefined = process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES
-): number {
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_WS_MAX_MESSAGE_BYTES;
-  }
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < MIN_WS_MAX_MESSAGE_BYTES) {
-    return DEFAULT_WS_MAX_MESSAGE_BYTES;
-  }
-  return value;
+export function wsMaxMessageBytes(): number {
+  return envNumber(
+    'WORKFLOW_WS_MAX_MESSAGE_BYTES',
+    DEFAULT_WS_MAX_MESSAGE_BYTES,
+    {
+      min: MIN_WS_MAX_MESSAGE_BYTES,
+      max: MAX_WS_MAX_MESSAGE_BYTES,
+      integer: true,
+    }
+  );
 }
 
 /**
@@ -130,39 +155,6 @@ export function splitEncodedFrame(
   return encodeWsFrameMessages(meta, body, maxMessageBytes);
 }
 
-/**
- * Decode exactly one frame from one buffer, synchronously. A WebSocket
- * message is one frame by construction, so trailing bytes are an error.
- * Throws on a truncated or malformed frame.
- */
-export function decodeFrame(raw: Uint8Array): DecodedFrame {
-  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-  if (raw.byteLength < 4) {
-    throw new Error('ws frame shorter than the meta length prefix');
-  }
-  const metaEnd = 4 + view.getUint32(0, false);
-  if (raw.byteLength < metaEnd + 4) {
-    throw new Error('ws frame too short for meta + body length prefix');
-  }
-  const meta: unknown = decode(raw.subarray(4, metaEnd));
-  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
-    throw new Error('ws frame meta must be a CBOR map');
-  }
-  const bodyStart = metaEnd + 4;
-  const bodyEnd = bodyStart + view.getUint32(metaEnd, false);
-  if (raw.byteLength !== bodyEnd) {
-    throw new Error(
-      raw.byteLength < bodyEnd
-        ? 'ws frame shorter than its declared body length'
-        : `ws frame has ${raw.byteLength - bodyEnd} trailing bytes`
-    );
-  }
-  return {
-    meta: meta as Record<string, unknown>,
-    body: raw.subarray(bodyStart, bodyEnd),
-  };
-}
-
 function continuationMeta(
   reqId: number,
   partIndex: number,
@@ -182,6 +174,21 @@ interface OpenFrame {
   nextIndex: number;
   chunks: Uint8Array[];
   bytes: number;
+  /** Nobody wants this frame: its parts are checked and counted, not kept. */
+  discard: boolean;
+}
+
+export interface WsPartAssemblerOptions {
+  /** Largest frame to rebuild. Default {@link WS_MAX_FRAME_BYTES}. */
+  maxFrameBytes?: number;
+  /**
+   * Whether a split frame for `reqId` is still wanted, asked at its first
+   * part. An unwanted frame's parts are still checked, so the stream stays in
+   * sync, but not buffered; `onDiscarded` is called once its last part
+   * arrives. Default: every frame is wanted.
+   */
+  wanted?: (reqId: number) => boolean;
+  onDiscarded?: (reqId: number) => void;
 }
 
 /**
@@ -194,8 +201,15 @@ interface OpenFrame {
  */
 export class WsPartAssembler {
   private readonly open = new Map<number, OpenFrame>();
+  private readonly maxFrameBytes: number;
+  private readonly wanted: (reqId: number) => boolean;
+  private readonly onDiscarded: (reqId: number) => void;
 
-  constructor(private readonly maxFrameBytes: number = WS_MAX_FRAME_BYTES) {}
+  constructor(options: WsPartAssemblerOptions = {}) {
+    this.maxFrameBytes = options.maxFrameBytes ?? WS_MAX_FRAME_BYTES;
+    this.wanted = options.wanted ?? (() => true);
+    this.onDiscarded = options.onDiscarded ?? (() => {});
+  }
 
   accept(frame: DecodedFrame): DecodedFrame | undefined {
     const { meta, body } = frame;
@@ -231,6 +245,7 @@ export class WsPartAssembler {
       nextIndex: 1,
       chunks: [],
       bytes: 0,
+      discard: !this.wanted(reqId),
     };
     this.addChunk(reqId, entry, body);
     this.open.set(reqId, entry);
@@ -282,6 +297,10 @@ export class WsPartAssembler {
     if (entry.nextIndex < entry.partCount) return undefined;
 
     this.open.delete(reqId);
+    if (entry.discard) {
+      this.onDiscarded(reqId);
+      return undefined;
+    }
     const joined = new Uint8Array(entry.bytes);
     let offset = 0;
     for (const chunk of entry.chunks) {
@@ -299,6 +318,7 @@ export class WsPartAssembler {
         `frame for reqId ${reqId} exceeds ${this.maxFrameBytes} bytes`
       );
     }
+    if (entry.discard) return;
     // Copy: the decoded body may be a view over a buffer `ws` reuses.
     entry.chunks.push(body.slice());
   }

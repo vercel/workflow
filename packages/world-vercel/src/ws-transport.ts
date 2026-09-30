@@ -25,7 +25,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
-import type { DecodedFrame } from './frames.js';
+import { type DecodedFrame, decodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -41,8 +41,9 @@ import {
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
 import {
-  decodeFrame,
   splitEncodedFrame,
+  WS_CLIENT_FLAGS,
+  WS_FLAGS_HEADER,
   WsPartAssembler,
   WsPartProtocolError,
   wsMaxMessageBytes,
@@ -369,6 +370,10 @@ class WsEventsTransport {
       headers[key] = value;
     });
 
+    // Tells the server this client rebuilds split replies. Without it the
+    // server sends every reply whole, which is what older clients expect.
+    headers[WS_FLAGS_HEADER] = WS_CLIENT_FLAGS.join(', ');
+
     return headers;
   }
 
@@ -426,11 +431,22 @@ class WsEventsTransport {
           const headers = await this.resolveUpgradeHeaders();
           const ws = new WebSocket(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
+          const pending = new Map<number, PendingRequest>();
           conn = {
             ws,
             nextReqId: 1,
-            pending: new Map(),
-            parts: new WsPartAssembler(),
+            pending,
+            // A split reply for a request that already settled (its deadline
+            // or a send error) is read through, not buffered.
+            parts: new WsPartAssembler({
+              wanted: (reqId) => pending.has(reqId),
+              onDiscarded: (reqId) =>
+                console.error(
+                  `world-vercel: ws events transport received a split reply ` +
+                    `for unknown reqId ${reqId} from ${this.wsUrl} (already ` +
+                    `settled); dropping it.`
+                ),
+            }),
           };
         } catch (err) {
           console.error(
