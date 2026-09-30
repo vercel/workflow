@@ -84,6 +84,12 @@ export function encodeWsFrameMessages(
   const whole = encodeFrame(meta, body);
   if (whole.byteLength <= maxMessageBytes) return [whole];
 
+  if (body.byteLength > WS_MAX_FRAME_BYTES) {
+    throw new WsFrameTooLargeError(
+      `ws frame body of ${body.byteLength} bytes is over the ${WS_MAX_FRAME_BYTES}-byte limit for a split frame`
+    );
+  }
+
   const reqId = meta.reqId;
   if (!isClientReqId(reqId)) {
     throw new Error(
@@ -164,6 +170,11 @@ function continuationMeta(
   partCount: number
 ): Record<string, unknown> {
   return { type: WS_PART_TYPE, reqId, partIndex, partCount };
+}
+
+/** A frame is too large to send, even as parts. Nothing was sent. */
+export class WsFrameTooLargeError extends Error {
+  override name = 'WsFrameTooLargeError';
 }
 
 /** A part broke the protocol. The connection can't be trusted any more. */

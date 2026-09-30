@@ -7,6 +7,7 @@ import {
   WS_MAX_FRAME_BYTES,
   WS_MAX_OPEN_FRAMES,
   WS_MAX_PART_COUNT,
+  WsFrameTooLargeError,
   WsPartAssembler,
   type WsPartAssemblerOptions,
   WsPartProtocolError,
@@ -104,6 +105,13 @@ describe('encodeWsFrameMessages', () => {
   it('refuses a frame that would need more than the part cap', () => {
     expect(() => encodeWsFrameMessages(META, body(LIMIT * 300), LIMIT)).toThrow(
       /at most 257 are allowed/
+    );
+  });
+
+  it('refuses a frame body over the split-frame limit', () => {
+    const big = new Uint8Array(WS_MAX_FRAME_BYTES + 1);
+    expect(() => encodeWsFrameMessages(META, big, 16 * 1024 * 1024)).toThrow(
+      WsFrameTooLargeError
     );
   });
 
