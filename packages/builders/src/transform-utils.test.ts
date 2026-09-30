@@ -527,6 +527,21 @@ export async function run() {
       expect(result.hasDirective).toBe(true);
     });
 
+    it('detects a directive after blank lines and CRLF line endings', () => {
+      const source =
+        'export async function run() {\r\n\r\n  \r\n  "use step";\r\n}\r\n';
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+
+    it('checks every line that mentions a directive', () => {
+      const source = `const label = 'use step';
+export async function run() {
+  "use step";
+}
+`;
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+
     it('still detects directives after other directive prologue entries', () => {
       const source = `export async function run() {
   "use strict";
@@ -704,6 +719,17 @@ const n = 1;
 `;
       expect(stripCommentsFromSource(source, true)).toBe(
         `return                           /\`/.test(s);
+`
+      );
+    });
+
+    it('reads a slash after a keyword and a line comment as a regex', () => {
+      const source = `return // c
+  /\`/.test(s);
+`;
+      expect(stripCommentsFromSource(source, true)).toBe(
+        `return     
+  /\`/.test(s);
 `
       );
     });
