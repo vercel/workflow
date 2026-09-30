@@ -1,5 +1,52 @@
 # @workflow/ai
 
+## 5.0.0
+
+### Major Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Initial v5 beta release
+
+### Minor Changes
+
+- [#1863](https://github.com/vercel/workflow/pull/1863) [`d580326`](https://github.com/vercel/workflow/commit/d5803265d4fa616e61fae960916fe957b0b16ad0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Expose `totalUsage` and `finishReason` on the `DurableAgent.stream()` result, mirroring the AI SDK's `GenerateTextResult`/`StreamTextResult` and the existing `onFinish` event payload.
+
+- [#2537](https://github.com/vercel/workflow/pull/2537) [`8cdfd85`](https://github.com/vercel/workflow/commit/8cdfd8591418b1c3e7d294b44f3003cc3fe7552f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `WorkflowChatTransport` now repairs UI message stream part framing, so duplicated or interleaved durable stream writes no longer crash the AI SDK consumer with `Received text-delta for missing text part`.
+
+### Patch Changes
+
+- [#2730](https://github.com/vercel/workflow/pull/2730) [`0f02af4`](https://github.com/vercel/workflow/commit/0f02af4cfb1c6529fc9c9d726d720b5d31cc51af) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Continue DurableAgent tool loops whenever a model step contains tool calls, regardless of the reported finish reason.
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1707](https://github.com/vercel/workflow/pull/1707) [`86ebe9f`](https://github.com/vercel/workflow/commit/86ebe9fe9f17d36819bafef427a51f81e6045307) Thanks [@craze3](https://github.com/craze3)! - Preserve malformed streamed tool-call input until repair hooks can run
+
+- [#1663](https://github.com/vercel/workflow/pull/1663) [`4d31619`](https://github.com/vercel/workflow/commit/4d31619eb724bf243b9775ef71a34f20668a9e2a) Thanks [@gr2m](https://github.com/gr2m)! - fix(ai): preserve provider tool identity across step boundaries
+  
+  Provider tools (e.g. `anthropic.tools.webSearch`) were being converted to plain function tools in `toolsToModelTools`, stripping `type: 'provider'`, `id`, and `args`. This caused providers like Anthropic Gateway to not recognize them as provider-executed tools.
+
+- [#1544](https://github.com/vercel/workflow/pull/1544) [`3f6d98f`](https://github.com/vercel/workflow/commit/3f6d98f3f0b1e18af47a7665fa210d87f99ff979) Thanks [@iNishant](https://github.com/iNishant)! - Forward `strict`, `inputExamples`, and `providerOptions` tool properties to language model providers, and handle `type: 'dynamic'` tools
+
+- [#3891](https://github.com/vercel/workflow/pull/3891) [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Route Workflow AI examples through AI Gateway and recommend WorkflowAgent for Workflow 5.
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state on `globalThis` rather than at module scope in the packages that get bundled into the host application's server build, where a bundler compiles one copy of each module per layer. Covers warn-once latches, lazy caches, the VM script and QuickJS asset caches, the dev-server port cache, and step single-flight, whose per-copy map was not actually single-flight. State that is deliberately per-copy is annotated with the reason.
+
+- [#2082](https://github.com/vercel/workflow/pull/2082) [`eff215c`](https://github.com/vercel/workflow/commit/eff215ceeceaf87cc8704d7cc404b0f427a45b3c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `WorkflowChatTransport` now drops orphan UI chunks (deltas/ends with no matching `*-start` in the resumed window) when reconnecting with an `initialStartIndex` not matching a UI chunk boundary, instead of throwing.
+
+- [#2699](https://github.com/vercel/workflow/pull/2699) [`654f959`](https://github.com/vercel/workflow/commit/654f95911b6260df56cd77a41ae82864461c7f2c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent now recovers from invalid tool-call input by returning the validation error to the model instead of aborting the stream.
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- [#2635](https://github.com/vercel/workflow/pull/2635) [`aa71766`](https://github.com/vercel/workflow/commit/aa71766bc9fac71d0f38b42f83151952193be579) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Suppress chat transport console errors for intentional AbortError stream closes.
+
+- [#1932](https://github.com/vercel/workflow/pull/1932) [`096faf0`](https://github.com/vercel/workflow/commit/096faf0ff6a8106522263971c899a68404f5e406) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reduce DurableAgent step boundary payload by reconstructing `StepResult` outside the step instead of inside.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- [#3902](https://github.com/vercel/workflow/pull/3902) [`7a46a81`](https://github.com/vercel/workflow/commit/7a46a81a53d91ddcff75b073b917a900f3cb956b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade runtime validation to Zod 4.5 and enable compilation on SDK-owned Zod schemas.
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3), [`926a5e7`](https://github.com/vercel/workflow/commit/926a5e7c6a50c1e74f2e2cc37324caa0f6442d85), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/serde@5.0.0
+  - @workflow/utils@5.0.0
+
 ## 5.0.0-beta.16
 
 ### Patch Changes
