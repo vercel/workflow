@@ -338,7 +338,7 @@ export default function ChatPage() {
 
 ## Using webhooks directly
 
-For simpler cases where you don't need type-safe validation or programmatic resumption, you can use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) directly. This generates a unique URL that can be called to resume the workflow. Anyone with the URL can resume it, so avoid this for approvals that need to know who approved. See [Hook and webhook security](/docs/foundations/hooks#security).
+For simpler cases where you don't need type-safe validation or programmatic resumption, you can use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) directly. This generates a unique URL that can be called to resume the workflow. Anyone with the URL can resume it, so avoid this for approvals that need to know who approved, unless you use the incoming payload for authorization. See [Hook and webhook security](/docs/foundations/hooks#security).
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
 import { createWebhook } from "workflow";

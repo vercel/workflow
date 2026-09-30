@@ -251,7 +251,7 @@ Hooks require you to manually handle HTTP requests and route them to workflows. 
 When using Workflow SDK, webhooks are automatically wired up at `/.well-known/workflow/v1/webhook/:token` without any additional setup.
 
 <Callout type="warn">
-`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. That is convenient for prototypes, but read [Security](#security) before using a webhook for anything consequential.
+`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. Make sure to read up on [security](#security) before using a webhook for calls that need to be authenticated.
 </Callout>
 
 <Callout type="info">
@@ -433,9 +433,9 @@ A hook token tells the runtime which hook a payload belongs to. It is not an aut
 
 When you don't pass a `token`, the SDK generates one inside the workflow function. Workflow code must produce the same values on every replay, so the generated token comes from the run's deterministic random number generator, the same one that backs [`Math.random()` and `crypto.randomUUID()`](/docs/api-reference/workflow-globals) in workflow functions. That generator is seeded from identifiers of the run, including the run ID, not from a secret key.
 
-A generated token is hard to guess without knowing the run, but the values it is derived from are not designed to be kept secret: run IDs are often returned to clients. If a run ID is exposed, don't rely on the tokens that run generates staying private. Treat a generated token like an unlisted link, not like a credential.
+A generated token is hard to guess without knowing the run, but the values it is derived from are not designed to be kept secret. Treat a generated token like an unlisted link, not like a credential.
 
-Custom tokens passed to `createHook({ token })` are usually built from domain data such as an order ID, so they are even easier to reconstruct. That is what makes them useful for routing, and it is why the route that resumes them must do its own authorization. If you need a hook token that is unguessable, generate it in a step, where `crypto` is not seeded, and pass it as `token`:
+Custom tokens passed to `createHook({ token })` are usually built from domain data such as an order ID, so they are even easier to reconstruct. That is what makes them useful for routing, and it is why the route that resumes them must do its own authorization. If you can not perform your own authorization on the route that calls `resume` for any reason, and need to generate an unguessable token instead, generate it in a step where `crypto` is not seeded and pass it as `token`:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
