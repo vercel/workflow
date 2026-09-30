@@ -293,35 +293,44 @@ function hasWorkflowDependency(dependencies: unknown): boolean {
   );
 }
 
-function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
+// Matched against source with quoted strings masked, so the symbol name is
+// blank here and is checked against the original source at the same offsets.
+const MASKED_SYMBOL_FOR_SERDE_METHOD =
+  /static\s+\[\s*Symbol\.for\s*\(\s*(['"])\s*\1\s*\)\s*\]\s*\(/g;
+const SYMBOL_FOR_SERDE_METHOD =
+  /^static\s+\[\s*Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\)\s*\]\s*\($/;
 
 function hasLikelySerdeClass(source: string): boolean {
   if (!source.includes('static') || !source.includes('[')) {
     return false;
   }
 
-  const uncommentedSource = stripComments(source);
+  // Class shapes are matched against code only, never string contents. The
+  // scanner output has the same length as the source, so offsets line up.
+  const codeOnlySource = stripCommentsFromSource(source, true, true);
   if (
-    /static\s+\[\s*(?:WORKFLOW_(?:SERIALIZE|DESERIALIZE)|Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\))\s*\]\s*\(/.test(
-      uncommentedSource
+    /static\s+\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]\s*\(/.test(
+      codeOnlySource
     )
   ) {
     return true;
   }
+  for (const match of codeOnlySource.matchAll(MASKED_SYMBOL_FOR_SERDE_METHOD)) {
+    const original = source.slice(match.index, match.index + match[0].length);
+    if (SYMBOL_FOR_SERDE_METHOD.test(original)) {
+      return true;
+    }
+  }
 
   if (
     !/from\s+['"]@workflow\/serde['"]|require\s*\(\s*['"]@workflow\/serde['"]\s*\)/.test(
-      uncommentedSource
+      stripCommentsFromSource(source)
     )
   ) {
     return false;
   }
 
-  return /static\s+\[\s*[$A-Z_a-z][$\w]*\s*\]\s*\(/.test(uncommentedSource);
+  return /static\s+\[\s*[$A-Z_a-z][$\w]*\s*\]\s*\(/.test(codeOnlySource);
 }
 
 async function loadTsconfigPathAliases(
