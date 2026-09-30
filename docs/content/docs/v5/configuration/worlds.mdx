@@ -298,14 +298,6 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - This is not tenant rollout policy or a package-version check. HTTP remains the compatibility path. `/websockets/v1` is independent of REST v2/v4 and persisted workflow `specVersion` values.
 - A throttled (429) socket write or close is retried after the server's `Retry-After`, as over HTTP. It moves to HTTP if the connection ends during the wait or the cumulative wait passes 30 seconds.
 
-### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
-
-- Factory option: none
-- CLI flag: none
-- Default: `12582912` (12 MiB)
-- Clamp: `1024` to `16777216` (values outside are clamped, with a warning)
-- Largest stream WebSocket message, header included. Larger write groups are split into several ordered write requests; a single chunk too large for one message is written over HTTP. The ceiling is the platform's 16 MiB WebSocket frame limit.
-
 ### `WORKFLOW_DISABLE_ANALYTICS_READS`
 
 - Factory option: none
@@ -335,4 +327,6 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - CLI flag: none
 - Default: `12582912` (12 MiB)
 - Clamp: `2097152` to `16777216` (values outside are clamped, with a warning)
-- Largest events WebSocket message, header included. A larger frame is sent as several messages and rebuilt on the other side. The ceiling is the 16 MiB WebSocket message limit.
+- Largest WebSocket message the Vercel World sends, header included, for both the events and stream-write transports. The ceiling is the 16 MiB WebSocket message limit.
+- Events: a larger frame is sent as several messages and rebuilt on the other side.
+- Stream writes: a larger write group is split into several ordered write requests; a single chunk too large for one message is written over HTTP, as are the rest of that writer's writes.

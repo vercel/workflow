@@ -250,7 +250,7 @@ Writes and close requests execute serially. The first operation waits up to 250 
 
 Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
 
-Each stream WebSocket message is at most `WORKFLOW_WS_MAX_MESSAGE_BYTES` bytes, header included. Default: `12582912` (12 MiB). Integer values are clamped to `1024`-`16777216`, because the platform drops any WebSocket frame over 16 MiB. A write group larger than the limit is sent as several ordered write requests. A single chunk too large for one message is written over HTTP instead, as are the rest of its writer's writes.
+Each stream WebSocket message is at most [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#workflow_ws_max_message_bytes) bytes. A write group larger than the limit is sent as several ordered write requests. A single chunk too large for one message is written over HTTP instead, as are the rest of its writer's writes.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
@@ -294,9 +294,9 @@ The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the c
 
 ### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
 
-Largest WebSocket message the events transport sends, header included. Default: `12582912` (12 MiB).
+Largest WebSocket message the Vercel World sends, header included, on both the events and stream-write transports. Default: `12582912` (12 MiB).
 
-Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it. Frames at or under the limit are unaffected. Integer values are clamped to `2097152`-`16777216` (2–16 MiB) with a warning; other values use the default.
+Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it. Stream writes split a large write group into several ordered write requests instead (see [`WORKFLOW_STREAMS_TRANSPORT`](#workflow_streams_transport)). Frames at or under the limit are unaffected. Integer values are clamped to `2097152`-`16777216` (2–16 MiB) with a warning; other values use the default.
 
 The client splits its own large requests, which needs a Vercel World backend that accepts split frames. It lists `frame-parts` in the `x-workflow-ws-flags` header of the WebSocket upgrade, and the backend splits large replies only for a client that does, so older clients keep receiving whole replies.
 

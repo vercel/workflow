@@ -11,7 +11,6 @@ import {
   STREAM_WS_PROTOCOL_V1,
   STREAM_WS_V1_MAX_CHUNK_BYTES,
   STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
-  STREAM_WS_V1_MAX_MESSAGE_BYTES,
   STREAM_WS_V1_WRITE_ENVELOPE_MAX_BYTES,
   StreamWriterIdSchema,
   StreamWsCloseRequestMetaSchema,
@@ -143,10 +142,6 @@ describe('workflow-stream-ws/v1 contract', () => {
         [new Uint8Array(STREAM_WS_V1_MAX_CHUNK_BYTES + 1)]
       )
     ).toThrow('maximum is 10485760');
-  });
-
-  it('bounds the whole message at the platform 16 MiB frame limit', () => {
-    expect(STREAM_WS_V1_MAX_MESSAGE_BYTES).toBe(2 ** 24);
   });
 
   it('bounds the write envelope outside chunk records', () => {

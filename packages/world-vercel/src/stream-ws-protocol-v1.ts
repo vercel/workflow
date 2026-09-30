@@ -20,12 +20,6 @@ export const STREAM_WS_V1_MAX_CHUNKS_PER_WRITE = MAX_CHUNKS_PER_STREAM_WRITE;
 /** Shared v1 size bound for each decoded chunk. */
 export const STREAM_WS_V1_MAX_CHUNK_BYTES = 10 * 1024 * 1024;
 /**
- * Largest whole encoded v1 message (2^24 bytes). The Vercel proxy drops any
- * WebSocket frame over this size without a close frame, which the client only
- * observes seconds later as code 1006, so a client must split before sending.
- */
-export const STREAM_WS_V1_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
-/**
  * Upper bound on a write message's bytes outside its chunk records: the two
  * u32 frame length prefixes plus the CBOR metadata, which is at most 60 bytes
  * (safe-integer `reqId` and `chunkSeq`, `numChunks` at the count bound).
@@ -119,10 +113,13 @@ export const StreamWsReplyMetaSchema = z.discriminatedUnion('type', [
  * 429, which did not apply: a client with no other request outstanding may
  * resend it after `retryAfter`. An unknown client outcome is never replayed.
  *
- * A whole encoded message is at most `STREAM_WS_V1_MAX_MESSAGE_BYTES`, because
- * the platform silently drops larger WebSocket frames. One stream-write group
- * may therefore become several ordered write requests, each bounded by chunk
- * count and message bytes, with `chunkSeq` advancing across them.
+ * A whole encoded message is at most 16 MiB (2^24 bytes), because the Vercel
+ * proxy drops any larger WebSocket frame without a close frame, which the
+ * client only observes seconds later as code 1006. The sender's limit is
+ * `WORKFLOW_WS_MAX_MESSAGE_BYTES` (`wsMaxMessageBytes` in `ws-parts.ts`), so
+ * one stream-write group may become several ordered write requests, each
+ * bounded by chunk count and message bytes, with `chunkSeq` advancing across
+ * them.
  */
 
 export type StreamWriterId = z.infer<typeof StreamWriterIdSchema>;

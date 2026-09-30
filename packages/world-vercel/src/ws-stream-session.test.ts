@@ -122,11 +122,10 @@ vi.mock('./http-core.js', async (importOriginal) => {
   };
 });
 
-const {
-  createStreamWriteSession,
-  DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES,
-  getStreamWsMaxMessageBytes,
-} = await import('./ws-stream-session.js');
+const { createStreamWriteSession } = await import('./ws-stream-session.js');
+const { DEFAULT_WS_MAX_MESSAGE_BYTES, MIN_WS_MAX_MESSAGE_BYTES } = await import(
+  './ws-parts.js'
+);
 
 async function decodeOne(raw: Uint8Array) {
   for await (const frame of decodeFrames(
@@ -1343,12 +1342,18 @@ async function ackWrites(
 }
 
 describe('v1 stream WebSocket message byte budget', () => {
+  // The shared WORKFLOW_WS_MAX_MESSAGE_BYTES floor, 2 MiB. With the
+  // 128-byte envelope bound, two of these chunks fit one message and three
+  // do not.
+  const LIMIT = MIN_WS_MAX_MESSAGE_BYTES;
+  const CHUNK = 800_000;
+  const fill = (length: number, size: number) =>
+    Array.from({ length }, (_, index) => new Uint8Array(size).fill(index + 1));
+
   it('splits a group over the budget into contiguous ordered requests', async () => {
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '4096';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
     const { session, socket, writeHttp } = await openSession();
-    const chunks = Array.from({ length: 5 }, (_, index) =>
-      new Uint8Array(1500).fill(index + 1)
-    );
+    const chunks = fill(5, CHUNK);
 
     const frames = await ackWrites(socket, session.write(7, chunks), 3);
 
@@ -1358,7 +1363,7 @@ describe('v1 stream WebSocket message byte budget', () => {
       { type: 'write', reqId: 3, chunkSeq: 11, numChunks: 1 },
     ]);
     for (const raw of socket.sent) {
-      expect(raw.byteLength).toBeLessThanOrEqual(4096);
+      expect(raw.byteLength).toBeLessThanOrEqual(LIMIT);
     }
     expect(frames.flatMap((frame) => decodeChunks(frame.body))).toEqual(chunks);
     expect(writeHttp).not.toHaveBeenCalled();
@@ -1379,10 +1384,7 @@ describe('v1 stream WebSocket message byte budget', () => {
 
   it('splits few large chunks by bytes at the default budget', async () => {
     const { session, socket } = await openSession();
-    const chunks = Array.from(
-      { length: 3 },
-      () => new Uint8Array(5 * 1024 * 1024)
-    );
+    const chunks = fill(3, 5 * 1024 * 1024);
 
     const frames = await ackWrites(socket, session.write(4, chunks), 2);
 
@@ -1391,25 +1393,20 @@ describe('v1 stream WebSocket message byte budget', () => {
       { chunkSeq: 6, numChunks: 1 },
     ]);
     for (const raw of socket.sent) {
-      expect(raw.byteLength).toBeLessThanOrEqual(
-        DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES
-      );
+      expect(raw.byteLength).toBeLessThanOrEqual(DEFAULT_WS_MAX_MESSAGE_BYTES);
     }
   });
 
   it.each([
     { chunkBytes: 1, expected: [1000, 1] },
-    { chunkBytes: 8, expected: [672, 329] },
+    { chunkBytes: 4096, expected: [511, 490] },
   ])('applies whichever bound binds first for 1001 chunks of $chunkBytes bytes', async ({
     chunkBytes,
     expected,
   }) => {
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '8192';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
     const { session, socket } = await openSession();
-    const chunks = Array.from(
-      { length: 1001 },
-      () => new Uint8Array(chunkBytes)
-    );
+    const chunks = fill(1001, chunkBytes);
 
     const frames = await ackWrites(
       socket,
@@ -1423,14 +1420,14 @@ describe('v1 stream WebSocket message byte budget', () => {
       expected[0],
     ]);
     for (const raw of socket.sent) {
-      expect(raw.byteLength).toBeLessThanOrEqual(8192);
+      expect(raw.byteLength).toBeLessThanOrEqual(LIMIT);
     }
   });
 
   it('sends a chunk too large for one message over HTTP without poisoning', async () => {
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '1024';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
     const { session, socket, writeHttp } = await openSession();
-    const big = new Uint8Array(2000);
+    const big = new Uint8Array(3 * 1024 * 1024);
 
     await ackWrites(socket, session.write(0, ['head', big, 'tail']), 1);
     await session.write(3, ['later']);
@@ -1443,13 +1440,15 @@ describe('v1 stream WebSocket message byte budget', () => {
     expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
   });
 
+  // Planned at 2 * LIMIT, where two of these chunks share a message; lowering
+  // the limit to LIMIT during the wait would make that message too large.
+  const THROTTLE_CHUNK = 1_600_000;
+
   it('resends only a throttled byte-split request, with its planned budget', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '4096';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(2 * LIMIT);
     const { session, socket, writeHttp } = await openSession();
-    const chunks = Array.from({ length: 5 }, (_, index) =>
-      new Uint8Array(1500).fill(index + 1)
-    );
+    const chunks = fill(5, THROTTLE_CHUNK);
     const writing = session.write(7, chunks);
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     socket.reply(
@@ -1465,9 +1464,10 @@ describe('v1 stream WebSocket message byte budget', () => {
       )
     );
     // The resend keeps the limit its group was split with.
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '1024';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(socket.sent).toHaveLength(3);
+    expect(socket.sent[2].byteLength).toBeGreaterThan(LIMIT);
     const original = await decodeOne(socket.sent[1]);
     const resent = await decodeOne(socket.sent[2]);
     expect(resent.meta).toEqual({
@@ -1496,11 +1496,9 @@ describe('v1 stream WebSocket message byte budget', () => {
 
   it('sends only the unapplied tail to HTTP once a byte-split request exhausts the throttle budget', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '4096';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
     const { session, socket, writeHttp } = await openSession();
-    const chunks = Array.from({ length: 5 }, (_, index) =>
-      new Uint8Array(1500).fill(index + 1)
-    );
+    const chunks = fill(5, CHUNK);
     const writing = session.write(7, chunks);
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     socket.reply(
@@ -1528,34 +1526,16 @@ describe('v1 stream WebSocket message byte budget', () => {
   });
 
   it('never passes an encoded message over the budget to the socket', async () => {
-    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = '4096';
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
     const { session, socket, writeHttp } = await openSession();
     // Simulate a batch plan that underestimates the encoded size.
     batchEndOverride.fn = (chunks) => chunks.length;
-    const chunks = Array.from({ length: 3 }, () => new Uint8Array(1500));
+    const chunks = fill(3, CHUNK);
 
     await session.write(0, chunks);
 
     expect(socket.sent).toHaveLength(0);
     expect(writeHttp.mock.calls).toEqual([[chunks]]);
     expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
-  });
-
-  it.each([
-    [undefined, DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES],
-    ['', DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES],
-    ['4096', 4096],
-    ['16777216', 16 * 1024 * 1024],
-    ['16777217', 16 * 1024 * 1024],
-    ['999999999', 16 * 1024 * 1024],
-    ['10', 1024],
-    ['-1', 1024],
-    ['abc', DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES],
-    ['4096.5', DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES],
-  ])('reads WORKFLOW_WS_MAX_MESSAGE_BYTES=%s as %i', (raw, expected) => {
-    if (raw === undefined) delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
-    else process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = raw;
-    expect(DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES).toBe(12 * 1024 * 1024);
-    expect(getStreamWsMaxMessageBytes()).toBe(expected);
   });
 });
