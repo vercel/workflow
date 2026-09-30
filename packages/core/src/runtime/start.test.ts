@@ -514,7 +514,6 @@ async function workflow() {
           capabilities: { dynamicWorkflowCode: true },
           events: { create: eventsCreate },
           queue,
-          runs: { get: vi.fn() },
           ...overrides,
         } as any;
       }
@@ -608,40 +607,14 @@ async function workflow() {
         expect(queue).not.toHaveBeenCalled();
       });
 
-      it('publishes after a 409 when the existing run holds the code', async () => {
-        eventsCreate.mockRejectedValue(
-          new EntityConflictError('Run already exists')
-        );
-        const world = storingWorld();
-        world.runs.get.mockImplementation(async (runId: string) => ({
-          runId,
-          status: 'pending',
-          dynamicWorkflowCode: new Uint8Array([1, 2, 3]),
-        }));
-        setWorld(world);
+      it('publishes nothing when run_created conflicts', async () => {
+        // Nothing reads the existing run back: a dynamic create that does not
+        // cleanly succeed is thrown, whatever the reason.
+        const conflict = new EntityConflictError('Run already exists');
+        eventsCreate.mockRejectedValue(conflict);
+        setWorld(storingWorld());
 
-        const run = await start(source, dynamicOptions);
-
-        expect(world.runs.get).toHaveBeenCalledWith(run.runId, {
-          resolveData: 'all',
-        });
-        expect(queue).toHaveBeenCalledOnce();
-      });
-
-      it('publishes nothing after a 409 when the existing run lacks the code', async () => {
-        eventsCreate.mockRejectedValue(
-          new EntityConflictError('Run already exists')
-        );
-        const world = storingWorld();
-        world.runs.get.mockImplementation(async (runId: string) => ({
-          runId,
-          status: 'pending',
-        }));
-        setWorld(world);
-
-        await expect(start(source, dynamicOptions)).rejects.toThrow(
-          /did not store its dynamic workflow code/
-        );
+        await expect(start(source, dynamicOptions)).rejects.toBe(conflict);
         expect(queue).not.toHaveBeenCalled();
       });
 
