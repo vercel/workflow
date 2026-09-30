@@ -465,9 +465,6 @@ A hook token tells the runtime which hook a payload belongs to. It is not an aut
 
 ### Generated tokens are hard to guess, not secret
 
-When you don't pass a `token`, the SDK generates one inside the workflow function. Workflow code must produce the same values on every replay, so the generated token comes from the run's deterministic random number generator, the same one that backs [`Math.random()` and `crypto.randomUUID()`](/docs/api-reference/workflow-globals) in workflow functions. That generator is seeded from the run ID, the workflow name, and the deployment ID, not from a secret key.
-
-
 When you don't pass a `token`, the SDK generates one inside the workflow function. Workflow code must produce the same values on every replay, so the generated token comes from the run's deterministic random number generator, the same one that backs [`Math.random()` and `crypto.randomUUID()`](/docs/api-reference/workflow-globals) in workflow functions. That generator is seeded from identifiers of the run, including the run ID, not from a secret key.
 
 A generated token is hard to guess without knowing the run, but the values it is derived from are not designed to be kept secret. Treat a generated token like an unlisted link, not like a credential.
