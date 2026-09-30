@@ -93,7 +93,10 @@ function codecOverrideFromEnv(): 'gzip' | 'zstd' | undefined {
 
 interface NodeZlib {
   zstdCompressSync?: (data: Uint8Array, opts?: unknown) => Uint8Array;
-  zstdDecompressSync?: (data: Uint8Array) => Uint8Array;
+  zstdDecompressSync?: (
+    data: Uint8Array,
+    opts?: { maxOutputLength?: number }
+  ) => Uint8Array;
   zstdCompress?: (
     data: Uint8Array,
     opts: unknown,
@@ -145,7 +148,8 @@ async function pipeThroughTransform(
   transform: {
     readable: ReadableStream<Uint8Array>;
     writable: WritableStream<Uint8Array>;
-  }
+  },
+  maxOutputBytes?: number
 ): Promise<Uint8Array> {
   const writer = transform.writable.getWriter();
   // Don't await the write before reading: the transform's internal
@@ -163,6 +167,10 @@ async function pipeThroughTransform(
     if (done) break;
     chunks.push(value);
     total += value.length;
+    if (maxOutputBytes !== undefined && total > maxOutputBytes) {
+      await reader.cancel().catch(() => {});
+      throw new DecompressedSizeLimitError(maxOutputBytes);
+    }
   }
   await writePromise;
   const out = new Uint8Array(total);
@@ -178,8 +186,26 @@ async function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
   return pipeThroughTransform(data, new CompressionStream('gzip'));
 }
 
-async function gunzipBytes(data: Uint8Array): Promise<Uint8Array> {
-  return pipeThroughTransform(data, new DecompressionStream('gzip'));
+async function gunzipBytes(
+  data: Uint8Array,
+  maxOutputBytes?: number
+): Promise<Uint8Array> {
+  return pipeThroughTransform(
+    data,
+    new DecompressionStream('gzip'),
+    maxOutputBytes
+  );
+}
+
+/**
+ * Thrown by {@link decompress} when a payload inflates past the caller's
+ * `maxOutputBytes`, so a small compressed input cannot exhaust memory.
+ */
+export class DecompressedSizeLimitError extends Error {
+  constructor(readonly maxOutputBytes: number) {
+    super(`Decompressed payload exceeds ${maxOutputBytes} bytes`);
+    this.name = 'DecompressedSizeLimitError';
+  }
 }
 
 function zstdOpts(z: NodeZlib | undefined): unknown {
@@ -214,7 +240,7 @@ function zstdBytesAsync(data: Uint8Array): Promise<Uint8Array> {
   });
 }
 
-function unzstdBytes(data: Uint8Array): Uint8Array {
+function unzstdBytes(data: Uint8Array, maxOutputBytes?: number): Uint8Array {
   const z = getNodeZlib();
   if (!z?.zstdDecompressSync) {
     throw new Error(
@@ -224,7 +250,19 @@ function unzstdBytes(data: Uint8Array): Uint8Array {
         '(serialization-format.ts).'
     );
   }
-  return new Uint8Array(z.zstdDecompressSync(data));
+  if (maxOutputBytes === undefined) {
+    return new Uint8Array(z.zstdDecompressSync(data));
+  }
+  try {
+    return new Uint8Array(
+      z.zstdDecompressSync(data, { maxOutputLength: maxOutputBytes })
+    );
+  } catch (err) {
+    if ((err as { code?: string })?.code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new DecompressedSizeLimitError(maxOutputBytes);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -355,14 +393,23 @@ export async function compress(
  */
 export async function decompress(
   data: Uint8Array | unknown,
-  stats?: CompressionStats
+  stats?: CompressionStats,
+  opts?: {
+    /**
+     * Refuse to inflate past this many bytes (throws
+     * {@link DecompressedSizeLimitError}). For payloads from storage that
+     * may be hostile or corrupt, where a small input could otherwise
+     * inflate without bound.
+     */
+    maxOutputBytes?: number;
+  }
 ): Promise<Uint8Array | unknown> {
   if (!(data instanceof Uint8Array)) return data;
   const prefix = peekFormatPrefix(data);
 
   if (prefix === SerializationFormat.ZSTD) {
     const { payload } = decodeFormatPrefix(data);
-    const inflated = unzstdBytes(payload);
+    const inflated = unzstdBytes(payload, opts?.maxOutputBytes);
     recordStats(stats, 'zstd', inflated.length, data.length);
     return inflated;
   }
@@ -376,7 +423,7 @@ export async function decompress(
       );
     }
     const { payload } = decodeFormatPrefix(data);
-    const inflated = await gunzipBytes(payload);
+    const inflated = await gunzipBytes(payload, opts?.maxOutputBytes);
     recordStats(stats, 'gzip', inflated.length, data.length);
     return inflated;
   }

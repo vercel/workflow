@@ -1784,6 +1784,120 @@ describe('VM snapshot/restore', () => {
     late.dispose();
   });
 
+  it('keeps the heap flat across steps: consumed step results are not retained', async () => {
+    // continueWithEvents re-scans a batch while it makes progress; a
+    // re-scanned terminal whose resolver already settled must be dropped,
+    // not buffered, or every step result stays in the heap (and in every
+    // persisted snapshot) for the rest of the run.
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const run = makeRun();
+    const big = 'x'.repeat(20_000);
+    const steps = 60;
+    const session = await startQuickJSWorkflow({
+      workflowCode: `
+        var step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//big");
+        async function workflow() {
+          var retained = [];
+          for (var i = 0; i < ${steps}; i++) {
+            await step(i);
+            retained.push(Object.keys(globalThis.__terminalBuffer).length);
+          }
+          return retained[retained.length - 1];
+        }
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [runCreatedEvent(run)],
+    });
+    try {
+      let result = session.result;
+      for (let i = 0; i < steps; i++) {
+        assert(result.suspended);
+        const cid = result.suspended.pendingOperations[0].correlationId;
+        result = await session.continueWithEvents([
+          {
+            eventId: `evnt_${i}_created`,
+            runId: run.runId,
+            eventType: 'step_created' as const,
+            correlationId: cid,
+            eventData: { stepName: 'step//test//big' },
+            createdAt: new Date('2025-01-01T00:00:01Z'),
+          },
+          {
+            eventId: `evnt_${i}_completed`,
+            runId: run.runId,
+            eventType: 'step_completed' as const,
+            correlationId: cid,
+            eventData: { result: big },
+            createdAt: new Date('2025-01-01T00:00:02Z'),
+          },
+        ] as never);
+      }
+      assert(result.completed);
+      // Nothing buffered after any step: each result was consumed once.
+      expect(unwrapResult(result.completed.result)).toBe(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it('exposes the current process.env after a restore, not the captured one', async () => {
+    const { startQuickJSWorkflow } = await import('./quickjs-runtime.js');
+    const run = makeRun();
+    const workflowCode = `
+      var step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
+      async function workflow() {
+        await step(1);
+        return process.env.WF_SNAPSHOT_ENV_TEST;
+      }
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const previous = process.env.WF_SNAPSHOT_ENV_TEST;
+    try {
+      process.env.WF_SNAPSHOT_ENV_TEST = 'before';
+      const s1 = await startQuickJSWorkflow({
+        workflowCode,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: run,
+        events: [runCreatedEvent(run)],
+      });
+      assert(s1.result.suspended);
+      const cid = s1.result.suspended.pendingOperations[0].correlationId;
+      const captured = s1.snapshot();
+      s1.dispose();
+
+      process.env.WF_SNAPSHOT_ENV_TEST = 'after';
+      const restored = await startQuickJSWorkflow({
+        workflowCode,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: run,
+        events: stepEvents(run, cid, 2, 'evnt_env'),
+        existingSnapshot: {
+          data: captured.data,
+          metadata: {
+            eventsCursor: 'cursor_1',
+            createdAt: new Date(),
+            rngDraws: captured.rngDraws,
+            lastUlid: captured.lastUlid,
+            serdeRootPtr: captured.serdeRootPtr,
+            clockMs: captured.clockMs,
+            engineVersion: captured.engineVersion,
+          },
+        },
+      });
+      try {
+        assert(restored.result.completed);
+        expect(unwrapResult(restored.result.completed.result)).toBe('after');
+      } finally {
+        restored.dispose();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.WF_SNAPSHOT_ENV_TEST;
+      else process.env.WF_SNAPSHOT_ENV_TEST = previous;
+    }
+  });
+
   it('re-registers the attribute-write validator on restore', async () => {
     // Every host callback must come back after a restore (they're
     // referenced from the heap by name). A validator skipped on the

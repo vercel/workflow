@@ -113,7 +113,7 @@ async function invoke(options: {
     runs: { get: vi.fn(async () => workflowRun) },
     queue: vi.fn().mockResolvedValue({ messageId: 'msg_snapshot_gate' }),
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
-    snapshots: { load, save: vi.fn(), delete: vi.fn() },
+    experimental_snapshots: { load, save: vi.fn(), delete: vi.fn() },
   } as unknown as World);
 
   const result =
@@ -144,6 +144,9 @@ async function invoke(options: {
 
 describe('QuickJS snapshot load gate', () => {
   beforeEach(async () => {
+    // These runs have no encryption key; opt in to unencrypted snapshots
+    // so the load gate is what's under test.
+    process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
     const { __resetSnapshotLatchesForTests } = await import(
       './quickjs-entrypoint.js'
     );
@@ -151,8 +154,19 @@ describe('QuickJS snapshot load gate', () => {
   });
 
   afterEach(() => {
+    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
     setWorld(undefined);
     vi.clearAllMocks();
+  });
+
+  it('never probes for a run without an encryption key unless opted in', async () => {
+    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
+    const { load } = await invoke({
+      log: makeLog(10),
+      threshold: 1,
+      outcome: 'completed',
+    });
+    expect(load).not.toHaveBeenCalled();
   });
 
   it('skips the load when a complete preload is shorter than the threshold', async () => {

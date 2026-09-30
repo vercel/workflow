@@ -324,12 +324,23 @@ globalThis.__hookPayloadBuffer = {};
 // and attrs settle exactly once).
 globalThis.__terminalBuffer = {};
 
+// Correlation ids this VM has constructed an awaiting promise for. A
+// resolver is only ever removed by settling it, so a terminal that finds
+// no resolver for an id listed here is a re-scan of one already consumed
+// (continueWithEvents re-scans a batch while it makes progress), not an
+// early arrival. Such terminals must NOT be buffered: nothing would ever
+// drain them, and in a VM whose heap is persisted by snapshotting every
+// step result would accumulate across the whole run. One short key per
+// id, instead of a whole result.
+globalThis.__awaitedCids = {};
+
 // Registers a resolver for an awaited primitive, first draining any
 // buffered terminal recorded for the correlationId. Entries are prepared
 // host-side: bytes are decrypted AND deserialized into VM values by the
 // host serde before buffering (the VM has no in-guest deserializer on
 // the host-serde engine), so draining only forwards the stored value.
 globalThis.__registerResolver = function(correlationId, resolve, reject) {
+  globalThis.__awaitedCids[correlationId] = 1;
   var buffered = globalThis.__terminalBuffer[correlationId];
   if (buffered) {
     delete globalThis.__terminalBuffer[correlationId];
@@ -1412,14 +1423,6 @@ function getBaselineEntry(
 }
 
 /**
- * Restore a VM from persisted snapshot bytes. The restored WASM heap
- * resumes at the exact suspension point it was captured at — the serde
- * bundle, workflow bundle, and all workflow state are already inside it,
- * so no bootstrap or bundle evaluation happens here. Host callbacks are
- * name-registered by the caller (they live host-side and do not survive
- * serialization).
- */
-/**
  * Continue a monotonic ULID sequence from a persisted last value:
  * re-implements the `ulid` package's same-timestamp step (Crockford
  * base32 +1 on the 16-char random part, carrying left; the 10-char time
@@ -1452,6 +1455,14 @@ export function incrementUlidRandom(prev: string): string {
   throw new Error(`Cannot increment ULID random part beyond maximum: ${prev}`);
 }
 
+/**
+ * Restore a VM from persisted snapshot bytes. The restored WASM heap
+ * resumes at the exact suspension point it was captured at — the serde
+ * bundle, workflow bundle, and all workflow state are already inside it,
+ * so no bootstrap or bundle evaluation happens here. Host callbacks are
+ * name-registered by the caller (they live host-side and do not survive
+ * serialization).
+ */
 async function restoreWorkflowVM(
   data: Uint8Array,
   getNowMs: () => number,
@@ -1763,6 +1774,14 @@ export async function startQuickJSWorkflow(
       for (const callback of hostCallbacks) {
         vm.registerHostCallback(callback.name, callback.fn(vm));
       }
+
+      // `process.env` is a per-invocation copy of the host env (see the
+      // fresh-boot install), so replace the one the snapshot carried: a
+      // restored run must see the env of THIS invocation, the same as a
+      // full replay or the node:vm engine, not the one from whichever
+      // invocation started the snapshot chain (rotated secrets, changed
+      // config).
+      serde.installProcessEnv(process.env);
 
       // Process the delta events and drain jobs.
       {
@@ -2356,7 +2375,7 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-        } else {
+        } else if (!isConsumedTerminal(vm, cidJs)) {
           // No resolver yet, so buffer the prepared outcome so the promise
           // settles the moment the VM constructs it (see __terminalBuffer
           // in the bootstrap). Without this, the live-continuation path
@@ -2444,7 +2463,7 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-        } else {
+        } else if (!isConsumedTerminal(vm, cidJs)) {
           // No resolver yet, so buffer the prepared rejection (see the
           // step_completed branch above for the rationale).
           const errorData = eventData?.error;
@@ -2496,7 +2515,7 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-        } else {
+        } else if (!isConsumedTerminal(vm, cidJs)) {
           // No resolver yet, so buffer (see step_completed above).
           vm.evalCode(
             `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
@@ -2515,7 +2534,7 @@ async function processEvents(
         const hasResolver = vm.dump(
           vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
-        if (!hasResolver) {
+        if (!hasResolver && !isConsumedTerminal(vm, cidJs)) {
           // No resolver yet, so buffer (see step_completed above).
           vm.evalCode(
             `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
@@ -2950,6 +2969,20 @@ async function processEvents(
     }
   }
   return resolved;
+}
+
+/**
+ * Whether the VM already consumed the terminal for this correlation id: it
+ * constructed an awaiting promise for it (see `__awaitedCids` in the
+ * bootstrap) and that resolver has since settled. Terminals for such ids are
+ * dropped instead of buffered, since nothing will ever drain them.
+ */
+function isConsumedTerminal(vm: QuickJS, cidJs: string): boolean {
+  return vm.dump(
+    vm.evalCode(
+      `!!(globalThis.__awaitedCids && globalThis.__awaitedCids[${cidJs}])`
+    )
+  ) as boolean;
 }
 
 function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {

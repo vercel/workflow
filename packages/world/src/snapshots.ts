@@ -92,9 +92,14 @@ export const SnapshotMetadataSchema = z.object({
  * snapshots (in-VM serde era) cannot be restored by this engine and are
  * treated as a miss.
  *
+ * v3: the stored bytes frame the heap with the restore-relevant metadata,
+ * sealed inside the encryption so it can be checked against the envelope
+ * on load, and the heap stops retaining consumed step results. v2
+ * snapshots are treated as a miss.
+ *
  * @experimental See `Storage.experimental_snapshots`.
  */
-export const SNAPSHOT_FORMAT_VERSION = 2;
+export const SNAPSHOT_FORMAT_VERSION = 3;
 
 /** @experimental See `Storage.experimental_snapshots`. */
 export type SnapshotMetadata = z.infer<typeof SnapshotMetadataSchema>;

@@ -3,8 +3,10 @@ import type { WorkflowRun } from '@workflow/world';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   getSnapshotThreshold,
+  getSnapshotThresholdForHandler,
   getSnapshotThresholdFromEnv,
   getWorkflowVmFromEnv,
+  isUnencryptedSnapshottingAllowed,
   useQuickJSVm,
   WORKFLOW_VMS,
 } from './vm-mode.js';
@@ -135,7 +137,16 @@ describe('getSnapshotThresholdFromEnv', () => {
   });
 
   it('throws on invalid values', () => {
-    for (const bad of ['-1', '1.5', 'abc', 'Infinity']) {
+    for (const bad of [
+      '-1',
+      '1.5',
+      'abc',
+      'Infinity',
+      '1e3',
+      '0x10',
+      ' 5 ',
+      '99999999999999999999',
+    ]) {
       expect(() =>
         getSnapshotThresholdFromEnv({ WORKFLOW_SNAPSHOT_THRESHOLD: bad })
       ).toThrow(WorkflowRuntimeError);
@@ -177,5 +188,39 @@ describe('getSnapshotThreshold', () => {
     expect(() =>
       getSnapshotThreshold(makeRun({ snapshotThreshold: 'x' }))
     ).toThrow(WorkflowRuntimeError);
+  });
+});
+
+describe('getSnapshotThresholdForHandler', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_SNAPSHOT_THRESHOLD;
+  });
+
+  it('disables snapshotting with a warning instead of throwing', () => {
+    process.env.WORKFLOW_SNAPSHOT_THRESHOLD = 'abc';
+    const warnings: string[] = [];
+    const run = { runId: 'wrun_test' } as unknown as WorkflowRun;
+    expect(getSnapshotThresholdForHandler(run, (m) => warnings.push(m))).toBe(
+      0
+    );
+    expect(warnings).toEqual([
+      expect.stringContaining('Invalid WORKFLOW_SNAPSHOT_THRESHOLD'),
+    ]);
+  });
+});
+
+describe('isUnencryptedSnapshottingAllowed', () => {
+  it('is off unless explicitly enabled', () => {
+    expect(isUnencryptedSnapshottingAllowed({})).toBe(false);
+    expect(
+      isUnencryptedSnapshottingAllowed({
+        WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: '0',
+      })
+    ).toBe(false);
+    expect(
+      isUnencryptedSnapshottingAllowed({
+        WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: '1',
+      })
+    ).toBe(true);
   });
 });
