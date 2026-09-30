@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import { getWritable } from '../step/writable-stream.js';
 import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
@@ -329,6 +330,87 @@ describe('executeStep — stream durability barrier', () => {
     expect(await eventsFor(world, runId, stepId, 'step_failed')).toHaveLength(
       0
     );
+  });
+
+  it.each([
+    false,
+    true,
+  ])('reports remaining ops after a slow released writable close drains (background op: %s)', async (hasBackgroundOp) => {
+    const world = makeWorld();
+    setWorld(world);
+    const backgroundOp = Promise.withResolvers<void>();
+    const closeGate = Promise.withResolvers<void>();
+    const closeStarted = Promise.withResolvers<void>();
+    const settlementStarted = Promise.withResolvers<void>();
+    const close = world.streams.close.bind(world.streams);
+    world.streams.close = vi.fn(async (...args) => {
+      closeStarted.resolve();
+      await closeGate.promise;
+      return close(...args);
+    });
+    const createEvent = vi.spyOn(world.events, 'create');
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(stepName, async () => {
+      const writable = getWritable<string>();
+      const writer = writable.getWriter();
+      await writer.write('snapshot');
+      writer.releaseLock();
+      await writable.close();
+
+      // The public transform is closed, but its downstream pipe can still be
+      // waiting for the World close. Observe the executor entering that wait.
+      const ctx = contextStorage.getStore()!;
+      if (hasBackgroundOp) ctx.ops.push(backgroundOp.promise);
+      const state = ctx.streamStates![0];
+      const settle = state.settleReleasedWrites!;
+      vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
+        settlementStarted.resolve();
+        return settle();
+      });
+      return 'ok';
+    });
+
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    try {
+      await Promise.all([closeStarted.promise, settlementStarted.promise]);
+      // Expire the inline-loop heuristic while the durability barrier is held.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(
+        createEvent.mock.calls.some(
+          ([, event]) => event.eventType === 'step_completed'
+        )
+      ).toBe(false);
+      closeGate.resolve();
+      await expect(execution).resolves.toMatchObject({
+        type: 'completed',
+        hasPendingOps: hasBackgroundOp,
+      });
+      expect(
+        await eventsFor(world, runId, stepId, 'step_completed')
+      ).toHaveLength(1);
+    } finally {
+      closeGate.resolve();
+      backgroundOp.resolve();
+      await execution;
+      vi.useRealTimers();
+    }
   });
 
   it('does not complete successfully when the drain times out', async () => {

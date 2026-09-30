@@ -12,6 +12,30 @@ Backend connection failures and interrupted event streams follow existing retry 
 
 See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
 
+## Events channel
+
+With `WORKFLOW_EVENTS_TRANSPORT=ws` (opt-in; the default is HTTP), event
+writes go over a per-run WebSocket only while that run's channel is open. The
+queue handler opens it for each delivery, so workflows need nothing extra. Code that writes a run's events
+outside a delivery (a custom driver, a long-lived process) opens and releases
+it itself; otherwise those writes go over HTTP:
+
+```ts
+import { createWorld, openEventsChannel } from '@workflow/world-vercel';
+
+const world = createWorld();
+const release = openEventsChannel(runId);
+try {
+  await world.events.create(runId, event);
+} finally {
+  release?.();
+}
+```
+
+It returns `undefined`, and writes stay on HTTP, when the transport is
+disabled or the World cannot hold a socket (a `projectConfig` World, as the
+CLI uses).
+
 ## Custom dispatcher
 
 HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:

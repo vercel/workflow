@@ -6,7 +6,10 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
 import { importParents } from './discover-entries-esbuild-plugin.js';
-import { detectWorkflowPatterns } from './transform-utils.js';
+import {
+  detectWorkflowPatterns,
+  stripCommentsFromSource,
+} from './transform-utils.js';
 
 const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
   '.ts',
@@ -251,127 +254,6 @@ function addImportParent(parent: string, child: string): void {
   children.add(normalizedChild);
 }
 
-const REGEX_PREFIX_CHARS = new Set([
-  '(',
-  '{',
-  '[',
-  '=',
-  ':',
-  ',',
-  ';',
-  '!',
-  '?',
-  '&',
-  '|',
-  '+',
-  '-',
-  '*',
-  '~',
-  '^',
-  '<',
-  '>',
-  '%',
-]);
-const REGEX_PREFIX_KEYWORDS =
-  /\b(?:return|throw|case|delete|void|typeof|instanceof|in|yield|await)$/;
-
-const canStartRegexLiteral = (output: string) => {
-  const previous = output.trimEnd();
-  if (previous.length === 0) {
-    return true;
-  }
-  const previousChar = previous[previous.length - 1];
-  return (
-    REGEX_PREFIX_CHARS.has(previousChar) || REGEX_PREFIX_KEYWORDS.test(previous)
-  );
-};
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
-function stripCommentsFromSource(source: string): string {
-  let output = '';
-  let index = 0;
-  let quote: '"' | "'" | '`' | undefined;
-  let regex = false;
-  let regexCharClass = false;
-  let escaped = false;
-
-  while (index < source.length) {
-    const char = source[index];
-    const next = source[index + 1];
-
-    if (quote || regex) {
-      output += char;
-      index++;
-
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (quote && char === quote) {
-        quote = undefined;
-      } else if (regex && char === '[') {
-        regexCharClass = true;
-      } else if (regex && char === ']') {
-        regexCharClass = false;
-      } else if (regex && char === '/' && !regexCharClass) {
-        regex = false;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char;
-      output += char;
-      index++;
-      continue;
-    }
-
-    if (
-      char === '/' &&
-      next !== '/' &&
-      next !== '*' &&
-      canStartRegexLiteral(output)
-    ) {
-      regex = true;
-      output += char;
-      index++;
-      continue;
-    }
-
-    if (char === '/' && next === '/') {
-      output += '  ';
-      index += 2;
-      while (index < source.length && source[index] !== '\n') {
-        output += ' ';
-        index++;
-      }
-      continue;
-    }
-
-    if (char === '/' && next === '*') {
-      output += '  ';
-      index += 2;
-      while (index < source.length) {
-        const blockChar = source[index];
-        const blockNext = source[index + 1];
-        if (blockChar === '*' && blockNext === '/') {
-          output += '  ';
-          index += 2;
-          break;
-        }
-        output += blockChar === '\n' ? '\n' : ' ';
-        index++;
-      }
-      continue;
-    }
-
-    output += char;
-    index++;
-  }
-
-  return output;
-}
-
 function extractImportSpecifiers(source: string): string[] {
   const sourceWithoutComments = stripCommentsFromSource(source);
   if (
@@ -411,35 +293,44 @@ function hasWorkflowDependency(dependencies: unknown): boolean {
   );
 }
 
-function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
+// Matched against source with quoted strings masked, so the symbol name is
+// blank here and is checked against the original source at the same offsets.
+const MASKED_SYMBOL_FOR_SERDE_METHOD =
+  /static\s+\[\s*Symbol\.for\s*\(\s*(['"])\s*\1\s*\)\s*\]\s*\(/g;
+const SYMBOL_FOR_SERDE_METHOD =
+  /^static\s+\[\s*Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\)\s*\]\s*\($/;
 
 function hasLikelySerdeClass(source: string): boolean {
   if (!source.includes('static') || !source.includes('[')) {
     return false;
   }
 
-  const uncommentedSource = stripComments(source);
+  // Class shapes are matched against code only, never string contents. The
+  // scanner output has the same length as the source, so offsets line up.
+  const codeOnlySource = stripCommentsFromSource(source, true, true);
   if (
-    /static\s+\[\s*(?:WORKFLOW_(?:SERIALIZE|DESERIALIZE)|Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\))\s*\]\s*\(/.test(
-      uncommentedSource
+    /static\s+\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]\s*\(/.test(
+      codeOnlySource
     )
   ) {
     return true;
   }
+  for (const match of codeOnlySource.matchAll(MASKED_SYMBOL_FOR_SERDE_METHOD)) {
+    const original = source.slice(match.index, match.index + match[0].length);
+    if (SYMBOL_FOR_SERDE_METHOD.test(original)) {
+      return true;
+    }
+  }
 
   if (
     !/from\s+['"]@workflow\/serde['"]|require\s*\(\s*['"]@workflow\/serde['"]\s*\)/.test(
-      uncommentedSource
+      stripCommentsFromSource(source)
     )
   ) {
     return false;
   }
 
-  return /static\s+\[\s*[$A-Z_a-z][$\w]*\s*\]\s*\(/.test(uncommentedSource);
+  return /static\s+\[\s*[$A-Z_a-z][$\w]*\s*\]\s*\(/.test(codeOnlySource);
 }
 
 async function loadTsconfigPathAliases(

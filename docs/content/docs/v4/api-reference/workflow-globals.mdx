@@ -32,6 +32,10 @@ These APIs are available but are **seeded or fixed** to ensure deterministic beh
 You can safely use `Math.random()`, `Date.now()`, and `crypto.randomUUID()` in workflow functions. The framework ensures these return the same values across replays.
 </Callout>
 
+<Callout type="warn">
+`Math.random()`, `crypto.randomUUID()`, and `crypto.getRandomValues()` are derived from the run's seed rather than a secret, so their values are predictable to anyone who knows that seed. Don't use them for secrets, one-time codes, or tokens that must be unguessable; generate those in a step instead. See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
 ## Web platform APIs
 
 These standard Web APIs are available in workflow functions:

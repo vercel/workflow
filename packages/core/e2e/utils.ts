@@ -161,6 +161,22 @@ export interface ConformanceConfig {
    * test cannot leave a stale exemption behind that silently covers nothing.
    */
   unsupported?: Record<string, string>;
+  /**
+   * The highest spec version the app's runtime accepts. For `workbench/python`
+   * that is `SPEC_VERSION_MAX_SUPPORTED` in vercel-py's
+   * `src/vercel-workflow/vercel/workflow/_internal/world.py`, at the commit
+   * `workbench/python/uv.lock` pins.
+   *
+   * The harness starts runs as the deployment under test, so `start()` takes
+   * them for same-deployment starts and stamps this SDK's version. A runtime
+   * that accepts less rejects every such run, and it stays `pending`. Runs are
+   * stamped with the lower of the two instead (see
+   * {@link startAtTargetSpecVersion}). Keep it in step with the SDK pin: set
+   * too high, every run stays `pending` (see the hint in
+   * {@link warmDeployment}); set too low, runs are under-stamped and tests of
+   * newer features fail or skip.
+   */
+  maxSpecVersion?: number;
 }
 
 export const CONFORMANCE_CONFIG_FILENAME = 'e2e-conformance.json';
@@ -195,7 +211,7 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  const { language, fixtures, unsupported } = (parsed ??
+  const { language, fixtures, unsupported, maxSpecVersion } = (parsed ??
     {}) as Partial<ConformanceConfig>;
   if (typeof language !== 'string' || !Array.isArray(fixtures)) {
     throw new Error(
@@ -214,7 +230,16 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  conformanceConfigCache = { language, fixtures, unsupported };
+  if (
+    maxSpecVersion !== undefined &&
+    !(Number.isInteger(maxSpecVersion) && maxSpecVersion >= 1)
+  ) {
+    throw new Error(
+      `${configPath}: "maxSpecVersion" must be a positive integer`
+    );
+  }
+
+  conformanceConfigCache = { language, fixtures, unsupported, maxSpecVersion };
   return conformanceConfigCache;
 }
 
@@ -1068,6 +1093,45 @@ export async function waitForRunPickup(
 }
 
 /**
+ * `start()` stamped with the highest spec version the app's runtime accepts
+ * when that is lower than this process's (see
+ * {@link ConformanceConfig.maxSpecVersion}). An explicit `specVersion` still
+ * wins. Use it wherever the suite would call `start()` directly.
+ */
+export async function startAtTargetSpecVersion<T>(
+  ...args: Parameters<typeof runtimeStart<T>>
+): Promise<Run<T>> {
+  const target = getConformanceConfig()?.maxSpecVersion;
+  if (target === undefined) return runtimeStart<T>(...args);
+  const [workflow, argsOrOptions, maybeOptions] = args as unknown as [
+    Parameters<typeof runtimeStart<T>>[0],
+    unknown,
+    Record<string, unknown> | undefined,
+  ];
+  const optionsFirst =
+    argsOrOptions !== undefined && !Array.isArray(argsOrOptions);
+  const options = (optionsFirst ? argsOrOptions : maybeOptions) as
+    | Record<string, unknown>
+    | undefined;
+  if (options?.specVersion !== undefined) return runtimeStart<T>(...args);
+  const world =
+    (options?.world as { specVersion?: number } | undefined) ??
+    (await getWorld());
+  const local = world.specVersion;
+  if (local === undefined || target >= local) return runtimeStart<T>(...args);
+  const stamped = { ...options, specVersion: target };
+  return (
+    optionsFirst
+      ? runtimeStart<T>(workflow, stamped as never)
+      : runtimeStart<T>(
+          workflow,
+          (argsOrOptions ?? []) as never,
+          stamped as never
+        )
+  ) as Promise<Run<T>>;
+}
+
+/**
  * `start()` + `trackRun()` with a pickup watchdog.
  *
  * A run that is still `pending` after {@link PICKUP_BUDGET_MS} was never
@@ -1082,13 +1146,13 @@ export async function waitForRunPickup(
 export async function startTracked<T>(
   ...args: Parameters<typeof runtimeStart<T>>
 ): Promise<Run<T>> {
-  const run = await runtimeStart<T>(...args);
+  const run = await startAtTargetSpecVersion<T>(...args);
   trackRun(run);
   if (await waitForRunPickup(run)) {
     return run;
   }
 
-  const replacement = await runtimeStart<T>(...args);
+  const replacement = await startAtTargetSpecVersion<T>(...args);
   trackRun(replacement);
   recordInfraEvent({
     kind: 'run-pickup-stall',
@@ -1189,6 +1253,16 @@ export async function warmDeployment(
           `${totalBudgetMs}ms (${stalledProbeRunIds.length} abandoned); ` +
           `proceeding — the per-test pickup watchdog still guards`
       );
+      const maxSpecVersion = getConformanceConfig()?.maxSpecVersion;
+      if (maxSpecVersion !== undefined) {
+        // The failure this field exists to prevent looks exactly like a
+        // stalled queue, so name it where the stall is reported.
+        console.warn(
+          `[e2e] If the app's runtime rejects every run, check "maxSpecVersion" ` +
+            `(${maxSpecVersion}) in ${CONFORMANCE_CONFIG_FILENAME} against the ` +
+            `highest spec version its SDK accepts.`
+        );
+      }
       return;
     }
   }

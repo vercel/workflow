@@ -559,12 +559,18 @@ describe('queue transport timeouts', () => {
   });
 
   it('places no deadline on queue requests by default', () => {
-    expect(DEFAULT_HEADERS_TIMEOUT_MS).toBe(0);
-    expect(DEFAULT_BODY_TIMEOUT_MS).toBe(0);
-    expect(getQueueAgentOptions()).toMatchObject({
+    const defaults = getQueueAgentOptions();
+    expect(defaults).toMatchObject({
       bodyTimeout: DEFAULT_BODY_TIMEOUT_MS,
       headersTimeout: DEFAULT_HEADERS_TIMEOUT_MS,
     });
+
+    // `0` is the documented value that disables a deadline.
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '0';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    const unbounded = getQueueAgentOptions();
+    expect(defaults.headersTimeout).toBe(unbounded.headersTimeout);
+    expect(defaults.bodyTimeout).toBe(unbounded.bodyTimeout);
   });
 
   it('honors environment overrides', () => {

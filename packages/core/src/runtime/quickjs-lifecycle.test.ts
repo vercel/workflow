@@ -13,7 +13,10 @@ import {
   maybeDecrypt,
   SerializationFormat,
 } from '../serialization.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './lifecycle-hooks.js';
 import { runWorkflowWithQuickJS } from './quickjs-entrypoint.js';
 import { startQuickJSWorkflow } from './quickjs-runtime.js';
 import { setWorld } from './world.js';
@@ -76,6 +79,52 @@ beforeEach(() => {
 });
 
 afterEach(() => setWorld(undefined));
+
+async function complete() {
+  vi.mocked(startQuickJSWorkflow).mockResolvedValueOnce({
+    result: {
+      completed: { result: await dehydrateRunError('done', runId, undefined) },
+    },
+    continueWithEvents: vi.fn(),
+    dispose: vi.fn(),
+  });
+  return run();
+}
+
+it('dispatches completion only after the terminal write lands', async () => {
+  let finishWrite!: () => void;
+  const pendingWrite = new Promise<void>((resolve) => {
+    finishWrite = resolve;
+  });
+  createEvent.mockImplementationOnce(async (_id, request) => {
+    await pendingWrite;
+    return { event: { ...request, runId, eventId: 'evnt_completed' } };
+  });
+  const execution = complete();
+  await vi.waitFor(() => expect(createEvent).toHaveBeenCalledOnce());
+  expect(createEvent.mock.calls[0][1].eventType).toBe('run_completed');
+  expect(dispatchRunCompletedHooks).not.toHaveBeenCalled();
+  finishWrite();
+  await execution;
+  expect(dispatchRunCompletedHooks).toHaveBeenCalledExactlyOnceWith(
+    runId,
+    workflowName
+  );
+});
+
+it.each([
+  new EntityConflictError('already finished'),
+  new RunExpiredError('expired'),
+  new Error('write failed'),
+])('does not dispatch when run_completed is rejected: %s', async (error) => {
+  createEvent.mockRejectedValueOnce(error);
+  if (EntityConflictError.is(error) || RunExpiredError.is(error)) {
+    await expect(complete()).resolves.toBeUndefined();
+  } else {
+    await expect(complete()).rejects.toBe(error);
+  }
+  expect(dispatchRunCompletedHooks).not.toHaveBeenCalled();
+});
 
 it.each([
   'unknown class',

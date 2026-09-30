@@ -74,6 +74,14 @@ For complete details on pricing, usage limits, and included allotments on Vercel
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
+## Per-run limits
+
+The Vercel World caps how large a single run can get. It caps the run's [event log](/docs/how-it-works/event-sourcing), and separately caps how many steps one run may create; see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current values. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
+
+Treat both caps as backstops, not budgets. Replay cost grows with the log, so a run slows down well before it fails. We recommend splitting a run into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Size for that recommendation rather than for the cap.
+
+Vercel raises the per-run event and step limits on request, so an unusually large run that genuinely cannot be split is worth raising with support rather than working around.
+
 ## Multi-region
 
 The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time. Its stored state, queue dispatch, and streams are all served from that region without cross-region round trips on the hot path. When your application is deployed in the run's region, as described below, step execution is also region-local.
@@ -238,17 +246,17 @@ Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_S
 
 This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
 
-Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append.
+Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. A throttled (429) write or close did not apply, so the writer retries it after the server's `Retry-After`, as the HTTP writer does, on the socket if it stays open (or its replacement, after a drain) and otherwise over HTTP. Past 30 seconds of cumulative wait, the write moves to HTTP, whose own 429 retry applies. A close that fails with a 5xx is retried over HTTP, since close is idempotent.
 
 Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
-Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
+Opt-in WebSocket transport for workflow run events, which ships them to the Vercel World over one socket per run instead of one HTTP request each. Default: `http`.
 
-Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables the WebSocket — any other value, including unset or empty, takes it — so a typo fails toward the default rather than silently pinning a deployment to HTTP.
+Set `WORKFLOW_EVENTS_TRANSPORT=ws` to opt in. Only that value (case-insensitive) enables the WebSocket — any other value, including unset, empty, or `http`, keeps HTTP — so a typo fails toward the default rather than enabling a transport nobody asked for.
 
-The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent — now that the WebSocket is the default, nothing asked for it — and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
+The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent, because the variable is typically set deployment-wide and a `projectConfig` World (such as the CLI) cannot act on it, and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 

@@ -4,6 +4,7 @@
     "workflow-error",
     "hook-not-found-error",
     "hook-conflict-error",
+    "hook-force-claimed-error",
     "step-not-registered-error",
     "workflow-not-registered-error",
     "workflow-run-not-found-error",

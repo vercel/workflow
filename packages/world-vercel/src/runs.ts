@@ -70,6 +70,9 @@ const WorkflowRunWireWithRefsSchema = z.compile(
     // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
     input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
     output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+    // Discarded by `filterRunData`: `resolveData: 'none'` never returns a
+    // dynamic run's code, whatever shape the backend sends it in.
+    dynamicWorkflowCode: z.any().optional(),
   })
 );
 
@@ -91,7 +94,13 @@ function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
-    const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
+    // The code is dropped before normalizing, so it is never decompressed.
+    const {
+      inputRef: _inputRef,
+      outputRef: _outputRef,
+      dynamicWorkflowCode: _dynamicWorkflowCode,
+      ...rest
+    } = run;
     const deserialized = normalizeWorkflowRunData(
       deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
     );

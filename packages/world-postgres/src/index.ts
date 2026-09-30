@@ -77,8 +77,15 @@ export function createWorld(
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
+      // upload path, so `start()` always sends the code inline.
+      dynamicWorkflowCode: true,
       hookResumeDedup: true,
       ...(config.enableInvoke ? { invoke: true } : {}),
+      // One transaction re-points the token, journals the victim's
+      // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
+      // the hook_created branch of storage.ts.
+      hookForceClaim: true,
     },
     ...storage,
     ...streamer,

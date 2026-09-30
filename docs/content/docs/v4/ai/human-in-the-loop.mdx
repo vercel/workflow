@@ -154,6 +154,10 @@ export async function POST(request: Request) {
 }
 ```
 
+<Callout type="warn">
+This route resumes whichever hook owns `toolCallId`, so anyone who learns the ID can submit a decision. In production, authenticate the request and check that the signed-in user may approve this booking before calling `resume()`. See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
 </Step>
 
 <Step>
@@ -334,7 +338,7 @@ export default function ChatPage() {
 
 ## Using webhooks directly
 
-For simpler cases where you don't need type-safe validation or programmatic resumption, you can use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) directly. This generates a unique URL that can be called to resume the workflow:
+For simpler cases where you don't need type-safe validation or programmatic resumption, you can use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) directly. This generates a unique URL that can be called to resume the workflow. Anyone with the URL can resume it, so avoid this for approvals that need to know who approved. See [Hook and webhook security](/docs/foundations/hooks#security).
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
 import { createWebhook } from "workflow";
