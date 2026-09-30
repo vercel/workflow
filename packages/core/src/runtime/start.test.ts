@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  FatalError,
   ThrottleError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -627,6 +628,110 @@ async function workflow() {
           'Queue unavailable'
         );
         expect(eventsCreate).toHaveBeenCalledOnce();
+      });
+    });
+
+    describe('refusals are fatal', () => {
+      const steps = { noop: { stepId: 'step//./test//noop' } };
+
+      function refusingWorld(overrides: Record<string, unknown> = {}) {
+        return {
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          capabilities: { dynamicWorkflowCode: true },
+          events: { create: eventsCreate },
+          queue,
+          ...overrides,
+        } as any;
+      }
+
+      it.each<[string, () => Promise<unknown>, RegExp]>([
+        [
+          'the opt-in is off',
+          () => {
+            vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+            return start(source, { experimental_dynamic: { steps } });
+          },
+          /Dynamic workflows are disabled on this deployment/,
+        ],
+        [
+          'experimental_dynamic is missing',
+          () => start(source as never, []),
+          /no `experimental_dynamic` options/,
+        ],
+        [
+          'the source is invalid',
+          () =>
+            start('async function workflow() {', {
+              experimental_dynamic: { steps },
+            }),
+          /not valid JavaScript/,
+        ],
+        [
+          'the steps are empty',
+          () => start(source, { experimental_dynamic: { steps: {} } }),
+          /at least one registered step/,
+        ],
+        [
+          'the target is another deployment',
+          () =>
+            start(source, {
+              deploymentId: 'dpl_other',
+              experimental_dynamic: { steps },
+            }),
+          /only start on the current deployment/,
+        ],
+        [
+          'the World lacks the capability',
+          () => {
+            setWorld(refusingWorld({ capabilities: undefined }));
+            return start(source, { experimental_dynamic: { steps } });
+          },
+          /capabilities\.dynamicWorkflowCode/,
+        ],
+        [
+          'the execution context is over budget',
+          () => {
+            setWorld(
+              refusingWorld({
+                validateRunExecutionContext: () => {
+                  throw new WorkflowRuntimeError('execution context too large');
+                },
+              })
+            );
+            return start(source, { experimental_dynamic: { steps } });
+          },
+          /execution context too large/,
+        ],
+      ])('when %s', async (_label, startIt, message) => {
+        setWorld(refusingWorld());
+
+        const error = await startIt().catch((err: unknown) => err);
+
+        // Same type and message as before; `fatal` is what makes a step that
+        // calls `start()` fail instead of retrying a refusal.
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
+        expect((error as Error).message).toMatch(message);
+        expect(FatalError.is(error)).toBe(true);
+        expect(eventsCreate).not.toHaveBeenCalled();
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it('marks a refusal from a World that throws a plain Error', async () => {
+        setWorld(
+          refusingWorld({
+            validateRunExecutionContext: () => {
+              throw new Error('too large');
+            },
+          })
+        );
+
+        const error = await start(source, {
+          experimental_dynamic: { steps },
+        }).catch((err: unknown) => err);
+
+        expect((error as Error).message).toBe('too large');
+        expect(FatalError.is(error)).toBe(true);
       });
     });
 

@@ -51,6 +51,8 @@ import {
   DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES,
   type DynamicStartOptions,
   type DynamicWorkflowMetadata,
+  dynamicStartRefusal,
+  markDynamicStartRefusal,
 } from './dynamic-workflow.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
@@ -484,7 +486,7 @@ export type {
  */
 function assertDynamicWorkflowsEnabled(): void {
   if (!isDynamicWorkflowsEnabled()) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Dynamic workflows are disabled on this deployment, so no run was created. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
     );
   }
@@ -576,7 +578,7 @@ export async function start<TArgs extends unknown[], TResult>(
       const dynamicOptions = (opts as Partial<DynamicStartOptions>)
         .experimental_dynamic;
       if (!dynamicOptions) {
-        throw new WorkflowRuntimeError(
+        throw dynamicStartRefusal(
           "'start' was given workflow source but no `experimental_dynamic` options. Pass `{ experimental_dynamic: { steps } }` to declare which registered steps the source may call."
         );
       }
@@ -683,7 +685,7 @@ export async function start<TArgs extends unknown[], TResult>(
           currentDeploymentId === undefined
             ? 'an unknown current deployment'
             : JSON.stringify(currentDeploymentId);
-        throw new WorkflowRuntimeError(
+        throw dynamicStartRefusal(
           `Dynamic workflows can only start on the current deployment. This start targets ${JSON.stringify(deploymentId)} from ${current}, so no run was created.`
         );
       }
@@ -713,7 +715,7 @@ export async function start<TArgs extends unknown[], TResult>(
       }`;
 
       if (dynamicWorkflow && !world.capabilities?.dynamicWorkflowCode) {
-        throw new WorkflowRuntimeError(
+        throw dynamicStartRefusal(
           'Dynamic workflows require a World that declares `capabilities.dynamicWorkflowCode`. This World does not, so no run was created.'
         );
       }
@@ -995,7 +997,11 @@ export async function start<TArgs extends unknown[], TResult>(
       // limit, so only dynamic starts are validated here; static starts keep
       // relying on the World's own write-time checks.
       if (dynamicWorkflow) {
-        world.validateRunExecutionContext?.(executionContext);
+        try {
+          world.validateRunExecutionContext?.(executionContext);
+        } catch (err) {
+          throw markDynamicStartRefusal(err);
+        }
       }
 
       // Create run via run_created event (event-sourced architecture)
