@@ -48,19 +48,26 @@ export function dynamicStartRefusal(
   message: string,
   options?: ErrorOptions
 ): WorkflowRuntimeError & { fatal: true } {
-  return markDynamicStartRefusal(new WorkflowRuntimeError(message, options));
+  return Object.assign(new WorkflowRuntimeError(message, options), {
+    fatal: true as const,
+  });
 }
 
 /**
- * Marks an error thrown by a World's `validateRunExecutionContext` as a
- * refusal (see {@link dynamicStartRefusal}); the World contract makes that
- * throw the start's refusal, whatever class the World used.
+ * The refusal for an error thrown by a World's `validateRunExecutionContext`;
+ * the World contract makes that throw the start's refusal, whatever it threw.
+ *
+ * A fresh error carrying the World's message, with the original as `cause`,
+ * rather than a `fatal` flag set on the World's own object: that object may be
+ * frozen, shared across calls, or not an `Error` at all.
  */
-export function markDynamicStartRefusal<T>(error: T): T & { fatal: true } {
-  if (error !== null && typeof error === 'object') {
-    (error as { fatal?: boolean }).fatal = true;
-  }
-  return error as T & { fatal: true };
+export function dynamicStartRefusalFrom(
+  error: unknown
+): WorkflowRuntimeError & { fatal: true } {
+  return dynamicStartRefusal(
+    error instanceof Error ? error.message : String(error),
+    { cause: error }
+  );
 }
 
 /**

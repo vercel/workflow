@@ -52,7 +52,7 @@ import {
   type DynamicStartOptions,
   type DynamicWorkflowMetadata,
   dynamicStartRefusal,
-  markDynamicStartRefusal,
+  dynamicStartRefusalFrom,
 } from './dynamic-workflow.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
@@ -681,13 +681,13 @@ export async function start<TArgs extends unknown[], TResult>(
       // deployment that validated and opted in to it: this one. Rejected
       // before the capability check, key lookup, upload, or run creation.
       if (dynamicWorkflow && crossDeployment) {
-        const current =
-          currentDeploymentId === undefined
-            ? 'an unknown current deployment'
-            : JSON.stringify(currentDeploymentId);
-        throw dynamicStartRefusal(
-          `Dynamic workflows can only start on the current deployment. This start targets ${JSON.stringify(deploymentId)} from ${current}, so no run was created.`
-        );
+        const message = `Dynamic workflows can only start on the current deployment. This start targets ${JSON.stringify(deploymentId)} from ${currentDeploymentId === undefined ? 'an unknown current deployment' : JSON.stringify(currentDeploymentId)}, so no run was created.`;
+        // Only a confirmed mismatch is a refusal. An unknown current
+        // deployment may be a lookup that fails transiently and would match
+        // on a retry, so that case stays retryable.
+        throw currentDeploymentId === undefined
+          ? new WorkflowRuntimeError(message)
+          : dynamicStartRefusal(message);
       }
 
       // Decide whether to write byte streams in the framed wire format.
@@ -1000,7 +1000,7 @@ export async function start<TArgs extends unknown[], TResult>(
         try {
           world.validateRunExecutionContext?.(executionContext);
         } catch (err) {
-          throw markDynamicStartRefusal(err);
+          throw dynamicStartRefusalFrom(err);
         }
       }
 

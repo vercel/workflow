@@ -717,11 +717,16 @@ async function workflow() {
         expect(queue).not.toHaveBeenCalled();
       });
 
-      it('marks a refusal from a World that throws a plain Error', async () => {
+      it.each([
+        ['a plain Error', () => new Error('too large')],
+        ['a frozen Error', () => Object.freeze(new Error('too large'))],
+        ['a string', () => 'too large'],
+      ])('turns a World throwing %s into a fatal refusal without mutating it', async (_label, makeThrown) => {
+        const thrown = makeThrown();
         setWorld(
           refusingWorld({
             validateRunExecutionContext: () => {
-              throw new Error('too large');
+              throw thrown;
             },
           })
         );
@@ -730,8 +735,35 @@ async function workflow() {
           experimental_dynamic: { steps },
         }).catch((err: unknown) => err);
 
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
         expect((error as Error).message).toBe('too large');
+        expect((error as Error).cause).toBe(thrown);
         expect(FatalError.is(error)).toBe(true);
+        if (typeof thrown === 'object') {
+          expect((thrown as { fatal?: unknown }).fatal).toBeUndefined();
+        }
+      });
+
+      it('keeps an unknown current deployment retryable', async () => {
+        // The lookup may fail transiently and match on a retry, so only a
+        // confirmed mismatch is a refusal.
+        setWorld(
+          refusingWorld({
+            getDeploymentId: vi
+              .fn()
+              .mockRejectedValue(new Error('lookup unavailable')),
+          })
+        );
+
+        const error = await start(source, {
+          deploymentId: 'deploy_123',
+          experimental_dynamic: { steps },
+        }).catch((err: unknown) => err);
+
+        expect((error as Error).message).toMatch(
+          /only start on the current deployment.*an unknown current deployment/
+        );
+        expect(FatalError.is(error)).toBe(false);
       });
     });
 
