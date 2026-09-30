@@ -59,7 +59,7 @@ if (typeof require !== "undefined") {
 }
 ```
 
-These checks are lexical: a `try` with only a `finally`, or a `catch` that rethrows the error, still fails at runtime if the code is reached.
+A `typeof require` check only excuses the branch it skips when `require` is undefined, so `typeof require === "undefined" ? require(x) : y` is still reported. A `try` only counts when it has a `catch`. The checks read the code's structure without running it, so a `catch` that rethrows the error is still treated as a guard, and the bundle fails at runtime if that code is reached.
 
 As a last resort — for example a `require()` that can never run — set `WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE=1` to downgrade the build failure to a warning. The bundle still fails at runtime if the code is reached.
 

@@ -23,7 +23,8 @@
  * way), and the sandbox's `ReferenceError` lands in the `catch`, so the bundle
  * still loads. Those are left alone, as are calls behind a `typeof require`
  * check (`if (typeof require !== "undefined") …`, esbuild's own ESM
- * `__require` shim), which never run in the sandbox.
+ * `__require` shim), which never run in the sandbox. Both are decided on the
+ * parsed syntax tree: a check only excuses the branches it provably skips.
  *
  * Those failures used to be silent at build time.
  * `createNodeModuleErrorPlugin()` marks Node.js/Bun builtins as external and
@@ -34,6 +35,7 @@
  */
 
 import { ERROR_SLUGS, WorkflowBuildError } from '@workflow/errors';
+import * as acorn from 'acorn';
 import * as esbuild from 'esbuild';
 import { isRuntimeBuiltinSpecifier } from './node-module-esbuild-plugin.js';
 
@@ -43,7 +45,7 @@ import { isRuntimeBuiltinSpecifier } from './node-module-esbuild-plugin.js';
  * The bundle still crashes at runtime if the offending code is reached; this
  * only exists as an escape hatch for the rare case where the detection is
  * wrong (for example a `require()` that is provably unreachable, or guarded in
- * a way the lexical `try`/`catch` and `typeof require` checks do not see).
+ * a way the `try`/`catch` and `typeof require` checks do not see).
  */
 export const ALLOW_UNSAFE_FLOW_BUNDLE_ENV = 'WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE';
 
@@ -119,63 +121,12 @@ export interface MaskResult {
   masked: string;
   /** Column-0 line comments, in source order. */
   banners: BannerComment[];
-  /**
-   * Offsets of `try { … } catch` bodies, from the `{` to the matching `}`. A
-   * `try` with only a `finally` is not included: it does not stop the error.
-   */
-  tryBlocks: SourceRange[];
-  /**
-   * Offsets of `if (typeof require !== "undefined") { … }` bodies (and the
-   * other spellings of that check), from the `{` to the matching `}`.
-   */
-  requireCheckBlocks: SourceRange[];
-}
-
-export interface SourceRange {
-  start: number;
-  end: number;
 }
 
 const IDENTIFIER_CHAR = /[A-Za-z0-9_$]/;
 
 /** Statements whose parenthesized head can be followed by a regex literal. */
 const CONTROL_KEYWORDS = new Set(['if', 'while', 'for', 'with']);
-
-/**
- * Matches a `typeof <identifier>` test that only passes when the identifier is
- * defined, in either operand order: `!== "undefined"`, `=== "function"`, and
- * the minified `< "u"`. Strings must still be intact in the text this runs on.
- */
-function typeofDefinedTest(identifier: string): RegExp {
-  const operand = `(?<![\\w$])typeof\\s+${identifier}(?![\\w$])`;
-  const definedComparisons = [
-    `!==?\\s*["']undefined["']`,
-    `===?\\s*["']function["']`,
-    `<\\s*["']u["']`,
-  ];
-  const reversedComparisons = [
-    `["']undefined["']\\s*!==?`,
-    `["']function["']\\s*===?`,
-    `["']u["']\\s*>`,
-  ];
-  return new RegExp(
-    [
-      `${operand}\\s*(?:${definedComparisons.join('|')})`,
-      `(?:${reversedComparisons.join('|')})\\s*${operand}`,
-    ].join('|'),
-    'g'
-  );
-}
-
-/**
- * Whether an `if` condition can only be true when `require` is defined: it
- * tests `typeof require` and has no `||` / `??` that could bypass the test.
- */
-function isRequireCheckCondition(condition: string): boolean {
-  return (
-    typeofDefinedTest('require').test(condition) && !/\|\||\?\?/.test(condition)
-  );
-}
 
 /**
  * Keywords after which a `/` starts a regex literal rather than a division.
@@ -364,29 +315,24 @@ function scanNonCodeToken(
   return undefined;
 }
 
-type BlockKind = 'try' | 'requireCheck' | 'other';
-
 /**
- * Tracks `(…)` and `{…}` nesting for {@link maskNonCodeRegions}, and records
- * the `try … catch` and `if (typeof require …)` bodies a `require` can sit in
- * without failing at runtime.
+ * Tracks `(…)` and `{…}` nesting for {@link maskNonCodeRegions}, so a `/`
+ * after an `if (…)` head and the `}` that closes a template substitution are
+ * both recognized.
  */
 class BlockTracker {
-  readonly tryBlocks: SourceRange[] = [];
-  readonly requireCheckBlocks: SourceRange[] = [];
   private readonly code: string;
-  // One entry per open `{`.
-  private readonly braces: { kind: BlockKind; start: number }[] = [];
+  private braceDepth = 0;
   // Offsets of each open `(`, and the most recently closed `(…)` pair.
   private readonly parens: number[] = [];
-  private lastParen: SourceRange | undefined;
+  private lastParen: { start: number; end: number } | undefined;
 
   constructor(code: string) {
     this.code = code;
   }
 
   get depth(): number {
-    return this.braces.length;
+    return this.braceDepth;
   }
 
   /** The keyword before the `(…)` that closed at `index`, e.g. `if`. */
@@ -399,11 +345,8 @@ class BlockTracker {
     );
   }
 
-  /**
-   * Handles the code character at `index`. `previousIndex` is the offset of
-   * the last significant character before it.
-   */
-  visit(ch: string, index: number, previousIndex: number): void {
+  /** Handles the code character at `index`. */
+  visit(ch: string, index: number): void {
     if (ch === '(') {
       this.parens.push(index);
     } else if (ch === ')') {
@@ -411,32 +354,10 @@ class BlockTracker {
       this.lastParen =
         open === undefined ? undefined : { start: open, end: index };
     } else if (ch === '{') {
-      this.braces.push({ kind: this.kindOfBlock(previousIndex), start: index });
+      this.braceDepth += 1;
     } else if (ch === '}') {
-      const open = this.braces.pop();
-      if (open?.kind === 'try' && isFollowedByCatch(this.code, index + 1)) {
-        this.tryBlocks.push({ start: open.start, end: index });
-      } else if (open?.kind === 'requireCheck') {
-        this.requireCheckBlocks.push({ start: open.start, end: index });
-      }
+      this.braceDepth = Math.max(0, this.braceDepth - 1);
     }
-  }
-
-  /** Classifies a `{` by the token that ends at `previousIndex`. */
-  private kindOfBlock(previousIndex: number): BlockKind {
-    if (previousIndex < 0) return 'other';
-    if (identifierEndingAt(this.code, previousIndex + 1) === 'try') {
-      return 'try';
-    }
-    const paren = this.lastParen;
-    if (
-      paren !== undefined &&
-      this.keywordBeforeParenClosingAt(previousIndex) === 'if' &&
-      isRequireCheckCondition(this.code.slice(paren.start + 1, paren.end))
-    ) {
-      return 'requireCheck';
-    }
-    return 'other';
   }
 }
 
@@ -521,7 +442,7 @@ export function maskNonCodeRegions(code: string): MaskResult {
       i += 1;
       continue;
     }
-    blocks.visit(ch, i, lastSignificantIndex);
+    blocks.visit(ch, i);
 
     if (!/\s/.test(ch)) {
       lastSignificantChar = ch;
@@ -531,21 +452,7 @@ export function maskNonCodeRegions(code: string): MaskResult {
   }
 
   parts.push(code.slice(copyFrom));
-  return {
-    masked: parts.join(''),
-    banners,
-    tryBlocks: blocks.tryBlocks,
-    requireCheckBlocks: blocks.requireCheckBlocks,
-  };
-}
-
-/** Whether the `try` block that closed just before `from` has a `catch`. */
-function isFollowedByCatch(code: string, from: number): boolean {
-  const start = skipWhitespaceForward(code, from);
-  return (
-    code.startsWith('catch', start) &&
-    !IDENTIFIER_CHAR.test(code[start + 'catch'.length] ?? '')
-  );
+  return { masked: parts.join(''), banners };
 }
 
 // ---------------------------------------------------------------------------
@@ -644,66 +551,210 @@ function moduleForIndex(
   return match;
 }
 
-function isInsideAnyRange(ranges: SourceRange[], index: number): boolean {
-  return ranges.some((range) => index > range.start && index < range.end);
-}
+// ---------------------------------------------------------------------------
+// Guards
+// ---------------------------------------------------------------------------
 
-/**
- * Whether a `typeof <identifier>` test earlier on the same line guards the
- * reference at `index`, as in `typeof require === "function" && require(x)`,
- * `typeof require !== "undefined" ? require : fallback` or a brace-less
- * `if (typeof require !== "undefined") return require.apply(this, arguments)`.
- * esbuild prints one statement per line, so the line is the statement. Nothing
- * that could evaluate the reference without the test (`||`, `??`, `:`, `,`,
- * `;`) may sit between the two; `masked` is used for that so strings cannot
- * interfere.
- */
-function isGuardedOnSameLine(
-  code: string,
-  masked: string,
-  lineStart: number,
-  index: number,
-  identifier: string
-): boolean {
-  const prefix = code.slice(lineStart, index);
-  for (const test of prefix.matchAll(typeofDefinedTest(identifier))) {
-    let between = masked
-      .slice(lineStart + test.index + test[0].length, index)
-      .trimStart();
-    if (between.startsWith('?')) between = between.slice(1);
-    if (!/[|?:;,]/.test(between)) return true;
+/** String comparison operators a `typeof` test can use. */
+function compareStrings(
+  operator: acorn.BinaryOperator,
+  left: string,
+  right: string
+): boolean | undefined {
+  switch (operator) {
+    case '==':
+    case '===':
+      return left === right;
+    case '!=':
+    case '!==':
+      return left !== right;
+    case '<':
+      return left < right;
+    case '<=':
+      return left <= right;
+    case '>':
+      return left > right;
+    case '>=':
+      return left >= right;
+    default:
+      return undefined;
   }
-  return false;
-}
-
-interface GuardContext {
-  code: string;
-  masked: string;
-  lineStarts: number[];
-  tryBlocks: SourceRange[];
-  requireCheckBlocks: SourceRange[];
 }
 
 /**
- * Whether evaluating the `identifier` reference at `index` cannot throw in the
- * sandbox: a `try`/`catch` catches the `ReferenceError`, or a `typeof` check
- * skips the code because `require` is not defined there.
+ * The string value of `node` in the sandbox, where `identifier` is never
+ * declared and `typeof identifier` is therefore always `"undefined"`.
  */
-function isGuardedReference(
-  context: GuardContext,
-  index: number,
+function sandboxStringValue(
+  node: acorn.Node,
   identifier: string
-): boolean {
-  if (isInsideAnyRange(context.tryBlocks, index)) return true;
-  if (isInsideAnyRange(context.requireCheckBlocks, index)) return true;
-  const { line } = locationOf(context.lineStarts, index);
-  return isGuardedOnSameLine(
-    context.code,
-    context.masked,
-    context.lineStarts[line - 1],
-    index,
-    identifier
+): string | undefined {
+  if (node.type === 'Literal') {
+    const { value } = node as acorn.Literal;
+    return typeof value === 'string' ? value : undefined;
+  }
+  if (node.type === 'UnaryExpression') {
+    const unary = node as acorn.UnaryExpression;
+    if (
+      unary.operator === 'typeof' &&
+      unary.argument.type === 'Identifier' &&
+      unary.argument.name === identifier
+    ) {
+      return 'undefined';
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The truthiness `node` has in the sandbox (see {@link sandboxStringValue}),
+ * or `undefined` when it does not follow from `identifier` being undeclared.
+ */
+function sandboxTruthiness(
+  node: acorn.Node,
+  identifier: string
+): boolean | undefined {
+  switch (node.type) {
+    case 'Literal': {
+      const literal = node as acorn.Literal;
+      return 'regex' in literal ? true : Boolean(literal.value);
+    }
+    case 'UnaryExpression': {
+      const unary = node as acorn.UnaryExpression;
+      if (unary.operator === 'void') return false;
+      if (unary.operator !== '!') return undefined;
+      const argument = sandboxTruthiness(unary.argument, identifier);
+      return argument === undefined ? undefined : !argument;
+    }
+    case 'BinaryExpression': {
+      const binary = node as acorn.BinaryExpression;
+      const left = sandboxStringValue(binary.left, identifier);
+      const right = sandboxStringValue(binary.right, identifier);
+      if (left === undefined || right === undefined) return undefined;
+      return compareStrings(binary.operator, left, right);
+    }
+    case 'LogicalExpression':
+      return logicalTruthiness(node as acorn.LogicalExpression, identifier);
+    case 'SequenceExpression': {
+      const { expressions } = node as acorn.SequenceExpression;
+      return sandboxTruthiness(expressions[expressions.length - 1], identifier);
+    }
+    default:
+      return undefined;
+  }
+}
+
+function logicalTruthiness(
+  node: acorn.LogicalExpression,
+  identifier: string
+): boolean | undefined {
+  // `??` tests for nullishness, which a truthiness says nothing about.
+  if (node.operator === '??') return undefined;
+  const left = sandboxTruthiness(node.left, identifier);
+  const right = sandboxTruthiness(node.right, identifier);
+  // `&&` is false as soon as one side is, `||` true as soon as one side is.
+  const decisive = node.operator === '||';
+  if (left === decisive || right === decisive) return decisive;
+  return left === !decisive ? right : undefined;
+}
+
+/**
+ * Whether the `key` child of `node` cannot throw a `ReferenceError` for
+ * `identifier` in the sandbox: it is the body of a `try` with a `catch`, or a
+ * branch its `if`, `?:`, `&&` or `||` provably skips there.
+ */
+function guardsChild(node: acorn.Node, key: string, identifier: string) {
+  switch (node.type) {
+    case 'TryStatement':
+      // Without a `catch`, the error still escapes a `try … finally`.
+      return key === 'block' && (node as acorn.TryStatement).handler != null;
+    case 'IfStatement':
+    case 'ConditionalExpression': {
+      if (key !== 'consequent' && key !== 'alternate') return false;
+      const { test } = node as acorn.IfStatement | acorn.ConditionalExpression;
+      // The consequent is skipped when the test is false, the alternate when
+      // it is true.
+      return sandboxTruthiness(test, identifier) === (key === 'alternate');
+    }
+    case 'LogicalExpression': {
+      if (key !== 'right') return false;
+      const { operator, left } = node as acorn.LogicalExpression;
+      const truthiness = sandboxTruthiness(left, identifier);
+      if (operator === '&&') return truthiness === false;
+      if (operator === '||') return truthiness === true;
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+function isNode(value: unknown): value is acorn.Node {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === 'string'
   );
+}
+
+function parseScript(code: string): acorn.Program | undefined {
+  try {
+    return acorn.parse(code, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+      allowHashBang: true,
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Offsets of the `identifier` references in `code` that cannot throw in the
+ * sandbox (see {@link guardsChild}). The rule is lexical: a function defined
+ * inside a guarded region counts as guarded wherever it is later called.
+ *
+ * Returns `undefined` when `code` does not parse, so the caller treats every
+ * reference as unguarded.
+ */
+function findGuardedReferences(
+  code: string,
+  identifier: string
+): Set<number> | undefined {
+  const program = parseScript(code);
+  if (program === undefined) return undefined;
+
+  const guarded = new Set<number>();
+  // Iterative, because bundles nest deeply (long `a + b + …` chains).
+  const stack: [acorn.Node, boolean][] = [[program, false]];
+  for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
+    const [node, isGuarded] = entry;
+    if (
+      isGuarded &&
+      node.type === 'Identifier' &&
+      (node as acorn.Identifier).name === identifier
+    ) {
+      guarded.add(node.start);
+    }
+    pushChildren(stack, node, isGuarded, identifier);
+  }
+  return guarded;
+}
+
+function pushChildren(
+  stack: [acorn.Node, boolean][],
+  node: acorn.Node,
+  isGuarded: boolean,
+  identifier: string
+): void {
+  for (const [key, value] of Object.entries(node)) {
+    const childGuarded = isGuarded || guardsChild(node, key, identifier);
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (isNode(child)) stack.push([child, childGuarded]);
+    }
+  }
 }
 
 /**
@@ -762,17 +813,16 @@ export function findRequireSites(
   REQUIRE_TOKEN.lastIndex = 0;
   if (!REQUIRE_TOKEN.test(bundleText)) return [];
 
-  const { masked, banners, tryBlocks, requireCheckBlocks } =
-    maskNonCodeRegions(bundleText);
+  const { masked, banners } = maskNonCodeRegions(bundleText);
   const lineStarts = computeLineStarts(bundleText);
-  const guardContext: GuardContext = {
-    code: bundleText,
-    masked,
-    lineStarts,
-    tryBlocks,
-    requireCheckBlocks,
-  };
   const sites: RequireSite[] = [];
+  // Parsing costs more than the scan, so only parse once a reference turns up.
+  let guardedReferences: Set<number> | undefined;
+  const isGuarded = (index: number): boolean => {
+    guardedReferences ??=
+      findGuardedReferences(bundleText, 'require') ?? new Set();
+    return guardedReferences.has(index);
+  };
 
   REQUIRE_TOKEN.lastIndex = 0;
   let match = REQUIRE_TOKEN.exec(masked);
@@ -802,7 +852,7 @@ export function findRequireSites(
         // wrapped this way. The sandbox's `ReferenceError` lands in the
         // `catch`, so the bundle still loads. A `typeof require` check (UMD
         // wrappers, esbuild's ESM `__require` shim) skips the call instead.
-        guarded: isGuardedReference(guardContext, index, 'require'),
+        guarded: isGuarded(index),
       });
     }
 
@@ -878,14 +928,9 @@ async function probeFreeRequireReferences(
     `(?<![A-Za-z0-9_$])${FREE_REQUIRE_SENTINEL}(?![A-Za-z0-9_$])`,
     'g'
   );
-  const { masked, tryBlocks, requireCheckBlocks } = maskNonCodeRegions(code);
-  const guardContext: GuardContext = {
-    code,
-    masked,
-    lineStarts: computeLineStarts(code),
-    tryBlocks,
-    requireCheckBlocks,
-  };
+  const { masked } = maskNonCodeRegions(code);
+  const guardedReferences =
+    findGuardedReferences(code, FREE_REQUIRE_SENTINEL) ?? new Set<number>();
   let match = sentinel.exec(masked);
   while (match !== null) {
     const beforeEnd = skipWhitespaceBackward(masked, match.index);
@@ -893,10 +938,7 @@ async function probeFreeRequireReferences(
     // Mirror the scan's exclusions so a `typeof` probe or a guarded optional
     // require cannot confirm an unrelated candidate. `define` rewrote the
     // `typeof require` checks too, so they now test the sentinel.
-    if (
-      previousWord !== 'typeof' &&
-      !isGuardedReference(guardContext, match.index, FREE_REQUIRE_SENTINEL)
-    ) {
+    if (previousWord !== 'typeof' && !guardedReferences.has(match.index)) {
       const afterStart = skipWhitespaceForward(
         masked,
         match.index + FREE_REQUIRE_SENTINEL.length

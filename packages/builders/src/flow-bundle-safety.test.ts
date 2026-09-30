@@ -117,9 +117,9 @@ describe('findDynamicRequireCandidates', () => {
     expect(findDynamicRequireCandidates(code)).toHaveLength(1);
   });
 
-  it('keeps try ranges in sync across a regex after an if head', () => {
-    // An unmasked `/{/` would open a phantom block and stretch the try range
-    // over the unguarded `require` below it.
+  it('flags a require after a try block that holds a regex after an if head', () => {
+    // esbuild prints `if (s)\n  /{/.test(s);`, so the lexer must not read the
+    // `/{/` as a division and lose track of the code that follows.
     const code = [
       'function load(s) {',
       '  try {',
@@ -173,6 +173,44 @@ describe('findDynamicRequireCandidates', () => {
     expect(
       findDynamicRequireCandidates(code).map((site) => site.specifier)
     ).toEqual(['a', 'b', 'c', 'd', 'f']);
+  });
+
+  it('follows the polarity of a typeof require check', () => {
+    // In the sandbox `typeof require` is always "undefined": a check only
+    // excuses the branch it skips there.
+    const code = [
+      'if (!(typeof require !== "undefined")) { a = require("a"); }',
+      'if (typeof require === "undefined") { b = require("b"); } else { require("ok1"); }',
+      'var c = typeof require === "undefined" ? require("c") : require("ok2");',
+      'var d = typeof require === "undefined" || require("ok3");',
+      'var e = !(typeof require === "undefined") && require("ok4");',
+      'var f = typeof require !== "undefined" && (cached || require("ok5"));',
+    ].join('\n');
+    expect(
+      findDynamicRequireCandidates(code).map((site) => site.specifier)
+    ).toEqual(['a', 'b', 'c']);
+  });
+
+  it('only excuses operators that short-circuit', () => {
+    const code = [
+      'var a = (typeof require !== "undefined") & require("a");',
+      'var b = typeof require !== "undefined" ?? require("b");',
+      'var c = typeof require !== "undefined" | require("c");',
+    ].join('\n');
+    expect(
+      findDynamicRequireCandidates(code).map((site) => site.specifier)
+    ).toEqual(['a', 'b', 'c']);
+  });
+
+  it('does not take a guard from typeof checks inside strings or regexes', () => {
+    const code = [
+      'if (/typeof require !== "undefined"/.test(s)) { a = require("a"); }',
+      'if (s === \'typeof require !== "undefined"\') { b = require("b"); }',
+      'var c = "typeof require !== \\"undefined\\"" && require("c");',
+    ].join('\n');
+    expect(
+      findDynamicRequireCandidates(code).map((site) => site.specifier)
+    ).toEqual(['a', 'b', 'c']);
   });
 
   it('flags require used as a ternary operand', () => {
