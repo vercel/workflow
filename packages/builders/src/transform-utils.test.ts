@@ -537,6 +537,78 @@ export async function run() {
       expect(result.hasUseWorkflow).toBe(true);
       expect(result.hasDirective).toBe(true);
     });
+
+    it('detects a directive in a .tsx file after a closing tag and a template with a slash', () => {
+      const source = `export default function Page({ id }: { id: string }) {
+  return (
+    <div>
+      <h1>Order</h1>
+      <a href={\`/orders/\${id}\`}>View</a>
+    </div>
+  );
+}
+
+export async function processOrder(id: string) {
+  'use workflow';
+  return id;
+}
+`;
+      expect(stripCommentsFromSource(source, true)).toContain(
+        "'use workflow';"
+      );
+      expect(detectWorkflowPatterns(source).hasUseWorkflow).toBe(true);
+    });
+
+    it('does not detect a directive in a code sample template after a closing tag', () => {
+      const source = `export function Sample() {
+  return <p>Run it anywhere</p>;
+}
+
+const code = \`export async function welcome(userId: string) {
+  "use workflow";
+  await fetch('/api/welcome');
+}\`;
+`;
+      expect(stripCommentsFromSource(source, true)).not.toContain(
+        '"use workflow"'
+      );
+      expect(detectWorkflowPatterns(source).hasUseWorkflow).toBe(false);
+    });
+
+    it('detects a directive after an apostrophe in JSX text', () => {
+      const source = `export function Hint() {
+  return <p>Don't panic</p>;
+}
+const msg = \`it's fine\`;
+export async function run() {
+  'use step';
+}
+`;
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+
+    it('detects a directive after a division that follows a long block comment', () => {
+      const source = `const pct = done /* number of completed items */ / total;
+const url = \`https://example.com\`;
+export async function run() {
+  'use step';
+}
+`;
+      expect(stripCommentsFromSource(source, true)).toContain("'use step';");
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+
+    it('detects a directive after a division that follows a long run of whitespace', () => {
+      const source = `const a = b
+                    / c;
+const url = \`https://example.com\`;
+export async function run() {
+  'use step';
+}
+`;
+      expect(stripCommentsFromSource(source, true)).toContain("'use step';");
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
   });
 
   describe('shouldTransformFile', () => {
@@ -616,6 +688,43 @@ const n = 1; // c
 const n = 1;     
 `
       );
+    });
+
+    it('reads a slash after an identifier ending in a keyword as a division', () => {
+      const source = `const half = plugin              / 2; const s = \`/\`;
+`;
+      expect(stripCommentsFromSource(source, true)).toBe(
+        `const half = plugin              / 2; const s = \` \`;
+`
+      );
+    });
+
+    it('reads a slash after a keyword and a long comment as a regex', () => {
+      const source = `return /* a long comment here */ /\`/.test(s);
+`;
+      expect(stripCommentsFromSource(source, true)).toBe(
+        `return                           /\`/.test(s);
+`
+      );
+    });
+
+    it('reads a regex right after ) as a division (known limitation)', () => {
+      const source = `if (x) /\`/.test(s);
+const y = 1;
+`;
+      // The backtick in the regex opens a template that runs to the end.
+      const output = stripCommentsFromSource(source, true);
+      expect(output.startsWith('if (x) /`')).toBe(true);
+      expect(output).not.toContain('const y = 1;');
+    });
+
+    it('keeps the output the same length as the source', () => {
+      const source = `const a = 'x' // c\r\n/* b\r\n */ const t = \`a \${\`b \${c}\`} /* d */\`;\r\nconst r = /[/]\`/; const u = \`unterminated /* `;
+      for (const mask of [false, true]) {
+        const output = stripCommentsFromSource(source, mask);
+        expect(output.length).toBe(source.length);
+        expect(output.split('\n').length).toBe(source.split('\n').length);
+      }
     });
 
     it('blanks template contents but keeps delimiters when masking', () => {

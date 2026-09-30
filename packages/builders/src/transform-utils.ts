@@ -22,6 +22,8 @@ export const workflowSerdeSymbolPattern =
 export const workflowSerdeComputedPropertyPattern =
   /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
 
+const templateLiteralPattern = /`(?:\\[\s\S]|[^`\\])*`/g;
+const commentPattern = /\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g;
 const directiveLinePattern = /^\s*(['"])(use workflow|use step)\1;?\s*$/;
 const stringDirectiveLinePattern = /^\s*(['"])[^'"]+\1;?\s*$/;
 
@@ -30,6 +32,8 @@ const stringDirectiveLinePattern = /^\s*(['"])[^'"]+\1;?\s*$/;
 export const generatedWorkflowPathPattern =
   /[/\\]\.well-known[/\\]workflow[/\\]/;
 
+// `<` is left out on purpose. `</` closes every JSX element, while a regex
+// right after `<` almost never appears in real code.
 const REGEX_PREFIX_CHARS = new Set([
   '(',
   '{',
@@ -47,25 +51,38 @@ const REGEX_PREFIX_CHARS = new Set([
   '*',
   '~',
   '^',
-  '<',
   '>',
   '%',
 ]);
 const REGEX_PREFIX_KEYWORDS =
   /\b(?:return|throw|case|delete|void|typeof|instanceof|in|yield|await)$/;
 
-// Only the last few emitted characters matter for the regex check, so keep a
-// short window instead of scanning the whole output on every slash.
+// The keyword check looks at this many characters, ending with the last one
+// that is not whitespace or a comment. The longest keyword is 10 characters,
+// so the character before it is always inside the window for the `\b` check.
 const REGEX_LOOKBACK_LENGTH = 16;
 
-const canStartRegexLiteral = (recentOutput: string) => {
-  const previous = recentOutput.trimEnd();
-  if (previous.length === 0) {
+const isWhitespace = (char: string) =>
+  char <= ' ' || (char > '~' && /\s/.test(char));
+
+/**
+ * `significantEnd` is the index just past the last character of code that is
+ * not whitespace or a comment. The output always has the same length as the
+ * source, so this reads the source: indexing the output string while it is
+ * being built would copy it on every slash.
+ */
+const canStartRegexLiteral = (source: string, significantEnd: number) => {
+  if (significantEnd === 0) {
     return true;
   }
-  const previousChar = previous[previous.length - 1];
   return (
-    REGEX_PREFIX_CHARS.has(previousChar) || REGEX_PREFIX_KEYWORDS.test(previous)
+    REGEX_PREFIX_CHARS.has(source[significantEnd - 1]) ||
+    REGEX_PREFIX_KEYWORDS.test(
+      source.slice(
+        Math.max(0, significantEnd - REGEX_LOOKBACK_LENGTH),
+        significantEnd
+      )
+    )
   );
 };
 
@@ -76,12 +93,13 @@ const canStartRegexLiteral = (recentOutput: string) => {
  *
  * With `maskTemplateLiterals`, the contents of template literals are replaced
  * with spaces as well, including any nested templates inside `${...}`. The
- * backtick and `${` `}` delimiters stay so the regex heuristic still sees what
- * came before a `/`. Directive detection uses this so a directive quoted
- * inside a template literal is not mistaken for a real one.
+ * backtick and `${` `}` delimiters stay, and code inside `${...}` is kept.
+ * Directive detection uses this so a directive quoted inside a template
+ * literal is not mistaken for a real one.
  *
  * Whether a `/` starts a regex is decided from the previous character, which
- * is a heuristic. A regex right after `)` is read as a division.
+ * is a heuristic. The output always has the same length as the source. Known gaps: a regex right after `)` is read as a division,
+ * and JSX text is scanned as code, so an apostrophe in it opens a string.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
 export function stripCommentsFromSource(
@@ -89,7 +107,7 @@ export function stripCommentsFromSource(
   maskTemplateLiterals = false
 ): string {
   let output = '';
-  let recentOutput = '';
+  let significantEnd = 0;
   let index = 0;
   let quote: '"' | "'" | '`' | undefined;
   let regex = false;
@@ -100,14 +118,6 @@ export function stripCommentsFromSource(
   let braceDepth = 0;
   const templateBraceDepths: number[] = [];
 
-  const templateChar = (char: string) =>
-    maskTemplateLiterals && char !== '\n' ? ' ' : char;
-
-  const emit = (text: string) => {
-    output += text;
-    recentOutput = (recentOutput + text).slice(-REGEX_LOOKBACK_LENGTH);
-  };
-
   while (index < source.length) {
     const char = source[index];
     const next = source[index + 1];
@@ -117,28 +127,30 @@ export function stripCommentsFromSource(
 
       if (escaped) {
         escaped = false;
-        emit(templateChar(char));
       } else if (char === '\\') {
         escaped = true;
-        emit(templateChar(char));
       } else if (char === '`') {
         quote = undefined;
-        emit(char);
+        output += char;
+        significantEnd = index;
+        continue;
       } else if (char === '$' && next === '{') {
         index++;
-        emit('${');
+        output += '${';
+        significantEnd = index;
         templateBraceDepths.push(braceDepth);
         braceDepth++;
         quote = undefined;
-      } else {
-        emit(templateChar(char));
+        continue;
       }
+      output += maskTemplateLiterals && char !== '\n' ? ' ' : char;
       continue;
     }
 
     if (quote || regex) {
-      emit(char);
+      output += char;
       index++;
+      significantEnd = index;
 
       if (escaped) {
         escaped = false;
@@ -158,19 +170,9 @@ export function stripCommentsFromSource(
 
     if (char === '"' || char === "'" || char === '`') {
       quote = char;
-      emit(char);
-      index++;
-      continue;
-    }
-
-    if (char === '{') {
+    } else if (char === '{') {
       braceDepth++;
-      emit(char);
-      index++;
-      continue;
-    }
-
-    if (char === '}') {
+    } else if (char === '}') {
       braceDepth--;
       if (
         templateBraceDepths.length > 0 &&
@@ -179,52 +181,40 @@ export function stripCommentsFromSource(
         templateBraceDepths.pop();
         quote = '`';
       }
-      emit(char);
-      index++;
-      continue;
-    }
-
-    if (
-      char === '/' &&
-      next !== '/' &&
-      next !== '*' &&
-      canStartRegexLiteral(recentOutput)
-    ) {
-      regex = true;
-      emit(char);
-      index++;
-      continue;
-    }
-
-    if (char === '/' && next === '/') {
-      emit('  ');
+    } else if (char === '/' && next === '/') {
+      output += '  ';
       index += 2;
       while (index < source.length && source[index] !== '\n') {
-        emit(' ');
+        output += ' ';
         index++;
       }
       continue;
-    }
-
-    if (char === '/' && next === '*') {
-      emit('  ');
+    } else if (char === '/' && next === '*') {
+      output += '  ';
       index += 2;
       while (index < source.length) {
         const blockChar = source[index];
         const blockNext = source[index + 1];
         if (blockChar === '*' && blockNext === '/') {
-          emit('  ');
+          output += '  ';
           index += 2;
           break;
         }
-        emit(blockChar === '\n' ? '\n' : ' ');
+        output += blockChar === '\n' ? '\n' : ' ';
         index++;
       }
       continue;
+    } else if (char === '/' && canStartRegexLiteral(source, significantEnd)) {
+      regex = true;
+    } else if (isWhitespace(char)) {
+      output += char;
+      index++;
+      continue;
     }
 
-    emit(char);
+    output += char;
     index++;
+    significantEnd = index;
   }
 
   return output;
@@ -259,6 +249,35 @@ function hasDirective(source: string, directive: 'use workflow' | 'use step') {
   return false;
 }
 
+const blankMatch = (match: string) => match.replace(/[^\r\n]/g, ' ');
+
+/**
+ * Returns a check for directives outside comments and template literals. Two
+ * maskings are tried. The scanner handles backticks in comments, strings, and
+ * regex literals, which the older regex masking pairs with a later template
+ * literal, hiding a real directive. The regex masking does not share the
+ * scanner's known gaps (see `stripCommentsFromSource`). A directive found by
+ * either counts: a missed directive drops the file silently, while an extra
+ * match only costs a transform that finds nothing.
+ */
+function createDirectiveCheck(source: string) {
+  let regexMasked: string | undefined;
+  let scanned: string | undefined;
+  return (directive: 'use workflow' | 'use step') => {
+    if (!source.includes('`') && !source.includes('/')) {
+      return hasDirective(source, directive);
+    }
+    regexMasked ??= source
+      .replace(templateLiteralPattern, blankMatch)
+      .replace(commentPattern, blankMatch);
+    if (hasDirective(regexMasked, directive)) {
+      return true;
+    }
+    scanned ??= stripCommentsFromSource(source, true);
+    return hasDirective(scanned, directive);
+  };
+}
+
 /**
  * Detects workflow-related patterns in source code.
  */
@@ -283,18 +302,11 @@ export interface WorkflowPatternMatch {
  * @returns Object with flags for each detected pattern
  */
 export function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
-  const hasDirectiveSubstring =
-    source.includes('use workflow') || source.includes('use step');
-  const sourceForDirectives =
-    hasDirectiveSubstring && (source.includes('`') || source.includes('/'))
-      ? stripCommentsFromSource(source, true)
-      : source;
+  const hasDirectiveInCode = createDirectiveCheck(source);
   const hasUseWorkflow =
-    source.includes('use workflow') &&
-    hasDirective(sourceForDirectives, 'use workflow');
+    source.includes('use workflow') && hasDirectiveInCode('use workflow');
   const hasUseStep =
-    source.includes('use step') &&
-    hasDirective(sourceForDirectives, 'use step');
+    source.includes('use step') && hasDirectiveInCode('use step');
   const hasSerdeImport =
     source.includes('@workflow/serde') &&
     workflowSerdeImportPattern.test(source);
