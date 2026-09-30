@@ -61,7 +61,10 @@ import {
   healthCheck,
 } from './helpers.js';
 import { Run } from './run.js';
-import { getWorkflowVmFromEnv } from './vm-mode.js';
+import {
+  getSnapshotThresholdFromEnv,
+  getWorkflowVmFromEnv,
+} from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
@@ -977,7 +980,14 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Build the complete execution context before serializing or uploading
       // dynamic source and before either run-creation side effect.
+      //
+      // If WORKFLOW_VM / WORKFLOW_SNAPSHOT_THRESHOLD are set on the client
+      // starting the run, stamp them into the run's executionContext so the
+      // run keeps the engine and snapshot policy it started with (the same
+      // deployment can serve both VM engines). Unknown values throw; see
+      // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
+      const snapshotThreshold = getSnapshotThresholdFromEnv();
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
@@ -986,6 +996,7 @@ export async function start<TArgs extends unknown[], TResult>(
           ? { hookResumeInputVersion: targetHookResumeInputVersion }
           : {}),
         ...(workflowVm ? { workflowVm } : {}),
+        ...(snapshotThreshold !== undefined ? { snapshotThreshold } : {}),
         ...(opts.replayedFromRunId
           ? { replayedFromRunId: opts.replayedFromRunId }
           : {}),

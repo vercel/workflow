@@ -857,6 +857,7 @@ jobs:
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -958,6 +959,7 @@ jobs:
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -1069,6 +1071,7 @@ jobs:
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
 
       - name: Generate E2E summary
         if: always()

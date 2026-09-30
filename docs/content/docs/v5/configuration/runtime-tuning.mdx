@@ -237,6 +237,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - A bundle whose module scope consumes randomness, reads the clock, or replaces a serialization intrinsic cannot be snapshotted safely. The runtime detects these cases when preparing the snapshot and falls back to per-invocation evaluation.
 - Set `0` or `false` to always evaluate the bundle per invocation.
 
+### `WORKFLOW_SNAPSHOT_THRESHOLD`
+
+- Default: `0` (disabled)
+- Values: non-negative integer
+- Only used by the QuickJS engine (`WORKFLOW_VM=quickjs`).
+- When set above `0`, the runtime persists a **VM-memory snapshot** at a suspension once at least this many events have been processed since the last snapshot. Subsequent invocations restore the VM from the snapshot and replay only the events recorded since — instead of re-executing the workflow from the top against the full event log.
+- Short-lived runs below the threshold never pay the snapshot cost; long-running or unbounded runs stop scaling their resume cost with total event-log length. `1` snapshots at every qualifying suspension.
+- Snapshots are an optimization, not a source of truth: the event log remains authoritative, and a missing, corrupt, or incompatible snapshot automatically falls back to a full replay.
+- Snapshot bytes are compressed (zstd, gzip fallback) and encrypted with the run's encryption key (when configured) before being handed to the World's `snapshots` storage. They are deleted when the run reaches a terminal state.
+- Like `WORKFLOW_VM`, the policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with.
+- Invalid values throw at startup.
+
 ## Dynamic workflows
 
 ### `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`
