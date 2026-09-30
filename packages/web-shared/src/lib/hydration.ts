@@ -130,6 +130,11 @@ export function getWebRevivers(): Revivers {
       new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
+    // Deliberately not registered under `DataView`: payloads written before
+    // core gained this reducer use devalue's built-in encoding, and a custom
+    // reviver for that tag would strip their bounds and render the whole
+    // backing buffer. See `serialization/reducers/common.ts` in core.
+    DataViewBytes: (value: string) => new DataView(reviveArrayBuffer(value)),
     Date: (value) => new Date(value),
 
     // Error family. The reducer side (see

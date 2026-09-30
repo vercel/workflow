@@ -68,12 +68,17 @@ export const StreamWsCloseAckMetaSchema = z.object({
   reqId: RequestIdSchema,
 });
 
-/** An absent request id makes the error connection-fatal. */
+/**
+ * An absent request id makes the error connection-fatal. A correlated 429 is
+ * the one retryable rejection: the request did not apply. `retryAfter` is the
+ * server handler's `Retry-After` header, verbatim, when it set one.
+ */
 export const StreamWsErrorMetaSchema = z.object({
   type: z.literal('error'),
   reqId: RequestIdSchema.optional(),
   status: z.number().int(),
   message: z.string().optional(),
+  retryAfter: z.string().optional(),
 });
 
 /**
@@ -96,8 +101,9 @@ export const StreamWsReplyMetaSchema = z.discriminatedUnion('type', [
 /*
  * v1 pipelining is ordered and fail-stop. The server executes requests serially
  * in receive order. Its first failed request prevents later queued writes or
- * closes from executing and poisons the writer. An unknown client outcome is
- * likewise never replayed. The whole WebSocket-message ceiling is deliberately
+ * closes from executing and poisons the writer. The exception is a correlated
+ * 429, which did not apply: a client with no other request outstanding may
+ * resend it after `retryAfter`. An unknown client outcome is never replayed. The whole WebSocket-message ceiling is deliberately
  * implementation- and measurement-defined beyond the per-chunk/count bounds.
  */
 

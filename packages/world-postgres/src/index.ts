@@ -75,11 +75,11 @@ export function createWorld(
 
   return {
     specVersion: mintedSpecVersion(),
-    getBackendCapabilities: async () => ({
-      dynamicWorkflowStorageVersion: 1,
-    }),
     capabilities: {
       hookRetention: { active: true },
+      // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
+      // upload path, so `start()` always sends the code inline.
+      dynamicWorkflowCode: true,
       hookResumeDedup: true,
       ...(config.enableInvoke ? { invoke: true } : {}),
       // One transaction re-points the token, journals the victim's

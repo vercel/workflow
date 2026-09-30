@@ -97,11 +97,16 @@ const UNSUPPORTED_DEPLOYMENT: readonly {
     optIn: true,
   },
   {
-    // The backend does not advertise dynamic-source storage (including a
-    // backend without the capabilities route, which reads as none).
-    pattern: /Dynamic workflows require backend storage capability version/,
+    // The World does not declare `capabilities.dynamicWorkflowCode`.
+    pattern: /Dynamic workflows require a World that declares/,
+    reason: "this deployment's World does not support dynamic workflows",
+  },
+  {
+    // The backend refused `run_created` because the project is outside its
+    // dynamic-source storage rollout.
+    pattern: /dynamic workflow storage is not enabled for this project/,
     reason:
-      "this deployment's Workflow backend does not advertise dynamic-source storage",
+      "this deployment's Workflow backend has not enabled dynamic-source storage for this project",
   },
   {
     // The backend accepted the run but did not persist its workflow code.

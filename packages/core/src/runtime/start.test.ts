@@ -76,9 +76,7 @@ describe('start', () => {
         return {
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-          getBackendCapabilities: vi
-            .fn()
-            .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          capabilities: { dynamicWorkflowCode: true },
           getEncryptionKeyForRun: vi.fn(),
           uploadDynamicWorkflowCode: upload,
           events: { create: eventsCreate },
@@ -112,7 +110,6 @@ describe('start', () => {
           /Dynamic workflows are disabled on this deployment.*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1/
         );
         expect(world.getDeploymentId).not.toHaveBeenCalled();
-        expect(world.getBackendCapabilities).not.toHaveBeenCalled();
         expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
         expect(upload).not.toHaveBeenCalled();
         expect(eventsCreate).not.toHaveBeenCalled();
@@ -167,9 +164,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi
-          .fn()
-          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        capabilities: { dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -191,9 +186,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi
-          .fn()
-          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        capabilities: { dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -241,9 +234,7 @@ describe('start', () => {
         return {
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-          getBackendCapabilities: vi
-            .fn()
-            .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+          capabilities: { dynamicWorkflowCode: true },
           getEncryptionKeyForRun: vi.fn(),
           uploadDynamicWorkflowCode: upload,
           events: { create: eventsCreate },
@@ -258,7 +249,6 @@ describe('start', () => {
         // no run creation.
         expect(queue).not.toHaveBeenCalled();
         expect(world.streams.get).not.toHaveBeenCalled();
-        expect(world.getBackendCapabilities).not.toHaveBeenCalled();
         expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
         expect(upload).not.toHaveBeenCalled();
         expect(eventsCreate).not.toHaveBeenCalled();
@@ -357,9 +347,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi
-          .fn()
-          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        capabilities: { dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -401,9 +389,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi
-          .fn()
-          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        capabilities: { dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -440,9 +426,7 @@ async function workflow() {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi
-          .fn()
-          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        capabilities: { dynamicWorkflowCode: true },
         events: { create: eventsCreate },
         queue,
       } as any);
@@ -458,12 +442,18 @@ async function workflow() {
       expect(queue).toHaveBeenCalledOnce();
     });
 
-    it('rejects absent backend attestation before start side effects', async () => {
+    it.each([
+      ['no capabilities', undefined],
+      ['capabilities without the flag', { hookRetention: { active: true } }],
+    ])('rejects a World with %s before start side effects', async (_label, capabilities) => {
+      // A World with an upload path but no declared capability is still
+      // refused: the upload is an optional size escape hatch, not the signal.
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         getEncryptionKeyForRun: vi.fn(),
         uploadDynamicWorkflowCode: upload,
+        capabilities,
         events: { create: eventsCreate },
         queue,
       } as any);
@@ -474,32 +464,7 @@ async function workflow() {
             steps: { noop: { stepId: 'step//./test//noop' } },
           },
         })
-      ).rejects.toThrow(/backend storage capability version 1/);
-      expect(upload).not.toHaveBeenCalled();
-      expect(eventsCreate).not.toHaveBeenCalled();
-      expect(queue).not.toHaveBeenCalled();
-    });
-
-    it('rejects an empty backend capability set before start side effects', async () => {
-      // world-vercel maps a backend without the capabilities route (404) to
-      // an empty set, which must fail closed like an absent attestation.
-      setWorld({
-        specVersion: SPEC_VERSION_CURRENT,
-        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi.fn().mockResolvedValue({}),
-        getEncryptionKeyForRun: vi.fn(),
-        uploadDynamicWorkflowCode: upload,
-        events: { create: eventsCreate },
-        queue,
-      } as any);
-
-      await expect(
-        start(source, {
-          experimental_dynamic: {
-            steps: { noop: { stepId: 'step//./test//noop' } },
-          },
-        })
-      ).rejects.toThrow(/backend storage capability version 1/);
+      ).rejects.toThrow(/capabilities\.dynamicWorkflowCode/);
       expect(upload).not.toHaveBeenCalled();
       expect(eventsCreate).not.toHaveBeenCalled();
       expect(queue).not.toHaveBeenCalled();
@@ -509,9 +474,7 @@ async function workflow() {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        getBackendCapabilities: vi
-          .fn()
-          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        capabilities: { dynamicWorkflowCode: true },
         validateRunExecutionContext: vi.fn(() => {
           throw new Error('execution context too large');
         }),

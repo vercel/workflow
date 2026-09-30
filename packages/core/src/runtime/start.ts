@@ -54,7 +54,6 @@ import {
 } from './dynamic-workflow.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
-  DYNAMIC_WORKFLOW_VERSION,
   getWorkflowQueueName,
   type HealthCheckResult,
   healthCheck,
@@ -678,7 +677,7 @@ export async function start<TArgs extends unknown[], TResult>(
       const crossDeployment = deploymentId !== currentDeploymentId;
       // A dynamic run executes stored code, so it may only target the
       // deployment that validated and opted in to it: this one. Rejected
-      // before the capability probe, key lookup, upload, or run creation.
+      // before the capability check, key lookup, upload, or run creation.
       if (dynamicWorkflow && crossDeployment) {
         const current =
           currentDeploymentId === undefined
@@ -713,16 +712,10 @@ export async function start<TArgs extends unknown[], TResult>(
           : ulid()
       }`;
 
-      if (dynamicWorkflow) {
-        const backendCapabilities = await world.getBackendCapabilities?.();
-        if (
-          backendCapabilities?.dynamicWorkflowStorageVersion !==
-          DYNAMIC_WORKFLOW_VERSION
-        ) {
-          throw new WorkflowRuntimeError(
-            `Dynamic workflows require backend storage capability version ${DYNAMIC_WORKFLOW_VERSION}. No compatible capability was attested, so no run was created.`
-          );
-        }
+      if (dynamicWorkflow && !world.capabilities?.dynamicWorkflowCode) {
+        throw new WorkflowRuntimeError(
+          'Dynamic workflows require a World that declares `capabilities.dynamicWorkflowCode`. This World does not, so no run was created.'
+        );
       }
 
       let framedByteStreams: boolean;
