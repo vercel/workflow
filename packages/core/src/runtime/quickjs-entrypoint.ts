@@ -991,9 +991,16 @@ async function listRunLogFrom(
   world: Awaited<ReturnType<typeof getWorld>>,
   runId: string,
   cursor: string | null
-): Promise<{ events: Event[]; cursor: string | null; pages: number }> {
+): Promise<{
+  events: Event[];
+  cursor: string | null;
+  pages: number;
+  /** Whether every returned event is covered by the returned cursor. */
+  covered: boolean;
+}> {
   const events: Event[] = [];
   let pages = 0;
+  let covered = true;
   let hasMore = true;
   while (hasMore) {
     const response = await world.events.list({
@@ -1011,10 +1018,12 @@ async function listRunLogFrom(
     // returns `null`, which would reset the read position.
     if (response.cursor) {
       cursor = response.cursor;
+    } else if (response.data.length > 0) {
+      covered = false;
     }
     hasMore = response.data.length > 0 && response.cursor != null;
   }
-  return { events, cursor, pages };
+  return { events, cursor, pages, covered };
 }
 
 const snapshotWarnings = globalSingleton(
@@ -1362,17 +1371,18 @@ export async function runWorkflowWithQuickJS(params: {
   // first invocation the preloaded events from the run_started response
   // are the complete log and save the events.list round-trips; a
   // caller-attested complete preload (lazy hook fast path) is trusted
-  // the same way. Preload is used even with snapshotting enabled: it
-  // carries no cursor, so the FIRST qualifying suspension simply skips
-  // its snapshot save (the persist path requires a cursor) and the next
-  // one — whose feed loop has observed a cursor — snapshots normally.
-  // Short-lived runs keep the zero-overhead fast path either way.
+  // the same way. Preload is used even with snapshotting enabled: without
+  // a preload cursor, a qualifying suspension before the first listing
+  // skips its snapshot save (a save needs an exact log position) and a
+  // later one snapshots normally. Short-lived runs keep the zero-overhead
+  // fast path either way.
   let events: Event[];
   let eventsFetchedPages = 0;
-  // Cursor after the last event the VM has processed — persisted as the
-  // snapshot's eventsCursor so restores fetch only the delta.
-  let lastEventsCursor: string | null =
+  // Where a restored snapshot's log position ends: the read below starts
+  // after it.
+  const snapshotCursor: string | null =
     existingSnapshot?.metadata.eventsCursor ?? null;
+  let loadedCovered = true;
   // Where the log was read to: the cursor after the last page below, or the
   // one the caller read the preload to. Seeds the incremental reads and the
   // inline-delta requests that follow.
@@ -1387,11 +1397,11 @@ export async function runWorkflowWithQuickJS(params: {
     events = preloadedEvents;
     loadedCursor = preloadedCursor ?? null;
   } else {
-    const read = await listRunLogFrom(world, runId, lastEventsCursor);
+    const read = await listRunLogFrom(world, runId, snapshotCursor);
     eventsFetchedPages += read.pages;
     events = read.events;
-    if (read.cursor) lastEventsCursor = read.cursor;
     loadedCursor = read.cursor;
+    loadedCovered = read.covered;
   }
 
   // This invocation's view of the log, and the queue of events a World has
@@ -1406,7 +1416,15 @@ export async function runWorkflowWithQuickJS(params: {
   // the forced creations this invocation makes publish their own.
   await republishOwedForceClaimVictimWakes(world, runId, events);
 
-  const logView = new QuickJSLogView(events, loadedCursor);
+  // How many events `loadedCursor` covers: the snapshot's count plus
+  // everything read after its cursor, or the whole preload (which starts at
+  // the top of the log).
+  const loadedPosition = !loadedCovered
+    ? undefined
+    : usePreloaded
+      ? events.length
+      : (existingSnapshot?.metadata.eventCount ?? 0) + events.length;
+  const logView = new QuickJSLogView(events, loadedCursor, loadedPosition);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {
       // Returned replay events only feed the log; read them the way replay
@@ -1592,7 +1610,6 @@ export async function runWorkflowWithQuickJS(params: {
     // `snapshotStored` stays set: the unusable snapshot is still in
     // storage, and the terminal paths must delete it.
     existingSnapshot = null;
-    lastEventsCursor = null;
     // The refetched log below is the WHOLE run — the pre-snapshot count
     // no longer describes anything not already in events/seenEventIds.
     restoredEventCount = 0;
@@ -1601,9 +1618,9 @@ export async function runWorkflowWithQuickJS(params: {
     const read = await listRunLogFrom(world, runId, null);
     eventsFetchedPages += read.pages;
     events = read.events;
-    if (read.cursor) lastEventsCursor = read.cursor;
     logView.markFed(events);
-    logView.advanceCursor(read.cursor);
+    if (read.covered) logView.setPosition(read.cursor, events.length);
+    else logView.advanceCursor(read.cursor);
     session = await startQuickJSWorkflow({
       workflowCode: workflowCodeForVM,
       workflowId,
@@ -1617,6 +1634,13 @@ export async function runWorkflowWithQuickJS(params: {
   }
   let result = session.result;
 
+  if (existingSnapshot) {
+    runtimeLogger.info('QuickJS runtime: restored VM snapshot', {
+      workflowRunId: runId,
+      deltaEvents: events.length,
+      restoreMs: snapshotRestoreMs,
+    });
+  }
   if (snapshotThreshold > 0) {
     parentSpan?.setAttributes({
       ...Attribute.QuickJSSnapshotRestored(!!existingSnapshot),
@@ -1773,6 +1797,9 @@ export async function runWorkflowWithQuickJS(params: {
         serdeRootPtr: number;
         clockMs: number;
         engineVersion: string;
+        /** The log position the heap has consumed through. */
+        eventsCursor: string;
+        eventsThroughCursor: number;
       }
     | undefined;
   // Set when an inline step's lazy claim came back `throttled`: the exit
@@ -1791,6 +1818,10 @@ export async function runWorkflowWithQuickJS(params: {
   const fetchUnseenEvents = async (): Promise<Event[]> => {
     const unseen: Event[] = [];
     let cursor: string | null = logView.logCursor;
+    // Every event listed from the view's cursor (seen or not) is covered
+    // by the cursor this read ends at.
+    let listed = 0;
+    let listedWithoutCursor = false;
     let hasMore = true;
     while (hasMore) {
       const response = await world.events.list({
@@ -1809,13 +1840,16 @@ export async function runWorkflowWithQuickJS(params: {
       }
       if (response.cursor) {
         cursor = response.cursor;
-        // Every listed event is either already processed or about to be
-        // fed, so the page cursor always tracks the VM's frontier.
-        lastEventsCursor = response.cursor;
+        listed += response.data.length;
+      } else if (response.data.length > 0) {
+        // Events with no cursor after them: how many events the cursor
+        // covers is no longer known (snapshot saves stop for this
+        // invocation).
+        listedWithoutCursor = true;
       }
       hasMore = response.data.length > 0 && response.cursor != null;
     }
-    logView.advanceCursor(cursor);
+    logView.advanceCursor(cursor, listedWithoutCursor ? undefined : listed);
     logView.markFed(unseen);
     observeEventsForOwnership(unseen);
     return unseen;
@@ -2403,17 +2437,32 @@ export async function runWorkflowWithQuickJS(params: {
     // Capture the VM memory for persistence while the session is still
     // alive. The (compress → encrypt → save) pipeline runs after the VM
     // is disposed — only the byte capture needs the live session.
+    // The saved log position is the view's read cursor and the number of
+    // events it covers. Every event up to that cursor must already be in
+    // the heap: nothing may still be queued for delivery (an inline delta
+    // can move the cursor past events the VM hasn't been given yet), and
+    // the count must be known. Events fed beyond the cursor are fine: a
+    // restore re-feeds them, which is harmless, and counts them once.
+    const positionCursor = logView.logCursor;
+    const positionCount = logView.eventsThroughCursor;
     if (
       snapshotThreshold > 0 &&
       result.suspended &&
       !runGone &&
       eventsProcessedSinceSnapshot >= snapshotThreshold &&
+      positionCursor !== null &&
+      positionCount !== undefined &&
+      logView.bufferedCount === 0 &&
       // Once oversized, always oversized (linear memory never shrinks):
       // skip BEFORE the capture, which costs two full heap copies.
       !oversizedSnapshotRuns.has(runId)
     ) {
       try {
-        capturedSnapshot = session.snapshot();
+        capturedSnapshot = {
+          ...session.snapshot(),
+          eventsCursor: positionCursor,
+          eventsThroughCursor: positionCount,
+        };
         if (capturedSnapshot.data.byteLength > MAX_SNAPSHOT_PLAINTEXT_BYTES) {
           // A heap this large costs more to store/decompress than the
           // replay it saves — skip the save (full replay remains correct)
@@ -2441,21 +2490,20 @@ export async function runWorkflowWithQuickJS(params: {
     session.dispose();
   }
 
-  if (capturedSnapshot && snapshotsStorage && lastEventsCursor !== null) {
+  if (capturedSnapshot && snapshotsStorage) {
     // Persist: seal (frame with the restore-relevant metadata) →
     // compress (QuickJS heaps compress ~4x) → encrypt → save. Failures
     // are non-fatal — the run still makes progress via full replay; the
     // next qualifying suspension retries. Moved off the response path via
     // waitUntil: only the byte capture needed the live session; the
     // pipeline runs post-response so a multi-MB heap doesn't delay the
-    // next step's pickup. (Skipped when no cursor exists yet — a preloaded
-    // first invocation snapshots at its next qualifying suspension
-    // instead.)
+    // next step's pickup. (The capture above is skipped when the log
+    // position isn't exact yet; the next qualifying suspension retries.)
     const snapshot = capturedSnapshot;
     const metadata: SnapshotMetadata = {
-      eventsCursor: lastEventsCursor,
+      eventsCursor: snapshot.eventsCursor,
       createdAt: new Date(),
-      eventCount: restoredEventCount + seenEventIds.size,
+      eventCount: snapshot.eventsThroughCursor,
       rngDraws: snapshot.rngDraws,
       lastUlid: snapshot.lastUlid,
       serdeRootPtr: snapshot.serdeRootPtr,
@@ -2505,7 +2553,7 @@ export async function runWorkflowWithQuickJS(params: {
         wfdiag('snapshot_saved', {
           plaintextBytes: snapshot.data.byteLength,
           storedBytes: toStore.byteLength,
-          eventsCursor: lastEventsCursor,
+          eventsCursor: snapshot.eventsCursor,
           eventsProcessedSinceSnapshot,
           rngDraws: snapshot.rngDraws,
           durationMs: saveMs,

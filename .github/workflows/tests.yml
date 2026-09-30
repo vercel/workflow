@@ -860,6 +860,17 @@ jobs:
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
           # Local worlds have no run encryption keys; snapshot legs opt in.
           WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
+          # Snapshot legs log each restore so the check below can count them.
+          DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
+
+      - name: Check VM snapshots were restored
+        if: ${{ matrix.app.snapshotThreshold }}
+        run: |
+          # A snapshot leg that never restores would still pass the suite
+          # (every miss falls back to full replay), so require restores.
+          restores=$(grep -c "QuickJS runtime: restored VM snapshot" "$GITHUB_WORKSPACE/dev-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log" || true)
+          echo "VM snapshot restores: $restores"
+          test "$restores" -gt 0
 
       - name: Generate E2E summary
         if: always()
@@ -964,6 +975,17 @@ jobs:
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
           # Local worlds have no run encryption keys; snapshot legs opt in.
           WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
+          # Snapshot legs log each restore so the check below can count them.
+          DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
+
+      - name: Check VM snapshots were restored
+        if: ${{ matrix.app.snapshotThreshold }}
+        run: |
+          # A snapshot leg that never restores would still pass the suite
+          # (every miss falls back to full replay), so require restores.
+          restores=$(grep -c "QuickJS runtime: restored VM snapshot" "$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log" || true)
+          echo "VM snapshot restores: $restores"
+          test "$restores" -gt 0
 
       - name: Generate E2E summary
         if: always()
@@ -1078,6 +1100,17 @@ jobs:
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
           # Local worlds have no run encryption keys; snapshot legs opt in.
           WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
+          # Snapshot legs log each restore so the check below can count them.
+          DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
+
+      - name: Check VM snapshots were restored
+        if: ${{ matrix.app.snapshotThreshold }}
+        run: |
+          # A snapshot leg that never restores would still pass the suite
+          # (every miss falls back to full replay), so require restores.
+          restores=$(grep -c "QuickJS runtime: restored VM snapshot" "$GITHUB_WORKSPACE/prod-server-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log" || true)
+          echo "VM snapshot restores: $restores"
+          test "$restores" -gt 0
 
       - name: Generate E2E summary
         if: always()
