@@ -6,10 +6,7 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
 import { importParents } from './discover-entries-esbuild-plugin.js';
-import {
-  detectWorkflowPatterns,
-  stripCommentsFromSource,
-} from './transform-utils.js';
+import { detectWorkflowPatterns } from './transform-utils.js';
 
 const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
   '.ts',
