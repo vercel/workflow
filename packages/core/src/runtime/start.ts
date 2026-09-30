@@ -1089,27 +1089,58 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
-      // Call events.create (run_created) and queue in parallel.
+      const runCreated = world.events.create(
+        runId,
+        {
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId: deploymentId,
+            workflowName: workflowName,
+            input: workflowArguments,
+            executionContext,
+            ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+            ...attributeSeed,
+            ...dynamicWorkflowSeed,
+          },
+        },
+        { v1Compat }
+      );
+
+      // A dynamic run publishes only once the backend has confirmed it stored
+      // the code. The queue message carries that code too, and its first
+      // delivery can execute from the message alone (turbo starts the first
+      // step's body before `run_started` lands), so publishing beside an
+      // unconfirmed write would let a run execute after this call reported
+      // that it cannot exist. Any failure to create a dynamic run, retryable
+      // or not, is therefore thrown with nothing published: there is no
+      // resilient start for dynamic runs. The extra round-trip is small next
+      // to the compilation (and sometimes upload) a dynamic start already
+      // pays for.
+      if (dynamicWorkflow) {
+        const { run } = await runCreated;
+        // A backend that predates dynamic-source support ignores the field
+        // rather than rejecting it (dropping unrecognized metadata is by
+        // design), so the write succeeds and the run looks fine, but nothing
+        // could ever replay it. The created run echoes what it persisted.
+        if (
+          (run as { dynamicWorkflowCode?: unknown }).dynamicWorkflowCode ===
+          undefined
+        ) {
+          throw new WorkflowRuntimeError(
+            `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
+              'It was not queued, so it will not execute. ' +
+              'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
+          );
+        }
+      }
+
+      // Call events.create (run_created) and queue in parallel (for a dynamic
+      // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
       const [runCreatedResult, queueResult] = await Promise.allSettled([
-        world.events.create(
-          runId,
-          {
-            eventType: 'run_created',
-            specVersion,
-            eventData: {
-              deploymentId: deploymentId,
-              workflowName: workflowName,
-              input: workflowArguments,
-              executionContext,
-              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-              ...attributeSeed,
-              ...dynamicWorkflowSeed,
-            },
-          },
-          { v1Compat }
-        ),
+        runCreated,
         world.queue(
           queueName,
           {
@@ -1179,26 +1210,6 @@ export async function start<TArgs extends unknown[], TResult>(
         if (!v1Compat && result.run.runId !== runId) {
           throw new WorkflowRuntimeError(
             `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
-          );
-        }
-        // Verify the backend actually stored the dynamic workflow code.
-        //
-        // A backend that predates dynamic-source support ignores the field
-        // rather than rejecting it — dropping unrecognized metadata is by
-        // design — so the write succeeds and the run looks fine. It is not:
-        // nothing can ever replay it, and the failure would surface much
-        // later as an unregistered-workflow error on a queue delivery with no
-        // hint that the backend's age was the cause. The created run echoes
-        // what it persisted, so this check costs nothing and moves the
-        // failure to the call site.
-        if (
-          dynamicWorkflow &&
-          (result.run as { dynamicWorkflowCode?: unknown })
-            .dynamicWorkflowCode === undefined
-        ) {
-          throw new WorkflowRuntimeError(
-            `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
-              'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
           );
         }
       }

@@ -1,4 +1,9 @@
-import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  ThrottleError,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -493,6 +498,136 @@ async function workflow() {
       expect(upload).not.toHaveBeenCalled();
       expect(eventsCreate).not.toHaveBeenCalled();
       expect(queue).not.toHaveBeenCalled();
+    });
+
+    describe('publishes only a run whose code was stored', () => {
+      const dynamicOptions = {
+        experimental_dynamic: {
+          steps: { noop: { stepId: 'step//./test//noop' } },
+        },
+      };
+
+      function storingWorld(overrides: Record<string, unknown> = {}) {
+        return {
+          specVersion: SPEC_VERSION_CURRENT,
+          getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+          capabilities: { dynamicWorkflowCode: true },
+          events: { create: eventsCreate },
+          queue,
+          ...overrides,
+        } as any;
+      }
+
+      function echoStoredCode() {
+        eventsCreate.mockImplementation(async (runId, event) => ({
+          run: {
+            runId,
+            status: 'pending',
+            dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+          },
+        }));
+      }
+
+      beforeEach(() => {
+        queue.mockResolvedValue({ messageId: 'msg_1' });
+      });
+
+      it('publishes only after run_created has confirmed the code', async () => {
+        let created = false;
+        eventsCreate.mockImplementation(async (runId, event) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          created = true;
+          return {
+            run: {
+              runId,
+              status: 'pending',
+              dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+            },
+          };
+        });
+        queue.mockImplementation(async () => {
+          expect(created).toBe(true);
+          return { messageId: 'msg_1' };
+        });
+        setWorld(storingWorld());
+
+        const run = await start(source, dynamicOptions);
+
+        expect(queue).toHaveBeenCalledOnce();
+        expect(queue.mock.calls[0][1].runInput.dynamicWorkflowCode).toEqual(
+          eventsCreate.mock.calls[0][1].eventData.dynamicWorkflowCode
+        );
+        expect(run.runId).toBe(eventsCreate.mock.calls[0][0]);
+      });
+
+      it('publishes nothing when the backend drops the code', async () => {
+        eventsCreate.mockImplementation(async (runId) => ({
+          run: { runId, status: 'pending' },
+        }));
+        setWorld(storingWorld());
+
+        const error = await start(source, dynamicOptions).catch(
+          (err: unknown) => err
+        );
+
+        expect(WorkflowRuntimeError.is(error)).toBe(true);
+        expect((error as Error).message).toMatch(
+          /was created, but this deployment's Workflow backend did not store its dynamic workflow code.*It was not queued, so it will not execute/
+        );
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it('publishes nothing when run_created is rejected with a 400', async () => {
+        const rejected = new WorkflowWorldError(
+          'dynamic workflow storage is not enabled for this project',
+          { status: 400, code: 'dynamic-workflow-storage-disabled' }
+        );
+        eventsCreate.mockRejectedValue(rejected);
+        setWorld(storingWorld());
+
+        await expect(start(source, dynamicOptions)).rejects.toBe(rejected);
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [
+          '500',
+          () =>
+            new WorkflowWorldError('Internal Server Error', { status: 500 }),
+        ],
+        ['429', () => new ThrottleError('Too Many Requests')],
+      ])('publishes nothing when run_created fails with a retryable %s', async (_label, makeError) => {
+        const failure = makeError();
+        eventsCreate.mockRejectedValue(failure);
+        setWorld(storingWorld());
+
+        // Unlike a static start, which publishes anyway and lets the first
+        // delivery re-create the run, the error reaches the caller.
+        await expect(start(source, dynamicOptions)).rejects.toBe(failure);
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it('publishes nothing when run_created conflicts', async () => {
+        // Nothing reads the existing run back: a dynamic create that does not
+        // cleanly succeed is thrown, whatever the reason.
+        const conflict = new EntityConflictError('Run already exists');
+        eventsCreate.mockRejectedValue(conflict);
+        setWorld(storingWorld());
+
+        await expect(start(source, dynamicOptions)).rejects.toBe(conflict);
+        expect(queue).not.toHaveBeenCalled();
+      });
+
+      it('throws when the queue rejects after the code was stored', async () => {
+        echoStoredCode();
+        queue.mockRejectedValue(new Error('Queue unavailable'));
+        setWorld(storingWorld());
+
+        await expect(start(source, dynamicOptions)).rejects.toThrow(
+          'Queue unavailable'
+        );
+        expect(eventsCreate).toHaveBeenCalledOnce();
+      });
     });
 
     it('does not apply execution-context validation to static starts', async () => {
