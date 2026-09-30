@@ -35,6 +35,15 @@ function snapshotDiag(fields: Record<string, unknown>): void {
 }
 
 /**
+ * Largest snapshot envelope the workflow-server accepts (it rejects larger
+ * bodies with a 400 and stores nothing). Checked before the upload so an
+ * oversized heap fails fast with a clear error instead of first sending
+ * tens of MB over the wire. The core treats a failed save as a skipped
+ * snapshot, so the run keeps making progress via full replay.
+ */
+export const MAX_SNAPSHOT_ENVELOPE_BYTES = 64 * 1024 * 1024;
+
+/**
  * Create snapshot storage backed by the workflow-server API.
  *
  * Compression and encryption are handled by `@workflow/core`'s
@@ -72,6 +81,18 @@ export function createSnapshotsStorage(
       const url = `${baseUrl}/v2/runs/${encodeURIComponent(runId)}/snapshot`;
 
       const envelope = encodeSnapshotEnvelope(metadata, data);
+      if (envelope.byteLength > MAX_SNAPSHOT_ENVELOPE_BYTES) {
+        snapshotDiag({
+          op: 'save',
+          runId,
+          outcome: 'too_large',
+          wireBytes: envelope.byteLength,
+        });
+        throw new WorkflowWorldError(
+          `Snapshot for run ${runId} is ${envelope.byteLength} bytes, over the ${MAX_SNAPSHOT_ENVELOPE_BYTES}-byte limit; not uploading`,
+          { url }
+        );
+      }
 
       headers.set('Content-Type', 'application/octet-stream');
       // Observability-only denormalized copies (see module docstring).

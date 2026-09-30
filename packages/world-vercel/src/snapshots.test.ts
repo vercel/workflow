@@ -17,7 +17,10 @@ vi.mock('./utils.js', () => ({
 
 // Bypass the OIDC token fetch in getHttpConfig — handled by the mock above.
 
-import { createSnapshotsStorage } from './snapshots.js';
+import {
+  createSnapshotsStorage,
+  MAX_SNAPSHOT_ENVELOPE_BYTES,
+} from './snapshots.js';
 
 interface RequestRecord {
   method: string;
@@ -160,6 +163,18 @@ describe('snapshots storage', () => {
         expect(r.bodyBytes).toBeGreaterThan(0);
         expect(r.bodyBytes).toBe(Number(r.contentLength));
       }
+    });
+
+    it('rejects an envelope over the server limit without uploading it', async () => {
+      const storage = createSnapshotsStorage();
+      const data = new Uint8Array(MAX_SNAPSHOT_ENVELOPE_BYTES + 1);
+      await expect(
+        storage.save('wrun_too_large', data, {
+          eventsCursor: 'eid:test',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        })
+      ).rejects.toThrow(/over the \d+-byte limit/);
+      expect(server.records).toHaveLength(0);
     });
 
     it('throws WorkflowWorldError when the server returns 4xx', async () => {
