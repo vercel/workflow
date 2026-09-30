@@ -1,6 +1,6 @@
 import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
-import type { StreamWriteSession } from '@workflow/world';
+import { envNumber, type StreamWriteSession } from '@workflow/world';
 import type { WebSocket } from 'ws';
 import { createThrottleWaiter } from './event-retry.js';
 import { type DecodedFrame, decodeFrames } from './frames.js';
@@ -10,15 +10,17 @@ import {
   parseRetryAfter,
   withHttpClientSpan,
 } from './http-core.js';
+import { normalizeStreamChunks } from './stream-chunks.js';
 import {
   encodeStreamWsCloseRequest,
   encodeStreamWsWriteRequest,
   getStreamWsProtocolV1Url,
   parseStreamWsReply,
-  STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
+  STREAM_WS_V1_MAX_MESSAGE_BYTES,
   type StreamWriterId,
   StreamWriterIdSchema,
   type StreamWsErrorMeta,
+  streamWsWriteBatchEnd,
 } from './stream-ws-protocol-v1.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import type { APIConfig } from './utils.js';
@@ -66,6 +68,28 @@ type PendingRequest = {
   replyReceivedAt?: number;
 };
 const MAX_IDLE_RECONNECTS = 3;
+
+/**
+ * Default bound on each stream WebSocket message, leaving margin under the
+ * platform's 16 MiB per-frame limit (`STREAM_WS_V1_MAX_MESSAGE_BYTES`).
+ */
+export const DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES = 12 * 1024 * 1024;
+const MIN_STREAM_WS_MAX_MESSAGE_BYTES = 1024;
+
+/**
+ * Effective per-message byte budget for stream WebSocket writes. Override via
+ * `WORKFLOW_WS_MAX_MESSAGE_BYTES` (an integer, clamped to 1024 bytes-16 MiB).
+ */
+export const getStreamWsMaxMessageBytes = (): number =>
+  envNumber(
+    'WORKFLOW_WS_MAX_MESSAGE_BYTES',
+    DEFAULT_STREAM_WS_MAX_MESSAGE_BYTES,
+    {
+      integer: true,
+      min: MIN_STREAM_WS_MAX_MESSAGE_BYTES,
+      max: STREAM_WS_V1_MAX_MESSAGE_BYTES,
+    }
+  );
 
 function now(): number {
   return performance.now();
@@ -304,18 +328,16 @@ class VercelStreamWriteSession implements StreamWriteSession {
       await this.writeHttpOrFail(chunks);
       return;
     }
-    // Core's default group cap equals the wire cap, so splitting is normally
-    // dormant. Keep it here as a guard against configured or future cap drift;
-    // v1 deliberately defines no separate whole-message byte budget.
-    for (
-      let offset = 0;
-      offset < chunks.length;
-      offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-    ) {
-      const batch = chunks.slice(
-        offset,
-        offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-      );
+    // The platform drops any WebSocket frame over 16 MiB with no close frame,
+    // leaving an unknown outcome that poisons the writer. Split each group into
+    // ordered write requests bounded by both chunk count and message bytes. At
+    // defaults (1 MiB core groups, 10 MiB chunks, 12 MiB budget) a group is one
+    // request; a single chunk too large for one message goes to HTTP unsent.
+    const maxMessageBytes = getStreamWsMaxMessageBytes();
+    const binaryChunks = normalizeStreamChunks(chunks);
+    for (let offset = 0; offset < chunks.length; ) {
+      const end = streamWsWriteBatchEnd(binaryChunks, offset, maxMessageBytes);
+      const batch = binaryChunks.slice(offset, end);
       let reply: Record<string, unknown>;
       try {
         reply = await this.requestRetryingThrottle(
@@ -331,7 +353,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
               batch
             ),
           offset === 0 ? timing : undefined,
-          { chunkSeq: chunkSeq + offset, numChunks: batch.length }
+          { chunkSeq: chunkSeq + offset, numChunks: batch.length },
+          maxMessageBytes
         );
       } catch (error) {
         if (!(error instanceof StreamWsRequestNotSentError)) throw error;
@@ -344,6 +367,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
           new Error(`stream WebSocket write received ${reply.type}`)
         );
       }
+      offset = end;
     }
   }
 
@@ -844,7 +868,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     operation: Operation,
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
-    writeMetadata?: WriteMetadata
+    writeMetadata?: WriteMetadata,
+    maxMessageBytes = getStreamWsMaxMessageBytes()
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
     const ws = this.socket;
@@ -859,6 +884,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
       frame = buildFrame(reqId);
     } catch (error) {
       throw new StreamWsRequestNotSentError(error);
+    }
+    if (frame.byteLength > maxMessageBytes) {
+      throw new StreamWsRequestNotSentError(
+        new Error(
+          `stream WebSocket message is ${frame.byteLength} bytes; maximum is ${maxMessageBytes}`
+        )
+      );
     }
     const connectionTiming = this.connectionTiming;
     const connectionFirstWrite = connectionTiming?.firstWriteSent === false;
@@ -1003,7 +1035,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     operation: Operation,
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
-    writeMetadata?: WriteMetadata
+    writeMetadata?: WriteMetadata,
+    maxMessageBytes?: number
   ): Promise<Record<string, unknown>> {
     const waitOutThrottle = createThrottleWaiter(
       operation === 'write' ? 'stream chunks' : 'stream close'
@@ -1014,7 +1047,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
           operation,
           buildFrame,
           attempt === 0 ? writeTiming : undefined,
-          writeMetadata
+          writeMetadata,
+          maxMessageBytes
         );
       } catch (error) {
         if (!(error instanceof StreamWsThrottledError)) throw error;

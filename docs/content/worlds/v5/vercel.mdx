@@ -250,6 +250,8 @@ Writes and close requests execute serially. The first operation waits up to 250 
 
 Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
 
+Each stream WebSocket message is at most `WORKFLOW_WS_MAX_MESSAGE_BYTES` bytes, header included. Default: `12582912` (12 MiB). Integer values are clamped to `1024`-`16777216`, because the platform drops any WebSocket frame over 16 MiB. A write group larger than the limit is sent as several ordered write requests. A single chunk too large for one message is written over HTTP instead, as are the rest of its writer's writes.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 Opt-in WebSocket transport for workflow run events, which ships them to the Vercel World over one socket per run instead of one HTTP request each. Default: `http`.
