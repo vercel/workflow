@@ -119,11 +119,10 @@ const UNSUPPORTED_DEPLOYMENT: readonly {
 /**
  * The run id `start()` names in that error.
  *
- * The dynamic run *is* created before the check runs — `start()` writes
- * `run_created` and enqueues the run, and only then reads back what the
- * backend kept — so on this path a real dynamic run exists in the world, and
- * a short one can even complete (turbo executes it from the queue message).
- * Only its *replayability* is missing. Pulling the id out means the sidecar
+ * The dynamic run *is* created before the check runs: `start()` writes
+ * `run_created`, reads back what the backend kept, and only publishes the run
+ * once its code was stored. So on this path a real dynamic run exists in the
+ * world, left `pending` and never queued. Pulling the id out means the sidecar
  * still reports it, which is the whole reason to want a run id: to go look at
  * one.
  *
@@ -321,16 +320,8 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
 
     const code = (child.record as { dynamicWorkflowCode?: unknown })
       .dynamicWorkflowCode;
-    if (code === undefined) {
-      // Same "no dynamic-source storage" fact, reached a step later:
-      // `start()`'s fail-fast check reads the created run off its own
-      // response, and a resilient start has no response to read — so a short
-      // dynamic run can still finish (turbo runs it from the queue message
-      // inside one invocation) while the backend stored nothing.
-      getCurrentTest()?.context.skip(
-        "this deployment's Workflow backend has no dynamic-source storage yet: the run completed from the queue message without its code being persisted"
-      );
-    }
+    // `start()` only publishes a dynamic run once `run_created` has confirmed
+    // the code was stored, so a child that ran must have its code.
     expect(code).toBeInstanceOf(Uint8Array);
     const codeBytes = code as Uint8Array;
     expect(codeBytes.byteLength).toBeGreaterThan(0);

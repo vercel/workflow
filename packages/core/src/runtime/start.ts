@@ -2,8 +2,10 @@ import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
+  EventResult,
   RunRetention,
   WorkflowInvokePayload,
+  WorkflowRun,
   World,
 } from '@workflow/world';
 import {
@@ -488,6 +490,79 @@ function assertDynamicWorkflowsEnabled(): void {
       `Dynamic workflows are disabled on this deployment, so no run was created. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
     );
   }
+}
+
+/**
+ * Writes a dynamic run's `run_created` and confirms the backend stored its
+ * code, before anything is published for the run to execute.
+ *
+ * Every failure here throws with no queue message sent, so the run cannot
+ * execute:
+ *
+ * - A non-retryable rejection (a 400 from a backend that has not enabled
+ *   dynamic-source storage) propagates unchanged.
+ * - A retryable failure (429, 5xx, transport) propagates too. Static starts
+ *   publish anyway and let the first delivery re-create the run, but a
+ *   dynamic run re-created that way would execute from the queue message
+ *   before anything confirmed its code was stored. If the write did land, the
+ *   run it created stays `pending`: it was never queued.
+ * - A created run without its code (a backend that predates dynamic-source
+ *   storage and drops the field) is refused, since no replay could read it.
+ *
+ * A 409 means an earlier attempt of this same write landed; the run id was
+ * minted by this `start()`, so nothing else could have created it. The run is
+ * read back to check what that attempt stored.
+ *
+ * @returns The created run's status, for the span.
+ */
+async function createDynamicRun(
+  world: World,
+  runId: string,
+  createRun: () => Promise<EventResult>,
+  v1Compat: boolean
+): Promise<WorkflowRun['status']> {
+  let run: Pick<WorkflowRun, 'runId' | 'status' | 'dynamicWorkflowCode'>;
+  try {
+    const result = await createRun();
+    if (!result.run) {
+      throw new WorkflowRuntimeError(
+        `Creating dynamic workflow run ${runId} returned no run, so it was not queued and will not execute.`
+      );
+    }
+    run = result.run;
+  } catch (err) {
+    if (!EntityConflictError.is(err)) {
+      if (isRetryableWorldError(err)) {
+        runtimeLogger.warn(
+          'Dynamic run creation failed; the run was not queued, so it will not execute.',
+          {
+            workflowRunId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      }
+      throw err;
+    }
+    run = await world.runs.get(runId, { resolveData: 'all' });
+  }
+  if (!v1Compat && run.runId !== runId) {
+    throw new WorkflowRuntimeError(
+      `Server returned different runId than requested: expected ${runId}, got ${run.runId}`
+    );
+  }
+  // A backend that predates dynamic-source support ignores the field rather
+  // than rejecting it (dropping unrecognized metadata is by design), so the
+  // write succeeds and the run looks fine. Nothing could ever replay it. The
+  // created run echoes what it persisted, so this check costs nothing and
+  // moves the failure to the call site.
+  if (run.dynamicWorkflowCode === undefined) {
+    throw new WorkflowRuntimeError(
+      `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
+        'It was not queued, so it will not execute. ' +
+        'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
+    );
+  }
+  return run.status;
 }
 
 /**
@@ -1089,10 +1164,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
-      // Call events.create (run_created) and queue in parallel.
-      // If events.create fails with 429/5xx, the run was still accepted
-      // via the queue and creation will be re-tried async by the runtime.
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
+      const createRun = () =>
         world.events.create(
           runId,
           {
@@ -1109,7 +1181,8 @@ export async function start<TArgs extends unknown[], TResult>(
             },
           },
           { v1Compat }
-        ),
+        );
+      const publishRun = () =>
         world.queue(
           queueName,
           {
@@ -1142,64 +1215,67 @@ export async function start<TArgs extends unknown[], TResult>(
             // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
-        ),
-      ]);
+        );
 
-      // Queue failure is always fatal: the run was not enqueued
-      if (queueResult.status === 'rejected') {
-        throw queueResult.reason;
-      }
-
-      // Handle events.create result
+      let runStatus: WorkflowRun['status'] | undefined;
       let resilientStart = false;
-      if (runCreatedResult.status === 'rejected') {
-        const err = runCreatedResult.reason;
-        if (EntityConflictError.is(err)) {
-          // 409: The run already exists. This can happen in extreme cases where
-          // the run creation call gets a cold start or other slowdown, and the queue
-          // + run_started call completes faster. We expect this to be <=1% of cases.
-          // In this case, we can safely return.
-        } else if (isRetryableWorldError(err)) {
-          // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
-          // queue and creation will be re-tried by the runtime when it calls
-          // run_started.
-          resilientStart = true;
-          runtimeLogger.warn(
-            'Run creation event failed, but the run was accepted via the queue. ' +
-              'The run_created event will be re-tried async by the runtime.',
-            { workflowRunId: runId, error: err.message }
-          );
-        } else {
-          throw err;
-        }
+      if (dynamicWorkflow) {
+        // A dynamic run writes `run_created` first and publishes only once
+        // the backend has confirmed it stored the code. The queue message
+        // carries that code too, and its first delivery can execute from the
+        // message alone (turbo starts the first step's body before its
+        // `run_started` lands). Publishing beside an unconfirmed write would
+        // let a run execute after `start()` told the caller it cannot exist,
+        // and fail on its first replay. Dynamic starts already pay for
+        // compilation, and sometimes an upload, so the extra round-trip is
+        // small next to them.
+        runStatus = await createDynamicRun(world, runId, createRun, v1Compat);
+        await publishRun();
       } else {
-        const result = runCreatedResult.value;
-        // Verify server accepted our runId
-        if (!v1Compat && result.run.runId !== runId) {
-          throw new WorkflowRuntimeError(
-            `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
-          );
+        // Call events.create (run_created) and queue in parallel.
+        // If events.create fails with 429/5xx, the run was still accepted
+        // via the queue and creation will be re-tried async by the runtime.
+        const [runCreatedResult, queueResult] = await Promise.allSettled([
+          createRun(),
+          publishRun(),
+        ]);
+
+        // Queue failure is always fatal: the run was not enqueued
+        if (queueResult.status === 'rejected') {
+          throw queueResult.reason;
         }
-        // Verify the backend actually stored the dynamic workflow code.
-        //
-        // A backend that predates dynamic-source support ignores the field
-        // rather than rejecting it — dropping unrecognized metadata is by
-        // design — so the write succeeds and the run looks fine. It is not:
-        // nothing can ever replay it, and the failure would surface much
-        // later as an unregistered-workflow error on a queue delivery with no
-        // hint that the backend's age was the cause. The created run echoes
-        // what it persisted, so this check costs nothing and moves the
-        // failure to the call site.
-        if (
-          dynamicWorkflow &&
-          (result.run as { dynamicWorkflowCode?: unknown })
-            .dynamicWorkflowCode === undefined
-        ) {
-          throw new WorkflowRuntimeError(
-            `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
-              'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
-          );
+
+        // Handle events.create result
+        if (runCreatedResult.status === 'rejected') {
+          const err = runCreatedResult.reason;
+          if (EntityConflictError.is(err)) {
+            // 409: The run already exists. This can happen in extreme cases where
+            // the run creation call gets a cold start or other slowdown, and the queue
+            // + run_started call completes faster. We expect this to be <=1% of cases.
+            // In this case, we can safely return.
+          } else if (isRetryableWorldError(err)) {
+            // 429 (ThrottleError), 5xx, and transient transport failures
+            // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
+            // queue and creation will be re-tried by the runtime when it calls
+            // run_started.
+            resilientStart = true;
+            runtimeLogger.warn(
+              'Run creation event failed, but the run was accepted via the queue. ' +
+                'The run_created event will be re-tried async by the runtime.',
+              { workflowRunId: runId, error: err.message }
+            );
+          } else {
+            throw err;
+          }
+        } else {
+          const result = runCreatedResult.value;
+          // Verify server accepted our runId
+          if (!v1Compat && result.run.runId !== runId) {
+            throw new WorkflowRuntimeError(
+              `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+            );
+          }
+          runStatus = result.run.status;
         }
       }
 
@@ -1220,8 +1296,8 @@ export async function start<TArgs extends unknown[], TResult>(
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled'
-          ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
+        ...(runStatus !== undefined
+          ? Attribute.WorkflowRunStatus(runStatus)
           : {}),
       });
 
