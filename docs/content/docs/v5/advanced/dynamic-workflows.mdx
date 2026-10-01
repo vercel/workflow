@@ -54,7 +54,7 @@ Only the *orchestration* is dynamic. Every step the source calls was deployed wi
 
 `start()` can be called from any server code in the deployment, including a route handler, with no wrapper workflow. Pass the **imported** step functions: the build stamps a `stepId` on each one, and that ID is what binds the alias to a deployed step. Code without a handle on the function, such as a script outside the deployment, has to pass `{ stepId: '...' }` references instead.
 
-For a complete application of this, see the [Dynamic Workflows recipe](/cookbook/advanced/dynamic-workflows): a step catalog deployed once, reviewed missions published to a store after deploy, and routes that start and resume them.
+For a complete application of this, see the [Dynamic Workflows recipe](/cookbook/advanced/dynamic-workflows): a migration step catalog deployed once, and customer-specific procedures written, reviewed, and started after deploy.
 
 ## When to use this
 
@@ -182,7 +182,7 @@ Two consequences worth knowing:
 - **The same definition always gets the same ID.** Runs of one generated workflow group together in [observability](/docs/observability) and share a queue topic, even across processes.
 - **A caller cannot claim an ID.** Because the hash covers the source *and* the step bindings, arbitrary source cannot be made to run under a static workflow's name — or under another definition's.
 
-Changing the source, or pointing an alias at a different step, produces a different workflow. The hash covers the raw source bytes, so whitespace, formatting, and comment changes also produce a new workflow ID, and runs before and after the change group separately. When you need a name that stays stable across revisions of a definition, keep it in your application, alongside the exact source you started; see the [recipe](/cookbook/advanced/dynamic-workflows#mission-revisions).
+Changing the source, or pointing an alias at a different step, produces a different workflow. The hash covers the raw source bytes, so whitespace, formatting, and comment changes also produce a new workflow ID, and runs before and after the change group separately. When you need a name that stays stable across revisions of a definition, keep it in your application, alongside the exact source you started; see the [recipe](/cookbook/advanced/dynamic-workflows#procedure-revisions).
 
 ## How the code is stored
 
