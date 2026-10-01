@@ -4348,31 +4348,32 @@ async function sha256Hex(text: string) {
 // write, which needs a real backing store.
 //////////////////////////////////////////////////////////
 
-/** A row of the synthetic legacy CRM export. */
+/** A row of the synthetic legacy CRM export. Every name and email is invented. */
 type LegacyRow =
   | {
       kind: 'account';
       id: string;
       name: string;
+      parentId: string | null;
       contract: string;
       owner: string;
-      parent?: string;
     }
   | {
       kind: 'contact';
       id: string;
       name: string;
       email: string;
-      account: string;
+      accountId: string;
     };
 
 /** Synthetic legacy CRM data: one customer's export, labelled as such. */
 const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
-  'acme-legacy': [
+  'synthetic-crm-v1': [
     {
       kind: 'account',
       id: 'acct-acme',
       name: 'Acme Holdings',
+      parentId: null,
       contract: 'C-100',
       owner: 'dana',
     },
@@ -4380,22 +4381,23 @@ const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
       kind: 'account',
       id: 'acct-acme-east',
       name: 'Acme East',
+      parentId: 'acct-acme',
       contract: 'C-100/E',
       owner: 'dana',
-      parent: 'acct-acme',
     },
     {
       kind: 'account',
       id: 'acct-acme-west',
       name: 'Acme West',
+      parentId: 'acct-acme',
       contract: 'C-100/W',
       owner: 'dana',
-      parent: 'acct-acme',
     },
     {
       kind: 'account',
       id: 'acct-globex',
       name: 'Globex',
+      parentId: null,
       contract: 'C-200',
       owner: 'lee',
     },
@@ -4403,6 +4405,7 @@ const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
       kind: 'account',
       id: 'acct-initech',
       name: 'Initech',
+      parentId: null,
       contract: 'C-300',
       owner: 'kim',
     },
@@ -4410,6 +4413,7 @@ const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
       kind: 'account',
       id: 'acct-initech-ltd',
       name: 'Initech Ltd',
+      parentId: null,
       contract: 'C-300',
       owner: 'sam',
     },
@@ -4418,28 +4422,28 @@ const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
       id: 'ct-ada-east',
       name: 'Ada Park',
       email: 'ada@acme.com',
-      account: 'acct-acme-east',
+      accountId: 'acct-acme-east',
     },
     {
       kind: 'contact',
       id: 'ct-ada-west',
       name: 'Ada Park',
       email: ' ADA@acme.com',
-      account: 'acct-acme-west',
+      accountId: 'acct-acme-west',
     },
     {
       kind: 'contact',
       id: 'ct-info-initech',
       name: 'Initech front desk',
       email: 'info@initech.com',
-      account: 'acct-initech',
+      accountId: 'acct-initech',
     },
     {
       kind: 'contact',
       id: 'ct-info-globex',
       name: 'Globex reseller desk',
       email: 'info@initech.com',
-      account: 'acct-globex',
+      accountId: 'acct-globex',
     },
   ],
 };
@@ -4661,15 +4665,18 @@ function simulatePlan(plan: Omit<StagedPlan, 'conflicts'>): {
 }
 
 /** Catalog step: one page of the customer's legacy export. */
-async function readSourcePage(request: { dataset: string; cursor?: number }) {
+async function readSourcePage(request: {
+  dataset: string;
+  cursor: string | null;
+}) {
   'use step';
   const rows = LEGACY_DATASETS[request.dataset];
   if (!rows) throw new FatalError(`Unknown dataset "${request.dataset}"`);
-  const start = request.cursor ?? 0;
+  const start = request.cursor === null ? 0 : Number(request.cursor);
   const end = start + SOURCE_PAGE_SIZE;
   return {
     records: rows.slice(start, end),
-    nextCursor: end < rows.length ? end : undefined,
+    nextCursor: end < rows.length ? String(end) : null,
   };
 }
 

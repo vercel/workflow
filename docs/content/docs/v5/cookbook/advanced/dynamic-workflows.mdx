@@ -45,13 +45,13 @@ A procedure is trusted application code with your deployment's privileges, not a
 The platform deploys a fixed set of migration steps once. Steps do the I/O: they read the legacy export and write to the destination. The procedure decides what to write and in what order, and reaches the steps only through `steps.<name>()`.
 
 ```typescript title="workflows/migration-steps.ts" lineNumbers
-declare const legacyCrm: { page(dataset: string, cursor?: number): Promise<{ records: unknown[]; nextCursor?: number }> }; // @setup
+declare const legacyCrm: { page(dataset: string, cursor: string | null): Promise<{ records: unknown[]; nextCursor: string | null }> }; // @setup
 declare const destinations: { lookup(r: any): Promise<any>; stage(r: any): Promise<any>; apply(r: any): Promise<any>; verify(r: any): Promise<any> }; // @setup
 declare function notifyReviewer(r: any): Promise<void>; // @setup
 declare function saveReport(r: any): Promise<string>; // @setup
 
 /** One page of the customer's legacy export. */
-export async function readSourcePage(request: { dataset: string; cursor?: number }) {
+export async function readSourcePage(request: { dataset: string; cursor: string | null }) {
   "use step";
   return await legacyCrm.page(request.dataset, request.cursor);
 }
@@ -136,18 +136,18 @@ export const MIGRATION_CATALOG = {
 This is Acme's procedure. It is a file in the integration team's repository, not part of the deployment. It migrates each account family as its own plan, all families at once, and only the family whose owners disagree waits for a person:
 
 {/* @skip-typecheck: dynamic workflow source, evaluated with injected steps and createHook */}
-```javascript title="procedures/acme-parent-first.js" lineNumbers
+```javascript title="procedures/crm-parent-first.js" lineNumbers
 async function workflow(input) {
   "use workflow";
   const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
 
   const rows = [];
-  let cursor;
+  let cursor = null;
   do {
     const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
     rows.push(...page.records);
     cursor = page.nextCursor;
-  } while (cursor !== undefined);
+  } while (cursor !== null);
 
   // This customer's rules: a family is every account under one contract root,
   // accounts on the same contract are one account, and a contact is one person
@@ -156,7 +156,7 @@ async function workflow(input) {
   const contacts = rows.filter((row) => row.kind === "contact");
   const families = new Map();
   for (const row of accounts) {
-    const family = row.contract.split("/")[0];
+    const family = row.contract.split("/")[0].toLowerCase();
     families.set(family, [...(families.get(family) || []), row]);
   }
 
@@ -165,7 +165,7 @@ async function workflow(input) {
     const ordered = [];
     const visit = (row) => {
       if (ordered.includes(row)) return;
-      const parent = members.find((other) => other.id === row.parent);
+      const parent = members.find((other) => other.id === row.parentId);
       if (parent) visit(parent);
       ordered.push(row);
     };
@@ -176,7 +176,7 @@ async function workflow(input) {
     const survivorOf = new Map();
     for (const row of ordered) {
       ops.push({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, sources: [row.id] });
-      if (row.parent) ops.push({ op: "setParent", account: row.id, parent: row.parent });
+      if (row.parentId) ops.push({ op: "setParent", account: row.id, parent: row.parentId });
       const survivor = survivors.get(row.contract);
       if (!survivor) {
         survivors.set(row.contract, row.id);
@@ -192,11 +192,11 @@ async function workflow(input) {
 
     const people = new Map();
     for (const row of contacts) {
-      if (!survivorOf.has(row.account)) continue;
+      if (!survivorOf.has(row.accountId)) continue;
       const email = row.email.trim().toLowerCase();
       const person = people.get(email) || { key: row.id, name: row.name, email, sources: [], accounts: [] };
       person.sources.push(row.id);
-      person.accounts.push(survivorOf.get(row.account));
+      person.accounts.push(survivorOf.get(row.accountId));
       people.set(email, person);
     }
     for (const person of people.values()) {
@@ -243,7 +243,7 @@ async function workflow(input) {
 
 The procedure owns the customer's policy, and nothing in the catalog knows about it:
 
-- **Families.** Accounts are grouped by the root of their contract number, so `C-100`, `C-100/E`, and `C-100/W` are one family. Each family becomes its own plan, and `Promise.all` runs them concurrently.
+- **Families.** Accounts are grouped by the root of their contract number, so `C-100`, `C-100/E`, and `C-100/W` are one family, keyed `c-100`. Each family becomes its own plan, and `Promise.all` runs them concurrently.
 - **Parent-first order.** Within a family, an account is written only after the account it reports to. The destination checks that every parent resolves, so writing a child first would fail the plan.
 - **One account per contract.** Two rows on the same contract become one account through `mergeAccount`. If their owners differ, the plan comes back with a conflict, and the procedure asks a person.
 - **One person per email within a family.** Ada Park appears once per region with differently cased emails, and becomes one contact linked to both regions. `info@initech.com` appears in two families, so it stays two contacts.
@@ -253,7 +253,7 @@ Every parameter, including the dataset, the destination, and the token prefix, a
 
 ## Publish and start it
 
-Nothing about this procedure existed when the platform deployed. After the procedure is reviewed and merged in the integration repository, a release job stores the file and its step names wherever the platform keeps procedures, keyed by a stable procedure ID such as `acme-parent-first`. A route then starts it on the running deployment:
+Nothing about this procedure existed when the platform deployed. After the procedure is reviewed and merged in the integration repository, a release job stores the file and its step names wherever the platform keeps procedures, keyed by a stable procedure ID such as `crm-parent-first`. A route then starts it on the running deployment:
 
 ```typescript title="app/api/migrations/route.ts" lineNumbers
 import { start } from "workflow/api";
@@ -313,7 +313,7 @@ The whole sequence is:
 
 ## Review an owner conflict
 
-Initech's two rows share contract `C-300` but list different owners, so only that family waits. Its token is the run's `tokenPrefix` plus the family. The review route resumes it after authorizing the reviewer:
+Initech's two rows share contract `C-300` but list different owners, so only that family waits. Its token is the run's `tokenPrefix` plus the family key, the lowercased contract root (`c-300`). The review route resumes it after authorizing the reviewer:
 
 ```typescript title="app/api/migrations/[runId]/reviews/route.ts" lineNumbers
 import { getHookByToken, resumeHook } from "workflow/api";
@@ -388,7 +388,7 @@ After the reviewer picks `sam` as Initech's owner, the destination holds:
 Another customer team prefers to see everything land before anything is reconciled. Procedure B runs over the same catalog and is published later, without a deploy. It is structured differently: instead of building each family carefully and pausing only the ambiguous one, it writes every row as it is, then stages one consolidation over all of it, and asks for one review of the whole change:
 
 {/* @skip-typecheck: excerpt of dynamic workflow source */}
-```javascript title="procedures/acme-provisional-first.js (excerpt)" lineNumbers
+```javascript title="procedures/crm-provisional-first.js (excerpt)" lineNumbers
   // 1. Land every row as written: provisional, flat, one record per row.
   const load = await steps.stageChanges({
     ...scope,
@@ -397,7 +397,7 @@ Another customer team prefers to see everything land before anything is reconcil
       ...accounts.map((row) => ({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, status: "provisional", sources: [row.id] })),
       ...contacts.flatMap((row) => [
         { op: "createContact", key: row.id, name: row.name, email: row.email.trim().toLowerCase(), sources: [row.id] },
-        { op: "linkContact", contact: row.id, account: row.account },
+        { op: "linkContact", contact: row.id, account: row.accountId },
       ]),
     ],
   });
@@ -520,7 +520,7 @@ See [Rules for the source](/docs/advanced/dynamic-workflows#rules-for-the-source
 
 ## Testing it
 
-The e2e tests behind this recipe run both procedures against a synthetic `acme-legacy` dataset and a **pure simulated destination**: each plan's records are derived from the plan and the plans it depends on, and `verifyChanges` reconciles the results it is given. That shows the workflow's guarantees, including replay of recorded step results across a pause. It does not show destination-side deduplication when a write's outcome is unknown, which needs a destination that stores idempotency keys; test that against your real adapter.
+The e2e tests behind this recipe run both procedures against a synthetic `synthetic-crm-v1` dataset and a **pure simulated destination**: each plan's records are derived from the plan and the plans it depends on, and `verifyChanges` reconciles the results it is given. That shows the workflow's guarantees, including replay of recorded step results across a pause. It does not show destination-side deduplication when a write's outcome is unknown, which needs a destination that stores idempotency keys; test that against your real adapter.
 
 ## Key APIs
 
