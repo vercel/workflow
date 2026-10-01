@@ -190,7 +190,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'dynamic-workflows',
     title: 'Dynamic Workflows',
     description:
-      'Publish reviewed workflow source after deploy and run it on an unchanged deployment, over a fixed catalog of deployed steps.',
+      'Run a customer-specific migration procedure, written and approved after deploy, as a durable workflow over a fixed catalog of deployed steps.',
     category: 'advanced',
     skipVersions: ['v4'],
   },
