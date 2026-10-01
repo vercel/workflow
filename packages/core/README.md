@@ -82,7 +82,7 @@ A retained owner always arms a durable delayed wake for a pending `sleep()`.
 The queue delivers it to the public flow route, which relays it to the owner
 with `invoke` (affinity = run ID), so a live owner receives it in-process.
 
-When a sleep ends within `WORKFLOW_RETAINED_LOCAL_TIMER_MS` (default 30,000 ms;
+When a sleep ends within `WORKFLOW_RETAINED_LOCAL_TIMER_MS` (default 120,000 ms;
 `0` disables) and before the function deadline, the owner also arms an
 in-process timer that enters the same mailbox and completes the wait without a
 queue round trip. The durable wake is then scheduled 15 s after `resumeAt` as a

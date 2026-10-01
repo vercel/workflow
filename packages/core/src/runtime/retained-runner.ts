@@ -220,7 +220,7 @@ function materializeEntityPayloads<T extends object>(
 
 /** Sleeps that end within this many ms wake the owner from an in-process timer
  * (WORKFLOW_RETAINED_LOCAL_TIMER_MS; 0 disables). */
-const DEFAULT_LOCAL_TIMER_MAX_MS = 30_000;
+const DEFAULT_LOCAL_TIMER_MAX_MS = 120_000;
 /** The queued backstop for a local timer fires this much after resumeAt. */
 const LOCAL_TIMER_BACKSTOP_SECONDS = 15;
 const LOCAL_TIMER_DEADLINE_MARGIN_MS = 5_000;
