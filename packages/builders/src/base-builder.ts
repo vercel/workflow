@@ -32,6 +32,7 @@ import {
   type DiscoveredEntries,
   fastDiscoverEntries,
 } from './fast-discovery.js';
+import { assertFlowBundleIsSandboxSafe } from './flow-bundle-safety.js';
 import {
   hashManifestSource,
   type ManifestEntryLocation,
@@ -1263,7 +1264,6 @@ export const __steps_registered = true;
     outfile,
     bundleFinalOutput = true,
     keepInterimBundleContext = this.config.watch,
-    includeMetafile = false,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -1273,7 +1273,6 @@ export const __steps_registered = true;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
     keepInterimBundleContext?: boolean;
-    includeMetafile?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
@@ -1281,7 +1280,7 @@ export const __steps_registered = true;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     /** The raw workflow VM code (before wrapping with entrypoint) */
     interimBundleText?: string;
-    /** The initial workflow VM build graph, when requested by a caller. */
+    /** The initial workflow VM build graph. */
     interimBundleMetafile?: esbuild.Metafile;
   }> {
     const discovered =
@@ -1392,7 +1391,10 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      metafile: includeMetafile,
+      // `assertFlowBundleIsSandboxSafe()` below and
+      // `createNodeModuleErrorPlugin()` (which sets this itself) both need the
+      // build graph to attribute externalized imports back to user code.
+      metafile: true,
       // Initialize the workflow registry at the beginning of the bundle
       // This must be in banner (not the virtual entry) because esbuild's bundling
       // can reorder code, and the .set() calls need the Map to exist first
@@ -1496,6 +1498,16 @@ export const __steps_registered = true;
           hint: 'This usually indicates a misconfigured entry point or an empty workflow directory. Check that your workflow files contain a `"use workflow"` or `"use step"` directive.',
         });
       }
+
+      // The VM this bundle runs in has no `require`, so any externalized
+      // import or unresolved `require()` left in the CJS output is a
+      // guaranteed `ReferenceError` at load time. Fail here instead of
+      // shipping a bundle that cannot start.
+      await assertFlowBundleIsSandboxSafe({
+        bundleText: interimBundle.outputFiles[0].text,
+        metafile: interimBundle.metafile,
+        warn: (message) => console.warn(chalk.yellow(message)),
+      });
 
       // Serde compliance warnings: check if workflow bundle has Node.js imports
       // alongside serde-registered classes (these will fail at runtime in the sandbox)
