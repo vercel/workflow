@@ -28,11 +28,8 @@ function createStorage(
   };
 }
 
-function getDefaultMaxPoolSize(): number | undefined {
-  const parsed = parseInt(
-    process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE || '',
-    10
-  );
+function getPositiveIntEnv(name: string): number | undefined {
+  const parsed = parseInt(process.env[name] || '', 10);
 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
@@ -52,12 +49,14 @@ export function createWorld(
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
       50,
+    pollInterval: getPositiveIntEnv('WORKFLOW_POSTGRES_POLL_INTERVAL_MS'),
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
   }
 ): World & { start(): Promise<void> } {
-  const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
+  const maxPoolSize =
+    config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
   const pool =
     config.pool ||
     new Pool({

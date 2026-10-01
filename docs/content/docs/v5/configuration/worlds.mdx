@@ -160,6 +160,12 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Number of concurrent workers polling for jobs.
 - Also bounds concurrent parent-to-child workflow return-value polls.
 
+### `pollInterval`
+
+- Environment variable: `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
+- Default: `500`
+- Milliseconds between idle job fetches per worker.
+
 ### `applicationManagedShutdown`
 
 - Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)
