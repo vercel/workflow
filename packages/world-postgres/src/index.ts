@@ -8,6 +8,7 @@ import {
   createRunStatusListener,
   type RunStatusListener,
 } from './run-status.js';
+import { createSnapshotsStorage } from './snapshots.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -25,6 +26,7 @@ function createStorage(
     events: createEventsStorage(drizzle),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
+    experimental_snapshots: createSnapshotsStorage(drizzle),
   };
 }
 
