@@ -1613,6 +1613,39 @@ describe('scheduled timer wakes', () => {
     });
   });
 
+  it('accepts the wrapper inside a Schedules delivery envelope', async () => {
+    vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '');
+    let capturedHandler!: (
+      message: unknown,
+      metadata: unknown
+    ) => Promise<void>;
+    mockHandleCallback.mockImplementation((handler) => {
+      capturedHandler = handler;
+      return async () => new Response('ok');
+    });
+    const handled: unknown[] = [];
+    createQueue().createQueueHandler('__wkf_workflow_', async (payload) => {
+      handled.push(payload);
+    });
+    await capturedHandler(
+      {
+        payload: {
+          payload: { runId: 'wrun_A' },
+          queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_run',
+        },
+      },
+      {
+        messageId: 'msg-1',
+        deliveryCount: 1,
+        createdAt: new Date(),
+        topicName: '__wkf_workflow_test',
+        consumerGroup: 'default',
+      }
+    );
+    expect(handled).toEqual([{ runId: 'wrun_A' }]);
+  });
+
   it('keeps step messages and wakes without wakeAt on the queue', async () => {
     mockSend.mockResolvedValue({ messageId: 'msg-1' });
     const queue = createQueue();

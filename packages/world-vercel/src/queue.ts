@@ -204,6 +204,27 @@ const MessageWrapper = z.compile(
 );
 
 /**
+ * Vercel Schedules publish the configured payload inside an envelope
+ * (`{ payload, ... }`), so a scheduled wake carries the wrapper one level down.
+ */
+function parseMessageWrapper(message: unknown) {
+  const direct = MessageWrapper.safeParse(message);
+  if (direct.success) return direct.data;
+  const nested =
+    message && typeof message === 'object' && 'payload' in message
+      ? MessageWrapper.safeParse(message.payload)
+      : undefined;
+  if (nested?.success) return nested.data;
+  console.warn('[workflow] Unrecognized queue message shape', {
+    keys:
+      message && typeof message === 'object'
+        ? Object.keys(message)
+        : typeof message,
+  });
+  throw direct.error;
+}
+
+/**
  * Sleep Implementation via Message Delays
  *
  * VQS v3 supports `delaySeconds` which delays the initial delivery of a message.
@@ -832,7 +853,7 @@ export function createQueue(config?: APIConfig): Queue {
         if (!message || !metadata) return;
         const context = requestIdStorage.getStore();
         const { payload, queueName, deploymentId } =
-          MessageWrapper.parse(message);
+          parseMessageWrapper(message);
 
         const executorRunId = orchestrationRunId(payload);
         const invokeHandler = () =>
