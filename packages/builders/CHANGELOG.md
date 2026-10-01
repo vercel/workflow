@@ -1,5 +1,16 @@
 # @workflow/builders
 
+## 4.1.16
+
+### Patch Changes
+
+- [#3954](https://github.com/vercel/workflow/pull/3954) [`08b4420`](https://github.com/vercel/workflow/commit/08b44209e1eb219d1a9c87af848ad36e83f5f75d) Thanks [@withkarann](https://github.com/withkarann)! - Fix directive discovery missing `"use step"` and `"use workflow"` when a backtick appears earlier in a comment or regex literal
+
+- [#4537](https://github.com/vercel/workflow/pull/4537) [`6bb5224`](https://github.com/vercel/workflow/commit/6bb52248b022115f878f4857ce219d5f672191a4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep JSON import attributes in generated bundles, and stop bundling the builder's own serde checker into step and workflow bundles
+
+- Updated dependencies []:
+  - @workflow/core@4.8.11
+
 ## 4.1.15
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+## 4.7.6
+
+### Patch Changes
+
+- [#4557](https://github.com/vercel/workflow/pull/4557) [`3c033a9`](https://github.com/vercel/workflow/commit/3c033a9ceefcdfcb5a1150a3d4f98555131f6d2d) Thanks [@SandboxRD](https://github.com/SandboxRD)! - Fix `createQueueDispatcher()` and `createEventsDispatcher()` crashing under Bun with `compose is not a function`. Bun resolves `undici` to its built-in module, whose dispatchers can't compose interceptors and are ignored by Bun's `fetch`, so the plain dispatcher is used instead.
+
+- [#4275](https://github.com/vercel/workflow/pull/4275) [`b5a78f8`](https://github.com/vercel/workflow/commit/b5a78f8b6856d2b9bbce69ab865d135d52200ecd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Honor server-provided Retry-After delays when scheduling queue redeliveries.
+
 ## 4.7.5
 
 ### Patch Changes
