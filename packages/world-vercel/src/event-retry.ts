@@ -53,9 +53,9 @@
  * instead (see isFirewallChallenge429), so throttle retries cannot hot-loop
  * against the firewall. Each retry honors the server's `retryAfter`. How long
  * a POST keeps waiting depends on what giving up would throw away (see
- * ThrottleBudget): `step_completed` and `step_retrying` wait for as long as
- * the invocation has time left, because giving up means re-running the step
- * body on redelivery. Every other write keeps the short
+ * ThrottleBudget): a write recording the outcome of a step body that already
+ * ran waits for as long as the invocation has time left, because giving up
+ * means re-running the body on redelivery. Every other write keeps the short
  * THROTTLE_RETRY_BUDGET_MS. Beyond either, the ThrottleError surfaces and the
  * queue's redelivery takes over.
  *
@@ -114,7 +114,9 @@ type WorkflowEventType = z.infer<typeof EventTypeSchema>;
  *
  * `step_failed` is left out: besides recording a body's failure, it is written
  * on the replay path for a step whose arguments failed to serialize (no body
- * ran), where a long wait would count against the replay budget.
+ * ran), where a long wait would count against the replay budget. The runtime
+ * marks the post-body ones instead (`CreateEventParams.afterStepBody`, passed
+ * here as EventPostRetryOptions.afterStepBody).
  */
 const STEP_OUTCOME_EVENT_TYPES: ReadonlySet<WorkflowEventType> = new Set([
   'step_completed',
@@ -455,6 +457,13 @@ export interface EventPostRetryOptions {
    * non-retryable regardless.
    */
   batchIdempotent?: boolean;
+  /**
+   * The write records the outcome of a step body this invocation already ran
+   * (`CreateEventParams.afterStepBody`), so it gets the `invocation` throttle
+   * budget whatever its event type. See STEP_OUTCOME_EVENT_TYPES for why
+   * `step_failed` needs it.
+   */
+  afterStepBody?: boolean;
 }
 
 /**
@@ -469,9 +478,10 @@ export interface EventPostRetryOptions {
  *   handlers (`start()`, `resumeHook()`) that should not be held for minutes.
  * - `invocation`: until the invocation's deadline, less
  *   THROTTLE_DEADLINE_RESERVE_MS, capped at THROTTLE_RETRY_MAX_BUDGET_MS. For
- *   a write that only step execution makes, outside the replay budget (see
- *   STEP_OUTCOME_EVENT_TYPES). Falls back to `bounded` when the deadline is
- *   unknown.
+ *   a write that records a step body's outcome, made from step execution
+ *   outside the replay budget (see STEP_OUTCOME_EVENT_TYPES and
+ *   EventPostRetryOptions.afterStepBody). Falls back to `bounded` when the
+ *   deadline is unknown.
  *
  * Either budget also stops before the deadline: a wait that would outlast the
  * invocation surfaces the 429 instead, so the queue's redelivery (which honors
@@ -556,7 +566,9 @@ function throttleBudgetFor(
   // Batches carry replay-path fan-out (creates and starts), never a step's
   // outcome, and their first event says nothing about the rest.
   if (options?.batchIdempotent !== undefined) return 'bounded';
-  return recordsStepOutcome(eventType) ? 'invocation' : 'bounded';
+  return options?.afterStepBody === true || recordsStepOutcome(eventType)
+    ? 'invocation'
+    : 'bounded';
 }
 
 /** Whether this event type may retry transient failures in-process, including

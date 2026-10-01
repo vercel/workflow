@@ -532,6 +532,22 @@ describe('withEventPostRetry', () => {
       );
     });
 
+    it('gives a step_failed recorded after the body ran the invocation budget', async () => {
+      deadlineIn(300_000);
+      const fn = alwaysThrottled(14);
+
+      const p = withEventPostRetry(fn, 'step_failed', {
+        afterStepBody: true,
+      }).catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      const waits = Math.floor(
+        (300_000 - THROTTLE_DEADLINE_RESERVE_MS) / 14_000
+      );
+      expect(fn).toHaveBeenCalledTimes(waits + 1);
+    });
+
     it('keeps a batch on the 30s budget whatever its first event', async () => {
       deadlineIn(300_000);
       const fn = alwaysThrottled(14);

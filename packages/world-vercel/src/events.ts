@@ -678,6 +678,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           data.eventType === 'hook_received' &&
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
+        afterStepBody: params?.afterStepBody === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {

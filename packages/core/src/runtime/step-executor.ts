@@ -1354,23 +1354,27 @@ export async function executeStep(
           setErrorStack(effectiveErr, normalizedStack);
         }
         try {
-          await createEvent({
-            eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              error: await dehydrateStepError(
-                effectiveErr,
-                workflowRunId,
-                await getEncryptionKey(),
-                [],
-                globalThis,
-                compression
-              ),
-              ...latencyEventData,
+          await createEvent(
+            {
+              eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                error: await dehydrateStepError(
+                  effectiveErr,
+                  workflowRunId,
+                  await getEncryptionKey(),
+                  [],
+                  globalThis,
+                  compression
+                ),
+                ...latencyEventData,
+              },
             },
-          });
+            // The body ran: losing this write to redelivery would run it again.
+            { afterStepBody: true }
+          );
         } catch (stepFailErr) {
           if (EntityConflictError.is(stepFailErr)) {
             runtimeLogger.info(
@@ -1423,23 +1427,27 @@ export async function executeStep(
         (wrappedError as Error).cause = err;
         if (normalizedStack) wrappedError.stack = normalizedStack;
         try {
-          await createEvent({
-            eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              error: await dehydrateStepError(
-                wrappedError,
-                workflowRunId,
-                await getEncryptionKey(),
-                [],
-                globalThis,
-                compression
-              ),
-              ...latencyEventData,
+          await createEvent(
+            {
+              eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                error: await dehydrateStepError(
+                  wrappedError,
+                  workflowRunId,
+                  await getEncryptionKey(),
+                  [],
+                  globalThis,
+                  compression
+                ),
+                ...latencyEventData,
+              },
             },
-          });
+            // The body ran: losing this write to redelivery would run it again.
+            { afterStepBody: true }
+          );
         } catch (stepFailErr) {
           if (EntityConflictError.is(stepFailErr)) {
             runtimeLogger.info(

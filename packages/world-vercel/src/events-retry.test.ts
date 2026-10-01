@@ -28,6 +28,11 @@ vi.mock('./events-v4.js', () => ({
 
 import { AfterCommitError } from './event-retry.js';
 import { createWorkflowRunEvent } from './events.js';
+import { getDeadline } from './get-deadline.js';
+
+vi.mock('./get-deadline.js', () => ({
+  getDeadline: vi.fn(async () => undefined),
+}));
 
 const RUN_ID = 'wrun_test';
 const CONFIG = { token: 'test-token' };
@@ -62,6 +67,37 @@ describe('createWorkflowRunEvent retry wiring', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each([
+    [true, 5],
+    [false, 3],
+  ])('threads afterStepBody=%s into the step_failed throttle budget', async (afterStepBody, calls) => {
+    vi.mocked(getDeadline).mockResolvedValue(new Date(Date.now() + 300_000));
+    let attempt = 0;
+    createV4Mock.mockImplementation(async () => {
+      attempt++;
+      if (attempt <= 4) throw new ThrottleError('429', { retryAfter: 14 });
+      return v4Success();
+    });
+
+    const p = createWorkflowRunEvent(
+      RUN_ID,
+      {
+        eventType: 'step_failed',
+        correlationId: 'step_1',
+        specVersion: 2,
+        eventData: { stepName: 's', error: new Uint8Array() },
+      },
+      afterStepBody ? { afterStepBody: true } : undefined,
+      CONFIG
+    ).catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    const result = await p;
+
+    expect(createV4Mock).toHaveBeenCalledTimes(calls);
+    expect(ThrottleError.is(result)).toBe(!afterStepBody);
+    vi.mocked(getDeadline).mockResolvedValue(undefined);
   });
 
   it('surfaces a throttled run_started suffix read without re-sending the POST', async () => {
