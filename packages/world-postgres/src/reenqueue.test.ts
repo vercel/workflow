@@ -208,6 +208,26 @@ describe('re-enqueue active runs on start', () => {
     await world.close();
   });
 
+  it('re-enqueues on start() while claims are paused, and not again on resumeClaims()', async () => {
+    mockRunsList({
+      running: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+    });
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.pauseClaims();
+    await world.start();
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+
+    await world.resumeClaims();
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(1);
+
+    await world.close();
+  });
+
   it('does not enqueue anything when there are no active runs', async () => {
     mockRunsList({});
 
