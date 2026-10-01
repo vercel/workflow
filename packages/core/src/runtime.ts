@@ -144,6 +144,7 @@ import {
   hydrateDynamicWorkflowCode,
   type PayloadKey,
 } from './serialization.js';
+import { setErrorStack } from './set-error-stack.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -5604,7 +5605,7 @@ export function workflowEntrypoint(
                         // Error` is `false` for VM-thrown errors. The V8
                         // type tag works across realms.
                         if (types.isNativeError(terminalError) && errorStack) {
-                          (terminalError as Error).stack = errorStack;
+                          setErrorStack(terminalError, errorStack);
                         }
 
                         // Fail the workflow run via event (event-sourced).
