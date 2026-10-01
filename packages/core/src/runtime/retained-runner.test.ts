@@ -1910,3 +1910,90 @@ it('reconstructs idempotency and VM state after an idle owner retires', async ()
     recovered.events.filter((event) => event.eventType === 'hook_received')
   ).toHaveLength(3);
 });
+
+const sleepCode = `
+  const sleep = globalThis[Symbol.for('WORKFLOW_SLEEP')];
+  const mark = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('sleepMark');
+  async function workflow() {
+    await mark('before');
+    await sleep(400);
+    return mark('after');
+  }
+  globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+it('wakes a short sleep from an in-owner timer and keeps the queued wake only as a later backstop', async () => {
+  const marks: Array<{ label: string; at: number }> = [];
+  registerStepFunction('sleepMark', async (label) => {
+    marks.push({ label: label as string, at: Date.now() });
+    return label;
+  });
+  const fixture = await setup(sleepCode);
+  const queued: Array<{ delaySeconds?: number; idempotencyKey?: string }> = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      queued.push({
+        delaySeconds: options?.delaySeconds,
+        idempotencyKey: options?.idempotencyKey,
+      });
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await vi.waitFor(
+    () => expect(marks.map((m) => m.label)).toEqual(['before', 'after']),
+    { timeout: 5000 }
+  );
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+  // One durable wake, armed after the timer would fire: never the first path.
+  expect(queued).toHaveLength(1);
+  expect(queued[0].delaySeconds).toBeGreaterThanOrEqual(15);
+  expect(queued[0].idempotencyKey).toMatch(/^retained-wait:/);
+  expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
+});
+
+it('uses the queued wake when local timers are disabled', async () => {
+  vi.stubEnv('WORKFLOW_RETAINED_LOCAL_TIMER_MS', '0');
+  cleanups.push(async () => vi.unstubAllEnvs());
+  const marks: string[] = [];
+  registerStepFunction('sleepMark', async (label) => {
+    marks.push(label as string);
+    return label;
+  });
+  const fixture = await setup(sleepCode);
+  const queued: number[] = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      queued.push(options?.delaySeconds ?? 0);
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await vi.waitFor(() => expect(queued).toHaveLength(1));
+  expect(queued[0]).toBe(1);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  // Nothing wakes the owner in-process; the relayed queue delivery does. The
+  // idle fixture owner has retired, so the delivery starts a fresh owner.
+  expect(marks).toEqual(['before']);
+  await fixture.finished;
+  const owner = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    sleepCode,
+    fixture.metadata,
+    () => {},
+    40
+  );
+  await owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('vqs-wake') }
+  );
+  await vi.waitFor(() => expect(marks).toEqual(['before', 'after']));
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});

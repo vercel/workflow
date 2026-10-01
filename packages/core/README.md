@@ -75,3 +75,16 @@ acknowledged only after the owner's durability barrier. A delivery failure witho
 a committed outcome faults the run instead of silently falling back to a queue.
 The existing durable delayed wake remains the recovery backstop for interrupted
 attempts; it is not the overflow execution or result transport.
+
+### Sleeps in a retained run (experimental)
+
+A retained owner always arms a durable delayed wake for a pending `sleep()`.
+The queue delivers it to the public flow route, which relays it to the owner
+with `invoke` (affinity = run ID), so a live owner receives it in-process.
+
+When a sleep ends within `WORKFLOW_RETAINED_LOCAL_TIMER_MS` (default 30,000 ms;
+`0` disables) and before the function deadline, the owner also arms an
+in-process timer that enters the same mailbox and completes the wait without a
+queue round trip. The durable wake is then scheduled 15 s after `resumeAt` as a
+backstop for a lost owner; when it arrives after the timer it is a no-op. A
+pending local timer keeps the owner alive past its idle window.

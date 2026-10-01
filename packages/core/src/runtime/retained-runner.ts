@@ -218,6 +218,22 @@ function materializeEntityPayloads<T extends object>(
   return materialized as T;
 }
 
+/** Sleeps that end within this many ms wake the owner from an in-process timer
+ * (WORKFLOW_RETAINED_LOCAL_TIMER_MS; 0 disables). */
+const DEFAULT_LOCAL_TIMER_MAX_MS = 30_000;
+/** The queued backstop for a local timer fires this much after resumeAt. */
+const LOCAL_TIMER_BACKSTOP_SECONDS = 15;
+const LOCAL_TIMER_DEADLINE_MARGIN_MS = 5_000;
+
+function localTimerMaxMs(): number {
+  const raw = process.env.WORKFLOW_RETAINED_LOCAL_TIMER_MS;
+  if (raw === undefined || raw === '') return DEFAULT_LOCAL_TIMER_MAX_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : DEFAULT_LOCAL_TIMER_MAX_MS;
+}
+
 /** One owner, one mailbox and one committed projection. Transport supplies exclusion. */
 export class RetainedRunner {
   readonly id = randomUUID();
@@ -248,6 +264,7 @@ export class RetainedRunner {
   private workers = new Map<string, Promise<void>>();
   private localWorkers = new Set<string>();
   private timerWakeups = new Set<string>();
+  private localTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private lifetime?: Promise<void>;
   private closing = false;
   private deadline = Infinity;
@@ -1089,12 +1106,18 @@ export class RetainedRunner {
           const wakeKey = handled.waitTimeout.correlationId;
           if (!this.timerWakeups.has(wakeKey)) {
             this.timerWakeups.add(wakeKey);
+            const local = this.armLocalTimer(wakeKey);
+            // The durable wake is always armed. With a local timer it is only a
+            // backstop for a lost owner, scheduled after the timer should fire.
             await this.backend.queue(
               this.metadata.queueName,
               { runId: this.runId },
               {
                 deploymentId: this.runState.deploymentId,
-                delaySeconds: handled.waitTimeout.seconds,
+                delaySeconds: local
+                  ? Math.ceil(local.delayMs / 1000) +
+                    LOCAL_TIMER_BACKSTOP_SECONDS
+                  : handled.waitTimeout.seconds,
                 idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
               }
             );
@@ -1291,6 +1314,44 @@ export class RetainedRunner {
           ...this.runState,
         });
     }
+  }
+
+  /** Wake this owner in-process for a short sleep instead of waiting for the
+   * queue. Only used when the wait ends well before the function deadline;
+   * the queued wake remains the durable backstop. */
+  private armLocalTimer(waitId: string): { delayMs: number } | undefined {
+    const maxMs = localTimerMaxMs();
+    if (maxMs <= 0 || this.localTimers.has(waitId)) return undefined;
+    let resumeAt: Date | undefined;
+    for (const event of this.events)
+      if (event.eventType === 'wait_created' && event.correlationId === waitId)
+        resumeAt = event.eventData.resumeAt;
+    if (!resumeAt) return undefined;
+    const delayMs = Math.max(0, +resumeAt - Date.now());
+    // A pending local timer keeps the owner loop alive past its idle window.
+    if (
+      delayMs > maxMs ||
+      Date.now() + delayMs >= this.deadline - LOCAL_TIMER_DEADLINE_MARGIN_MS
+    )
+      return undefined;
+    const timer = setTimeout(() => {
+      this.localTimers.delete(waitId);
+      this.observe('local_timer', 'end', randomUUID(), {
+        waitId,
+        status: 'completed',
+        delayMs,
+      });
+      // Same mailbox as every other input. If the owner is retiring or full,
+      // the queued backstop delivers the wake instead.
+      this.enqueue(`local-timer:${waitId}`, async () => {
+        if (this.runState && !isTerminalWorkflowRunStatus(this.runState.status))
+          await this.advance();
+      }).catch(() => {});
+      // Timers may fire marginally before the wall clock reaches resumeAt.
+    }, delayMs + 5);
+    this.localTimers.set(waitId, timer);
+    this.observe('local_timer', 'begin', randomUUID(), { waitId, delayMs });
+    return { delayMs };
   }
 
   private async completeDueWaits() {
@@ -1799,7 +1860,8 @@ export class RetainedRunner {
             resolve(true);
           };
         });
-        if (!woke && this.workers.size === 0) break;
+        if (!woke && this.workers.size === 0 && this.localTimers.size === 0)
+          break;
         continue;
       }
       if (item.batch && this.initialized && this.eventWriter?.stage)
@@ -1807,6 +1869,8 @@ export class RetainedRunner {
       else await item.run.call(undefined).then(item.resolve, item.reject);
     }
     this.closing = true;
+    for (const timer of this.localTimers.values()) clearTimeout(timer);
+    this.localTimers.clear();
     if (
       this.workers.size > 0 &&
       this.runState &&
