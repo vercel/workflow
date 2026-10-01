@@ -1092,7 +1092,7 @@ export function createEventsDispatcher(
     }),
     getEventsRetryAgentOptions()
   );
-  if (!h2) {
+  if (!h2 || !supportsCompose(agent)) {
     return agent;
   }
   // HTTP/1.1 agent for the bodies the interceptor will not re-buffer; see
@@ -1115,6 +1115,28 @@ export function createEventsDispatcher(
     ) as unknown as RetryAgent,
     streamedBodyAgent
   );
+}
+
+/**
+ * Whether `dispatcher` can take interceptors through `Dispatcher.compose()`.
+ *
+ * False under Bun: `import { Agent } from 'undici'` resolves to Bun's built-in
+ * `undici` module even when the package is installed, and its dispatcher
+ * classes are stubs with no `compose` or `dispatch`. Bun's `fetch` also ignores
+ * the `dispatcher` option, so there is nothing for an interceptor to wrap;
+ * callers skip composing and return the plain dispatcher.
+ *
+ * Under Bun every dispatcher setting in this file is therefore inert, not just
+ * the interceptors: `connections`, `pipelining`, `allowH2`, `keepAliveTimeout`,
+ * `headersTimeout`, `bodyTimeout`, the retry options, and the queue path's
+ * deadline (deadlineInterceptor). A hung queue request is bounded only by Bun's
+ * own `fetch` default (300s, the length of the message lease), so the
+ * visibility-renewal loop gets no retry window. The runtime-neutral fix is an
+ * `AbortSignal` on the `fetch` call inside `@vercel/queue`, which Bun honors;
+ * that needs a change there and is out of scope here.
+ */
+export function supportsCompose(dispatcher: Agent | RetryAgent): boolean {
+  return typeof (dispatcher as Partial<Agent>).compose === 'function';
 }
 
 /**
@@ -1188,10 +1210,11 @@ export function createStreamDispatcher(
  * Exported so a test can exercise this exact wiring rather than the singleton.
  */
 export function createQueueDispatcher(): RetryAgent {
+  const agent = new Agent(getQueueAgentOptions());
   return new RetryAgent(
-    new Agent(getQueueAgentOptions()).compose(
-      deadlineInterceptor(getQueueRequestTimeoutMs())
-    ),
+    supportsCompose(agent)
+      ? agent.compose(deadlineInterceptor(getQueueRequestTimeoutMs()))
+      : agent,
     getRetryAgentOptions()
   );
 }
