@@ -1,5 +1,13 @@
 # @workflow/world
 
+## 5.0.1
+
+### Patch Changes
+
+- [#3251](https://github.com/vercel/workflow/pull/3251) [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add experimental threshold-based VM-memory snapshotting to the QuickJS engine via `WORKFLOW_SNAPSHOT_THRESHOLD` (or per-run `executionContext.snapshotThreshold`). Once the configured number of events has been processed since the last snapshot, suspensions persist a compressed, encrypted VM snapshot, which is later used for resumption. Runs without an encryption key are only snapshotted with `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`
+
+- [#3250](https://github.com/vercel/workflow/pull/3250) [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an _optional_, experimental `experimental_snapshots` storage interface for the QuickJS engine's VM-memory snapshotting (`save`/`load`/`delete` plus `SnapshotMetadata`, and `encodeSnapshotEnvelope`/`decodeSnapshotEnvelope`.
+
 ## 5.0.0
 
 ### Major Changes

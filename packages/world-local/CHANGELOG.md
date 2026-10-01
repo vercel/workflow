@@ -1,5 +1,14 @@
 # @workflow/world-local
 
+## 5.0.1
+
+### Patch Changes
+
+- [#3250](https://github.com/vercel/workflow/pull/3250) [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an _optional_, experimental `experimental_snapshots` storage interface for the QuickJS engine's VM-memory snapshotting (`save`/`load`/`delete` plus `SnapshotMetadata`, and `encodeSnapshotEnvelope`/`decodeSnapshotEnvelope`.
+- Updated dependencies [[`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa)]:
+  - @workflow/world@5.0.1
+  - @workflow/errors@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

@@ -1,5 +1,17 @@
 # @workflow/world-postgres
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4355](https://github.com/vercel/workflow/pull/4355) [`479a78d`](https://github.com/vercel/workflow/commit/479a78d28f5c1168479e56a7791ea5de70730098) Thanks [@cwdx](https://github.com/cwdx)! - Add `pollInterval` option and `WORKFLOW_POSTGRES_POLL_INTERVAL_MS` env var for the Graphile Worker poll interval (default `500`).
+
+- [#3250](https://github.com/vercel/workflow/pull/3250) [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an _optional_, experimental `experimental_snapshots` storage interface for the QuickJS engine's VM-memory snapshotting (`save`/`load`/`delete` plus `SnapshotMetadata`, and `encodeSnapshotEnvelope`/`decodeSnapshotEnvelope`.
+- Updated dependencies [[`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa)]:
+  - @workflow/world@5.0.1
+  - @workflow/world-local@5.0.1
+  - @workflow/errors@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

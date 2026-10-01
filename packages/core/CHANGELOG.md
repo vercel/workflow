@@ -1,5 +1,30 @@
 # @workflow/core
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4531](https://github.com/vercel/workflow/pull/4531) [`14dbfdc`](https://github.com/vercel/workflow/commit/14dbfdc1f52e838854b6ee70398b742e4850e891) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Dynamic `start()` refusals (opt-in, validation, same-deployment, World capability, execution-context budget) are now fatal, so a `start()` inside a step fails fast instead of retrying.
+
+- [#4530](https://github.com/vercel/workflow/pull/4530) [`1fcf4bb`](https://github.com/vercel/workflow/commit/1fcf4bb33964e491ebefefbcd0644fe46e8dd1f4) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Dynamic `start()` now publishes the run only after `run_created` confirms its code was stored, so a refused or failed create can no longer leave an executing run behind.
+
+- [#4534](https://github.com/vercel/workflow/pull/4534) [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Dynamic `start()` validation: cap `exportName` at 64 characters, detect `"use step"` only as a real directive, and name non-async, generator, and duplicate workflow declarations.
+
+- [#4328](https://github.com/vercel/workflow/pull/4328) [`0e64f7b`](https://github.com/vercel/workflow/commit/0e64f7bc25b9159a39485c5ff5b2c8025bf2745a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop re-executing a running lazy or pre-claimed inline step when its message is redelivered.
+
+- [#4551](https://github.com/vercel/workflow/pull/4551) [`e915eab`](https://github.com/vercel/workflow/commit/e915eab3ea98d300e6431ad005c766c90b81695c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `nuxt dev` and other Nitro v2 dev servers failing with a Rollup "already an existing non-external module id" error, and with "Workflow world runtime was not initialized" after it.
+
+- [#3251](https://github.com/vercel/workflow/pull/3251) [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add experimental threshold-based VM-memory snapshotting to the QuickJS engine via `WORKFLOW_SNAPSHOT_THRESHOLD` (or per-run `executionContext.snapshotThreshold`). Once the configured number of events has been processed since the last snapshot, suspensions persist a compressed, encrypted VM snapshot, which is later used for resumption. Runs without an encryption key are only snapshotted with `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`
+
+- [#4575](https://github.com/vercel/workflow/pull/4575) [`3b09dd7`](https://github.com/vercel/workflow/commit/3b09dd7da5ea4e5de852d59c33db8db10a3d314b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix webhooks returning 404 on Nitro apps running Node 24, where serializing the request's headers failed.
+
+- [#4549](https://github.com/vercel/workflow/pull/4549) [`98442de`](https://github.com/vercel/workflow/commit/98442dea24a392c29adcf843ef1a65c1ed94f32c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Errors with a read-only `stack`, such as postgres.js query errors, are now reported as thrown instead of being replaced by `Cannot assign to read only property 'stack'`.
+- Updated dependencies [[`6eaa899`](https://github.com/vercel/workflow/commit/6eaa899bfb2636b5d2545703bd166fd6ac5b6cbf), [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb), [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa), [`dff10ba`](https://github.com/vercel/workflow/commit/dff10bab71f2f546a2e0143b8b91bcd2c5e1645b), [`7fb0575`](https://github.com/vercel/workflow/commit/7fb057520d97ef32a9e3b717efd51e594924f964), [`37ddf00`](https://github.com/vercel/workflow/commit/37ddf00f7b64698b0c8e0d678aabbc06ca3e67a9), [`0648d16`](https://github.com/vercel/workflow/commit/0648d1684cbc86482c8c43de60b975cffc745185)]:
+  - @workflow/world-vercel@5.0.1
+  - @workflow/world@5.0.1
+  - @workflow/world-local@5.0.1
+  - @workflow/errors@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

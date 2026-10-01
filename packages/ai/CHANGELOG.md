@@ -1,5 +1,11 @@
 # @workflow/ai
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4548](https://github.com/vercel/workflow/pull/4548) [`662ff5d`](https://github.com/vercel/workflow/commit/662ff5d429d266498fe16b9968c154fcc2e84d9b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Publish the 5.x release of `@workflow/ai`. The `5.0.0` on npm is an old pre-release build that requires `workflow` 4.x; use `5.0.1` or later with `workflow` 5.
+
 ## 5.0.0
 
 ### Major Changes
