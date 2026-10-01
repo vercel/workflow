@@ -24,7 +24,7 @@ vi.mock('undici', async (importOriginal) => {
   return { ...actual, Agent: BunAgent, RetryAgent: BunRetryAgent };
 });
 
-const { Agent } = await import('undici');
+const { Agent, RetryAgent } = await import('undici');
 const { createEventsDispatcher, createQueueDispatcher, supportsCompose } =
   await import('./http-client.js');
 
@@ -44,13 +44,15 @@ describe('dispatchers under Bun’s built-in undici', () => {
     expect(dispatcher.dispatcher).toBeInstanceOf(Agent);
   });
 
-  it('builds the events dispatcher with HTTP/2 multiplexing enabled', () => {
-    vi.stubEnv('WORKFLOW_H2_MULTIPLEX', '1');
-    expect(() => createEventsDispatcher()).not.toThrow();
-  });
-
-  it('builds the events dispatcher with HTTP/2 multiplexing disabled', () => {
-    vi.stubEnv('WORKFLOW_H2_MULTIPLEX', '0');
-    expect(() => createEventsDispatcher()).not.toThrow();
+  it.each([
+    ['enabled', '1'],
+    ['disabled', '0'],
+  ])('builds the events dispatcher as a bare RetryAgent with HTTP/2 multiplexing %s', (_label, flag) => {
+    vi.stubEnv('WORKFLOW_H2_MULTIPLEX', flag);
+    const dispatcher = createEventsDispatcher() as unknown as {
+      dispatcher: unknown;
+    };
+    expect(dispatcher).toBeInstanceOf(RetryAgent);
+    expect(dispatcher.dispatcher).toBeInstanceOf(Agent);
   });
 });

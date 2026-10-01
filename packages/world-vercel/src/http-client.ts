@@ -1053,8 +1053,16 @@ export function createEventsDispatcher(
  * `undici` module even when the package is installed, and its dispatcher
  * classes are stubs with no `compose` or `dispatch`. Bun's `fetch` also ignores
  * the `dispatcher` option, so there is nothing for an interceptor to wrap;
- * callers skip composing and return the plain dispatcher. That also means the
- * queue path's deadline (see deadlineInterceptor) does not apply under Bun.
+ * callers skip composing and return the plain dispatcher.
+ *
+ * Under Bun every dispatcher setting in this file is therefore inert, not just
+ * the interceptors: `connections`, `pipelining`, `allowH2`, `keepAliveTimeout`,
+ * `headersTimeout`, `bodyTimeout`, the retry options, and the queue path's
+ * deadline (deadlineInterceptor). A hung queue request is bounded only by Bun's
+ * own `fetch` default (300s, the length of the message lease), so the
+ * visibility-renewal loop gets no retry window. The runtime-neutral fix is an
+ * `AbortSignal` on the `fetch` call inside `@vercel/queue`, which Bun honors;
+ * that needs a change there and is out of scope here.
  */
 export function supportsCompose(dispatcher: Agent | RetryAgent): boolean {
   return typeof (dispatcher as Partial<Agent>).compose === 'function';
