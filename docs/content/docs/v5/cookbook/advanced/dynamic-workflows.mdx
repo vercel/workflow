@@ -111,7 +111,7 @@ import type { CatalogStepName } from "@/lib/mission-catalog";
 export interface MissionRevision {
   missionId: string;
   revision: number;
-  /** The exact approved bytes. */
+  /** The exact source that was approved. */
   source: string;
   sourceSha256: string;
   /** Alias the source calls -> catalog step name. */
@@ -169,7 +169,7 @@ async function workflow(input) {
 }
 ```
 
-Mission B, published later, accepts detections at or above `input.autoAcceptAbove` without a review, and gives each remaining review until `input.reviewTimeout` before counting it as unconfirmed:
+Mission B, published later, accepts detections at or above `input.autoAcceptAbove` without a review, and gives each remaining review until `input.reviewTimeout` before counting it as unconfirmed. It disposes each review's hook once the review settles, so a response that arrives after the timeout is refused rather than delivered to a hook nothing reads:
 
 {/* @skip-typecheck: dynamic workflow source, evaluated with injected steps, createHook, and sleep */}
 ```javascript title="missions/triage.js" lineNumbers
@@ -184,15 +184,21 @@ async function workflow(input) {
       } // [!code highlight]
       const token = input.reviewTokenPrefix + ":" + detection.id;
       const review = createHook({ token });
-      await steps.expertReview(detection, token);
-      const verdict = await Promise.race([ // [!code highlight]
-        review, // [!code highlight]
-        sleep(input.reviewTimeout).then(() => null), // [!code highlight]
-      ]); // [!code highlight]
-      if (verdict === null) {
-        return { ...detection, confirmed: false, reviewedBy: "timeout" };
+      try {
+        await steps.expertReview(detection, token);
+        const verdict = await Promise.race([ // [!code highlight]
+          review, // [!code highlight]
+          sleep(input.reviewTimeout).then(() => null), // [!code highlight]
+        ]); // [!code highlight]
+        if (verdict === null) {
+          return { ...detection, confirmed: false, reviewedBy: "timeout" };
+        }
+        return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+      } finally {
+        // Release the token, so a response after the timeout is refused
+        // instead of resolving a hook nothing reads.
+        review.dispose(); // [!code highlight]
       }
-      return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
     })
   );
 
@@ -206,7 +212,7 @@ async function workflow(input) {
 }
 ```
 
-Both missions bind the same aliases: `llm` to `detectBirds`, `expertReview` to `requestExpertReview`, `notify`, and `reportToParent`. Every parameter, including the threshold, the timeout, and the hook tokens, arrives as `input`. The stored source is never templated, so the code that runs is byte for byte the code that was reviewed. Hook tokens are derived from a mission-run ID the server generates, so replay recreates the same hooks and concurrent runs never share a token; see [custom tokens](/docs/foundations/hooks#custom-tokens-for-deterministic-hooks).
+Both missions bind the same aliases: `llm` to `detectBirds`, `expertReview` to `requestExpertReview`, `notify`, and `reportToParent`. Every parameter, including the threshold, the timeout, and the hook tokens, arrives as `input`. The stored source is never templated, so the code that runs is the stored revision, unchanged. Hook tokens are derived from a mission-run ID the server generates, so replay recreates the same hooks and concurrent runs never share a token; see [custom tokens](/docs/foundations/hooks#custom-tokens-for-deterministic-hooks).
 
 ## Publish a revision
 
@@ -263,11 +269,11 @@ export async function POST(request: Request) {
 }
 ```
 
-These checks confirm the revision is well formed and fits this deployment's catalog. They are not a review: nothing here can tell whether a mission does what its approver thinks it does. The review is the approval recorded with it. The SDK validates the source shape (the `workflow` declaration, the directive, no imports) when `start()` is called; there is no separate validation API, so a pipeline that wants that check before approval can start the mission once on a preview deployment.
+These checks confirm the revision is well formed and fits this deployment's catalog. They are not a review: nothing here can tell whether a mission does what its approver thinks it does. Nor do they verify the approval: `approvedBy` is a field the caller supplied, and the route trusts it because only operators can reach the route. The review happens in your review process; the publish route and the store's write access are what make the stored record trustworthy. The SDK validates the source shape (the `workflow` declaration, the directive, no imports) when `start()` is called; there is no separate validation API, so a pipeline that wants that check before approval can start the mission once on a preview deployment.
 
 ## Start a mission
 
-The start route loads the latest revision, checks it again, and starts it. Checking at start as well as at publish catches a record that was edited after approval and a revision published against a catalog this deployment no longer serves. The checks throw [`FatalError`](/docs/api-reference/workflow/fatal-error) so that, when a step calls them (as in [Fan out at scale](#fan-out-at-scale)), a refused revision fails at once instead of retrying.
+The start route loads the latest revision, checks it again, and starts it. Checking at start as well as at publish catches a revision published against a catalog this deployment no longer serves, and a source that changed in the store without its hash, such as a partial write or a hand edit. It does not catch a writer who changes the source and the hash together, or who invents an approval record: the hash is stored next to the source it describes, so it detects accidents, not tampering. Trust in a revision comes from who can publish and who can write to the store. To verify provenance at start independently of the store, sign each revision at publish with a key the store's writers do not hold, and check the signature here. The checks throw [`FatalError`](/docs/api-reference/workflow/fatal-error) so that, when a step calls them (as in [Fan out at scale](#fan-out-at-scale)), a refused revision fails at once instead of retrying.
 
 ```typescript title="lib/start-mission.ts" lineNumbers
 import { FatalError } from "workflow";
@@ -281,7 +287,7 @@ export async function bindMissionRevision(revision: MissionRevision) {
     throw new FatalError(`Mission ${label} has no approval record`);
   }
   if ((await sha256Hex(revision.source)) !== revision.sourceSha256) {
-    throw new FatalError(`Mission ${label} does not match its approved source`);
+    throw new FatalError(`Mission ${label} does not match its recorded hash`);
   }
   if (revision.catalogVersion !== MISSION_CATALOG_VERSION) {
     throw new FatalError(`Mission ${label} targets catalog ${revision.catalogVersion}`);
@@ -354,7 +360,7 @@ export async function POST(request: Request) {
 }
 ```
 
-Record the revision a run started from alongside its run ID, so every result can be traced to the exact approved source.
+Record the revision a run started from alongside its run ID, so every result can be traced to the exact source it ran.
 
 ## Resume a review
 
@@ -403,7 +409,7 @@ export async function POST(
 }
 ```
 
-A review for a detection mission B accepted on its own, or one that arrives after its timeout, gets a 404: that hook never existed or is already gone. See [Authorize before calling `resumeHook()`](/docs/foundations/hooks#authorize-before-calling-resumehook).
+A review for a detection mission B accepted on its own gets a 404 because that hook never existed. One that arrives after its timeout gets a 404 because mission B disposed the hook when the timeout fired, even though the run may still be finishing its remaining steps. Once a run finishes, all of its hooks are gone. See [Authorize before calling `resumeHook()`](/docs/foundations/hooks#authorize-before-calling-resumehook).
 
 To report status, read the run with [`getRun()`](/docs/api-reference/workflow-api/get-run). A dynamic run's result type is `unknown` to TypeScript, so pass the type you expect, as in `getRun<MissionResult>(runId)`.
 
@@ -477,7 +483,7 @@ Dynamic workflows execute trusted application code, including code authored by o
 - **The source has the deployment's privileges.** The workflow sandbox is for determinism, not isolation. Mission source can read `process.env`, reach host globals, call the World with the deployment's credentials (which reach other runs' hooks and streams), and alter state in a warm instance that later requests reuse.
 - **The step map is not a boundary.** A mission that calls an alias it was not given fails its run, but the map does not stop source that is trying to reach other steps or the host. Review is the boundary.
 - **A dedicated project is defense in depth.** Running missions from their own Vercel project, with only the environment variables and access the catalog needs, limits what a mistake in reviewed code can reach. It does not make unreviewed source safe to run.
-- **Guard the publish path like a deploy.** Anyone who can publish a revision can run code with the deployment's privileges. Restrict the publish route to operators, and protect the store's write access the same way.
+- **Guard the publish path like a deploy.** Anyone who can publish a revision, or write to the store directly, can run code with the deployment's privileges. Restrict the publish route to operators and protect the store's write access the same way; the hash and approval fields in a revision do not defend against either.
 - **Parameters are input, not source.** Building source from request fields, even with escaping, turns every caller into a code author.
 - **Authorize every resume.** Hook tokens route a payload to a run; they do not prove who sent it.
 

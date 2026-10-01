@@ -457,15 +457,21 @@ async function workflow(input) {
       }
       const token = input.reviewTokenPrefix + ":" + detection.id;
       const review = createHook({ token });
-      await steps.expertReview(detection, token);
-      const verdict = await Promise.race([
-        review,
-        sleep(input.reviewTimeout).then(() => null),
-      ]);
-      if (verdict === null) {
-        return { ...detection, confirmed: false, reviewedBy: "timeout" };
+      try {
+        await steps.expertReview(detection, token);
+        const verdict = await Promise.race([
+          review,
+          sleep(input.reviewTimeout).then(() => null),
+        ]);
+        if (verdict === null) {
+          return { ...detection, confirmed: false, reviewedBy: "timeout" };
+        }
+        return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+      } finally {
+        // Release the token, so a response after the timeout is refused
+        // instead of resolving a hook nothing reads.
+        review.dispose();
       }
-      return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
     })
   );
 
@@ -505,6 +511,23 @@ function publishRevision(missionId: string, revision: number, source: string) {
 
 const MISSION_A = publishRevision('review-all', 1, REVIEW_ALL_SOURCE);
 const MISSION_B = publishRevision('triage', 1, TRIAGE_SOURCE);
+
+/** Every event in a run's log, oldest first. */
+async function allRunEvents(runId: string) {
+  const world = await getWorld();
+  const events: { eventType: string }[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await world.events.list({
+      runId,
+      pagination: { limit: 100, cursor, sortOrder: 'asc' },
+    });
+    events.push(...(page.data as { eventType: string }[]));
+    if (!page.cursor || page.cursor === cursor) break;
+    cursor = page.cursor;
+  }
+  return events;
+}
 
 /**
  * Resume a hook a dynamic mission creates, once it exists.
@@ -630,13 +653,14 @@ describeJs(
       await expect(getHookByToken(`${prefix}:0`)).rejects.toThrow(/not found/i);
     });
 
-    it('closes a review nobody answers when its timeout fires', async () => {
+    it('closes and disposes a review nobody answers when its timeout fires', async () => {
+      const prefix = `e2e-dynamic-triage:${crypto.randomUUID()}`;
       const { childRunId } = await startParent('dynamicMissionRun', [
         MISSION_B,
         {
           image: 'porch.jpg',
           count: 2,
-          reviewTokenPrefix: `e2e-dynamic-triage:${crypto.randomUUID()}`,
+          reviewTokenPrefix: prefix,
           autoAcceptAbove: 0.9,
           reviewTimeout: '2s',
         },
@@ -651,6 +675,18 @@ describeJs(
           { id: 1, confirmed: false, reviewedBy: 'timeout' },
         ],
       });
+
+      // The mission disposed the timed-out review's hook itself, before the
+      // run completed. Completion removes a run's remaining hooks without
+      // logging a `hook_disposed`, so this event is the source's dispose().
+      const events = await allRunEvents(childRunId);
+      const types = events.map((event) => event.eventType);
+      const disposedAt = types.indexOf('hook_disposed');
+      expect(disposedAt).toBeGreaterThan(-1);
+      expect(disposedAt).toBeLessThan(types.indexOf('run_completed'));
+
+      // A late response is refused rather than delivered.
+      await expect(getHookByToken(`${prefix}:1`)).rejects.toThrow(/not found/i);
     });
 
     it('gives a revision that differs only in whitespace a new workflow id', async () => {
@@ -676,7 +712,7 @@ describeJs(
       expect(a.record.workflowName).not.toBe(b.record.workflowName);
     });
 
-    it('refuses a stored revision whose source does not match its approval', async () => {
+    it('refuses a stored revision whose source does not match its recorded hash', async () => {
       const tampered = {
         ...MISSION_B,
         source: TRIAGE_SOURCE.replace('>= input.autoAcceptAbove', '>= 0'),
@@ -686,7 +722,7 @@ describeJs(
         { image: 'x.jpg', count: 1, reviewTokenPrefix: 'unused' },
       ]);
       await expect(parent.returnValue).rejects.toThrow(
-        /does not match its approved source/
+        /does not match its recorded hash/
       );
     });
 
