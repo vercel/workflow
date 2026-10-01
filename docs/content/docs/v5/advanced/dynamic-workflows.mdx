@@ -140,7 +140,7 @@ Supply a unique, deterministic approval token from the caller. The workflow must
 
 `start()` validates the source before it writes anything, so a definition that could never run fails at the call site rather than on a queue delivery:
 
-- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name; export names may contain letters, digits, and `_`, and cannot start with a digit.
+- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name; export names may contain letters, digits, and `_`, cannot start with a digit, and are at most 64 characters.
 - The function's first statement must be the `"use workflow"` directive.
 - No `import` or `export`. Reach steps through `steps`, not through modules.
 - JavaScript only — no TypeScript syntax, no npm dependencies, no bundling.

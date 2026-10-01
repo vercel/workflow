@@ -3,6 +3,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import {
   compileDynamicWorkflow,
+  DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH,
   DYNAMIC_WORKFLOW_SOURCE_MAX_BYTES,
   readDynamicWorkflowMetadata,
 } from './dynamic-workflow.js';
@@ -487,6 +488,112 @@ async function workflow() {
           { steps: STEPS, exportName: '$workflow' }
         )
       ).rejects.toThrow(/"\$" cannot appear in workflow queue names/);
+    });
+
+    it('rejects an export name over the length limit', async () => {
+      const exportName = 'w'.repeat(
+        DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH + 1
+      );
+      await expect(
+        compileDynamicWorkflow(
+          `async function ${exportName}() { "use workflow"; return 1; }`,
+          { steps: STEPS, exportName }
+        )
+      ).rejects.toThrow(
+        `Dynamic workflow exportName is ${exportName.length} characters, over the ${DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH}-character limit.`
+      );
+    });
+
+    it('accepts an export name at the length limit', async () => {
+      const exportName = 'w'.repeat(DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH);
+      await expect(
+        compileDynamicWorkflow(
+          `async function ${exportName}() { "use workflow"; return 1; }`,
+          { steps: STEPS, exportName }
+        )
+      ).resolves.toMatchObject({ metadata: { exportName } });
+    });
+
+    it.each([
+      ['a string argument', 'await steps.fetchUser("use step");'],
+      ['a single-quoted string', "const label = 'use step';"],
+      ['a template literal', 'const label = `use step`;'],
+      ['a string after the prologue', 'const x = 1;\n  "use step";'],
+    ])('accepts "use step" in %s', async (_label, statement) => {
+      const source = `async function workflow() {
+  "use workflow";
+  ${statement}
+  return 1;
+}`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).resolves.toMatchObject({ metadata: { version: 1 } });
+    });
+
+    it.each([
+      ['an arrow function', 'const f = async () => { "use step"; return 1; };'],
+      ['a class method', 'class C { async run() { "use step"; return 1; } }'],
+      [
+        'an object method',
+        "const o = { async run() { 'use step'; return 1; } };",
+      ],
+    ])('rejects a "use step" directive in %s', async (_label, statement) => {
+      const source = `async function workflow() {
+  "use workflow";
+  ${statement}
+  return 1;
+}`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(/cannot declare "use step"/);
+    });
+
+    it('rejects a "use step" directive in the script prologue', async () => {
+      await expect(
+        compileDynamicWorkflow(`"use step";\n${SOURCE}`, { steps: STEPS })
+      ).rejects.toThrow(/cannot declare "use step"/);
+    });
+
+    it('hints at async when a parse failure may be an await', async () => {
+      const source = `function workflow(input) {
+  "use workflow";
+  return await steps.fetchUser(input.id);
+}`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(
+        /not valid JavaScript: Unexpected token.*If the error is at an `await`, declare the function as `async function workflow\(\.\.\.\)`\./
+      );
+    });
+
+    it('validates a deeply nested expression without overflowing the stack', async () => {
+      const source = `function helper(x) { return x${'.a'.repeat(30_000)}; }
+${SOURCE}`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).resolves.toMatchObject({ metadata: { version: 1 } });
+    });
+
+    it.each([
+      [
+        'declared twice',
+        `${SOURCE}\n${SOURCE}`,
+        /exactly once, but declares `function workflow` 2 times/,
+      ],
+      [
+        'not async',
+        'function workflow() { "use workflow"; return 1; }',
+        /at top level, but `workflow` is not async/,
+      ],
+      [
+        'a generator',
+        'async function* workflow() { "use workflow"; }',
+        /at top level, but `workflow` is a generator function/,
+      ],
+    ])('says what is wrong when the workflow function is %s', async (_label, source, message) => {
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(message);
     });
 
     it('still accepts "$" in step aliases', async () => {
