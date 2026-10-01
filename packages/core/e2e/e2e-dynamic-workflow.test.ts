@@ -793,24 +793,53 @@ async function workflow(input) {
     cursor = page.nextCursor;
   } while (cursor !== null);
 
+  // A family whose parent links cannot be ordered is rejected; the rest proceed.
+  const familyOf = (row) => row.contract.split("/")[0].toLowerCase();
+  const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
+  const reasons = new Map();
+  const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  for (const row of byId.values()) {
+    if (row.parentId === null) continue;
+    const parent = byId.get(row.parentId);
+    if (row.parentId === row.id) reject(row, row.id + " is its own parent");
+    else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
+    else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
+    else {
+      const path = [row.id];
+      for (let at = parent; at; at = byId.get(at.parentId)) {
+        if (at.id === row.id) {
+          reject(row, "cycle: " + [...path, row.id].join(" → "));
+          break;
+        }
+        if (path.includes(at.id)) break;
+        path.push(at.id);
+      }
+    }
+  }
+  const rejectedRecords = rows
+    .filter((row) => row.kind === "contact" && !byId.has(row.accountId))
+    .map((row) => ({ id: row.id, reason: row.id + ": account " + row.accountId + " is not in the export" }));
+  const accounts = [...byId.values()].filter((row) => !reasons.has(familyOf(row)));
+  const contacts = rows.filter(
+    (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
+  );
+  const rejected = [...reasons].map(([family, why]) => ({ family, status: "rejected", reasons: why }));
+
   // This customer's rules: a family is every account under one contract root,
   // accounts on the same contract are one account, and a contact is one person
   // per normalized email within a family.
-  const accounts = rows.filter((row) => row.kind === "account");
-  const contacts = rows.filter((row) => row.kind === "contact");
   const families = new Map();
   for (const row of accounts) {
-    const family = row.contract.split("/")[0].toLowerCase();
-    families.set(family, [...(families.get(family) || []), row]);
+    families.set(familyOf(row), [...(families.get(familyOf(row)) || []), row]);
   }
 
   function familyOperations(members, owner) {
     // Parent-first: an account is written only after the account it reports to.
+    // Validation above guarantees every parent is in the family and acyclic.
     const ordered = [];
     const visit = (row) => {
       if (ordered.includes(row)) return;
-      const parent = members.find((other) => other.id === row.parentId);
-      if (parent) visit(parent);
+      if (row.parentId !== null) visit(byId.get(row.parentId));
       ordered.push(row);
     };
     members.forEach(visit);
@@ -879,9 +908,9 @@ async function workflow(input) {
     ...scope,
     results: outcomes.filter((outcome) => outcome.result).map((outcome) => outcome.result),
   });
-  const summary = outcomes.map(({ family, status }) => ({ family, status }));
-  const report = await steps.publishReport({ migrationId: input.migrationId, results: { families: summary, verification } });
-  return { families: summary, verification, report };
+  const summary = [...outcomes.map(({ family, status }) => ({ family, status })), ...rejected];
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { families: summary, rejectedRecords, verification } });
+  return { families: summary, rejectedRecords, verification, report };
 }
 `;
 
@@ -898,10 +927,40 @@ async function workflow(input) {
     rows.push(...page.records);
     cursor = page.nextCursor;
   } while (cursor !== null);
-  const accounts = rows.filter((row) => row.kind === "account");
-  const contacts = rows.filter((row) => row.kind === "contact");
 
-  // 1. Land every row as written: provisional, flat, one record per row.
+  // A family whose parent links cannot be ordered is rejected; the rest proceed.
+  const familyOf = (row) => row.contract.split("/")[0].toLowerCase();
+  const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
+  const reasons = new Map();
+  const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  for (const row of byId.values()) {
+    if (row.parentId === null) continue;
+    const parent = byId.get(row.parentId);
+    if (row.parentId === row.id) reject(row, row.id + " is its own parent");
+    else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
+    else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
+    else {
+      const path = [row.id];
+      for (let at = parent; at; at = byId.get(at.parentId)) {
+        if (at.id === row.id) {
+          reject(row, "cycle: " + [...path, row.id].join(" → "));
+          break;
+        }
+        if (path.includes(at.id)) break;
+        path.push(at.id);
+      }
+    }
+  }
+  const rejectedRecords = rows
+    .filter((row) => row.kind === "contact" && !byId.has(row.accountId))
+    .map((row) => ({ id: row.id, reason: row.id + ": account " + row.accountId + " is not in the export" }));
+  const accounts = [...byId.values()].filter((row) => !reasons.has(familyOf(row)));
+  const contacts = rows.filter(
+    (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
+  );
+  const rejected = [...reasons].map(([family, why]) => ({ family, status: "rejected", reasons: why }));
+
+  // 1. Land every valid row as written: provisional, flat, one record per row.
   const load = await steps.stageChanges({
     ...scope,
     groupKey: "load",
@@ -933,8 +992,7 @@ async function workflow(input) {
     }
     const people = new Map();
     for (const row of contacts) {
-      const holder = accounts.find((account) => account.id === row.accountId);
-      const identity = holder.contract.split("/")[0] + ":" + row.email.trim().toLowerCase();
+      const identity = familyOf(byId.get(row.accountId)) + ":" + row.email.trim().toLowerCase();
       const person = people.get(identity);
       if (person) ops.push({ op: "mergeContact", from: row.id, into: person });
       else people.set(identity, row.id);
@@ -946,7 +1004,7 @@ async function workflow(input) {
     steps.stageChanges({ ...scope, groupKey: "consolidation", operations: consolidation(owner), dependsOn: [load] });
   let plan = await stage();
 
-  // One review for the whole consolidation, not one per family.
+  // 3. One review for the whole consolidation, not one per family.
   const token = input.tokenPrefix + ":consolidation";
   const review = createHook({ token });
   let decision;
@@ -959,13 +1017,14 @@ async function workflow(input) {
     review.dispose();
   }
 
+  // 4. Apply only what was approved, then check the destination either way.
   const results = [loaded];
   if (decision.approved) {
     results.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
   }
   const verification = await steps.verifyChanges({ ...scope, results });
-  const report = await steps.publishReport({ migrationId: input.migrationId, results: { approved: decision.approved, verification } });
-  return { approved: decision.approved, stages: results.map((result) => result.applied), verification, report };
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { approved: decision.approved, rejected, rejectedRecords, verification } });
+  return { approved: decision.approved, rejected, rejectedRecords, verification, report };
 }
 `;
 
@@ -981,6 +1040,24 @@ async function workflow(input) {
   });
   plan.operations.push({ op: "createAccount", key: "acct-b", name: "B", owner: "dana", sources: [] });
   return await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
+}
+`;
+
+/** Stages a parent cycle directly, which the adapter must refuse on its own. */
+const PARENT_CYCLE_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  return await steps.stageChanges({
+    migrationId: input.migrationId,
+    destinationId: input.destinationId,
+    groupKey: "cycle",
+    operations: [
+      { op: "createAccount", key: "acct-a", name: "A", owner: "dana", sources: [] },
+      { op: "createAccount", key: "acct-b", name: "B", owner: "dana", sources: [] },
+      { op: "setParent", account: "acct-a", parent: "acct-b" },
+      { op: "setParent", account: "acct-b", parent: "acct-a" },
+    ],
+  });
 }
 `;
 
@@ -1082,6 +1159,40 @@ const MIGRATED_CONTACTS = [
   },
   { key: 'ct-info-globex', accounts: ['acct-globex'] },
   { key: 'ct-info-initech', accounts: ['acct-initech'] },
+];
+
+/** Every family in `synthetic-crm-invalid`, in export order. */
+const INVALID_PARENT_FAMILIES = [
+  { family: 'c-100', status: 'applied' },
+  {
+    family: 'c-400',
+    status: 'rejected',
+    reasons: ['acct-self is its own parent'],
+  },
+  {
+    family: 'c-500',
+    status: 'rejected',
+    reasons: [
+      'cycle: acct-loop-a → acct-loop-b → acct-loop-a',
+      'cycle: acct-loop-b → acct-loop-a → acct-loop-b',
+    ],
+  },
+  {
+    family: 'c-600',
+    status: 'rejected',
+    reasons: ['acct-stray: parent acct-missing is not in the export'],
+  },
+  {
+    family: 'c-700',
+    status: 'rejected',
+    reasons: ['acct-cross: parent acct-acme is in another company'],
+  },
+];
+const INVALID_PARENT_RECORDS = [
+  {
+    id: 'ct-orphan',
+    reason: 'ct-orphan: account acct-gone is not in the export',
+  },
 ];
 
 describeJs(
@@ -1196,6 +1307,65 @@ describeJs(
           counts: { accounts: 6, contacts: 4, provisional: 6 },
         },
       });
+    });
+
+    it('rejects families whose parents cannot be ordered and migrates the rest', async () => {
+      const input = { ...migrationInput(), dataset: 'synthetic-crm-invalid' };
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_A,
+        input,
+      ]);
+
+      // Acme has no owner conflict, so the run finishes without a review.
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        families: INVALID_PARENT_FAMILIES,
+        rejectedRecords: INVALID_PARENT_RECORDS,
+        verification: {
+          ok: true,
+          violations: [],
+          accounts: MIGRATED_ACCOUNTS.slice(0, 3),
+          contacts: MIGRATED_CONTACTS.slice(0, 1),
+        },
+      });
+    });
+
+    it('procedure B rejects the same families before it loads anything', async () => {
+      const input = { ...migrationInput(), dataset: 'synthetic-crm-invalid' };
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_B,
+        input,
+      ]);
+      await resumeMissionHook(`${input.tokenPrefix}:consolidation`, {
+        approved: true,
+      });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        approved: true,
+        rejected: INVALID_PARENT_FAMILIES.slice(1),
+        rejectedRecords: INVALID_PARENT_RECORDS,
+        verification: {
+          ok: true,
+          violations: [],
+          counts: { accounts: 3, contacts: 1, provisional: 0 },
+          accounts: MIGRATED_ACCOUNTS.slice(0, 3),
+          contacts: MIGRATED_CONTACTS.slice(0, 1),
+        },
+      });
+    });
+
+    it('refuses a plan that would create a parent cycle', async () => {
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        publishProcedure('parent-cycle', PARENT_CYCLE_SOURCE),
+        migrationInput(),
+      ]);
+      const child = trackRun(getRun(childRunId), {
+        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+      });
+      await expect(child.returnValue).rejects.toThrow(
+        /acct-b -> acct-a would create a parent cycle/
+      );
     });
 
     it('refuses a plan changed after it was staged', async () => {
