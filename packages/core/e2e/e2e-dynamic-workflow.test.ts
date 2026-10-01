@@ -406,13 +406,13 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
 });
 
 /**
- * The mission runner in the "Dynamic Workflows" cookbook recipe.
+ * Published revisions: bird-survey missions kept as regression coverage for
+ * revision checks, hook disposal, and fan-out.
  *
  * The deployment holds only the step catalog and the runner
  * (`dynamicMissionRun` and friends in `workflows/99_e2e.ts`). The missions
  * are published after deploy: this runner plays the operator, building each
- * approved revision the way the recipe's publish route does and handing it to
- * the unchanged deployment. Keep both sources in sync with the recipe.
+ * approved revision and handing it to the unchanged deployment.
  */
 
 /** Mission A, as the recipe publishes it: every detection gets a review. */
@@ -494,14 +494,22 @@ const MISSION_STEPS = {
 };
 
 /** The operator path: an approved, immutable revision of a mission. */
-function publishRevision(missionId: string, revision: number, source: string) {
+function publishRevision(
+  missionId: string,
+  revision: number,
+  source: string,
+  {
+    steps = MISSION_STEPS,
+    catalogVersion = 'birds@1',
+  }: { steps?: Record<string, string>; catalogVersion?: string } = {}
+) {
   return {
     missionId,
     revision,
     source,
     sourceSha256: createHash('sha256').update(source).digest('hex'),
-    steps: MISSION_STEPS,
-    catalogVersion: 'birds@1',
+    steps,
+    catalogVersion,
     approval: {
       approvedBy: 'e2e-operator',
       approvedAt: new Date().toISOString(),
@@ -572,7 +580,7 @@ async function resumeMissionHook(
 }
 
 describeJs(
-  'dynamic workflows: mission runner recipe',
+  'dynamic workflows: published revisions',
   { timeout: 120_000 },
   () => {
     it('runs a published mission that reviews every detection', async () => {
@@ -758,6 +766,449 @@ describeJs(
           { image: 'south.jpg', confirmed: 0 },
         ],
       });
+    });
+  }
+);
+
+/**
+ * The customer-migration procedures in the "Dynamic Workflows" cookbook
+ * recipe. The deployment holds only the migration catalog (a simulated
+ * destination; see `99_e2e.ts`). Both procedures exist only here, published
+ * after deploy, and must converge on the same destination records. Procedure
+ * A appears in the recipe byte-for-byte, and an excerpt of B; keep them in
+ * sync.
+ */
+
+/** Procedure A: account families in parallel, parent-first, one review only where owners disagree. */
+const PARENT_FIRST_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
+
+  const rows = [];
+  let cursor;
+  do {
+    const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
+    rows.push(...page.records);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+
+  // This customer's rules: a family is every account under one contract root,
+  // accounts on the same contract are one account, and a contact is one person
+  // per normalized email within a family.
+  const accounts = rows.filter((row) => row.kind === "account");
+  const contacts = rows.filter((row) => row.kind === "contact");
+  const families = new Map();
+  for (const row of accounts) {
+    const family = row.contract.split("/")[0];
+    families.set(family, [...(families.get(family) || []), row]);
+  }
+
+  function familyOperations(members, owner) {
+    // Parent-first: an account is written only after the account it reports to.
+    const ordered = [];
+    const visit = (row) => {
+      if (ordered.includes(row)) return;
+      const parent = members.find((other) => other.id === row.parent);
+      if (parent) visit(parent);
+      ordered.push(row);
+    };
+    members.forEach(visit);
+
+    const ops = [];
+    const survivors = new Map();
+    const survivorOf = new Map();
+    for (const row of ordered) {
+      ops.push({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, sources: [row.id] });
+      if (row.parent) ops.push({ op: "setParent", account: row.id, parent: row.parent });
+      const survivor = survivors.get(row.contract);
+      if (!survivor) {
+        survivors.set(row.contract, row.id);
+        survivorOf.set(row.id, row.id);
+        continue;
+      }
+      survivorOf.set(row.id, survivor);
+      if (owner) {
+        ops.push({ op: "setOwner", key: survivor, owner }, { op: "setOwner", key: row.id, owner });
+      }
+      ops.push({ op: "mergeAccount", from: row.id, into: survivor });
+    }
+
+    const people = new Map();
+    for (const row of contacts) {
+      if (!survivorOf.has(row.account)) continue;
+      const email = row.email.trim().toLowerCase();
+      const person = people.get(email) || { key: row.id, name: row.name, email, sources: [], accounts: [] };
+      person.sources.push(row.id);
+      person.accounts.push(survivorOf.get(row.account));
+      people.set(email, person);
+    }
+    for (const person of people.values()) {
+      ops.push({ op: "createContact", key: person.key, name: person.name, email: person.email, sources: person.sources });
+      for (const account of new Set(person.accounts)) {
+        ops.push({ op: "linkContact", contact: person.key, account });
+      }
+    }
+    return ops;
+  }
+
+  async function migrateFamily(family, members) {
+    const stage = (owner) =>
+      steps.stageChanges({ ...scope, groupKey: family, operations: familyOperations(members, owner) });
+    let plan = await stage();
+    if (plan.conflicts.length > 0) {
+      // Only this family waits for a person; the others carry on.
+      const token = input.tokenPrefix + ":" + family;
+      const review = createHook({ token });
+      try {
+        const owners = plan.conflicts.flatMap((conflict) => conflict.values);
+        await steps.requestApproval({ planId: plan.planId, token, summary: family + ": choose an owner from " + owners.join(", ") });
+        const decision = await review;
+        if (!decision.approved) return { family, status: "skipped" };
+        plan = await stage(decision.owner || owners[0]);
+      } finally {
+        review.dispose();
+      }
+    }
+    const result = await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
+    return { family, status: "applied", result };
+  }
+
+  const outcomes = await Promise.all([...families].map(([family, members]) => migrateFamily(family, members)));
+  const verification = await steps.verifyChanges({
+    ...scope,
+    results: outcomes.filter((outcome) => outcome.result).map((outcome) => outcome.result),
+  });
+  const summary = outcomes.map(({ family, status }) => ({ family, status }));
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { families: summary, verification } });
+  return { families: summary, verification, report };
+}
+`;
+
+/** Procedure B: load everything provisional first, then one reviewed consolidation. */
+const PROVISIONAL_FIRST_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
+
+  const rows = [];
+  let cursor;
+  do {
+    const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
+    rows.push(...page.records);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  const accounts = rows.filter((row) => row.kind === "account");
+  const contacts = rows.filter((row) => row.kind === "contact");
+
+  // 1. Land every row as written: provisional, flat, one record per row.
+  const load = await steps.stageChanges({
+    ...scope,
+    groupKey: "load",
+    operations: [
+      ...accounts.map((row) => ({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, status: "provisional", sources: [row.id] })),
+      ...contacts.flatMap((row) => [
+        { op: "createContact", key: row.id, name: row.name, email: row.email.trim().toLowerCase(), sources: [row.id] },
+        { op: "linkContact", contact: row.id, account: row.account },
+      ]),
+    ],
+  });
+  const loaded = await steps.applyChanges({ plan: load, idempotencyKey: "apply:" + load.planId });
+
+  // 2. Reconcile the landed records with this customer's rules, as one change.
+  function consolidation(owner) {
+    const ops = [];
+    for (const row of accounts) {
+      if (row.parent) ops.push({ op: "setParent", account: row.id, parent: row.parent });
+    }
+    const survivors = new Map();
+    for (const row of accounts) {
+      const survivor = survivors.get(row.contract);
+      if (!survivor) {
+        survivors.set(row.contract, row.id);
+        continue;
+      }
+      if (owner) ops.push({ op: "setOwner", key: survivor, owner }, { op: "setOwner", key: row.id, owner });
+      ops.push({ op: "mergeAccount", from: row.id, into: survivor });
+    }
+    const people = new Map();
+    for (const row of contacts) {
+      const holder = accounts.find((account) => account.id === row.account);
+      const identity = holder.contract.split("/")[0] + ":" + row.email.trim().toLowerCase();
+      const person = people.get(identity);
+      if (person) ops.push({ op: "mergeContact", from: row.id, into: person });
+      else people.set(identity, row.id);
+    }
+    for (const key of survivors.values()) ops.push({ op: "markFinal", key });
+    return ops;
+  }
+  const stage = (owner) =>
+    steps.stageChanges({ ...scope, groupKey: "consolidation", operations: consolidation(owner), dependsOn: [load] });
+  let plan = await stage();
+
+  // One review for the whole consolidation, not one per family.
+  const token = input.tokenPrefix + ":consolidation";
+  const review = createHook({ token });
+  let decision;
+  try {
+    const owners = plan.conflicts.flatMap((conflict) => conflict.values);
+    await steps.requestApproval({ planId: plan.planId, token, summary: plan.operations.length + " changes; owners to choose from: " + owners.join(", ") });
+    decision = await review;
+    if (decision.approved && plan.conflicts.length > 0) plan = await stage(decision.owner || owners[0]);
+  } finally {
+    review.dispose();
+  }
+
+  const results = [loaded];
+  if (decision.approved) {
+    results.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
+  }
+  const verification = await steps.verifyChanges({ ...scope, results });
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { approved: decision.approved, verification } });
+  return { approved: decision.approved, stages: results.map((result) => result.applied), verification, report };
+}
+`;
+
+/** Changes a staged plan before applying it, which the adapter must refuse. */
+const TAMPERED_PLAN_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const plan = await steps.stageChanges({
+    migrationId: input.migrationId,
+    destinationId: input.destinationId,
+    groupKey: "tampered",
+    operations: [{ op: "createAccount", key: "acct-a", name: "A", owner: "dana", sources: [] }],
+  });
+  plan.operations.push({ op: "createAccount", key: "acct-b", name: "B", owner: "dana", sources: [] });
+  return await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
+}
+`;
+
+const MIGRATION_CATALOG_STEPS = Object.fromEntries(
+  [
+    'readSourcePage',
+    'lookupDestination',
+    'stageChanges',
+    'requestApproval',
+    'applyChanges',
+    'verifyChanges',
+    'publishReport',
+  ].map((name) => [name, name])
+);
+
+const publishProcedure = (id: string, source: string) =>
+  publishRevision(id, 1, source, {
+    steps: MIGRATION_CATALOG_STEPS,
+    catalogVersion: 'crm-migration@1',
+  });
+
+const PROCEDURE_A = publishProcedure('acme-parent-first', PARENT_FIRST_SOURCE);
+const PROCEDURE_B = publishProcedure(
+  'acme-provisional-first',
+  PROVISIONAL_FIRST_SOURCE
+);
+
+function migrationInput() {
+  const id = crypto.randomUUID();
+  return {
+    dataset: 'acme-legacy',
+    migrationId: `migration-${id}`,
+    destinationId: `destination-${id}`,
+    tokenPrefix: `e2e-migration:${id}`,
+  };
+}
+
+/** Wait until a hook exists for `token`, without resuming it. */
+async function waitForMissionHook(token: string, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await getHookByToken(token);
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `No hook ${token} after ${timeoutMs}ms: ${String(lastError)}`
+  );
+}
+
+/** How many `applyChanges` calls a run has completed so far. */
+async function completedApplies(runId: string) {
+  const world = await getWorld();
+  const page = await world.steps.list({
+    runId,
+    pagination: { limit: 100, sortOrder: 'asc' },
+    resolveData: 'none',
+  });
+  return page.data.filter(
+    (step) =>
+      step.stepName.endsWith('//applyChanges') && step.status === 'completed'
+  ).length;
+}
+
+/** The destination records both procedures must end with. */
+const MIGRATED_ACCOUNTS = [
+  { key: 'acct-acme', parent: null, owner: 'dana', status: 'final' },
+  {
+    key: 'acct-acme-east',
+    parent: 'acct-acme',
+    owner: 'dana',
+    status: 'final',
+  },
+  {
+    key: 'acct-acme-west',
+    parent: 'acct-acme',
+    owner: 'dana',
+    status: 'final',
+  },
+  { key: 'acct-globex', parent: null, owner: 'lee', status: 'final' },
+  {
+    key: 'acct-initech',
+    parent: null,
+    owner: 'sam',
+    status: 'final',
+    sources: ['acct-initech', 'acct-initech-ltd'],
+  },
+];
+const MIGRATED_CONTACTS = [
+  {
+    key: 'ct-ada-east',
+    email: 'ada@acme.com',
+    accounts: ['acct-acme-east', 'acct-acme-west'],
+    sources: ['ct-ada-east', 'ct-ada-west'],
+  },
+  { key: 'ct-info-globex', accounts: ['acct-globex'] },
+  { key: 'ct-info-initech', accounts: ['acct-initech'] },
+];
+
+describeJs(
+  'dynamic workflows: customer migration recipe',
+  { timeout: 120_000 },
+  () => {
+    it('procedure A finishes independent families while one waits for review', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_A,
+        input,
+      ]);
+
+      const hook = await waitForMissionHook(`${input.tokenPrefix}:C-300`);
+      expect(hook.runId).toBe(childRunId);
+      // Acme and Globex apply while Initech is still waiting for a person.
+      const deadline = Date.now() + 30_000;
+      while (
+        (await completedApplies(childRunId)) < 2 &&
+        Date.now() < deadline
+      ) {
+        await sleep(250);
+      }
+      expect(await completedApplies(childRunId)).toBe(2);
+      expect((await readRunRecord(childRunId)).status).not.toBe('completed');
+
+      await resumeHook(hook, { approved: true, owner: 'sam' });
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        families: [
+          { family: 'C-100', status: 'applied' },
+          { family: 'C-200', status: 'applied' },
+          { family: 'C-300', status: 'applied' },
+        ],
+        verification: {
+          ok: true,
+          violations: [],
+          counts: { accounts: 5, contacts: 3, provisional: 0 },
+          accounts: MIGRATED_ACCOUNTS,
+          contacts: MIGRATED_CONTACTS,
+        },
+      });
+    });
+
+    it('procedure A leaves a rejected family out and migrates the rest', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_A,
+        input,
+      ]);
+      await resumeMissionHook(`${input.tokenPrefix}:C-300`, {
+        approved: false,
+      });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        families: [
+          { family: 'C-100', status: 'applied' },
+          { family: 'C-200', status: 'applied' },
+          { family: 'C-300', status: 'skipped' },
+        ],
+        verification: {
+          ok: true,
+          accounts: MIGRATED_ACCOUNTS.slice(0, 4),
+          contacts: MIGRATED_CONTACTS.slice(0, 2),
+        },
+      });
+    });
+
+    it('procedure B, published later, loads provisionally and converges after one review', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_B,
+        input,
+      ]);
+
+      const hook = await waitForMissionHook(
+        `${input.tokenPrefix}:consolidation`
+      );
+      // Every row has already landed provisionally; nothing is consolidated.
+      expect(await completedApplies(childRunId)).toBe(1);
+
+      await resumeHook(hook, { approved: true, owner: 'sam' });
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        approved: true,
+        verification: {
+          ok: true,
+          violations: [],
+          counts: { accounts: 5, contacts: 3, provisional: 0 },
+          accounts: MIGRATED_ACCOUNTS,
+          contacts: MIGRATED_CONTACTS,
+        },
+      });
+    });
+
+    it('procedure B reports provisional records when the consolidation is rejected', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_B,
+        input,
+      ]);
+      await resumeMissionHook(`${input.tokenPrefix}:consolidation`, {
+        approved: false,
+      });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        approved: false,
+        verification: {
+          ok: false,
+          counts: { accounts: 6, contacts: 4, provisional: 6 },
+        },
+      });
+    });
+
+    it('refuses a plan changed after it was staged', async () => {
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        publishProcedure('tampered', TAMPERED_PLAN_SOURCE),
+        migrationInput(),
+      ]);
+      const child = trackRun(getRun(childRunId), {
+        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+      });
+      await expect(child.returnValue).rejects.toThrow(
+        /changed after it was staged/
+      );
     });
   }
 );

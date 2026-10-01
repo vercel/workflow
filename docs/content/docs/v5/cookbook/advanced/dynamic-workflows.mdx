@@ -1,8 +1,8 @@
 ---
 title: Dynamic Workflows
-description: Publish reviewed workflow source after deploy and run it on an unchanged deployment, over a fixed catalog of deployed steps.
+description: Run a customer-specific migration procedure, written and approved after deploy, as a durable workflow over a fixed catalog of deployed steps.
 type: guide
-summary: Deploy a step catalog and a mission runner once, store approved mission revisions, publish a new mission through a privileged operator path, and start it with start() on the same deployment without a rebuild.
+summary: Deploy a migration step catalog once, then start reviewed JavaScript procedures for individual customers with start(), resume their approvals, and read back the records they changed, without a rebuild or redeploy.
 prerequisites:
   - /docs/advanced/dynamic-workflows
 related:
@@ -13,10 +13,12 @@ related:
 ---
 
 <CopyPrompt
-  text="Build a mission runner on experimental dynamic workflows. Deploy once: a step catalog of ordinary exported `&quot;use step&quot;` functions, a catalog map from step name to imported step function with a catalog version, and routes to start, review, and inspect missions. Store each mission as immutable revisions keyed by a stable mission ID: the exact approved JavaScript source, its SHA-256, the alias-to-catalog-step map, the catalog version it targets, and the approval record. Publish revisions only through a privileged operator route that checks the approval, the catalog names and version, and the size. At start, load the revision, re-check its hash, approval, and catalog version, bind the aliases to the imported step functions, and call `start(revision.source, [input], { experimental_dynamic: { steps } })` with every parameter in `input`, never interpolated into the source. Resume review hooks with `getHookByToken()` and `resumeHook()` after authorizing the caller. Set `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1` on the deployment. Only run source reviewed under your application-code review process. Verify that a revision published after deploy starts on the unchanged deployment, that a tampered revision is refused, and that in-flight runs keep their original code."
+  text="Build a customer-specific migration on experimental dynamic workflows. Deploy once: a catalog of ordinary exported `&quot;use step&quot;` functions (read a source page, stage an immutable plan of supported destination operations, request approval, apply a plan with an idempotency key, verify, report) that wrap your integration adapters, plus routes to start a procedure and resume its approvals. Write each customer's procedure as plain JavaScript, `async function workflow(input)` opening with `&quot;use workflow&quot;`, that calls only `steps.<name>()`, `createHook()`, and `sleep()`; keep grouping, identity, and ordering rules in the procedure and API access, writes, and referential integrity in the steps. Store the reviewed source outside the deployment, and start it with `start(source, [input], { experimental_dynamic: { steps } })` using the imported step functions, passing every parameter as `input`. Create each approval hook before requesting review and dispose it when the review settles. Set `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1` on the deployment. Only run source approved under your application-code review process. Verify that independent groups finish while one waits for review, that the resulting destination records are correct, and that a second procedure published later runs on the unchanged deployment."
 />
 
-Use this pattern when the orchestration a platform runs has to change after deploy, but every side effect it performs does not. The deployment ships a fixed catalog of steps and a small runner. Operators then publish reviewed **missions**, short JavaScript workflows over that catalog, to a store. The runner loads a mission and starts it with [`start()`](/docs/api-reference/workflow-api/start) as a [dynamic workflow](/docs/advanced/dynamic-workflows). Publishing a new mission needs no rebuild or redeploy.
+A platform that imports customers' legacy CRM data usually needs nothing more than a field mapping. Then a customer arrives whose export only makes sense under their own conventions. Acme groups accounts by contract lineage, so a regional account must be loaded after the account it reports to. The same person appears once per region. Two account rows on one contract are one account, and when their owners disagree, a person has to choose.
+
+An integration engineer, perhaps with an agent drafting it, writes those rules as a short JavaScript program over the platform's deployed migration steps. A reviewer approves it, and the platform runs it with [`start()`](/docs/api-reference/workflow-api/start) as a [dynamic workflow](/docs/advanced/dynamic-workflows). The program is published after the platform deployed, and running it needs no rebuild or redeploy. It survives pauses for approvals and restarts like any workflow, and it applies the same approved rules to every record.
 
 <Callout type="warning">
 Dynamic workflows are **experimental**. Before this recipe runs:
@@ -28,355 +30,303 @@ Dynamic workflows are **experimental**. Before this recipe runs:
 See [Enabling dynamic workflows](/docs/advanced/dynamic-workflows#enabling-dynamic-workflows) and [World support](/docs/advanced/dynamic-workflows#world-support) for the details.
 </Callout>
 
-## How it fits together
+## When to use this
 
-1. **Deploy once.** The deployment contains the step catalog, the runner, and the publish, start, and review routes. It contains no missions.
-2. **Publish mission A.** An operator publishes a reviewed revision of a mission that sends every bird detection to an expert. The store keeps it.
-3. **Publish mission B.** Later, an operator publishes a second mission with a different shape: it accepts confident detections on its own and sends only the rest for review. Nothing is rebuilt.
-4. **Start either mission** on the same, unchanged deployment. The start route loads the stored revision and runs it.
+- **Use static configuration for routine imports.** If a customer's import is "column `acct_name` goes to `name`", keep a static workflow that reads a mapping. It needs no review of code and has better types and errors.
+- **Use a procedure when the rules are an algorithm.** Acme's grouping, identity, and dependency order take loops, maps, and a traversal. You could encode them in JSON, but then the platform owns an interpreter for that JSON.
+- **Use an agent to write the procedure, not to run it.** A durable agent would reconsider every record. Here an agent can help draft the procedure, a person approves it, and the workflow executes exactly those rules for every record, every time.
 
-If the set of workflows is known at build time, write normal workflow functions and pick one in code instead. They have better types and errors, and no source to store or review separately.
+<Callout type="error">
+A procedure is trusted application code with your deployment's privileges, not a sandboxed customer script. Only run source approved under your application-code review process; a fixed catalog of steps is an integration contract, not a security boundary. See [Security](/docs/advanced/dynamic-workflows#security).
+</Callout>
 
-## The step catalog
+## The deployed catalog
 
-The catalog is a workflow file of ordinary step functions, deployed with the app. Dynamic source cannot define steps, so everything a mission does outside of orchestration happens here.
+The platform deploys a fixed set of migration steps once. Steps do the I/O: they read the legacy export and write to the destination. The procedure decides what to write and in what order, and reaches the steps only through `steps.<name>()`.
 
-```typescript title="workflows/mission-steps.ts" lineNumbers
-import { resumeHook } from "workflow/api";
+```typescript title="workflows/migration-steps.ts" lineNumbers
+declare const legacyCrm: { page(dataset: string, cursor?: number): Promise<{ records: unknown[]; nextCursor?: number }> }; // @setup
+declare const destinations: { lookup(r: any): Promise<any>; stage(r: any): Promise<any>; apply(r: any): Promise<any>; verify(r: any): Promise<any> }; // @setup
+declare function notifyReviewer(r: any): Promise<void>; // @setup
+declare function saveReport(r: any): Promise<string>; // @setup
 
-export interface BirdDetection {
-  id: number;
-  species: string;
-  confidence: number;
+/** One page of the customer's legacy export. */
+export async function readSourcePage(request: { dataset: string; cursor?: number }) {
+  "use step";
+  return await legacyCrm.page(request.dataset, request.cursor);
 }
 
-declare function callVisionModel(image: string, maxDetections: number): Promise<BirdDetection[]>; // @setup
-declare function pageReviewer(detection: BirdDetection, token: string): Promise<void>; // @setup
-declare function postToChannel(message: string): Promise<void>; // @setup
-
-export async function detectBirds(request: { image: string; count: number }) {
+/** Which of these keys the destination already has. */
+export async function lookupDestination(request: { destinationId: string; keys: string[] }) {
   "use step";
-  return await callVisionModel(request.image, request.count);
+  return await destinations.lookup(request);
 }
 
-export async function requestExpertReview(detection: BirdDetection, token: string) {
+/** Validates operations and returns an immutable plan with a content-derived `planId`. */
+export async function stageChanges(request: {
+  migrationId: string;
+  destinationId: string;
+  groupKey: string;
+  operations: unknown[];
+  dependsOn?: unknown[];
+}) {
   "use step";
-  await pageReviewer(detection, token);
-  return { detectionId: detection.id, token };
+  return await destinations.stage(request);
 }
 
-export async function notify(message: string) {
+/** Asks a reviewer to resume `token` with `{ approved, owner? }`. */
+export async function requestApproval(request: { planId: string; token: string; summary: string }) {
   "use step";
-  await postToChannel(message);
-  return { delivered: message };
+  await notifyReviewer(request);
+  return { planId: request.planId, token: request.token };
 }
 
-/** Fans a child mission's result back into its parent's hook. */
-export async function reportToParent(token: string, report: unknown) {
+/** Applies a staged plan to the destination named in the plan. */
+export async function applyChanges(request: { plan: unknown; idempotencyKey: string }) {
   "use step";
-  // Throws, and so retries, until the parent has created its hook.
-  await resumeHook(token, report);
+  return await destinations.apply(request);
+}
+
+/** Integrity invariants and the resulting records. */
+export async function verifyChanges(request: { destinationId: string; migrationId: string; results: unknown[] }) {
+  "use step";
+  return await destinations.verify(request);
+}
+
+export async function publishReport(request: { migrationId: string; results: unknown }) {
+  "use step";
+  return { reportId: await saveReport(request) };
 }
 ```
 
-The runner names the catalog by step name and gives it a version. Bump the version whenever a step changes in a way an existing mission would notice, such as a new argument shape or a different return value.
+`legacyCrm` and `destinations` stand for your integration adapters. The destination adapter, not the procedure, owns the contract every procedure relies on:
 
-```typescript title="lib/mission-catalog.ts" lineNumbers
+- **Supported operations only:** `createAccount`, `createContact`, `linkContact`, `setParent`, `setOwner`, `markFinal`, `mergeAccount`, and `mergeContact`. There is no step that evaluates arbitrary code.
+- **Referential integrity:** every parent and contact link must resolve when the plan is applied, to a record created earlier in the plan or by a plan listed in `dependsOn`.
+- **Immutable plans:** `planId` is a hash of the plan's migration, destination, group, operations, and dependencies, and `applyChanges` takes the destination from the plan, so a caller cannot point an approved plan at another destination.
+- **Conflicts block writes:** merging two accounts whose owners differ records a conflict on the plan, and `applyChanges` refuses a plan with conflicts.
+- **Idempotency:** the key is `"apply:" + planId`. Repeating it returns the first result; reusing it for a different payload is rejected.
+
+The steps are bound under their own names when a procedure starts:
+
+```typescript title="lib/migration-catalog.ts" lineNumbers
 import {
-  detectBirds,
-  notify,
-  reportToParent,
-  requestExpertReview,
-} from "@/workflows/mission-steps";
+  applyChanges,
+  lookupDestination,
+  publishReport,
+  readSourcePage,
+  requestApproval,
+  stageChanges,
+  verifyChanges,
+} from "@/workflows/migration-steps";
 
-export const MISSION_CATALOG = {
-  detectBirds,
-  requestExpertReview,
-  notify,
-  reportToParent,
+export const MIGRATION_CATALOG = {
+  readSourcePage,
+  lookupDestination,
+  stageChanges,
+  requestApproval,
+  applyChanges,
+  verifyChanges,
+  publishReport,
 };
-
-export const MISSION_CATALOG_VERSION = "birds@1";
-
-export type CatalogStepName = keyof typeof MISSION_CATALOG;
 ```
 
-## Mission revisions
+## Procedure A: parent-first
 
-The store holds **immutable revisions**. A stable, app-level mission ID such as `triage` names the mission; each publish adds a revision under it, and nothing edits a revision in place. A revision records exactly what was approved:
-
-```typescript title="lib/mission-store.ts" lineNumbers
-import type { CatalogStepName } from "@/lib/mission-catalog";
-
-export interface MissionRevision {
-  missionId: string;
-  revision: number;
-  /** The exact source that was approved. */
-  source: string;
-  sourceSha256: string;
-  /** Alias the source calls -> catalog step name. */
-  steps: Record<string, CatalogStepName>;
-  /** The catalog version the source was reviewed against. */
-  catalogVersion: string;
-  approval: { approvedBy: string; approvedAt: string; reviewUrl: string };
-}
-
-/** Any durable store works: a database table, a KV namespace, a bucket. */
-export interface MissionStore {
-  latest(missionId: string): Promise<MissionRevision | null>;
-  get(missionId: string, revision: number): Promise<MissionRevision | null>;
-  /** Appends the next revision; never overwrites one. */
-  append(revision: Omit<MissionRevision, "revision">): Promise<MissionRevision>;
-}
-
-export async function sha256Hex(text: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-```
-
-Keep the mission ID separate from the workflow ID. The SDK derives the [workflow ID](/docs/advanced/dynamic-workflows#workflow-ids) from a hash of the raw source bytes and the step bindings, so reformatting a mission, editing a comment, or rebinding an alias gives its runs a new workflow ID. The mission ID is what stays stable across revisions.
-
-## The two missions
-
-Missions are plain JavaScript: a top-level `async function workflow(input)` that opens with `"use workflow"` and reaches the catalog only through `steps`. `createHook`, `sleep`, and the usual [workflow globals](/docs/api-reference/workflow-globals) are in scope; see [What the source can use](/docs/advanced/dynamic-workflows#what-the-source-can-use).
-
-Mission A sends every detection to an expert and waits on one hook per detection:
+This is Acme's procedure. It is a file in the integration team's repository, not part of the deployment. It migrates each account family as its own plan, all families at once, and only the family whose owners disagree waits for a person:
 
 {/* @skip-typecheck: dynamic workflow source, evaluated with injected steps and createHook */}
-```javascript title="missions/review-all.js" lineNumbers
+```javascript title="procedures/acme-parent-first.js" lineNumbers
 async function workflow(input) {
   "use workflow";
-  const detections = await steps.llm({ image: input.image, count: input.count });
+  const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
 
-  const reviews = await Promise.all(
-    detections.map(async (detection) => {
-      const token = input.reviewTokenPrefix + ":" + detection.id;
-      const review = createHook({ token });
-      await steps.expertReview(detection, token);
-      const verdict = await review;
-      return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
-    })
-  );
+  const rows = [];
+  let cursor;
+  do {
+    const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
+    rows.push(...page.records);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
 
-  const confirmed = reviews.filter((review) => review.confirmed).length;
-  const result = { image: input.image, confirmed, reviews };
-  await steps.notify(input.image + ": " + confirmed + " of " + reviews.length + " confirmed");
-  if (input.parentToken) {
-    await steps.reportToParent(input.parentToken, result);
+  // This customer's rules: a family is every account under one contract root,
+  // accounts on the same contract are one account, and a contact is one person
+  // per normalized email within a family.
+  const accounts = rows.filter((row) => row.kind === "account");
+  const contacts = rows.filter((row) => row.kind === "contact");
+  const families = new Map();
+  for (const row of accounts) {
+    const family = row.contract.split("/")[0];
+    families.set(family, [...(families.get(family) || []), row]);
   }
-  return result;
-}
-```
 
-Mission B, published later, accepts detections at or above `input.autoAcceptAbove` without a review, and gives each remaining review until `input.reviewTimeout` before counting it as unconfirmed. It disposes each review's hook once the review settles, so a response that arrives after the timeout is refused rather than delivered to a hook nothing reads:
+  function familyOperations(members, owner) {
+    // Parent-first: an account is written only after the account it reports to.
+    const ordered = [];
+    const visit = (row) => {
+      if (ordered.includes(row)) return;
+      const parent = members.find((other) => other.id === row.parent);
+      if (parent) visit(parent);
+      ordered.push(row);
+    };
+    members.forEach(visit);
 
-{/* @skip-typecheck: dynamic workflow source, evaluated with injected steps, createHook, and sleep */}
-```javascript title="missions/triage.js" lineNumbers
-async function workflow(input) {
-  "use workflow";
-  const detections = await steps.llm({ image: input.image, count: input.count });
+    const ops = [];
+    const survivors = new Map();
+    const survivorOf = new Map();
+    for (const row of ordered) {
+      ops.push({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, sources: [row.id] });
+      if (row.parent) ops.push({ op: "setParent", account: row.id, parent: row.parent });
+      const survivor = survivors.get(row.contract);
+      if (!survivor) {
+        survivors.set(row.contract, row.id);
+        survivorOf.set(row.id, row.id);
+        continue;
+      }
+      survivorOf.set(row.id, survivor);
+      if (owner) {
+        ops.push({ op: "setOwner", key: survivor, owner }, { op: "setOwner", key: row.id, owner });
+      }
+      ops.push({ op: "mergeAccount", from: row.id, into: survivor });
+    }
 
-  const reviews = await Promise.all(
-    detections.map(async (detection) => {
-      if (detection.confidence >= input.autoAcceptAbove) { // [!code highlight]
-        return { ...detection, confirmed: true, reviewedBy: "auto" }; // [!code highlight]
-      } // [!code highlight]
-      const token = input.reviewTokenPrefix + ":" + detection.id;
+    const people = new Map();
+    for (const row of contacts) {
+      if (!survivorOf.has(row.account)) continue;
+      const email = row.email.trim().toLowerCase();
+      const person = people.get(email) || { key: row.id, name: row.name, email, sources: [], accounts: [] };
+      person.sources.push(row.id);
+      person.accounts.push(survivorOf.get(row.account));
+      people.set(email, person);
+    }
+    for (const person of people.values()) {
+      ops.push({ op: "createContact", key: person.key, name: person.name, email: person.email, sources: person.sources });
+      for (const account of new Set(person.accounts)) {
+        ops.push({ op: "linkContact", contact: person.key, account });
+      }
+    }
+    return ops;
+  }
+
+  async function migrateFamily(family, members) {
+    const stage = (owner) =>
+      steps.stageChanges({ ...scope, groupKey: family, operations: familyOperations(members, owner) });
+    let plan = await stage();
+    if (plan.conflicts.length > 0) {
+      // Only this family waits for a person; the others carry on.
+      const token = input.tokenPrefix + ":" + family;
       const review = createHook({ token });
       try {
-        await steps.expertReview(detection, token);
-        const verdict = await Promise.race([ // [!code highlight]
-          review, // [!code highlight]
-          sleep(input.reviewTimeout).then(() => null), // [!code highlight]
-        ]); // [!code highlight]
-        if (verdict === null) {
-          return { ...detection, confirmed: false, reviewedBy: "timeout" };
-        }
-        return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+        const owners = plan.conflicts.flatMap((conflict) => conflict.values);
+        await steps.requestApproval({ planId: plan.planId, token, summary: family + ": choose an owner from " + owners.join(", ") });
+        const decision = await review;
+        if (!decision.approved) return { family, status: "skipped" };
+        plan = await stage(decision.owner || owners[0]);
       } finally {
-        // Release the token, so a response after the timeout is refused
-        // instead of resolving a hook nothing reads.
-        review.dispose(); // [!code highlight]
+        review.dispose();
       }
-    })
-  );
-
-  const confirmed = reviews.filter((review) => review.confirmed).length;
-  const result = { image: input.image, confirmed, reviews };
-  await steps.notify(input.image + ": " + confirmed + " of " + reviews.length + " confirmed");
-  if (input.parentToken) {
-    await steps.reportToParent(input.parentToken, result);
+    }
+    const result = await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
+    return { family, status: "applied", result };
   }
-  return result;
+
+  const outcomes = await Promise.all([...families].map(([family, members]) => migrateFamily(family, members)));
+  const verification = await steps.verifyChanges({
+    ...scope,
+    results: outcomes.filter((outcome) => outcome.result).map((outcome) => outcome.result),
+  });
+  const summary = outcomes.map(({ family, status }) => ({ family, status }));
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { families: summary, verification } });
+  return { families: summary, verification, report };
 }
 ```
 
-Both missions bind the same aliases: `llm` to `detectBirds`, `expertReview` to `requestExpertReview`, `notify`, and `reportToParent`. Every parameter, including the threshold, the timeout, and the hook tokens, arrives as `input`. The stored source is never templated, so the code that runs is the stored revision, unchanged. Hook tokens are derived from a mission-run ID the server generates, so replay recreates the same hooks and concurrent runs never share a token; see [custom tokens](/docs/foundations/hooks#custom-tokens-for-deterministic-hooks).
+The procedure owns the customer's policy, and nothing in the catalog knows about it:
 
-## Publish a revision
+- **Families.** Accounts are grouped by the root of their contract number, so `C-100`, `C-100/E`, and `C-100/W` are one family. Each family becomes its own plan, and `Promise.all` runs them concurrently.
+- **Parent-first order.** Within a family, an account is written only after the account it reports to. The destination checks that every parent resolves, so writing a child first would fail the plan.
+- **One account per contract.** Two rows on the same contract become one account through `mergeAccount`. If their owners differ, the plan comes back with a conflict, and the procedure asks a person.
+- **One person per email within a family.** Ada Park appears once per region with differently cased emails, and becomes one contact linked to both regions. `info@initech.com` appears in two families, so it stays two contacts.
+- **Review before waiting.** The approval hook is created before `requestApproval` sends its token, so a fast reviewer can never miss it, and it is disposed once the review settles. A rejected family is skipped; the others are applied either way.
 
-Publishing is a privileged operator action, not part of the public API. A typical setup keeps missions in a reviewed repository and lets its CI job call this route after a change merges:
+Every parameter, including the dataset, the destination, and the token prefix, arrives as `input`. The source is never templated, so what runs is exactly the file that was reviewed.
 
-```typescript title="app/api/admin/missions/route.ts" lineNumbers
+## Publish and start it
+
+Nothing about this procedure existed when the platform deployed. After the procedure is reviewed and merged in the integration repository, a release job stores the file and its step names wherever the platform keeps procedures, keyed by a stable procedure ID such as `acme-parent-first`. A route then starts it on the running deployment:
+
+```typescript title="app/api/migrations/route.ts" lineNumbers
+import { start } from "workflow/api";
 import { z } from "zod";
-import { MISSION_CATALOG, MISSION_CATALOG_VERSION } from "@/lib/mission-catalog";
-import { sha256Hex, type MissionStore } from "@/lib/mission-store";
+import { MIGRATION_CATALOG } from "@/lib/migration-catalog";
 
-declare const missionStore: MissionStore; // @setup
+declare const procedures: { latest(id: string): Promise<{ source: string; steps: Record<string, string> } | null> }; // @setup
 declare function assertOperator(request: Request): Promise<void>; // @setup
 
-const publishRequest = z.object({
-  missionId: z.string().regex(/^[a-z][a-z0-9-]{0,62}$/),
-  source: z.string().max(128 * 1024),
-  steps: z.record(z.string(), z.string()),
-  catalogVersion: z.string(),
-  approval: z.object({
-    approvedBy: z.string().min(1),
-    approvedAt: z.string().datetime(),
-    reviewUrl: z.string().url(),
-  }),
-});
-
-export async function POST(request: Request) {
-  await assertOperator(request); // [!code highlight]
-
-  const parsed = publishRequest.safeParse(await request.json());
-  if (!parsed.success) {
-    return Response.json({ error: parsed.error.message }, { status: 400 });
-  }
-  const { steps, catalogVersion, ...mission } = parsed.data;
-
-  if (catalogVersion !== MISSION_CATALOG_VERSION) {
-    return Response.json(
-      { error: `This deployment serves catalog ${MISSION_CATALOG_VERSION}` },
-      { status: 409 }
-    );
-  }
-  for (const name of Object.values(steps)) {
-    if (!Object.hasOwn(MISSION_CATALOG, name)) {
-      return Response.json({ error: `Unknown catalog step "${name}"` }, { status: 400 });
-    }
-  }
-
-  const revision = await missionStore.append({
-    ...mission,
-    steps: steps as Record<string, keyof typeof MISSION_CATALOG>,
-    catalogVersion,
-    sourceSha256: await sha256Hex(mission.source),
-  });
-  return Response.json({ missionId: revision.missionId, revision: revision.revision });
-}
-```
-
-These checks confirm the revision is well formed and fits this deployment's catalog. They are not a review: nothing here can tell whether a mission does what its approver thinks it does. Nor do they verify the approval: `approvedBy` is a field the caller supplied, and the route trusts it because only operators can reach the route. The review happens in your review process; the publish route and the store's write access are what make the stored record trustworthy. The SDK validates the source shape (the `workflow` declaration, the directive, no imports) when `start()` is called; there is no separate validation API, so a pipeline that wants that check before approval can start the mission once on a preview deployment.
-
-## Start a mission
-
-The start route loads the latest revision, checks it again, and starts it. Checking at start as well as at publish catches a revision published against a catalog this deployment no longer serves, and a source that changed in the store without its hash, such as a partial write or a hand edit. It does not catch a writer who changes the source and the hash together, or who invents an approval record: the hash is stored next to the source it describes, so it detects accidents, not tampering. Trust in a revision comes from who can publish and who can write to the store. To verify provenance at start independently of the store, sign each revision at publish with a key the store's writers do not hold, and check the signature here. The checks throw [`FatalError`](/docs/api-reference/workflow/fatal-error) so that, when a step calls them (as in [Fan out at scale](#fan-out-at-scale)), a refused revision fails at once instead of retrying.
-
-```typescript title="lib/start-mission.ts" lineNumbers
-import { FatalError } from "workflow";
-import { start } from "workflow/api";
-import { MISSION_CATALOG, MISSION_CATALOG_VERSION } from "@/lib/mission-catalog";
-import { sha256Hex, type MissionRevision } from "@/lib/mission-store";
-
-export async function bindMissionRevision(revision: MissionRevision) {
-  const label = `${revision.missionId}@${revision.revision}`;
-  if (!revision.approval?.approvedBy) {
-    throw new FatalError(`Mission ${label} has no approval record`);
-  }
-  if ((await sha256Hex(revision.source)) !== revision.sourceSha256) {
-    throw new FatalError(`Mission ${label} does not match its recorded hash`);
-  }
-  if (revision.catalogVersion !== MISSION_CATALOG_VERSION) {
-    throw new FatalError(`Mission ${label} targets catalog ${revision.catalogVersion}`);
-  }
-  const steps: Record<string, (typeof MISSION_CATALOG)[keyof typeof MISSION_CATALOG]> = {};
-  for (const alias of Object.keys(revision.steps)) {
-    const name = revision.steps[alias];
-    if (!Object.hasOwn(MISSION_CATALOG, name)) {
-      throw new FatalError(`Mission ${label} binds unknown step "${name}"`);
-    }
-    steps[alias] = MISSION_CATALOG[name]; // [!code highlight]
-  }
-  return steps;
-}
-
-export async function startMissionRevision(
-  revision: MissionRevision,
-  input: Record<string, unknown>
-) {
-  const steps = await bindMissionRevision(revision);
-  return await start(revision.source, [input], { // [!code highlight]
-    experimental_dynamic: { steps }, // [!code highlight]
-  }); // [!code highlight]
-}
-```
-
-The step map holds the **imported** step functions. The build stamps a `stepId` on each one, and that ID is what binds `steps.llm` in the source to `detectBirds` in this deployment.
-
-```typescript title="app/api/missions/route.ts" lineNumbers
-import { z } from "zod";
-import type { MissionStore } from "@/lib/mission-store";
-import { startMissionRevision } from "@/lib/start-mission";
-
-declare const missionStore: MissionStore; // @setup
-
 const startRequest = z.object({
-  missionId: z.string(),
-  image: z.string().min(1).max(200),
-  count: z.number().int().min(1).max(20),
+  procedureId: z.string(),
+  dataset: z.string(),
+  destinationId: z.string(),
 });
 
 export async function POST(request: Request) {
-  // Authenticate the caller first: a mission runs deployed steps.
+  await assertOperator(request);
   const parsed = startRequest.safeParse(await request.json());
   if (!parsed.success) {
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
-  const { missionId, image, count } = parsed.data;
-
-  const revision = await missionStore.latest(missionId);
-  if (!revision) {
-    return Response.json({ error: "Unknown mission" }, { status: 404 });
+  const procedure = await procedures.latest(parsed.data.procedureId);
+  if (!procedure) {
+    return Response.json({ error: "Unknown procedure" }, { status: 404 });
   }
 
-  const missionRunId = crypto.randomUUID();
-  const run = await startMissionRevision(revision, {
-    image,
-    count,
-    reviewTokenPrefix: `mission-run:${missionRunId}:review`,
-    // Read only by missions that use them.
-    autoAcceptAbove: 0.9,
-    reviewTimeout: "1d",
-  });
+  // Bind each name the procedure calls to the imported step function.
+  const steps = Object.fromEntries(
+    Object.entries(procedure.steps).map(([alias, name]) => [
+      alias,
+      MIGRATION_CATALOG[name as keyof typeof MIGRATION_CATALOG],
+    ])
+  );
 
-  return Response.json({
-    runId: run.runId,
-    missionRunId,
-    revision: revision.revision,
-  });
+  const id = crypto.randomUUID();
+  const migrationId = `migration-${id}`;
+  const run = await start(procedure.source, [{ // [!code highlight]
+    dataset: parsed.data.dataset,
+    destinationId: parsed.data.destinationId,
+    migrationId,
+    tokenPrefix: `migration:${id}`,
+  }], { experimental_dynamic: { steps } }); // [!code highlight]
+
+  return Response.json({ runId: run.runId, migrationId });
 }
 ```
 
-Record the revision a run started from alongside its run ID, so every result can be traced to the exact source it ran.
+The step map holds the **imported** step functions: the build stamps a `stepId` on each one, and that ID is what binds `steps.applyChanges` in the source to this deployment's step. See [Operating it](#operating-it) for what to check before starting a stored procedure.
 
-## Resume a review
+The whole sequence is:
 
-Each review waits on its own hook. The review route rebuilds the token from the mission-run ID and the detection ID, confirms the hook belongs to the run, and resumes it:
+1. Deploy the catalog and these routes once.
+2. Write and review a procedure, then publish it to the store.
+3. `POST /api/migrations` with the procedure ID, the dataset, and the destination.
+4. A reviewer answers any approval it requests.
+5. Read the result with [`getRun()`](/docs/api-reference/workflow-api/get-run); the run's return value holds the verification and the report ID.
 
-```typescript title="app/api/missions/[runId]/reviews/route.ts" lineNumbers
+## Review an owner conflict
+
+Initech's two rows share contract `C-300` but list different owners, so only that family waits. Its token is the run's `tokenPrefix` plus the family. The review route resumes it after authorizing the reviewer:
+
+```typescript title="app/api/migrations/[runId]/reviews/route.ts" lineNumbers
 import { getHookByToken, resumeHook } from "workflow/api";
 import { HookNotFoundError } from "workflow/errors";
 import { z } from "zod";
 
-declare function assertCanReview(request: Request, missionRunId: string): Promise<void>; // @setup
+declare function assertCanReview(request: Request, migrationId: string): Promise<void>; // @setup
 
 const reviewRequest = z.object({
-  missionRunId: z.string().uuid(),
-  detectionId: z.number().int().min(0),
-  confirmed: z.boolean(),
+  migrationId: z.string().startsWith("migration-"),
+  family: z.string(),
+  approved: z.boolean(),
+  owner: z.string().optional(),
 });
 
 export async function POST(
@@ -388,17 +338,17 @@ export async function POST(
   if (!parsed.success) {
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
-  const { missionRunId, detectionId, confirmed } = parsed.data;
-
+  const { migrationId, family, approved, owner } = parsed.data;
   // Knowing a token does not authorize the caller.
-  await assertCanReview(request, missionRunId); // [!code highlight]
+  await assertCanReview(request, migrationId); // [!code highlight]
 
+  const token = `migration:${migrationId.slice("migration-".length)}:${family}`;
   try {
-    const hook = await getHookByToken(`mission-run:${missionRunId}:review:${detectionId}`);
+    const hook = await getHookByToken(token);
     if (hook.runId !== runId) {
       return Response.json({ error: "No such review" }, { status: 404 });
     }
-    await resumeHook(hook, { confirmed }); // [!code highlight]
+    await resumeHook(hook, { approved, owner }); // [!code highlight]
     return Response.json({ ok: true });
   } catch (error) {
     if (HookNotFoundError.is(error)) {
@@ -409,91 +359,173 @@ export async function POST(
 }
 ```
 
-A review for a detection mission B accepted on its own gets a 404 because that hook never existed. One that arrives after its timeout gets a 404 because mission B disposed the hook when the timeout fired, even though the run may still be finishing its remaining steps. Once a run finishes, all of its hooks are gone. See [Authorize before calling `resumeHook()`](/docs/foundations/hooks#authorize-before-calling-resumehook).
+A review for a family that never conflicted, or one that arrives after the review settled, gets a 404: that hook never existed, or the procedure already disposed it. See [Authorize before calling `resumeHook()`](/docs/foundations/hooks#authorize-before-calling-resumehook).
 
-To report status, read the run with [`getRun()`](/docs/api-reference/workflow-api/get-run). A dynamic run's result type is `unknown` to TypeScript, so pass the type you expect, as in `getRun<MissionResult>(runId)`.
+## What survives a pause, and what changed
 
-## Fan out at scale
+While Initech waits, the run is suspended on its hook, using no compute, and the other two families are already applied: Acme's three accounts with Ada linked to both regions, and Globex. A restart in between does not matter, and neither does a new deploy: the run stays on the deployment that started it, and when the review arrives it replays its stored procedure and recorded step results instead of re-reading or re-writing anything.
 
-To run a mission once per image across a large batch, start the runs from a static parent workflow and fan back in through hooks, as in [Child Workflows](/cookbook/advanced/child-workflows). Each mission ends with `steps.reportToParent(input.parentToken, result)` when it was given a parent token, which resumes the hook the parent created for it.
+After the reviewer picks `sam` as Initech's owner, the destination holds:
 
-```typescript title="workflows/bird-survey.ts" lineNumbers
-import { createHook } from "workflow";
-import type { MissionRevision } from "@/lib/mission-store";
-import { startMissionRevision } from "@/lib/start-mission";
+| Account | Parent | Owner | From legacy rows |
+| --- | --- | --- | --- |
+| Acme Holdings | none | dana | `acct-acme` |
+| Acme East | Acme Holdings | dana | `acct-acme-east` |
+| Acme West | Acme Holdings | dana | `acct-acme-west` |
+| Globex | none | lee | `acct-globex` |
+| Initech | none | sam | `acct-initech`, `acct-initech-ltd` |
 
-interface MissionResult {
-  image: string;
-  confirmed: number;
+| Contact | Linked to | From legacy rows |
+| --- | --- | --- |
+| Ada Park, `ada@acme.com` | Acme East, Acme West | `ct-ada-east`, `ct-ada-west` |
+| Initech front desk, `info@initech.com` | Initech | `ct-info-initech` |
+| Globex reseller desk, `info@initech.com` | Globex | `ct-info-globex` |
+
+`verifyChanges` reports no dangling links, no provisional accounts, and no duplicate contacts. A field mapping could not produce this: it would create six accounts and four contacts, merge nothing, and either link the two `info@initech.com` rows together or keep Ada twice.
+
+## Procedure B: provisional first
+
+Another customer team prefers to see everything land before anything is reconciled. Procedure B runs over the same catalog and is published later, without a deploy. It is structured differently: instead of building each family carefully and pausing only the ambiguous one, it writes every row as it is, then stages one consolidation over all of it, and asks for one review of the whole change:
+
+{/* @skip-typecheck: excerpt of dynamic workflow source */}
+```javascript title="procedures/acme-provisional-first.js (excerpt)" lineNumbers
+  // 1. Land every row as written: provisional, flat, one record per row.
+  const load = await steps.stageChanges({
+    ...scope,
+    groupKey: "load",
+    operations: [
+      ...accounts.map((row) => ({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, status: "provisional", sources: [row.id] })),
+      ...contacts.flatMap((row) => [
+        { op: "createContact", key: row.id, name: row.name, email: row.email.trim().toLowerCase(), sources: [row.id] },
+        { op: "linkContact", contact: row.id, account: row.account },
+      ]),
+    ],
+  });
+  const loaded = await steps.applyChanges({ plan: load, idempotencyKey: "apply:" + load.planId });
+
+  // 2. Reconcile the landed records with this customer's rules, as one change:
+  //    setParent for every child, mergeAccount for rows on the same contract,
+  //    mergeContact for one person per email within a family, markFinal for
+  //    every surviving account.
+  function consolidation(owner) { /* ... */ }
+  const stage = (owner) =>
+    steps.stageChanges({ ...scope, groupKey: "consolidation", operations: consolidation(owner), dependsOn: [load] });
+  let plan = await stage();
+
+  // 3. One review for the whole consolidation, not one per family.
+  const token = input.tokenPrefix + ":consolidation";
+  const review = createHook({ token });
+  let decision;
+  try {
+    const owners = plan.conflicts.flatMap((conflict) => conflict.values);
+    await steps.requestApproval({ planId: plan.planId, token, summary: plan.operations.length + " changes; owners to choose from: " + owners.join(", ") });
+    decision = await review;
+    if (decision.approved && plan.conflicts.length > 0) plan = await stage(decision.owner || owners[0]);
+  } finally {
+    review.dispose();
+  }
+```
+
+The two procedures converge on the same records shown above, but they get there differently:
+
+| | Procedure A: parent-first | Procedure B: provisional first |
+| --- | --- | --- |
+| First writes | Final records, one family at a time | Every row, provisional and flat |
+| What waits for a person | Only the family whose owners disagree | The single consolidation of everything |
+| Integrity during the run | Parents exist before children | Hierarchy and merges arrive in one plan that depends on the load |
+| If the review is rejected | That family is skipped; the others are final | Records stay provisional, and `verifyChanges` reports them |
+
+Neither is the right migration algorithm in general. They encode two customers' conventions, which is why each is a procedure rather than a platform feature.
+
+## Many families
+
+A procedure that runs every family in one run keeps the whole migration in one event log. For an export with thousands of families, start one run per family, or per batch of families, from a static parent workflow, and fan back in through hooks as in [Child Workflows](/cookbook/advanced/child-workflows). Each child is the same procedure with a narrower `input`.
+
+## Operating it
+
+The sections above leave out how procedures are stored and checked. None of this changes the API, but a platform that runs procedures for customers needs it.
+
+### Procedure revisions
+
+Store procedures as **immutable revisions** under a stable procedure ID: the exact source, the step names it binds, the catalog version it was reviewed against, and the approval record. Publish adds a revision; nothing edits one in place. Record the revision a run started from next to its run ID.
+
+Keep the procedure ID separate from the [workflow ID](/docs/advanced/dynamic-workflows#workflow-ids). The SDK derives the workflow ID from a hash of the raw source bytes and the step bindings, so reformatting a procedure or editing a comment gives its runs a new workflow ID; the procedure ID stays stable across revisions.
+
+### Checks at publish and start
+
+Restrict publishing to operators, and at publish check what your platform owns: the approval record exists, every bound name is in the catalog, the catalog version is one this deployment serves, and the source is under 128 KB. Check again when a run starts, because the store can change in between:
+
+```typescript title="lib/bind-revision.ts" lineNumbers
+import { FatalError } from "workflow";
+import { MIGRATION_CATALOG } from "@/lib/migration-catalog";
+
+declare function sha256Hex(text: string): Promise<string>; // @setup
+
+interface ProcedureRevision {
+  procedureId: string;
+  revision: number;
+  source: string;
+  sourceSha256: string;
+  steps: Record<string, string>;
+  catalogVersion: string;
+  approval: { approvedBy: string; approvedAt: string; reviewUrl: string };
 }
 
-export async function birdSurvey(revision: MissionRevision, surveyId: string, images: string[]) {
-  "use workflow";
+const CATALOG_VERSION = "crm-migration@1";
 
-  const hooks = images.map((_, index) =>
-    createHook<MissionResult>({ token: `survey:${surveyId}:mission:${index}` })
-  );
-  await Promise.all(
-    images.map((image, index) =>
-      startMission(revision, {
-        image,
-        count: 5,
-        reviewTokenPrefix: `survey:${surveyId}:review:${index}`,
-        parentToken: `survey:${surveyId}:mission:${index}`, // [!code highlight]
-      })
-    )
-  );
-  const results = await Promise.all(hooks); // [!code highlight]
-
-  return {
-    images: results.length,
-    confirmed: results.reduce((total, result) => total + result.confirmed, 0),
-    results,
-  };
-}
-
-async function startMission(revision: MissionRevision, input: Record<string, unknown>) {
-  "use step";
-  const run = await startMissionRevision(revision, input);
-  return { runId: run.runId };
+export async function bindRevision(revision: ProcedureRevision) {
+  const label = `${revision.procedureId}@${revision.revision}`;
+  if (!revision.approval?.approvedBy) {
+    throw new FatalError(`Procedure ${label} has no approval record`);
+  }
+  if ((await sha256Hex(revision.source)) !== revision.sourceSha256) {
+    throw new FatalError(`Procedure ${label} does not match its recorded hash`);
+  }
+  if (revision.catalogVersion !== CATALOG_VERSION) {
+    throw new FatalError(`Procedure ${label} targets catalog ${revision.catalogVersion}`);
+  }
+  const steps: Record<string, (typeof MIGRATION_CATALOG)[keyof typeof MIGRATION_CATALOG]> = {};
+  for (const alias of Object.keys(revision.steps)) {
+    const name = revision.steps[alias];
+    if (!Object.hasOwn(MIGRATION_CATALOG, name)) {
+      throw new FatalError(`Procedure ${label} binds unknown step "${name}"`);
+    }
+    steps[alias] = MIGRATION_CATALOG[name as keyof typeof MIGRATION_CATALOG];
+  }
+  return steps;
 }
 ```
 
-`startMission` is a step, not workflow code: `start()` is a side effect, and the step map holds function references that must not cross a step boundary as serialized data. Load the revision in the route that starts `birdSurvey`, and pass it in, so every child runs the same revision. The child-workflows recipe covers the rest of the fan-out: [chunked spawning](/cookbook/advanced/child-workflows#fan-out-pattern-chunked-spawning) for hundreds of children, [partial failures](/cookbook/advanced/child-workflows#tolerating-partial-failures), and the parent's own event-log growth.
+Be precise about what these checks prove:
 
-## Runs in flight
+- **They are not a review.** Nothing here can tell whether a procedure does what its approver thinks it does. Syntax validation in `start()` is not a review either.
+- **The hash detects accidents, not tampering.** It is stored next to the source it describes, so it catches a source that changed without it, such as a partial write or a hand edit, but not a writer who changes both or invents an approval record. `approvedBy` is a field the publisher supplied.
+- **Trust comes from who can publish and who can write to the store.** To verify provenance at start independently of the store, sign each revision at publish with a key the store's writers do not hold, and check the signature here.
 
-A dynamic run stores its compiled code when it starts, and every replay runs that stored code. Publishing a new revision changes what the *next* start runs:
+The checks throw [`FatalError`](/docs/api-reference/workflow/fatal-error) so that a refused revision fails at once instead of retrying when a step calls them.
 
-- **In-flight runs are neither upgraded nor revoked.** A run of mission A revision 1 finishes on revision 1, even after revision 2 is published or the record is deleted. To stop one, [cancel the run](/docs/api-reference/workflow-api/get-run#cancel-a-run).
-- **A run needs its deployment until it finishes.** A dynamic run executes only on the deployment that started it, against that deployment's steps. Keep a deployment available while its long-running missions wait on reviews or timers, and keep its catalog steps compatible with what those missions call.
+### Runs in flight
 
-## Limits
+A dynamic run stores its compiled code when it starts, and every replay runs that stored code:
 
-- **Source size.** At most 128 KB of source per mission.
-- **Execution context.** On Vercel, a run's execution context is limited to **2,048 bytes of JSON**, and the mission's plaintext metadata counts against it: the source hash, the export name, and every alias with its full step ID. Step IDs are derived from the step's file path and function name, so a catalog in a deeply nested file fits fewer aliases than one near the root. Treat any alias count as an estimate; a start that exceeds the limit throws before a run is created.
-- **Local and Vercel differ.** The Local World does not enforce the execution-context limit, so start a mission with many bindings on a preview deployment before approving it.
+- **In-flight runs are neither upgraded nor revoked.** Publishing a new revision changes what the next start runs. To stop a run, [cancel it](/docs/api-reference/workflow-api/get-run#cancel-a-run).
+- **A run needs its deployment until it finishes.** A dynamic run executes only on the deployment that started it, against that deployment's steps. Keep a deployment available while its migrations wait on reviews, and bump the catalog version when a step changes in a way an existing procedure would notice.
+
+### Limits
+
+- **Source size.** At most 128 KB of source per procedure.
+- **Execution context.** On Vercel, a run's execution context is limited to **2,048 bytes of JSON**, and the procedure's plaintext metadata counts against it: the source hash, the export name, and every bound name with its full step ID. Treat any count of bindings as an estimate; a start that exceeds the limit throws before a run is created. The Local World does not enforce this limit, so try a procedure with many bindings on a preview deployment.
 
 See [Rules for the source](/docs/advanced/dynamic-workflows#rules-for-the-source) for the full list.
 
-## Security
+## Testing it
 
-Dynamic workflows execute trusted application code, including code authored by operators or drafted by a model and approved under your application-code review process. Do not execute end-user scripts, or unreviewed model-generated source influenced by untrusted requests, retrieved content, or tool outputs. A fixed step catalog, syntax validation, and a dedicated project do not make that source safe.
-
-- **The source has the deployment's privileges.** The workflow sandbox is for determinism, not isolation. Mission source can read `process.env`, reach host globals, call the World with the deployment's credentials (which reach other runs' hooks and streams), and alter state in a warm instance that later requests reuse.
-- **The step map is not a boundary.** A mission that calls an alias it was not given fails its run, but the map does not stop source that is trying to reach other steps or the host. Review is the boundary.
-- **A dedicated project is defense in depth.** Running missions from their own Vercel project, with only the environment variables and access the catalog needs, limits what a mistake in reviewed code can reach. It does not make unreviewed source safe to run.
-- **Guard the publish path like a deploy.** Anyone who can publish a revision, or write to the store directly, can run code with the deployment's privileges. Restrict the publish route to operators and protect the store's write access the same way; the hash and approval fields in a revision do not defend against either.
-- **Parameters are input, not source.** Building source from request fields, even with escaping, turns every caller into a code author.
-- **Authorize every resume.** Hook tokens route a payload to a run; they do not prove who sent it.
-
-See [Security](/docs/advanced/dynamic-workflows#security) on the concept page for the full model, including what encryption does and does not protect.
+The e2e tests behind this recipe run both procedures against a synthetic `acme-legacy` dataset and a **pure simulated destination**: each plan's records are derived from the plan and the plans it depends on, and `verifyChanges` reconciles the results it is given. That shows the workflow's guarantees, including replay of recorded step results across a pause. It does not show destination-side deduplication when a write's outcome is unknown, which needs a destination that stores idempotency keys; test that against your real adapter.
 
 ## Key APIs
 
 - [`start()`](/docs/api-reference/workflow-api/start): Starts a run from workflow source with `experimental_dynamic.steps`.
-- [`createHook()`](/docs/api-reference/workflow/create-hook): Waits for an external signal, such as a review, inside the source.
-- [`sleep()`](/docs/api-reference/workflow/sleep): Durable timer, raced against a hook for timeouts.
-- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Looks up a pending hook before resuming it.
-- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Delivers a review to the waiting run.
-- [`getRun()`](/docs/api-reference/workflow-api/get-run): Reads a mission run's status and result.
+- [`createHook()`](/docs/api-reference/workflow/create-hook): Waits for a review inside the procedure.
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Looks up a pending review before resuming it.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Delivers a reviewer's decision to the waiting run.
+- [`getRun()`](/docs/api-reference/workflow-api/get-run): Reads a migration's status and result.
