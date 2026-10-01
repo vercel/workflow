@@ -87,7 +87,7 @@ A dynamic run must execute on the deployment that started it. `start()` rejects 
 
 ### Errors for each gate
 
-Each gate fails with a message that names it. Except at delivery, where the run itself fails, `start()` throws: a `WorkflowRuntimeError` for the checks it makes itself, and the World's own error when the backend refuses the run.
+Each gate fails with a message that names it. Except at delivery, where the run itself fails, `start()` throws: a `WorkflowRuntimeError` for the checks it makes before writing anything, including the World's execution-context limit, and the World's own error when the backend refuses the run.
 
 | Gate | Where it fails | Message |
 | --- | --- | --- |
@@ -97,6 +97,8 @@ Each gate fails with a message that names it. Except at delivery, where the run 
 | World capability | `start()` | ``Dynamic workflows require a World that declares `capabilities.dynamicWorkflowCode`. This World does not, so no run was created.`` |
 | Execution-context limit (Vercel) | `start()` | `Dynamic workflow execution context is <n> bytes, exceeding the 2048-byte limit, so no run was created.`, followed by guidance on what counts |
 | Project storage (Vercel) | `start()`, from the backend | A `WorkflowWorldError` with `status: 400`, `code: 'dynamic-workflow-storage-disabled'`, and the message `dynamic workflow storage is not enabled for this project`. See [World support](#world-support). |
+
+The `WorkflowRuntimeError` refusals, like the [source validation](#rules-for-the-source) errors, are marked fatal: `FatalError.is()` returns `true` for them, so a step that calls `start()` fails on the first attempt instead of spending its retries. A same-deployment refusal is fatal only when the current deployment is known. When it cannot be determined, the message reads `from an unknown current deployment` and the error stays retryable, because the lookup can succeed on a retry. When workflow code calls `start()` directly, `start()` runs as its own step: that step still fails without retrying, but the error the workflow catches does not carry the fatal marker.
 
 ## What the source can use
 
