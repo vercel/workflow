@@ -1,5 +1,16 @@
 # @workflow/next
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4547](https://github.com/vercel/workflow/pull/4547) [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `next dev` not bundling a workflow that is created after its import, or deleted and restored
+
+- [#4396](https://github.com/vercel/workflow/pull/4396) [`156e023`](https://github.com/vercel/workflow/commit/156e023d90875acc0149bf723f95f2e2d7bc044d) Thanks [@pranaygp](https://github.com/pranaygp)! - Scope the Next dev watcher to the framework module graph and stop opening a file descriptor per source file, which fixes file watch limits being reached on large projects
+- Updated dependencies [[`ff4a0fd`](https://github.com/vercel/workflow/commit/ff4a0fd155bfe32e1e8df977dec6fc9e4e71dde0), [`14dbfdc`](https://github.com/vercel/workflow/commit/14dbfdc1f52e838854b6ee70398b742e4850e891), [`1fcf4bb`](https://github.com/vercel/workflow/commit/1fcf4bb33964e491ebefefbcd0644fe46e8dd1f4), [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb), [`65ca6c8`](https://github.com/vercel/workflow/commit/65ca6c893e83ef623fba370416ce9b88e9064df4), [`0e64f7b`](https://github.com/vercel/workflow/commit/0e64f7bc25b9159a39485c5ff5b2c8025bf2745a), [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270), [`e915eab`](https://github.com/vercel/workflow/commit/e915eab3ea98d300e6431ad005c766c90b81695c), [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`3b09dd7`](https://github.com/vercel/workflow/commit/3b09dd7da5ea4e5de852d59c33db8db10a3d314b), [`98442de`](https://github.com/vercel/workflow/commit/98442dea24a392c29adcf843ef1a65c1ed94f32c)]:
+  - @workflow/builders@5.0.1
+  - @workflow/core@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

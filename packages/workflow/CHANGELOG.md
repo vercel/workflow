@@ -1,5 +1,23 @@
 # workflow
 
+## 5.0.1
+
+### Patch Changes
+
+- [#3251](https://github.com/vercel/workflow/pull/3251) [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add experimental threshold-based VM-memory snapshotting to the QuickJS engine via `WORKFLOW_SNAPSHOT_THRESHOLD` (or per-run `executionContext.snapshotThreshold`). Once the configured number of events has been processed since the last snapshot, suspensions persist a compressed, encrypted VM snapshot, which is later used for resumption. Runs without an encryption key are only snapshotted with `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`
+- Updated dependencies [[`14dbfdc`](https://github.com/vercel/workflow/commit/14dbfdc1f52e838854b6ee70398b742e4850e891), [`1fcf4bb`](https://github.com/vercel/workflow/commit/1fcf4bb33964e491ebefefbcd0644fe46e8dd1f4), [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb), [`0e64f7b`](https://github.com/vercel/workflow/commit/0e64f7bc25b9159a39485c5ff5b2c8025bf2745a), [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270), [`e915eab`](https://github.com/vercel/workflow/commit/e915eab3ea98d300e6431ad005c766c90b81695c), [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`156e023`](https://github.com/vercel/workflow/commit/156e023d90875acc0149bf723f95f2e2d7bc044d), [`3b09dd7`](https://github.com/vercel/workflow/commit/3b09dd7da5ea4e5de852d59c33db8db10a3d314b), [`98442de`](https://github.com/vercel/workflow/commit/98442dea24a392c29adcf843ef1a65c1ed94f32c)]:
+  - @workflow/core@5.0.1
+  - @workflow/next@5.0.1
+  - @workflow/nitro@5.0.1
+  - @workflow/cli@5.0.1
+  - @workflow/astro@5.0.1
+  - @workflow/nest@5.0.1
+  - @workflow/rollup@5.0.1
+  - @workflow/sveltekit@5.0.1
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/nuxt@5.0.1
+  - @workflow/errors@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

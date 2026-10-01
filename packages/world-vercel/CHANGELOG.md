@@ -1,5 +1,26 @@
 # @workflow/world-vercel
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4557](https://github.com/vercel/workflow/pull/4557) [`6eaa899`](https://github.com/vercel/workflow/commit/6eaa899bfb2636b5d2545703bd166fd6ac5b6cbf) Thanks [@SandboxRD](https://github.com/SandboxRD)! - Fix `createQueueDispatcher()` and `createEventsDispatcher()` crashing under Bun with `compose is not a function`. Bun resolves `undici` to its built-in module, whose dispatchers can't compose interceptors and are ignored by Bun's `fetch`, so the plain dispatcher is used instead.
+
+- [#4534](https://github.com/vercel/workflow/pull/4534) [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb) Thanks [@alangenfeld](https://github.com/alangenfeld)! - The dynamic execution-context budget error now says that step IDs and `exportName` count, not only aliases.
+
+- [#3250](https://github.com/vercel/workflow/pull/3250) [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an _optional_, experimental `experimental_snapshots` storage interface for the QuickJS engine's VM-memory snapshotting (`save`/`load`/`delete` plus `SnapshotMetadata`, and `encodeSnapshotEnvelope`/`decodeSnapshotEnvelope`.
+
+- [#4566](https://github.com/vercel/workflow/pull/4566) [`dff10ba`](https://github.com/vercel/workflow/commit/dff10bab71f2f546a2e0143b8b91bcd2c5e1645b) Thanks [@shalabhc](https://github.com/shalabhc)! - Add `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`, a comma-separated list of workflows whose runs use the WebSocket events transport even when `WORKFLOW_EVENTS_TRANSPORT` is `http` or unset.
+
+- [#4504](https://github.com/vercel/workflow/pull/4504) [`7fb0575`](https://github.com/vercel/workflow/commit/7fb057520d97ef32a9e3b717efd51e594924f964) Thanks [@shalabhc](https://github.com/shalabhc)! - The WebSocket events transport now limits the size of each message. Any frame over `WORKFLOW_WS_MAX_MESSAGE_BYTES` (default 12 MiB, at most 16 MiB) is sent as several messages and rebuilt by the receiver. The client offers `frame-parts` in the `x-workflow-ws-flags` upgrade header so the backend can split large replies too.
+
+- [#4510](https://github.com/vercel/workflow/pull/4510) [`37ddf00`](https://github.com/vercel/workflow/commit/37ddf00f7b64698b0c8e0d678aabbc06ca3e67a9) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Split stream WebSocket write groups by encoded message bytes as well as chunk count, bounded by `WORKFLOW_WS_MAX_MESSAGE_BYTES` (default 12 MiB, at most 16 MiB).
+
+- [#4381](https://github.com/vercel/workflow/pull/4381) [`0648d16`](https://github.com/vercel/workflow/commit/0648d1684cbc86482c8c43de60b975cffc745185) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Retry throttled (429) stream WebSocket writes and closes after `Retry-After`, moving to HTTP when the socket closes or the wait budget runs out, and retry a close 5xx over HTTP instead of failing the writer.
+- Updated dependencies [[`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa)]:
+  - @workflow/world@5.0.1
+  - @workflow/errors@5.0.1
+
 ## 5.0.0
 
 ### Major Changes
