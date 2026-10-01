@@ -43,14 +43,17 @@ describe('createWatchScope', () => {
   // the watcher needs; compare in the canonical form the rest of the suite uses.
   const scope = ({
     relevantFiles = [] as string[],
+    unresolvedImports = [] as string[],
     isIgnored = () => false,
   }: {
     relevantFiles?: string[];
+    unresolvedImports?: string[];
     isIgnored?: (path: string) => boolean;
   } = {}) => {
     const result = createWatchScope({
       workingDir: root,
       relevantFiles,
+      unresolvedImports,
       pageExtensions,
       isIgnored,
     });
@@ -175,6 +178,22 @@ describe('createWatchScope', () => {
     expect(scope().missing).toContain(p('src/middleware.ts'));
   });
 
+  test('waits for the targets of unresolved imports, without following their directories', () => {
+    const page = write('app/page.tsx');
+    const target = p('lib/billing/workflow.ts');
+
+    const result = scope({
+      relevantFiles: [page],
+      unresolvedImports: [target, p('node_modules/pkg/index.ts')],
+      isIgnored: (path) => path.includes('/node_modules/'),
+    });
+
+    expect(result.missing).toContain(target);
+    expect(result.missing).not.toContain(p('node_modules/pkg/index.ts'));
+    expect(result.directories).not.toContain(p('lib'));
+    expect(result.directories).not.toContain(p('lib/billing'));
+  });
+
   test('never lists a root entrypoint as both tracked and missing', () => {
     const middleware = write('middleware.ts');
 
@@ -247,19 +266,21 @@ describe('watching a scope', () => {
   const changes: string[] = [];
   const removals: string[] = [];
 
-  const buildScope = (relevantFiles: string[]) =>
+  const buildScope = (relevantFiles: string[], unresolvedImports: string[]) =>
     createWatchScope({
       workingDir: root,
       relevantFiles,
+      unresolvedImports,
       pageExtensions,
       isIgnored: (path) => path.includes('/node_modules/'),
     });
 
   const startWatching = (
     relevantFiles: string[],
-    startTime: number = Date.now()
+    startTime: number = Date.now(),
+    unresolvedImports: string[] = []
   ) => {
-    const scope = buildScope(relevantFiles);
+    const scope = buildScope(relevantFiles, unresolvedImports);
 
     if (!watcher) {
       watcher = new Watchpack({ followSymlinks: false });
@@ -431,5 +452,43 @@ describe('watching a scope', () => {
     const created = write('middleware.ts');
 
     expect(await waitFor(() => changes.includes(created))).toBe(true);
+  });
+
+  /**
+   * The import is written before its target exists, in a directory that does
+   * not exist either. Nothing in the graph changes when the file is created,
+   * so only watching the unresolved target catches it.
+   */
+  test('reports an unresolved import target created in a new directory', async () => {
+    write('app/page.tsx');
+    const target = p('lib/billing/workflow.ts');
+
+    const { changes } = startWatching([p('app/page.tsx')], Date.now(), [
+      target,
+    ]);
+    const created = write('lib/billing/workflow.ts');
+
+    expect(created).toBe(target);
+    expect(await waitFor(() => changes.includes(target))).toBe(true);
+  });
+
+  /**
+   * A graph module is deleted while its importer is left alone. Rediscovery
+   * drops it from the graph and reports it as an unresolved target instead,
+   * so restoring it is still seen.
+   */
+  test('reports a deleted module that is restored after leaving the graph', async () => {
+    write('app/page.tsx');
+    const workflow = write('workflows/order.ts');
+    startWatching([p('app/page.tsx'), workflow]);
+
+    rmSync(join(root, 'workflows'), { recursive: true });
+    expect(await waitFor(() => removals.includes(workflow))).toBe(true);
+    startWatching([p('app/page.tsx')], Date.now(), [workflow]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    write('workflows/order.ts');
+
+    expect(await waitFor(() => changes.includes(workflow))).toBe(true);
   });
 });

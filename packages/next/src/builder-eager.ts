@@ -322,6 +322,21 @@ export async function getNextBuilderEager(
         setActiveDevWatcher(watcher);
 
         /**
+         * Unresolved imports seen by the discovery pass of a rediscovery whose
+         * bundle then failed. esbuild rejects an import it cannot resolve, so
+         * when the importer is itself a workflow or step module the rebuild
+         * throws and `discoveredEntries` keeps describing the previous graph,
+         * which never mentioned the new import. The target still has to be
+         * watched, or creating it is the one edit that cannot end the failure.
+         * Cleared by the next rediscovery that succeeds.
+         */
+        let failedRebuildUnresolvedImports: ReadonlySet<string> = new Set();
+
+        const isUnresolvedImport = (file: string) =>
+          discoveredEntries.unresolvedImportCandidates?.has(file) === true ||
+          failedRebuildUnresolvedImports.has(file);
+
+        /**
          * Attach the watcher to the scope the current graph implies.
          *
          * `startTime` has to predate the reads that produced that graph rather
@@ -343,6 +358,10 @@ export async function getNextBuilderEager(
               inputFiles: options.inputFiles,
               normalizePath,
             }),
+            unresolvedImports: [
+              ...(discoveredEntries.unresolvedImportCandidates ?? []),
+              ...failedRebuildUnresolvedImports,
+            ],
             pageExtensions: this.config.pageExtensions,
             isIgnored: hasIgnoredPathFragment,
           });
@@ -589,7 +608,8 @@ export async function getNextBuilderEager(
             discoveredEntries,
             fileChanges,
             inputFiles: options.inputFiles,
-            isEntrypoint: isNextEntrypointPath,
+            forcesRediscovery: (file) =>
+              isNextEntrypointPath(file) || isUnresolvedImport(file),
             normalizePath,
             parentHasChild,
             readSnapshot: readSourceSnapshot,
@@ -606,10 +626,24 @@ export async function getNextBuilderEager(
             logDevHmr('workflow dev hmr: full rediscovery');
             try {
               await fullRebuild();
+              failedRebuildUnresolvedImports = new Set();
               refreshKnownFiles();
               // Rediscovery is what moves files in and out of the graph, so the
               // watch set is only correct once it follows.
               applyWatchScope(batchStartedAt);
+            } catch (error) {
+              // Discovery runs before the bundle and records where every
+              // unresolved import was expected; it is cached for these input
+              // files, so reading it back here does not walk the graph again.
+              const attempted = await this.discoverEntries(
+                options.inputFiles,
+                join(workflowGeneratedDir, 'flow'),
+                options.tsconfigPath
+              ).catch(() => undefined);
+              failedRebuildUnresolvedImports =
+                attempted?.unresolvedImportCandidates ?? new Set();
+              applyWatchScope(batchStartedAt);
+              throw error;
             } finally {
               // Lets a log reader tell "quiet" from "rebuild in flight".
               // The e2e HMR tests drain-to-quiet before counting lines.

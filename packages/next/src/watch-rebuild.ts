@@ -447,18 +447,19 @@ const removedFilesRequireFullRebuild = ({
 
 const addedFilesRequireFullRebuild = async ({
   addedFiles,
-  isEntrypoint,
+  forcesRediscovery,
   readSnapshot,
 }: {
   addedFiles: string[];
-  isEntrypoint: (file: string) => boolean;
+  forcesRediscovery: (file: string) => boolean;
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
 }) => {
   for (const file of addedFiles) {
-    // A new framework entrypoint changes the set discovery starts from, so it
-    // has to be rediscovered even when the file declares nothing itself: the
-    // workflow it imports may be reachable for the first time.
-    if (isEntrypoint(file)) {
+    // Some files extend the graph just by existing (a new framework
+    // entrypoint, or the target of an import that did not resolve), so they
+    // have to be rediscovered even when they declare nothing themselves: a
+    // workflow they import may be reachable for the first time.
+    if (forcesRediscovery(file)) {
       return true;
     }
     try {
@@ -644,7 +645,7 @@ export const classifyRebuild = async ({
   discoveredEntries,
   fileChanges,
   inputFiles,
-  isEntrypoint = () => false,
+  forcesRediscovery = () => false,
   normalizePath = defaultNormalizePath,
   parentHasChild,
   readSnapshot,
@@ -654,10 +655,11 @@ export const classifyRebuild = async ({
   fileChanges: FileChanges;
   inputFiles: string[];
   /**
-   * Whether a path is an entrypoint the framework picks up by convention.
-   * Creating one changes the input set, which only rediscovery can act on.
+   * Whether creating this path changes what discovery would reach: an
+   * entrypoint the framework picks up by convention, or the target of an
+   * import that did not resolve. Only rediscovery can act on either.
    */
-  isEntrypoint?: (file: string) => boolean;
+  forcesRediscovery?: (file: string) => boolean;
   normalizePath?: (path: string) => string;
   parentHasChild: (
     parent: string,
@@ -686,7 +688,7 @@ export const classifyRebuild = async ({
     }) ||
     (await addedFilesRequireFullRebuild({
       addedFiles: normalizedFileChanges.addedFiles,
-      isEntrypoint,
+      forcesRediscovery,
       readSnapshot,
     })) ||
     (await modifiedFilesRequireFullRebuild({

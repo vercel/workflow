@@ -554,6 +554,133 @@ export async function hmrPageWorkflow() {
       }
     );
 
+    /**
+     * The import is written before the module exists, in a directory nothing
+     * in the graph lives in yet. Rediscovery cannot resolve it, so the module
+     * is not in the graph, and creating it changes no file that is already
+     * watched. Only watching the unresolved import's target catches it.
+     */
+    test.runIf(shouldRunNextFlowRouteHmrTests)(
+      'should bundle a workflow created after its import was written',
+      { timeout: multiPhaseHmrTestTimeoutMs },
+      async () => {
+        await waitForHmrReady();
+
+        const lateDir = path.join(appPath, 'dev-test-late-import');
+        const lateFile = path.join(lateDir, 'late-workflow.ts');
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: lateFile, content: '' });
+        restoreDirectories.push(lateDir);
+        // Let the previous test's teardown rebuild finish first, like every
+        // other HMR case here, so the writes below land on an idle pipeline.
+        await readDevServerLogCursor();
+
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/dev-test-late-import/late-workflow';
+${apiFileContent}`
+        );
+        // The rediscovery the import edit triggers has to be over before the
+        // module appears, or it would find the module itself.
+        await readDevServerLogCursor();
+        if (!shouldAssertDevHmrLogs) {
+          await sleep(5_000);
+        }
+        expect(await readManifestWorkflowFunctionNames()).not.toContain(
+          'devTestLateWorkflow'
+        );
+
+        await fs.mkdir(lateDir, { recursive: true });
+        await fs.writeFile(
+          lateFile,
+          `export async function devTestLateWorkflow() {
+  'use workflow';
+  return 'late';
+}
+`
+        );
+
+        await pollUntil({
+          description: 'late-created workflow to appear in manifest',
+          timeoutMs: hmrRediscoveryTimeoutMs,
+          intervalMs: 500,
+          check: async () => {
+            await prewarm();
+            expect(await readManifestWorkflowFunctionNames()).toContain(
+              'devTestLateWorkflow'
+            );
+          },
+        });
+      }
+    );
+
+    /**
+     * Deleting a module while its importer is left alone drops it from the
+     * graph, and with it the directory it was the only module in, so restoring
+     * it changes nothing the graph still watches.
+     */
+    test.runIf(shouldRunNextFlowRouteHmrTests)(
+      'should bundle a workflow again after it is deleted and restored',
+      { timeout: multiPhaseHmrTestTimeoutMs },
+      async () => {
+        await waitForHmrReady();
+
+        const restoredDir = path.join(appPath, 'dev-test-restored');
+        const workflowFile = path.join(restoredDir, 'restored-workflow.ts');
+        const workflowContent = `export async function devTestRestoredWorkflow() {
+  'use workflow';
+  return 'restored';
+}
+`;
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: workflowFile, content: '' });
+        restoreDirectories.push(restoredDir);
+        await readDevServerLogCursor();
+
+        const expectInManifest = async (
+          present: boolean,
+          description: string
+        ) =>
+          pollUntil({
+            description,
+            timeoutMs: hmrRediscoveryTimeoutMs,
+            intervalMs: 500,
+            check: async () => {
+              await prewarm();
+              const names = await readManifestWorkflowFunctionNames();
+              if (present) {
+                expect(names).toContain('devTestRestoredWorkflow');
+              } else {
+                expect(names).not.toContain('devTestRestoredWorkflow');
+              }
+            },
+          });
+
+        await fs.mkdir(restoredDir, { recursive: true });
+        await fs.writeFile(workflowFile, workflowContent);
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/dev-test-restored/restored-workflow';
+${apiFileContent}`
+        );
+        await expectInManifest(true, 'fixture workflow to appear in manifest');
+
+        await fs.rm(workflowFile);
+        await expectInManifest(false, 'deleted workflow to leave the manifest');
+        await readDevServerLogCursor();
+
+        await fs.writeFile(workflowFile, workflowContent);
+        await expectInManifest(
+          true,
+          'restored workflow to reappear in manifest'
+        );
+      }
+    );
+
     test.runIf(
       shouldRunNextFlowRouteHmrTests &&
         process.env.APP_NAME === 'nextjs-turbopack'
