@@ -1021,7 +1021,7 @@ export function createEventsDispatcher(
     }),
     EVENTS_RETRY_AGENT_OPTIONS
   );
-  if (!h2) {
+  if (!h2 || !supportsCompose(agent)) {
     return agent;
   }
   // HTTP/1.1 agent for the bodies the interceptor will not re-buffer; see
@@ -1044,6 +1044,20 @@ export function createEventsDispatcher(
     ) as unknown as RetryAgent,
     streamedBodyAgent
   );
+}
+
+/**
+ * Whether `dispatcher` can take interceptors through `Dispatcher.compose()`.
+ *
+ * False under Bun: `import { Agent } from 'undici'` resolves to Bun's built-in
+ * `undici` module even when the package is installed, and its dispatcher
+ * classes are stubs with no `compose` or `dispatch`. Bun's `fetch` also ignores
+ * the `dispatcher` option, so there is nothing for an interceptor to wrap;
+ * callers skip composing and return the plain dispatcher. That also means the
+ * queue path's deadline (see deadlineInterceptor) does not apply under Bun.
+ */
+export function supportsCompose(dispatcher: Agent | RetryAgent): boolean {
+  return typeof (dispatcher as Partial<Agent>).compose === 'function';
 }
 
 /**
@@ -1117,10 +1131,11 @@ export function createStreamDispatcher(
  * Exported so a test can exercise this exact wiring rather than the singleton.
  */
 export function createQueueDispatcher(): RetryAgent {
+  const agent = new Agent(getQueueAgentOptions());
   return new RetryAgent(
-    new Agent(getQueueAgentOptions()).compose(
-      deadlineInterceptor(getQueueRequestTimeoutMs())
-    ),
+    supportsCompose(agent)
+      ? agent.compose(deadlineInterceptor(getQueueRequestTimeoutMs()))
+      : agent,
     RETRY_AGENT_OPTIONS
   );
 }
