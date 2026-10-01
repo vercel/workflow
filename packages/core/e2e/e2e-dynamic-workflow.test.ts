@@ -786,12 +786,12 @@ async function workflow(input) {
   const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
 
   const rows = [];
-  let cursor;
+  let cursor = null;
   do {
     const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
     rows.push(...page.records);
     cursor = page.nextCursor;
-  } while (cursor !== undefined);
+  } while (cursor !== null);
 
   // This customer's rules: a family is every account under one contract root,
   // accounts on the same contract are one account, and a contact is one person
@@ -800,7 +800,7 @@ async function workflow(input) {
   const contacts = rows.filter((row) => row.kind === "contact");
   const families = new Map();
   for (const row of accounts) {
-    const family = row.contract.split("/")[0];
+    const family = row.contract.split("/")[0].toLowerCase();
     families.set(family, [...(families.get(family) || []), row]);
   }
 
@@ -809,7 +809,7 @@ async function workflow(input) {
     const ordered = [];
     const visit = (row) => {
       if (ordered.includes(row)) return;
-      const parent = members.find((other) => other.id === row.parent);
+      const parent = members.find((other) => other.id === row.parentId);
       if (parent) visit(parent);
       ordered.push(row);
     };
@@ -820,7 +820,7 @@ async function workflow(input) {
     const survivorOf = new Map();
     for (const row of ordered) {
       ops.push({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, sources: [row.id] });
-      if (row.parent) ops.push({ op: "setParent", account: row.id, parent: row.parent });
+      if (row.parentId) ops.push({ op: "setParent", account: row.id, parent: row.parentId });
       const survivor = survivors.get(row.contract);
       if (!survivor) {
         survivors.set(row.contract, row.id);
@@ -836,11 +836,11 @@ async function workflow(input) {
 
     const people = new Map();
     for (const row of contacts) {
-      if (!survivorOf.has(row.account)) continue;
+      if (!survivorOf.has(row.accountId)) continue;
       const email = row.email.trim().toLowerCase();
       const person = people.get(email) || { key: row.id, name: row.name, email, sources: [], accounts: [] };
       person.sources.push(row.id);
-      person.accounts.push(survivorOf.get(row.account));
+      person.accounts.push(survivorOf.get(row.accountId));
       people.set(email, person);
     }
     for (const person of people.values()) {
@@ -892,12 +892,12 @@ async function workflow(input) {
   const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
 
   const rows = [];
-  let cursor;
+  let cursor = null;
   do {
     const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
     rows.push(...page.records);
     cursor = page.nextCursor;
-  } while (cursor !== undefined);
+  } while (cursor !== null);
   const accounts = rows.filter((row) => row.kind === "account");
   const contacts = rows.filter((row) => row.kind === "contact");
 
@@ -909,7 +909,7 @@ async function workflow(input) {
       ...accounts.map((row) => ({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, status: "provisional", sources: [row.id] })),
       ...contacts.flatMap((row) => [
         { op: "createContact", key: row.id, name: row.name, email: row.email.trim().toLowerCase(), sources: [row.id] },
-        { op: "linkContact", contact: row.id, account: row.account },
+        { op: "linkContact", contact: row.id, account: row.accountId },
       ]),
     ],
   });
@@ -919,7 +919,7 @@ async function workflow(input) {
   function consolidation(owner) {
     const ops = [];
     for (const row of accounts) {
-      if (row.parent) ops.push({ op: "setParent", account: row.id, parent: row.parent });
+      if (row.parentId) ops.push({ op: "setParent", account: row.id, parent: row.parentId });
     }
     const survivors = new Map();
     for (const row of accounts) {
@@ -933,7 +933,7 @@ async function workflow(input) {
     }
     const people = new Map();
     for (const row of contacts) {
-      const holder = accounts.find((account) => account.id === row.account);
+      const holder = accounts.find((account) => account.id === row.accountId);
       const identity = holder.contract.split("/")[0] + ":" + row.email.trim().toLowerCase();
       const person = people.get(identity);
       if (person) ops.push({ op: "mergeContact", from: row.id, into: person });
@@ -1011,7 +1011,7 @@ const PROCEDURE_B = publishProcedure(
 function migrationInput() {
   const id = crypto.randomUUID();
   return {
-    dataset: 'acme-legacy',
+    dataset: 'synthetic-crm-v1',
     migrationId: `migration-${id}`,
     destinationId: `destination-${id}`,
     tokenPrefix: `e2e-migration:${id}`,
@@ -1095,7 +1095,7 @@ describeJs(
         input,
       ]);
 
-      const hook = await waitForMissionHook(`${input.tokenPrefix}:C-300`);
+      const hook = await waitForMissionHook(`${input.tokenPrefix}:c-300`);
       expect(hook.runId).toBe(childRunId);
       // Acme and Globex apply while Initech is still waiting for a person.
       const deadline = Date.now() + 30_000;
@@ -1112,9 +1112,9 @@ describeJs(
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
         families: [
-          { family: 'C-100', status: 'applied' },
-          { family: 'C-200', status: 'applied' },
-          { family: 'C-300', status: 'applied' },
+          { family: 'c-100', status: 'applied' },
+          { family: 'c-200', status: 'applied' },
+          { family: 'c-300', status: 'applied' },
         ],
         verification: {
           ok: true,
@@ -1132,16 +1132,16 @@ describeJs(
         PROCEDURE_A,
         input,
       ]);
-      await resumeMissionHook(`${input.tokenPrefix}:C-300`, {
+      await resumeMissionHook(`${input.tokenPrefix}:c-300`, {
         approved: false,
       });
 
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
         families: [
-          { family: 'C-100', status: 'applied' },
-          { family: 'C-200', status: 'applied' },
-          { family: 'C-300', status: 'skipped' },
+          { family: 'c-100', status: 'applied' },
+          { family: 'c-200', status: 'applied' },
+          { family: 'c-300', status: 'skipped' },
         ],
         verification: {
           ok: true,
