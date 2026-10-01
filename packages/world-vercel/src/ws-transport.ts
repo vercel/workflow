@@ -48,7 +48,10 @@ import {
   WsPartProtocolError,
   wsMaxMessageBytes,
 } from './ws-parts.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import {
+  isWsEventsTransportEnabled,
+  isWsEventsTransportEnabledForWorkflow,
+} from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
@@ -887,9 +890,20 @@ export { isWsEventsTransportEnabled };
  */
 export function openWsChannel(
   runId: string,
-  config?: APIConfig
+  config?: APIConfig,
+  options: {
+    /**
+     * The run's workflow name. Lets a workflow listed in
+     * `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS` open a channel on a
+     * deployment otherwise on HTTP; without it only the deployment-wide
+     * `WORKFLOW_EVENTS_TRANSPORT=ws` does.
+     */
+    workflowName?: string;
+  } = {}
 ): (() => void) | undefined {
-  if (!isWsEventsTransportEnabled()) return undefined;
+  if (!isWsEventsTransportEnabledForWorkflow(options.workflowName)) {
+    return undefined;
+  }
   const resolved = resolveChannelUrl(runId, config);
   if (!resolved) return undefined;
   if (!wsState.loggedWsInUse) {

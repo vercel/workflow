@@ -4,6 +4,7 @@ import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
 import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
+  parseQueueName,
   type Queue,
   type QueueBatchResult,
   type QueueOptions,
@@ -21,7 +22,7 @@ import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js';
 
 /**
  * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
@@ -320,6 +321,19 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
 }
 
 /**
+ * The workflow name a queue name carries: every message for a run, workflow
+ * and step alike, goes to `__wkf_workflow_<workflowName>` (with an optional
+ * namespace prefix). `undefined` for a name that isn't a workflow topic.
+ */
+function getWorkflowNameFromQueueName(queueName: string): string | undefined {
+  try {
+    return parseQueueName(queueName as ValidQueueName).id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Bind this run's events channel to one invocation of the flow route. This is
  * the only pair of calls that opens one: nothing else in the SDK does, so every
  * other writer (`start()` writing `run_created` from an arbitrary request
@@ -330,6 +344,7 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
  */
 const wsEventsChannelForInvocation = (
   runId: string | undefined,
+  workflowName: string | undefined,
   config: APIConfig | undefined
 ) => {
   /** This invocation's release, once the open has resolved one. */
@@ -344,9 +359,13 @@ const wsEventsChannelForInvocation = (
      * the claim it is releasing.
      */
     open(): void {
-      if (!runId || !isWsEventsTransportEnabled()) return;
+      if (!runId || !isWsEventsTransportEnabledForWorkflow(workflowName)) {
+        return;
+      }
       claim = import('./ws-transport.js')
-        .then(({ openWsChannel }) => openWsChannel(runId, config))
+        .then(({ openWsChannel }) =>
+          openWsChannel(runId, config, { workflowName })
+        )
         .catch(() => undefined);
     },
     /**
@@ -782,6 +801,7 @@ export function createQueue(config?: APIConfig): Queue {
         // timestamps). This path also absorbs `ws`'s module init.
         const wsEvents = wsEventsChannelForInvocation(
           getRunIdFromPayload(payload),
+          getWorkflowNameFromQueueName(queueName),
           config
         );
         const collectStepIds = !(

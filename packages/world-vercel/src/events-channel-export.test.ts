@@ -6,6 +6,7 @@ describe('openEventsChannel', () => {
   afterEach(() => {
     if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
     else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS;
   });
 
   it('is exported from the package root', () => {
@@ -32,6 +33,20 @@ describe('openEventsChannel', () => {
       openEventsChannel('wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV', {
         projectConfig: { projectId: 'prj_test', teamId: 'team_test' },
       } as never)
+    ).toBeUndefined();
+  });
+
+  it('opens nothing for a workflow the override does not list', () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    expect(
+      openEventsChannel('wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV')
+    ).toBeUndefined();
+    expect(
+      openEventsChannel('wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV', undefined, {
+        workflowName: 'workflow//./src/workflows/orders//processOrder',
+      })
     ).toBeUndefined();
   });
 });

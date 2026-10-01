@@ -112,6 +112,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+  delete process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS;
   delete process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
 });
 
@@ -203,6 +204,63 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     });
 
     expect(result.event.eventId).toBe('evnt_1');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('per-workflow override (WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS)', () => {
+  const httpAgent = () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, materializedBody(), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': CREATED_AT,
+        },
+      });
+    return agent;
+  };
+
+  it('writes over WS for a run whose channel the override opened', async () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    requestMock.mockResolvedValueOnce(ack());
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes over HTTP for a run with no channel, even in strict mode', async () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    // Strict mode promises a socket only for a deployment-wide opt-in; an
+    // unlisted workflow has no channel by design.
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    resolveWsTransportMock.mockReturnValueOnce(null);
+    const agent = httpAgent();
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
   });
 });
