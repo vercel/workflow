@@ -276,6 +276,56 @@ export interface StepExecutorParams {
   authoritativeAttempt?: number;
   /** One-shot recovery telemetry activated by the orchestrator replay. */
   replayRecoveryReporter?: ReplayRecoveryReporter;
+  /**
+   * Piggyback commit: hold the step's terminal write instead of making it.
+   *
+   * Everything today's `step_completed` / `step_failed` write waits for still
+   * runs first (the background ops flush, `preCompletionOps`, the stream drain
+   * barrier, dehydration and encryption of the result), and then, instead of
+   * writing, the executor returns `{ type: 'held' }` with the event it would
+   * have written and a `flushAlone()` that writes it exactly as today, with
+   * the same outcome mapping. The runtime replays the workflow over the held
+   * completion and either commits it together with what that replay derived
+   * (`world.events.commit`) or calls `flushAlone()` before anything else
+   * leaves the process.
+   *
+   * A request, not a guarantee. The executor writes normally, and returns an
+   * ordinary result, whenever holding would change what the write means or
+   * could not pay off:
+   *
+   * - optimistic start (the claim is still in flight; the runtime never asks,
+   *   and the executor re-checks);
+   * - background ops that did not settle inside the flush window
+   *   (`hasPendingOps`: the inline loop yields the delivery anyway);
+   * - a non-empty `preCompletionOps` (it wrote a real `hook_received` the
+   *   replay never consumed, which fences any commit);
+   * - `step_retrying`, and the pre-body failures (unregistered step, retries
+   *   exhausted before the body ran), which are never held.
+   */
+  holdTerminal?: boolean;
+}
+
+/**
+ * A step terminal write the executor held instead of making (see
+ * {@link StepExecutorParams.holdTerminal}): exactly the event the write would
+ * have carried, and the client time it is committed under if it commits as
+ * part of a piggyback pair.
+ */
+export interface HeldStepTerminal {
+  eventType: 'step_completed' | 'step_failed';
+  correlationId: string;
+  stepName: string;
+  /** The `eventData` of the write: result or error, plus latency telemetry. */
+  eventData: Record<string, unknown>;
+  /**
+   * When the completion occurred. A committed pair stores it verbatim as the
+   * row's `createdAt`, which is what the replay over the held completion
+   * observed. (`flushAlone()` writes as today, stamped at write time: the
+   * replay is discarded on every path that flushes.)
+   */
+  occurredAt: Date;
+  /** `Date.now()` at the hold, for the hold-duration metric. */
+  heldAtMs: number;
 }
 
 /**
@@ -307,6 +357,19 @@ export type PreclaimedInlineStart =
        * claim's completion instant (T6 of the hook-resume TTR window).
        */
       claimCompletedAtMs?: number;
+      /**
+       * The committed `step_created` + `step_started` rows of the claim, in
+       * slot order, when the writer kept them. The piggyback commit needs them:
+       * a replay over the step's held completion must consume the step's own
+       * creation and start, and they are the `own` events its fence exempts.
+       */
+      events?: Event[];
+      /**
+       * What committed the claim: the suspension's batched fan-out (default),
+       * or a piggyback commit that created the step born-running together
+       * with the previous step's completion. Telemetry only.
+       */
+      source?: 'batch' | 'piggyback';
     }
   | {
       /**
@@ -351,7 +414,19 @@ export type StepExecutionResult =
   | { type: 'retry'; timeoutSeconds: number }
   | { type: 'skipped' }
   | { type: 'gone' }
-  | { type: 'throttled'; timeoutSeconds: number };
+  | { type: 'throttled'; timeoutSeconds: number }
+  | {
+      /**
+       * The terminal write was held (see
+       * {@link StepExecutorParams.holdTerminal}). Nothing about this step's
+       * outcome is durable yet: the caller MUST either commit `held` or call
+       * `flushAlone()` before any other write or exit.
+       */
+      type: 'held';
+      held: HeldStepTerminal;
+      /** Writes the held event alone, exactly as the executor would have. */
+      flushAlone: () => Promise<StepExecutionResult>;
+    };
 
 /**
  * Executes a single step: creates step_started event, hydrates input,
@@ -697,7 +772,14 @@ export async function executeStep(
     // claim retains the strategy after the 409 is reconciled as `skipped`.
     // Bare background starts and owned recovery deliberately have no value.
     if (params.preclaimedStart) {
-      span?.setAttributes(Attribute.StepStartStrategy('batch_preclaimed'));
+      span?.setAttributes(
+        Attribute.StepStartStrategy(
+          params.preclaimedStart.owned &&
+            params.preclaimedStart.source === 'piggyback'
+            ? 'piggyback_preclaimed'
+            : 'batch_preclaimed'
+        )
+      );
     } else if (params.lazyStepInput !== undefined) {
       span?.setAttributes(
         Attribute.StepStartStrategy(optimisticStart ? 'optimistic' : 'awaited')
@@ -942,6 +1024,38 @@ export async function executeStep(
     const ops: Promise<void>[] = [];
     const streamStates: FlushableStreamState[] = [];
     let opsSettled = true;
+
+    // Piggyback hold (see StepExecutorParams.holdTerminal). Decided at each
+    // terminal write, after the waits that write depends on have run: the ops
+    // flush may not have settled, and the body may have queued
+    // preCompletionOps, and either one means the write is made normally.
+    const holdRequested = params.holdTerminal === true && !optimisticStart;
+    const mayHoldTerminal = (): boolean =>
+      holdRequested && opsSettled && preCompletionOps.length === 0;
+    const holdTerminalWrite = (
+      eventType: HeldStepTerminal['eventType'],
+      eventData: Record<string, unknown>,
+      write: () => Promise<StepExecutionResult>
+    ): StepExecutionResult => {
+      span?.setAttributes({ 'workflow.piggyback.held': true });
+      // Once: an exit path that flushes twice must not write twice.
+      let flushed: Promise<StepExecutionResult> | undefined;
+      return {
+        type: 'held',
+        held: {
+          eventType,
+          correlationId: stepId,
+          stepName,
+          eventData,
+          occurredAt: new Date(),
+          heldAtMs: Date.now(),
+        },
+        flushAlone: () => {
+          flushed ??= write();
+          return flushed;
+        },
+      };
+    };
 
     // Latency telemetry to attach to this step's terminal event. Computed
     // right before user code runs; declared here so the failure path (the
@@ -1353,44 +1467,53 @@ export async function executeStep(
         if (types.isNativeError(effectiveErr) && normalizedStack) {
           setErrorStack(effectiveErr, normalizedStack);
         }
-        try {
-          await createEvent({
-            eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              error: await dehydrateStepError(
-                effectiveErr,
-                workflowRunId,
-                await getEncryptionKey(),
-                [],
-                globalThis,
-                compression
-              ),
-              ...latencyEventData,
-            },
-          });
-        } catch (stepFailErr) {
-          if (EntityConflictError.is(stepFailErr)) {
-            runtimeLogger.info(
-              'Tried failing step, but step has already finished.',
-              {
-                workflowRunId,
-                stepId,
-                stepName,
-                message: stepFailErr.message,
-              }
-            );
-            return { type: 'skipped' };
+        const fatalEventData = {
+          stepName,
+          error: await dehydrateStepError(
+            effectiveErr,
+            workflowRunId,
+            await getEncryptionKey(),
+            [],
+            globalThis,
+            compression
+          ),
+          ...latencyEventData,
+        };
+        const writeFatal = async (): Promise<StepExecutionResult> => {
+          try {
+            await createEvent({
+              eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: fatalEventData,
+            });
+          } catch (stepFailErr) {
+            if (EntityConflictError.is(stepFailErr)) {
+              runtimeLogger.info(
+                'Tried failing step, but step has already finished.',
+                {
+                  workflowRunId,
+                  stepId,
+                  stepName,
+                  message: stepFailErr.message,
+                }
+              );
+              return { type: 'skipped' };
+            }
+            throw stepFailErr;
           }
-          throw stepFailErr;
+          span?.setAttributes({
+            ...Attribute.StepStatus('failed'),
+            ...Attribute.StepFatalError(true),
+          });
+          return { type: 'failed' };
+        };
+        // A failed body never reaches the ops flush above, so ops it started
+        // are not known to have settled: only a body that started none holds.
+        if (mayHoldTerminal() && ops.length === 0) {
+          return holdTerminalWrite('step_failed', fatalEventData, writeFatal);
         }
-        span?.setAttributes({
-          ...Attribute.StepStatus('failed'),
-          ...Attribute.StepFatalError(true),
-        });
-        return { type: 'failed' };
+        return writeFatal();
       }
 
       // Non-fatal error: check if retries remaining
@@ -1422,44 +1545,57 @@ export async function executeStep(
         const wrappedError = new FatalError(errorMessage);
         (wrappedError as Error).cause = err;
         if (normalizedStack) wrappedError.stack = normalizedStack;
-        try {
-          await createEvent({
-            eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              error: await dehydrateStepError(
-                wrappedError,
-                workflowRunId,
-                await getEncryptionKey(),
-                [],
-                globalThis,
-                compression
-              ),
-              ...latencyEventData,
-            },
-          });
-        } catch (stepFailErr) {
-          if (EntityConflictError.is(stepFailErr)) {
-            runtimeLogger.info(
-              'Tried failing step, but step has already finished.',
-              {
-                workflowRunId,
-                stepId,
-                stepName,
-                message: stepFailErr.message,
-              }
-            );
-            return { type: 'skipped' };
+        const exhaustedEventData = {
+          stepName,
+          error: await dehydrateStepError(
+            wrappedError,
+            workflowRunId,
+            await getEncryptionKey(),
+            [],
+            globalThis,
+            compression
+          ),
+          ...latencyEventData,
+        };
+        const writeExhausted = async (): Promise<StepExecutionResult> => {
+          try {
+            await createEvent({
+              eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: exhaustedEventData,
+            });
+          } catch (stepFailErr) {
+            if (EntityConflictError.is(stepFailErr)) {
+              runtimeLogger.info(
+                'Tried failing step, but step has already finished.',
+                {
+                  workflowRunId,
+                  stepId,
+                  stepName,
+                  message: stepFailErr.message,
+                }
+              );
+              return { type: 'skipped' };
+            }
+            throw stepFailErr;
           }
-          throw stepFailErr;
+          span?.setAttributes({
+            ...Attribute.StepStatus('failed'),
+            ...Attribute.StepRetryExhausted(true),
+          });
+          return { type: 'failed' };
+        };
+        // Same rule as the fatal branch: ops a failed body started are
+        // not known to have settled.
+        if (mayHoldTerminal() && ops.length === 0) {
+          return holdTerminalWrite(
+            'step_failed',
+            exhaustedEventData,
+            writeExhausted
+          );
         }
-        span?.setAttributes({
-          ...Attribute.StepStatus('failed'),
-          ...Attribute.StepRetryExhausted(true),
-        });
-        return { type: 'failed' };
+        return writeExhausted();
       }
 
       // Retries remaining
@@ -1537,67 +1673,81 @@ export async function executeStep(
     // Create step_completed event outside the step execution failure path:
     // persistence failures are infrastructure errors and should redeliver the
     // queue message, not become user step_retrying/step_failed events.
-    let completedResult: EventResult;
-    try {
-      completedResult = await createEvent(
-        {
-          eventType: 'step_completed',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: stepId,
-          eventData: {
-            stepName,
-            workflowName,
-            result: result as Uint8Array,
-            ...latencyEventData,
-          },
-        },
-        params.inlineDeltaSinceCursor !== undefined
-          ? { sinceCursor: params.inlineDeltaSinceCursor }
-          : undefined
-      );
-    } catch (err) {
-      if (EntityConflictError.is(err)) {
-        runtimeLogger.info(
-          'Tried completing step, but step has already finished.',
+    const completedEventData = {
+      stepName,
+      workflowName,
+      result: result as Uint8Array,
+      ...latencyEventData,
+    };
+    const writeCompleted = async (): Promise<StepExecutionResult> => {
+      let completedResult: EventResult;
+      try {
+        completedResult = await createEvent(
           {
+            eventType: 'step_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: completedEventData,
+          },
+          params.inlineDeltaSinceCursor !== undefined
+            ? { sinceCursor: params.inlineDeltaSinceCursor }
+            : undefined
+        );
+      } catch (err) {
+        if (EntityConflictError.is(err)) {
+          runtimeLogger.info(
+            'Tried completing step, but step has already finished.',
+            {
+              workflowRunId,
+              stepId,
+              stepName,
+              message: err.message,
+            }
+          );
+          return { type: 'skipped' };
+        }
+        if (RunExpiredError.is(err)) {
+          stepLogger.info('Workflow run already completed, skipping step', {
             workflowRunId,
             stepId,
-            stepName,
             message: err.message,
-          }
-        );
-        return { type: 'skipped' };
+          });
+          return { type: 'gone' };
+        }
+        throw err;
       }
-      if (RunExpiredError.is(err)) {
-        stepLogger.info('Workflow run already completed, skipping step', {
-          workflowRunId,
-          stepId,
-          message: err.message,
-        });
-        return { type: 'gone' };
-      }
-      throw err;
-    }
 
-    const inlineDelta = extractInlineDelta(
-      completedResult,
-      params.inlineDeltaSinceCursor !== undefined
-    );
+      const inlineDelta = extractInlineDelta(
+        completedResult,
+        params.inlineDeltaSinceCursor !== undefined
+      );
 
-    span?.setAttributes({
-      ...Attribute.StepStatus('completed'),
-      ...Attribute.StepResultType(typeof result),
-    });
-
-    if (ops.length > 0) {
-      stepLogger.debug('Step has pending ops', {
-        workflowRunId,
-        stepName,
-        opsCount: ops.length,
+      span?.setAttributes({
+        ...Attribute.StepStatus('completed'),
+        ...Attribute.StepResultType(typeof result),
       });
+
+      if (ops.length > 0) {
+        stepLogger.debug('Step has pending ops', {
+          workflowRunId,
+          stepName,
+          opsCount: ops.length,
+        });
+      }
+      // hasPendingOps signals the combined handler to break the loop
+      // and queue a continuation so waitUntil can flush them.
+      return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
+    };
+    if (mayHoldTerminal()) {
+      span?.setAttributes({
+        ...Attribute.StepResultType(typeof result),
+      });
+      return holdTerminalWrite(
+        'step_completed',
+        completedEventData,
+        writeCompleted
+      );
     }
-    // hasPendingOps signals the combined handler to break the loop
-    // and queue a continuation so waitUntil can flush them.
-    return { type: 'completed', hasPendingOps: !opsSettled, inlineDelta };
+    return writeCompleted();
   });
 }

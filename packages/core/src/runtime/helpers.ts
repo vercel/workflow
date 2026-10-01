@@ -1120,7 +1120,10 @@ export interface SlotSnapshotParams {
  * | `run_completed`, `run_failed`, `run_cancelled` | replay loop, replay budget, `runs.cancel` | `eventCount` where the node loop's seam stamps it (the QuickJS engine sends nothing); never `sinceCursor` (`deltaRequestCursor` excludes terminal types) | terminal: nothing replays the log afterwards, so a World reads no page for them |
  *
  * Batched writes (`events.createBatch`) are outside all of this: a batch carries
- * no per-event position and gets no page. The user-facing version of this table
+ * no per-event position and gets no page. A fenced commit (`events.commit`, the
+ * piggyback commit in `piggyback.ts`) names its position as `after`, the top of
+ * the dense prefix its replay consumed, which fences the whole request, and its
+ * answer carries the cursor past the rows it committed. The user-facing version of this table
  * is in `docs/content/docs/v5/how-it-works/event-sourcing.mdx`; keep the two in
  * step.
  *

@@ -161,6 +161,19 @@ export interface SuspensionHandlerParams {
    * suspension. Omitted, every suspension republishes on its own.
    */
   forceClaimVictimWakes?: Set<string>;
+  /**
+   * Piggyback commit: fold a LONE lazy-inline step's create + claim into the
+   * batch as a pre-claimed pair too (normally a lone inline step takes the
+   * lazy `step_started`, see `inlinePairFoldEligible`). Same round trip and
+   * the same two rows, but the batch hands the committed `step_created` and
+   * `step_started` rows back, and a later piggyback commit of the step's held
+   * completion needs exactly those: the replay over the completion must
+   * consume them, and they are the `own` events its fence exempts. Set by the
+   * runtime only when the step's completion could be held (see
+   * `runtime/piggyback.ts`); still requires the batched fan-out and an
+   * `ownerMessageId`.
+   */
+  foldLoneInlinePair?: boolean;
 }
 
 /**
@@ -506,6 +519,7 @@ export async function handleSuspension({
   ownerMessageId,
   allowDeferredBatchWork,
   forceClaimVictimWakes,
+  foldLoneInlinePair,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -1235,7 +1249,8 @@ export async function handleSuspension({
     batchFanoutEligible &&
     ownerMessageId !== undefined &&
     (lazyInlineCorrelationIds.size >= 2 ||
-      (lazyInlineCorrelationIds.size === 1 && hooksNeedingCreation.length > 0));
+      (lazyInlineCorrelationIds.size === 1 &&
+        (hooksNeedingCreation.length > 0 || foldLoneInlinePair === true)));
   const inlineClaims: SuspensionHandlerResult['inlineClaims'] = new Map();
 
   // The trace carrier for resilient step dispatches, resolved at most once per
@@ -1788,6 +1803,21 @@ export async function handleSuspension({
                       updatedAt: now,
                       startedAt: now,
                     };
+                // The pair's own rows, for a caller that will commit this
+                // step's completion as a piggyback pair (see
+                // `foldLoneInlinePair`). Only when BOTH rows committed here,
+                // adjacent in this chunk as the flush keeps them: a pair
+                // whose create was lost but whose claim won has no created
+                // row of its own to name.
+                const createdItem = index > 0 ? results[index - 1] : undefined;
+                const createdEntry = index > 0 ? chunk[index - 1] : undefined;
+                const pairRows =
+                  createdItem?.error === undefined &&
+                  createdItem?.event !== undefined &&
+                  createdEntry?.kind === 'inline-created' &&
+                  createdEntry.correlationId === entry.correlationId
+                    ? [createdItem.event, item.event]
+                    : undefined;
                 inlineClaims.set(entry.correlationId, {
                   owned: true,
                   step: {
@@ -1796,6 +1826,7 @@ export async function handleSuspension({
                   },
                   batchPostSentAtMs,
                   claimCompletedAtMs,
+                  ...(pairRows ? { events: pairRows } : {}),
                 });
               }
               continue;
@@ -2175,4 +2206,136 @@ function isWorldValidationFailure(err: unknown): boolean {
     return true;
   }
   return WorkflowWorldError.is(err) && err.status === 400;
+}
+
+/**
+ * The next step of a piggyback step pair, ready to commit: the born-running
+ * `step_created` (carrying the step's input) and the bare, ownership-stamped
+ * `step_started` that follow a held completion in one fenced commit (see
+ * `runtime/piggyback.ts`), or the reason the suspension is not that shape.
+ */
+export type PiggybackStepPairPlan =
+  | {
+      eligible: true;
+      correlationId: string;
+      stepName: string;
+      dehydratedInput: SerializedData;
+      /** `[step_created, step_started]`, in commit order. */
+      events: [CreateEventRequest, CreateEventRequest];
+      /**
+       * Guest code executions while dehydrating the input (getters, proxies).
+       * Nonzero means the parked VM ran workflow code outside a replay, so the
+       * caller must not keep it: the same rule `handleSuspension` reports
+       * through `serializationBlockerCount`.
+       */
+      serializationBlockerCount: number;
+    }
+  | { eligible: false; reason: string };
+
+/**
+ * Fold a suspension into the second half of a piggyback step pair, or say why
+ * it cannot be one.
+ *
+ * The only suspension that folds is the one whose entire queue is ONE new
+ * step: exactly what `handleSuspension` would have deferred as the lone
+ * lazy-inline step and the caller would have run inline next, and nothing
+ * else — no hook, wait, attribute write, hook disposal or abort, and no second
+ * step. Anything else writes something the pair cannot carry, and is an exit:
+ * the caller writes the held completion alone and takes today's path (which
+ * this function has not touched: it writes nothing).
+ *
+ * The input is dehydrated exactly as `handleSuspension` dehydrates a
+ * lazy-inline step's (same key, compression, and VM realm), so the committed
+ * `step_created` is byte-for-byte the one the lazy path would have written.
+ */
+export async function buildPiggybackStepPair({
+  suspension,
+  world,
+  run,
+  ownerMessageId,
+}: {
+  suspension: WorkflowSuspension;
+  world: World;
+  run: WorkflowRun;
+  ownerMessageId: string;
+}): Promise<PiggybackStepPairPlan> {
+  if (suspension.items.length !== 1) {
+    return { eligible: false, reason: nonPairShapeReason(suspension) };
+  }
+  const item = suspension.items[0];
+  if (item.type !== 'step') {
+    return { eligible: false, reason: `shape_${item.type}` };
+  }
+  if (item.hasCreatedEvent) {
+    // The step already exists (queued, retrying, or owned elsewhere): today's
+    // path dispatches it; a create would only conflict.
+    return { eligible: false, reason: 'shape_existing_step' };
+  }
+  if (getMaxInlineSteps() < 1) {
+    return { eligible: false, reason: 'inline_disabled' };
+  }
+
+  const rawKey = await world.getEncryptionKeyForRun?.(run);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  const compression =
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+  const stats: GuestCodeStats = { executions: [] };
+  let dehydratedInput: SerializedData;
+  try {
+    dehydratedInput = (await dehydrateStepArguments(
+      {
+        args: item.args,
+        closureVars: item.closureVars,
+        thisVal: item.thisVal,
+      },
+      run.runId,
+      encryptionKey,
+      suspension.globalThis,
+      false,
+      compression,
+      stats
+    )) as SerializedData;
+  } catch (err) {
+    // An unserializable input is finalized as a failed step by the
+    // suspension handler; that is today's path, taken after the flush.
+    if (SerializationError.is(err)) {
+      return { eligible: false, reason: 'unserializable_input' };
+    }
+    throw err;
+  }
+  return {
+    eligible: true,
+    correlationId: item.correlationId,
+    stepName: item.stepName,
+    dehydratedInput,
+    events: [
+      {
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: item.correlationId,
+        eventData: {
+          stepName: item.stepName,
+          workflowName: run.workflowName,
+          input: dehydratedInput,
+        },
+      },
+      {
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: item.correlationId,
+        eventData: { stepName: item.stepName, ownerMessageId },
+      },
+    ],
+    serializationBlockerCount: stats.totalExecutions ?? stats.executions.length,
+  };
+}
+
+/** Why a suspension with other than one queue item cannot be a step pair. */
+function nonPairShapeReason(suspension: WorkflowSuspension): string {
+  if (suspension.items.length === 0) return 'shape_empty';
+  const kinds = new Set(suspension.items.map((item) => item.type));
+  for (const kind of ['hook', 'wait', 'attribute'] as const) {
+    if (kinds.has(kind)) return `shape_${kind}`;
+  }
+  return 'shape_multiple_steps';
 }

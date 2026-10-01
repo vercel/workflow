@@ -1000,6 +1000,39 @@ export class PreconditionFailedError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown by a World's fenced commit (`world.events.commit`) when it cannot say
+ * whether the commit landed: the request may have been applied even though no
+ * definite answer came back — a transport failure after the request was sent,
+ * an unclassified server error, a lost response, or a server that reports the
+ * outcome itself as ambiguous.
+ *
+ * Never a rejection: a caller must not assume nothing was written. The core
+ * runtime writes the held completion through the ordinary single path (which
+ * converges on a 409 if the commit did land), discards the replay it derived
+ * the commit from, and re-reads the log before deciding anything else. The
+ * World does not retry the request on its own, because it carries a
+ * `step_started` whose repetition could not be told apart from its first
+ * attempt.
+ */
+export class AmbiguousCommitError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    options?: { status?: number; url?: string; cause?: unknown }
+  ) {
+    super(message, {
+      status: options?.status,
+      url: options?.url,
+      cause: options?.cause,
+    });
+    this.name = 'AmbiguousCommitError';
+  }
+
+  static is(value: unknown): value is AmbiguousCommitError {
+    return isError(value) && value.name === 'AmbiguousCommitError';
+  }
+}
+
+/**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
  * This error indicates that the workflow was explicitly cancelled (via

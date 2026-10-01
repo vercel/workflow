@@ -329,7 +329,8 @@ export type WorkflowStepStartMode =
   | 'single_owned_recovery'
   | 'single_bare'
   | 'batch_create_claim'
-  | 'batch_bare';
+  | 'batch_bare'
+  | 'piggyback_commit';
 export const WorkflowStepStartMode = SemanticConvention<WorkflowStepStartMode>(
   'workflow.step_start.mode'
 );

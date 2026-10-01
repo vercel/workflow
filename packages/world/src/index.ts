@@ -150,6 +150,7 @@ export {
   isSlotBody,
   isSlotEventId,
   MAX_EVENT_SLOT,
+  PIGGYBACK_HELD_EVENT_ID,
   requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';

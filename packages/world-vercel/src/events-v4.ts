@@ -24,6 +24,7 @@
 import assert from 'node:assert/strict';
 import type { Span } from '@opentelemetry/api';
 import {
+  AmbiguousCommitError,
   CorruptedEventLogError,
   StreamError,
   WorkflowWorldError,
@@ -120,7 +121,9 @@ async function fetchV4(
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
   opName: string,
-  attributes?: Record<string, string | number | boolean | string[]>
+  attributes?: Record<string, string | number | boolean | string[]>,
+  /** Replaces the typed-error mapping of a non-2xx answer (see below). */
+  buildErrorOverride?: (response: Response) => Promise<Error>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
   const response = await instrumentedFetch({
@@ -142,14 +145,16 @@ async function fetchV4(
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
     // carries event payloads back) does not survive a UTF-8 decode.
-    buildError: async (response) =>
-      errorFromV4Response(
-        response.status,
-        headersToRecord(response.headers),
-        new Uint8Array(await response.arrayBuffer()),
-        opName,
-        url
-      ),
+    buildError:
+      buildErrorOverride ??
+      (async (response) =>
+        errorFromV4Response(
+          response.status,
+          headersToRecord(response.headers),
+          new Uint8Array(await response.arrayBuffer()),
+          opName,
+          url
+        )),
   });
 
   if (!response.body) {
@@ -1283,6 +1288,549 @@ export async function createWorkflowRunEventsBatchV4(
   );
 
   return { results };
+}
+
+// ---------------------------------------------------------------------------
+// Fenced piggyback commit
+// ---------------------------------------------------------------------------
+
+/**
+ * Carried by EVERY answer of the fenced commit route, middleware refusals and
+ * the route's own 404 run-not-found included, so a 404/405 WITHOUT it can only
+ * be an older server's catch-all: the one answer that means "route
+ * unsupported" (workflow-server `docs/fenced-commit.md` §3.1).
+ */
+export const FENCED_COMMIT_CAPABILITY_HEADER = 'x-workflow-fenced-commit';
+/**
+ * The route's statement of which outcome class an answer belongs to:
+ * `committed`, `rejected` (definitely nothing committed) or `ambiguous` (may
+ * have committed). Set only by the route's handler, so its absence means the
+ * request never reached it.
+ */
+export const FENCED_COMMIT_OUTCOME_HEADER = 'x-workflow-fenced-commit-outcome';
+
+/**
+ * How long a backend without the fenced commit is remembered as such. Long
+ * enough that a deployment against an older server pays the probe rarely,
+ * short enough that a transient edge 404 during a deploy is re-probed.
+ */
+export const FENCED_COMMIT_UNSUPPORTED_MEMO_MS = 10 * 60_000;
+
+/**
+ * Backends that answered the commit as unsupported, by base URL, and when.
+ * On `globalThis` (see `globalSingleton`) so every bundled copy of this
+ * module learns from one probe.
+ */
+const fencedCommitSupport = globalSingleton(
+  '@workflow/world-vercel//fencedCommitSupport',
+  1,
+  () => ({ unsupportedSince: new Map<string, number>() })
+);
+
+/** Remaining memo time for a backend known not to support the commit. */
+function fencedCommitUnsupportedForMs(baseUrl: string): number | undefined {
+  const since = fencedCommitSupport.unsupportedSince.get(baseUrl);
+  if (since === undefined) return undefined;
+  const remaining = since + FENCED_COMMIT_UNSUPPORTED_MEMO_MS - Date.now();
+  if (remaining > 0) return remaining;
+  fencedCommitSupport.unsupportedSince.delete(baseUrl);
+  return undefined;
+}
+
+/** Test hook: forget which backends lacked the fenced commit route. */
+export function resetFencedCommitSupportForTests(): void {
+  fencedCommitSupport.unsupportedSince.clear();
+}
+
+export interface CommitEventsV4Input {
+  runId: string;
+  after: number;
+  own: string[];
+  /** In commit order; each must carry `occurredAt`. */
+  events: CreateEventBatchV4Event[];
+}
+
+export type CommitEventsV4Result =
+  | {
+      status: 'committed';
+      results: Array<EventResult & { event: Event }>;
+      denseThrough: number;
+      cursor: string;
+    }
+  | {
+      status: 'rejected';
+      reason: string;
+      httpStatus?: number;
+      conflictSlot?: number;
+      unsupportedForMs?: number;
+    };
+
+/** A non-2xx HTTP answer kept whole, so the outcome rules can read it. */
+class FencedCommitHttpAnswer extends Error {
+  constructor(
+    readonly status: number,
+    readonly headers: Headers,
+    readonly body: Uint8Array
+  ) {
+    super(`fenced commit answered HTTP ${status}`);
+    this.name = 'FencedCommitHttpAnswer';
+  }
+}
+
+/** Everything the outcome rules read, from either transport. */
+interface FencedCommitAnswer {
+  status: number;
+  capability: string | undefined;
+  outcome: string | undefined;
+  body: Uint8Array;
+  contentType: string | undefined;
+}
+
+const CommitResultsBodySchema = z.compile(
+  z.object({
+    status: z.literal('committed'),
+    results: z.array(z.unknown()),
+    denseThrough: z.number().int().positive(),
+    cursor: z.string().min(1),
+  })
+);
+
+/** Decode a body as CBOR, then JSON, or neither: never throws. */
+function decodeCommitBody(
+  body: Uint8Array,
+  contentType: string | undefined
+): Record<string, unknown> | undefined {
+  if (body.byteLength === 0) return undefined;
+  const isJson = contentType?.includes('json') === true;
+  if (!isJson) {
+    try {
+      // cbor-x caches decode state on its input; decode a copy.
+      const decoded = decode(body.slice()) as unknown;
+      if (typeof decoded === 'object' && decoded !== null) {
+        return decoded as Record<string, unknown>;
+      }
+    } catch {
+      // not CBOR; try JSON below
+    }
+  }
+  try {
+    const json = JSON.parse(new TextDecoder().decode(body)) as unknown;
+    if (typeof json === 'object' && json !== null) {
+      return json as Record<string, unknown>;
+    }
+  } catch {
+    // neither
+  }
+  return undefined;
+}
+
+/**
+ * The fenced commit's outcome rules (workflow-server `docs/fenced-commit.md`
+ * §3.1), in one place for both transports:
+ *
+ * | answer | meaning |
+ * |---|---|
+ * | 200 with a `committed` body | committed |
+ * | outcome `rejected` (any status) | definitely nothing committed |
+ * | outcome `ambiguous` | may have committed |
+ * | no outcome, 404/405 without the capability header | old server: unsupported, remembered |
+ * | no outcome, other 4xx | never reached the handler: definite |
+ * | no outcome, 5xx (or anything else) | ambiguous |
+ *
+ * Ambiguity is thrown (`AmbiguousCommitError`), never returned: a caller
+ * cannot mistake it for a definite answer.
+ */
+function classifyFencedCommitAnswer(
+  answer: FencedCommitAnswer,
+  input: CommitEventsV4Input,
+  baseUrl: string,
+  endpoint: string
+): CommitEventsV4Result {
+  const { status, outcome } = answer;
+  if (status === 200) {
+    return parseCommittedBody(answer, input, endpoint);
+  }
+  const body = decodeCommitBody(answer.body, answer.contentType);
+  if (outcome === 'ambiguous') {
+    throw new AmbiguousCommitError(
+      `v4 commitEvents: the server could not say whether the commit landed (HTTP ${status})`,
+      { status, url: endpoint }
+    );
+  }
+  if (outcome === 'rejected' || (status >= 400 && status < 500)) {
+    if (
+      outcome === undefined &&
+      (status === 404 || status === 405) &&
+      answer.capability === undefined
+    ) {
+      fencedCommitSupport.unsupportedSince.set(baseUrl, Date.now());
+      return {
+        status: 'rejected',
+        reason: 'unsupported',
+        httpStatus: status,
+        unsupportedForMs: FENCED_COMMIT_UNSUPPORTED_MEMO_MS,
+      };
+    }
+    const reason =
+      typeof body?.reason === 'string' ? body.reason : `http-${status}`;
+    return {
+      status: 'rejected',
+      reason,
+      httpStatus: status,
+      ...(typeof body?.conflictSlot === 'number'
+        ? { conflictSlot: body.conflictSlot }
+        : {}),
+    };
+  }
+  throw new AmbiguousCommitError(
+    `v4 commitEvents: HTTP ${status} without a definite outcome`,
+    { status, url: endpoint }
+  );
+}
+
+/**
+ * A 200's body. It committed, so anything unreadable about it is ambiguous
+ * (the rows are durable but unknown), never a rejection.
+ */
+function parseCommittedBody(
+  answer: FencedCommitAnswer,
+  input: CommitEventsV4Input,
+  endpoint: string
+): CommitEventsV4Result {
+  const ambiguous = (detail: string, cause?: unknown) =>
+    new AmbiguousCommitError(
+      `v4 commitEvents: committed, but the answer was unusable: ${detail}`,
+      { status: 200, url: endpoint, cause }
+    );
+  let decoded: unknown;
+  try {
+    decoded = decode(answer.body.slice());
+  } catch (cause) {
+    throw ambiguous('invalid CBOR body', cause);
+  }
+  const parsed = CommitResultsBodySchema.safeParse(decoded);
+  if (!parsed.success) throw ambiguous('invalid body', parsed.error);
+  if (parsed.data.results.length !== input.events.length) {
+    throw ambiguous(
+      `${parsed.data.results.length} results for ${input.events.length} events`
+    );
+  }
+  const results = parsed.data.results.map((raw, index) => {
+    const eventType = input.events[index].eventType;
+    const item = CreateEventV4BodySchemas[eventType].safeParse(raw);
+    if (!item.success) {
+      throw ambiguous(`result ${index} (${eventType})`, item.error);
+    }
+    if (item.data.event.eventType !== eventType) {
+      throw ambiguous(
+        `result ${index} is a ${item.data.event.eventType}, expected ${eventType}`
+      );
+    }
+    return item.data;
+  });
+  return {
+    status: 'committed',
+    results,
+    denseThrough: parsed.data.denseThrough,
+    cursor: parsed.data.cursor,
+  };
+}
+
+/**
+ * POST /api/v4/runs/:runId/events/batch/commit, or the same request as a WS
+ * `commit` frame when the run's events socket is open.
+ *
+ * The fenced piggyback commit (see `Storage.events.commit` in
+ * `@workflow/world` and workflow-server's `docs/fenced-commit.md`). The body
+ * is a preamble frame — CBOR meta `{ after, own }`, empty body — followed by
+ * the events' single-POST frames, byte-identical to the batch route's.
+ *
+ * Exactly one attempt, on either transport: the request carries a
+ * `step_started`, and a retried commit's 409 could not be told apart from its
+ * own first attempt having landed. Transient failures surface as
+ * `AmbiguousCommitError`; the runtime writes the held completion alone and
+ * re-reads, and queue redelivery owns anything past that.
+ *
+ * A backend without the route answers 404 from its catch-all (no capability
+ * header), or an old socket answers the unknown frame type with a 400 error
+ * frame; either is remembered for {@link FENCED_COMMIT_UNSUPPORTED_MEMO_MS}
+ * and answered `unsupported` without a request meanwhile.
+ */
+export async function commitWorkflowRunEventsV4(
+  input: CommitEventsV4Input,
+  config?: APIConfig
+): Promise<CommitEventsV4Result> {
+  assert(input.events.length > 0, 'v4 commitEvents: empty commit');
+  const { baseUrl } = getHttpUrl(config);
+  const unsupportedForMs = fencedCommitUnsupportedForMs(baseUrl);
+  if (unsupportedForMs !== undefined) {
+    return { status: 'rejected', reason: 'unsupported', unsupportedForMs };
+  }
+  for (const event of input.events) {
+    // Required by the route (a frame without one is `clock-skew`), and by the
+    // caller's replay, which already observed this exact time.
+    assert(event.occurredAt, 'v4 commitEvents: every event needs occurredAt');
+  }
+
+  const eventFrames = input.events.map((event) =>
+    encodeFrame(buildPostFrameMeta(event), event.payload ?? new Uint8Array(0))
+  );
+  const eventsBody = concatFrames(eventFrames);
+  const restUrl = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch/commit`;
+  const carriesStart = input.events.some(
+    (event) => event.eventType === 'step_started'
+  );
+  const attributes = {
+    'workflow.batch.bytes': eventsBody.byteLength,
+    'workflow.fenced_commit.after': input.after,
+    'workflow.fenced_commit.own': input.own.length,
+    ...(carriesStart
+      ? {
+          ...WorkflowStepStartMode('piggyback_commit'),
+          ...WorkflowStepStartOwnerStamped(
+            input.events.some((event) => event.ownerMessageId !== undefined)
+          ),
+        }
+      : {}),
+  };
+
+  if (isWsEventsTransportEnabled()) {
+    const viaWs = await commitOverWs(
+      input,
+      eventsBody,
+      restUrl,
+      baseUrl,
+      attributes,
+      config
+    );
+    if (viaWs) return viaWs;
+    // The commit carries the step's completion, which must not silently fall
+    // back while the strict WS gate is on.
+    assertWsFallbackAllowed(input.events[0].eventType);
+  }
+
+  const answer = await commitOverHttp(
+    input,
+    eventsBody,
+    restUrl,
+    attributes,
+    config
+  );
+  return classifyFencedCommitAnswer(answer, input, baseUrl, restUrl);
+}
+
+/** Reads the outcome-bearing parts of an HTTP answer. */
+function httpCommitAnswer(
+  status: number,
+  headers: Headers,
+  body: Uint8Array
+): FencedCommitAnswer {
+  return {
+    status,
+    capability: headers.get(FENCED_COMMIT_CAPABILITY_HEADER) ?? undefined,
+    outcome: headers.get(FENCED_COMMIT_OUTCOME_HEADER) ?? undefined,
+    body,
+    contentType: headers.get('content-type') ?? undefined,
+  };
+}
+
+/**
+ * The commit as one HTTP POST. Any answer comes back whole, 2xx or not; no
+ * answer at all (a transport failure, a timeout, a body that never arrived)
+ * is `AmbiguousCommitError`, since the request may have landed.
+ */
+async function commitOverHttp(
+  input: CommitEventsV4Input,
+  eventsBody: Uint8Array,
+  restUrl: string,
+  attributes: Record<string, string | number | boolean>,
+  config: APIConfig | undefined
+): Promise<FencedCommitAnswer> {
+  const { headers: baseHeaders } = await getHttpConfig(config);
+  const headers = new Headers(baseHeaders);
+  headers.set('Content-Type', 'application/octet-stream');
+  const body = concatFrames([
+    encodeFrame({ after: input.after, own: input.own }, new Uint8Array(0)),
+    eventsBody,
+  ]);
+  try {
+    const response = await fetchV4(
+      restUrl,
+      { method: 'POST', headers, body },
+      config,
+      'commitEvents',
+      { ...WorkflowEventsTransport('http'), ...attributes },
+      async (errorResponse) =>
+        new FencedCommitHttpAnswer(
+          errorResponse.status,
+          errorResponse.headers,
+          new Uint8Array(await errorResponse.arrayBuffer())
+        )
+    );
+    return httpCommitAnswer(
+      response.status,
+      response.headers,
+      new Uint8Array(await response.arrayBuffer())
+    );
+  } catch (error) {
+    if (error instanceof FencedCommitHttpAnswer) {
+      return httpCommitAnswer(error.status, error.headers, error.body);
+    }
+    throw new AmbiguousCommitError(
+      `v4 commitEvents: no definite answer: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { url: restUrl, cause: error }
+    );
+  }
+}
+
+function concatFrames(frames: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const frame of frames) total += frame.byteLength;
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const frame of frames) {
+    body.set(frame, offset);
+    offset += frame.byteLength;
+  }
+  return body;
+}
+
+/**
+ * The commit as a WS `commit` frame on the run's open events socket, or
+ * `undefined` when no socket is resolvable (the caller falls through to HTTP).
+ *
+ * `commit_ack` carries the route's status, capability marker, outcome and
+ * `denseThrough`, with the route's body, and is classified exactly like the
+ * HTTP answer. An `error` frame is the socket's own refusal: a 400
+ * `ws v1 frame: …` is an older server that does not know the frame type
+ * (remembered as unsupported); any other 4xx was refused before dispatch
+ * (definite); anything else may have reached the handler (ambiguous).
+ */
+async function commitOverWs(
+  input: CommitEventsV4Input,
+  eventsBody: Uint8Array,
+  restUrl: string,
+  baseUrl: string,
+  attributes: Record<string, string | number | boolean>,
+  config: APIConfig | undefined
+): Promise<CommitEventsV4Result | undefined> {
+  const { resolveWsTransport } = await import('./ws-transport.js');
+  const resolved = resolveWsTransport(input.runId, config);
+  if (!resolved) return undefined;
+  const { transport, wsUrl } = resolved;
+  const endpoint = `${wsUrl}#runs/${encodeURIComponent(input.runId)}/events/batch/commit`;
+  return withHttpClientSpan(
+    {
+      method: 'POST',
+      url: restUrl,
+      attributes: {
+        ...WorkflowEventsTransport('ws'),
+        ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...NetworkProtocolName('websocket'),
+        ...WorkflowWsUrl(wsUrl),
+        ...attributes,
+      },
+    },
+    async (span) => {
+      let reply: WsFrameReply;
+      try {
+        reply = await transport.request((reqId) => {
+          span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
+          return encodeFrame(
+            {
+              reqId,
+              type: 'commit',
+              commit: { after: input.after, own: input.own },
+            },
+            eventsBody
+          );
+        });
+      } catch (err) {
+        span?.setAttributes({ ...ErrorType('TRANSPORT') });
+        // The frame may have been handed to the socket before it failed.
+        throw new AmbiguousCommitError(
+          `POST ${endpoint} transport failure: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          { url: wsUrl, cause: err }
+        );
+      }
+      if (typeof reply.meta.status === 'number') {
+        recordClientSpanStatus(span, reply.meta.status);
+      }
+      return classifyWsCommitReply(reply, input, baseUrl, endpoint, wsUrl);
+    }
+  );
+}
+
+/**
+ * A WS reply to a `commit` frame, on the HTTP route's outcome table (see
+ * {@link commitOverWs} for the `error` frame rules).
+ */
+function classifyWsCommitReply(
+  reply: WsFrameReply,
+  input: CommitEventsV4Input,
+  baseUrl: string,
+  endpoint: string,
+  wsUrl: string
+): CommitEventsV4Result {
+  const status = reply.meta.status;
+  if (typeof status !== 'number') {
+    throw new AmbiguousCommitError(
+      `POST ${endpoint}: reply frame carried no status (type: ${String(
+        reply.meta.type ?? 'absent'
+      )})`,
+      { url: wsUrl }
+    );
+  }
+  if (reply.meta.type === 'error') {
+    const detail = decodeCommitBody(reply.body, 'application/json');
+    const message = typeof detail?.message === 'string' ? detail.message : '';
+    if (status === 400 && message.startsWith('ws v1 frame')) {
+      fencedCommitSupport.unsupportedSince.set(baseUrl, Date.now());
+      return {
+        status: 'rejected',
+        reason: 'unsupported',
+        httpStatus: status,
+        unsupportedForMs: FENCED_COMMIT_UNSUPPORTED_MEMO_MS,
+      };
+    }
+    if (status >= 400 && status < 500) {
+      return {
+        status: 'rejected',
+        reason: `http-${status}`,
+        httpStatus: status,
+      };
+    }
+    throw new AmbiguousCommitError(
+      `POST ${endpoint}: error frame ${status}: ${message}`,
+      { status, url: wsUrl }
+    );
+  }
+  if (reply.meta.type !== 'commit_ack') {
+    throw new AmbiguousCommitError(
+      `POST ${endpoint}: unexpected reply frame type ${String(reply.meta.type)}`,
+      { status, url: wsUrl }
+    );
+  }
+  return classifyFencedCommitAnswer(
+    {
+      status,
+      capability:
+        typeof reply.meta.fencedCommit === 'string'
+          ? reply.meta.fencedCommit
+          : undefined,
+      outcome:
+        typeof reply.meta.outcome === 'string' ? reply.meta.outcome : undefined,
+      body: reply.body,
+      contentType: undefined,
+    },
+    input,
+    baseUrl,
+    endpoint
+  );
 }
 
 /** The only two members a decoded transport result is read for. `fetch`'s

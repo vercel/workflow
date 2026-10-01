@@ -5,6 +5,9 @@ import type {
 } from './attributes.js';
 import type {
   BatchEventRequest,
+  CommitEventsParams,
+  CommitEventsRequest,
+  CommitEventsResult,
   CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
@@ -457,6 +460,41 @@ export interface Storage {
       events: BatchEventRequest[],
       params?: CreateEventBatchParams
     ): Promise<EventBatchResult>;
+
+    /**
+     * OPTIONAL fenced, atomic commit (see {@link CommitEventsRequest} for the
+     * two shapes it carries). The piggyback commit uses it to write a held
+     * step completion together with what a replay over that completion
+     * derived — the next step's born-running creation, or the run's outcome —
+     * in one request instead of two awaited round trips.
+     *
+     * Semantics a World must implement exactly, or not implement the method:
+     *
+     * - **Atomic.** Either every event lands or none does; there is no
+     *   survivor round (unlike {@link createBatch}).
+     * - **Fenced.** Commit only if every position in `(after, first)` other
+     *   than `own` holds no real event, and seal the empty ones in the same
+     *   write so no later commit can land beneath the batch. Any `own` id that
+     *   is not a real event strictly inside that range fences the commit.
+     * - **Verbatim time.** Each committed row's `createdAt` equals its
+     *   `occurredAt`; a World that would clamp it rejects (`clock-skew`).
+     * - **Definite answers only.** `committed` and `rejected` are promises
+     *   about what is durable: a rejection must mean nothing committed. When
+     *   the World cannot tell — a transport failure, a lost response, a
+     *   server-side retry of a write that may already have landed — it throws
+     *   `AmbiguousCommitError` rather than guess, and it never retries the
+     *   request itself (the batch carries a `step_started`).
+     *
+     * Presence of the method is the capability declaration, as with
+     * {@link createBatch}: the core runtime offers commits only when the World
+     * implements it and the run's spec version has a sealed log; everything
+     * else keeps today's single writes.
+     */
+    commit?(
+      runId: string,
+      request: CommitEventsRequest,
+      params?: CommitEventsParams
+    ): Promise<CommitEventsResult>;
 
     get(
       runId: string,

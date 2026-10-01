@@ -661,3 +661,48 @@ export function getDeploymentMismatchMaxRetries(): number {
     { integer: true, min: 0 }
   );
 }
+
+/**
+ * Whether the run-end piggyback commit is enabled (default **OFF**). When on,
+ * the last step's completion is held instead of written, the workflow is
+ * replayed over it, and when the replay finishes the run (with nothing left
+ * for the end-of-run drain) the completion and the run's outcome commit as
+ * one fenced, atomic `world.events.commit` request instead of two awaited
+ * writes. Any other outcome writes the held completion alone first, exactly as
+ * today, and continues on today's path.
+ *
+ * Only engages where the commit is expressible: a World implementing
+ * `events.commit`, a sealed-log run (specVersion >= 7), the node:vm engine,
+ * a server-loaded event log, and a single owned inline execution. See
+ * `runtime/piggyback.ts` and workflow-server's `docs/fenced-commit.md`.
+ *
+ * Reads `process.env.WORKFLOW_PIGGYBACK_RUN_END` lazily; only `'1'` or
+ * `'true'` (case-insensitive) turns it on. Separate from
+ * {@link isPiggybackCommitEnabled} so the run-end pair, which has far fewer
+ * exits, can be rolled out first.
+ */
+export function isPiggybackRunEndEnabled(): boolean {
+  return envFlagOn(process.env.WORKFLOW_PIGGYBACK_RUN_END);
+}
+
+/**
+ * Whether the step piggyback commit is enabled (default **OFF**). When on, a
+ * sequential step's completion is held, the workflow is replayed over it, and
+ * when the replay's only new work is the next inline step, the completion and
+ * that step's born-running creation commit as one fenced, atomic request, so
+ * the next body starts one round trip earlier. Everything else writes the held
+ * completion alone first and takes today's path.
+ *
+ * Reads `process.env.WORKFLOW_PIGGYBACK_COMMIT` lazily; only `'1'` or
+ * `'true'` (case-insensitive) turns it on. Independent of
+ * {@link isPiggybackRunEndEnabled}.
+ */
+export function isPiggybackCommitEnabled(): boolean {
+  return envFlagOn(process.env.WORKFLOW_PIGGYBACK_COMMIT);
+}
+
+function envFlagOn(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  const value = raw.trim().toLowerCase();
+  return value === '1' || value === 'true';
+}

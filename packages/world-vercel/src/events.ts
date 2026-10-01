@@ -41,6 +41,9 @@ import {
   applyAttributeChanges,
   type BatchEventItemResult,
   type BatchEventRequest,
+  type CommitEventsParams,
+  type CommitEventsRequest,
+  type CommitEventsResult,
   type CreateEventBatchParams,
   type CreateEventParams,
   type Event,
@@ -64,6 +67,7 @@ import {
 } from '@workflow/world/attributes-validation';
 import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
 import {
+  commitWorkflowRunEventsV4,
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
@@ -534,6 +538,47 @@ export async function getWorkflowRunEvents(
 }
 
 /**
+ * The v4 frames of an ordered event list, as the batch and the fenced commit
+ * send them: per-event meta and payload split exactly like a single POST's,
+ * with the caller's logical time (the durable `createdAt` under slot
+ * identity), per-event compute attribution, and per-write request attribution.
+ */
+function toV4BatchInputs(
+  runId: string,
+  events: BatchEventRequest[],
+  params: CreateEventBatchParams | CommitEventsParams | undefined
+) {
+  return events.map(({ event, occurredAt, computeInstanceId }) => {
+    const { payload, meta } = splitEventDataForV4(event);
+    return {
+      runId,
+      eventType: event.eventType,
+      specVersion: event.specVersion ?? 2,
+      ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+      // Under slot identity this is the source of the durable createdAt, so
+      // the caller's logical time is what every replay observes.
+      occurredAt: occurredAt ?? new Date(),
+      // Per-event compute attribution (pre-claimed inline starts); rides the
+      // frame meta exactly like the single POST's CreateEventParams field.
+      ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
+      // Batch responses carry entities for bookkeeping, not payload reads, so
+      // default to lazy refs unless the caller explicitly asks for resolved
+      // data (the same `resolveData` mapping the read paths use).
+      remoteRefBehavior:
+        params?.resolveData === 'all'
+          ? ('resolve' as const)
+          : ('lazy' as const),
+      // Per-write request attribution, exactly like the single POST's
+      // `params.requestId` → `vercelId` threading, stamped per frame so
+      // batched usage facts carry the same attribution.
+      ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      payload,
+      ...meta,
+    };
+  });
+}
+
+/**
  * Batch write: append an ordered list of events to the run's log in one
  * request with per-event outcomes: the world-vercel implementation of
  * `Storage['events']['createBatch']`.
@@ -569,34 +614,7 @@ export async function createWorkflowRunEventBatch(
       { status: 400 }
     );
   }
-  const inputs = events.map(({ event, occurredAt, computeInstanceId }) => {
-    const { payload, meta } = splitEventDataForV4(event);
-    return {
-      runId,
-      eventType: event.eventType,
-      specVersion: event.specVersion ?? 2,
-      ...(event.correlationId ? { correlationId: event.correlationId } : {}),
-      // Under slot identity this is the source of the durable createdAt, so
-      // the caller's logical time is what every replay observes.
-      occurredAt: occurredAt ?? new Date(),
-      // Per-event compute attribution (pre-claimed inline starts); rides the
-      // frame meta exactly like the single POST's CreateEventParams field.
-      ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
-      // Batch responses carry entities for bookkeeping, not payload reads, so
-      // default to lazy refs unless the caller explicitly asks for resolved
-      // data (the same `resolveData` mapping the read paths use).
-      remoteRefBehavior:
-        params?.resolveData === 'all'
-          ? ('resolve' as const)
-          : ('lazy' as const),
-      // Per-write request attribution, exactly like the single POST's
-      // `params.requestId` → `vercelId` threading, stamped per frame so
-      // batched usage facts carry the same attribution.
-      ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      payload,
-      ...meta,
-    };
-  });
+  const inputs = toV4BatchInputs(runId, events, params);
 
   // In-process transient retry is safe only when EVERY event in the batch
   // converges on a retry of a committed attempt AND the caller can act on the
@@ -645,6 +663,59 @@ export async function createWorkflowRunEventBatch(
         ...(item.wait ? { wait: item.wait } : {}),
       };
     }),
+  };
+}
+
+/**
+ * Fenced, atomic commit: the world-vercel implementation of
+ * `Storage['events']['commit']` (see `commitWorkflowRunEventsV4`).
+ *
+ * Deliberately NOT wrapped in `withEventPostRetry`: the commit carries a
+ * `step_started` in its step-pair shape, and a retry's refusal of its own
+ * landed first attempt would read as a rejection. An ambiguous outcome is
+ * thrown as `AmbiguousCommitError`; the caller writes the held completion
+ * alone and re-reads.
+ */
+export async function commitWorkflowRunEvents(
+  runId: string,
+  request: CommitEventsRequest,
+  params?: CommitEventsParams,
+  config?: APIConfig
+): Promise<CommitEventsResult> {
+  if (request.events.length === 0) {
+    throw new WorkflowWorldError(
+      'world-vercel: commit requires at least one event',
+      { status: 400 }
+    );
+  }
+  for (const { event, occurredAt } of request.events) {
+    if (occurredAt === undefined) {
+      throw new WorkflowWorldError(
+        `world-vercel: every committed event needs occurredAt (${event.eventType} had none)`,
+        { status: 400 }
+      );
+    }
+  }
+  const answer = await commitWorkflowRunEventsV4(
+    {
+      runId,
+      after: request.after,
+      own: request.own,
+      events: toV4BatchInputs(runId, request.events, params),
+    },
+    config
+  );
+  if (answer.status === 'rejected') return answer;
+  return {
+    status: 'committed',
+    results: answer.results.map((item) => ({
+      event: item.event,
+      ...(item.run ? { run: item.run } : {}),
+      ...(item.step ? { step: item.step } : {}),
+      ...(item.wait ? { wait: item.wait } : {}),
+    })),
+    denseThrough: answer.denseThrough,
+    cursor: answer.cursor,
   };
 }
 
