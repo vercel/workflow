@@ -60,7 +60,7 @@ The importing customer is a distributor. Its CRM export lists the organizations 
 | Initech (owner kim) and Initech Ltd (owner sam), both on contract `C-300` | One account, with the owner a reviewer chooses |
 | An account that reports to itself, or to an account in another organization | Nothing for that organization; the reason is reported |
 
-A field mapping produces one destination record per row, so it cannot express any of these; they need a program. Whether that program is deployed application code or a procedure published later is the choice described above. The procedure groups accounts into **families**, one per contract root (`C-100`, `C-100/E`, and `C-100/W` are family `c-100`), and each organization in the export becomes one family.
+A field mapping produces one destination record per row, so it cannot express any of these; they need a program. Whether that program is deployed application code or a procedure published later is the choice described above. The procedure groups accounts into **families**, one per contract root (`C-100`, `C-100/E`, and `C-100/W` are family `c-100`), and each organization in the export becomes one family, reported under its group key.
 
 ## Deploy once, publish later
 
@@ -137,13 +137,14 @@ The distributor's procedure, `crm-parent-first`, validates the export's parent l
   // accounts on the same contract are one account, and a contact is one person
   // per normalized email within a family.
   const families = new Map();
-  for (const row of accounts) {
+  for (const row of byId.values()) {
     families.set(familyOf(row), [...(families.get(familyOf(row)) || []), row]);
   }
 
   // familyOperations(members, owner) writes each family parent-first: see the complete source.
 
   async function migrateFamily(family, members) {
+    if (reasons.has(family)) return { group: family, status: "rejected", reasons: reasons.get(family) };
     const stage = (owner) =>
       steps.stageChanges({ ...scope, groupKey: family, operations: familyOperations(members, owner) });
     let plan = await stage();
@@ -155,14 +156,14 @@ The distributor's procedure, `crm-parent-first`, validates the export's parent l
         const owners = plan.conflicts.flatMap((conflict) => conflict.values);
         await steps.requestApproval({ planId: plan.planId, token, summary: family + ": choose an owner from " + owners.join(", ") });
         const decision = await review;
-        if (!decision.approved) return { family, status: "skipped" };
+        if (!decision.approved) return { group: family, status: "skipped" };
         plan = await stage(decision.owner || owners[0]);
       } finally {
         review.dispose();
       }
     }
     const result = await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
-    return { family, status: "applied", result };
+    return { group: family, status: "applied", result };
   }
 
   const outcomes = await Promise.all([...families].map(([family, members]) => migrateFamily(family, members)));
@@ -172,9 +173,9 @@ The distributor's procedure, `crm-parent-first`, validates the export's parent l
 - **Policy stays in the source.** The family rule, the one-account-per-contract rule, and the one-person-per-email rule are all here; the catalog knows none of them.
 - **Conflicts come from the adapter, decisions from the source.** Merging Initech and Initech Ltd yields an owner conflict on the plan. The procedure decides that a conflict needs a person, and restages the plan with the reviewer's owner, because a staged plan never changes.
 - **Review before waiting.** The hook is created before `requestApproval` sends its token, so a fast reviewer cannot miss it, and it is disposed once the review settles, so a late reply is refused. A rejected family is skipped.
-- **Invalid input is rejected, not guessed at.** Before any of this, the procedure walks each account's parent chain. A family with a self-parent, a cycle, a missing parent, or a parent in another family is reported with its reasons and gets no plan at all, while the other families proceed.
+- **Invalid input is rejected, not guessed at.** Before any of this, the procedure walks each account's parent chain. A family with a self-parent, a cycle, a missing parent, or a parent in another family gets no plan at all; it appears in the run's `results` as `rejected`, with one reason per problem, while the other families proceed.
 
-A reviewer resumes the hook from a route that rebuilds the token from the run's `tokenPrefix` and the family key, after authorizing the caller; see [the review route](#review-route).
+A reviewer resumes the hook from a route that rebuilds the token from the run's `tokenPrefix` and the family's group key, after authorizing the caller; see [the review route](#review-route).
 
 ## What survives a pause, and what changed
 
@@ -243,11 +244,16 @@ If these two strategies are the only ones you will ever need, a static workflow 
   }
 
   // 4. Apply only what was approved, then check the destination either way.
-  const results = [loaded];
+  const applies = [loaded];
   if (decision.approved) {
-    results.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
+    applies.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
   }
-  const verification = await steps.verifyChanges({ ...scope, results });
+  const verification = await steps.verifyChanges({ ...scope, results: applies });
+  const results = [
+    ...[...reasons].map(([group, why]) => ({ group, status: "rejected", reasons: why })),
+    { group: "load", status: "applied", planId: load.planId },
+    { group: "consolidation", status: decision.approved ? "applied" : "skipped", planId: plan.planId },
+  ];
 ```
 
 The two procedures converge on the same records, but get there differently:
@@ -383,17 +389,19 @@ async function workflow(input) {
   const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
   const reasons = new Map();
   const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  const onReportedCycle = new Set();
   for (const row of byId.values()) {
     if (row.parentId === null) continue;
     const parent = byId.get(row.parentId);
     if (row.parentId === row.id) reject(row, row.id + " is its own parent");
     else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
     else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
-    else {
+    else if (!onReportedCycle.has(row.id)) {
       const path = [row.id];
       for (let at = parent; at; at = byId.get(at.parentId)) {
         if (at.id === row.id) {
           reject(row, "cycle: " + [...path, row.id].join(" → "));
+          path.forEach((id) => onReportedCycle.add(id));
           break;
         }
         if (path.includes(at.id)) break;
@@ -408,13 +416,12 @@ async function workflow(input) {
   const contacts = rows.filter(
     (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
   );
-  const rejected = [...reasons].map(([family, why]) => ({ family, status: "rejected", reasons: why }));
 
   // This customer's rules: a family is every account under one contract root,
   // accounts on the same contract are one account, and a contact is one person
   // per normalized email within a family.
   const families = new Map();
-  for (const row of accounts) {
+  for (const row of byId.values()) {
     families.set(familyOf(row), [...(families.get(familyOf(row)) || []), row]);
   }
 
@@ -467,6 +474,7 @@ async function workflow(input) {
   }
 
   async function migrateFamily(family, members) {
+    if (reasons.has(family)) return { group: family, status: "rejected", reasons: reasons.get(family) };
     const stage = (owner) =>
       steps.stageChanges({ ...scope, groupKey: family, operations: familyOperations(members, owner) });
     let plan = await stage();
@@ -478,14 +486,14 @@ async function workflow(input) {
         const owners = plan.conflicts.flatMap((conflict) => conflict.values);
         await steps.requestApproval({ planId: plan.planId, token, summary: family + ": choose an owner from " + owners.join(", ") });
         const decision = await review;
-        if (!decision.approved) return { family, status: "skipped" };
+        if (!decision.approved) return { group: family, status: "skipped" };
         plan = await stage(decision.owner || owners[0]);
       } finally {
         review.dispose();
       }
     }
     const result = await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
-    return { family, status: "applied", result };
+    return { group: family, status: "applied", result };
   }
 
   const outcomes = await Promise.all([...families].map(([family, members]) => migrateFamily(family, members)));
@@ -493,9 +501,9 @@ async function workflow(input) {
     ...scope,
     results: outcomes.filter((outcome) => outcome.result).map((outcome) => outcome.result),
   });
-  const summary = [...outcomes.map(({ family, status }) => ({ family, status })), ...rejected];
-  const report = await steps.publishReport({ migrationId: input.migrationId, results: { families: summary, rejectedRecords, verification } });
-  return { families: summary, rejectedRecords, verification, report };
+  const results = outcomes.map(({ result, ...row }) => row);
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { results, rejectedRecords, verification } });
+  return { results, rejectedRecords, verification, report };
 }
 ```
 
@@ -550,7 +558,7 @@ declare function assertCanReview(request: Request, migrationId: string): Promise
 
 const reviewRequest = z.object({
   migrationId: z.string().startsWith("migration-"),
-  family: z.string(),
+  group: z.string(),
   approved: z.boolean(),
   owner: z.string().optional(),
 });
@@ -564,11 +572,11 @@ export async function POST(
   if (!parsed.success) {
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
-  const { migrationId, family, approved, owner } = parsed.data;
+  const { migrationId, group, approved, owner } = parsed.data;
   // Knowing a token does not authorize the caller.
   await assertCanReview(request, migrationId); // [!code highlight]
 
-  const token = `migration:${migrationId.slice("migration-".length)}:${family}`;
+  const token = `migration:${migrationId.slice("migration-".length)}:${group}`;
   try {
     const hook = await getHookByToken(token);
     if (hook.runId !== runId) {
@@ -585,7 +593,7 @@ export async function POST(
 }
 ```
 
-A review for a family that never conflicted, or one that arrives after the review settled, gets a 404: that hook never existed, or the procedure already disposed it. See [Authorize before calling `resumeHook()`](/docs/foundations/hooks#authorize-before-calling-resumehook).
+A review for a group that never conflicted, or one that arrives after the review settled, gets a 404: that hook never existed, or the procedure already disposed it. See [Authorize before calling `resumeHook()`](/docs/foundations/hooks#authorize-before-calling-resumehook).
 
 ### Revision checks
 

@@ -798,17 +798,19 @@ async function workflow(input) {
   const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
   const reasons = new Map();
   const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  const onReportedCycle = new Set();
   for (const row of byId.values()) {
     if (row.parentId === null) continue;
     const parent = byId.get(row.parentId);
     if (row.parentId === row.id) reject(row, row.id + " is its own parent");
     else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
     else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
-    else {
+    else if (!onReportedCycle.has(row.id)) {
       const path = [row.id];
       for (let at = parent; at; at = byId.get(at.parentId)) {
         if (at.id === row.id) {
           reject(row, "cycle: " + [...path, row.id].join(" → "));
+          path.forEach((id) => onReportedCycle.add(id));
           break;
         }
         if (path.includes(at.id)) break;
@@ -823,13 +825,12 @@ async function workflow(input) {
   const contacts = rows.filter(
     (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
   );
-  const rejected = [...reasons].map(([family, why]) => ({ family, status: "rejected", reasons: why }));
 
   // This customer's rules: a family is every account under one contract root,
   // accounts on the same contract are one account, and a contact is one person
   // per normalized email within a family.
   const families = new Map();
-  for (const row of accounts) {
+  for (const row of byId.values()) {
     families.set(familyOf(row), [...(families.get(familyOf(row)) || []), row]);
   }
 
@@ -882,6 +883,7 @@ async function workflow(input) {
   }
 
   async function migrateFamily(family, members) {
+    if (reasons.has(family)) return { group: family, status: "rejected", reasons: reasons.get(family) };
     const stage = (owner) =>
       steps.stageChanges({ ...scope, groupKey: family, operations: familyOperations(members, owner) });
     let plan = await stage();
@@ -893,14 +895,14 @@ async function workflow(input) {
         const owners = plan.conflicts.flatMap((conflict) => conflict.values);
         await steps.requestApproval({ planId: plan.planId, token, summary: family + ": choose an owner from " + owners.join(", ") });
         const decision = await review;
-        if (!decision.approved) return { family, status: "skipped" };
+        if (!decision.approved) return { group: family, status: "skipped" };
         plan = await stage(decision.owner || owners[0]);
       } finally {
         review.dispose();
       }
     }
     const result = await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
-    return { family, status: "applied", result };
+    return { group: family, status: "applied", result };
   }
 
   const outcomes = await Promise.all([...families].map(([family, members]) => migrateFamily(family, members)));
@@ -908,9 +910,9 @@ async function workflow(input) {
     ...scope,
     results: outcomes.filter((outcome) => outcome.result).map((outcome) => outcome.result),
   });
-  const summary = [...outcomes.map(({ family, status }) => ({ family, status })), ...rejected];
-  const report = await steps.publishReport({ migrationId: input.migrationId, results: { families: summary, rejectedRecords, verification } });
-  return { families: summary, rejectedRecords, verification, report };
+  const results = outcomes.map(({ result, ...row }) => row);
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { results, rejectedRecords, verification } });
+  return { results, rejectedRecords, verification, report };
 }
 `;
 
@@ -933,17 +935,19 @@ async function workflow(input) {
   const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
   const reasons = new Map();
   const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  const onReportedCycle = new Set();
   for (const row of byId.values()) {
     if (row.parentId === null) continue;
     const parent = byId.get(row.parentId);
     if (row.parentId === row.id) reject(row, row.id + " is its own parent");
     else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
     else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
-    else {
+    else if (!onReportedCycle.has(row.id)) {
       const path = [row.id];
       for (let at = parent; at; at = byId.get(at.parentId)) {
         if (at.id === row.id) {
           reject(row, "cycle: " + [...path, row.id].join(" → "));
+          path.forEach((id) => onReportedCycle.add(id));
           break;
         }
         if (path.includes(at.id)) break;
@@ -958,7 +962,6 @@ async function workflow(input) {
   const contacts = rows.filter(
     (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
   );
-  const rejected = [...reasons].map(([family, why]) => ({ family, status: "rejected", reasons: why }));
 
   // 1. Land every valid row as written: provisional, flat, one record per row.
   const load = await steps.stageChanges({
@@ -1018,13 +1021,18 @@ async function workflow(input) {
   }
 
   // 4. Apply only what was approved, then check the destination either way.
-  const results = [loaded];
+  const applies = [loaded];
   if (decision.approved) {
-    results.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
+    applies.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
   }
-  const verification = await steps.verifyChanges({ ...scope, results });
-  const report = await steps.publishReport({ migrationId: input.migrationId, results: { approved: decision.approved, rejected, rejectedRecords, verification } });
-  return { approved: decision.approved, rejected, rejectedRecords, verification, report };
+  const verification = await steps.verifyChanges({ ...scope, results: applies });
+  const results = [
+    ...[...reasons].map(([group, why]) => ({ group, status: "rejected", reasons: why })),
+    { group: "load", status: "applied", planId: load.planId },
+    { group: "consolidation", status: decision.approved ? "applied" : "skipped", planId: plan.planId },
+  ];
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { results, rejectedRecords, verification } });
+  return { results, rejectedRecords, verification, report };
 }
 `;
 
@@ -1163,27 +1171,24 @@ const MIGRATED_CONTACTS = [
 
 /** Every family in `synthetic-crm-invalid`, in export order. */
 const INVALID_PARENT_FAMILIES = [
-  { family: 'c-100', status: 'applied' },
+  { group: 'c-100', status: 'applied' },
   {
-    family: 'c-400',
+    group: 'c-400',
     status: 'rejected',
     reasons: ['acct-self is its own parent'],
   },
   {
-    family: 'c-500',
+    group: 'c-500',
     status: 'rejected',
-    reasons: [
-      'cycle: acct-loop-a → acct-loop-b → acct-loop-a',
-      'cycle: acct-loop-b → acct-loop-a → acct-loop-b',
-    ],
+    reasons: ['cycle: acct-loop-a → acct-loop-b → acct-loop-a'],
   },
   {
-    family: 'c-600',
+    group: 'c-600',
     status: 'rejected',
     reasons: ['acct-stray: parent acct-missing is not in the export'],
   },
   {
-    family: 'c-700',
+    group: 'c-700',
     status: 'rejected',
     reasons: ['acct-cross: parent acct-acme is in another company'],
   },
@@ -1222,10 +1227,10 @@ describeJs(
       await resumeHook(hook, { approved: true, owner: 'sam' });
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
-        families: [
-          { family: 'c-100', status: 'applied' },
-          { family: 'c-200', status: 'applied' },
-          { family: 'c-300', status: 'applied' },
+        results: [
+          { group: 'c-100', status: 'applied' },
+          { group: 'c-200', status: 'applied' },
+          { group: 'c-300', status: 'applied' },
         ],
         verification: {
           ok: true,
@@ -1249,10 +1254,10 @@ describeJs(
 
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
-        families: [
-          { family: 'c-100', status: 'applied' },
-          { family: 'c-200', status: 'applied' },
-          { family: 'c-300', status: 'skipped' },
+        results: [
+          { group: 'c-100', status: 'applied' },
+          { group: 'c-200', status: 'applied' },
+          { group: 'c-300', status: 'skipped' },
         ],
         verification: {
           ok: true,
@@ -1278,7 +1283,10 @@ describeJs(
       await resumeHook(hook, { approved: true, owner: 'sam' });
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
-        approved: true,
+        results: [
+          { group: 'load', status: 'applied' },
+          { group: 'consolidation', status: 'applied' },
+        ],
         verification: {
           ok: true,
           violations: [],
@@ -1301,7 +1309,10 @@ describeJs(
 
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
-        approved: false,
+        results: [
+          { group: 'load', status: 'applied' },
+          { group: 'consolidation', status: 'skipped' },
+        ],
         verification: {
           ok: false,
           counts: { accounts: 6, contacts: 4, provisional: 6 },
@@ -1319,7 +1330,7 @@ describeJs(
       // Acme has no owner conflict, so the run finishes without a review.
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
-        families: INVALID_PARENT_FAMILIES,
+        results: INVALID_PARENT_FAMILIES,
         rejectedRecords: INVALID_PARENT_RECORDS,
         verification: {
           ok: true,
@@ -1342,8 +1353,11 @@ describeJs(
 
       const child = await awaitChildRun(childRunId);
       expect(child.output).toMatchObject({
-        approved: true,
-        rejected: INVALID_PARENT_FAMILIES.slice(1),
+        results: [
+          ...INVALID_PARENT_FAMILIES.slice(1),
+          { group: 'load', status: 'applied' },
+          { group: 'consolidation', status: 'applied' },
+        ],
         rejectedRecords: INVALID_PARENT_RECORDS,
         verification: {
           ok: true,
