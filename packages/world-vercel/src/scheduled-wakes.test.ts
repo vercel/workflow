@@ -37,7 +37,7 @@ describe('scheduledWakeMinute', () => {
 describe('createScheduledWakes', () => {
   it('creates a one-time schedule on the given topic', async () => {
     const create = vi.fn().mockResolvedValue({});
-    const wakes = createScheduledWakes({ create, delete: vi.fn() });
+    const wakes = createScheduledWakes({ create });
     const wakeAt = new Date(Date.now() + 10 * 60_000);
     await wakes.schedule({
       idempotencyKey: 'retained-wait:wrun_A:wait_B',
@@ -57,10 +57,9 @@ describe('createScheduledWakes', () => {
     });
   });
 
-  it('treats an existing schedule as scheduled and a missing one as cancelled', async () => {
+  it('treats an existing schedule as scheduled', async () => {
     const wakes = createScheduledWakes({
       create: vi.fn().mockRejectedValue(new SchedulesApiError(409, 'exists')),
-      delete: vi.fn().mockRejectedValue(new SchedulesApiError(404, 'missing')),
     });
     await expect(
       wakes.schedule({
@@ -70,13 +69,11 @@ describe('createScheduledWakes', () => {
         payload: {},
       })
     ).resolves.toBeUndefined();
-    await expect(wakes.cancel('k')).resolves.toBeUndefined();
   });
 
   it('surfaces other failures', async () => {
     const wakes = createScheduledWakes({
       create: vi.fn().mockRejectedValue(new SchedulesApiError(403, 'no')),
-      delete: vi.fn(),
     });
     await expect(
       wakes.schedule({

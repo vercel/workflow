@@ -8,9 +8,13 @@ import { SchedulesApiError, SchedulesClient } from '@vercel/schedules';
  * `floorToMinute(wakeAt - 60 s)`, so it arrives no later than `wakeAt` and at
  * most two minutes early; the receiving owner times the remainder itself.
  * Scheduler load may still delay a firing, which only lengthens the sleep.
+ * Schedules are not deleted when a sleep completes: a late firing is a no-op
+ * wake, and fired one-time schedules are garbage-collected.
  */
 
 export const SCHEDULED_WAKE_NAMESPACE = 'workflow-wake';
+/** Idempotency-key prefix of a retained owner's sleep wake (core runtime). */
+export const RETAINED_SLEEP_WAKE_PREFIX = 'retained-wait:';
 const JITTER_MS = 60_000;
 const MINUTE_MS = 60_000;
 
@@ -45,11 +49,10 @@ export interface ScheduledWakes {
     topic: string;
     payload: unknown;
   }): Promise<void>;
-  cancel(idempotencyKey: string): Promise<void>;
 }
 
 export function createScheduledWakes(
-  client: Pick<SchedulesClient, 'create' | 'delete'> = new SchedulesClient()
+  client: Pick<SchedulesClient, 'create'> = new SchedulesClient()
 ): ScheduledWakes {
   return {
     async schedule({ idempotencyKey, wakeAt, topic, payload }) {
@@ -67,17 +70,6 @@ export function createScheduledWakes(
       } catch (error) {
         // The same wake (same key, same resumeAt) is already scheduled.
         if (error instanceof SchedulesApiError && error.status === 409) return;
-        throw error;
-      }
-    },
-    async cancel(idempotencyKey) {
-      try {
-        await client.delete({
-          name: scheduledWakeName(idempotencyKey),
-          namespace: SCHEDULED_WAKE_NAMESPACE,
-        });
-      } catch (error) {
-        if (error instanceof SchedulesApiError && error.status === 404) return;
         throw error;
       }
     },

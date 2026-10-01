@@ -1955,36 +1955,6 @@ it('wakes a short sleep from an in-owner timer and keeps the queued wake only as
   expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
 });
 
-it('passes the wait deadline as wakeAt and cancels the durable wake once the sleep completes', async () => {
-  registerStepFunction('sleepMark', async (label) => label);
-  const fixture = await setup(sleepCode);
-  const queued: Array<{ wakeAt?: Date; idempotencyKey?: string }> = [];
-  vi.spyOn(fixture.world, 'queue').mockImplementation(
-    async (_name, _message, options) => {
-      queued.push({
-        wakeAt: options?.wakeAt,
-        idempotencyKey: options?.idempotencyKey,
-      });
-      return { messageId: null };
-    }
-  );
-  const cancelled: string[] = [];
-  fixture.world.cancel = async (_name, key) => {
-    cancelled.push(key);
-  };
-  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
-  await fixture.finished;
-  expect(queued).toHaveLength(1);
-  expect(queued[0].wakeAt).toBeInstanceOf(Date);
-  const wait = fixture.owner.events.find(
-    (event) => event.eventType === 'wait_created'
-  );
-  expect(+queued[0].wakeAt!).toBe(
-    +(wait as { eventData: { resumeAt: Date } }).eventData.resumeAt
-  );
-  await vi.waitFor(() => expect(cancelled).toEqual([queued[0].idempotencyKey]));
-});
-
 it('times the remainder in-process when a durable wake arrives before the sleep is due', async () => {
   // The sleep starts beyond local-timer range, so only the durable wake can
   // resume it; that wake arrives early, as a Schedules pre-wake does.

@@ -1109,9 +1109,8 @@ export class RetainedRunner {
             const local = this.armLocalTimer(wakeKey);
             // The durable wake is always armed. With a local timer it is only a
             // backstop for a lost owner, scheduled after the timer should fire.
-            // `wakeAt` lets a World deliver it early instead; an early wake
-            // re-arms the local timer for the remainder (completeDueWaits).
-            const resumeAt = this.waitResumeAt(wakeKey);
+            // A World may deliver it early; the next pass re-arms the local
+            // timer for the remainder (completeDueWaits).
             await this.backend.queue(
               this.metadata.queueName,
               { runId: this.runId },
@@ -1121,8 +1120,7 @@ export class RetainedRunner {
                   ? Math.ceil(local.delayMs / 1000) +
                     LOCAL_TIMER_BACKSTOP_SECONDS
                   : handled.waitTimeout.seconds,
-                idempotencyKey: this.waitWakeKey(wakeKey),
-                ...(resumeAt ? { wakeAt: resumeAt } : {}),
+                idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
               }
             );
           }
@@ -1323,10 +1321,6 @@ export class RetainedRunner {
   /** Wake this owner in-process for a short sleep instead of waiting for the
    * queue. Only used when the wait ends well before the function deadline;
    * the queued wake remains the durable backstop. */
-  private waitWakeKey(waitId: string) {
-    return `retained-wait:${this.runId}:${waitId}`;
-  }
-
   private waitResumeAt(waitId: string): Date | undefined {
     let resumeAt: Date | undefined;
     for (const event of this.events)
@@ -1392,13 +1386,6 @@ export class RetainedRunner {
         clearTimeout(timer);
         this.localTimers.delete(id);
       }
-      // The durable wake is now redundant; dropping it is best-effort and off
-      // the critical path, since a stale wake is a harmless no-op.
-      const cancel = this.backend.cancel?.bind(this.backend);
-      if (cancel)
-        void cancel(this.metadata.queueName, this.waitWakeKey(id)).catch(
-          () => {}
-        );
     }
   }
 

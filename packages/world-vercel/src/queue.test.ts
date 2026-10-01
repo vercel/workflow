@@ -60,15 +60,14 @@ vi.mock('@vercel/queue', () => ({
   ConsumerDiscoveryError: MockConsumerDiscoveryError,
 }));
 
-const { mockScheduleCreate, mockScheduleDelete } = vi.hoisted(() => ({
+const { mockScheduleCreate } = vi.hoisted(() => ({
   mockScheduleCreate: vi.fn(),
-  mockScheduleDelete: vi.fn(),
 }));
 
 vi.mock('@vercel/schedules', () => ({
   // biome-ignore lint/complexity/useArrowFunction: needs to be newable
   SchedulesClient: vi.fn().mockImplementation(function () {
-    return { create: mockScheduleCreate, delete: mockScheduleDelete };
+    return { create: mockScheduleCreate };
   }),
   SchedulesApiError: class extends Error {
     constructor(
@@ -1581,10 +1580,10 @@ describe('scheduled timer wakes', () => {
   });
   afterEach(() => vi.unstubAllEnvs());
 
-  it('schedules a run wake with wakeAt instead of sending a delayed message', async () => {
+  it('schedules a retained sleep wake instead of sending a delayed message', async () => {
     mockScheduleCreate.mockResolvedValue({});
     const queue = createQueue();
-    const wakeAt = new Date(Date.now() + 30 * 60_000);
+    const before = Date.now();
     const result = await queue.queue(
       '__wkf_workflow_test',
       { runId: 'wrun_A' },
@@ -1592,7 +1591,6 @@ describe('scheduled timer wakes', () => {
         deploymentId: 'dpl_run',
         delaySeconds: 1800,
         idempotencyKey: 'retained-wait:wrun_A:wait_B',
-        wakeAt,
       }
     );
     expect(result).toEqual({ messageId: null });
@@ -1601,15 +1599,14 @@ describe('scheduled timer wakes', () => {
     const params = mockScheduleCreate.mock.calls[0][0];
     expect(params.name).toBe('retained-wait-wrun_A-wait_B');
     expect(params.target).toEqual({ topic: '__wkf_workflow_test' });
+    // Due in 30 min: the schedule fires one to two minutes before that.
+    const at = Date.parse(`${params.expression.at}:00Z`);
+    expect(at).toBeLessThanOrEqual(before + 1800_000 - 60_000);
+    expect(at).toBeGreaterThan(before + 1800_000 - 120_000 - 1000);
     expect(params.payload).toEqual({
       payload: { runId: 'wrun_A' },
       queueName: '__wkf_workflow_test',
       deploymentId: 'dpl_run',
-    });
-    await queue.cancel?.('__wkf_workflow_test', 'retained-wait:wrun_A:wait_B');
-    expect(mockScheduleDelete).toHaveBeenCalledWith({
-      name: 'retained-wait-wrun_A-wait_B',
-      namespace: 'workflow-wake',
     });
   });
 
@@ -1662,11 +1659,10 @@ describe('scheduled timer wakes', () => {
     vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '');
     mockSend.mockResolvedValue({ messageId: 'msg-1' });
     const queue = createQueue();
-    expect(queue.cancel).toBeUndefined();
     await queue.queue(
       '__wkf_workflow_test',
       { runId: 'wrun_A' },
-      { idempotencyKey: 'k', wakeAt: new Date(Date.now() + 600_000) }
+      { delaySeconds: 600, idempotencyKey: 'retained-wait:wrun_A:wait_B' }
     );
     expect(mockScheduleCreate).not.toHaveBeenCalled();
     expect(mockSend).toHaveBeenCalledTimes(1);

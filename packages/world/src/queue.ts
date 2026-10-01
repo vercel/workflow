@@ -477,15 +477,6 @@ export interface QueueOptions {
   headers?: Record<string, string>;
   /** Delay message delivery by this many seconds */
   delaySeconds?: number;
-  /**
-   * Absolute due time of a timer wake (for example a sleep's `resumeAt`).
-   *
-   * A World may deliver such a message before `wakeAt`: the receiver re-checks
-   * what is due and re-arms its own timer for the remainder. Worlds without a
-   * dedicated timer mechanism ignore it and honour `delaySeconds`. The
-   * `idempotencyKey` identifies the wake for {@link Queue.cancel}.
-   */
-  wakeAt?: Date;
   /** Spec version of the target run. Used to select the queue transport format. */
   specVersion?: number;
   /**
@@ -565,13 +556,6 @@ export interface Queue {
     message: QueuePayload,
     opts?: QueueOptions
   ): Promise<{ messageId: MessageId | null }>;
-
-  /**
-   * Best-effort cancellation of a pending timer wake previously queued with
-   * `wakeAt` and this `idempotencyKey`. Optional; a wake that is not cancelled
-   * is delivered and must be harmless. Resolves when nothing is pending.
-   */
-  cancel?(queueName: ValidQueueName, idempotencyKey: string): Promise<void>;
 
   /**
    * Enqueues several messages to the SAME logical queue in as few round trips

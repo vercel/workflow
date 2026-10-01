@@ -32,6 +32,7 @@ import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import {
   createScheduledWakes,
+  RETAINED_SLEEP_WAKE_PREFIX,
   scheduledWakesEnabled,
 } from './scheduled-wakes.js';
 import { getTraceContextHeaders } from './telemetry.js';
@@ -645,18 +646,20 @@ export function createQueue(config?: APIConfig): Queue {
     opts?: QueueOptions
   ) => {
     const prepared = prepareSend(queueName, payload, opts);
-    // Timer wakes for a run go through Vercel Schedules; the schedule
-    // publishes the same message to the run's flow topic, whose consumer
-    // relays it to the owner.
+    // A retained owner's sleep wake (identified by its idempotency key) goes
+    // through Vercel Schedules. The schedule publishes the same message to the
+    // run's flow topic, whose consumer relays it to the owner. It may arrive
+    // early; the owner times the remainder. Other delayed messages, such as
+    // step recovery wakes, need their delay honoured and stay on the queue.
     if (
       scheduledWakes &&
-      opts?.wakeAt &&
-      opts.idempotencyKey &&
+      opts?.delaySeconds &&
+      opts.idempotencyKey?.startsWith(RETAINED_SLEEP_WAKE_PREFIX) &&
       orchestrationRunId(payload)
     ) {
       await scheduledWakes.schedule({
         idempotencyKey: opts.idempotencyKey,
-        wakeAt: opts.wakeAt,
+        wakeAt: new Date(Date.now() + opts.delaySeconds * 1000),
         topic: prepared.topic,
         // Schedules deliver JSON; the handler's transport accepts it.
         payload: prepared.wrapper,
@@ -977,12 +980,6 @@ export function createQueue(config?: APIConfig): Queue {
   return {
     ...(invoke ? { invoke } : {}),
     queue,
-    ...(scheduledWakes
-      ? {
-          cancel: (_queueName: ValidQueueName, idempotencyKey: string) =>
-            scheduledWakes.cancel(idempotencyKey),
-        }
-      : {}),
     queueBatch,
     createQueueHandler,
     getDeploymentId,
