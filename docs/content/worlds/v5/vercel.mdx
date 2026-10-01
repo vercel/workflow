@@ -304,7 +304,7 @@ WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS=processOrder,syncInventory
 
 The override applies to the events channel the queue handler opens for each delivery of a listed workflow's run. The workflow name comes from the delivery's queue, so it covers the run's workflow and step invocations alike. `openEventsChannel(runId, config, { workflowName })` applies it to channels you open yourself; without `workflowName`, only `WORKFLOW_EVENTS_TRANSPORT=ws` opens one. When `WORKFLOW_EVENTS_TRANSPORT=ws` is set, every workflow already uses the WebSocket and the override has no effect.
 
-The setting is read when each delivery starts, so it takes effect on the next delivery after the deployment's environment changes, including for runs already in progress.
+Like other environment variables, the setting is fixed for each deployment, and a run stays on the deployment it started on. Changing it takes effect for runs started on the next deployment; runs already in progress keep the transport of the deployment they're pinned to.
 
 ### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
 
