@@ -1,6 +1,6 @@
 {
-  "lastUpdated": "2026-10-01T16:01:21.495Z",
-  "commit": "14dbfdc1f52e838854b6ee70398b742e4850e891",
+  "lastUpdated": "2026-10-01T16:35:32.993Z",
+  "commit": "479a78d28f5c1168479e56a7791ea5de70730098",
   "branch": "main",
   "type": "e2e",
   "worlds": {
@@ -24,10 +24,10 @@
     },
     "vercel": {
       "status": "passing",
-      "total": 4779,
-      "passed": 3904,
+      "total": 4602,
+      "passed": 3762,
       "failed": 0,
-      "skipped": 875,
+      "skipped": 840,
       "frameworks": {},
       "progress": 82
     }
