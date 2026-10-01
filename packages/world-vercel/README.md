@@ -144,6 +144,24 @@ owner/span identities and timing, not workflow payloads. `workflow.execution`
 reports replay versus retained VM passes. Older pinned runs retain their prior
 execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
 
+### Timer wakes on Vercel Schedules (experimental)
+
+With `WORKFLOW_SCHEDULED_WAKES=1`, a run wake queued with `wakeAt` and an
+`idempotencyKey` (for example a retained owner's sleep wake) becomes a one-time
+[Vercel Schedule](https://github.com/vercel/schedules) instead of a delayed
+queue message. The schedule publishes the same message wrapper, as JSON, to the
+run's flow topic; the flow route relays it to the owner like any other wake.
+
+One-time schedules have minute granularity and fire up to a minute late, so the
+schedule is set for `floorToMinute(wakeAt - 60 s)` (never before the next
+minute). It therefore arrives no later than `wakeAt` and at most two minutes
+early; the owner times the remainder in-process. Scheduler load can still delay
+a firing, which only lengthens the sleep. Schedules live in the
+`workflow-wake` namespace and are named after the idempotency key; an existing
+schedule with that name counts as scheduled. `Queue.cancel` deletes the
+schedule once the wait completes. Other messages, including step retry and
+recovery wakes, keep using the queue. Schedules must be enabled for the team.
+
 ### Owner-journal mode (experimental)
 
 `WORKFLOW_OWNER_JOURNAL=1` opts newly created retained-owner runs into

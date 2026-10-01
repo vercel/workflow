@@ -1109,6 +1109,9 @@ export class RetainedRunner {
             const local = this.armLocalTimer(wakeKey);
             // The durable wake is always armed. With a local timer it is only a
             // backstop for a lost owner, scheduled after the timer should fire.
+            // `wakeAt` lets a World deliver it early instead; an early wake
+            // re-arms the local timer for the remainder (completeDueWaits).
+            const resumeAt = this.waitResumeAt(wakeKey);
             await this.backend.queue(
               this.metadata.queueName,
               { runId: this.runId },
@@ -1118,7 +1121,8 @@ export class RetainedRunner {
                   ? Math.ceil(local.delayMs / 1000) +
                     LOCAL_TIMER_BACKSTOP_SECONDS
                   : handled.waitTimeout.seconds,
-                idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
+                idempotencyKey: this.waitWakeKey(wakeKey),
+                ...(resumeAt ? { wakeAt: resumeAt } : {}),
               }
             );
           }
@@ -1319,13 +1323,22 @@ export class RetainedRunner {
   /** Wake this owner in-process for a short sleep instead of waiting for the
    * queue. Only used when the wait ends well before the function deadline;
    * the queued wake remains the durable backstop. */
-  private armLocalTimer(waitId: string): { delayMs: number } | undefined {
-    const maxMs = localTimerMaxMs();
-    if (maxMs <= 0 || this.localTimers.has(waitId)) return undefined;
+  private waitWakeKey(waitId: string) {
+    return `retained-wait:${this.runId}:${waitId}`;
+  }
+
+  private waitResumeAt(waitId: string): Date | undefined {
     let resumeAt: Date | undefined;
     for (const event of this.events)
       if (event.eventType === 'wait_created' && event.correlationId === waitId)
-        resumeAt = event.eventData.resumeAt;
+        resumeAt = new Date(event.eventData.resumeAt);
+    return resumeAt;
+  }
+
+  private armLocalTimer(waitId: string): { delayMs: number } | undefined {
+    const maxMs = localTimerMaxMs();
+    if (maxMs <= 0 || this.localTimers.has(waitId)) return undefined;
+    const resumeAt = this.waitResumeAt(waitId);
     if (!resumeAt) return undefined;
     const delayMs = Math.max(0, +resumeAt - Date.now());
     // A pending local timer keeps the owner loop alive past its idle window.
@@ -1362,13 +1375,31 @@ export class RetainedRunner {
       if (event.eventType === 'wait_completed')
         pending.delete(event.correlationId);
     }
-    for (const [id, at] of pending)
-      if (+at <= Date.now())
-        await this.commit({
-          eventType: 'wait_completed',
-          correlationId: id,
-          specVersion: SPEC_VERSION_CURRENT,
-        });
+    for (const [id, at] of pending) {
+      if (+at > Date.now()) {
+        // An early durable wake (or any other input) may arrive once the wait
+        // is within local-timer range: time the remainder in-process.
+        this.armLocalTimer(id);
+        continue;
+      }
+      await this.commit({
+        eventType: 'wait_completed',
+        correlationId: id,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      const timer = this.localTimers.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        this.localTimers.delete(id);
+      }
+      // The durable wake is now redundant; dropping it is best-effort and off
+      // the critical path, since a stale wake is a harmless no-op.
+      const cancel = this.backend.cancel?.bind(this.backend);
+      if (cancel)
+        void cancel(this.metadata.queueName, this.waitWakeKey(id)).catch(
+          () => {}
+        );
+    }
   }
 
   private async receiveStepInput(value: unknown, deferAdvance = false) {

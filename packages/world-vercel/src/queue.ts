@@ -30,6 +30,10 @@ import {
 import { logInvocationRouting } from './invocation-diagnostics.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
+import {
+  createScheduledWakes,
+  scheduledWakesEnabled,
+} from './scheduled-wakes.js';
 import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
@@ -155,6 +159,13 @@ class DualTransport implements Transport<unknown> {
       if (value) chunks.push(value);
     }
     const buffer = Buffer.concat(chunks);
+    // `{` is a short CBOR text string, never a message wrapper, so a leading
+    // brace means JSON (for example a message published by Vercel Schedules).
+    if (buffer[0] === 0x7b) {
+      try {
+        return JSON.parse(buffer.toString());
+      } catch {}
+    }
     try {
       return cborDecode(buffer);
     } catch {
@@ -603,12 +614,34 @@ export function createQueue(config?: APIConfig): Queue {
       transport: route.useCbor ? cborTransport : jsonTransport,
     });
 
+  const scheduledWakes = scheduledWakesEnabled()
+    ? createScheduledWakes()
+    : undefined;
+
   const queue: QueueFunction = async (
     queueName,
     payload,
     opts?: QueueOptions
   ) => {
     const prepared = prepareSend(queueName, payload, opts);
+    // Timer wakes for a run go through Vercel Schedules; the schedule
+    // publishes the same message to the run's flow topic, whose consumer
+    // relays it to the owner.
+    if (
+      scheduledWakes &&
+      opts?.wakeAt &&
+      opts.idempotencyKey &&
+      orchestrationRunId(payload)
+    ) {
+      await scheduledWakes.schedule({
+        idempotencyKey: opts.idempotencyKey,
+        wakeAt: opts.wakeAt,
+        topic: prepared.topic,
+        // Schedules deliver JSON; the handler's transport accepts it.
+        payload: prepared.wrapper,
+      });
+      return { messageId: null };
+    }
     const client = clientFor(prepared);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
@@ -923,6 +956,12 @@ export function createQueue(config?: APIConfig): Queue {
   return {
     ...(invoke ? { invoke } : {}),
     queue,
+    ...(scheduledWakes
+      ? {
+          cancel: (_queueName: ValidQueueName, idempotencyKey: string) =>
+            scheduledWakes.cancel(idempotencyKey),
+        }
+      : {}),
     queueBatch,
     createQueueHandler,
     getDeploymentId,

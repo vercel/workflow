@@ -88,3 +88,10 @@ in-process timer that enters the same mailbox and completes the wait without a
 queue round trip. The durable wake is then scheduled 15 s after `resumeAt` as a
 backstop for a lost owner; when it arrives after the timer it is a no-op. A
 pending local timer keeps the owner alive past its idle window.
+
+The durable wake carries the sleep's `resumeAt` as `wakeAt`, so a World with a
+coarser timer service may deliver it early. Each owner pass re-arms the local
+timer for any pending wait that is now within range, so an early wake (to a
+live or a newly started owner) completes the sleep at local-timer precision.
+When a wait completes, the owner cancels its durable wake best-effort through
+the optional `Queue.cancel`.

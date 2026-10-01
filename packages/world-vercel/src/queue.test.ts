@@ -60,6 +60,26 @@ vi.mock('@vercel/queue', () => ({
   ConsumerDiscoveryError: MockConsumerDiscoveryError,
 }));
 
+const { mockScheduleCreate, mockScheduleDelete } = vi.hoisted(() => ({
+  mockScheduleCreate: vi.fn(),
+  mockScheduleDelete: vi.fn(),
+}));
+
+vi.mock('@vercel/schedules', () => ({
+  // biome-ignore lint/complexity/useArrowFunction: needs to be newable
+  SchedulesClient: vi.fn().mockImplementation(function () {
+    return { create: mockScheduleCreate, delete: mockScheduleDelete };
+  }),
+  SchedulesApiError: class extends Error {
+    constructor(
+      readonly status: number,
+      message: string
+    ) {
+      super(message);
+    }
+  },
+}));
+
 vi.mock('./utils.js', () => ({
   getHttpUrl: vi
     .fn()
@@ -1550,5 +1570,72 @@ describe('queueBatch trace propagation', () => {
       // The kill switch is trace-only; message routing headers stay.
       expect(headers?.['x-vercel-workflow-run-id']).toBe('wrun_trace');
     }
+  });
+});
+
+describe('scheduled timer wakes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '1');
+    vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_test');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('schedules a run wake with wakeAt instead of sending a delayed message', async () => {
+    mockScheduleCreate.mockResolvedValue({});
+    const queue = createQueue();
+    const wakeAt = new Date(Date.now() + 30 * 60_000);
+    const result = await queue.queue(
+      '__wkf_workflow_test',
+      { runId: 'wrun_A' },
+      {
+        deploymentId: 'dpl_run',
+        delaySeconds: 1800,
+        idempotencyKey: 'retained-wait:wrun_A:wait_B',
+        wakeAt,
+      }
+    );
+    expect(result).toEqual({ messageId: null });
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockScheduleCreate).toHaveBeenCalledTimes(1);
+    const params = mockScheduleCreate.mock.calls[0][0];
+    expect(params.name).toBe('retained-wait-wrun_A-wait_B');
+    expect(params.target).toEqual({ topic: '__wkf_workflow_test' });
+    expect(params.payload).toEqual({
+      payload: { runId: 'wrun_A' },
+      queueName: '__wkf_workflow_test',
+      deploymentId: 'dpl_run',
+    });
+    await queue.cancel?.('__wkf_workflow_test', 'retained-wait:wrun_A:wait_B');
+    expect(mockScheduleDelete).toHaveBeenCalledWith({
+      name: 'retained-wait-wrun_A-wait_B',
+      namespace: 'workflow-wake',
+    });
+  });
+
+  it('keeps step messages and wakes without wakeAt on the queue', async () => {
+    mockSend.mockResolvedValue({ messageId: 'msg-1' });
+    const queue = createQueue();
+    await queue.queue(
+      '__wkf_workflow_test',
+      { runId: 'wrun_A' },
+      { delaySeconds: 5, idempotencyKey: 'step-recovery:wrun_A:x' }
+    );
+    expect(mockScheduleCreate).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('is off without WORKFLOW_SCHEDULED_WAKES', async () => {
+    vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '');
+    mockSend.mockResolvedValue({ messageId: 'msg-1' });
+    const queue = createQueue();
+    expect(queue.cancel).toBeUndefined();
+    await queue.queue(
+      '__wkf_workflow_test',
+      { runId: 'wrun_A' },
+      { idempotencyKey: 'k', wakeAt: new Date(Date.now() + 600_000) }
+    );
+    expect(mockScheduleCreate).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });

@@ -1620,6 +1620,9 @@ importers:
       '@vercel/queue':
         specifier: 'catalog:'
         version: 0.5.1(@opentelemetry/api@1.9.1)
+      '@vercel/schedules':
+        specifier: 0.0.0-alpha.11
+        version: 0.0.0-alpha.11
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -10315,6 +10318,10 @@ packages:
 
   '@vercel/routing-utils@5.3.3':
     resolution: {integrity: sha512-KYm2sLNUD48gDScv8ob4ejc3Gww2jcJyW80hTdYlenAPz/5BQar1Gyh38xrUuZ532TUwSb5mV1uRbAuiykq0EQ==}
+
+  '@vercel/schedules@0.0.0-alpha.11':
+    resolution: {integrity: sha512-wu2YwHwO+GMW/0ou8l+5749zvV1eNdJNQrD+juTcsaIqcuksAnaXDSlmG/qAJZhLcIy+cSgURhdGqpLpSXrV5g==}
+    engines: {node: '>=20.0.0'}
 
   '@vercel/speed-insights@1.3.1':
     resolution: {integrity: sha512-PbEr7FrMkUrGYvlcLHGkXdCkxnylCWePx7lPxxq36DNdfo9mcUjLOmqOyPDHAOgnfqgGGdmE3XI9L/4+5fr+vQ==}
@@ -27133,6 +27140,10 @@ snapshots:
       path-to-regexp-updated: path-to-regexp@6.3.0
     optionalDependencies:
       ajv: 6.12.6
+
+  '@vercel/schedules@0.0.0-alpha.11':
+    dependencies:
+      '@vercel/oidc': 3.8.2
 
   '@vercel/speed-insights@1.3.1(@sveltejs/kit@2.69.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.1.2(svelte@5.56.4(@typescript-eslint/types@8.46.4))(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)))(svelte@5.56.4(@typescript-eslint/types@8.46.4))(typescript@6.0.3)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)))(next@16.3.3(@babel/core@7.29.0(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(svelte@5.56.4(@typescript-eslint/types@8.46.4))(vue-router@4.6.3(vue@3.5.35(typescript@6.0.3)))(vue@3.5.35(typescript@6.0.3))':
     optionalDependencies:

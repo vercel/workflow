@@ -1955,6 +1955,111 @@ it('wakes a short sleep from an in-owner timer and keeps the queued wake only as
   expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
 });
 
+it('passes the wait deadline as wakeAt and cancels the durable wake once the sleep completes', async () => {
+  registerStepFunction('sleepMark', async (label) => label);
+  const fixture = await setup(sleepCode);
+  const queued: Array<{ wakeAt?: Date; idempotencyKey?: string }> = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      queued.push({
+        wakeAt: options?.wakeAt,
+        idempotencyKey: options?.idempotencyKey,
+      });
+      return { messageId: null };
+    }
+  );
+  const cancelled: string[] = [];
+  fixture.world.cancel = async (_name, key) => {
+    cancelled.push(key);
+  };
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.finished;
+  expect(queued).toHaveLength(1);
+  expect(queued[0].wakeAt).toBeInstanceOf(Date);
+  const wait = fixture.owner.events.find(
+    (event) => event.eventType === 'wait_created'
+  );
+  expect(+queued[0].wakeAt!).toBe(
+    +(wait as { eventData: { resumeAt: Date } }).eventData.resumeAt
+  );
+  await vi.waitFor(() => expect(cancelled).toEqual([queued[0].idempotencyKey]));
+});
+
+it('times the remainder in-process when a durable wake arrives before the sleep is due', async () => {
+  // The sleep starts beyond local-timer range, so only the durable wake can
+  // resume it; that wake arrives early, as a Schedules pre-wake does.
+  vi.stubEnv('WORKFLOW_RETAINED_LOCAL_TIMER_MS', '300');
+  cleanups.push(async () => vi.unstubAllEnvs());
+  const marks: Array<{ label: string; at: number }> = [];
+  registerStepFunction('sleepMark', async (label) => {
+    marks.push({ label: label as string, at: Date.now() });
+    return label;
+  });
+  const fixture = await setup(sleepCode);
+  const queued: string[] = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      queued.push(options?.idempotencyKey ?? '');
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await vi.waitFor(() => expect(queued).toHaveLength(1));
+  await fixture.finished;
+  expect(marks.map((m) => m.label)).toEqual(['before']);
+  // Early wake: about 250 ms of the 400 ms sleep remain.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const owner = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    sleepCode,
+    fixture.metadata,
+    () => {},
+    40
+  );
+  await owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('early-wake') }
+  );
+  await vi.waitFor(
+    () => expect(marks.map((m) => m.label)).toEqual(['before', 'after']),
+    { timeout: 5000 }
+  );
+  expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
+it('re-arms the in-owner timer when a live owner receives an early wake', async () => {
+  vi.stubEnv('WORKFLOW_RETAINED_LOCAL_TIMER_MS', '300');
+  cleanups.push(async () => vi.unstubAllEnvs());
+  const marks: Array<{ label: string; at: number }> = [];
+  registerStepFunction('sleepMark', async (label) => {
+    marks.push({ label: label as string, at: Date.now() });
+    return label;
+  });
+  // A long idle window keeps the owner alive until the early wake arrives.
+  const fixture = await setup(sleepCode, false, false, 2000);
+  vi.spyOn(fixture.world, 'queue').mockResolvedValue({ messageId: null });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await vi.waitFor(() => expect(marks).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await fixture.owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('early-wake') }
+  );
+  await vi.waitFor(
+    () => expect(marks.map((m) => m.label)).toEqual(['before', 'after']),
+    { timeout: 5000 }
+  );
+  expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
+  // Woken by its own timer, well before the 2 s idle window would end.
+  expect(marks[1].at - marks[0].at).toBeLessThan(1500);
+  await fixture.finished;
+});
+
 it('uses the queued wake when local timers are disabled', async () => {
   vi.stubEnv('WORKFLOW_RETAINED_LOCAL_TIMER_MS', '0');
   cleanups.push(async () => vi.unstubAllEnvs());

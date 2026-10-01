@@ -37,6 +37,7 @@
     "@vercel/functions": "catalog:",
     "@vercel/oidc": "catalog:",
     "@vercel/queue": "catalog:",
+    "@vercel/schedules": "0.0.0-alpha.11",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
