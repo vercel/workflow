@@ -34,6 +34,43 @@ import {
 import type { StartOptions } from './start.js';
 
 /**
+ * The error `start()` throws when it refuses a dynamic start before anything
+ * is written: invalid source or options, the opt-in, the target deployment,
+ * the World's capability, or its execution-context limit.
+ *
+ * Each refusal is deterministic, so retrying the same `start()` fails the same
+ * way. `fatal` is what tells the step executor so when `start()` runs inside
+ * a step: without it the step spends its retry budget on a refusal, then
+ * replaces the message with its retry-exhaustion wrapper. The type and message
+ * are otherwise a plain `WorkflowRuntimeError`. See `FatalError.is()`.
+ */
+export function dynamicStartRefusal(
+  message: string,
+  options?: ErrorOptions
+): WorkflowRuntimeError & { fatal: true } {
+  return Object.assign(new WorkflowRuntimeError(message, options), {
+    fatal: true as const,
+  });
+}
+
+/**
+ * The refusal for an error thrown by a World's `validateRunExecutionContext`;
+ * the World contract makes that throw the start's refusal, whatever it threw.
+ *
+ * A fresh error carrying the World's message, with the original as `cause`,
+ * rather than a `fatal` flag set on the World's own object: that object may be
+ * frozen, shared across calls, or not an `Error` at all.
+ */
+export function dynamicStartRefusalFrom(
+  error: unknown
+): WorkflowRuntimeError & { fatal: true } {
+  return dynamicStartRefusal(
+    error instanceof Error ? error.message : String(error),
+    { cause: error }
+  );
+}
+
+/**
  * A step exposed to dynamic source.
  *
  * Either an imported step function, or an explicit `{ stepId }` for a step
@@ -157,7 +194,7 @@ const UNSUPPORTED_DYNAMIC_MODULE_SYNTAX =
 
 function assertDynamicWorkflowIdentifier(kind: string, value: string): void {
   if (!SAFE_DYNAMIC_IDENTIFIER.test(value)) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Invalid dynamic workflow ${kind} ${JSON.stringify(value)}. Use a valid JavaScript identifier: letters, digits, "_" and "$", not starting with a digit.`
     );
   }
@@ -206,7 +243,7 @@ function parseDynamicWorkflowSource(source: string): Program {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Dynamic workflow source is not valid JavaScript: ${message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or module declarations.`
     );
   }
@@ -220,7 +257,7 @@ function assertGeneratedWorkflowCodeParses(workflowCode: string): void {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Generated dynamic workflow code is not valid JavaScript: ${message}.`
     );
   }
@@ -232,13 +269,13 @@ function validateDynamicWorkflowSource(
 ): void {
   const byteLength = new TextEncoder().encode(source).byteLength;
   if (byteLength > DYNAMIC_WORKFLOW_SOURCE_MAX_BYTES) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Dynamic workflow source is ${byteLength} bytes, over the ${DYNAMIC_WORKFLOW_SOURCE_MAX_BYTES}-byte limit.`
     );
   }
 
   if (UNSUPPORTED_DYNAMIC_MODULE_SYNTAX.test(source)) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       'Dynamic workflow source cannot use `import` or `export`. Reach registered steps through the injected `steps` object instead.'
     );
   }
@@ -250,7 +287,7 @@ function validateDynamicWorkflowSource(
   );
   const declaration = declarations.length === 1 ? declarations[0] : undefined;
   if (!declaration || !declaration.async || declaration.generator) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Dynamic workflow source must declare \`async function ${exportName}(...)\` at top level.`
     );
   }
@@ -262,7 +299,7 @@ function validateDynamicWorkflowSource(
     firstStatement?.type !== 'ExpressionStatement' ||
     firstStatement.directive !== 'use workflow'
   ) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Dynamic workflow function ${JSON.stringify(exportName)} must open with a "use workflow" directive.`
     );
   }
@@ -272,7 +309,7 @@ function validateDynamicWorkflowSource(
   // workflow VM, as ordinary (and non-deterministic) workflow code. Steps
   // come from `experimental_dynamic.steps` only.
   if (/(?:"use step"|'use step')/.test(source)) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `experimental_dynamic.steps` instead.'
     );
   }
@@ -285,7 +322,7 @@ function resolveStepId(alias: string, value: unknown): string {
       : undefined;
 
   if (typeof stepId !== 'string' || stepId.length === 0) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Dynamic workflow step ${JSON.stringify(alias)} must be an imported step function or an object with a non-empty \`stepId\`.`
     );
   }
@@ -333,14 +370,14 @@ export async function compileDynamicWorkflow(
   const exportName = options.exportName ?? 'workflow';
   assertDynamicWorkflowIdentifier('exportName', exportName);
   if (!SAFE_DYNAMIC_EXPORT_NAME.test(exportName)) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       `Invalid dynamic workflow exportName ${JSON.stringify(exportName)}. Use letters, digits, and "_", not starting with a digit; "$" cannot appear in workflow queue names.`
     );
   }
   validateDynamicWorkflowSource(source, exportName);
 
   if (!options.steps || Object.keys(options.steps).length === 0) {
-    throw new WorkflowRuntimeError(
+    throw dynamicStartRefusal(
       'Dynamic workflow options must expose at least one registered step through `experimental_dynamic.steps`.'
     );
   }
