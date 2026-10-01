@@ -1111,17 +1111,23 @@ export class RetainedRunner {
             // backstop for a lost owner, scheduled after the timer should fire.
             // A World may deliver it early; the next pass re-arms the local
             // timer for the remainder (completeDueWaits).
-            await this.backend.queue(
-              this.metadata.queueName,
-              { runId: this.runId },
-              {
-                deploymentId: this.runState.deploymentId,
-                delaySeconds: local
-                  ? Math.ceil(local.delayMs / 1000) +
-                    LOCAL_TIMER_BACKSTOP_SECONDS
-                  : handled.waitTimeout.seconds,
-                idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
-              }
+            const delaySeconds = local
+              ? Math.ceil(local.delayMs / 1000) + LOCAL_TIMER_BACKSTOP_SECONDS
+              : handled.waitTimeout.seconds;
+            const runState = this.runState;
+            await this.observed(
+              'durable_wake',
+              () =>
+                this.backend.queue(
+                  this.metadata.queueName,
+                  { runId: this.runId },
+                  {
+                    deploymentId: runState.deploymentId,
+                    delaySeconds,
+                    idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
+                  }
+                ),
+              { waitId: wakeKey, delaySeconds, localTimer: Boolean(local) }
             );
           }
         }
