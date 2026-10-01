@@ -327,4 +327,6 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - CLI flag: none
 - Default: `12582912` (12 MiB)
 - Clamp: `2097152` to `16777216` (values outside are clamped, with a warning)
-- Largest events WebSocket message, header included. A larger frame is sent as several messages and rebuilt on the other side. The ceiling is the 16 MiB WebSocket message limit.
+- Largest WebSocket message the Vercel World sends, header included, for both the events and stream-write transports. The ceiling is the 16 MiB WebSocket message limit.
+- Events: a larger frame is sent as several messages and rebuilt on the other side.
+- Stream writes: a larger write group is split into several ordered write requests; a single chunk too large for one message is written over HTTP, as are the rest of that writer's writes.
