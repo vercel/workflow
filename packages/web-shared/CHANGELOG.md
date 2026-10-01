@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 4.1.26
+
+### Patch Changes
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add a `DataView` reviver so run payloads containing one still hydrate in the observability UI and CLI.
+  </content>
+- Updated dependencies [[`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984), [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb), [`bc6a97f`](https://github.com/vercel/workflow/commit/bc6a97f110da76d768df5f1cc51794396c0d8d1d), [`b23170d`](https://github.com/vercel/workflow/commit/b23170d63c8215e4ea15bdcb1e675dc0a9f7931b), [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1)]:
+  - @workflow/core@4.8.10
+
 ## 4.1.25
 
 ### Patch Changes

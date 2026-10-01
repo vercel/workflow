@@ -17,6 +17,7 @@ import {
   type Step,
   StepInvokePayloadSchema,
 } from '@workflow/world';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -90,8 +91,9 @@ const stepHandler = createQueueHandler(
     // This prevents runaway steps from consuming infinite queue deliveries.
     // At this point, we want to do the minimal amount of work (no fetching
     // of the step details, etc. We simply attempt to mark the step as failed
-    // and enqueue the workflow once, and if either of those fails, the message
-    // is still consumed but with adequate logging that an error occurred.
+    // and enqueue the workflow once. A transient failure of either throws so
+    // the queue retries it; a definitive step_failed rejection consumes the
+    // message with adequate logging that an error occurred.
     if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
       runtimeLogger.error(
         `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
@@ -102,8 +104,8 @@ const stepHandler = createQueueHandler(
           attempt: metadata.attempt,
         }
       );
+      const world = getWorld();
       try {
-        const world = getWorld();
         await world.events.create(
           workflowRunId,
           {
@@ -117,36 +119,62 @@ const stepHandler = createQueueHandler(
           },
           { requestId }
         );
-        // Re-queue the workflow to handle the failed step
-        await queueMessage(
-          world,
-          getWorkflowQueueName(workflowName, stepNamespace),
-          {
-            runId: workflowRunId,
-            traceCarrier: await serializeTraceCarrier(),
-            requestedAt: new Date(),
-          }
-        );
       } catch (err) {
-        if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+        if (RunExpiredError.is(err)) {
           return;
         }
-        // Can't even mark the step as failed. Consume the message to stop
-        // further retries. The run will remain in its current state.
-        runtimeLogger.error(
-          `Failed to mark step as failed after ${metadata.attempt} delivery attempts. ` +
-            `A persistent error is preventing the step from being terminated. ` +
-            `The run will remain in its current state until manually resolved. ` +
-            `This is most likely due to a persistent outage of the workflow backend ` +
-            `or a bug in the workflow runtime and should be reported to the Workflow team.`,
-          {
-            workflowRunId,
-            stepId,
-            attempt: metadata.attempt,
-            error: err instanceof Error ? err.message : String(err),
+        // EntityConflictError: the step is already terminal. That may be this
+        // message's own earlier delivery, which wrote step_failed and then
+        // failed to re-queue the workflow below, so fall through and re-queue
+        // it. An extra wake only costs one replay.
+        if (!EntityConflictError.is(err)) {
+          // A transient backend failure (429 / 5xx / transport) must not
+          // abandon the run: acking here leaves it `running` with no message
+          // left to drive it. Throw so the queue redelivers. The redelivery
+          // is still past the ceiling, so it only retries this write and
+          // never re-runs the step body.
+          if (isRetryableWorldError(err)) {
+            runtimeLogger.warn(
+              'Transient error marking step as failed after max deliveries, retrying via queue redelivery',
+              {
+                workflowRunId,
+                stepId,
+                attempt: metadata.attempt,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+            throw err;
           }
-        );
+          // Can't even mark the step as failed. Consume the message to stop
+          // further retries. The run will remain in its current state.
+          runtimeLogger.error(
+            `Failed to mark step as failed after ${metadata.attempt} delivery attempts. ` +
+              `A persistent error is preventing the step from being terminated. ` +
+              `The run will remain in its current state until manually resolved. ` +
+              `This is most likely due to a persistent outage of the workflow backend ` +
+              `or a bug in the workflow runtime and should be reported to the Workflow team.`,
+            {
+              workflowRunId,
+              stepId,
+              attempt: metadata.attempt,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          );
+          return;
+        }
       }
+      // Re-queue the workflow to handle the failed step. A failure here
+      // throws so the queue redelivers: acking would leave the step failed
+      // with no message left to wake the workflow.
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowName, stepNamespace),
+        {
+          runId: workflowRunId,
+          traceCarrier: await serializeTraceCarrier(),
+          requestedAt: new Date(),
+        }
+      );
       return;
     }
 

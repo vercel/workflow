@@ -1,5 +1,26 @@
 # @workflow/core
 
+## 4.8.10
+
+### Patch Changes
+
+- [#4176](https://github.com/vercel/workflow/pull/4176) [`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix an unhandled rejection that could exit the process when the encryption-key lookup for a forwarded writable stream failed (for example a run metadata read that timed out) before anything was written to that stream. The lookup now starts on the first write, and a failure rejects that stream instead.
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serialize a `DataView` as the bytes it views. It previously fell through to devalue's built-in encoding, which persists the whole backing `ArrayBuffer` — for a view onto Node's pooled `Buffer` allocator, unrelated process memory.
+
+- [#4422](https://github.com/vercel/workflow/pull/4422) [`bc6a97f`](https://github.com/vercel/workflow/commit/bc6a97f110da76d768df5f1cc51794396c0d8d1d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Retry the max-deliveries `run_failed`/`step_failed` write and the step handler's workflow re-queue through queue redelivery when they fail transiently (429, 5xx, transport) instead of acking and leaving the run stuck `running`.
+
+- [#4408](https://github.com/vercel/workflow/pull/4408) [`b23170d`](https://github.com/vercel/workflow/commit/b23170d63c8215e4ea15bdcb1e675dc0a9f7931b) Thanks [@pranaygp](https://github.com/pranaygp)! - `start()` with an explicit `deploymentId` (and so `recreateRunFromExisting`, i.e. Replay Run) no longer fails in a process that is not itself a deployment; it takes the cross-deployment path instead.
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, and make `FatalError.is()` honor the `fatal` marker, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+
+- [#4179](https://github.com/vercel/workflow/pull/4179) [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Route unrecognized backend connection and stream failures through existing retry policies, rebuilding shared event connections after repeated HTTP/2 failures. Keep invalid backend URLs, blocked ports, and unsupported request headers out of those retries. Include error cause chains in run-failure logs to expose underlying socket, DNS, and TLS failures.
+
+- Updated dependencies [[`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77), [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1), [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77)]:
+  - @workflow/world-vercel@4.7.5
+  - @workflow/errors@4.2.2
+  - @workflow/world-local@4.4.2
+
 ## 4.8.9
 
 ### Patch Changes
