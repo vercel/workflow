@@ -588,6 +588,16 @@ export class RetainedRunner {
         ...details,
         status: 'error',
         elapsedMs: performance.now() - started,
+        errorName: error instanceof Error ? error.name : typeof error,
+        // Infrastructure calls only: never user step or workflow errors.
+        ...(phase === 'durable_wake'
+          ? {
+              errorMessage: String((error as Error)?.message ?? error).slice(
+                0,
+                256
+              ),
+            }
+          : {}),
       });
       throw error;
     }

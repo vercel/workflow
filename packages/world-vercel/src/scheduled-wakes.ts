@@ -17,6 +17,7 @@ export const SCHEDULED_WAKE_NAMESPACE = 'workflow-wake';
 export const RETAINED_SLEEP_WAKE_PREFIX = 'retained-wait:';
 const JITTER_MS = 60_000;
 const MINUTE_MS = 60_000;
+const CREATE_MARGIN_MS = 30_000;
 
 export function scheduledWakesEnabled(): boolean {
   return process.env.WORKFLOW_SCHEDULED_WAKES === '1';
@@ -25,9 +26,9 @@ export function scheduledWakesEnabled(): boolean {
 /** Earliest-safe firing minute for a wake due at `wakeAt`, never in the past. */
 export function scheduledWakeMinute(wakeAt: Date, now = Date.now()): Date {
   const floored = Math.floor((+wakeAt - JITTER_MS) / MINUTE_MS) * MINUTE_MS;
-  // A minute that has already started may be rejected or skipped; the next
-  // one is the earliest firing the scheduler can honour.
-  const earliest = Math.ceil((now + 1) / MINUTE_MS) * MINUTE_MS;
+  // The minute must still be in the future when the create request lands
+  // (it can take seconds), so keep at least CREATE_MARGIN_MS of headroom.
+  const earliest = Math.ceil((now + CREATE_MARGIN_MS) / MINUTE_MS) * MINUTE_MS;
   return new Date(Math.max(floored, earliest));
 }
 

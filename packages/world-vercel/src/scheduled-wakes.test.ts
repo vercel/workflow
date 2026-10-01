@@ -23,13 +23,19 @@ describe('scheduledWakeMinute', () => {
     }
   });
 
-  it('uses the next minute when the early minute has already started', () => {
+  it('uses the next minute at least 30 s away when the early minute is too close', () => {
     const now = +at('2026-10-01T12:00:20Z');
     expect(scheduledWakeMinute(at('2026-10-01T12:00:50Z'), now)).toEqual(
       at('2026-10-01T12:01:00Z')
     );
     expect(scheduledWakeMinute(at('2026-10-01T12:02:30Z'), now)).toEqual(
       at('2026-10-01T12:01:00Z')
+    );
+    // Two seconds before a minute boundary: that minute would be in the past
+    // by the time a slow create request lands, so the one after is used.
+    const late = +at('2026-10-01T12:00:58Z');
+    expect(scheduledWakeMinute(at('2026-10-01T12:01:08Z'), late)).toEqual(
+      at('2026-10-01T12:02:00Z')
     );
   });
 });
