@@ -14,7 +14,8 @@ See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/erro
 
 ## Events channel
 
-With `WORKFLOW_EVENTS_TRANSPORT=ws` (opt-in; the default is HTTP), event
+With `WORKFLOW_EVENTS_TRANSPORT=ws` (opt-in; the default is HTTP), or for
+the workflows listed in `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`, event
 writes go over a per-run WebSocket only while that run's channel is open. The
 queue handler opens it for each delivery, so workflows need nothing extra. Code that writes a run's events
 outside a delivery (a custom driver, a long-lived process) opens and releases

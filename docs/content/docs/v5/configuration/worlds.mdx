@@ -321,6 +321,15 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Set to `ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Only `ws` (case-insensitive) opts in; any other value, including unset, empty, or `http`, keeps HTTP.
 - Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
 
+### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
+
+- Factory option: none
+- CLI flag: none
+- Default: none
+- Comma-separated workflows whose runs use the WebSocket events transport even when `WORKFLOW_EVENTS_TRANSPORT` is `http` or unset. Each entry is a function name (`processOrder`) or a full workflow name (`workflow//./src/workflows/order//processOrder`), matched exactly and case-sensitively.
+- Has no effect when `WORKFLOW_EVENTS_TRANSPORT=ws`, which already enables every workflow.
+- See [`WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`](/worlds/vercel#workflow_events_transport_ws_override_workflows) for details.
+
 ### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
 
 - Factory option: none
