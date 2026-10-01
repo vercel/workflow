@@ -41,6 +41,7 @@ import {
   hydrateStepArguments,
   hydrateStepError,
 } from '../serialization.js';
+import { setErrorStack } from '../set-error-stack.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { recordStepExecutionDuration, trace } from '../telemetry.js';
@@ -1350,7 +1351,7 @@ export async function executeStep(
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
         if (types.isNativeError(effectiveErr) && normalizedStack) {
-          (effectiveErr as Error).stack = normalizedStack;
+          setErrorStack(effectiveErr, normalizedStack);
         }
         try {
           await createEvent({
@@ -1482,7 +1483,7 @@ export async function executeStep(
       // serialization. See the FatalError site above for why we use
       // `types.isNativeError` instead of `err instanceof Error`.
       if (types.isNativeError(err) && normalizedStack) {
-        (err as Error).stack = normalizedStack;
+        setErrorStack(err, normalizedStack);
       }
       try {
         await createEvent({

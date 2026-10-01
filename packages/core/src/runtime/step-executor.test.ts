@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { FatalError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
@@ -988,5 +989,95 @@ describe('executeStep — unserializable-argument placeholder guard', () => {
 
     expect(result.type).toBe('completed');
     expect(bodyRuns).toBe(1);
+  });
+});
+
+describe('executeStep — thrown errors with a read-only stack', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  // postgres.js decorates query errors this way: `Object.defineProperties`
+  // with only `value` turns `stack` into a non-writable data property, so
+  // assigning to it throws in strict mode.
+  function readOnlyStackError<T extends Error>(error: T): T {
+    Object.defineProperties(error, {
+      stack: { value: `${error.stack}\n    at query (db.js:1:1)` },
+    });
+    return error;
+  }
+
+  async function runThrowingStep(makeError: () => Error) {
+    const world = makeWorld();
+    setWorld(world);
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async () => {
+          throw makeError();
+        },
+        { maxRetries: MAX_RETRIES }
+      )
+    );
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    return { world, runId, stepId, result };
+  }
+
+  async function hydratedErrorOf(
+    world: World,
+    runId: string,
+    stepId: string,
+    eventType: 'step_retrying' | 'step_failed'
+  ): Promise<Error> {
+    const events = await eventsFor(world, runId, stepId, eventType);
+    expect(events).toHaveLength(1);
+    return (await hydrateStepError(
+      (events[0].eventData as { error: unknown }).error,
+      runId,
+      undefined
+    )) as Error;
+  }
+
+  it('records a retry with the original error', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      readOnlyStackError(new Error('relation "embeddings" does not exist'))
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe('relation "embeddings" does not exist');
+  });
+
+  it('records a fatal failure with the original error', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      readOnlyStackError(new FatalError('constraint violated'))
+    );
+
+    expect(result.type).toBe('failed');
+    expect(await eventsFor(world, runId, stepId, 'step_retrying')).toHaveLength(
+      0
+    );
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(hydrated.message).toBe('constraint violated');
   });
 });
