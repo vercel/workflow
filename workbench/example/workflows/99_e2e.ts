@@ -4446,6 +4446,102 @@ const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
       accountId: 'acct-globex',
     },
   ],
+  // Acme is valid; every other company has a parent link that cannot be
+  // ordered, and one contact names an account that is not in the export.
+  'synthetic-crm-invalid': [
+    {
+      kind: 'account',
+      id: 'acct-acme',
+      name: 'Acme Holdings',
+      parentId: null,
+      contract: 'C-100',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-acme-east',
+      name: 'Acme East',
+      parentId: 'acct-acme',
+      contract: 'C-100/E',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-acme-west',
+      name: 'Acme West',
+      parentId: 'acct-acme',
+      contract: 'C-100/W',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-self',
+      name: 'Self Parent Co',
+      parentId: 'acct-self',
+      contract: 'C-400',
+      owner: 'lee',
+    },
+    {
+      kind: 'account',
+      id: 'acct-loop-a',
+      name: 'Loop A',
+      parentId: 'acct-loop-b',
+      contract: 'C-500',
+      owner: 'kim',
+    },
+    {
+      kind: 'account',
+      id: 'acct-loop-b',
+      name: 'Loop B',
+      parentId: 'acct-loop-a',
+      contract: 'C-500/B',
+      owner: 'kim',
+    },
+    {
+      kind: 'account',
+      id: 'acct-stray',
+      name: 'Stray Branch',
+      parentId: 'acct-missing',
+      contract: 'C-600',
+      owner: 'sam',
+    },
+    {
+      kind: 'account',
+      id: 'acct-cross',
+      name: 'Cross Lineage',
+      parentId: 'acct-acme',
+      contract: 'C-700',
+      owner: 'sam',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-ada-east',
+      name: 'Ada Park',
+      email: 'ada@acme.com',
+      accountId: 'acct-acme-east',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-ada-west',
+      name: 'Ada Park',
+      email: ' ADA@acme.com',
+      accountId: 'acct-acme-west',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-loop',
+      name: 'Loop desk',
+      email: 'desk@loop.example',
+      accountId: 'acct-loop-a',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-orphan',
+      name: 'Orphan contact',
+      email: 'orphan@example.com',
+      accountId: 'acct-gone',
+    },
+  ],
 };
 
 const SOURCE_PAGE_SIZE = 4;
@@ -4613,10 +4709,18 @@ function simulatePlan(plan: Omit<StagedPlan, 'conflicts'>): {
         }
         break;
       }
-      case 'setParent':
-        account(op.parent);
+      case 'setParent': {
+        // Parent links must stay acyclic, whatever order a plan writes them in.
+        for (let at: string | null = op.parent; at; at = account(at).parent) {
+          if (at === op.account) {
+            throw new FatalError(
+              `${label}: ${op.account} -> ${op.parent} would create a parent cycle`
+            );
+          }
+        }
         account(op.account).parent = op.parent;
         break;
+      }
       case 'setOwner':
         account(op.key).owner = op.owner;
         break;
@@ -4798,9 +4902,11 @@ async function verifyChanges(request: {
     }
   }
   // A contact is one person per normalized email within an account family.
-  const rootOf = (key: string): string => {
+  const rootOf = (key: string, seen = new Set<string>()): string => {
     const parent = accounts[key]?.parent;
-    return parent && accounts[parent] ? rootOf(parent) : key;
+    if (!parent || !accounts[parent] || seen.has(parent)) return key;
+    seen.add(key);
+    return rootOf(parent, seen);
   };
   const people = new Map<string, string>();
   for (const person of Object.values(contacts)) {
