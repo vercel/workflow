@@ -40,6 +40,7 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | `workflow.start <name>` | internal | `start()` is called in your application code |
 | `workflow.execute <name>` | consumer (root) | a queue delivery invokes the workflow; replay, orchestration, and inline steps run under it |
 | `step.execute <name>` | internal (inline) / consumer + root (queue-delivered) | a step function executes |
+| `workflow.lifecycle.onRunCompleted` / `workflow.lifecycle.onRunFailed` | internal | registered lifecycle handlers observe a persisted terminal transition |
 | `http <method>` | client | the SDK calls the workflow backend (event reads/writes) |
 | `workflow.stream.write` | client | a stream chunk (or the stream close) is flushed to the backend |
 | `workflow.stream.flush` | client | a buffered batch of stream writes settles; back-dated to the batch's first `write()`, so its duration is the app-perceived batch latency (buffer dwell + RPC) |
@@ -51,6 +52,8 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 `<name>` is the short function name (for example `processOrder`); the full machine name, including the source module, is available in the `workflow.name` / `step.name` attributes.
 
 Stream spans are emitted by the SDK's world backend on the client that writes or reads the stream, and (like all SDK spans) are no-ops when no OpenTelemetry SDK is registered. The `workflow.stream.read` span only appears once the first non-empty chunk arrives.
+
+[Lifecycle hook](/docs/observability/lifecycle-hooks) spans carry `workflow.run.id` and `workflow.name`. Their duration includes handler execution and draining background stream operations from the hydrated failure cause. Handler, hydration, and stream-operation failures add `workflow.lifecycle.error` events with `phase`, `errorName`, `errorMessage`, and `errorStack` fields, even when debug logging is disabled. These failures are isolated: a span that finishes dispatch successfully can have OK status and still contain reporting-error events. It does not change the persisted run's outcome.
 
 ## Key attributes
 

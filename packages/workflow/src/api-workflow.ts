@@ -23,8 +23,12 @@ export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');
 export const resumeWebhook = () => workflowStub('resumeWebhook');
 export const runStep = () => workflowStub('runStep');
-export const registerLifecycleHooks = () =>
-  workflowStub('registerLifecycleHooks');
+export const registerLifecycleHooks = () => {
+  throw new Error(
+    'registerLifecycleHooks() cannot be called from a workflow or step function. ' +
+      'Register at host startup, e.g. in instrumentation.ts for Next.js.'
+  );
+};
 export type {
   RunCompletedHookParams,
   RunFailedHookParams,

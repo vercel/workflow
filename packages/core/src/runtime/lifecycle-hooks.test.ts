@@ -1,4 +1,5 @@
 import { runInNewContext } from 'node:vm';
+import type { Span } from '@opentelemetry/api';
 import { FatalError, WorkflowRunFailedError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +15,7 @@ import {
   hydrateRunError,
   SerializationFormat,
 } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import * as telemetry from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
@@ -214,6 +216,38 @@ describe('lifecycle hooks', () => {
     expect(waitUntilPromises).toHaveLength(0);
   });
 
+  it('rejects registration from step execution without leaking a handler', () => {
+    const onRunCompleted = vi.fn();
+    contextStorage.run(
+      {
+        stepMetadata: {
+          stepId: 'step_register',
+          stepName: 'register',
+          stepStartedAt: new Date(),
+          attempt: 1,
+        },
+        workflowMetadata: {
+          workflowRunId: 'wrun_register',
+          workflowName,
+          workflowStartedAt: new Date(),
+          url: 'http://localhost/.well-known/workflow/v1/flow',
+          features: { encryption: false },
+        },
+        ops: [],
+        preCompletionOps: [],
+      },
+      () => {
+        expect(() => register({ onRunCompleted })).toThrow(FatalError);
+        expect(() => register({ onRunCompleted })).toThrow(
+          'Register at host startup'
+        );
+      }
+    );
+    dispatchRunCompletedHooks('wrun_register', workflowName);
+    expect(waitUntil.safeWaitUntil).not.toHaveBeenCalled();
+    expect(onRunCompleted).not.toHaveBeenCalled();
+  });
+
   it.each([
     'onRunCompleted',
     'onRunFailed',
@@ -246,7 +280,7 @@ describe('lifecycle hooks', () => {
     await flushDispatches();
     expect(later).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(
-      `Workflow lifecycle ${event} handler threw`,
+      `Workflow lifecycle ${event} handler property access threw`,
       expect.objectContaining({ errorMessage: failure.message })
     );
   });
@@ -301,6 +335,120 @@ describe('lifecycle hooks', () => {
     );
   });
 
+  it.each([
+    'name',
+    'message',
+    'stack',
+    'toString',
+  ] as const)('still logs readable fields when a thrown value has a throwing %s', async (field) => {
+    const failure =
+      field === 'toString'
+        ? {
+            toString() {
+              throw new Error('cannot stringify');
+            },
+          }
+        : new Error('readable message');
+    if (field !== 'toString') {
+      Object.defineProperty(failure, 'stack', {
+        value: 'readable stack',
+        configurable: true,
+      });
+      Object.defineProperty(failure, field, {
+        get() {
+          throw new Error('cannot read field');
+        },
+      });
+    }
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    register({
+      onRunCompleted() {
+        throw failure;
+      },
+    });
+    dispatchRunCompletedHooks('wrun_unreadable', workflowName);
+    await flushDispatches();
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      {
+        workflowRunId: 'wrun_unreadable',
+        workflowName,
+        errorName: 'Error',
+        errorMessage:
+          field === 'message' || field === 'toString'
+            ? '[unreadable]'
+            : 'readable message',
+        errorStack:
+          field === 'stack' || field === 'toString' ? '' : 'readable stack',
+      }
+    );
+  });
+
+  it('correlates lifecycle spans and records isolated failures even if the log sink throws', async () => {
+    const addEvent = vi.fn();
+    const span = { addEvent } as unknown as Span;
+    const tracing = vi
+      .spyOn(telemetry, 'trace')
+      .mockImplementationOnce(async (_name, ...args) => {
+        const fn = typeof args[0] === 'function' ? args[0] : args[1];
+        if (!fn) throw new Error('Expected a trace callback');
+        return fn(span);
+      });
+    vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {
+      throw new Error('log sink failed');
+    });
+    const hydrationError = new Error('unknown class');
+    const handlerError = new Error('reporter failed');
+    const pipeError = new Error('pipe failed');
+    vi.mocked(hydrateRunError).mockImplementationOnce(
+      async (_error, _runId, _key, ops) => {
+        const pipe = Promise.reject(pipeError);
+        void pipe.catch(() => {});
+        if (!ops) throw new Error('Expected hydration operations');
+        ops.push(pipe);
+        throw hydrationError;
+      }
+    );
+    register({
+      onRunFailed() {
+        throw handlerError;
+      },
+    });
+    const later = vi.fn();
+    register({ onRunFailed: later });
+    dispatchRunFailedHooks(
+      'wrun_span',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(tracing).toHaveBeenCalledWith(
+      'workflow.lifecycle.onRunFailed',
+      {
+        attributes: {
+          'workflow.run.id': 'wrun_span',
+          'workflow.name': workflowName,
+        },
+      },
+      expect.any(Function)
+    );
+    for (const [phase, error] of [
+      ['error hydration failed', hydrationError],
+      ['handler threw', handlerError],
+      ['stream operation failed', pipeError],
+    ] as const) {
+      expect(addEvent).toHaveBeenCalledWith('workflow.lifecycle.error', {
+        phase,
+        errorName: error.name,
+        errorMessage: error.message,
+        errorStack: error.stack,
+      });
+    }
+    expect(later).toHaveBeenCalledOnce();
+  });
+
   it('does not throw into the terminal writer when scheduling fails synchronously', () => {
     const failure = new Error('tracing unavailable');
     vi.spyOn(telemetry, 'trace').mockImplementationOnce(() => {
@@ -319,15 +467,22 @@ describe('lifecycle hooks', () => {
 
   it('shares one registry across module copies via the Symbol.for global', async () => {
     const onRunCompleted = vi.fn();
-    register({ onRunCompleted });
-
-    const registry = (globalThis as Record<symbol, unknown>)[
-      Symbol.for('@workflow/core//lifecycleHooks')
-    ] as WorkflowLifecycleHooks[];
-    expect(Array.isArray(registry)).toBe(true);
-    expect(registry.some((h) => h.onRunCompleted === onRunCompleted)).toBe(
-      true
-    );
+    const unregister = register({ onRunCompleted });
+    vi.resetModules();
+    const other = await import('./lifecycle-hooks.js');
+    expect(other.registerLifecycleHooks).not.toBe(registerLifecycleHooks);
+    other.dispatchRunCompletedHooks('wrun_module_copy', workflowName);
+    await flushDispatches();
+    expect(onRunCompleted).toHaveBeenCalledExactlyOnceWith({
+      run: expect.objectContaining({ runId: 'wrun_module_copy' }),
+      workflowName,
+    });
+    unregister();
+    waitUntilPromises.length = 0;
+    other.dispatchRunCompletedHooks('wrun_unregistered_copy', workflowName);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(waitUntilPromises).toHaveLength(0);
+    expect(onRunCompleted).toHaveBeenCalledOnce();
   });
 
   it('non-Error thrown values round-trip through WorkflowRunFailedError.cause', async () => {
@@ -379,6 +534,9 @@ describe('lifecycle hooks', () => {
     );
     expect(span).toHaveBeenCalledWith(
       'workflow.lifecycle.onRunFailed',
+      {
+        attributes: { 'workflow.run.id': runId, 'workflow.name': workflowName },
+      },
       expect.any(Function)
     );
     const { error } = onRunFailed.mock.calls[0][0];
@@ -397,6 +555,7 @@ describe('lifecycle hooks', () => {
       )
     ),
   ])('reports the same fallback as run.returnValue when stored error hydration fails (%#)', async (bytes) => {
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
     const onRunFailed = vi.fn();
     register({ onRunFailed });
     dispatchRunFailedHooks(
@@ -413,6 +572,13 @@ describe('lifecycle hooks', () => {
     expect(error.errorCode).toBe('USER_ERROR');
     expect(error.cause).toEqual(
       new Error('Failed to hydrate workflow run error')
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunFailed error hydration failed',
+      expect.objectContaining({
+        workflowRunId: 'wrun_invalid_error',
+        errorMessage: expect.any(String),
+      })
     );
   });
 
@@ -517,6 +683,50 @@ describe('lifecycle hooks', () => {
     await stream.cancel();
   });
 
+  it('settles the drain when a handler cancels a readable during a pending read', async () => {
+    const cancel = vi.fn();
+    const get = vi.fn().mockResolvedValue(new ReadableStream({ cancel }));
+    vi.mocked(getWorldLazy).mockResolvedValue({ streams: { get } } as any);
+    const bytes = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["ReadableStream",1],{"name":2,"type":3},"error-body","bytes"]'
+      )
+    );
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    const finished = vi.fn();
+    register({
+      async onRunFailed({ error }) {
+        const reader = (error.cause as ReadableStream).getReader();
+        try {
+          const read = reader.read();
+          await vi.waitFor(() => expect(get).toHaveBeenCalledOnce());
+          await reader.cancel('reporting complete');
+          expect(await read).toEqual({ done: true, value: undefined });
+          finished();
+        } finally {
+          reader.releaseLock();
+        }
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_cancel_reader',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(finished).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    // Cancellation rejects the underlying pipe with its reason, but must
+    // still settle the drain rather than hold the invocation open.
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      'Workflow lifecycle onRunFailed stream operation failed',
+      expect.objectContaining({ errorMessage: 'reporting complete' })
+    );
+  });
+
   it.each([
     false,
     true,
@@ -574,7 +784,8 @@ describe('lifecycle hooks', () => {
     let pendingOps!: Promise<void>[];
     vi.mocked(hydrateRunError).mockImplementationOnce(
       async (_error, _runId, _key, ops) => {
-        pendingOps = ops!;
+        if (!ops) throw new Error('Expected hydration operations');
+        pendingOps = ops;
         pendingOps.push(failed, first.promise);
         throw new Error('partially hydrated payload');
       }
@@ -609,5 +820,73 @@ describe('lifecycle hooks', () => {
     last.resolve();
     await flushDispatches();
     expect(settled).toHaveBeenCalledOnce();
+  });
+
+  it('drains randomized nested operations despite hydration, handler, and pipe failures', async () => {
+    // A fixed seed makes the settlement-order coverage reproducible.
+    let seed = 4216;
+    const random = (max: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % max;
+    };
+    vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    for (let trial = 0; trial < 60; trial++) {
+      waitUntilPromises.length = 0;
+      const pending: Array<() => void> = [];
+      let ops!: Promise<void>[];
+      const prepared = withResolvers<void>();
+      const addOperation = (depth: number) => {
+        const gate = withResolvers<void>();
+        pending.push(gate.resolve);
+        const pipe = gate.promise.then(() => {
+          const children = depth < 3 ? random(3) : 0;
+          for (let i = 0; i < children; i++) addOperation(depth + 1);
+          if (random(3) === 0) throw new Error('pipe failed');
+        });
+        void pipe.catch(() => {});
+        ops.push(pipe);
+      };
+      vi.mocked(hydrateRunError).mockImplementationOnce(
+        async (_error, _id, _key, operations) => {
+          if (!operations) throw new Error('Expected hydration operations');
+          ops = operations;
+          for (let i = 0; i < 3; i++) addOperation(0);
+          prepared.resolve();
+          if (trial % 2 === 0) throw new Error('partial hydration');
+          return new Error('cause');
+        }
+      );
+      const unregister = register({
+        onRunFailed() {
+          addOperation(0);
+          if (trial % 3 === 0) throw new Error('handler failed');
+        },
+      });
+      dispatchRunFailedHooks(
+        `wrun_random_${trial}`,
+        workflowName,
+        undefined,
+        undefined,
+        'USER_ERROR'
+      );
+      await prepared.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(waitUntilPromises).toHaveLength(1);
+      let settled = false;
+      let pendingAtSettlement = -1;
+      void waitUntilPromises[0].then(() => {
+        settled = true;
+        pendingAtSettlement = pending.length;
+      });
+      while (pending.length > 0) {
+        expect(settled).toBe(false);
+        pending.splice(random(pending.length), 1)[0]();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await flushDispatches();
+      expect(settled).toBe(true);
+      expect(pendingAtSettlement).toBe(0);
+      unregister();
+    }
   });
 });

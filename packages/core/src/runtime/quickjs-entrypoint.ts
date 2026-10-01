@@ -2082,7 +2082,6 @@ export async function runWorkflowWithQuickJS(params: {
           ),
         },
       });
-      wfdiag('exit_completed', { result: 'run_completed_written' });
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
         runtimeLogger.warn(
@@ -2099,6 +2098,12 @@ export async function runWorkflowWithQuickJS(params: {
       throw err;
     }
     dispatchRunCompletedHooks(runId, workflowName);
+    try {
+      wfdiag('exit_completed', { result: 'run_completed_written' });
+    } catch {
+      // The terminal write succeeded. Diagnostics must neither suppress its
+      // lifecycle notification nor turn it into a failed queue delivery.
+    }
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by

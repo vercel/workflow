@@ -6,6 +6,7 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import {
   dehydrateRunError,
   encodeWithFormatPrefix,
@@ -78,7 +79,10 @@ beforeEach(() => {
   } as unknown as World);
 });
 
-afterEach(() => setWorld(undefined));
+afterEach(() => {
+  setWorld(undefined);
+  vi.restoreAllMocks();
+});
 
 async function complete() {
   vi.mocked(startQuickJSWorkflow).mockResolvedValueOnce({
@@ -124,6 +128,21 @@ it.each([
     await expect(complete()).rejects.toBe(error);
   }
   expect(dispatchRunCompletedHooks).not.toHaveBeenCalled();
+});
+
+it('dispatches completion when the post-write diagnostic logger throws', async () => {
+  vi.spyOn(runtimeLogger, 'debug').mockImplementation((_message, fields) => {
+    if (fields?.checkpoint === 'exit_completed') {
+      throw new Error('diagnostic sink failed');
+    }
+  });
+  await expect(complete()).resolves.toBeUndefined();
+  expect(createEvent).toHaveBeenCalledOnce();
+  expect(dispatchRunCompletedHooks).toHaveBeenCalledExactlyOnceWith(
+    runId,
+    workflowName
+  );
+  expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
 });
 
 it.each([
