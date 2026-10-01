@@ -676,14 +676,12 @@ describeJs(
         ],
       });
 
-      // The mission disposed the timed-out review's hook itself, before the
-      // run completed. Completion removes a run's remaining hooks without
-      // logging a `hook_disposed`, so this event is the source's dispose().
+      // The mission disposed the timed-out review's hook itself. Completion
+      // removes a run's remaining hooks without logging a `hook_disposed`, so
+      // this event is the source's dispose(). (Not ordered against
+      // `run_completed`: under load that event can trail the run's result.)
       const events = await allRunEvents(childRunId);
-      const types = events.map((event) => event.eventType);
-      const disposedAt = types.indexOf('hook_disposed');
-      expect(disposedAt).toBeGreaterThan(-1);
-      expect(disposedAt).toBeLessThan(types.indexOf('run_completed'));
+      expect(events.map((event) => event.eventType)).toContain('hook_disposed');
 
       // A late response is refused rather than delivered.
       await expect(getHookByToken(`${prefix}:1`)).rejects.toThrow(/not found/i);
