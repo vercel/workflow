@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { decodeFrames, encodeFrame } from './frames.js';
+import { decodeFrame, encodeFrame } from './frames.js';
 
 const {
   FakeWebSocket,
@@ -128,14 +128,15 @@ const { DEFAULT_WS_MAX_MESSAGE_BYTES, MIN_WS_MAX_MESSAGE_BYTES } = await import(
 );
 
 async function decodeOne(raw: Uint8Array) {
-  for await (const frame of decodeFrames(
-    (async function* () {
-      yield raw;
-    })()
-  )) {
-    return frame;
-  }
-  throw new Error('no frame');
+  return decodeFrame(raw);
+}
+
+/** Byte equality without vitest's element-by-element deep comparison, which
+ *  takes tens of seconds for the multi-MiB arrays the size-limit tests use. */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(
+    Buffer.from(b.buffer, b.byteOffset, b.byteLength)
+  );
 }
 
 const writerId = 'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -1365,7 +1366,11 @@ describe('v1 stream WebSocket message byte budget', () => {
     for (const raw of socket.sent) {
       expect(raw.byteLength).toBeLessThanOrEqual(LIMIT);
     }
-    expect(frames.flatMap((frame) => decodeChunks(frame.body))).toEqual(chunks);
+    const sent = frames.flatMap((frame) => decodeChunks(frame.body));
+    expect(sent).toHaveLength(chunks.length);
+    sent.forEach((chunk, index) => {
+      expect(sameBytes(chunk, chunks[index])).toBe(true);
+    });
     expect(writeHttp).not.toHaveBeenCalled();
   });
 
@@ -1436,7 +1441,12 @@ describe('v1 stream WebSocket message byte budget', () => {
       chunkSeq: 0,
       numChunks: 1,
     });
-    expect(writeHttp.mock.calls).toEqual([[[big, 'tail']], [['later']]]);
+    expect(writeHttp).toHaveBeenCalledTimes(2);
+    const [fallback] = writeHttp.mock.calls[0];
+    expect(fallback).toHaveLength(2);
+    expect(fallback[0]).toBe(big);
+    expect(fallback[1]).toBe('tail');
+    expect(writeHttp.mock.calls[1]).toEqual([['later']]);
     expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
   });
 
@@ -1476,7 +1486,7 @@ describe('v1 stream WebSocket message byte budget', () => {
       chunkSeq: 9,
       numChunks: 2,
     });
-    expect(resent.body).toEqual(original.body);
+    expect(sameBytes(resent.body, original.body)).toBe(true);
     socket.reply(
       encodeFrame({ type: 'write_ack', reqId: 3 }, new Uint8Array())
     );
@@ -1521,7 +1531,12 @@ describe('v1 stream WebSocket message byte budget', () => {
     await writing;
 
     expect(socket.sent).toHaveLength(3);
-    expect(writeHttp.mock.calls).toEqual([[chunks.slice(2)]]);
+    expect(writeHttp).toHaveBeenCalledTimes(1);
+    const [tail] = writeHttp.mock.calls[0];
+    expect(tail).toHaveLength(3);
+    tail.forEach((chunk, index) => {
+      expect(chunk).toBe(chunks[index + 2]);
+    });
     expect(socket.closed).toContainEqual([1000, 'stream request throttled']);
   });
 
@@ -1535,7 +1550,12 @@ describe('v1 stream WebSocket message byte budget', () => {
     await session.write(0, chunks);
 
     expect(socket.sent).toHaveLength(0);
-    expect(writeHttp.mock.calls).toEqual([[chunks]]);
+    expect(writeHttp).toHaveBeenCalledTimes(1);
+    const [all] = writeHttp.mock.calls[0];
+    expect(all).toHaveLength(chunks.length);
+    all.forEach((chunk, index) => {
+      expect(chunk).toBe(chunks[index]);
+    });
     expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
   });
 });
