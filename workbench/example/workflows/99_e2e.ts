@@ -4334,8 +4334,10 @@ async function sha256Hex(text: string) {
 }
 
 /**
- * Start-time checks on a stored revision: it is approved, its bytes are the
- * approved bytes, and it targets the catalog this deployment serves. Returns
+ * Start-time checks on a stored revision: it has an approval record, its
+ * source still matches the hash recorded with it, and it targets the catalog
+ * this deployment serves. The hash catches a source that changed without it,
+ * not a writer who changes both; trust comes from who can publish. Returns
  * the step map `start()` needs, built from the imported step functions.
  */
 async function bindMissionRevision(revision: MissionRevision) {
@@ -4344,7 +4346,7 @@ async function bindMissionRevision(revision: MissionRevision) {
     throw new FatalError(`Mission ${label} has no approval record`);
   }
   if ((await sha256Hex(revision.source)) !== revision.sourceSha256) {
-    throw new FatalError(`Mission ${label} does not match its approved source`);
+    throw new FatalError(`Mission ${label} does not match its recorded hash`);
   }
   if (revision.catalogVersion !== MISSION_CATALOG_VERSION) {
     throw new FatalError(
