@@ -161,6 +161,15 @@ export const DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES = 24 * 1024;
 const SAFE_DYNAMIC_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 
 /**
+ * The SDK's limit on `exportName`. The name becomes the last segment of the
+ * generated workflow id, which is also the queue topic name, and it counts
+ * against the run's execution-context budget. Queues cap topic names too
+ * (Vercel's at 256 characters, prefix included), so a long name buys nothing
+ * and fails late.
+ */
+export const DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH = 64;
+
+/**
  * The export name becomes the final segment of the generated workflow id,
  * which is also the queue topic name. Queue names do not accept `$`, so this
  * is the intersection of JavaScript identifiers and the queue-name alphabet.
@@ -235,7 +244,10 @@ async function sha256Hex(input: string): Promise<string> {
 // Raise only after every supported Node and QuickJS runtime accepts the grammar.
 const DYNAMIC_WORKFLOW_ECMA_VERSION = 2024;
 
-function parseDynamicWorkflowSource(source: string): Program {
+function parseDynamicWorkflowSource(
+  source: string,
+  exportName: string
+): Program {
   try {
     return parse(source, {
       ecmaVersion: DYNAMIC_WORKFLOW_ECMA_VERSION,
@@ -243,8 +255,10 @@ function parseDynamicWorkflowSource(source: string): Program {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // A non-async workflow using `await` fails to parse with a bare
+    // "Unexpected token", which reads like one of the other two causes.
     throw dynamicStartRefusal(
-      `Dynamic workflow source is not valid JavaScript: ${message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or module declarations.`
+      `Dynamic workflow source is not valid JavaScript: ${message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or module declarations. If the error is at an \`await\`, declare the function as \`async function ${exportName}(...)\`.`
     );
   }
 }
@@ -280,17 +294,8 @@ function validateDynamicWorkflowSource(
     );
   }
 
-  const program = parseDynamicWorkflowSource(source);
-  const declarations = program.body.filter(
-    (node): node is FunctionDeclaration =>
-      node.type === 'FunctionDeclaration' && node.id.name === exportName
-  );
-  const declaration = declarations.length === 1 ? declarations[0] : undefined;
-  if (!declaration || !declaration.async || declaration.generator) {
-    throw dynamicStartRefusal(
-      `Dynamic workflow source must declare \`async function ${exportName}(...)\` at top level.`
-    );
-  }
+  const program = parseDynamicWorkflowSource(source, exportName);
+  const declaration = findWorkflowDeclaration(program, exportName);
 
   const firstStatement = declaration.body.body[0] as
     | ExpressionStatement
@@ -308,11 +313,72 @@ function validateDynamicWorkflowSource(
   // would not split a step out: the function would simply run inside the
   // workflow VM, as ordinary (and non-deterministic) workflow code. Steps
   // come from `experimental_dynamic.steps` only.
-  if (/(?:"use step"|'use step')/.test(source)) {
+  if (hasDirective(program, 'use step')) {
     throw dynamicStartRefusal(
       'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `experimental_dynamic.steps` instead.'
     );
   }
+}
+
+/**
+ * The single top-level `async function <exportName>` declaration, or a
+ * refusal that says what is wrong with the one the source declares.
+ */
+function findWorkflowDeclaration(
+  program: Program,
+  exportName: string
+): FunctionDeclaration {
+  const expected = `Dynamic workflow source must declare \`async function ${exportName}(...)\` at top level`;
+  const declarations = program.body.filter(
+    (node): node is FunctionDeclaration =>
+      node.type === 'FunctionDeclaration' && node.id.name === exportName
+  );
+  const [declaration] = declarations;
+  let problem = '';
+  if (declarations.length > 1) {
+    problem = ` exactly once, but declares \`function ${exportName}\` ${declarations.length} times`;
+  } else if (declaration?.generator) {
+    problem = `, but \`${exportName}\` is a generator function`;
+  } else if (declaration && !declaration.async) {
+    problem = `, but \`${exportName}\` is not async`;
+  }
+  if (!declaration || problem) {
+    throw dynamicStartRefusal(`${expected}${problem}.`);
+  }
+  return declaration;
+}
+
+/**
+ * Whether any directive prologue in the program (the script's own, or any
+ * function's) holds `directive`.
+ *
+ * Acorn marks prologue statements with `directive`, so a string that merely
+ * reads `"use step"` elsewhere, such as an argument or a template literal, is
+ * not one.
+ */
+function hasDirective(program: Program, directive: string): boolean {
+  // Iterative: a long member chain nests the AST far deeper than the call
+  // stack allows, well inside the source size limit.
+  const pending: object[] = [program];
+  while (pending.length > 0) {
+    const node = pending.pop() as { directive?: unknown };
+    if (node.directive === directive) return true;
+    for (const child of childNodes(node)) pending.push(child);
+  }
+  return false;
+}
+
+/** Child nodes of an acorn node, in no particular order. */
+function childNodes(node: object): object[] {
+  const children: object[] = [];
+  for (const value of Object.values(node)) {
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (child && typeof child === 'object' && 'type' in child) {
+        children.push(child);
+      }
+    }
+  }
+  return children;
 }
 
 function resolveStepId(alias: string, value: unknown): string {
@@ -368,6 +434,11 @@ export async function compileDynamicWorkflow(
   options: DynamicWorkflowOptions
 ): Promise<CompiledDynamicWorkflow> {
   const exportName = options.exportName ?? 'workflow';
+  if (exportName.length > DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH) {
+    throw dynamicStartRefusal(
+      `Dynamic workflow exportName is ${exportName.length} characters, over the ${DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH}-character limit. It becomes part of the workflow id and queue name.`
+    );
+  }
   assertDynamicWorkflowIdentifier('exportName', exportName);
   if (!SAFE_DYNAMIC_EXPORT_NAME.test(exportName)) {
     throw dynamicStartRefusal(
