@@ -148,7 +148,7 @@ execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
 
 With `WORKFLOW_SCHEDULED_WAKES=1`, a run wake queued with `wakeAt` and an
 `idempotencyKey` (for example a retained owner's sleep wake) becomes a one-time
-[Vercel Schedule](https://github.com/vercel/schedules) instead of a delayed
+Vercel Schedule (`@vercel/schedules`) instead of a delayed
 queue message. The schedule publishes the same message wrapper, as JSON, to the
 run's flow topic; the flow route relays it to the owner like any other wake.
 
