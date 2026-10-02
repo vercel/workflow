@@ -401,9 +401,10 @@ export async function write(
       );
     }
 
-    // Slow path: check filesystem for files created before this process started
+    // Slow path: check filesystem for files created before this process started.
+    // On Windows the probe can hit the same transient locks as rename/unlink.
     try {
-      await fs.access(filePath);
+      await withWindowsRetry(() => fs.access(filePath));
       // File exists on disk, add to cache for future checks
       fsState.createdFilesCache.add(filePath);
       throw new EntityConflictError(
