@@ -710,6 +710,27 @@ function containsAwaitExpression(node: any): boolean {
     return containsAwaitExpression(node.body);
   }
 
+  // Check try/catch/finally
+  if (node.type === 'TryStatement') {
+    return (
+      containsAwaitExpression(node.block) ||
+      containsAwaitExpression(node.handler?.body) ||
+      containsAwaitExpression(node.finalizer)
+    );
+  }
+
+  // Check switch statement
+  if (node.type === 'SwitchStatement') {
+    return (node.cases || []).some((c: any) =>
+      (c.consequent || []).some((s: any) => containsAwaitExpression(s))
+    );
+  }
+
+  // Check do-while
+  if (node.type === 'DoWhileStatement') {
+    return containsAwaitExpression(node.body);
+  }
+
   // Check assignment expressions (e.g., result = await doWork())
   if (node.type === 'AssignmentExpression') {
     return containsAwaitExpression(node.right);
@@ -1111,6 +1132,289 @@ function analyzeStatement(
     context.inLoop = savedLoop;
   }
 
+  // Handle TryStatement - recurse into try body and catch handler
+  if (stmt.type === 'TryStatement') {
+    const tryStmt = stmt as any;
+
+    // Analyze the try block body
+    if (tryStmt.block?.stmts) {
+      const tryResult = analyzeBlock(
+        tryStmt.block.stmts,
+        stepDeclarations,
+        context,
+        functionMap,
+        variableMap
+      );
+
+      nodes.push(...tryResult.nodes);
+      edges.push(...tryResult.edges);
+
+      if (entryNodeIds.length === 0) {
+        entryNodeIds = tryResult.entryNodeIds;
+      }
+      exitNodeIds = tryResult.exitNodeIds;
+    }
+
+    // Analyze the catch handler if present
+    if (tryStmt.handler?.body?.stmts) {
+      const catchResult = analyzeBlock(
+        tryStmt.handler.body.stmts,
+        stepDeclarations,
+        context,
+        functionMap,
+        variableMap
+      );
+
+      if (catchResult.nodes.length > 0) {
+        nodes.push(...catchResult.nodes);
+        edges.push(...catchResult.edges);
+
+        // Connect the last try-body node to the catch entry as an error path
+        // If the try block had nodes, any of them could throw and reach catch
+        if (exitNodeIds.length > 0 && catchResult.entryNodeIds.length > 0) {
+          for (const tryExitId of exitNodeIds) {
+            for (const catchEntryId of catchResult.entryNodeIds) {
+              edges.push({
+                id: `e_${tryExitId}_${catchEntryId}_catch`,
+                source: tryExitId,
+                target: catchEntryId,
+                type: 'conditional',
+                label: 'catch',
+              });
+            }
+          }
+        }
+
+        // If the try block had no nodes, the catch entry becomes the entry
+        if (entryNodeIds.length === 0) {
+          entryNodeIds = catchResult.entryNodeIds;
+        }
+
+        // Both try exits and catch exits are valid exit points
+        exitNodeIds = [...exitNodeIds, ...catchResult.exitNodeIds];
+      }
+    }
+
+    // Analyze the finally block if present
+    if (tryStmt.finalizer?.stmts) {
+      const finallyResult = analyzeBlock(
+        tryStmt.finalizer.stmts,
+        stepDeclarations,
+        context,
+        functionMap,
+        variableMap
+      );
+
+      if (finallyResult.nodes.length > 0) {
+        nodes.push(...finallyResult.nodes);
+        edges.push(...finallyResult.edges);
+
+        // Connect all previous exits to the finally entry
+        if (exitNodeIds.length > 0 && finallyResult.entryNodeIds.length > 0) {
+          for (const prevExitId of exitNodeIds) {
+            for (const finallyEntryId of finallyResult.entryNodeIds) {
+              edges.push({
+                id: `e_${prevExitId}_${finallyEntryId}_finally`,
+                source: prevExitId,
+                target: finallyEntryId,
+                type: 'default',
+              });
+            }
+          }
+        }
+
+        if (entryNodeIds.length === 0) {
+          entryNodeIds = finallyResult.entryNodeIds;
+        }
+        exitNodeIds = finallyResult.exitNodeIds;
+      }
+    }
+  }
+
+  // Handle SwitchStatement - each case is a branch
+  if (stmt.type === 'SwitchStatement') {
+    const switchStmt = stmt as any;
+    const cases: any[] = switchStmt.cases || [];
+
+    // Check if any case has workflow-relevant nodes before creating the switch node
+    const caseResults: AnalysisResult[] = [];
+    let hasWorkflowNodes = false;
+
+    for (const switchCase of cases) {
+      if (switchCase.consequent && switchCase.consequent.length > 0) {
+        const caseResult = analyzeBlock(
+          switchCase.consequent,
+          stepDeclarations,
+          context,
+          functionMap,
+          variableMap
+        );
+        caseResults.push(caseResult);
+        if (caseResult.nodes.length > 0) {
+          hasWorkflowNodes = true;
+        }
+      } else {
+        caseResults.push({
+          nodes: [],
+          edges: [],
+          entryNodeIds: [],
+          exitNodeIds: [],
+        });
+      }
+    }
+
+    if (hasWorkflowNodes) {
+      // Create a conditional node for the switch
+      const switchId = `cond_${context.conditionalCounter++}`;
+      const discriminantText = getConditionText(switchStmt.discriminant);
+      const switchNodeId = `${switchId}_node`;
+
+      const switchNode: ManifestNode = {
+        id: switchNodeId,
+        type: 'conditional',
+        data: {
+          label: `switch(${discriminantText})`,
+          nodeKind: 'conditional',
+        },
+      };
+      nodes.push(switchNode);
+      entryNodeIds.push(switchNodeId);
+
+      for (let i = 0; i < cases.length; i++) {
+        const switchCase = cases[i];
+        const caseResult = caseResults[i];
+
+        if (caseResult.nodes.length > 0) {
+          const caseLabel = switchCase.test
+            ? getConditionText(switchCase.test)
+            : 'default';
+
+          for (const node of caseResult.nodes) {
+            if (!node.metadata) node.metadata = {};
+            node.metadata.conditionalId = switchId;
+          }
+
+          nodes.push(...caseResult.nodes);
+          edges.push(...caseResult.edges);
+
+          for (const caseEntryId of caseResult.entryNodeIds) {
+            edges.push({
+              id: `e_${switchNodeId}_${caseEntryId}_case`,
+              source: switchNodeId,
+              target: caseEntryId,
+              type: 'conditional',
+              label: caseLabel,
+            });
+          }
+          exitNodeIds.push(...caseResult.exitNodeIds);
+        }
+      }
+    }
+  }
+
+  // Handle DoWhileStatement - same as while but loop-back is unconditional
+  if (stmt.type === 'DoWhileStatement') {
+    const body = (stmt as any).body;
+    const hasAwait = containsAwaitExpression(body);
+    const loopId = hasAwait ? `loop_${context.loopCounter++}` : undefined;
+    const savedLoop = context.inLoop;
+    if (loopId) {
+      context.inLoop = loopId;
+    }
+
+    const loopResult =
+      body.type === 'BlockStatement'
+        ? analyzeBlock(
+            body.stmts,
+            stepDeclarations,
+            context,
+            functionMap,
+            variableMap
+          )
+        : analyzeStatement(
+            body,
+            stepDeclarations,
+            context,
+            functionMap,
+            variableMap
+          );
+
+    if (loopId) {
+      for (const node of loopResult.nodes) {
+        if (!node.metadata) node.metadata = {};
+        node.metadata.loopId = loopId;
+      }
+    }
+
+    nodes.push(...loopResult.nodes);
+    edges.push(...loopResult.edges);
+    entryNodeIds = loopResult.entryNodeIds;
+    exitNodeIds = loopResult.exitNodeIds;
+
+    if (loopId) {
+      for (const exitId of loopResult.exitNodeIds) {
+        for (const entryId of loopResult.entryNodeIds) {
+          edges.push({
+            id: `e_${exitId}_back_${entryId}`,
+            source: exitId,
+            target: entryId,
+            type: 'loop',
+          });
+        }
+      }
+    }
+
+    context.inLoop = savedLoop;
+  }
+
+  // Handle ForInStatement - same structure as ForOfStatement
+  if (stmt.type === 'ForInStatement') {
+    const loopId = `loop_${context.loopCounter++}`;
+    const savedLoop = context.inLoop;
+    context.inLoop = loopId;
+
+    const body = (stmt as any).body;
+    const loopResult =
+      body.type === 'BlockStatement'
+        ? analyzeBlock(
+            body.stmts,
+            stepDeclarations,
+            context,
+            functionMap,
+            variableMap
+          )
+        : analyzeStatement(
+            body,
+            stepDeclarations,
+            context,
+            functionMap,
+            variableMap
+          );
+
+    for (const node of loopResult.nodes) {
+      if (!node.metadata) node.metadata = {};
+      node.metadata.loopId = loopId;
+    }
+
+    nodes.push(...loopResult.nodes);
+    edges.push(...loopResult.edges);
+    entryNodeIds = loopResult.entryNodeIds;
+    exitNodeIds = loopResult.exitNodeIds;
+
+    for (const exitId of loopResult.exitNodeIds) {
+      for (const entryId of loopResult.entryNodeIds) {
+        edges.push({
+          id: `e_${exitId}_back_${entryId}`,
+          source: exitId,
+          target: entryId,
+          type: 'loop',
+        });
+      }
+    }
+
+    context.inLoop = savedLoop;
+  }
+
   // Handle plain BlockStatement (bare blocks like { ... })
   if (stmt.type === 'BlockStatement') {
     const blockResult = analyzeBlock(
@@ -1138,6 +1442,23 @@ function analyzeStatement(
     edges.push(...result.edges);
     entryNodeIds = result.entryNodeIds;
     exitNodeIds = result.exitNodeIds;
+  }
+
+  // Fallback: for any unhandled statement type, attempt to recurse into
+  // known child properties to avoid silently dropping step calls.
+  // This handles LabeledStatement, WithStatement, ThrowStatement arguments, etc.
+  if (nodes.length === 0 && entryNodeIds.length === 0) {
+    const fallbackResult = analyzeStatementFallback(
+      stmt,
+      stepDeclarations,
+      context,
+      functionMap,
+      variableMap
+    );
+    nodes.push(...fallbackResult.nodes);
+    edges.push(...fallbackResult.edges);
+    entryNodeIds = fallbackResult.entryNodeIds;
+    exitNodeIds = fallbackResult.exitNodeIds;
   }
 
   return { nodes, edges, entryNodeIds, exitNodeIds };
@@ -1199,6 +1520,117 @@ function analyzeBlock(
   }
 
   return { nodes, edges, entryNodeIds, exitNodeIds: currentExitIds };
+}
+
+/**
+ * Fallback analyzer for unhandled statement types.
+ * Recursively walks known child properties (body, expression, argument, etc.)
+ * to find step calls that would otherwise be silently dropped.
+ * Produces sequential edges between discovered nodes.
+ */
+function analyzeStatementFallback(
+  node: any,
+  stepDeclarations: Map<string, { stepId: string }>,
+  context: AnalysisContext,
+  functionMap: Map<string, FunctionInfo>,
+  variableMap: Map<string, any>
+): AnalysisResult {
+  const results: AnalysisResult[] = [];
+
+  // Check child statement properties
+  if (node.body) {
+    if (node.body.type === 'BlockStatement' && node.body.stmts) {
+      results.push(
+        analyzeBlock(
+          node.body.stmts,
+          stepDeclarations,
+          context,
+          functionMap,
+          variableMap
+        )
+      );
+    } else if (Array.isArray(node.body)) {
+      results.push(
+        analyzeBlock(
+          node.body,
+          stepDeclarations,
+          context,
+          functionMap,
+          variableMap
+        )
+      );
+    } else {
+      results.push(
+        analyzeStatement(
+          node.body,
+          stepDeclarations,
+          context,
+          functionMap,
+          variableMap
+        )
+      );
+    }
+  }
+
+  // Check expression/argument properties (e.g., ThrowStatement argument)
+  if (
+    node.argument &&
+    typeof node.argument === 'object' &&
+    node.argument.type
+  ) {
+    // If the argument is an expression, analyze it
+    if (
+      !node.argument.type.endsWith('Statement') &&
+      !node.argument.type.endsWith('Declaration')
+    ) {
+      const exprResult = analyzeExpression(
+        node.argument,
+        stepDeclarations,
+        context,
+        functionMap,
+        variableMap
+      );
+      results.push(exprResult);
+    }
+  }
+
+  // LabeledStatement has a .body that is a statement
+  // WithStatement has a .body
+  // These are handled by the node.body check above
+
+  // Merge results sequentially
+  const nodes: ManifestNode[] = [];
+  const edges: ManifestEdge[] = [];
+  let entryNodeIds: string[] = [];
+  let exitNodeIds: string[] = [];
+
+  for (const result of results) {
+    if (result.nodes.length === 0) continue;
+
+    nodes.push(...result.nodes);
+    edges.push(...result.edges);
+
+    if (entryNodeIds.length === 0) {
+      entryNodeIds = result.entryNodeIds;
+    } else if (exitNodeIds.length > 0 && result.entryNodeIds.length > 0) {
+      for (const prevId of exitNodeIds) {
+        for (const entryId of result.entryNodeIds) {
+          edges.push({
+            id: `e_${prevId}_${entryId}`,
+            source: prevId,
+            target: entryId,
+            type: 'default',
+          });
+        }
+      }
+    }
+
+    if (result.exitNodeIds.length > 0) {
+      exitNodeIds = result.exitNodeIds;
+    }
+  }
+
+  return { nodes, edges, entryNodeIds, exitNodeIds };
 }
 
 /**
