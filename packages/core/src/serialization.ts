@@ -6,7 +6,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
-import type { StreamWriteSession } from '@workflow/world';
+import type { StreamInfoResponse, StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -889,6 +889,25 @@ const getFramedStreamMaxTotalReconnects = (): number =>
   );
 
 /**
+ * Consecutive live-read sessions that may end without delivering a frame while
+ * the stream's metadata reports a chunk at the resume index, before the read
+ * fails. Such a session is not waiting for new data: the chunk is known to
+ * exist but was not served, so the index is a hole (the chunk is missing from
+ * storage) and reconnecting from it can never make progress. Each stalled
+ * session typically lasts the server's maximum response duration, so the
+ * general reconnect budget alone would stall a reader for over an hour.
+ */
+export const FRAMED_STREAM_MAX_STALLS_BELOW_TAIL = 3;
+
+/** Effective stall cap. Override: `WORKFLOW_FRAMED_STREAM_MAX_STALLS_BELOW_TAIL`. */
+const getFramedStreamMaxStallsBelowTail = (): number =>
+  envNumber(
+    'WORKFLOW_FRAMED_STREAM_MAX_STALLS_BELOW_TAIL',
+    FRAMED_STREAM_MAX_STALLS_BELOW_TAIL,
+    { integer: true, min: 1 }
+  );
+
+/**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
  * transparent auto-reconnect.
  *
@@ -911,6 +930,12 @@ const getFramedStreamMaxTotalReconnects = (): number =>
  * trusted (legacy behavior) rather than failing a read that may well be
  * complete.
  *
+ * A session that ends without delivering a frame while the metadata reports
+ * a chunk at the resume index is a stall at a hole (a chunk missing from
+ * storage). After `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the
+ * read errors with a `StreamError` naming the missing index, so the consumer
+ * can resume past it with `startIndex` instead of waiting indefinitely.
+ *
  * Negative `startIndex` values (last-N semantics) skip the reconnect
  * machinery because we cannot compute an absolute resume position without
  * a tail-index lookup; the returned stream behaves as a single-shot read.
@@ -927,6 +952,7 @@ export function createReconnectingFramedStream(
   let consumedFrames = 0;
   let reconnectCount = 0;
   let totalReconnectCount = 0;
+  let stallsBelowTail = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let canceled = false;
   let cancelReason: unknown;
@@ -985,13 +1011,49 @@ export function createReconnectingFramedStream(
    * into an error (or a reconnect loop) on a transient metadata blip would
    * be worse than the legacy behavior this check guards against.
    */
-  async function isVerifiedComplete(): Promise<boolean> {
+  async function getStreamInfo(): Promise<StreamInfoResponse | undefined> {
     try {
       const world = await getWorldLazy();
-      const info = await world.streams.getInfo(runId, name);
-      return info.done && currentStartIndex + consumedFrames > info.tailIndex;
+      return await world.streams.getInfo(runId, name);
     } catch {
-      return true;
+      return undefined;
+    }
+  }
+
+  function isVerifiedComplete(info: StreamInfoResponse | undefined): boolean {
+    if (!info) return true;
+    return info.done && currentStartIndex + consumedFrames > info.tailIndex;
+  }
+
+  /**
+   * Called when a session ends. Throws once consecutive sessions have ended
+   * without a frame while the metadata reports a chunk at the resume index.
+   * Metadata is only fetched for zero-frame sessions (unless the caller
+   * already has it), so sessions that deliver data pay nothing extra.
+   */
+  async function assertNotStalledAtHole(
+    info?: StreamInfoResponse
+  ): Promise<void> {
+    if (consumedFrames > 0) {
+      stallsBelowTail = 0;
+      return;
+    }
+    const resolved = info ?? (await getStreamInfo());
+    // Unknown metadata neither confirms nor rules out a hole.
+    if (!resolved) return;
+    if (resolved.tailIndex < currentStartIndex) {
+      stallsBelowTail = 0;
+      return;
+    }
+    stallsBelowTail++;
+    if (stallsBelowTail >= getFramedStreamMaxStallsBelowTail()) {
+      throw new StreamError(
+        `Stream "${name}" of run "${runId}" has no readable chunk at index ` +
+          `${currentStartIndex}, below its tail index ${resolved.tailIndex}: ` +
+          `${stallsBelowTail} consecutive reads from that index delivered ` +
+          `nothing. The chunk is missing from storage; read from startIndex ` +
+          `${currentStartIndex + 1} or later to continue past it.`
+      );
     }
   }
 
@@ -1079,6 +1141,8 @@ export function createReconnectingFramedStream(
             return;
           }
           try {
+            await assertNotStalledAtHole();
+            if (canceled) return;
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
@@ -1097,11 +1161,11 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
-          const verifiedComplete =
-            !reconnectSupported || (await isVerifiedComplete());
+          const info = reconnectSupported ? await getStreamInfo() : undefined;
           if (canceled) return;
-          if (!verifiedComplete) {
+          if (reconnectSupported && !isVerifiedComplete(info)) {
             try {
+              await assertNotStalledAtHole(info);
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
