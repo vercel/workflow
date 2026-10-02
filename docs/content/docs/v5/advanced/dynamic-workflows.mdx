@@ -79,7 +79,7 @@ Only `1` or `true` (case-insensitive) enables them; any other value, or no value
 
 ### Same deployment only
 
-A dynamic run must execute on the deployment that started it. `start()` rejects a dynamic start whose target differs from the current deployment. That includes an explicit `deploymentId` for another deployment, `deploymentId: 'latest'` when it resolves to a different deployment, and any concrete target when the current deployment cannot be determined. The rejection happens before any capability check, key lookup, upload, run creation, or queue message.
+A dynamic run must execute on the deployment that started it. `start()` rejects a dynamic start whose target differs from the current deployment. That includes an explicit `deploymentId` for another deployment, `deploymentId: 'latest'` when it resolves to a different deployment, and any concrete target when the current deployment cannot be determined. The rejection happens before any capability check, key lookup, upload, run creation, or queue message. A confirmed mismatch fails without retrying. When the current deployment cannot be determined, the error stays retryable, since the lookup may succeed on a later attempt.
 
 ## What the source can use
 
@@ -147,6 +147,8 @@ Supply a unique, deterministic approval token from the caller. The workflow must
 - No inline `"use step"` functions. Steps come from `experimental_dynamic.steps`.
 - At most 128 KB of source.
 - On Vercel, the run's execution context is limited to 2,048 bytes of JSON, and the `dynamicWorkflow` metadata below counts against it. That leaves room for roughly 30 step aliases, depending on how long the aliases and step IDs are. A start that exceeds it fails before anything is written.
+
+A start that breaks these rules, or that the opt-in, same-deployment, or World checks refuse, throws a fatal error. A step that calls `start()` fails on the first attempt instead of spending its retries on a start that can never succeed.
 
 Everything a static workflow must obey still applies: the body has to be [deterministic](/docs/foundations/workflows-and-steps), and any side effect belongs in a step.
 
