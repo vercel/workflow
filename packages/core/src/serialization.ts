@@ -1052,6 +1052,10 @@ export interface SerializableSpecial {
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
+  // A `DataView`, as base64 of the bytes it views. Not tagged `DataView`:
+  // that tag belongs to devalue's built-in encoding, which payloads written
+  // before this one still use. See `getCommonReducers()`.
+  DataViewBytes: string; // base64 string of the viewed bytes only
   Date: string; // ISO string
   DOMException: {
     message: string;
@@ -1186,6 +1190,24 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof global.BigUint64Array && viewToBase64(value),
+    // Claims `DataView` for the same reason every typed array is claimed:
+    // devalue's built-in `DataView` encoding emits the *whole* backing
+    // ArrayBuffer plus the view's offset and length. For a view onto Node's
+    // shared `Buffer` pool (`Buffer.allocUnsafe`, and `Buffer.from` below
+    // `Buffer.poolSize >>> 1`) that whole buffer is 8 KiB of unrelated
+    // allocations, so a four-byte view would persist bytes the workflow
+    // never handed us into the run's event log. Base64 of the viewed range
+    // keeps the payload to the bytes the view actually spans.
+    //
+    // The tag deliberately is *not* `DataView`. devalue skips its built-in
+    // branch for any tag that has a custom reviver, so registering one under
+    // that name would strip the bounds off `["DataView", buf, offset, length]`
+    // tuples already in event logs — the o11y UI and CLI read those with
+    // current code, and would render the whole pooled slab this reducer
+    // exists to keep out. Under a distinct tag the built-in branch stays
+    // reachable and those payloads still revive with their bounds.
+    DataViewBytes: (value) =>
+      value instanceof global.DataView && viewToBase64(value),
     // Class and Instance are intentionally placed before Error so that
     // custom Error subclasses with WORKFLOW_SERIALIZE take precedence
     // over the generic Error serialization (devalue uses first-match-wins).
@@ -1661,6 +1683,12 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     BigUint64Array: (value: string) => {
       const ab = reviveArrayBuffer(value);
       return new global.BigUint64Array(ab);
+    },
+    // No `DataView` reviver: see the `DataViewBytes` reducer. Older payloads
+    // tagged `DataView` must keep reaching devalue's built-in branch.
+    DataViewBytes: (value: string) => {
+      const ab = reviveArrayBuffer(value);
+      return new global.DataView(ab);
     },
     Date: (value) => new global.Date(value),
     DOMException: (value) => {

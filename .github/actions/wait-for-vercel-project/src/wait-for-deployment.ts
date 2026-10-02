@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { Vercel } from '@vercel/sdk';
 import * as fs from 'fs';
+import { getTerminalDeploymentState } from './deployment-state.mjs';
 
 interface VercelDeployment {
   uid: string;
@@ -145,6 +146,8 @@ async function run(): Promise<void> {
           console.log(`Deployment state: ${deployment.state}`);
           console.log(`Deployment readyState: ${deployment.readyState}`);
 
+          const terminalState = getTerminalDeploymentState(deployment);
+
           // Check if deployment is ready
           if (
             deployment.state === 'READY' ||
@@ -158,13 +161,14 @@ async function run(): Promise<void> {
             core.setOutput('deployment-url', deploymentUrl);
             core.setOutput('deployment-id', deployment.uid);
             return; // Exit successfully
-          } else if (
-            deployment.state === 'ERROR' ||
-            deployment.state === 'CANCELED'
-          ) {
-            throw new Error(
-              `Deployment failed with state: ${deployment.state}`
+          } else if (terminalState) {
+            const inspectorUrl = deployment.inspectorUrl
+              ? ` (${deployment.inspectorUrl})`
+              : '';
+            core.setFailed(
+              `Deployment ${deployment.uid} failed with state: ${terminalState}${inspectorUrl}`
             );
+            return;
           } else {
             console.log(
               `🔄 Deployment in progress (state: ${deployment.state}, readyState: ${deployment.readyState})`
