@@ -1,5 +1,26 @@
 # @workflow/world-vercel
 
+## 4.7.6
+
+### Patch Changes
+
+- [#4557](https://github.com/vercel/workflow/pull/4557) [`3c033a9`](https://github.com/vercel/workflow/commit/3c033a9ceefcdfcb5a1150a3d4f98555131f6d2d) Thanks [@SandboxRD](https://github.com/SandboxRD)! - Fix `createQueueDispatcher()` and `createEventsDispatcher()` crashing under Bun with `compose is not a function`. Bun resolves `undici` to its built-in module, whose dispatchers can't compose interceptors and are ignored by Bun's `fetch`, so the plain dispatcher is used instead.
+
+- [#4275](https://github.com/vercel/workflow/pull/4275) [`b5a78f8`](https://github.com/vercel/workflow/commit/b5a78f8b6856d2b9bbce69ab865d135d52200ecd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Honor server-provided Retry-After delays when scheduling queue redeliveries.
+
+## 4.7.5
+
+### Patch Changes
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77) Thanks [@pranaygp](https://github.com/pranaygp)! - Send event requests with bodies too large to re-buffer over HTTP/1.1 so they no longer stall behind in-flight HTTP/2 streams, and retry event-log reads whose HTTP/2 stream the peer reset.
+
+- [#4179](https://github.com/vercel/workflow/pull/4179) [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Route unrecognized backend connection and stream failures through existing retry policies, rebuilding shared event connections after repeated HTTP/2 failures. Keep invalid backend URLs, blocked ports, and unsupported request headers out of those retries. Include error cause chains in run-failure logs to expose underlying socket, DNS, and TLS failures.
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade undici to 7.30.0, which stops a failed HTTP/2 stream from leaving a phantom in-flight request on its connection.
+
+- Updated dependencies [[`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0)]:
+  - @workflow/errors@4.2.2
+
 ## 4.7.4
 
 ### Patch Changes
