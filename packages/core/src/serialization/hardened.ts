@@ -245,6 +245,16 @@ const typedArrayByteLength = protoGetter<number>(
   'byteLength'
 );
 const typedArrayLength = protoGetter<number>(TypedArrayPrototype, 'length');
+// `%TypedArray%.prototype.set` copies by internal slots and, unlike `slice`,
+// never consults a species constructor.
+const typedArraySet = uncurryThis(
+  (TypedArrayPrototype as Uint8Array).set as (
+    this: Uint8Array,
+    source: ArrayLike<number>
+  ) => void
+);
+const HostArrayBuffer = ArrayBuffer;
+const HostUint8Array = Uint8Array;
 const dataViewBuffer = protoGetter<ArrayBufferLike>(
   DataView.prototype,
   'buffer'
@@ -652,14 +662,33 @@ export const hardenedStringifyOperations: Partial<StringifyOperations> = {
 
   viewInfo: (view: ArrayBufferView) => {
     const info = viewInfo(view);
+    // devalue only reads `length` for typed-array subviews; DataView
+    // subviews are encoded from `byteLength`.
+    const length = types.isDataView(view) ? 0 : typedArrayLength(view);
+    const bufferByteLength = types.isSharedArrayBuffer(info.buffer)
+      ? sharedArrayBufferByteLength(info.buffer)
+      : arrayBufferByteLength(info.buffer);
+    if (info.byteLength === bufferByteLength) {
+      return { ...info, length, bufferByteLength };
+    }
+    // Reached only for views the reducers did not claim (e.g. `Float16Array`,
+    // which no reducer set handles). devalue's built-in encoding emits the
+    // view's *whole* backing buffer plus offset/length, and a view onto
+    // Node's shared `Buffer` pool (`Buffer.allocUnsafe`, small `Buffer.from`)
+    // would put 8 KiB of unrelated, possibly sensitive allocations into the
+    // event log. Copy just the viewed bytes into a fresh buffer, so devalue
+    // encodes the compact `[tag, buffer]` form, which every reader accepts.
+    const copy = new HostArrayBuffer(info.byteLength);
+    typedArraySet(
+      new HostUint8Array(copy),
+      new HostUint8Array(info.buffer, info.byteOffset, info.byteLength)
+    );
     return {
-      ...info,
-      // devalue only reads `length` for typed-array subviews; DataView
-      // subviews are encoded from `byteLength`.
-      length: types.isDataView(view) ? 0 : typedArrayLength(view),
-      bufferByteLength: types.isSharedArrayBuffer(info.buffer)
-        ? sharedArrayBufferByteLength(info.buffer)
-        : arrayBufferByteLength(info.buffer),
+      buffer: copy,
+      byteOffset: 0,
+      byteLength: info.byteLength,
+      length,
+      bufferByteLength: info.byteLength,
     };
   },
 
