@@ -1179,9 +1179,8 @@ export async function executeStep(
       // catch maps it to step_failed/step_retrying.
       if (userCodeFailed) {
         // Released writers still own transports when the step body throws.
-        // Arm the same settlement as on success; held writers remain background
-        // work, and cleanup failures must not replace the user's error.
-        safeWaitUntil(Promise.all(ops), () => {});
+        // Settle released writers without retaining abandoned, lock-held ops
+        // through waitUntil. Cleanup failures must not replace the user's error.
         await settleReleasedStepStreams(streamStates).catch(() => {});
         throw userCodeError;
       }

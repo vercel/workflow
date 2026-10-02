@@ -630,6 +630,24 @@ describe('WorkflowServerWritableStream', () => {
       expect(session.close).toHaveBeenCalledTimes(1);
     });
 
+    it('settles an unused released writer whose session could not initialize', async () => {
+      mockStreams.createWriteSession = vi.fn(() => {
+        throw new Error('session setup failed');
+      });
+      const transform = new TransformStream<Uint8Array, Uint8Array>();
+      const state = createFlushableState();
+      const pipe = flushablePipe(
+        transform.readable,
+        new WorkflowServerWritableStream('run-123', 'test-stream'),
+        state
+      ).catch(() => {});
+      const writable = trackFlushableWritable(transform.writable, state);
+      await expect(state.settleReleasedWrites?.()).resolves.toBe(true);
+      await expect(state.promise).resolves.toBeUndefined();
+      await writable.abort();
+      await pipe;
+    });
+
     it('does not release a held writer or a durability-only snapshot', async () => {
       const { session, state, pipe, writable } = makePipe();
       const writer = writable.getWriter();

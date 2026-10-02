@@ -429,15 +429,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
   release(): Promise<void> {
     return this.enqueue(async () => {
       if (this.mode === 'closed' || this.mode === 'poisoned') return;
-      // A released handle can be acquired again. Retire only its socket and
-      // keep the writer usable over HTTP, with the same sequence space. Set
-      // the mode before closing so neither a late OPEN nor close reconnects.
-      this.mode = 'http';
-      this.drainReason = undefined;
-      const socket = this.socket;
-      this.socket = undefined;
-      this.finishDrainWait();
-      if (socket) beginNormalWsClose(socket, 'stream writer released');
+      // A released handle remains usable over HTTP with the same sequence
+      // space, without retaining or reconnecting its idle socket.
+      this.fallbackToHttpBeforeSend('stream writer released');
     });
   }
 
@@ -963,9 +957,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private fallbackToHttpBeforeSend(reason = 'HTTP fallback before send'): void {
     this.mode = 'http';
     this.drainReason = undefined;
-    this.socket?.close(1000, reason);
+    const socket = this.socket;
     this.socket = undefined;
+    // HTTP writes must not wait for a retired upgrade to finish negotiating.
+    this.transportDecision = Promise.resolve();
     this.finishDrainWait();
+    if (socket) beginNormalWsClose(socket, reason);
   }
 
   /**

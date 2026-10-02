@@ -6,7 +6,8 @@ Steps wait for released stream writers to drain before recording completion,
 then release idle transport resources when the World supports it. Reacquiring
 the same writable remains supported. Aborting a public writable drains its
 accepted prefix and disposes the underlying writer transport without closing
-the shared server stream.
+the shared server stream. Source failures in flushable readable pipes propagate
+to the user-facing reader rather than leaving it waiting for more data.
 Streams that finish draining after the inline wait budget expires do not force
 an extra queued continuation unless other background operations remain pending.
 
