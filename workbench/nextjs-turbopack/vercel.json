@@ -88,6 +88,12 @@
     },
     "app/api/e2e-stream-read/sfo1/route.ts": {
       "regions": ["sfo1"]
+    },
+    "app/api/e2e-stream-write/iad1/route.ts": {
+      "regions": ["iad1"]
+    },
+    "app/api/e2e-stream-write/sfo1/route.ts": {
+      "regions": ["sfo1"]
     }
   }
 }
