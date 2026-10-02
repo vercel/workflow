@@ -110,5 +110,13 @@ owner keeps a durable **monitor wake** pending, using `queue()` with
   replays and restarts inline steps whose previous owner is gone, within the
   step's attempt budget.
 
-Remote steps and sleeps keep their own deadline wakes.
+Remote steps and sleeps keep their own deadline wakes. A live owner never
+expires its own running steps; only attempts whose owner is gone time out.
+
+At its function deadline the owner **hands off instead of failing the run**.
+About 10 s before the deadline it stops taking work: new inputs get a
+retryable 503 and no new inline steps start. It then enqueues an immediate run
+wake for the next owner invocation and retires. That owner replays and
+restarts any cut-off inline step as its next attempt, so a step that always
+outlives the deadline fails through its own retry budget.
 

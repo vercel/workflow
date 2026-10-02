@@ -88,6 +88,8 @@ class InputRejected extends WorkflowWorldError {}
  * acknowledged (and an activation input is not committed), so its sender
  * redelivers it. Never a run failure. */
 class MonitorUnavailable extends InputRejected {}
+/** Near the deadline: retryable, the next delivery reaches a fresh owner. */
+class HandoffPending extends InputRejected {}
 
 const DISPATCH_STAGGER_MS = Number(
   process.env.WORKFLOW_DISPATCH_STAGGER_MS ?? 0
@@ -231,6 +233,9 @@ const MAX_WAKE_DELAY_SECONDS = 82_800;
 /** While the owner has in-process work, a durable wake is kept armed this far
  * ahead so a crashed owner is replaced (WORKFLOW_RETAINED_MONITOR_MS). */
 const DEFAULT_MONITOR_MS = 60_000;
+/** Before the function deadline the owner stops taking work and hands the
+ * run to a fresh owner invocation through an immediate queue wake. */
+const HANDOFF_MARGIN_MS = 10_000;
 
 function monitorMs(): number {
   const value = Number(process.env.WORKFLOW_RETAINED_MONITOR_MS);
@@ -381,8 +386,15 @@ export class RetainedRunner {
             if (
               event.eventType === 'step_completed' ||
               event.eventType === 'step_failed'
-            )
-              await this.advance();
+            ) {
+              // The outcome is committed; past the handoff point the next
+              // owner advances from it.
+              try {
+                await this.advance();
+              } catch (error) {
+                if (!(error instanceof HandoffPending)) throw error;
+              }
+            }
             return result;
           });
         }) as World['events']['create'],
@@ -439,7 +451,8 @@ export class RetainedRunner {
       );
     if (this.closing)
       return Promise.reject(
-        new WorkflowWorldError('Runner is retiring', { status: 409 })
+        // Retryable: the next delivery reaches a fresh owner.
+        new WorkflowWorldError('Runner is retiring', { status: 503 })
       );
     if (this.pending.length >= (this.queuedSteps?.mode === 'hybrid' ? 128 : 32))
       return Promise.reject(
@@ -1107,11 +1120,12 @@ export class RetainedRunner {
     if (this.queuedSteps) await this.expireQueuedSteps();
     for (;;) {
       if (this.fault) throw this.fault;
-      if (Date.now() >= this.deadline - 2000)
-        throw new RunnerFault(
-          'execution',
-          new Error('Runner execution deadline reached')
-        );
+      // Near the function deadline: take no more work. The input is rejected
+      // retryably (committed events stay) and a fresh owner continues.
+      if (this.handoffDue())
+        throw new HandoffPending('Owner is handing off at its deadline', {
+          status: 503,
+        });
       await this.completeDueWaits();
       const before = this.events.length;
       // A retained VM advances only on new events. Wakes that bring none (for
@@ -1450,6 +1464,37 @@ export class RetainedRunner {
     return armed;
   }
 
+  private handoffDue() {
+    return Date.now() >= this.deadline - HANDOFF_MARGIN_MS;
+  }
+
+  /** Hand the run to the next owner invocation: an immediate durable wake.
+   * Cut-off inline steps restart there as their next attempt. */
+  private async handOff() {
+    if (!this.runState || isTerminalWorkflowRunStatus(this.runState.status))
+      return;
+    try {
+      await this.observed('handoff', () =>
+        this.backend.queue(
+          this.metadata.queueName,
+          { runId: this.runId },
+          {
+            deploymentId: this.runState!.deploymentId,
+            idempotencyKey: `retained-handoff:${this.runId}:${this.id}`,
+          }
+        )
+      );
+    } catch (error) {
+      // The pending monitor (armed while work was in flight) still recovers
+      // the run, later.
+      console.error('[workflow] Owner handoff wake failed', {
+        runId: this.runId,
+        ownerId: this.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private waitResumeAt(waitId: string): Date | undefined {
     let resumeAt: Date | undefined;
     for (const event of this.events)
@@ -1674,6 +1719,8 @@ export class RetainedRunner {
       if (
         step.status !== 'running' ||
         !start ||
+        // A step running in this owner is alive; only lost attempts expire.
+        this.localWorkers.has(step.stepId) ||
         (+start.event.createdAt + policy.attemptTimeoutMs > Date.now() &&
           !(undeliveredAt !== undefined && undeliveredAt <= Date.now()))
       )
@@ -1993,11 +2040,15 @@ export class RetainedRunner {
 
   private async runOwnerLoop() {
     while (!this.closing && !this.fault) {
+      if (this.handoffDue()) break;
       const item = this.pending.shift();
       if (!item) {
         if (this.runState && isTerminalWorkflowRunStatus(this.runState.status))
           break;
-        const waitMs = Math.min(this.idleMs, this.deadline - Date.now() - 2000);
+        const waitMs = Math.min(
+          this.idleMs,
+          this.deadline - HANDOFF_MARGIN_MS - Date.now()
+        );
         if (waitMs <= 0) break;
         const woke = await new Promise<boolean>((resolve) => {
           const timer = setTimeout(() => {
@@ -2019,16 +2070,12 @@ export class RetainedRunner {
       else await item.run.call(undefined).then(item.resolve, item.reject);
     }
     this.closing = true;
+    const pendingTimers = this.localTimers.size > 0;
     for (const timer of this.localTimers.values()) clearTimeout(timer);
     this.localTimers.clear();
-    if (
-      this.workers.size > 0 &&
-      this.runState &&
-      !isTerminalWorkflowRunStatus(this.runState.status)
-    )
-      await this.fail(
-        new Error('Runner deadline reached with unfinished step work')
-      );
+    // Ending with unfinished work (the deadline) is a handoff, not a failure.
+    if (!this.fault && (this.workers.size > 0 || pendingTimers))
+      await this.handOff();
     const error = this.fault?.superseded
       ? supersededError(this.fault)
       : (this.fault ??

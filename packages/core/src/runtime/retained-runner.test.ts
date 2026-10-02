@@ -1515,7 +1515,8 @@ async function setup(
   workflowCode = code,
   ownerJournal = false,
   queued: boolean | 'hybrid' = false,
-  idleMs = queued ? 500 : 40
+  idleMs = queued ? 500 : 40,
+  attemptTimeoutMs?: number
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
   const world = createWorld({ dataDir: directory }) as World;
@@ -1537,7 +1538,8 @@ async function setup(
           ? {
               stepExecution: {
                 mode: queued === 'hybrid' ? 'hybrid' : 'queued',
-                attemptTimeoutMs: queued === 'hybrid' ? 60_000 : 1000,
+                attemptTimeoutMs:
+                  attemptTimeoutMs ?? (queued === 'hybrid' ? 60_000 : 1000),
               },
             }
           : {}),
@@ -2017,6 +2019,89 @@ it('rejects an input retryably, without failing the run, when the monitor cannot
   await fixture.finished;
 });
 
+const slowStepCode = `
+  const slow = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('slowLocal');
+  async function workflow() {
+    return slow('x');
+  }
+  globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+it('does not expire a hybrid step that is still running in the live owner', async () => {
+  let calls = 0;
+  registerStepFunction('slowLocal', async (value) => {
+    calls++;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    return value;
+  });
+  // A 1 s attempt timeout, far shorter than the step body.
+  const fixture = await setup(slowStepCode, false, 'hybrid', 3000, 1000);
+  vi.spyOn(fixture.world, 'queue').mockResolvedValue({ messageId: null });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  // Any input runs expiry; the live owner must keep its own attempt.
+  await fixture.owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('recovery-wake') }
+  );
+  await fixture.finished;
+  expect(calls).toBe(1);
+  expect(
+    fixture.owner.events.some((e) => e.eventType === 'step_retrying')
+  ).toBe(false);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
+it('hands off to a fresh owner at its deadline instead of failing the run', async () => {
+  let calls = 0;
+  registerStepFunction('slowLocal', async (value) => {
+    // The first attempt outlives its owner's deadline.
+    if (++calls === 1)
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    return value;
+  });
+  const fixture = await setup(slowStepCode, false, false, 5000);
+  // 10 s handoff margin: the owner reaches its handoff point after ~1 s.
+  fixture.world.getRuntimeDeadline = async () => new Date(Date.now() + 11_000);
+  const keys: string[] = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      keys.push(options?.idempotencyKey ?? '');
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.finished;
+  expect(keys.some((k) => k.startsWith('retained-handoff:'))).toBe(true);
+  expect(fixture.owner.events.some((e) => e.eventType === 'run_failed')).toBe(
+    false
+  );
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
+  // The handoff wake reaches a fresh owner, which restarts the step.
+  const next = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    slowStepCode,
+    fixture.metadata,
+    () => {},
+    40
+  );
+  fixture.world.getRuntimeDeadline = undefined;
+  await next.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('handoff-wake') }
+  );
+  await vi.waitFor(async () =>
+    expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+      'completed'
+    )
+  );
+  expect(calls).toBe(2);
+});
+
 it('keeps the monitor chain armed only while in-process step work remains', async () => {
   vi.stubEnv('WORKFLOW_RETAINED_MONITOR_MS', '1000');
   cleanups.push(async () => vi.unstubAllEnvs());
@@ -2296,8 +2381,12 @@ it('uses the queued wake when local timers are disabled', async () => {
     { runId: fixture.runId },
     { ...fixture.metadata, messageId: MessageId.parse('vqs-wake') }
   );
-  await vi.waitFor(() => expect(marks).toEqual(['before', 'after']));
-  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
-    'completed'
+  await vi.waitFor(() => expect(marks).toEqual(['before', 'after']), {
+    timeout: 5000,
+  });
+  await vi.waitFor(async () =>
+    expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+      'completed'
+    )
   );
 });
