@@ -417,7 +417,11 @@ async function describeStuckRun(
 // settled yet. `completed` past the poll budget is downgraded to a non-gating
 // SLOW_COMPLETION (slow, not wedged); `failed`/`cancelled` keep their meaning.
 function classifyTerminalRun(
-  runData: { status: string; errorCode?: string },
+  // A failed WorkflowRun carries its reason in `error: { code, message }` — the
+  // run has no top-level `errorCode`. Reading the structured error is what lets
+  // us classify USER_ERROR/RUNTIME_ERROR/CORRUPTED_EVENT_LOG (vs. uncategorised
+  // `other`) and surface *why* it failed in the summary.
+  runData: { status: string; error?: { code?: string; message?: string } },
   context: {
     runId: string;
     scenario: Scenario;
@@ -450,8 +454,9 @@ function classifyTerminalRun(
   if (runData.status === 'failed') {
     return {
       ...base,
-      outcome: classifyFailure(runData.errorCode),
-      errorCode: runData.errorCode,
+      outcome: classifyFailure(runData.error?.code),
+      errorCode: runData.error?.code,
+      errorMessage: runData.error?.message,
     };
   }
 
@@ -1017,44 +1022,42 @@ describe('event log race repro', () => {
     }
   });
 
-  test(
-    'event log races do not corrupt, stall, or take stale branches',
-    { timeout: testTimeoutMs },
-    async () => {
-      const stepBiasedAttempts = Math.ceil(config.stepSleepRaceAttempts / 2);
-      const sleepBiasedAttempts = Math.floor(config.stepSleepRaceAttempts / 2);
-      const results = [
-        ...(await runScenario(
-          config.hookSleepAttempts,
-          config.concurrency,
-          runHookSleepAttempt
-        )),
-        ...(await runScenario(
-          config.stepFanoutAttempts,
-          config.stepConcurrency,
-          runStepFanoutAttempt
-        )),
-        ...(await runScenario(
-          stepBiasedAttempts,
-          config.stepConcurrency,
-          (attempt) => runStepSleepRaceAttempt(attempt, 'step')
-        )),
-        ...(await runScenario(
-          sleepBiasedAttempts,
-          config.stepConcurrency,
-          (attempt) => runStepSleepRaceAttempt(attempt, 'sleep')
-        )),
-      ];
-      writeResults(results);
+  test('event log races do not corrupt, stall, or take stale branches', {
+    timeout: testTimeoutMs,
+  }, async () => {
+    const stepBiasedAttempts = Math.ceil(config.stepSleepRaceAttempts / 2);
+    const sleepBiasedAttempts = Math.floor(config.stepSleepRaceAttempts / 2);
+    const results = [
+      ...(await runScenario(
+        config.hookSleepAttempts,
+        config.concurrency,
+        runHookSleepAttempt
+      )),
+      ...(await runScenario(
+        config.stepFanoutAttempts,
+        config.stepConcurrency,
+        runStepFanoutAttempt
+      )),
+      ...(await runScenario(
+        stepBiasedAttempts,
+        config.stepConcurrency,
+        (attempt) => runStepSleepRaceAttempt(attempt, 'step')
+      )),
+      ...(await runScenario(
+        sleepBiasedAttempts,
+        config.stepConcurrency,
+        (attempt) => runStepSleepRaceAttempt(attempt, 'sleep')
+      )),
+    ];
+    writeResults(results);
 
-      // Only event-log regressions fail the job. `infra` outcomes are
-      // harness-side timing races (hook resume vs. sleep budget) and transport
-      // errors — they are recorded and surfaced in the summary, but do not
-      // gate, matching `--check` in the renderer script.
-      const regressions = results.filter(
-        (result) => result.outcome !== 'completed' && result.outcome !== 'infra'
-      );
-      expect(regressions).toEqual([]);
-    }
-  );
+    // Only event-log regressions fail the job. `infra` outcomes are
+    // harness-side timing races (hook resume vs. sleep budget) and transport
+    // errors — they are recorded and surfaced in the summary, but do not
+    // gate, matching `--check` in the renderer script.
+    const regressions = results.filter(
+      (result) => result.outcome !== 'completed' && result.outcome !== 'infra'
+    );
+    expect(regressions).toEqual([]);
+  });
 });
