@@ -54,11 +54,14 @@ runs:
         DEPLOYMENT_ENV: ${{ inputs.env }}
       run: |
         set -euo pipefail
+        # Every CLI call goes through the retry: a burst of these jobs trips the
+        # Vercel API rate limit (see with-rate-limit-retry.sh).
+        retry="$GITHUB_ACTION_PATH/with-rate-limit-retry.sh"
         # `vercel deploy` in source-upload mode applies the project's Root
         # Directory itself and expects to run from the repo root, like the Git
         # integration. `--cwd=<app dir>` would double-join the Root Directory
         # ("workbench/x/workbench/x does not exist").
-        vercel pull --yes --environment=preview \
+        "$retry" vercel pull --yes --environment=preview \
           --project="$PROJECT_ID" --scope="$TEAM_ID" --token="$VERCEL_DEPLOY_TOKEN"
         env_args=()
         while IFS= read -r line; do
@@ -68,12 +71,12 @@ runs:
         # do not redirect stderr into this capture. `--target=preview` is
         # explicit so these shared projects can never be deployed to their
         # production aliases by a later flag change.
-        URL=$(vercel deploy --yes --target=preview "${env_args[@]}" \
+        URL=$("$retry" vercel deploy --yes --target=preview "${env_args[@]}" \
           --scope="$TEAM_ID" --token="$VERCEL_DEPLOY_TOKEN")
         echo "url=$URL" >> "$GITHUB_OUTPUT"
         # Best-effort: only runtime-log capture on failure reads the ID, and it
         # skips gracefully without one.
-        DEPLOYMENT_ID=$(vercel inspect "$URL" --format=json \
+        DEPLOYMENT_ID=$("$retry" vercel inspect "$URL" --format=json \
           --scope="$TEAM_ID" --token="$VERCEL_DEPLOY_TOKEN" 2>/dev/null \
           | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{}})" || true)
         echo "deploymentId=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"

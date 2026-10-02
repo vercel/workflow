@@ -52,6 +52,7 @@ import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
+  DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
@@ -59,6 +60,7 @@ import {
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
+  isDynamicWorkflowsEnabled,
   isInlineOwnershipEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
@@ -69,6 +71,11 @@ import {
   guardDeploymentAffinity,
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
+import {
+  type DynamicWorkflowMetadata,
+  dynamicWorkflowName,
+  readDynamicWorkflowMetadata,
+} from './runtime/dynamic-workflow.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -83,6 +90,7 @@ import {
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
+  REPLAY_RESOLVE_DATA,
   resolveRunEncryptionKey,
   rootRunIdFrom,
   runDispatchContext,
@@ -131,7 +139,12 @@ import {
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld } from './runtime/world.js';
-import { dehydrateRunError, type PayloadKey } from './serialization.js';
+import {
+  dehydrateRunError,
+  hydrateDynamicWorkflowCode,
+  type PayloadKey,
+} from './serialization.js';
+import { setErrorStack } from './set-error-stack.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -153,6 +166,7 @@ import {
 } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
+  compileDynamicWorkflowBundle,
   compileWorkflowBundle,
   replayWorkflow,
   resumeWorkflow,
@@ -197,6 +211,9 @@ export {
   wakeUpRun,
 } from './runtime/runs.js';
 export {
+  type DynamicStartOptions,
+  type DynamicWorkflowOptions,
+  type DynamicWorkflowStepReference,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
@@ -677,6 +694,108 @@ async function getMaxInlineDurationMs(
   return ms('2m');
 }
 
+/** The workflow code a delivery replays, and the marker when it is dynamic. */
+interface ResolvedWorkflowCode {
+  code: string;
+  dynamicWorkflow?: DynamicWorkflowMetadata;
+}
+
+/**
+ * Pick the workflow code this run replays.
+ *
+ * For a static run this is the deployment's bundle, returned unchanged after
+ * one plaintext property read. The dynamic branch exists for runs started from
+ * source: their workflow function was never in the bundle, so the code came
+ * with the run, and replaying it means evaluating that exact code rather than
+ * whatever the deployment now contains.
+ *
+ * Stored code is only executed when all of these hold, and each failure is a
+ * `WorkflowRuntimeError` so the caller fails the run instead of redelivering a
+ * message whose verdict cannot change:
+ *
+ * - this deployment has opted in to dynamic workflows;
+ * - the run's `workflowName` is the id its `dynamicWorkflow` marker derives
+ *   (a marker on a static workflow's run does not redirect it to stored code);
+ * - the code exists and hydrates, which requires the `encr` envelope whenever
+ *   the run has key material or was started with encryption.
+ *
+ * Two sources for the code, in order of what the invocation already holds:
+ *
+ * 1. On the run snapshot. The normal case: `run_created` and the queue
+ *    message both carry the bytes, so a read is already unnecessary by the
+ *    time replay begins.
+ * 2. Read back from the run. Needed when the definition was too large to
+ *    send inline and lives behind a ref, or the snapshot was read with
+ *    `resolveData: 'none'`, which omits the code. The run has to exist first,
+ *    hence the barrier.
+ *
+ * World and key-lookup errors propagate unchanged, so transient failures are
+ * still redelivered.
+ *
+ * @param getEncryptionKey - Resolved only on the dynamic branch. The key is
+ *   lazy for a reason: some deliveries never need it, and forcing it here
+ *   would put a key fetch on every static run's critical path.
+ * @param awaitRunReady - Orders the fallback read after the write that
+ *   creates the run; a no-op once the run is durable.
+ */
+async function resolveWorkflowCodeForRun(
+  staticWorkflowCode: string,
+  workflowRun: WorkflowRun,
+  getEncryptionKey: () => Promise<PayloadKey | undefined>,
+  world: World,
+  awaitRunReady: () => Promise<void>
+): Promise<ResolvedWorkflowCode> {
+  const dynamicWorkflow = readDynamicWorkflowMetadata(
+    workflowRun.executionContext
+  );
+  if (!dynamicWorkflow) return { code: staticWorkflowCode };
+
+  const runLabel = `Workflow run "${workflowRun.runId}" is a dynamic workflow run (source ${dynamicWorkflow.sourceHash.slice(0, 12)})`;
+  if (!isDynamicWorkflowsEnabled()) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but this deployment has not enabled dynamic workflows, so its stored code was not executed. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    );
+  }
+  const expectedWorkflowName = dynamicWorkflowName(dynamicWorkflow);
+  if (workflowRun.workflowName !== expectedWorkflowName) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its workflow name ${JSON.stringify(workflowRun.workflowName)} does not match the dynamic id ${JSON.stringify(expectedWorkflowName)} its marker derives, so its stored code was not executed.`
+    );
+  }
+
+  let stored = workflowRun.dynamicWorkflowCode;
+  if (stored === undefined) {
+    await awaitRunReady();
+    stored = (await world.runs.get(workflowRun.runId, { resolveData: 'all' }))
+      .dynamicWorkflowCode;
+  }
+
+  if (stored === undefined) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its stored workflow code is missing, so it cannot be replayed. ` +
+        'This means the code was never persisted or its storage has expired.'
+    );
+  }
+
+  const encryptionKey = await getEncryptionKey();
+  const features = workflowRun.executionContext?.features as
+    | { encryption?: unknown }
+    | undefined;
+  try {
+    return {
+      code: await hydrateDynamicWorkflowCode(stored, encryptionKey, {
+        encryptionRequired: features?.encryption === true,
+      }),
+      dynamicWorkflow,
+    };
+  } catch (cause) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its stored workflow code could not be decoded, so it was not executed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause }
+    );
+  }
+}
+
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -798,14 +917,16 @@ export function workflowEntrypoint(
               errorAttribution: maxDeliveriesDescription.attribution,
             }
           );
+          let encryptionKey: PayloadKey | undefined;
+          let dehydratedError: Uint8Array;
           try {
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
-            const encryptionKey = await getEncryptionKey();
-            const dehydratedError = await dehydrateRunError(
+            encryptionKey = await getEncryptionKey();
+            dehydratedError = await dehydrateRunError(
               err,
               runId,
               encryptionKey
@@ -822,17 +943,30 @@ export function workflowEntrypoint(
               },
               { requestId }
             );
-            dispatchRunFailedHooks(
-              runId,
-              workflowName,
-              dehydratedError,
-              encryptionKey,
-              RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
-            );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
               return;
+            }
+            // A transient backend failure (429 / 5xx / transport) must not
+            // abandon the run: acking here leaves it `running` with no message
+            // left to drive it. Throw so the queue redelivers with its backoff
+            // (honoring a 429's Retry-After); the redelivery is still past the
+            // ceiling, so it only retries this terminal write, never the replay.
+            // This relies on the World redelivering past the ceiling: VQS and
+            // world-local do, while world-postgres currently caps its jobs at
+            // exactly this delivery (#4427, fixed by #4428).
+            if (isRetryableWorldError(err)) {
+              runLogger.warn(
+                'Transient error marking run as failed after max deliveries, retrying via queue redelivery',
+                {
+                  attempt: metadata.attempt,
+                  errorName: err instanceof Error ? err.name : 'UnknownError',
+                  errorMessage:
+                    err instanceof Error ? err.message : String(err),
+                }
+              );
+              throw err;
             }
             runLogger.error(
               `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
@@ -847,7 +981,15 @@ export function workflowEntrypoint(
                 errorStack: err instanceof Error ? err.stack : undefined,
               }
             );
+            return;
           }
+          dispatchRunFailedHooks(
+            runId,
+            workflowName,
+            dehydratedError,
+            encryptionKey,
+            RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+          );
           return;
         }
 
@@ -966,6 +1108,11 @@ export function workflowEntrypoint(
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
                   let loopIteration = 0;
+                  // Hooks whose force-claim victim wake this invocation has
+                  // already sent (its own forced creations, and the replay's
+                  // republishes), so each suspension of the loop below does
+                  // not send them again. See `forcedCreationsOwingWake`.
+                  const forceClaimVictimWakes = new Set<string>();
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
@@ -986,6 +1133,17 @@ export function workflowEntrypoint(
                       >
                     ) => {
                       if (!workflow || useQuickJSVm(workflow)) return;
+                      // A dynamic run does not replay the deployment's
+                      // bundle, and its own code is not available yet (it is
+                      // encrypted, and resolving it needs the run's key). Skip
+                      // the warm-up rather than cache scripts the replay must
+                      // not use: `replayWorkflow` compiles the resolved code
+                      // itself when no compiled scripts are handed to it.
+                      if (
+                        readDynamicWorkflowMetadata(workflow.executionContext)
+                      ) {
+                        return;
+                      }
                       if (compiledWorkflowName !== workflow.workflowName) {
                         compiledWorkflowName = workflow.workflowName;
                         compiledWorkflowScripts = compileWorkflowBundle(
@@ -1030,7 +1188,14 @@ export function workflowEntrypoint(
                     params?: CreateEventParams
                   ) => {
                     const sinceCursor = deltaRequestCursor(data, params);
-                    const withSnapshot = { ...slotSnapshot(), ...params };
+                    // Replay events a write hands back (an inline delta or a
+                    // preload) only feed this log; read them the way replay
+                    // reads the log.
+                    const withSnapshot: CreateEventParams = {
+                      ...slotSnapshot(),
+                      resolveData: REPLAY_RESOLVE_DATA,
+                      ...params,
+                    };
                     const result = await replayRecoveryReporter.withEventCreate(
                       sinceCursor === undefined
                         ? withSnapshot
@@ -1211,12 +1376,14 @@ export function workflowEntrypoint(
                   // invocation over-counts by the abandoned pass's hook time,
                   // the same slight over-count either restart has always had.
                   let preStepBlockingMs = 0;
-                  // Snapshot of the accumulator as of the suspension that
-                  // wrote the run's first attr_set (whose hook phase ran
-                  // before its attr writes). When a pre-step setAttributes
-                  // ends the TTFS measurement at the attr write, only hook
-                  // time from BEFORE that point may be subtracted, since later
-                  // hook writes fall outside the measured window.
+                  // Snapshot of the accumulator as of the start of the
+                  // suspension that wrote the run's first attr_set (that
+                  // suspension's hook writes run alongside its attr writes,
+                  // and the hook time it reports is what outlasted them).
+                  // When a pre-step setAttributes ends the TTFS measurement at
+                  // the attr write, only hook time from BEFORE that point may
+                  // be subtracted, since later hook writes fall outside the
+                  // measured window.
                   let preStepBlockingBeforeAttrMs: number | undefined;
 
                   // Turbo mode fast-paths the first delivery of the first
@@ -2479,6 +2646,13 @@ export function workflowEntrypoint(
                               attributes: runInput.attributes,
                               allowReservedAttributes:
                                 runInput.allowReservedAttributes,
+                              // Resilient start: this event is what creates
+                              // the run when `run_created` never landed, so a
+                              // dynamic run's code has to come with it or the
+                              // run is created unable to replay.
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                              dynamicWorkflowCodeRef:
+                                runInput.dynamicWorkflowCodeRef,
                             },
                           }
                         : {}),
@@ -2551,6 +2725,19 @@ export function workflowEntrypoint(
                         specVersion: runInput.specVersion,
                         executionContext: runInput.executionContext,
                         input: runInput.input,
+                        // A dynamic run's code rides the queue message for
+                        // exactly this: turbo synthesizes the run snapshot
+                        // instead of waiting for the `run_started` response,
+                        // and without the code there would be nothing to
+                        // execute on the first delivery. Absent when the
+                        // definition was too large to send inline, in which
+                        // case `resolveWorkflowCodeForRun` reads it back from
+                        // the run instead.
+                        ...(runInput.dynamicWorkflowCode
+                          ? {
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                            }
+                          : {}),
                         // Seed attributes from start() ride along in `runInput`
                         // (they live in `run_created`'s eventData, not separate
                         // `attr_set` events), so the synthesized snapshot carries
@@ -2881,6 +3068,55 @@ export function workflowEntrypoint(
                     } // end else (re-ensure needed)
                   }
 
+                  // The code this run replays. For every static run that is
+                  // the deployment's bundle, unchanged after one plaintext
+                  // property read. A dynamic run brings its own — resolved
+                  // once here, since the code is fixed for the run's lifetime
+                  // and each replay iteration below would otherwise redo the
+                  // decrypt.
+                  //
+                  // A refusal to execute stored code (opt-in off, a marker
+                  // that does not match the run, missing or undecodable code)
+                  // is a WorkflowRuntimeError and fails the run: every
+                  // redelivery would reach the same verdict.
+                  let resolvedWorkflowCode: ResolvedWorkflowCode;
+                  try {
+                    resolvedWorkflowCode = await resolveWorkflowCodeForRun(
+                      workflowCode,
+                      workflowRun,
+                      () => encryptionKey.value,
+                      world,
+                      awaitRunReady
+                    );
+                  } catch (err) {
+                    await awaitRunReady();
+                    if (!(await recordWorkflowSetupFailure(err))) {
+                      throw err;
+                    }
+                    return;
+                  }
+                  const effectiveWorkflowCode = resolvedWorkflowCode.code;
+                  const dynamicWorkflowMetadata =
+                    resolvedWorkflowCode.dynamicWorkflow;
+                  if (dynamicWorkflowMetadata) {
+                    span?.setAttributes({
+                      ...Attribute.WorkflowDynamic(true),
+                      ...Attribute.WorkflowDynamicSourceHash(
+                        dynamicWorkflowMetadata.sourceHash
+                      ),
+                    });
+                    runLogger.info('Executing stored dynamic workflow code', {
+                      sourceHash: dynamicWorkflowMetadata.sourceHash,
+                    });
+                  }
+                  const dynamicWorkflowScripts =
+                    dynamicWorkflowMetadata && !useQuickJSVm(workflowRun)
+                      ? compileDynamicWorkflowBundle(
+                          effectiveWorkflowCode,
+                          workflowRun.workflowName
+                        )
+                      : undefined;
+
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
                   // replays. Invocation-scoped: dies with this delivery.
@@ -3034,7 +3270,7 @@ export function workflowEntrypoint(
                           './runtime/quickjs-entrypoint.js'
                         );
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode,
+                          workflowCode: effectiveWorkflowCode,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -3373,17 +3609,25 @@ export function workflowEntrypoint(
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
                         const compiled = startWorkflowCompile(workflowRun);
+                        // Static bundles use the process-wide cache; dynamic
+                        // source is compiled once per invocation without
+                        // entering that shared cache.
                         assert(
-                          compiled,
+                          compiled || dynamicWorkflowScripts,
                           'Node workflow replay requires compiled scripts'
                         );
                         workflowResult = await replayWorkflow({
-                          workflowCode,
+                          workflowCode: effectiveWorkflowCode,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey: await encryptionKey.value,
                           replayPayloadCache,
-                          compiledWorkflowScripts: await compiled,
+                          ...((compiled ?? dynamicWorkflowScripts)
+                            ? {
+                                compiledWorkflowScripts: await (compiled ??
+                                  dynamicWorkflowScripts),
+                              }
+                            : {}),
                           // Turbo: the end-of-run drain inside workflow
                           // execution commits fire-and-forget `*_created`
                           // events before the terminal `awaitRunReady()` below.
@@ -3534,6 +3778,7 @@ export function workflowEntrypoint(
                             eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
+                            forceClaimVictimWakes,
                             // Resilient step dispatch: lets eligible newly
                             // created steps publish their step-execution
                             // message (carrying `stepInput`) in parallel with
@@ -3709,13 +3954,19 @@ export function workflowEntrypoint(
                         if (retentionDecision?.retain === false) {
                           retainedSession = null;
                         }
-                        preStepBlockingMs += suspensionResult.hookCreationMs;
+                        // Snapshot before adding this suspension's hook time:
+                        // its hook writes ran alongside its attr writes, and
+                        // `hookCreationMs` only counts the stretch after every
+                        // other write (the attr write included) had settled,
+                        // so none of it precedes the attr commit that ends the
+                        // measured window.
                         if (
                           suspensionResult.hasAttributeEvents &&
                           preStepBlockingBeforeAttrMs === undefined
                         ) {
                           preStepBlockingBeforeAttrMs = preStepBlockingMs;
                         }
+                        preStepBlockingMs += suspensionResult.hookCreationMs;
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -3827,22 +4078,48 @@ export function workflowEntrypoint(
                         // `hook_conflict` this suspension committed is what
                         // settles its awaiters — rejecting a payload await,
                         // resolving a `hook.getConflict()` with the
-                        // conflicting run. The workflow must observe that
-                        // before anything else this suspension scheduled runs,
-                        // which is why this branch comes ahead of the attr
-                        // detour and all step dispatch: a `Promise.race`
-                        // between the hook and a step must let the durable
-                        // conflict win without executing the losing step.
-                        // Continue in this process when the boundary allows
-                        // it; otherwise hand the run back for a fresh replay
-                        // over the conflict.
+                        // conflicting run. The workflow observes that before
+                        // this invocation dispatches or runs anything this
+                        // suspension scheduled, which is why this branch comes
+                        // ahead of the attr detour and all step dispatch.
+                        // (Steps written alongside the hook create are not
+                        // held back by it: a batched fan-out has already
+                        // published their messages. A workflow that must not
+                        // start a step on a conflict awaits
+                        // `hook.getConflict()` first.) Continue in this
+                        // process when the boundary allows it; otherwise hand
+                        // the run back for a fresh replay over the conflict.
                         if (suspensionResult.hasHookConflict) {
+                          // Every create and publish this suspension launched
+                          // is durable before the run moves on, exactly like
+                          // the joins on the dispatch paths below.
+                          await suspensionResult.deferredBatchWork;
                           if (
                             continueOverHookWrite(
                               suspensionResult.hookConflictCorrelationIds,
                               'hook_conflict'
                             )
                           ) {
+                            continue;
+                          }
+                          // Inline steps whose pair-folded claim committed
+                          // alongside the hook create are started and owned
+                          // by THIS message. A fresh delivery would find them
+                          // owned by a live lease and park on a backstop wake
+                          // for the lease's length, so replay here instead:
+                          // the next pass observes the conflict and
+                          // re-executes them through owned recovery, as the
+                          // unserializable-step path below does. (A workflow
+                          // that ends over the conflict, say an uncaught
+                          // HookConflictError, finishes before owned recovery
+                          // runs them, so such a step stays started with its
+                          // body never run.)
+                          if (
+                            [...suspensionResult.inlineClaims.values()].some(
+                              (claim) => claim.owned
+                            )
+                          ) {
+                            eventLog = nextEventLogLoad(eventLog);
                             continue;
                           }
                           return await reinvoke(0);
@@ -4817,21 +5094,27 @@ export function workflowEntrypoint(
                             // these bodies until they settle. See
                             // assertNoInFlightOwnedSteps.
                             inFlightOwnedSteps.add(s.correlationId);
-                            // Lazy and pre-claimed steps are brand-new
-                            // (their create-claim is the exactly-once gate),
-                            // but an owned-recovery step already exists and
-                            // its delayed backstop message may fire mid-body
-                            // in this same process, so route those through
-                            // the in-process single-flight.
-                            const executed =
-                              s.lazyStepInput === undefined &&
-                              s.preclaimedStart === undefined
-                                ? runStepSingleFlight(
-                                    runId,
-                                    s.correlationId,
-                                    run
-                                  )
-                                : run();
+                            // Every inline body runs through the in-process
+                            // single-flight. An owned-recovery step's delayed
+                            // backstop may fire mid-body in this process, and
+                            // a lazy or pre-claimed step's create-claim is not
+                            // an exactly-once gate for side effects either:
+                            // the optimistic start runs the body before the
+                            // claim settles, so a redelivery of this same
+                            // message (a transport timeout re-entering turbo
+                            // at attempt 1, workflow#3909) would run it again
+                            // concurrently. Fresh claims overlap during
+                            // ordinary wake replays, so they log at debug,
+                            // matching quickjs-entrypoint.
+                            const isFreshClaim =
+                              s.lazyStepInput !== undefined ||
+                              s.preclaimedStart !== undefined;
+                            const executed = runStepSingleFlight(
+                              runId,
+                              s.correlationId,
+                              run,
+                              isFreshClaim ? 'debug' : 'warn'
+                            );
                             return executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)
                             );
@@ -5279,7 +5562,7 @@ export function workflowEntrypoint(
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            workflowCode
+                            effectiveWorkflowCode
                           );
                         }
 
@@ -5322,7 +5605,7 @@ export function workflowEntrypoint(
                         // Error` is `false` for VM-thrown errors. The V8
                         // type tag works across realms.
                         if (types.isNativeError(terminalError) && errorStack) {
-                          (terminalError as Error).stack = errorStack;
+                          setErrorStack(terminalError, errorStack);
                         }
 
                         // Fail the workflow run via event (event-sourced).

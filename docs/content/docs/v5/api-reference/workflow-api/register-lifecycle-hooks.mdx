@@ -49,11 +49,11 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a function that unregisters these hooks.
+Returns a function that unregisters these hooks. Registrations are not deduplicated. Register each hook set once per process, and unregister the previous hooks before registering again during hot reload or module re-evaluation.
 
 ## Handlers
 
-Both handlers receive a `workflowName` string and a lazily hydrated [`Run`](/docs/api-reference/workflow-api/get-run) instance. Use the `workflowName` parameter to filter without a backend read; `run.runId` also requires no read. Accessors such as `run.workflowName`, `run.status`, and `run.returnValue` still fetch from the backend when used. Lazy access defers those reads rather than eliminating them.
+Both handlers receive a `workflowName` string and a lazily hydrated [`Run`](/docs/api-reference/workflow-api/get-run) instance. Use the `workflowName` parameter to filter without a backend read; `run.runId` also requires no read. Accessors such as `run.workflowName`, `run.status`, and `run.returnValue` still fetch from the backend when used. In particular, `workflowName` is a string, while `run.workflowName` is a `Promise<string>`. Lazy access defers those reads rather than eliminating them.
 
 ### `onRunCompleted`
 
@@ -72,9 +72,11 @@ Invoked when a workflow run fails terminally (after any retries).
 | --- | --- | --- |
 | `params.run` | `Run` | The failed run. |
 | `params.workflowName` | `string` | The machine-readable workflow identifier, such as `workflow//./src/workflows/order//processOrder`. Available without a backend read. |
-| `params.error` | `WorkflowRunFailedError` | The failure, in the same shape `run.returnValue` rejects with: `error.errorCode` carries the classification (e.g. `USER_ERROR`) and `error.cause` is the hydrated thrown value. |
+| `params.error` | `WorkflowRunFailedError` | The persisted failure hydrated for reporting: `error.errorCode` carries the classification (e.g. `USER_ERROR`) and `error.cause` is the hydrated thrown value. |
 
-`error.cause` is hydrated from the persisted error data, with streamed values loaded lazily when consumed. Abort signals reflect their persisted state without live subscriptions. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. In `onRunFailed`, `run.returnValue` rejects because the run failed. Use `error.cause` to inspect or report the thrown value instead.
+Unlike `run.returnValue`, `error.cause` defers readable stream I/O until consumption and revives abort signals as persisted snapshots without live subscriptions. Writable streams retain their normal forwarding pipe and lock-polling setup during hydration. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. In `onRunFailed`, `run.returnValue` rejects because the run failed. Use `error.cause` to inspect or report the thrown value instead.
+
+The invocation's `waitUntil` scope includes background stream operations from the hydrated cause, even after a handler returns or throws. Close or release stream reader and writer locks when finished so that work can settle. Await other asynchronous reporting work in your handler to keep it in the same lifetime scope.
 
 ## Behavior
 

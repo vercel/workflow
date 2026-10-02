@@ -184,6 +184,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
 ## Environment variables
@@ -194,6 +195,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `DATABASE_URL` or `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
+| `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`   | Milliseconds between idle job fetches per worker             | `500`                                           |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |

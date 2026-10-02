@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { FatalError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import { getWritable } from '../step/writable-stream.js';
 import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
@@ -329,6 +331,87 @@ describe('executeStep — stream durability barrier', () => {
     expect(await eventsFor(world, runId, stepId, 'step_failed')).toHaveLength(
       0
     );
+  });
+
+  it.each([
+    false,
+    true,
+  ])('reports remaining ops after a slow released writable close drains (background op: %s)', async (hasBackgroundOp) => {
+    const world = makeWorld();
+    setWorld(world);
+    const backgroundOp = Promise.withResolvers<void>();
+    const closeGate = Promise.withResolvers<void>();
+    const closeStarted = Promise.withResolvers<void>();
+    const settlementStarted = Promise.withResolvers<void>();
+    const close = world.streams.close.bind(world.streams);
+    world.streams.close = vi.fn(async (...args) => {
+      closeStarted.resolve();
+      await closeGate.promise;
+      return close(...args);
+    });
+    const createEvent = vi.spyOn(world.events, 'create');
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(stepName, async () => {
+      const writable = getWritable<string>();
+      const writer = writable.getWriter();
+      await writer.write('snapshot');
+      writer.releaseLock();
+      await writable.close();
+
+      // The public transform is closed, but its downstream pipe can still be
+      // waiting for the World close. Observe the executor entering that wait.
+      const ctx = contextStorage.getStore()!;
+      if (hasBackgroundOp) ctx.ops.push(backgroundOp.promise);
+      const state = ctx.streamStates![0];
+      const settle = state.settleReleasedWrites!;
+      vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
+        settlementStarted.resolve();
+        return settle();
+      });
+      return 'ok';
+    });
+
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    try {
+      await Promise.all([closeStarted.promise, settlementStarted.promise]);
+      // Expire the inline-loop heuristic while the durability barrier is held.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(
+        createEvent.mock.calls.some(
+          ([, event]) => event.eventType === 'step_completed'
+        )
+      ).toBe(false);
+      closeGate.resolve();
+      await expect(execution).resolves.toMatchObject({
+        type: 'completed',
+        hasPendingOps: hasBackgroundOp,
+      });
+      expect(
+        await eventsFor(world, runId, stepId, 'step_completed')
+      ).toHaveLength(1);
+    } finally {
+      closeGate.resolve();
+      backgroundOp.resolve();
+      await execution;
+      vi.useRealTimers();
+    }
   });
 
   it('does not complete successfully when the drain times out', async () => {
@@ -906,5 +989,95 @@ describe('executeStep — unserializable-argument placeholder guard', () => {
 
     expect(result.type).toBe('completed');
     expect(bodyRuns).toBe(1);
+  });
+});
+
+describe('executeStep — thrown errors with a read-only stack', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  // postgres.js decorates query errors this way: `Object.defineProperties`
+  // with only `value` turns `stack` into a non-writable data property, so
+  // assigning to it throws in strict mode.
+  function readOnlyStackError<T extends Error>(error: T): T {
+    Object.defineProperties(error, {
+      stack: { value: `${error.stack}\n    at query (db.js:1:1)` },
+    });
+    return error;
+  }
+
+  async function runThrowingStep(makeError: () => Error) {
+    const world = makeWorld();
+    setWorld(world);
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async () => {
+          throw makeError();
+        },
+        { maxRetries: MAX_RETRIES }
+      )
+    );
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    return { world, runId, stepId, result };
+  }
+
+  async function hydratedErrorOf(
+    world: World,
+    runId: string,
+    stepId: string,
+    eventType: 'step_retrying' | 'step_failed'
+  ): Promise<Error> {
+    const events = await eventsFor(world, runId, stepId, eventType);
+    expect(events).toHaveLength(1);
+    return (await hydrateStepError(
+      (events[0].eventData as { error: unknown }).error,
+      runId,
+      undefined
+    )) as Error;
+  }
+
+  it('records a retry with the original error', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      readOnlyStackError(new Error('relation "embeddings" does not exist'))
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe('relation "embeddings" does not exist');
+  });
+
+  it('records a fatal failure with the original error', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      readOnlyStackError(new FatalError('constraint violated'))
+    );
+
+    expect(result.type).toBe('failed');
+    expect(await eventsFor(world, runId, stepId, 'step_retrying')).toHaveLength(
+      0
+    );
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(hydrated.message).toBe('constraint violated');
   });
 });

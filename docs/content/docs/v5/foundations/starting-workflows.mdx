@@ -102,6 +102,8 @@ export async function parentWorkflow(inputValue: number) {
 
 When you call `start()` inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works as it does outside workflows. Properties such as `.runId`, `.status`, and `.returnValue`, and methods such as `.cancel()`, are all available. Each property access or method call executes as a separate step.
 
+If the child run fails or is canceled, `await childRun.returnValue` throws [`WorkflowRunFailedError`](/docs/api-reference/workflow-errors/workflow-run-failed-error) or [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) on the first attempt.
+
 <Callout type="info">
 Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) triggers a workflow step. This means each access is recorded in the event log and replayed deterministically.
 </Callout>

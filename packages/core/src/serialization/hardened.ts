@@ -439,13 +439,27 @@ export function urlSearchParamsToString(value: URLSearchParams): string {
 /**
  * Iterates a Headers instance through the captured host iterator, so the
  * iterator object, and its `next`, are host-realm.
+ *
+ * Some server runtimes hand out Headers look-alikes: objects that inherit
+ * from `Headers.prototype` and forward every method to a wrapped native
+ * instance (srvx, used by Nitro, does this for incoming request headers).
+ * They carry no native header state, so the host iterator rejects them with
+ * a TypeError on runtimes whose undici keeps that state in private fields
+ * (Node 24+). Those fall back to the object's own iterator, which runs
+ * non-intrinsic code and is recorded as such.
  */
 export function headersToEntries(value: Headers): [string, string][] {
   if (isProxy(value)) {
     recordProxy(value);
     return Array.from(value) as [string, string][];
   }
-  return [...headersIterator(value)] as [string, string][];
+  try {
+    return [...headersIterator(value)] as [string, string][];
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    recordGuestCode('method', 'Headers[Symbol.iterator]');
+    return Array.from(value) as [string, string][];
+  }
 }
 
 /**

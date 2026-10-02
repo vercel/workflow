@@ -85,20 +85,26 @@ export async function POST(request: Request) {
 
 ### Validating hook before resume
 
-Use `getHookByToken` to validate hook ownership or metadata before resuming:
+Use `getHookByToken` to validate hook ownership or metadata before resuming. Take the user's identity from your authentication layer, not from the request body. See [Hook and webhook security](/docs/foundations/hooks#security).
 
 ```typescript lineNumbers
 import { getHookByToken, resumeHook } from "workflow/api";
 
+declare function getSession(request: Request): Promise<{ userId: string } | null>; // @setup
+
 export async function POST(request: Request) {
-  const { token, userId, data } = await request.json();
+  const session = await getSession(request);
+  if (!session) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { token, data } = await request.json();
 
   try {
     const hook = await getHookByToken(token); // [!code highlight]
     const metadata = hook.metadata as { allowedUserId?: string } | undefined;
 
     // Validate that the hook metadata matches the user
-    if (metadata?.allowedUserId !== userId) {
+    if (metadata?.allowedUserId !== session.userId) {
       return Response.json(
         { error: "Unauthorized to resume this hook" },
         { status: 403 }

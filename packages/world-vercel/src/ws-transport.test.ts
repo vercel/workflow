@@ -23,9 +23,10 @@ import {
   it,
   vi,
 } from 'vitest';
-import { encodeFrame } from './frames.js';
+import { decodeFrame, encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
+import { encodeWsFrameMessages, WsPartAssembler } from './ws-parts.js';
 import {
   getWsEventsTransport,
   isWsEventsTransportEnabled,
@@ -51,8 +52,9 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     readonly url: string;
     readonly headers: Record<string, string>;
     readonly sent: Uint8Array[] = [];
-    /** Queued failures for upcoming `send` calls. */
-    readonly sendErrors: Error[] = [];
+    /** Queued outcomes for upcoming `send` calls: an error fails that send,
+     *  `undefined` lets it through. */
+    readonly sendErrors: Array<Error | undefined> = [];
     private readonly listeners = new Map<string, Listener[]>();
 
     constructor(url: string, options?: { headers?: Record<string, string> }) {
@@ -216,6 +218,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
   delete process.env.DEBUG;
 });
 
@@ -278,6 +281,186 @@ describe('request/reply', () => {
 
     await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
     await expect(first).resolves.toMatchObject({ meta: { reqId: 1 } });
+  });
+});
+
+describe('large frames', () => {
+  /** Byte equality without a deep diff, which is slow on multi-MiB arrays. */
+  const sameBytes = (a: Uint8Array | undefined, b: Uint8Array) =>
+    a !== undefined && Buffer.from(a).equals(Buffer.from(b));
+  // The smallest message limit the env var allows.
+  const LIMIT = 2 * 1024 * 1024;
+  const bytes = (size: number) => {
+    const out = new Uint8Array(size);
+    for (let i = 0; i < size; i++) out[i] = (i * 7 + 3) & 0xff;
+    return out;
+  };
+
+  beforeEach(() => {
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
+  });
+
+  it('sends a request over the limit as parts that rebuild to the frame', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const payload = bytes(LIMIT * 3 + 5);
+    const event = { eventType: 'step_completed', specVersion: 4 };
+    const promise = transport.request((reqId) =>
+      encodeFrame({ reqId, type: 'event', event }, payload)
+    );
+    const socket = await nextSocket();
+    socket.open();
+    await tick();
+
+    expect(socket.sent.length).toBeGreaterThan(2);
+    for (const message of socket.sent) {
+      expect(message.byteLength).toBeLessThanOrEqual(LIMIT);
+    }
+    const assembler = new WsPartAssembler();
+    const frames = socket.sent.flatMap((message) => {
+      const frame = assembler.accept(decodeFrame(message));
+      return frame ? [frame] : [];
+    });
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.meta).toEqual({ reqId: 1, type: 'event', event });
+    expect(sameBytes(frames[0]?.body, payload)).toBe(true);
+
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({
+      meta: { reqId: 1, status: 201 },
+      requestParts: socket.sent.length,
+      replyParts: 1,
+    });
+  });
+
+  it('offers the frame-parts flag on every upgrade', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { socket } = await connectAndSend(transport);
+    expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+  });
+
+  it('fails the request when a later part cannot be sent', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request((reqId) =>
+      encodeFrame(
+        { reqId, type: 'event', event: { eventType: 'step_completed' } },
+        bytes(LIMIT * 3)
+      )
+    );
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+    socket.sendErrors.push(undefined, new Error('EPIPE'));
+    socket.open();
+    await tick();
+
+    await expect(promise).rejects.toThrow(/send failed: EPIPE/);
+  });
+
+  it('fails the request when the socket closes partway through a split reply', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    const [head] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 3),
+      LIMIT
+    );
+    if (head) socket.deliver(head);
+    await tick();
+    socket.close(1006);
+    await tick();
+
+    await expect(promise).rejects.toThrow(/closed \(code 1006\)/);
+  });
+
+  it('reads through a split reply for a request that already settled', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise: first, socket } = await connectAndSend(transport);
+    const second = transport.request(eventFrame);
+    await tick();
+    socket.deliver(ackFrame(2));
+    await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
+
+    // A late split reply for reqId 2, which is no longer pending, then the
+    // reply request 1 is waiting for.
+    for (const part of encodeWsFrameMessages(
+      { reqId: 2, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    )) {
+      socket.deliver(part);
+    }
+    socket.deliver(ackFrame(1));
+    await tick();
+
+    await expect(first).resolves.toMatchObject({ meta: { reqId: 1 } });
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(loggedErrors()).toMatch(/split reply for unknown reqId 2/);
+  });
+
+  it('sends a request under the limit as one message', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    expect(socket.sent).toHaveLength(1);
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({ requestParts: 1 });
+  });
+
+  it('rebuilds a reply sent as parts and resolves the matching request', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise: first, socket } = await connectAndSend(transport);
+    const second = transport.request(eventFrame);
+    await tick();
+
+    const replyBody = bytes(LIMIT * 4);
+    const parts = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      replyBody,
+      LIMIT
+    );
+    // A whole reply for another request can arrive between parts.
+    const [head, ...rest] = parts;
+    if (head) socket.deliver(head);
+    socket.deliver(ackFrame(2, 201));
+    for (const part of rest) socket.deliver(part);
+    await tick();
+
+    await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
+    await expect(first).resolves.toMatchObject({
+      meta: { reqId: 1, type: 'event_ack', status: 200 },
+      replyParts: parts.length,
+    });
+    expect(sameBytes((await first).body, replyBody)).toBe(true);
+  });
+
+  it('fails the connection on a whole reply for a reqId whose split reply is open', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    const [head] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    );
+    if (head) socket.deliver(head);
+    socket.deliver(ackFrame(1));
+    await tick();
+
+    await expect(promise).rejects.toThrow(/while its split frame is open/);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  it('fails the connection on a part that breaks the protocol', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+
+    const [, continuation] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    );
+    if (continuation) socket.deliver(continuation);
+    await tick();
+
+    await expect(promise).rejects.toThrow(/part protocol.*no open frame/);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 });
 
@@ -528,7 +711,7 @@ describe('failures are never silent', () => {
 
   it('stays silent on a drain notice without DEBUG', async () => {
     // Both drain reasons — the socket outliving the server's max duration, and
-    // its bearer nearing expiry — are routine on the WS default, and the
+    // its bearer nearing expiry — are routine on the WS transport, and the
     // transport reconnects from the close that follows. A healthy long-lived
     // run must not narrate that.
     const transport = getWsEventsTransport(WS_URL, headers);
@@ -985,39 +1168,37 @@ describe('transport selection', () => {
   const directConfig = { token: 'test-token' };
 
   /**
-   * The gate is the whole safety story for this feature, and since the default
-   * flipped it is the HTTP path that is now reached only by opting out.
-   * Nothing on either side pins the *choice* of path — the two transports are
-   * built to be indistinguishable at the result layer, so a future edit that
-   * moved the default again would sail through with every other assertion in
-   * this file still green. This table is the only thing that would fail, which
-   * is why it enumerates the boundary rather than spot-checking two values.
+   * The gate is the whole safety story for this feature: the WebSocket path is
+   * reached only by opting in. Nothing on either side pins the *choice* of
+   * path — the two transports are built to be indistinguishable at the result
+   * layer, so a future edit that moved the default would sail through with
+   * every other assertion in this file still green. This table is the only
+   * thing that would fail, which is why it enumerates the boundary rather than
+   * spot-checking two values.
    */
   describe('isWsEventsTransportEnabled', () => {
     it.each([
-      // `http` opts out, case-insensitively and trimmed: whoever reaches for
-      // the escape hatch is the last person who should have it silently
-      // ignored over a capital letter.
-      ['http', false],
-      ['HTTP', false],
-      ['Http', false],
-      ['  http  ', false],
-      // Everything else takes the default, including values that look like a
-      // half-remembered opt-out. Unrecognized input resolving to `ws` is the
-      // deliberate half of the asymmetry above.
+      // `ws` opts in, case-insensitively and trimmed.
       ['ws', true],
       ['WS', true],
-      ['', true],
-      ['https', true],
-      ['off', true],
-      ['false', true],
+      ['Ws', true],
+      ['  ws  ', true],
+      // Everything else stays on the HTTP default, including values that look
+      // like a half-remembered opt-in.
+      ['http', false],
+      ['HTTP', false],
+      ['', false],
+      ['wss', false],
+      ['websocket', false],
+      ['on', false],
+      ['true', false],
     ])('%o resolves to ws=%o', (value, expected) => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = value;
       expect(isWsEventsTransportEnabled()).toBe(expected);
     });
 
-    it('defaults to ws when unset', () => {
-      expect(isWsEventsTransportEnabled()).toBe(true);
+    it('defaults to http when unset', () => {
+      expect(isWsEventsTransportEnabled()).toBe(false);
     });
   });
 
@@ -1090,11 +1271,11 @@ describe('transport selection', () => {
     });
 
     it('says nothing about the transport it selected without DEBUG', () => {
-      // The regression this pins: both lines were written while WS was opt-in,
-      // where "using ws" and "you asked for ws but this World can't" reported a
-      // choice the caller had made. On the WS default nobody asked, so every
-      // deployment printed the first after each cold start and every CLI
-      // command — all `projectConfig` Worlds — printed the second.
+      // The regression this pins: while WS was the default, nobody had asked
+      // for it, so every deployment printed "using ws" after each cold start
+      // and every CLI command — all `projectConfig` Worlds — printed the
+      // proxy fallback. Both stay debug-gated so a future default flip cannot
+      // bring that noise back.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
 
       openWsChannel('wrun_1', proxyConfig);
@@ -1124,10 +1305,8 @@ describe('transport selection', () => {
     });
 
     it('does nothing when the gate is off', async () => {
-      // Explicitly off. Before the default flipped this was the ambient state
-      // of the suite, so the test read as if it were asserting nothing in
-      // particular; it is in fact the only thing pinning "gate off means no
-      // socket is ever opened".
+      // Explicitly off via the opt-out value, not just unset: this is the
+      // only thing pinning "gate off means no socket is ever opened".
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
       openWsChannel('wrun_1', directConfig);
       await tick();

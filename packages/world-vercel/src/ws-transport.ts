@@ -25,7 +25,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrames } from './frames.js';
+import { type DecodedFrame, decodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -40,11 +40,26 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import {
+  splitEncodedFrame,
+  WS_CLIENT_FLAGS,
+  WS_FLAGS_HEADER,
+  WsPartAssembler,
+  WsPartProtocolError,
+  wsMaxMessageBytes,
+} from './ws-parts.js';
+import {
+  isWsEventsTransportEnabled,
+  isWsEventsTransportEnabledForWorkflow,
+} from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
   body: Uint8Array;
+  /** Messages the request went out as: 1, or its part count when split. */
+  requestParts?: number;
+  /** Messages the reply arrived as: 1, or its part count when split. */
+  replyParts?: number;
 }
 
 /**
@@ -77,6 +92,9 @@ interface Connection {
   ws: WebSocket;
   nextReqId: number;
   pending: Map<number, PendingRequest>;
+  /** Rebuilds replies the server sent as parts. Per connection, since a
+   *  frame's parts all travel on one socket. */
+  parts: WsPartAssembler;
 }
 
 /** Reserved reqId the server replies under when a frame was too malformed to
@@ -101,16 +119,6 @@ function readAuthorization(headers: Record<string, string>): string | null {
     if (key.toLowerCase() === 'authorization') return value;
   }
   return null;
-}
-
-async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
-  const source = (async function* () {
-    yield raw;
-  })();
-  for await (const frame of decodeFrames(source)) {
-    return frame;
-  }
-  throw new Error('ws-transport: received an empty/unframed message');
 }
 
 /** Pull the `{ "message": string }` JSON an `error` frame carries as its body,
@@ -165,7 +173,12 @@ class WsEventsTransport {
   /** Send one request frame and wait for its matching reply. `buildFrame`
    *  receives the reqId to embed in the meta before framing. */
   async request(
-    buildFrame: (reqId: number) => Uint8Array
+    buildFrame: (reqId: number) => Uint8Array,
+    options: {
+      /** Called with the number of messages the frame goes out as, before
+       *  the first is sent, so a caller can record it even if no reply comes. */
+      onMessages?: (count: number) => void;
+    } = {}
   ): Promise<WsFrameReply> {
     if (this.closed) {
       // Unreachable through `resolveWsTransport`, which only hands back a
@@ -179,11 +192,14 @@ class WsEventsTransport {
     const conn = await this.ensureConnected();
 
     const reqId = conn.nextReqId++;
-    const frame = buildFrame(reqId);
+    // A frame over the message limit goes out as several messages; see
+    // `ws-parts.ts`.
+    const messages = splitEncodedFrame(buildFrame(reqId), wsMaxMessageBytes());
+    options.onMessages?.(messages.length);
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await new Promise<WsFrameReply>((resolve, reject) => {
+      const reply = await new Promise<WsFrameReply>((resolve, reject) => {
         conn.pending.set(reqId, { resolve, reject });
         // Deliberately the same knob the HTTP path uses. Without it, a reply
         // that never arrives for a reason the error/close handling doesn't
@@ -207,7 +223,7 @@ class WsEventsTransport {
           );
         }, timeoutMs);
         deadline.unref?.();
-        conn.ws.send(frame, (err) => {
+        const onSent = (err?: Error) => {
           if (!err) return;
           // `ws.send()` does not throw when the socket isn't OPEN; it
           // reports here instead, so without this callback the request would
@@ -221,8 +237,12 @@ class WsEventsTransport {
               )
             );
           }
-        });
+        };
+        // Back to back, in order: nothing else can be queued on the socket
+        // between them because `send` only enqueues.
+        for (const message of messages) conn.ws.send(message, onSent);
       });
+      return { ...reply, requestParts: messages.length };
     } finally {
       if (deadline !== undefined) clearTimeout(deadline);
     }
@@ -248,7 +268,8 @@ class WsEventsTransport {
    * That de-opt covers the handshake only. A channel that connects and then
    * fails every write stays registered and keeps taking the WS path, so the
    * fallback is per-invocation rather than a circuit breaker. Tolerable while
-   * the transport is opt-in; defaulting it on needs a write-failure de-opt too.
+   * the transport is opt-in; defaulting it on would need a write-failure
+   * de-opt too.
    */
   open(): void {
     if (this.closed) return;
@@ -358,6 +379,10 @@ class WsEventsTransport {
       headers[key] = value;
     });
 
+    // Tells the server this client rebuilds split replies. Without it the
+    // server sends every reply whole, which is what older clients expect.
+    headers[WS_FLAGS_HEADER] = WS_CLIENT_FLAGS.join(', ');
+
     return headers;
   }
 
@@ -415,7 +440,23 @@ class WsEventsTransport {
           const headers = await this.resolveUpgradeHeaders();
           const ws = new WebSocket(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
-          conn = { ws, nextReqId: 1, pending: new Map() };
+          const pending = new Map<number, PendingRequest>();
+          conn = {
+            ws,
+            nextReqId: 1,
+            pending,
+            // A split reply for a request that already settled (its deadline
+            // or a send error) is read through, not buffered.
+            parts: new WsPartAssembler({
+              wanted: (reqId) => pending.has(reqId),
+              onDiscarded: (reqId) =>
+                console.error(
+                  `world-vercel: ws events transport received a split reply ` +
+                    `for unknown reqId ${reqId} from ${this.wsUrl} (already ` +
+                    `settled); dropping it.`
+                ),
+            }),
+          };
         } catch (err) {
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
@@ -459,7 +500,7 @@ class WsEventsTransport {
         });
 
         ws.on('message', (raw: Buffer) => {
-          void this.handleMessage(conn, new Uint8Array(raw));
+          this.handleMessage(conn, new Uint8Array(raw));
         });
 
         ws.on('error', (err) => {
@@ -554,13 +595,12 @@ class WsEventsTransport {
     this.reconnectTimer = timer;
   }
 
-  private async handleMessage(
-    conn: Connection,
-    raw: Uint8Array
-  ): Promise<void> {
-    let decoded: DecodedFrame;
+  /** Synchronous so parts of a split reply are always assembled in arrival
+   *  order. */
+  private handleMessage(conn: Connection, raw: Uint8Array): void {
+    let message: DecodedFrame;
     try {
-      decoded = await decodeOneFrame(raw);
+      message = decodeFrame(raw);
     } catch (err) {
       // Uncorrelatable, and it says the framing on this socket is no longer
       // trustworthy, so the connection goes rather than leaving its waiters
@@ -576,6 +616,12 @@ class WsEventsTransport {
       return;
     }
 
+    const assembled = this.assemble(conn, message);
+    // A part of a reply that is still arriving, or a protocol error that
+    // already failed the connection.
+    if (assembled === undefined) return;
+    const { frame: decoded, parts: replyParts } = assembled;
+
     if (decoded.meta.type === 'drain') {
       // Unsolicited server push, no reqId. Informational on its own: the
       // `close` that follows is what triggers the reconnect and consumes the
@@ -584,7 +630,7 @@ class WsEventsTransport {
       // Debug-gated, because both reasons are routine rather than faults: a
       // socket outliving the server's max duration, or its bearer approaching
       // expiry. Neither loses a write — the drain is a heads-up ahead of a
-      // close the transport reconnects from — so on the WS default every
+      // close the transport reconnects from — so on the WS transport every
       // long-lived run would otherwise print this on a healthy path.
       const reason: DrainReason =
         decoded.meta.reason === 'auth_expiry' ? 'auth_expiry' : 'max_duration';
@@ -643,7 +689,40 @@ class WsEventsTransport {
       return;
     }
     conn.pending.delete(reqId);
-    pending.resolve({ meta: decoded.meta, body: decoded.body });
+    pending.resolve({ meta: decoded.meta, body: decoded.body, replyParts });
+  }
+
+  /**
+   * Feed one decoded message to the connection's part assembler. Returns the
+   * complete frame with the number of messages it arrived as, or `undefined`
+   * while a split frame is still arriving. A part that breaks the protocol
+   * leaves the rest of the stream unmatchable, the same as an undecodable
+   * frame, so it fails the connection and also returns `undefined`.
+   */
+  private assemble(
+    conn: Connection,
+    message: DecodedFrame
+  ): { frame: DecodedFrame; parts: number } | undefined {
+    let frame: DecodedFrame | undefined;
+    try {
+      frame = conn.parts.accept(message);
+    } catch (err) {
+      const detail =
+        err instanceof WsPartProtocolError
+          ? `received a split reply from ${this.wsUrl} that breaks the part protocol: ${err.message}`
+          : `could not assemble a split reply from ${this.wsUrl}: ${describeError(err)}`;
+      console.error(`world-vercel: ws events transport ${detail}`);
+      this.failConnection(
+        conn,
+        `workflow-server events WS transport ${detail}`
+      );
+      return undefined;
+    }
+    if (frame === undefined) return undefined;
+    const { type, partCount } = message.meta;
+    const parts =
+      type === 'part' && typeof partCount === 'number' ? partCount : 1;
+    return { frame, parts };
   }
 
   private failAllPending(conn: Connection, err: unknown): void {
@@ -811,18 +890,28 @@ export { isWsEventsTransportEnabled };
  */
 export function openWsChannel(
   runId: string,
-  config?: APIConfig
+  config?: APIConfig,
+  options: {
+    /**
+     * The run's workflow name. Lets a workflow listed in
+     * `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS` open a channel on a
+     * deployment otherwise on HTTP; without it only the deployment-wide
+     * `WORKFLOW_EVENTS_TRANSPORT=ws` does.
+     */
+    workflowName?: string;
+  } = {}
 ): (() => void) | undefined {
-  if (!isWsEventsTransportEnabled()) return undefined;
+  if (!isWsEventsTransportEnabledForWorkflow(options.workflowName)) {
+    return undefined;
+  }
   const resolved = resolveChannelUrl(runId, config);
   if (!resolved) return undefined;
   if (!wsState.loggedWsInUse) {
     wsState.loggedWsInUse = true;
-    // Debug-gated: this said something when WS was opt-in, and says nothing now
-    // that it is the default — every deployment would print it on its first
-    // invocation after each cold start, describing the transport it was always
-    // going to use. `workflow.events.transport` on the per-write span is the
-    // durable answer to "which transport carried this run".
+    // Debug-gated: every opted-in deployment would otherwise print it on its
+    // first invocation after each cold start, describing the transport it was
+    // configured to use. `workflow.events.transport` on the per-write span is
+    // the durable answer to "which transport carried this run".
     debugLog(`world-vercel: using ws events transport (${resolved}).`);
   }
   // Cheap: a URL plus a map lookup, no token mint and no I/O. The socket work
@@ -900,13 +989,11 @@ function resolveChannelUrl(
     // "experimental_upgradeWebSocket is not available in the current runtime
     // environment". Fall back rather than fail a connection it can't serve.
     //
-    // Debug-gated rather than a warning, and the flip to the WS default is why:
-    // "requested but unavailable" was a real mismatch to report while the
-    // transport was opt-in, because someone had asked for it. Nobody asks now,
-    // so a `projectConfig` World — every CLI command and the observability app —
-    // would warn about a fallback its caller neither chose nor can act on. The
-    // HTTP path it falls back to is the same one it used before the default
-    // flipped.
+    // Debug-gated rather than a warning: `WORKFLOW_EVENTS_TRANSPORT` is
+    // typically set deployment-wide, so a `projectConfig` World sharing that
+    // environment — every CLI command and the observability app — would warn
+    // about a fallback its caller neither chose nor can act on. The HTTP path
+    // it falls back to is the same default path every other World uses.
     if (!wsState.loggedWsProxyFallback) {
       wsState.loggedWsProxyFallback = true;
       debugLog(
