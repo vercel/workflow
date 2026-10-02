@@ -1181,7 +1181,16 @@ export async function executeStep(
         // Released writers still own transports when the step body throws.
         // Settle released writers without retaining abandoned, lock-held ops
         // through waitUntil. Cleanup failures must not replace the user's error.
-        await settleReleasedStepStreams(streamStates).catch(() => {});
+        await settleReleasedStepStreams(streamStates).catch((error) => {
+          runtimeLogger.warn(
+            'Failed to drain released streams after step error',
+            {
+              workflowRunId,
+              stepId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
         throw userCodeError;
       }
 
