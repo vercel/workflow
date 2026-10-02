@@ -1,5 +1,20 @@
 # @workflow/world-vercel
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4589](https://github.com/vercel/workflow/pull/4589) [`9ca188a`](https://github.com/vercel/workflow/commit/9ca188a1e9ec229af92bf82f4ead511ca3a626f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Default the events transport to WebSockets. Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out.
+
+### Patch Changes
+
+- [#4333](https://github.com/vercel/workflow/pull/4333) [`a6c455a`](https://github.com/vercel/workflow/commit/a6c455a09c622e184f518764109fa455eb718699) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade `@vercel/queue` to 0.6.0 so queue callbacks for messages that are already claimed or processed (409 / 410) respond 200 instead of logging `Queue callback error` and returning 500
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Wait out a throttled (429) write recording a step body's outcome until the invocation's deadline instead of 30 seconds, and resend a throttled event-log read from its cursor instead of restarting it.
+- Updated dependencies [[`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157)]:
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

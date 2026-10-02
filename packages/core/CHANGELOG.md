@@ -1,5 +1,24 @@
 # @workflow/core
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4578](https://github.com/vercel/workflow/pull/4578) [`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4) Thanks [@wycats](https://github.com/wycats)! - Export the existing `Serializable` type from `@workflow/core` and `workflow`.
+
+### Patch Changes
+
+- [#4595](https://github.com/vercel/workflow/pull/4595) [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove the unused, stale `vm-serde-bundle.generated.ts` left over from the retired in-VM QuickJS serializer.
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Mark `step_failed` writes that record a failed step body with `afterStepBody`, so a World can keep waiting out a throttled write instead of re-running the body.
+
+- [#4594](https://github.com/vercel/workflow/pull/4594) [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serialize only the viewed bytes of a `Float16Array` (no longer the whole Node `Buffer` pool behind it), and support `Float16Array` in the QuickJS engine with the same wire format as the node:vm engine.
+- Updated dependencies [[`9ca188a`](https://github.com/vercel/workflow/commit/9ca188a1e9ec229af92bf82f4ead511ca3a626f2), [`a6c455a`](https://github.com/vercel/workflow/commit/a6c455a09c622e184f518764109fa455eb718699), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157)]:
+  - @workflow/world-vercel@5.1.0
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+  - @workflow/world-local@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes
