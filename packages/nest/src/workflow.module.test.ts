@@ -45,12 +45,21 @@ function providerFor(
  */
 function moduleWith(
   options: ResolvedWorkflowModuleOptions,
-  globalPrefix = ''
+  globalPrefix = '',
+  globalPrefixOptions?: unknown
 ): WorkflowModule {
-  const appConfig = { getGlobalPrefix: () => globalPrefix };
+  const appConfig = {
+    getGlobalPrefix: () => globalPrefix,
+    getGlobalPrefixOptions: () => globalPrefixOptions,
+  };
+  // An adapter host carrying no adapter is what a standalone application
+  // context looks like: the core providers resolve, there is simply no HTTP
+  // server to patch. Passing one keeps the shared-`@nestjs/core` check quiet.
+  const adapterHost = { httpAdapter: undefined };
   return new WorkflowModule(
     options,
-    appConfig as unknown as ConstructorParameters<typeof WorkflowModule>[1]
+    appConfig as unknown as ConstructorParameters<typeof WorkflowModule>[1],
+    adapterHost as unknown as ConstructorParameters<typeof WorkflowModule>[2]
   );
 }
 
@@ -186,6 +195,61 @@ describe('WorkflowModule base path reconciliation', () => {
     writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
     await moduleWith(options()).onModuleInit();
     expect(getWorkflowBasePath()).toBe('');
+  });
+
+  it('does not adopt a prefix the workflow routes are excluded from', async () => {
+    // `setGlobalPrefix(prefix, { exclude })` leaves the excluded routes at the
+    // origin root. Adopting the prefix would generate callback URLs for a path
+    // NestJS does not serve, and the startup log would report success.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    await moduleWith(options(), '/api', {
+      exclude: [
+        {
+          path: '.well-known/workflow/v1/(.*)',
+          requestMethod: 5,
+          pathRegex: /^\/\.well-known\/workflow\/v1\/(.*)$/,
+        },
+      ],
+    }).onModuleInit();
+
+    expect(getWorkflowBasePath()).toBe('');
+    expect(log.mock.calls.map((call) => String(call[0])).join('\n')).toContain(
+      'excludes the workflow routes'
+    );
+  });
+
+  it('reports a prefix exclusion that covers only one of the two routes', async () => {
+    // No single generated base path can address a prefixed flow route and an
+    // unprefixed webhook route, so the configuration itself has to be fixed.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    await moduleWith(options(), '/api', {
+      exclude: [
+        {
+          path: '.well-known/workflow/v1/flow',
+          requestMethod: 5,
+          pathRegex: /^\/\.well-known\/workflow\/v1\/flow$/,
+        },
+      ],
+    }).onModuleInit();
+
+    expect(
+      error.mock.calls.map((call) => String(call[0])).join('\n')
+    ).toContain('excludes the workflow flow route but not the other');
+  });
+
+  it('reports an injector that resolved a second copy of @nestjs/core', async () => {
+    // Injecting NestJS's core providers by class only works while there is one
+    // copy of @nestjs/core. With two, `@Optional()` yields undefined and the
+    // prefix handling and body-parser bypass both silently stop working.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    await new WorkflowModule(options()).onModuleInit();
+
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toContain(
+      'different copies of @nestjs/core'
+    );
   });
 
   it('lets an explicit basePath win over the global prefix and reports it', async () => {

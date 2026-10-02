@@ -3,6 +3,8 @@ import {
   basePathReachesRoutes,
   normalizeBasePath,
   resolveModuleOptions,
+  servedGlobalPrefix,
+  workflowRoutesExcludedFromGlobalPrefix,
 } from './options.js';
 
 describe('basePathReachesRoutes', () => {
@@ -95,5 +97,82 @@ describe('resolveModuleOptions', () => {
     expect(resolveModuleOptions({}, { VERCEL: '1' }).preloadBundles).toBe(
       false
     );
+  });
+
+  it('defaults the body-parser bypass on', () => {
+    expect(resolveModuleOptions({}, {}).bypassBodyParser).toBe(true);
+    expect(
+      resolveModuleOptions({ bypassBodyParser: false }, {}).bypassBodyParser
+    ).toBe(false);
+  });
+});
+
+/** The shape NestJS stores after normalizing `setGlobalPrefix`'s `exclude`. */
+function excluded(pattern: RegExp, requestMethod = 5) {
+  return { path: pattern.source, requestMethod, pathRegex: pattern };
+}
+
+describe('workflowRoutesExcludedFromGlobalPrefix', () => {
+  it('is false without any exclusions', () => {
+    expect(workflowRoutesExcludedFromGlobalPrefix(undefined)).toBe(false);
+    expect(workflowRoutesExcludedFromGlobalPrefix({})).toBe(false);
+    expect(workflowRoutesExcludedFromGlobalPrefix({ exclude: [] })).toBe(false);
+  });
+
+  it('detects a normalized all-method exclusion of the flow route', () => {
+    expect(
+      workflowRoutesExcludedFromGlobalPrefix({
+        exclude: [excluded(/^\/\.well-known\/workflow\/v1\/(.*)$/)],
+      })
+    ).toBe(true);
+  });
+
+  it('ignores an exclusion for another path', () => {
+    expect(
+      workflowRoutesExcludedFromGlobalPrefix({
+        exclude: [excluded(/^\/health$/)],
+      })
+    ).toBe(false);
+  });
+
+  it('ignores a method-scoped exclusion', () => {
+    // Only some methods would move, and no single generated base path can
+    // address both halves, so the prefix is still the honest answer.
+    const GET = 0;
+    expect(
+      workflowRoutesExcludedFromGlobalPrefix({
+        exclude: [excluded(/^\/\.well-known\/workflow\/v1\/(.*)$/, GET)],
+      })
+    ).toBe(false);
+  });
+
+  it('accepts a raw string exclusion', () => {
+    expect(
+      workflowRoutesExcludedFromGlobalPrefix({
+        exclude: ['/.well-known/workflow/v1/flow'],
+      })
+    ).toBe(true);
+  });
+});
+
+describe('servedGlobalPrefix', () => {
+  it('is empty without a prefix', () => {
+    expect(servedGlobalPrefix(undefined)).toBe('');
+    expect(servedGlobalPrefix({ getGlobalPrefix: () => '' })).toBe('');
+  });
+
+  it('normalizes the configured prefix', () => {
+    expect(servedGlobalPrefix({ getGlobalPrefix: () => 'api/' })).toBe('/api');
+  });
+
+  it('is empty when the workflow routes are excluded from the prefix', () => {
+    expect(
+      servedGlobalPrefix({
+        getGlobalPrefix: () => 'api',
+        getGlobalPrefixOptions: () => ({
+          exclude: [excluded(/^\/\.well-known\/workflow\/v1\/(.*)$/)],
+        }),
+      })
+    ).toBe('');
   });
 });

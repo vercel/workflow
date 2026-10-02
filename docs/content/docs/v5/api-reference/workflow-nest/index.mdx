@@ -10,7 +10,7 @@ related:
 NestJS integration for Workflow SDK. The `WorkflowModule` builds the workflow bundles on application startup and registers the controller that serves the workflow runtime routes.
 
 <Callout>
-NestJS integration is experimental and not yet supported for deployment to Vercel. The same exports are also available from the `@workflow/nest` package.
+NestJS integration is experimental. Both `@nestjs/platform-express` and `@nestjs/platform-fastify` are supported, and deploying to Vercel goes through [`workflow-nest build --vercel`](/docs/getting-started/nestjs#deploy-to-vercel). The same exports are also available from the `@workflow/nest` package.
 </Callout>
 
 ## Exports
@@ -24,6 +24,9 @@ NestJS integration is experimental and not yet supported for deployment to Verce
     </Card>
     <Card title="WorkflowController" href="/docs/api-reference/workflow-nest/workflow-controller">
         Controller that serves the workflow runtime routes under `.well-known/workflow/v1`
+    </Card>
+    <Card title="isWorkflowRequest()" href="/docs/api-reference/workflow-nest/is-workflow-request">
+        Recognises a workflow request in a guard, so queue deliveries and webhooks are not rejected by your own auth
     </Card>
     <Card title="configureWorkflowController()" href="/docs/api-reference/workflow-nest/configure-workflow-controller">
         Points `WorkflowController` at the directory containing the generated workflow bundles

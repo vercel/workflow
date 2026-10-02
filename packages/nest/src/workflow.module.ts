@@ -10,8 +10,12 @@ import {
   Optional,
   type Provider,
 } from '@nestjs/common';
-import { ApplicationConfig } from '@nestjs/core';
+import { ApplicationConfig, HttpAdapterHost } from '@nestjs/core';
 import { join } from 'pathe';
+import {
+  bypassWorkflowBodyParsers,
+  fastifyBodyLimitAdvice,
+} from './body-parser.js';
 import {
   basePathReachesRoutes,
   normalizeBasePath,
@@ -22,6 +26,7 @@ import {
   WORKFLOW_OPTIONS,
   type WorkflowModuleAsyncOptions,
   type WorkflowModuleOptions,
+  workflowRoutesExcludedFromGlobalPrefix,
 } from './options.js';
 import {
   configureWorkflowController,
@@ -117,7 +122,10 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
     private readonly options: ResolvedWorkflowModuleOptions,
     @Optional()
     @Inject(ApplicationConfig)
-    private readonly appConfig?: ApplicationConfig
+    private readonly appConfig?: ApplicationConfig,
+    @Optional()
+    @Inject(HttpAdapterHost)
+    private readonly adapterHost?: HttpAdapterHost
   ) {}
 
   /**
@@ -177,6 +185,15 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   }
 
   async onModuleInit(): Promise<void> {
+    this.#assertNestCoreIsShared();
+
+    // Before anything that can serve a request: NestJS registers its body
+    // parsers earlier in `app.init()` than this hook, and they would otherwise
+    // 413 the first queue delivery that carries a payload of any size.
+    if (this.options.bypassBodyParser) {
+      this.#bypassBodyParser();
+    }
+
     const basePath = this.#resolveEffectiveBasePath();
     setWorkflowBasePath(basePath);
 
@@ -235,9 +252,7 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    * routes at all is reported; see {@link basePathReachesRoutes}.
    */
   #resolveEffectiveBasePath(): string {
-    const globalPrefix = normalizeBasePath(
-      this.appConfig?.getGlobalPrefix?.() ?? ''
-    );
+    const globalPrefix = this.#servedGlobalPrefix();
     const configured = this.options.basePath;
 
     if (!configured) {
@@ -260,6 +275,97 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       );
     }
     return configured;
+  }
+
+  /**
+   * The global prefix the workflow routes are *actually* served under.
+   *
+   * `setGlobalPrefix(prefix, { exclude })` leaves excluded routes at the origin
+   * root while the rest of the application moves under the prefix. Adopting the
+   * prefix in that case points every generated callback and webhook URL at a
+   * path NestJS does not route, which is the same 404 the prefix handling
+   * exists to prevent — only harder to spot, because the startup log claims the
+   * prefix was adopted correctly.
+   */
+  #servedGlobalPrefix(): string {
+    const configured = normalizeBasePath(
+      this.appConfig?.getGlobalPrefix?.() ?? ''
+    );
+    if (!configured) return '';
+
+    const options = this.appConfig?.getGlobalPrefixOptions?.();
+    const flowExcluded = workflowRoutesExcludedFromGlobalPrefix(options);
+    const webhookExcluded = workflowRoutesExcludedFromGlobalPrefix(
+      options,
+      '/.well-known/workflow/v1/webhook/token'
+    );
+
+    if (flowExcluded !== webhookExcluded) {
+      console.error(
+        `[@workflow/nest] The global prefix "${configured}" excludes the ` +
+          `workflow ${flowExcluded ? 'flow' : 'webhook'} route but not the ` +
+          `other, so no single prefix can address both. Exclude ` +
+          `".well-known/workflow/v1/(.*)" as a whole, or exclude none of it.`
+      );
+    }
+
+    if (flowExcluded) {
+      console.log(
+        `[@workflow/nest] The NestJS global prefix "${configured}" excludes ` +
+          `the workflow routes, so workflow URLs are generated at the origin ` +
+          `root.`
+      );
+      return '';
+    }
+    return configured;
+  }
+
+  /**
+   * Report an injector that handed back nothing for NestJS's own core
+   * providers.
+   *
+   * `ApplicationConfig` and `HttpAdapterHost` are injected by class, so they
+   * only resolve when this package and the application resolve the *same*
+   * copy of `@nestjs/core`. Two copies — the usual cause is a monorepo where a
+   * workspace package pins its own `@nestjs/core` next to the application's —
+   * give two distinct classes, two distinct injection tokens, and `@Optional()`
+   * quietly yields `undefined`. Everything keeps booting; the global prefix is
+   * simply never adopted and the body-parser bypass never runs, so queue
+   * deliveries 404 or 413 with nothing in the logs to explain it.
+   *
+   * A standalone application context (`NestFactory.createApplicationContext`)
+   * is not this: there the providers resolve and `httpAdapter` is just null,
+   * because the app serves no HTTP at all.
+   */
+  #assertNestCoreIsShared(): void {
+    if (this.appConfig && this.adapterHost) return;
+    const missing = [
+      this.appConfig ? null : 'ApplicationConfig',
+      this.adapterHost ? null : 'HttpAdapterHost',
+    ].filter(Boolean);
+    console.warn(
+      `[@workflow/nest] NestJS did not inject ${missing.join(' or ')}. These ` +
+        `are injected by class, so the usual cause is @workflow/nest and your ` +
+        `application resolving different copies of @nestjs/core. Global ` +
+        `prefix handling and the body-parser bypass are both disabled while ` +
+        `this is the case, so queue deliveries can 404 or be rejected with ` +
+        `413. Deduplicate @nestjs/core so a single copy is installed.`
+    );
+  }
+
+  /**
+   * Make the application's body parsers stand aside for the workflow routes.
+   *
+   * See `body-parser.ts` for why this is necessary and why it can only happen
+   * here.
+   */
+  #bypassBodyParser(): void {
+    const adapter = this.adapterHost?.httpAdapter;
+    if (!adapter) return;
+    const result = bypassWorkflowBodyParsers(adapter);
+    if (result.platform !== 'fastify') return;
+    const advice = fastifyBodyLimitAdvice(result.bodyLimit);
+    if (advice) console.warn(advice);
   }
 
   /**
