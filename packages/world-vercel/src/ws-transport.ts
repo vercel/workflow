@@ -24,6 +24,7 @@
 
 import { channel } from 'node:diagnostics_channel';
 import { getVercelOidcToken } from '@vercel/oidc';
+import { WorkflowWorldError } from '@workflow/errors';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
@@ -88,6 +89,8 @@ export interface EventsyncCatchUpOptions<E> {
   position(): number;
   /** Decode one `history` frame body (a v4 event-frame sequence). */
   decode(body: Uint8Array): Promise<E[]>;
+  /** The affinity this owner was invoked under, verified by the server. */
+  affinity?(): string | undefined;
 }
 
 interface PendingRequest {
@@ -513,6 +516,8 @@ class WsEventsTransport {
           if (after !== undefined) {
             const parsed = new URL(url);
             parsed.searchParams.set('after', String(after));
+            const affinity = this.catchUpOptions?.affinity?.();
+            if (affinity) parsed.searchParams.set('affinity', affinity);
             url = parsed.toString();
           }
           const ws = new WebSocket(url, { headers });
@@ -640,6 +645,23 @@ class WsEventsTransport {
                 return;
               }
               if (frame.meta.type === 'drain') return;
+              if (
+                frame.meta.type === 'error' &&
+                errorFrameMessage(frame.body) === 'affinity-mismatch'
+              )
+                // This process is not the run's owner under the server's
+                // current mapping: it must stop without writing, and the
+                // caller retries at the right owner.
+                throw new WsTransportError(
+                  'workflow-server eventsync rejected the owner affinity',
+                  {
+                    permanent: true,
+                    cause: new WorkflowWorldError(
+                      'Run is routed to a different affinity',
+                      { status: 503, code: 'OWNER_SUPERSEDED' }
+                    ),
+                  }
+                );
               throw new WsTransportError(
                 `workflow-server eventsync catch-up failed: ${
                   frame.meta.type === 'error'

@@ -23,6 +23,11 @@ import { regionForRunId } from './create-run-id.js';
 import { logInvocationRouting } from './invocation-diagnostics.js';
 import { createInvocationMailbox } from './invocation-mailbox.js';
 import { observeInvocation } from './invocation-observer.js';
+import {
+  forgetRunAffinity,
+  freshRunAffinity,
+  noteOwnerAffinity,
+} from './run-affinity.js';
 import { getWorkflowRun } from './runs.js';
 import {
   getSpanKind,
@@ -60,8 +65,12 @@ export function invocationConfig(
   );
 }
 
+/**
+ * The affinity ID to route a run's invocation with: the mapping from a recent
+ * server response for the run, or the run ID itself (per-run affinity).
+ */
 export function invocationAffinity(runId: string): string {
-  return runId;
+  return freshRunAffinity(runId) ?? runId;
 }
 
 const Envelope = z.object({
@@ -72,6 +81,8 @@ const Envelope = z.object({
   deploymentId: z.string().min(1),
   queueName: ValidQueueName,
   timeoutMs: z.number().int().min(1).max(120_000),
+  /** The affinity the caller routed with; the owner states it to the server. */
+  affinityId: z.string().min(1).max(256).optional(),
   input: z.unknown(),
 });
 
@@ -196,8 +207,11 @@ export function createInvoker(
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
       const identity = { runId, requestId, invocationId };
+      // Routing needs the server's current affinity for the run. A hook
+      // resume or a fresh start has just received it; otherwise read the run.
+      const cached = freshRunAffinity(runId);
       const run =
-        options?.target ??
+        (cached !== undefined ? options?.target : undefined) ??
         (await observeInvocation('lookup', identity, () =>
           getWorkflowRun(runId, { resolveData: 'none' }, config)
         ));
@@ -232,6 +246,7 @@ export function createInvoker(
         deploymentId: run.deploymentId,
         queueName: `${getQueueTopicPrefix('workflow', resolveQueueNamespace())}${run.workflowName}`,
         timeoutMs,
+        affinityId,
         input,
       });
       const body = encodeBody(payload);
@@ -338,7 +353,15 @@ export function createInvoker(
       );
     })();
     // Unwrap outside transport handling so known handler errors retain their class.
-    return unwrapInvocationOutcome(await awaitSignal(work, signal));
+    try {
+      return unwrapInvocationOutcome(await awaitSignal(work, signal));
+    } catch (error) {
+      // A superseded owner may have rejected a stale mapping: the next
+      // attempt reads the run's current affinity again.
+      if ((error as { code?: unknown })?.code === 'OWNER_SUPERSEDED')
+        forgetRunAffinity(runId);
+      throw error;
+    }
   };
 }
 
@@ -406,9 +429,12 @@ export function createDirectInvocationHandler(
         target = {
           runId: input.runId,
           requestId: input.requestId,
-          expectedAffinityId: invocationAffinity(input.runId),
+          expectedAffinityId: input.affinityId ?? input.runId,
           requestedDeploymentId: input.deploymentId,
         };
+        // The owner states this on its eventsync handshake; the server, which
+        // owns the mapping, rejects it if the run belongs to another affinity.
+        noteOwnerAffinity(input.runId, input.affinityId ?? input.runId);
         logInvocationRouting('direct.received', {
           ...routing,
           ...target,

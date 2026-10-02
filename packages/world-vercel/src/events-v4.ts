@@ -281,6 +281,8 @@ interface CreateEventV4InputBase {
    *  the run entity so cross-run writers can seal to it without holding the
    *  run's symmetric key. */
   encryptionPublicKey?: string;
+  /** run_created's opt-in shared affinity cell size (experimental). */
+  affinityCellSize?: number;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -466,7 +468,11 @@ const CreateEventV4BodySchemas: {
 } = {
   run_created: z.compile(
     CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema,
+      // `affinityId` is world-vercel routing state, removed again by
+      // createWorkflowRunEvent after it is recorded.
+      run: WorkflowRunSchema.and(
+        z.object({ affinityId: z.string().optional() })
+      ),
     }).and(CreateEventV4PageSchema)
   ),
   run_started: z.compile(
@@ -653,6 +659,9 @@ function buildPostFrameMeta(
   }
   if (input.encryptionPublicKey !== undefined) {
     meta.encryptionPublicKey = input.encryptionPublicKey;
+  }
+  if (input.affinityCellSize !== undefined) {
+    meta.affinityCellSize = input.affinityCellSize;
   }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;

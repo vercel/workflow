@@ -2103,7 +2103,12 @@ export class RetainedRunner {
     this.fault ??=
       cause instanceof RunnerFault
         ? cause
-        : new RunnerFault('execution', cause);
+        : isOwnerSuperseded(cause)
+          ? Object.assign(
+              new RunnerFault('persistence', cause, 'owner_superseded'),
+              { superseded: true }
+            )
+          : new RunnerFault('execution', cause);
     const fault = this.fault;
     if (!this.failurePromise)
       this.failurePromise = (async () => {

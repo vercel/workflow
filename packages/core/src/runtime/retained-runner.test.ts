@@ -1054,6 +1054,31 @@ it('initializes from the owner session catch-up alone, without run, event or ste
   await fixture.finished;
 });
 
+it('stops without failing the run when the server rejects the owner during catch-up', async () => {
+  const fixture = await setup();
+  const create = vi.fn();
+  fixture.world.events.createWriteSession = () => ({
+    catchUp: async () => {
+      // e.g. the owner's stated affinity no longer maps to this run.
+      throw new Error('eventsync rejected the owner affinity', {
+        cause: new WorkflowWorldError('Run is routed to a different affinity', {
+          status: 503,
+          code: 'OWNER_SUPERSEDED',
+        }),
+      });
+    },
+    create,
+    dispose() {},
+  });
+  await expect(
+    fixture.owner.submit({ runId: fixture.runId }, fixture.metadata)
+  ).rejects.toMatchObject({ status: 503, code: 'OWNER_SUPERSEDED' });
+  expect(create).not.toHaveBeenCalled();
+  expect((await fixture.world.runs.get(fixture.runId)).status).not.toBe(
+    'failed'
+  );
+});
+
 it('refuses an expired run reported by the catch-up', async () => {
   const fixture = await setup();
   const events = await fixture.world.events.list({

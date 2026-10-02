@@ -27,6 +27,7 @@ import {
 } from 'vitest';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
+import { noteOwnerAffinity } from './run-affinity.js';
 import { createStorage } from './storage.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import {
@@ -383,6 +384,41 @@ describe('owner event writer', () => {
           )
         );
         await expect(loaded).rejects.toThrow('after-ahead-of-log');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('states the owner affinity and treats a rejection as superseded', () =>
+    withEventsync(async () => {
+      noteOwnerAffinity('wrun_test', 'cell-iad1-abc123-0');
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const socket = await nextSocket();
+        expect(new URL(socket.url).searchParams.get('affinity')).toBe(
+          'cell-iad1-abc123-0'
+        );
+        socket.open();
+        const loaded = writer.catchUp!();
+        void loaded.catch(() => {});
+        await tick();
+        socket.deliver(
+          encodeFrame(
+            { reqId: -1, type: 'error', status: 409 },
+            new TextEncoder().encode(
+              JSON.stringify({
+                code: 'affinity-mismatch',
+                message: 'affinity-mismatch',
+              })
+            )
+          )
+        );
+        const error = await loaded.catch((cause: unknown) => cause);
+        expect((error as Error).message).toMatch(/owner affinity/);
+        expect(((error as Error).cause as { code?: string }).code).toBe(
+          'OWNER_SUPERSEDED'
+        );
       } finally {
         await writer.dispose();
       }

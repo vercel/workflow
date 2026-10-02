@@ -12,6 +12,7 @@ import {
 } from './buffered-event-writer.js';
 import { createWorkflowRunEvent } from './events.js';
 import { decodeEventFrameSequence } from './events-v4.js';
+import { ownerAffinity } from './run-affinity.js';
 import type { APIConfig } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -51,6 +52,7 @@ export function createEventWriteSession(
           decode: decodeEventFrameSequence as (
             body: Uint8Array
           ) => Promise<unknown[]>,
+          affinity: () => ownerAffinity(runId),
         }
       : undefined;
   // Handle rejection immediately even when snapshot loading fails before a write.
