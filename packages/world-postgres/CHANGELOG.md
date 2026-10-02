@@ -1,5 +1,13 @@
 # @workflow/world-postgres
 
+## 4.3.9
+
+### Patch Changes
+
+- [#4219](https://github.com/vercel/workflow/pull/4219) [`50e8b41`](https://github.com/vercel/workflow/commit/50e8b419af434029f2cc868d647d0ab965fe5ff1) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Allow same-run queue wakes to reach a workflow while an inline step is pending, so hook-driven cancellation and steering do not wait for the step to finish.
+
+- [#3908](https://github.com/vercel/workflow/pull/3908) [`5637f10`](https://github.com/vercel/workflow/commit/5637f109f6977cd1e4021c5f59a8558c74a5dd42) Thanks [@pranaygp](https://github.com/pranaygp)! - Document that this is a reference implementation whose workflow HTTP routes are unauthenticated, and how to restrict them.
+
 ## 4.3.8
 
 ### Patch Changes

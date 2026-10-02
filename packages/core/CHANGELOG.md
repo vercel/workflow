@@ -1,5 +1,13 @@
 # @workflow/core
 
+## 4.8.12
+
+### Patch Changes
+
+- [#4213](https://github.com/vercel/workflow/pull/4213) [`69a4b76`](https://github.com/vercel/workflow/commit/69a4b76218cae869673fe16b1dffa6b62fc74b71) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an issue with the workflow's deterministic clock tracking advancement on consumption, not on write, which could lead to a determinism issue when concurrent replays called `Date.now` with different amounts of events read from the log
+
+- [#4215](https://github.com/vercel/workflow/pull/4215) [`8b3bb55`](https://github.com/vercel/workflow/commit/8b3bb5584db3d4df723ef8be32d6705c8d7f4e9f) Thanks [@gaojude](https://github.com/gaojude)! - Order hook registration and conflict settlements with earlier workflow deliveries so replay preserves concurrent step correlation IDs.
+
 ## 4.8.11
 
 ### Patch Changes
