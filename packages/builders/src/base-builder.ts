@@ -1662,6 +1662,23 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     }
   }
 
+  private createStepLoaderRegistrationsCode(
+    manifest: WorkflowManifest,
+    loaderSpecifier: string
+  ): string {
+    const registrations: string[] = [];
+
+    for (const entries of Object.values(manifest.steps ?? {})) {
+      for (const { stepId } of Object.values(entries)) {
+        registrations.push(
+          `registerStepFunctionLoader(${JSON.stringify(stepId)}, () => import(${JSON.stringify(loaderSpecifier)}));`
+        );
+      }
+    }
+
+    return registrations.join('\n');
+  }
+
   /**
    * V2: Creates a combined bundle that includes both step registrations and
    * workflow orchestration in a single route. The combined entrypoint executes
@@ -1763,6 +1780,10 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
 
     // 3. Generate combined route file
     const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
+    const stepLoaderRegistrationsCode = this.createStepLoaderRegistrationsCode(
+      stepsManifest,
+      stepsRelativePath
+    );
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
       basePath: this.config.basePath,
@@ -1771,13 +1792,11 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
-import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
+import { registerStepFunctionLoader, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 
-// Prevent rollup from tree-shaking the steps side-effect import
-void __steps_registered;
+${stepLoaderRegistrationsCode}
 
 const workflowCode = \`${escapedVMCode}\`;
 
@@ -1851,12 +1870,11 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       );
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
-import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
+import { registerStepFunctionLoader, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 
-void __steps_registered;
+${stepLoaderRegistrationsCode}
 
 const workflowCode = \`${escaped}\`;
 
