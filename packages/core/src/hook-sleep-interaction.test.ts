@@ -1595,6 +1595,180 @@ function defineTests(mode: 'sync' | 'async') {
       expect(pendingWaits).toHaveLength(0);
     });
   });
+
+  // ─── Concurrent-writer race: branch decided on a stale prefix ──────────
+  //
+  // Two replays load the log concurrently. A `hook_received` is appended by a
+  // third party in between, so the replay that started earlier decides its
+  // `Promise.race` branch without having seen it, and then appends the events
+  // that branch emits AFTER the hook_received in the log.
+  //
+  // The resulting log is still replayable, and must not be reported as
+  // corrupt: delivery barriers order branch-deciding deliveries by event-log
+  // index (see `pendingDeliveryBarriers`), so every later replay reaches the
+  // same branch the log already recorded. The three cases below pin which
+  // interleavings that covers and which are true corruption.
+  describe(`branch decided on a stale prefix ${label}`, () => {
+    const RESUME_1 = new Date('2099-01-01');
+    const RESUME_2 = new Date('2099-01-02');
+
+    function ev(
+      index: number,
+      eventType: Event['eventType'],
+      correlationId: string,
+      eventData: unknown
+    ): Event {
+      return {
+        eventId: `evnt_${index}`,
+        runId: 'wrun_test',
+        eventType,
+        correlationId,
+        eventData,
+        createdAt: new Date(),
+      } as Event;
+    }
+
+    /**
+     * `Promise.race([hookRead, sleep])` where the two branches emit different
+     * events: the sleep branch creates a second wait, the hook branch creates
+     * a step. The log therefore records which branch a replay committed to.
+     */
+    function makeRaceWorkflow(
+      ctx: WorkflowOrchestratorContext,
+      seen: { branch?: 'hook' | 'sleep' }
+    ) {
+      const createHook = createCreateHook(ctx);
+      const sleep = createSleep(ctx);
+      const drainStep = createUseStep(ctx)('drainStep');
+
+      return async () => {
+        const hook = createHook({ token: 'test-token' });
+        const pendingHookRead = hook[Symbol.asyncIterator]().next();
+        const branch = await Promise.race([
+          pendingHookRead.then(() => 'hook' as const),
+          sleep(RESUME_1).then(() => 'sleep' as const),
+        ]);
+        seen.branch = branch;
+        if (branch === 'sleep') {
+          await sleep(RESUME_2);
+          return 'sleep-done';
+        }
+        await drainStep();
+        return 'hook-done';
+      };
+    }
+
+    async function payload() {
+      const ops: Promise<unknown>[] = [];
+      return dehydrateStepReturnValue(
+        { msg: 'hi' },
+        'wrun_test',
+        undefined,
+        ops
+      );
+    }
+
+    it('replays the recorded branch when the concurrent hook_received lands after the branch-deciding event', async () => {
+      await setupHydrateMock();
+      const ctx = setupWorkflowContext([
+        ev(0, 'hook_created', `hook_${CORR_IDS[0]}`, {
+          token: 'test-token',
+          isWebhook: false,
+        }),
+        ev(1, 'wait_created', `wait_${CORR_IDS[1]}`, { resumeAt: RESUME_1 }),
+        ev(2, 'wait_completed', `wait_${CORR_IDS[1]}`, { resumeAt: RESUME_1 }),
+        // Appended by a concurrent writer. The replay that decided the branch
+        // loaded only events 0..2 and never saw this one.
+        ev(3, 'hook_received', `hook_${CORR_IDS[0]}`, {
+          token: 'test-token',
+          payload: await payload(),
+        }),
+        // ...and then appended its sleep-branch wait after it.
+        ev(4, 'wait_created', `wait_${CORR_IDS[2]}`, { resumeAt: RESUME_2 }),
+      ]);
+
+      const seen: { branch?: 'hook' | 'sleep' } = {};
+      const { error } = await runWithDiscontinuation(
+        ctx,
+        makeRaceWorkflow(ctx, seen)
+      );
+
+      // `wait_completed` precedes `hook_received` in the log, so the sleep arm
+      // wins the race for every replay and the trailing `wait_created` has a
+      // consumer. The run suspends on the second wait rather than failing.
+      expect(seen.branch).toBe('sleep');
+      expect(WorkflowSuspension.is(error)).toBe(true);
+      expect(ctx.eventsConsumer.eventIndex).toBe(5);
+      const pendingWaits = [...ctx.invocationsQueue.values()].filter(
+        (i) => i.type === 'wait'
+      );
+      expect(pendingWaits).toHaveLength(1);
+    });
+
+    it('reports an unconsumed event when the log orders the outside events against the branch that was recorded', async () => {
+      await setupHydrateMock();
+      const ctx = setupWorkflowContext([
+        ev(0, 'hook_created', `hook_${CORR_IDS[0]}`, {
+          token: 'test-token',
+          isWebhook: false,
+        }),
+        ev(1, 'wait_created', `wait_${CORR_IDS[1]}`, { resumeAt: RESUME_1 }),
+        // hook_received BEFORE wait_completed: only reachable if a reader
+        // observed the wait completion without observing an already-committed
+        // earlier event (a hole in the read, not a stale prefix).
+        ev(2, 'hook_received', `hook_${CORR_IDS[0]}`, {
+          token: 'test-token',
+          payload: await payload(),
+        }),
+        ev(3, 'wait_completed', `wait_${CORR_IDS[1]}`, { resumeAt: RESUME_1 }),
+        ev(4, 'wait_created', `wait_${CORR_IDS[2]}`, { resumeAt: RESUME_2 }),
+      ]);
+
+      const seen: { branch?: 'hook' | 'sleep' } = {};
+      const { error } = await runWithDiscontinuation(
+        ctx,
+        makeRaceWorkflow(ctx, seen)
+      );
+
+      // The hook arm now wins, so nothing creates the trailing wait.
+      expect(seen.branch).toBe('hook');
+      expect(error?.message).toContain('Unconsumed event in event log');
+      expect(error?.message).toContain(`wait_${CORR_IDS[2]}`);
+    });
+
+    it('reports an unconsumed event when two replays commit opposite branches', async () => {
+      await setupHydrateMock();
+      const ctx = setupWorkflowContext([
+        ev(0, 'hook_created', `hook_${CORR_IDS[0]}`, {
+          token: 'test-token',
+          isWebhook: false,
+        }),
+        ev(1, 'wait_created', `wait_${CORR_IDS[1]}`, { resumeAt: RESUME_1 }),
+        ev(2, 'wait_completed', `wait_${CORR_IDS[1]}`, { resumeAt: RESUME_1 }),
+        ev(3, 'hook_received', `hook_${CORR_IDS[0]}`, {
+          token: 'test-token',
+          payload: await payload(),
+        }),
+        // Replay 1 saw 0..2 and committed the sleep branch.
+        ev(4, 'wait_created', `wait_${CORR_IDS[2]}`, { resumeAt: RESUME_2 }),
+        // Replay 2 saw 0..3 and committed the hook branch. Both prefixes were
+        // complete when written, so no completeness-based write guard rejects
+        // either. The log now records two mutually exclusive branches and no
+        // replay semantics can honour both.
+        ev(5, 'step_created', `step_${CORR_IDS[2]}`, { stepName: 'drainStep' }),
+      ]);
+
+      const seen: { branch?: 'hook' | 'sleep' } = {};
+      const { error } = await runWithDiscontinuation(
+        ctx,
+        makeRaceWorkflow(ctx, seen)
+      );
+
+      expect(seen.branch).toBe('sleep');
+      expect(error?.message).toContain('Unconsumed event in event log');
+      expect(error?.message).toContain(`step_${CORR_IDS[2]}`);
+    });
+  });
 }
 
 // ─── Run tests in both modes ────────────────────────────
