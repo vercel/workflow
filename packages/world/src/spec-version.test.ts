@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import * as specVersions from './spec-version.js';
 import {
+  CAPABILITY_ONLY_SPEC_VERSIONS,
+  crossesStructuralSpecVersion,
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
@@ -9,21 +12,66 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  STRUCTURAL_SPEC_VERSIONS,
 } from './spec-version.js';
 
+describe('spec version classification', () => {
+  const versionConstants = Object.entries(specVersions).filter(([name]) =>
+    name.startsWith('SPEC_VERSION_SUPPORTS_')
+  ) as [string, number][];
+
+  it.each(
+    versionConstants
+  )('%s is classified as capability-only or structural', (_name, version) => {
+    // A new version constant must be placed in exactly one set: a backend
+    // raises running runs across capability-only versions, so leaving a
+    // structural one out of STRUCTURAL_SPEC_VERSIONS is only safe because
+    // the check is an allow-list, and this keeps the lists honest.
+    expect(
+      Number(CAPABILITY_ONLY_SPEC_VERSIONS.has(version)) +
+        Number(STRUCTURAL_SPEC_VERSIONS.has(version))
+    ).toBe(1);
+  });
+
+  it('treats slot identity and the sealed log as structural', () => {
+    expect(crossesStructuralSpecVersion(5, 6)).toBe(true);
+    expect(crossesStructuralSpecVersion(6, 7)).toBe(true);
+    expect(crossesStructuralSpecVersion(3, 8)).toBe(true);
+  });
+
+  it('lets capability-only versions be crossed', () => {
+    expect(crossesStructuralSpecVersion(3, 5)).toBe(false);
+    expect(crossesStructuralSpecVersion(7, 8)).toBe(false);
+    expect(crossesStructuralSpecVersion(8, 8)).toBe(false);
+  });
+
+  it('treats an unclassified future version as structural', () => {
+    expect(
+      crossesStructuralSpecVersion(
+        SPEC_VERSION_MAX_SUPPORTED,
+        SPEC_VERSION_MAX_SUPPORTED + 1
+      )
+    ).toBe(true);
+  });
+});
+
 describe('spec version constants', () => {
-  it('current spec version is the sealed-log version', () => {
+  it('current spec version is the hook-force-claim version', () => {
     expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
     expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
-    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    expect(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM).toBe(8);
+    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
   });
 
   describe('mintedSpecVersion', () => {
-    it('stamps the sealed-log version by default', () => {
+    it('stamps the current version by default', () => {
       expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
-      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+      expect(mintedSpecVersion({})).toBeGreaterThanOrEqual(
+        SPEC_VERSION_SUPPORTS_SEALED_LOG
+      );
     });
 
     it('falls back to slot identity when switched off', () => {
@@ -55,7 +103,9 @@ describe('spec version constants', () => {
     // "What do we write?" and "what can we still read?" are separate dials,
     // and the ceiling must never sit below the default: an SDK that stamps a
     // version it cannot read back would reject its own runs.
-    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(
+      SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+    );
     expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
       SPEC_VERSION_CURRENT
     );

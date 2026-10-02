@@ -4,6 +4,7 @@ import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
 import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
+  parseQueueName,
   type Queue,
   type QueueBatchResult,
   type QueueOptions,
@@ -21,7 +22,7 @@ import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js';
 
 /**
  * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
@@ -152,10 +153,48 @@ class DualTransport implements Transport<unknown> {
   }
 }
 
-// per-copy-ok: both ends of this store live in the same `createQueueHandler`
-// closure: the `run()` wrapper and the `getStore()` read always come from the
-// same module copy, so the context never has to cross a copy boundary.
-const requestIdStorage = new AsyncLocalStorage<string | undefined>();
+interface QueueInvocationContext {
+  collectStepIds: boolean;
+  requestId?: string;
+  stepIds: Set<string>;
+}
+
+// per-copy-ok: the route wrapper and the World hook exported from this module
+// share the same module copy through the World instance, so the context never
+// has to cross a copy boundary.
+const invocationStorage = new AsyncLocalStorage<QueueInvocationContext>();
+
+const WORKFLOW_STEP_IDS_HEADER = 'x-vercel-internal-workflow-step-ids';
+// Keep the response header and downstream request-log cardinality bounded.
+const MAX_WORKFLOW_STEP_IDS = 10;
+
+export function recordStepExecution(stepId: string): void {
+  const invocation = invocationStorage.getStore();
+  if (
+    invocation?.collectStepIds &&
+    invocation.stepIds.size < MAX_WORKFLOW_STEP_IDS
+  ) {
+    invocation.stepIds.add(stepId);
+  }
+}
+
+function attachStepIds(
+  response: Response,
+  invocation: QueueInvocationContext
+): Response {
+  if (invocation.stepIds.size === 0) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set(
+    WORKFLOW_STEP_IDS_HEADER,
+    JSON.stringify(Array.from(invocation.stepIds))
+  );
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
 
 const MessageWrapper = z.compile(
   z.object({
@@ -282,6 +321,19 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
 }
 
 /**
+ * The workflow name a queue name carries: every message for a run, workflow
+ * and step alike, goes to `__wkf_workflow_<workflowName>` (with an optional
+ * namespace prefix). `undefined` for a name that isn't a workflow topic.
+ */
+function getWorkflowNameFromQueueName(queueName: string): string | undefined {
+  try {
+    return parseQueueName(queueName as ValidQueueName).id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Bind this run's events channel to one invocation of the flow route. This is
  * the only pair of calls that opens one: nothing else in the SDK does, so every
  * other writer (`start()` writing `run_created` from an arbitrary request
@@ -292,6 +344,7 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
  */
 const wsEventsChannelForInvocation = (
   runId: string | undefined,
+  workflowName: string | undefined,
   config: APIConfig | undefined
 ) => {
   /** This invocation's release, once the open has resolved one. */
@@ -306,9 +359,13 @@ const wsEventsChannelForInvocation = (
      * the claim it is releasing.
      */
     open(): void {
-      if (!runId || !isWsEventsTransportEnabled()) return;
+      if (!runId || !isWsEventsTransportEnabledForWorkflow(workflowName)) {
+        return;
+      }
       claim = import('./ws-transport.js')
-        .then(({ openWsChannel }) => openWsChannel(runId, config))
+        .then(({ openWsChannel }) =>
+          openWsChannel(runId, config, { workflowName })
+        )
         .catch(() => undefined);
     },
     /**
@@ -731,7 +788,8 @@ export function createQueue(config?: APIConfig): Queue {
           return;
         }
 
-        const requestId = requestIdStorage.getStore();
+        const invocation = invocationStorage.getStore();
+        const requestId = invocation?.requestId;
         // The CborTransport handles CBOR decoding inside deserialize(),
         // so message is already a plain object with Uint8Array values intact.
         const { payload, queueName, deploymentId } =
@@ -743,17 +801,28 @@ export function createQueue(config?: APIConfig): Queue {
         // timestamps). This path also absorbs `ws`'s module init.
         const wsEvents = wsEventsChannelForInvocation(
           getRunIdFromPayload(payload),
+          getWorkflowNameFromQueueName(queueName),
           config
+        );
+        const collectStepIds = !(
+          'stepId' in payload && typeof payload.stepId === 'string'
         );
         wsEvents.open();
 
         try {
-          const result = await handler(payload, {
-            queueName,
-            messageId: MessageId.parse(metadata.messageId),
-            attempt: metadata.deliveryCount,
-            requestId,
-          });
+          const runHandler = () =>
+            handler(payload, {
+              queueName,
+              messageId: MessageId.parse(metadata.messageId),
+              attempt: metadata.deliveryCount,
+              requestId,
+            });
+          const result = await (invocation
+            ? invocationStorage.run(
+                { ...invocation, collectStepIds },
+                runHandler
+              )
+            : runHandler());
 
           if (
             !('invoke' in payload && payload.invoke === true) &&
@@ -806,7 +875,15 @@ export function createQueue(config?: APIConfig): Queue {
     return async (req: Request) => {
       const rawId = req.headers.get('x-vercel-id');
       const requestId = rawId?.trim() || undefined;
-      return requestIdStorage.run(requestId, () => vqsHandler(req));
+      const invocation: QueueInvocationContext = {
+        collectStepIds: false,
+        requestId,
+        stepIds: new Set(),
+      };
+      const response = await invocationStorage.run(invocation, () =>
+        vqsHandler(req)
+      );
+      return attachStepIds(response, invocation);
     };
   };
 

@@ -23,7 +23,9 @@ import { type Event, eventIdToSlot, FIRST_EVENT_SLOT } from '@workflow/world';
  *   as they arrive and a later replay will read the log in position order;
  *   feeding position 13 before 12 exists would let the two disagree.
  * - `cursor`, the read position for `events.list`, advanced by list pages and
- *   by a complete inline delta.
+ *   by a complete inline delta. Alongside it, how many events of the log the
+ *   cursor covers, when known: VM snapshots persist the pair, and a restore
+ *   adds only the events listed after the cursor to that count.
  *
  * Only PAGES are queued for delivery, never the created event a write returns
  * on its own. A World reads a report or a delta the way it reads a listing,
@@ -49,10 +51,39 @@ export class QuickJSLogView {
   /** Events handed back by a World that the VM has not been given yet. */
   private readonly unfed = new Map<number, Event>();
   private cursor: string | null;
+  private cursorPosition: number | undefined;
 
-  constructor(fedEvents: readonly Event[], cursor: string | null) {
+  /**
+   * @param cursorPosition How many events of the log `cursor` covers, when
+   *   the caller knows (see {@link eventsThroughCursor}).
+   */
+  constructor(
+    fedEvents: readonly Event[],
+    cursor: string | null,
+    cursorPosition?: number
+  ) {
     this.cursor = cursor;
+    this.cursorPosition = cursor === null ? 0 : cursorPosition;
     this.markFed(fedEvents);
+  }
+
+  /**
+   * How many events of the log the read cursor covers (every event at or
+   * before it), or `undefined` once that is no longer known. A VM snapshot
+   * saves this with the cursor, and the restore adds the events listed
+   * after the cursor, so it must count exactly the events the cursor
+   * covers, however they reached the VM.
+   */
+  get eventsThroughCursor(): number | undefined {
+    return this.cursorPosition;
+  }
+
+  /**
+   * Reset the read position, e.g. after re-reading the whole log.
+   */
+  setPosition(cursor: string | null, eventsThroughCursor: number): void {
+    this.cursor = cursor;
+    this.cursorPosition = eventsThroughCursor;
   }
 
   /** Read position for the next `events.list`, or `null` for the start. */
@@ -80,10 +111,21 @@ export class QuickJSLogView {
       : {};
   }
 
-  /** A page of `events.list` was read to `cursor`. */
-  advanceCursor(cursor: string | null): void {
+  /**
+   * `events.list` (or an inline delta) was read from the current cursor to
+   * `cursor`, returning `eventsRead` events. Without `eventsRead` the
+   * position the cursor covers is no longer known.
+   */
+  advanceCursor(cursor: string | null, eventsRead?: number): void {
     if (cursor !== null) {
       this.cursor = cursor;
+      this.cursorPosition =
+        this.cursorPosition === undefined || eventsRead === undefined
+          ? undefined
+          : this.cursorPosition + eventsRead;
+    } else if (eventsRead !== 0) {
+      // Events read with no cursor to show for them.
+      this.cursorPosition = undefined;
     }
   }
 
@@ -173,7 +215,7 @@ export class QuickJSLogView {
     if (!this.queueIsDense()) {
       return false;
     }
-    this.advanceCursor(delta.cursor);
+    this.advanceCursor(delta.cursor, delta.events.length);
     return true;
   }
 

@@ -1,7 +1,7 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,
@@ -10,8 +10,10 @@ import {
   peekFormatPrefix,
   SerializationFormat,
 } from '../serialization.js';
+import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import {
   appendUniqueEvents,
+  DYNAMIC_WORKFLOW_VERSION,
   findEventSlotGap,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -263,6 +265,26 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
   });
 
+  it('surfaces dynamicWorkflowVersion when present in the response', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: 1 })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBe(1);
+  });
+
+  it('omits malformed dynamicWorkflowVersion values', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: '1' })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBeUndefined();
+  });
+
   it('omits workflowCoreVersion when the response does not include the field', async () => {
     // Independent of specVersion — the field is omitted by any responder
     // running an older `@workflow/core` that predates the addition of
@@ -449,6 +471,7 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenCalledWith({
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -576,10 +599,12 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenNthCalledWith(1, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+      resolveData: 'skip-step-inputs',
     });
     expect(eventsListMock).toHaveBeenNthCalledWith(2, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -1093,6 +1118,44 @@ describe('health check run public key', () => {
     expect(response.healthy).toBe(true);
     expect(response.encryptionPublicKey).toBeUndefined();
     expect(response.workflowCoreVersion).toBeDefined();
+  });
+});
+
+describe('health check dynamic workflow version', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function respond() {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue({
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+    } as any);
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_dynamic' },
+      'workflow'
+    );
+    return JSON.parse(write.mock.calls[0][2] as string);
+  }
+
+  it('omits dynamicWorkflowVersion when the deployment has not opted in', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+    const response = await respond();
+    expect(response.healthy).toBe(true);
+    expect(response).not.toHaveProperty('dynamicWorkflowVersion');
+  });
+
+  it('omits dynamicWorkflowVersion for a value other than 1 or true', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, 'false');
+    expect(await respond()).not.toHaveProperty('dynamicWorkflowVersion');
+  });
+
+  it('advertises dynamicWorkflowVersion when the deployment has opted in', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, 'true');
+    expect((await respond()).dynamicWorkflowVersion).toBe(
+      DYNAMIC_WORKFLOW_VERSION
+    );
   });
 });
 

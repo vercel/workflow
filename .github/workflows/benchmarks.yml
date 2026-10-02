@@ -119,8 +119,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      deployments: read
-      statuses: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -146,23 +144,21 @@ jobs:
       - name: Build packages
         run: pnpm turbo run build --filter='@workflow/cli'
 
-      - name: Wait for Vercel deployment
-        id: waitForDeployment
+      - name: Resolve Vercel deployment
+        id: deployment
         if: matrix.target.world == 'vercel'
-        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        uses: ./.github/actions/resolve-vercel-deployment
         with:
-          project-slug: ${{ matrix.target.project-slug }}
-          timeout: 1000
-          check-interval: 15
-          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          project-id: ${{ matrix.target.project-id }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
 
       - name: Run benchmarks
         env:
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.target.app }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ steps.deployment.outputs.environment == 'preview' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}

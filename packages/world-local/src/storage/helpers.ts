@@ -42,6 +42,54 @@ export function hookDisposeLockPath(
 }
 
 /**
+ * What a hook's dispose lock says about who disposed it. The lock's content
+ * is empty for the run's own disposal and a JSON `{ forceClaimedBy }` when
+ * another run took the hook's token (`createHook({ experimental_force })`):
+ * the takeover writes the lock as its first durable step, so a
+ * `hook_received` refused by it can be answered as a redirect to the new
+ * owner rather than the final "not found" a disposal earns. Same tag
+ * visibility as {@link isHookDisposalCommitted}.
+ */
+export async function readHookDisposeLock(
+  basedir: string,
+  hookId: string,
+  tag?: string
+): Promise<
+  | { committed: false }
+  | { committed: true; forceClaimedBy?: { runId: string; hookId: string } }
+> {
+  const candidates = [hookDisposeLockPath(basedir, hookId)];
+  if (tag) {
+    candidates.push(hookDisposeLockPath(basedir, hookId, tag));
+  }
+  for (const lockPath of candidates) {
+    let content: string;
+    try {
+      content = await fs.readFile(lockPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (content.trim() === '') return { committed: true };
+    try {
+      const parsed = JSON.parse(content) as {
+        forceClaimedBy?: { runId?: unknown; hookId?: unknown };
+      };
+      const by = parsed.forceClaimedBy;
+      if (by && typeof by.runId === 'string' && typeof by.hookId === 'string') {
+        return {
+          committed: true,
+          forceClaimedBy: { runId: by.runId, hookId: by.hookId },
+        };
+      }
+    } catch {
+      // Not JSON: an older lock with unexpected content. Still a disposal.
+    }
+    return { committed: true };
+  }
+  return { committed: false };
+}
+
+/**
  * Whether a hook's disposal has been committed (its dispose lock exists).
  * Mirrors event visibility for tagged worlds: an untagged lock is visible
  * to every tag, a tagged lock only to its own tag.
@@ -358,6 +406,18 @@ export const HookTokenClaimSchema = z.compile(
     // canonical hook_created event before concurrent retries publish it.
     eventId: z.string().optional(),
     tokenRetentionUntil: z.coerce.date().optional(),
+    // Set when this claim took the token from another run
+    // (`experimental_force`), so a retry that adopts the claim can still
+    // report — and wake — the run it came from.
+    claimedFrom: z
+      .object({
+        runId: z.string(),
+        hookId: z.string(),
+        workflowName: z.string().optional(),
+        deploymentId: z.string().optional(),
+        runSpecVersion: z.number().optional(),
+      })
+      .optional(),
   })
 );
 

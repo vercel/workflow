@@ -1,7 +1,15 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getWorkflowVmFromEnv, useQuickJSVm, WORKFLOW_VMS } from './vm-mode.js';
+import {
+  getSnapshotThreshold,
+  getSnapshotThresholdForHandler,
+  getSnapshotThresholdFromEnv,
+  getWorkflowVmFromEnv,
+  isUnencryptedSnapshottingAllowed,
+  useQuickJSVm,
+  WORKFLOW_VMS,
+} from './vm-mode.js';
 
 describe('getWorkflowVmFromEnv', () => {
   it('returns undefined when WORKFLOW_VM is not set', () => {
@@ -105,5 +113,114 @@ describe('useQuickJSVm', () => {
   it('throws on unknown WORKFLOW_VM env values', () => {
     process.env.WORKFLOW_VM = 'bogus';
     expect(() => useQuickJSVm(makeRun())).toThrow(WorkflowRuntimeError);
+  });
+});
+
+describe('getSnapshotThresholdFromEnv', () => {
+  it('returns undefined when unset or empty', () => {
+    expect(getSnapshotThresholdFromEnv({})).toBeUndefined();
+    expect(
+      getSnapshotThresholdFromEnv({ WORKFLOW_SNAPSHOT_THRESHOLD: '' })
+    ).toBeUndefined();
+  });
+
+  it('parses non-negative integers', () => {
+    expect(
+      getSnapshotThresholdFromEnv({ WORKFLOW_SNAPSHOT_THRESHOLD: '0' })
+    ).toBe(0);
+    expect(
+      getSnapshotThresholdFromEnv({ WORKFLOW_SNAPSHOT_THRESHOLD: '1' })
+    ).toBe(1);
+    expect(
+      getSnapshotThresholdFromEnv({ WORKFLOW_SNAPSHOT_THRESHOLD: '250' })
+    ).toBe(250);
+  });
+
+  it('throws on invalid values', () => {
+    for (const bad of [
+      '-1',
+      '1.5',
+      'abc',
+      'Infinity',
+      '1e3',
+      '0x10',
+      ' 5 ',
+      '99999999999999999999',
+    ]) {
+      expect(() =>
+        getSnapshotThresholdFromEnv({ WORKFLOW_SNAPSHOT_THRESHOLD: bad })
+      ).toThrow(WorkflowRuntimeError);
+    }
+  });
+});
+
+describe('getSnapshotThreshold', () => {
+  const makeRun = (executionContext?: Record<string, unknown>) =>
+    ({
+      runId: 'wrun_test',
+      workflowName: 'test',
+      executionContext,
+    }) as unknown as WorkflowRun;
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_SNAPSHOT_THRESHOLD;
+  });
+
+  it('defaults to 0 (disabled)', () => {
+    expect(getSnapshotThreshold(makeRun())).toBe(0);
+  });
+
+  it('reads the env var when the run has no stamped policy', () => {
+    process.env.WORKFLOW_SNAPSHOT_THRESHOLD = '100';
+    expect(getSnapshotThreshold(makeRun())).toBe(100);
+  });
+
+  it('executionContext.snapshotThreshold wins over env (run affinity)', () => {
+    process.env.WORKFLOW_SNAPSHOT_THRESHOLD = '100';
+    expect(getSnapshotThreshold(makeRun({ snapshotThreshold: 5 }))).toBe(5);
+    expect(getSnapshotThreshold(makeRun({ snapshotThreshold: 0 }))).toBe(0);
+  });
+
+  it('throws on invalid stamped values', () => {
+    expect(() =>
+      getSnapshotThreshold(makeRun({ snapshotThreshold: -1 }))
+    ).toThrow(WorkflowRuntimeError);
+    expect(() =>
+      getSnapshotThreshold(makeRun({ snapshotThreshold: 'x' }))
+    ).toThrow(WorkflowRuntimeError);
+  });
+});
+
+describe('getSnapshotThresholdForHandler', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_SNAPSHOT_THRESHOLD;
+  });
+
+  it('disables snapshotting with a warning instead of throwing', () => {
+    process.env.WORKFLOW_SNAPSHOT_THRESHOLD = 'abc';
+    const warnings: string[] = [];
+    const run = { runId: 'wrun_test' } as unknown as WorkflowRun;
+    expect(getSnapshotThresholdForHandler(run, (m) => warnings.push(m))).toBe(
+      0
+    );
+    expect(warnings).toEqual([
+      expect.stringContaining('Invalid WORKFLOW_SNAPSHOT_THRESHOLD'),
+    ]);
+  });
+});
+
+describe('isUnencryptedSnapshottingAllowed', () => {
+  it('is off unless explicitly enabled', () => {
+    expect(isUnencryptedSnapshottingAllowed({})).toBe(false);
+    expect(
+      isUnencryptedSnapshottingAllowed({
+        WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: '0',
+      })
+    ).toBe(false);
+    expect(
+      isUnencryptedSnapshottingAllowed({
+        WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: '1',
+      })
+    ).toBe(true);
   });
 });

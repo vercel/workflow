@@ -128,6 +128,16 @@ export interface APIConfig {
     teamId?: string;
     environment?: string;
   };
+  /**
+   * The spec version this World declared when it was created. Set by
+   * `createWorld`, which reads `mintedSpecVersion()` once; `run_started`
+   * attests this value as `executorSpecVersion` so the attestation always
+   * matches what the runtime validated, even if `WORKFLOW_SEALED_LOG` changes
+   * in-process afterwards.
+   *
+   * @internal
+   */
+  mintedSpecVersion?: number;
 }
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';

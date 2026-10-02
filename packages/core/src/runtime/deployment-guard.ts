@@ -5,7 +5,6 @@ import {
   WorkflowDeploymentMismatchError,
 } from '@workflow/errors';
 import {
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
@@ -15,6 +14,7 @@ import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 
 /** Cap on the re-route backoff, in seconds. */
 const MAX_REROUTE_DELAY_SECONDS = 8;
@@ -193,9 +193,10 @@ export async function guardDeploymentAffinity({
       { recoveryAttempts, cause }
     );
 
+    let dehydratedError: Uint8Array;
     try {
       // Unencrypted: the pinned deployment's key may no longer be available.
-      const dehydratedError = await dehydrateRunError(
+      dehydratedError = await dehydrateRunError(
         error,
         run.runId,
         undefined,
@@ -206,20 +207,14 @@ export async function guardDeploymentAffinity({
         run.runId,
         {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          // Written by a deployment that is, by definition, not the run's own.
+          specVersion: specVersionForRunWrite(run.specVersion),
           eventData: {
             error: dehydratedError,
             errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
           },
         },
         { requestId }
-      );
-      dispatchRunFailedHooks(
-        run.runId,
-        workflowName,
-        dehydratedError,
-        undefined,
-        RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
       );
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or
@@ -231,7 +226,15 @@ export async function guardDeploymentAffinity({
       ) {
         throw failError;
       }
+      return result('failed', run.deploymentId, recoveryAttempts);
     }
+    dispatchRunFailedHooks(
+      run.runId,
+      workflowName,
+      dehydratedError,
+      undefined,
+      RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
+    );
     return result('failed', run.deploymentId, recoveryAttempts);
   };
 

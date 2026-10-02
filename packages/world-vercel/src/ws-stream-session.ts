@@ -2,24 +2,29 @@ import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import type { StreamWriteSession } from '@workflow/world';
 import type { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrames } from './frames.js';
+import { createThrottleWaiter } from './event-retry.js';
+import { decodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
+  parseRetryAfter,
   withHttpClientSpan,
 } from './http-core.js';
+import { normalizeStreamChunks } from './stream-chunks.js';
 import {
   encodeStreamWsCloseRequest,
   encodeStreamWsWriteRequest,
   getStreamWsProtocolV1Url,
   parseStreamWsReply,
-  STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
   type StreamWriterId,
   StreamWriterIdSchema,
+  type StreamWsErrorMeta,
+  streamWsWriteBatchEnd,
 } from './stream-ws-protocol-v1.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import type { APIConfig } from './utils.js';
 import { getHttpConfig } from './utils.js';
+import { wsMaxMessageBytes } from './ws-parts.js';
 import {
   beginNormalWsClose,
   STREAM_WS_INITIAL_CONNECT_TIMEOUT_MS,
@@ -52,8 +57,10 @@ type ConnectionTiming = {
   openedAt?: number;
   firstWriteSent: boolean;
 };
+type Operation = 'write' | 'close';
 type PendingRequest = {
   reqId: number;
+  operation: Operation;
   resolve: (meta: Record<string, unknown>) => void;
   reject: (error: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -166,18 +173,31 @@ class StreamWsRequestNotSentError extends Error {
   }
 }
 
-async function decodeOne(raw: Uint8Array): Promise<DecodedFrame> {
-  let frame: DecodedFrame | undefined;
-  for await (const candidate of decodeFrames(
-    (async function* () {
-      yield raw;
-    })()
-  )) {
-    if (frame) throw new Error('stream WebSocket message has multiple frames');
-    frame = candidate;
+/**
+ * A correlated 429. The server rejected the request before applying it, so it
+ * may be resent (workflow-stream-ws/v1 "Retryable rejection").
+ */
+class StreamWsThrottledError extends Error {
+  constructor(
+    message: string,
+    /** Seconds, from the frame's `retryAfter`. */
+    readonly retryAfter: number | undefined
+  ) {
+    super(message);
+    this.name = 'StreamWsThrottledError';
   }
-  if (!frame) throw new Error('stream WebSocket message has no frame');
-  return frame;
+}
+
+/**
+ * A correlated 5xx on close. Close is idempotent and the server's close barrier
+ * returns retriable 503s, so it is retried over HTTP, whose close dispatcher
+ * retries 5xx. An append 5xx has an unknown outcome and stays terminal.
+ */
+class StreamWsCloseRetriableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StreamWsCloseRetriableError';
+  }
 }
 
 function asBytes(raw: unknown): Uint8Array {
@@ -189,7 +209,9 @@ function asBytes(raw: unknown): Uint8Array {
 /**
  * One stateful stream-writer lifetime. Requests are deliberately serialized;
  * an unacknowledged frame has an unknown outcome and poisons the session rather
- * than being replayed over HTTP or another socket.
+ * than being replayed over HTTP or another socket. Serialization is also what
+ * makes a correlated 429 retryable: v1 permits a resend only when no other
+ * request was outstanding when the rejection arrived, which always holds here.
  */
 class VercelStreamWriteSession implements StreamWriteSession {
   private mode: Mode = 'connecting';
@@ -201,6 +223,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private nextReqId = 1;
   private pending: PendingRequest | undefined;
   private poisonError: unknown;
+  /** The socket that returned a 429 whose retry is still waiting. */
+  private throttledSocket: WebSocket | undefined;
+  /** Aborted on dispose or poison, ending any throttle wait early. */
+  private readonly terminated = new AbortController();
   private wsUrl: string | undefined;
   private closeAcknowledged = false;
   private idleReconnects = 0;
@@ -263,24 +289,23 @@ class VercelStreamWriteSession implements StreamWriteSession {
     await this.transportDecision;
     this.assertUsable();
     if (this.mode === 'http') {
-      await this.writeHttp(chunks);
+      await this.writeHttpOrFail(chunks);
       return;
     }
-    // Core's default group cap equals the wire cap, so splitting is normally
-    // dormant. Keep it here as a guard against configured or future cap drift;
-    // v1 deliberately defines no separate whole-message byte budget.
-    for (
-      let offset = 0;
-      offset < chunks.length;
-      offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-    ) {
-      const batch = chunks.slice(
-        offset,
-        offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-      );
+    // The platform drops any WebSocket frame over 16 MiB with no close frame,
+    // leaving an unknown outcome that poisons the writer. Split each group into
+    // ordered write requests bounded by both chunk count and message bytes. At
+    // defaults (1 MiB core groups, 10 MiB chunks, 12 MiB budget) a group is one
+    // request; a single chunk too large for one message goes to HTTP unsent.
+    const maxMessageBytes = wsMaxMessageBytes();
+    const binaryChunks = normalizeStreamChunks(chunks);
+    for (let offset = 0; offset < chunks.length; ) {
+      const end = streamWsWriteBatchEnd(binaryChunks, offset, maxMessageBytes);
+      const batch = binaryChunks.slice(offset, end);
       let reply: Record<string, unknown>;
       try {
-        reply = await this.request(
+        reply = await this.requestRetryingThrottle(
+          'write',
           (reqId) =>
             encodeStreamWsWriteRequest(
               {
@@ -292,12 +317,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
               batch
             ),
           offset === 0 ? timing : undefined,
-          { chunkSeq: chunkSeq + offset, numChunks: batch.length }
+          { chunkSeq: chunkSeq + offset, numChunks: batch.length },
+          maxMessageBytes
         );
       } catch (error) {
         if (!(error instanceof StreamWsRequestNotSentError)) throw error;
         this.fallbackToHttpBeforeSend();
-        await this.writeHttp(chunks.slice(offset));
+        await this.writeHttpOrFail(chunks.slice(offset));
         return;
       }
       if (reply.type !== 'write_ack') {
@@ -305,6 +331,22 @@ class VercelStreamWriteSession implements StreamWriteSession {
           new Error(`stream WebSocket write received ${reply.type}`)
         );
       }
+      offset = end;
+    }
+  }
+
+  /**
+   * An HTTP write whose outcome may be unknown fails the writer, as on every
+   * other transport, so a queued write cannot apply ahead of it.
+   */
+  private async writeHttpOrFail(
+    chunks: (string | Uint8Array)[]
+  ): Promise<void> {
+    try {
+      await this.writeHttp(chunks);
+    } catch (error) {
+      this.failUnknown(error);
+      throw this.poisonError;
     }
   }
 
@@ -387,6 +429,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
+    this.terminated.abort();
     this.finishDrainWait();
     const pending = this.pending;
     this.pending = undefined;
@@ -419,26 +462,34 @@ class VercelStreamWriteSession implements StreamWriteSession {
         this.mode = 'closed';
         return;
       }
-      let reply: Record<string, unknown>;
-      try {
-        reply = await this.request((reqId) =>
-          encodeStreamWsCloseRequest({ type: 'close', reqId })
-        );
-      } catch (error) {
-        if (!(error instanceof StreamWsRequestNotSentError)) throw error;
-        this.fallbackToHttpBeforeSend();
-        await this.closeHttp();
-        this.mode = 'closed';
-        return;
-      }
-      if (reply.type !== 'close_ack') {
-        throw this.poison(
-          new Error(`stream WebSocket close received ${reply.type}`)
-        );
-      }
-      this.mode = 'closed';
-      if (this.socket) beginNormalWsClose(this.socket, 'stream closed');
+      await this.closeOverWs();
     });
+  }
+
+  private async closeOverWs(): Promise<void> {
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.requestRetryingThrottle('close', (reqId) =>
+        encodeStreamWsCloseRequest({ type: 'close', reqId })
+      );
+    } catch (error) {
+      const httpRetry =
+        error instanceof StreamWsRequestNotSentError ||
+        error instanceof StreamWsCloseRetriableError;
+      if (!httpRetry) throw error;
+      // Idempotent: a retriable close failure already switched to HTTP.
+      this.fallbackToHttpBeforeSend();
+      await this.closeHttp();
+      this.mode = 'closed';
+      return;
+    }
+    if (reply.type !== 'close_ack') {
+      throw this.poison(
+        new Error(`stream WebSocket close received ${reply.type}`)
+      );
+    }
+    this.mode = 'closed';
+    if (this.socket) beginNormalWsClose(this.socket, 'stream closed');
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
@@ -601,7 +652,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
               fallback();
               return;
             }
-            this.failUnknown(error);
+            // Like close, let an already-delivered reply finish decoding so
+            // a reset right behind a 429 sees the throttled state.
+            void this.inbound.then(() => {
+              if (this.isIdleThrottledSocket(ws)) {
+                this.leaveThrottledSocketForHttp();
+                return;
+              }
+              this.failUnknown(error);
+            });
           });
           ws.once('close', (code) => {
             if (!opened) {
@@ -632,7 +691,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     receivedAt: number
   ): Promise<void> {
     try {
-      const frame = await decodeOne(raw);
+      const frame = decodeFrame(raw);
       const reply = parseStreamWsReply(frame.meta, frame.body);
       if (reply.type === 'drain') {
         this.handleDrain(reply.reason, reply.graceMs);
@@ -656,18 +715,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       clearTimeout(pending.timer);
       if (reply.type === 'close_ack') this.closeAcknowledged = true;
       if (reply.type === 'error') {
-        // v1 is fail-stop and provides no machine-readable retry class. HTTP
-        // status alone cannot prove whether a rejected write was appended, so
-        // every correlated error remains terminal until the protocol can state
-        // that retrying (or continuing this connection) is safe.
-        pending.reject(
-          this.poison(
-            new Error(
-              `stream WebSocket request failed (${reply.status}): ${reply.message ?? 'unknown error'}`
-            )
-          )
-        );
-        this.socket?.close(1011, 'stream request failed');
+        pending.reject(this.requestError(pending, reply));
       } else {
         if (reply.type === 'write_ack') this.idleReconnects = 0;
         pending.resolve(reply);
@@ -728,6 +776,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
       this.failUnknown(new Error('stream WebSocket closed before reply'));
       return;
     }
+    if (socket && this.isIdleThrottledSocket(socket) && this.mode === 'ws') {
+      // The server ended the connection after a retryable rejection. A
+      // draining connection instead takes the normal drain path below.
+      this.leaveThrottledSocketForHttp();
+      return;
+    }
     if (this.mode === 'draining' && code !== 1001) {
       // No request is pending, so there is no unknown write to protect. The
       // promised drain close shape was not honored; fail closed to HTTP rather
@@ -775,9 +829,11 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   private async request(
+    operation: Operation,
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
-    writeMetadata?: WriteMetadata
+    writeMetadata?: WriteMetadata,
+    maxMessageBytes = wsMaxMessageBytes()
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
     const ws = this.socket;
@@ -792,6 +848,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
       frame = buildFrame(reqId);
     } catch (error) {
       throw new StreamWsRequestNotSentError(error);
+    }
+    if (frame.byteLength > maxMessageBytes) {
+      throw new StreamWsRequestNotSentError(
+        new Error(
+          `stream WebSocket message is ${frame.byteLength} bytes; maximum is ${maxMessageBytes}`
+        )
+      );
     }
     const connectionTiming = this.connectionTiming;
     const connectionFirstWrite = connectionTiming?.firstWriteSent === false;
@@ -838,7 +901,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
               );
             }, getRequestTimeoutMs());
             timer.unref?.();
-            pending = { reqId, resolve, reject, timer };
+            pending = { reqId, operation, resolve, reject, timer };
             this.pending = pending;
             try {
               if (detailedTiming) {
@@ -879,10 +942,128 @@ class VercelStreamWriteSession implements StreamWriteSession {
     release?.();
   }
 
-  private fallbackToHttpBeforeSend(): void {
+  private fallbackToHttpBeforeSend(reason = 'HTTP fallback before send'): void {
     this.mode = 'http';
-    this.socket?.close(1000, 'HTTP fallback before send');
+    this.drainReason = undefined;
+    this.socket?.close(1000, reason);
     this.socket = undefined;
+    this.finishDrainWait();
+  }
+
+  /**
+   * Classifies a correlated error and applies its session effect
+   * synchronously, before a close the server queued behind it is handled.
+   */
+  private requestError(
+    pending: PendingRequest,
+    reply: StreamWsErrorMeta
+  ): unknown {
+    const detail = `(${reply.status}): ${reply.message ?? 'unknown error'}`;
+    if (reply.status === 429) {
+      // The one retryable rejection: the request did not apply. Remember the
+      // socket so its close (servers before the retryable-rejection contract
+      // always send one) moves the session to HTTP instead of reconnecting.
+      this.throttledSocket = this.socket;
+      return new StreamWsThrottledError(
+        `stream WebSocket ${pending.operation} throttled ${detail}`,
+        parseRetryAfter(reply.retryAfter)
+      );
+    }
+    if (
+      pending.operation === 'close' &&
+      reply.status >= 500 &&
+      reply.status <= 599
+    ) {
+      this.fallbackToHttpBeforeSend('stream close retried over HTTP');
+      return new StreamWsCloseRetriableError(
+        `stream WebSocket close failed ${detail}`
+      );
+    }
+    // Every other status is terminal: v1 defines 429 as the only known
+    // non-applied outcome, and an append's status alone cannot prove whether
+    // its chunks were written.
+    const poisoned = this.poison(
+      new Error(`stream WebSocket request failed ${detail}`)
+    );
+    this.socket?.close(1011, 'stream request failed');
+    return poisoned;
+  }
+
+  /**
+   * Sends one request, resending it (same frame contents, new reqId) after
+   * each correlated 429 on the shared event-write throttle budget. A resend
+   * whose socket closed meanwhile, or one past the budget, throws
+   * StreamWsRequestNotSentError, which callers turn into an HTTP fallback.
+   */
+  private async requestRetryingThrottle(
+    operation: Operation,
+    buildFrame: (reqId: number) => Uint8Array,
+    writeTiming?: WriteTiming,
+    writeMetadata?: WriteMetadata,
+    maxMessageBytes?: number
+  ): Promise<Record<string, unknown>> {
+    // `bounded`: past the budget the request falls back to HTTP, whose
+    // dispatcher has its own 429 policy, rather than failing the write, so a
+    // longer wait on the socket would buy little.
+    const waitOutThrottle = createThrottleWaiter(
+      operation === 'write' ? 'writing stream chunks' : 'writing stream close',
+      'bounded'
+    );
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.request(
+          operation,
+          buildFrame,
+          attempt === 0 ? writeTiming : undefined,
+          writeMetadata,
+          maxMessageBytes
+        );
+      } catch (error) {
+        if (!(error instanceof StreamWsThrottledError)) throw error;
+        await this.waitOutThrottle(waitOutThrottle, error);
+      }
+    }
+  }
+
+  private async waitOutThrottle(
+    wait: (error: StreamWsThrottledError, signal: AbortSignal) => Promise<void>,
+    error: StreamWsThrottledError
+  ): Promise<void> {
+    try {
+      await wait(error, this.terminated.signal);
+    } catch {
+      // Disposed or poisoned during the wait.
+      this.assertUsable();
+      // Budget exhausted. The request did not apply and nothing is
+      // outstanding, so hand it to HTTP, whose dispatcher applies its own
+      // 429 policy, rather than failing a write HTTP would complete.
+      this.fallbackToHttpBeforeSend('stream request throttled');
+      throw new StreamWsRequestNotSentError(error);
+    } finally {
+      this.throttledSocket = undefined;
+    }
+    // A drain during the wait parks here until its reconnect is decided; the
+    // resend then goes over the new socket, or over HTTP.
+    await this.transportDecision;
+    this.assertUsable();
+  }
+
+  private isIdleThrottledSocket(socket: WebSocket): boolean {
+    return (
+      !this.pending && socket === this.throttledSocket && socket === this.socket
+    );
+  }
+
+  /**
+   * The connection ended after a retryable rejection with nothing outstanding:
+   * the rejected request did not apply, so it and everything after it can go
+   * over HTTP rather than reconnecting.
+   */
+  private leaveThrottledSocketForHttp(): void {
+    this.drainReason = undefined;
+    this.mode = 'http';
+    this.socket = undefined;
+    this.finishDrainWait();
   }
 
   private failUnknown(error: unknown): void {
@@ -901,6 +1082,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     if (this.mode !== 'poisoned') {
       this.mode = 'poisoned';
       this.poisonError = error;
+      this.terminated.abort();
     }
     return this.poisonError;
   }
