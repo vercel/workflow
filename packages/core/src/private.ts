@@ -155,10 +155,10 @@ export interface WorkflowOrchestratorContext {
   /**
    * Ordered registry of in-flight "branch-deciding" deliveries — the
    * resolutions a workflow typically `Promise.race`s on, or awaits from
-   * independent concurrent branches: hook payloads (`hook_received`), wait
-   * completions (`wait_completed`), and step results (`step_completed` /
-   * `step_failed`). Keyed by the delivery's position (index) in the consumed
-   * event log.
+   * independent concurrent branches: hook payloads (`hook_received`), hook
+   * registration outcomes (`hook_created` / `hook_conflict`), wait completions
+   * (`wait_completed`), and step results (`step_completed` / `step_failed`).
+   * Keyed by the delivery's position (index) in the consumed event log.
    *
    * The problem: each of these resolutions reaches workflow code after a
    * different, workload-dependent number of microtask hops. A buffered hook
