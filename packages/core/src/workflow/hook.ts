@@ -144,7 +144,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // (see `ctx.pendingDeliveryBarriers`).
     const payloadsQueue: { claim: () => Promise<T> }[] = [];
 
-    // Queue of promises that resolve to the next hook payload
+    // The awaiter for the next hook payload, shared by every read made while
+    // no payload is available (so it holds at most one entry; see
+    // `createHookPromise`)
     const promises: PromiseWithResolvers<T>[] = [];
 
     // Queue of promises that resolve once hook registration is confirmed
@@ -623,9 +625,19 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         scheduleWorkflowSuspension(ctx);
       }
 
-      promises.push(resolvers);
+      // Every read made while no payload is available shares the one pending
+      // awaiter. `then()` cannot tell that an earlier read was abandoned (e.g.
+      // it lost a `Promise.race` to a `sleep()`), so enrolling a fresh awaiter
+      // per read would let that dead one, first in line, swallow the next
+      // payload while the read that is actually waiting never wakes.
+      // Sequential reads (`await hook` in a loop, `for await`) are unaffected:
+      // `hook_received` removes the awaiter it resolves, so the next read
+      // enrols a new one.
+      if (promises.length === 0) {
+        promises.push(resolvers);
+      }
 
-      return resolvers.promise;
+      return promises[0].promise;
     }
 
     // Helper function to create a promise that resolves with the hook's

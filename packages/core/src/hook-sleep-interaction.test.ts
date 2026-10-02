@@ -1595,6 +1595,100 @@ function defineTests(mode: 'sync' | 'async') {
       expect(pendingWaits).toHaveLength(0);
     });
   });
+
+  // Regression for #4264: every `then()` on a hook used to enrol a fresh
+  // one-shot awaiter, and `hook_received` resolves the oldest one. An awaiter
+  // whose race was lost to a sleep stayed first in line, so a payload
+  // delivered during a later iteration resolved that dead awaiter and the
+  // iteration actually waiting never woke.
+  describe(`hook re-raced against sleep in a loop ${label}`, () => {
+    function buildEventLog(payload: unknown): Event[] {
+      const resumeAt = new Date('2099-01-01');
+      return [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        // Iteration 1: the sleep wins the race.
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        // Iteration 2: a single payload arrives while its sleep is pending.
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload },
+          createdAt: new Date(),
+        },
+      ];
+    }
+
+    it.each([
+      ['hook.then(...)', (hook: PromiseLike<unknown>) => hook.then((v) => v)],
+      ['the bare hook', (hook: PromiseLike<unknown>) => hook],
+    ])('delivers the payload to the iteration that is waiting when racing %s', async (_, read) => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const payload = await dehydrateStepReturnValue(
+        'hello',
+        'wrun_test',
+        undefined,
+        ops
+      );
+      const ctx = setupWorkflowContext(buildEventLog(payload));
+      const createHook = createCreateHook(ctx);
+      const sleep = createSleep(ctx);
+
+      const { result, error } = await runWithDiscontinuation(ctx, async () => {
+        const hook = createHook<string>({ token: 'test-token' });
+        for (let iteration = 1; iteration <= 3; iteration++) {
+          const winner = await Promise.race([
+            Promise.resolve(read(hook)).then((value) => ({
+              kind: 'hook' as const,
+              value,
+            })),
+            sleep(new Date('2099-01-01')).then(() => ({
+              kind: 'sleep' as const,
+            })),
+          ]);
+          if (winner.kind === 'hook') {
+            return { iteration, value: winner.value };
+          }
+        }
+        return 'no payload';
+      });
+
+      expect(error).toBeUndefined();
+      expect(result).toEqual({ iteration: 2, value: 'hello' });
+    });
+  });
 }
 
 // ─── Run tests in both modes ────────────────────────────
