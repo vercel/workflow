@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import {
   createBaseBuilderConfig,
   VercelBuildOutputAPIBuilder,
+  type WorkflowAfterBundleHook,
 } from '@workflow/builders';
 import * as esbuild from 'esbuild';
 import { resolveAbsentNestPeers } from './nest-optional-peers.js';
@@ -208,6 +209,8 @@ export interface NestVercelBuilderOptions {
   runtime?: string;
   /** esbuild sourcemap mode for workflow bundles. */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  /** Runs after the workflow bundles and manifest have been written. */
+  onAfterBundle?: WorkflowAfterBundleHook;
   /**
    * Route prefix the app is served under, stamped into the generated flow route
    * so the runtime generates matching callback URLs.
@@ -244,6 +247,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs,
         runtime: options.runtime,
         sourcemap: options.sourcemap,
+        onAfterBundle: options.onAfterBundle,
         // A step that imports an application service pulls `@nestjs/common`
         // into the workflow function, and `@nestjs/common` `require()`s its
         // optional peers behind try/catch. Without this the build fails to

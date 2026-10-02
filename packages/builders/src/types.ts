@@ -8,7 +8,34 @@ export const validBuildTargets = [
   'sveltekit',
   'astro',
 ] as const;
-export type BuildTarget = (typeof validBuildTargets)[number];
+
+/** The output strategy used to emit workflow build artifacts. */
+export type BuildTarget = (typeof validBuildTargets)[number] | 'nitro';
+
+export type WorkflowBundleArtifactKind = 'steps' | 'workflows' | 'manifest';
+
+export interface WorkflowBundleArtifact<
+  Kind extends WorkflowBundleArtifactKind = WorkflowBundleArtifactKind,
+> {
+  readonly kind: Kind;
+  readonly path: string;
+}
+
+export type WorkflowBundleArtifacts = readonly [
+  WorkflowBundleArtifact<'steps'>,
+  WorkflowBundleArtifact<'workflows'>,
+  WorkflowBundleArtifact<'manifest'>,
+];
+
+export interface WorkflowBundleResult {
+  readonly buildTarget: BuildTarget;
+  readonly workingDir: string;
+  readonly artifacts: WorkflowBundleArtifacts;
+}
+
+export type WorkflowAfterBundleHook = (
+  result: WorkflowBundleResult
+) => void | Promise<void>;
 
 /**
  * Source map emission mode for generated workflow bundles. Matches esbuild's
@@ -62,6 +89,20 @@ interface BaseWorkflowConfig {
    * workflow bundles.
    */
   onAfterTransform?: WorkflowAfterTransformHook;
+
+  /**
+   * Optional hook invoked after a complete workflow bundle and its
+   * manifest have been written successfully.
+   *
+   * Each invocation contains exactly one `steps`, one `workflows`, and one
+   * `manifest` artifact. The hook is awaited and runs again after every
+   * successful watch rebuild. The hook runs at the bundle boundary, before
+   * later builder-specific outputs may have been written. Throwing rejects
+   * the build or rebuild after the bundle and manifest files have been written.
+   * Consumers should make side effects idempotent because build systems may
+   * rebuild unchanged inputs.
+   */
+  onAfterBundle?: WorkflowAfterBundleHook;
 
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
@@ -169,6 +210,20 @@ export interface NextConfig extends BaseWorkflowConfig {
 }
 
 /**
+ * Configuration for Nitro and Nuxt builds.
+ *
+ * Nitro is a framework adapter rather than a CLI target, so it is not part of
+ * the CLI's `validBuildTargets` list.
+ */
+export interface NitroConfig extends BaseWorkflowConfig {
+  buildTarget: 'nitro';
+  // Nitro computes paths dynamically, so these are not used by the base.
+  stepsBundlePath: string;
+  workflowsBundlePath: string;
+  webhookBundlePath: string;
+}
+
+/**
  * Configuration for SvelteKit builds.
  */
 export interface SvelteKitConfig extends BaseWorkflowConfig {
@@ -208,12 +263,13 @@ export type WorkflowConfig =
   | StandaloneConfig
   | VercelBuildOutputConfig
   | NextConfig
+  | NitroConfig
   | NestConfig
   | SvelteKitConfig
   | AstroConfig;
 
 export function isValidBuildTarget(
   target: string | undefined
-): target is BuildTarget {
-  return !!target && validBuildTargets.includes(target as BuildTarget);
+): target is (typeof validBuildTargets)[number] {
+  return !!target && (validBuildTargets as readonly string[]).includes(target);
 }
