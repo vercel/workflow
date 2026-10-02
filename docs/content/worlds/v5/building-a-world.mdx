@@ -145,6 +145,14 @@ interface Storage {
     getByToken(token: string, params?: GetHookParams): Promise<Hook>;
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
   };
+
+  // Optional, experimental: VM-memory snapshot storage for the QuickJS engine.
+  // Omitting it means every invocation replays the full event log.
+  experimental_snapshots?: {
+    save(runId: string, data: Uint8Array, metadata: SnapshotMetadata): Promise<void>;
+    load(runId: string): Promise<{ data: Uint8Array; metadata: SnapshotMetadata } | null>;
+    delete(runId: string): Promise<void>;
+  };
 }
 ```
 
@@ -204,6 +212,17 @@ The contract is deliberately forgiving, because "wait" means something different
 Choose a waiting mechanism that fits your store. The reference Worlds use a server-side long poll (`world-vercel` holds `GET /v2/runs/:runId/status` open), `LISTEN`/`NOTIFY` (`world-postgres`), and an in-process emitter over the run files (`world-local`), respectively. Treat the notification only as a *signal*, and reread the run before responding. Back the wait with a periodic reread so a lost notification increases latency instead of causing a hang until the budget expires.
 
 Omitting the method is supported. A store with no change notification, or a deterministic simulator such as `world-sim` where a real wait would stall a virtual clock, can leave it out. The runtime continues polling `get` at intervals, and no other behavior degrades. There is no capability to declare.
+
+### Optional: VM snapshot storage
+
+`experimental_snapshots` is experimental and may change without a major version bump. It backs [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold), which lets the QuickJS engine restore a run's VM from a snapshot and replay only the events recorded after it.
+
+- `save` overwrites the run's previous snapshot. Store the bytes and their metadata in one atomic write, because a snapshot paired with another suspension's metadata replays from the wrong log position. `encodeSnapshotEnvelope()` and `decodeSnapshotEnvelope()` from `@workflow/world` pack both into one blob for plain blob stores.
+- `load` returns `null` when the run has no snapshot.
+- `delete` runs after the run reaches a terminal state and must succeed when no snapshot exists.
+- Store the bytes as given. The runtime compresses them, and encrypts them when the run has an encryption key, before calling `save`.
+
+Omitting the namespace is always correct: the event log stays authoritative, and the runtime falls back to a full replay. There is no capability to declare.
 
 ### Event ID allocation
 
