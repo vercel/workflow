@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createFlushableState,
   drainFlushableSnapshot,
@@ -613,6 +613,32 @@ describe('flushablePipe drain barrier (group-commit sinks)', () => {
 
     releaseDrain();
     await expect(state.promise).resolves.toBeUndefined();
+  });
+
+  it('legacy lock polling releases transport after drain and before completion', async () => {
+    const state = createFlushableState();
+    const order: string[] = [];
+    let finishRelease!: () => void;
+    state.drainBarrier = async () => {
+      order.push('drain');
+    };
+    state.releaseTransport = async () => {
+      order.push('release');
+      await new Promise<void>((resolve) => {
+        finishRelease = resolve;
+      });
+    };
+    pollWritableLock(new WritableStream(), state);
+    await vi.waitFor(() => expect(order).toEqual(['drain', 'release']));
+    let settled = false;
+    void state.promise.then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+    finishRelease();
+    await state.promise;
+    expect(settled).toBe(true);
   });
 
   it('rejects the completion when the drain barrier reports a failed flush', async () => {

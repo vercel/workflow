@@ -104,6 +104,7 @@ import {
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
+  STREAM_RELEASE_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
@@ -1716,6 +1717,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // are still client-buffered or in flight.
     Object.defineProperty(this, STREAM_DRAIN_SYMBOL, {
       value: drain,
+      enumerable: false,
+      writable: false,
+    });
+    Object.defineProperty(this, STREAM_RELEASE_SYMBOL, {
+      value: async () => {
+        await drain();
+        const session = await writeSessionPromise;
+        await session?.release?.();
+      },
       enumerable: false,
       writable: false,
     });
