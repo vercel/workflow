@@ -144,6 +144,7 @@ import {
   hydrateDynamicWorkflowCode,
   type PayloadKey,
 } from './serialization.js';
+import { setErrorStack } from './set-error-stack.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -5093,21 +5094,27 @@ export function workflowEntrypoint(
                             // these bodies until they settle. See
                             // assertNoInFlightOwnedSteps.
                             inFlightOwnedSteps.add(s.correlationId);
-                            // Lazy and pre-claimed steps are brand-new
-                            // (their create-claim is the exactly-once gate),
-                            // but an owned-recovery step already exists and
-                            // its delayed backstop message may fire mid-body
-                            // in this same process, so route those through
-                            // the in-process single-flight.
-                            const executed =
-                              s.lazyStepInput === undefined &&
-                              s.preclaimedStart === undefined
-                                ? runStepSingleFlight(
-                                    runId,
-                                    s.correlationId,
-                                    run
-                                  )
-                                : run();
+                            // Every inline body runs through the in-process
+                            // single-flight. An owned-recovery step's delayed
+                            // backstop may fire mid-body in this process, and
+                            // a lazy or pre-claimed step's create-claim is not
+                            // an exactly-once gate for side effects either:
+                            // the optimistic start runs the body before the
+                            // claim settles, so a redelivery of this same
+                            // message (a transport timeout re-entering turbo
+                            // at attempt 1, workflow#3909) would run it again
+                            // concurrently. Fresh claims overlap during
+                            // ordinary wake replays, so they log at debug,
+                            // matching quickjs-entrypoint.
+                            const isFreshClaim =
+                              s.lazyStepInput !== undefined ||
+                              s.preclaimedStart !== undefined;
+                            const executed = runStepSingleFlight(
+                              runId,
+                              s.correlationId,
+                              run,
+                              isFreshClaim ? 'debug' : 'warn'
+                            );
                             return executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)
                             );
@@ -5598,7 +5605,7 @@ export function workflowEntrypoint(
                         // Error` is `false` for VM-thrown errors. The V8
                         // type tag works across realms.
                         if (types.isNativeError(terminalError) && errorStack) {
-                          (terminalError as Error).stack = errorStack;
+                          setErrorStack(terminalError, errorStack);
                         }
 
                         // Fail the workflow run via event (event-sourced).

@@ -881,6 +881,17 @@ export interface CreateEventParams {
    * may ignore this flag entirely.
    */
   viaStepDispatch?: boolean;
+  /**
+   * Marks a `step_failed` write that records the failure of a step body this
+   * invocation already ran. Losing such a write to queue redelivery runs the
+   * body again, so a World may keep a throttled write waiting longer than it
+   * otherwise would (world-vercel waits until the invocation's deadline).
+   * `step_failed` needs the mark because the runtime also writes it for a step
+   * whose arguments failed to serialize, where no body ran. `step_completed`
+   * and `step_retrying` are only ever written after a body ran. Advisory;
+   * Worlds may ignore it.
+   */
+  afterStepBody?: true;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**

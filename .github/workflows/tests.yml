@@ -345,7 +345,6 @@ jobs:
             packages/*/dist
             packages/*/.well-known
             packages/*/src/version.ts
-            packages/core/src/runtime/vm-serde-bundle.generated.ts
             packages/core/src/runtime/quickjs-assets.generated.ts
             packages/swc-plugin-workflow/swc_plugin_workflow.wasm
             packages/swc-plugin-workflow/build-hash.json
@@ -556,10 +555,10 @@ jobs:
   e2e-vercel-ws-transport:
     # Dedicated coverage for world-vercel's WebSocket events transport
     # (WORKFLOW_EVENTS_TRANSPORT=ws — see events-v4.ts's
-    # isWsEventsTransportEnabled). The transport is opt-in, so every other
-    # Vercel lane runs on the HTTP default; this is the only lane that
-    # exercises the socket, and it *asserts* the socket carried the events.
-    # See e2e-vercel-http-transport below for the other side.
+    # isWsEventsTransportEnabled). Every other Vercel lane inherits the
+    # default transport but checks nothing; this is the only lane that
+    # *asserts* the socket carried the events. See
+    # e2e-vercel-http-transport below for the other side.
     #
     # Runs the full e2e suite against its own `vercel deploy` rather than the
     # Git deployment: that is the only way to get a second, independent
@@ -651,16 +650,16 @@ jobs:
           e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
 
   e2e-vercel-http-transport:
-    # The counterpart to e2e-vercel-ws-transport. WORKFLOW_EVENTS_TRANSPORT
-    # now defaults to `http`, so e2e-vercel-prod — which sets no transport
-    # env var at all — also runs on HTTP. This lane pins the explicit
-    # `http` value on a dedicated deployment so the HTTP transport stays
-    # covered regardless of where the default sits.
+    # The counterpart to e2e-vercel-ws-transport. With
+    # WORKFLOW_EVENTS_TRANSPORT defaulting to `ws`, e2e-vercel-prod — which
+    # sets no transport env var at all — is a WebSocket lane, so nothing else
+    # exercises the HTTP events transport against a real Vercel deployment.
     #
-    # HTTP is also the fallback path, and the fallback is *silent*:
+    # HTTP is the fallback path, and the fallback is *silent*:
     # resolveWsTransport returning null costs a write nothing and logs
-    # nothing. A path that is quiet is the exact shape of the durabench bug
-    # this lane came out of, so it is unconditional and required.
+    # nothing. A path that is both unexercised and quiet is the exact
+    # shape of the durabench bug this lane came out of, so it is
+    # unconditional and required.
     #
     # Six apps, chosen by server shape rather than by count; each row is a
     # real `vercel deploy` charged to every PR, so the full 14 is too
@@ -714,8 +713,10 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
-      # `http` is the default; set explicitly so this lane keeps testing HTTP
-      # even if the default moves again.
+      # `http` is the one value that opts out; the gate compares against
+      # exactly this string, so a typo here would silently test the default
+      # instead of the fallback and this lane would quietly become a
+      # duplicate of e2e-vercel-prod.
       - name: Deploy a dedicated HTTP-transport preview
         id: deployment
         uses: ./.github/actions/deploy-vercel-preview
@@ -857,6 +858,20 @@ jobs:
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
+          # Local worlds have no run encryption keys; snapshot legs opt in.
+          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
+          # Snapshot legs log each restore so the check below can count them.
+          DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
+
+      - name: Check VM snapshots were restored
+        if: ${{ matrix.app.snapshotThreshold }}
+        run: |
+          # A snapshot leg that never restores would still pass the suite
+          # (every miss falls back to full replay), so require restores.
+          restores=$(grep -c "QuickJS runtime: restored VM snapshot" "$GITHUB_WORKSPACE/dev-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log" || true)
+          echo "VM snapshot restores: $restores"
+          test "$restores" -gt 0
 
       - name: Generate E2E summary
         if: always()
@@ -958,6 +973,20 @@ jobs:
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
+          # Local worlds have no run encryption keys; snapshot legs opt in.
+          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
+          # Snapshot legs log each restore so the check below can count them.
+          DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
+
+      - name: Check VM snapshots were restored
+        if: ${{ matrix.app.snapshotThreshold }}
+        run: |
+          # A snapshot leg that never restores would still pass the suite
+          # (every miss falls back to full replay), so require restores.
+          restores=$(grep -c "QuickJS runtime: restored VM snapshot" "$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log" || true)
+          echo "VM snapshot restores: $restores"
+          test "$restores" -gt 0
 
       - name: Generate E2E summary
         if: always()
@@ -1069,6 +1098,20 @@ jobs:
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
+          # Local worlds have no run encryption keys; snapshot legs opt in.
+          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
+          # Snapshot legs log each restore so the check below can count them.
+          DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
+
+      - name: Check VM snapshots were restored
+        if: ${{ matrix.app.snapshotThreshold }}
+        run: |
+          # A snapshot leg that never restores would still pass the suite
+          # (every miss falls back to full replay), so require restores.
+          restores=$(grep -c "QuickJS runtime: restored VM snapshot" "$GITHUB_WORKSPACE/prod-server-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log" || true)
+          echo "VM snapshot restores: $restores"
+          test "$restores" -gt 0
 
       - name: Generate E2E summary
         if: always()

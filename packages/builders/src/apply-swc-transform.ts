@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { transform } from '@swc/core';
+import { transform, type WasmPlugin } from '@swc/core';
 import { getDecoratorOptionsForDirectory } from './config-helpers.js';
 import { resolveModuleSpecifier } from './module-specifier.js';
 
@@ -98,6 +98,10 @@ export async function applySwcTransform(
     resolvedModuleSpecifierRoot
   );
 
+  const plugins: WasmPlugin[] | undefined = mode
+    ? [[swcPluginPath, { mode, moduleSpecifier }]]
+    : undefined;
+
   // Transform with SWC to support syntax esbuild doesn't
   const result = await transform(source, {
     filename,
@@ -117,11 +121,13 @@ export async function applySwcTransform(
             }),
       },
       target: 'es2022',
-      experimental: mode
-        ? {
-            plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
-          }
-        : undefined,
+      experimental: {
+        // SWC drops import attributes (`with { type: 'json' }`) by default.
+        // Imports that stay external in the emitted bundle are then rejected
+        // by Node's ESM loader with ERR_IMPORT_ATTRIBUTE_MISSING.
+        keepImportAttributes: true,
+        plugins,
+      },
       transform: {
         react: {
           runtime: 'preserve',

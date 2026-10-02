@@ -140,7 +140,7 @@ Supply a unique, deterministic approval token from the caller. The workflow must
 
 `start()` validates the source before it writes anything, so a definition that could never run fails at the call site rather than on a queue delivery:
 
-- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name; export names may contain letters, digits, and `_`, and cannot start with a digit.
+- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name; export names may contain letters, digits, and `_`, cannot start with a digit, and are at most 64 characters.
 - The function's first statement must be the `"use workflow"` directive.
 - No `import` or `export`. Reach steps through `steps`, not through modules.
 - JavaScript only — no TypeScript syntax, no npm dependencies, no bundling.
@@ -182,6 +182,8 @@ Both paths are transparent — there is nothing to configure. Here, “inline”
 
 Alongside the serialized code, the run records small plaintext metadata on `executionContext.dynamicWorkflow`: the source hash, the export name, and the alias-to-step-ID map. That is what lets a run be identified as dynamic without decoding the source. It is plaintext even when the code is encrypted, so anyone who can read the run can see which step IDs it was given and the aliases they were given under.
 
+In the [observability UI](/docs/observability), a dynamic run's detail view shows its stored code in a **Workflow Code** section, behind the same decrypt action as the run's input and output. **Replay Run** is unavailable for dynamic runs. To run the definition again, call `start()` with the same source.
+
 ## World support
 
 Dynamic workflows need a World that can store the run's workflow code.
@@ -219,6 +221,7 @@ Treat dynamic source the way you would treat code in a pull request: written or 
 - Steps must already be registered in the deployment; no runtime step registration.
 - No inline `"use step"` functions, `createWebhook`, or `getWritable`.
 - No caller-provided workflow IDs.
+- No **Replay Run** from the observability UI.
 - Parser-based validation checks JavaScript syntax and the required source/wrapper shape without executing it. It does not validate behavior, determinism, or intent.
 - On Vercel, roughly 30 step aliases fit the 2,048-byte execution-context limit.
 - Requires a World with dynamic-source storage.

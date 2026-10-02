@@ -112,6 +112,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+  delete process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS;
   delete process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
 });
 
@@ -119,7 +120,8 @@ afterEach(() => {
  * The gate is the whole safety story for this feature: everything else in
  * the PR is dead code for anyone who hasn't opted in. `events-v4.test.ts`
  * covers the HTTP path itself in depth, but nothing there pins the
- * *choice* of path — so a future edit that flipped the default
+ * *choice* of path — so a future edit that flipped the default (as an
+ * earlier revision of this branch did deliberately, for benchmarking)
  * would sail through with every HTTP assertion still green, because the
  * two transports are built to be indistinguishable at the result layer.
  */
@@ -207,11 +209,68 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
   });
 });
 
+describe('per-workflow override (WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS)', () => {
+  const httpAgent = () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, materializedBody(), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': CREATED_AT,
+        },
+      });
+    return agent;
+  };
+
+  it('writes over WS for a run whose channel the override opened', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    requestMock.mockResolvedValueOnce(ack());
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes over HTTP for a run with no channel, even in strict mode', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    // Strict mode promises a socket only for the deployment-wide gate; an
+    // unlisted workflow has no channel by design.
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    resolveWsTransportMock.mockReturnValueOnce(null);
+    const agent = httpAgent();
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('transport gate', () => {
   it('goes over HTTP, never touching the WS transport, when the gate is off', async () => {
-    // An explicit `http` rather than an absent variable, so this pins the
-    // opt-out value as well as the default; `beforeEach` sets `ws` for the
-    // rest of the file.
+    // "Off" is now an explicit opt-out rather than an absent variable, since
+    // the default flipped. Deleting it here would assert the opposite of what
+    // this test is named for.
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

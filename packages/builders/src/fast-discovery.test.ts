@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -334,6 +335,63 @@ export const allWorkflows = { workflow };
     expect(parentHasChild(normalize(entryFile), normalize(workflowFile))).toBe(
       true
     );
+  });
+
+  describe('unresolved import candidates', () => {
+    const discover = async (entrySource: string) => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const tsconfigFile = join(testRoot, 'tsconfig.json');
+      writeFile(
+        tsconfigFile,
+        JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } })
+      );
+      writeFile(entryFile, entrySource);
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out'),
+        tsconfigFile
+      );
+      return discovered.unresolvedImportCandidates ?? new Set<string>();
+    };
+
+    const src = (...segments: string[]) =>
+      normalize(join(testRoot, 'src', ...segments));
+
+    it('records where a missing relative import would resolve', async () => {
+      const candidates = await discover(`import './billing/workflow';\n`);
+
+      expect(candidates).toContain(src('billing', 'workflow.ts'));
+      expect(candidates).toContain(src('billing', 'workflow', 'index.ts'));
+    });
+
+    it('records where a missing tsconfig alias import would resolve', async () => {
+      const candidates = await discover(`import '@/billing/workflow';\n`);
+
+      expect(candidates).toContain(src('billing', 'workflow.ts'));
+    });
+
+    it('records a missing import written with a source extension as-is', async () => {
+      const candidates = await discover(`import './billing/workflow.ts';\n`);
+
+      expect([...candidates]).toEqual([src('billing', 'workflow.ts')]);
+    });
+
+    it('records nothing for imports that resolve', async () => {
+      writeFile(join(testRoot, 'src', 'helper.ts'), 'export const x = 1;\n');
+      writeFile(join(testRoot, 'src', 'styles.css'), 'body {}\n');
+
+      const candidates = await discover(
+        `import './helper';\nimport '@/helper';\nimport './styles.css';\n`
+      );
+
+      expect([...candidates]).toEqual([]);
+    });
+
+    it('records nothing for an unresolved bare package import', async () => {
+      const candidates = await discover(`import 'not-installed-package';\n`);
+
+      expect([...candidates]).toEqual([]);
+    });
   });
 
   it('discovers dotted files reached through tsconfig path aliases', async () => {
@@ -721,6 +779,52 @@ import './serde';
  */
 export const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
 `
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out')
+    );
+
+    expect(discovered.discoveredSerdeFiles).toEqual(new Set());
+  });
+
+  it('ignores serde examples that only appear inside string literals', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const messagesFile = join(testRoot, 'src', 'messages.ts');
+
+    writeFile(entryFile, `import './messages';\n`);
+    writeFile(
+      messagesFile,
+      `import { WORKFLOW_SERIALIZE } from '@workflow/serde';
+
+export const hint =
+  'Define it as: static [WORKFLOW_SERIALIZE](value) { ... }';
+export const symbolHint = "static [Symbol.for('workflow-serialize')](value)";
+export const templateHint = \`static [WS](value) for \${WORKFLOW_SERIALIZE.toString()}\`;
+`
+    );
+
+    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+      [entryFile],
+      join(testRoot, 'out')
+    );
+
+    expect(discovered.discoveredSerdeFiles).toEqual(new Set());
+  });
+
+  it("does not treat the builder's own serde checker as a serde file", async () => {
+    // The checker's error messages quote `static [WORKFLOW_SERIALIZE](...)`.
+    // It is reachable from any project whose config file imports a framework
+    // integration, and bundling it pulls builder-only dependencies (such as
+    // the `builtin-modules` JSON import) into every step bundle.
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const checkerFile = join(testRoot, 'src', 'serde-checker.ts');
+
+    writeFile(entryFile, `import './serde-checker';\n`);
+    writeFile(
+      checkerFile,
+      readFileSync(new URL('../src/serde-checker.ts', import.meta.url), 'utf-8')
     );
 
     const discovered = await createBuilder(testRoot).discoverEntriesPublic(

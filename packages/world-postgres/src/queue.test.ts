@@ -495,6 +495,26 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('defaults pollInterval to 500ms and honors an override from config', async () => {
+    const defaultQueue = buildQueue(
+      { connectionString: 'postgres://test' },
+      pool
+    );
+    await defaultQueue.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ pollInterval: 500 })
+    );
+
+    const overriddenQueue = buildQueue(
+      { connectionString: 'postgres://test', pollInterval: 2000 },
+      pool
+    );
+    await overriddenQueue.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ pollInterval: 2000 })
+    );
+  });
+
   it('uses per-run executor queues without serializing step jobs when invoke is enabled', async () => {
     const queue = buildQueue(
       {

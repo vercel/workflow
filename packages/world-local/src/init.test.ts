@@ -426,8 +426,10 @@ describe('initDataDir', () => {
     mkdirSync(dataDir, { recursive: true });
 
     // Write a newer version (simulating downgrade scenario)
+    const packageInfo = await getPackageInfo();
+    const newerVersion = `${parseVersion(packageInfo.version).major + 1}.0.0`;
     const versionPath = path.join(dataDir, 'version.txt');
-    writeFileSync(versionPath, '@workflow/world-local@5.0.0');
+    writeFileSync(versionPath, `${packageInfo.name}@${newerVersion}`);
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -436,7 +438,7 @@ describe('initDataDir', () => {
 
     // Should log the upgrade message (even for "downgrades")
     expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Upgrading from version 5.0.0')
+      expect.stringContaining(`Upgrading from version ${newerVersion}`)
     );
   });
 });

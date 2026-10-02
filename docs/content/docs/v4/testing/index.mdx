@@ -256,7 +256,7 @@ import { createWebhook } from "workflow";
 export async function ingestWorkflow(endpointId: string) {
   "use workflow";
 
-  // Webhook tokens are always randomly generated
+  // Webhook tokens are always generated for you
   using webhook = createWebhook(); // [!code highlight]
 
   const request = await webhook; // [!code highlight]
@@ -282,7 +282,7 @@ describe("ingestWorkflow", () => {
   it("should process webhook data", async () => {
     const run = await start(ingestWorkflow, ["ep-1"]);
 
-    // Discover the randomly generated webhook token
+    // Discover the generated webhook token
     const hook = await waitForHook(run); // [!code highlight]
 
     // Resume the webhook with a Request object

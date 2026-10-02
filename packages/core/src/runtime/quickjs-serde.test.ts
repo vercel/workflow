@@ -22,6 +22,7 @@ import { createRequire } from 'node:module';
 import { StreamError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { serialize as nodeEngineSerialize } from '../serialization/workflow.js';
 import {
   deserialize as referenceDeserialize,
   serialize as referenceSerialize,
@@ -423,6 +424,104 @@ describe('full round trip through the host serde only', () => {
     });
   });
 });
+
+describe.skipIf(typeof Float16Array !== 'function')(
+  'Float16Array (no reducer: devalue built-in branch)',
+  () => {
+    // `Float16Array` has no workflow reducer on any codec, so the reference
+    // codec, the node:vm engine and this one must all emit devalue's
+    // built-in `[tag, buffer]` form, and a subview must carry only its
+    // viewed bytes.
+    const expectParity = (bytes: Uint8Array, hostValue: unknown) => {
+      expect(text(bytes)).toBe(text(referenceSerialize(hostValue)));
+      expect(text(bytes)).toBe(text(nodeEngineSerialize(hostValue)));
+    };
+
+    it('matches the reference codec for a whole-buffer Float16Array', () => {
+      const bytes = serializeGuest('new Float16Array([0.5, -1, 65504])');
+      expectParity(bytes, new Float16Array([0.5, -1, 65504]));
+      expect(
+        checkInGuest(
+          bytes,
+          `function (v) {
+            return { isF16: v instanceof Float16Array, values: Array.from(v) };
+          }`
+        )
+      ).toEqual({ isF16: true, values: [0.5, -1, 65504] });
+    });
+
+    it('carries a Float16Array subview without the rest of its buffer', () => {
+      const bytes = serializeGuest(
+        'new Float16Array(new Uint8Array([1,2,0,60,0,64,7,8]).buffer, 2, 2)'
+      );
+      // Base64 of [0, 60, 0, 64] (1.0, 2.0) and nothing else.
+      expect(text(bytes)).toBe(
+        'devl[["Float16Array",1],["ArrayBuffer",2],"ADwAQA=="]'
+      );
+      expectParity(
+        bytes,
+        new Float16Array(
+          new Uint8Array([1, 2, 0, 60, 0, 64, 7, 8]).buffer,
+          2,
+          2
+        )
+      );
+      expect(
+        checkInGuest(
+          bytes,
+          `function (v) {
+            return {
+              isF16: v instanceof Float16Array,
+              byteOffset: v.byteOffset,
+              bufferByteLength: v.buffer.byteLength,
+              values: Array.from(v),
+            };
+          }`
+        )
+      ).toEqual({
+        isF16: true,
+        byteOffset: 0,
+        bufferByteLength: 4,
+        values: [1, 2],
+      });
+    });
+
+    it('serializes an empty Float16Array subview', () => {
+      const bytes = serializeGuest(
+        'new Float16Array(new ArrayBuffer(8), 4, 0)'
+      );
+      expectParity(bytes, new Float16Array(new ArrayBuffer(8), 4, 0));
+      expect(
+        checkInGuest(
+          bytes,
+          `function (v) {
+            return { isF16: v instanceof Float16Array, length: v.length };
+          }`
+        )
+      ).toEqual({ isF16: true, length: 0 });
+    });
+
+    it('revives a payload carrying subview bounds', () => {
+      // What devalue's built-in encoding wrote before the hardened
+      // `viewInfo` copied subviews: the whole buffer, bounds beside it.
+      const legacy = new TextEncoder().encode(
+        'devl[["Float16Array",1,2,2],["ArrayBuffer",2],"AQIAPABABwg="]'
+      );
+      expect(
+        checkInGuest(
+          legacy,
+          `function (v) {
+            return {
+              isF16: v instanceof Float16Array,
+              byteOffset: v.byteOffset,
+              values: Array.from(v),
+            };
+          }`
+        )
+      ).toEqual({ isF16: true, byteOffset: 2, values: [1, 2] });
+    });
+  }
+);
 
 describe('NUL (U+0000) safety across the WASM boundary', () => {
   // `JS_ToCString` is NUL-terminated: naive extraction truncates guest

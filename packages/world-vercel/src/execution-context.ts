@@ -24,7 +24,7 @@ export function validateRunExecutionContext(
   const bytes = new TextEncoder().encode(json).byteLength;
   if (bytes > MAX_EXECUTION_CONTEXT_BYTES) {
     throw new WorkflowRuntimeError(
-      `Dynamic workflow execution context is ${bytes} bytes, exceeding the ${MAX_EXECUTION_CONTEXT_BYTES}-byte limit, so no run was created. Bind fewer steps through \`experimental_dynamic.steps\` or use shorter aliases.`
+      `Dynamic workflow execution context is ${bytes} bytes, exceeding the ${MAX_EXECUTION_CONTEXT_BYTES}-byte limit, so no run was created. Each step binding counts its alias and its step ID, which comes from the step's file path and function name and is usually the longer of the two; the \`exportName\` counts too. Bind fewer steps through \`experimental_dynamic.steps\`, or shorten the aliases, the step files' paths or names, or the \`exportName\`.`
     );
   }
 }

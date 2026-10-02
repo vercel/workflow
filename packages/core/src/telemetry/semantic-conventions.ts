@@ -193,6 +193,41 @@ export const QuickJSInlineSteps = SemanticConvention<number>(
   'quickjs.inline_steps'
 );
 
+/** Whether this QuickJS invocation restored a persisted VM snapshot */
+export const QuickJSSnapshotRestored = SemanticConvention<boolean>(
+  'workflow.quickjs.snapshot.restored'
+);
+
+/** Events replayed on top of a restored snapshot (the delta after its cursor) */
+export const QuickJSSnapshotDeltaEvents = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.delta_events'
+);
+
+/** Time spent loading, verifying and decoding a persisted snapshot */
+export const QuickJSSnapshotRestoreMs = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.restore_ms'
+);
+
+/** Why a stored snapshot was not restored (the invocation replayed in full) */
+export const QuickJSSnapshotFallbackReason = SemanticConvention<string>(
+  'workflow.quickjs.snapshot.fallback_reason'
+);
+
+/** Time the post-response snapshot save pipeline took */
+export const QuickJSSnapshotSaveMs = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.save_ms'
+);
+
+/** Uncompressed size of a saved VM snapshot */
+export const QuickJSSnapshotPlaintextBytes = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.plaintext_bytes'
+);
+
+/** Stored (compressed, encrypted) size of a saved VM snapshot */
+export const QuickJSSnapshotStoredBytes = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.stored_bytes'
+);
+
 /** Active trace-correlation mode for this invocation (linked or continuous) */
 export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'

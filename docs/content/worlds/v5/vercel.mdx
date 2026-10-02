@@ -246,17 +246,37 @@ Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_S
 
 This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
 
-Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append.
+Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. A throttled (429) write or close did not apply, so the writer retries it after the server's `Retry-After`, as the HTTP writer does, on the socket if it stays open (or its replacement, after a drain) and otherwise over HTTP. Past 30 seconds of cumulative wait, the write moves to HTTP, whose own 429 retry applies. A close that fails with a 5xx is retried over HTTP, since close is idempotent.
 
 Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
 
+Each stream WebSocket message is at most [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#workflow_ws_max_message_bytes) bytes. A write group larger than the limit is sent as several ordered write requests. A single chunk too large for one message is written over HTTP instead, as are the rest of its writer's writes.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
-Opt-in WebSocket transport for workflow run events, which ships them to the Vercel World over one socket per run instead of one HTTP request each. Default: `http`.
+Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
 
-Set `WORKFLOW_EVENTS_TRANSPORT=ws` to opt in. Only that value (case-insensitive) enables the WebSocket — any other value, including unset, empty, or `http`, keeps HTTP — so a typo fails toward the default rather than enabling a transport nobody asked for.
+Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables the WebSocket — any other value, including unset or empty, takes it — so a typo fails toward the default rather than silently pinning a deployment to HTTP.
 
-The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent, because the variable is typically set deployment-wide and a `projectConfig` World (such as the CLI) cannot act on it, and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
+The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent — now that the WebSocket is the default, nothing asked for it — and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
+
+Event writes use the WebSocket only while that run's events channel is open. The queue handler opens it for every delivery, so workflows need nothing extra. Code that writes a run's events outside a delivery, such as a custom driver or a long-lived process, opens the channel with `openEventsChannel(runId)`, or those writes go over HTTP. Call the returned release when you're done, because an open socket keeps the process alive:
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript title="write-events.ts" lineNumbers
+import { createWorld, openEventsChannel } from "@workflow/world-vercel";
+
+const world = createWorld();
+const release = openEventsChannel(runId);
+try {
+  await world.events.create(runId, event);
+} finally {
+  release?.();
+}
+```
+
+`openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 
@@ -267,8 +287,32 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |
 | `workflow.events.ws.req_id` | — | per-connection request id, matching the server's log line |
+| `workflow.events.ws.request_parts` | — | messages the request was sent as, when it was split |
+| `workflow.events.ws.reply_parts` | — | messages the reply arrived as, when it was split |
 
 The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the cost of opening (or eagerly reopening) a connection is attributable rather than showing up as unexplained time inside the first write.
+
+### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
+
+Comma-separated workflows whose runs use the WebSocket events transport even when [`WORKFLOW_EVENTS_TRANSPORT`](#workflow_events_transport) is `http`. Use it to move selected workflows onto the WebSocket while the rest of the deployment stays on HTTP. Default: none.
+
+Each entry is a workflow's function name, such as `processOrder`, or its full workflow name, such as `workflow//./src/workflows/order//processOrder`. Matching is exact and case-sensitive. A function name matches every workflow with that name, in any file.
+
+```bash
+WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS=processOrder,syncInventory
+```
+
+The override applies to the events channel the queue handler opens for each delivery of a listed workflow's run. The workflow name comes from the delivery's queue, so it covers the run's workflow and step invocations alike. `openEventsChannel(runId, config, { workflowName })` applies it to channels you open yourself; without `workflowName`, a deployment with `WORKFLOW_EVENTS_TRANSPORT=http` opens none. Unless `WORKFLOW_EVENTS_TRANSPORT=http` is set, every workflow already uses the WebSocket and the override has no effect.
+
+Like other environment variables, the setting is fixed for each deployment, and a run stays on the deployment it started on. Changing it takes effect for runs started on the next deployment; runs already in progress keep the transport of the deployment they're pinned to.
+
+### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
+
+Largest WebSocket message the Vercel World sends, header included, on both the events and stream-write transports. Default: `12582912` (12 MiB).
+
+Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it. Stream writes split a large write group into several ordered write requests instead (see [`WORKFLOW_STREAMS_TRANSPORT`](#workflow_streams_transport)). Frames at or under the limit are unaffected. Integer values are clamped to `2097152`-`16777216` (2–16 MiB) with a warning; other values use the default.
+
+The client splits its own large requests, which needs a Vercel World backend that accepts split frames. It lists `frame-parts` in the `x-workflow-ws-flags` header of the WebSocket upgrade, and the backend splits large replies only for a client that does, so older clients keep receiving whole replies.
 
 ### Programmatic configuration
 

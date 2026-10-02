@@ -371,6 +371,23 @@ export const WorkflowWsRequestId = SemanticConvention<number>(
 );
 
 /**
+ * Number of WebSocket messages a WS event write went out as
+ * (workflow.events.ws.request_parts). Set only when the frame was over the
+ * message limit and was split.
+ */
+export const WorkflowWsRequestParts = SemanticConvention<number>(
+  'workflow.events.ws.request_parts'
+);
+
+/**
+ * Number of WebSocket messages the reply to a WS event write arrived as
+ * (workflow.events.ws.reply_parts). Set only when the reply was split.
+ */
+export const WorkflowWsReplyParts = SemanticConvention<number>(
+  'workflow.events.ws.reply_parts'
+);
+
+/**
  * Which eager-reconnect attempt opened this socket
  * (workflow.events.ws.reconnect_attempt); 0 for the invocation's first connect.
  */
