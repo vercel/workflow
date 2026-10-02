@@ -16,6 +16,11 @@ export const V4_FRAME_CONTENT_TYPE = 'application/vnd.workflow.v4-frames';
 export interface DecodedFrame {
   meta: Record<string, unknown>;
   body: Uint8Array;
+  /**
+   * Bytes the frame occupied on the wire: both length prefixes, the CBOR meta
+   * block and the body. Measurement only (see `ReplayEventFrame`).
+   */
+  byteLength: number;
 }
 
 /** The response body stopped before the next complete frame was available. */
@@ -167,7 +172,11 @@ export async function* decodeFrames(
       }
       // Slice (not subarray) so the yielded body owns its bytes, so later
       // reads into the buffer won't overwrite it; bodyLen 0 yields empty.
-      yield { meta, body: buffer.slice(0, bodyLen) };
+      yield {
+        meta,
+        body: buffer.slice(0, bodyLen),
+        byteLength: 8 + metaLen + bodyLen,
+      };
       take(bodyLen);
 
       if (meta._end === 1) return;

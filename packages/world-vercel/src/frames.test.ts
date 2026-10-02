@@ -119,6 +119,24 @@ describe('decodeFrames', () => {
     expect(frames[2].body.byteLength).toBe(0);
   });
 
+  it('reports each frame at its encoded wire size, across chunk splits', async () => {
+    const parts = [
+      encodeFrame({ eventId: 'a' }, new TextEncoder().encode('one')),
+      encodeFrame({ eventId: 'b' }, new Uint8Array(300).fill(1)),
+      encodeEndFrame('cursor-xyz'),
+    ];
+    const flat = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+    let off = 0;
+    for (const p of parts) {
+      flat.set(p, off);
+      off += p.byteLength;
+    }
+    const frames = await drainFrames(streamOf(flat, 7));
+    expect(frames.map((f) => f.byteLength)).toEqual(
+      parts.map((p) => p.byteLength)
+    );
+  });
+
   it('handles delivery in 1-byte chunks (worst-case chunk boundary)', async () => {
     const body = new Uint8Array(1024);
     for (let i = 0; i < body.length; i++) body[i] = (i * 13 + 5) & 0xff;

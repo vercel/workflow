@@ -687,6 +687,21 @@ export interface WorldCapabilities {
    * otherwise it is always sent inline.
    */
   dynamicWorkflowCode?: boolean;
+
+  /**
+   * The World's streamed replay-log responses (the `run_started` and lazy
+   * `hook_received` preloads, and the event lists that continue them) pass
+   * each event's wire size to `CreateEventParams.replayEventObserver` as a
+   * `ReplayEventFrame`.
+   *
+   * Measurement only. The runtime uses it for the opt-in event-log prefix
+   * shadow (`WORKFLOW_EVENT_LOG_PREFIX_SHADOW`), which records how many bytes
+   * a cross-invocation prefix cache would have saved, and records nothing for
+   * a World that leaves this unset: an estimate there would describe a
+   * transfer that does not exist (an in-process or database World pays no
+   * wire cost to re-read its log).
+   */
+  replayEventFrameBytes?: boolean;
 }
 
 /**
