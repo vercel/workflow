@@ -559,15 +559,34 @@ data happens to be:
   them.
 
 `WorkflowModule` handles both by keeping the application's body parsers away
-from `.well-known/workflow/v1`, and nothing else. Workflow requests are read
-straight from the request stream, so they are neither size-limited nor
-re-serialized, and your own routes keep the parsers and limits you configured.
-No bootstrap configuration is needed, and `{ rawBody: true }` is no longer
-required for signed webhooks.
+from `.well-known/workflow/v1`, and nothing else. On **Express**, workflow
+requests are read straight from the request stream, so they are neither
+size-limited nor re-serialized, and your own routes keep the parsers and limits
+you configured. No bootstrap configuration is needed, and `{ rawBody: true }` is
+not required for signed webhooks.
 
-Set `bypassBodyParser: false` to opt out and handle parsing yourself. A body
-that arrives with a `content-encoding` always goes through the parser, because
-that is what inflates it.
+Set `bypassBodyParser: false` to opt out and handle parsing yourself.
+
+<Callout type="warn">
+This stream bypass only applies to **uncompressed Express** requests. Two cases
+fall back to re-serializing the parsed body with `JSON.stringify`, which does
+**not** preserve whitespace or key order and therefore breaks webhook signature
+verification (Stripe, GitHub, Shopify, Slack):
+
+- **Fastify.** Fastify's content-type parser always consumes the request
+  stream before the route runs — `WorkflowModule` cannot stand it aside the way
+  it does Express's middleware — so the raw bytes are gone by the time the
+  handler sees them. Fastify's body limit is also enforced per instance rather
+  than per route; raise it on the adapter (for example
+  `new FastifyAdapter({ bodyLimit: 16 * 1024 * 1024 })`).
+- **Compressed bodies.** A body that arrives with a `content-encoding` always
+  goes through the parser on Express too, because that is what inflates it.
+
+For signed webhooks in either case, create the app with `{ rawBody: true }` (and
+on Fastify register `fastify-raw-body`) so the integration can recover the exact
+bytes the sender signed. Without it, the integration logs a one-time warning and
+falls back to the lossy `JSON.stringify` path.
+</Callout>
 
 <Callout type="info">
 On Vercel the flow and webhook routes are served by their own Build Output
