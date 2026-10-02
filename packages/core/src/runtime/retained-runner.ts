@@ -84,6 +84,10 @@ class RunnerFault extends WorkflowRuntimeError {
   }
 }
 class InputRejected extends WorkflowWorldError {}
+/** The monitor wake could not be enqueued. Retryable: the input is not
+ * acknowledged (and an activation input is not committed), so its sender
+ * redelivers it. Never a run failure. */
+class MonitorUnavailable extends InputRejected {}
 
 const DISPATCH_STAGGER_MS = Number(
   process.env.WORKFLOW_DISPATCH_STAGGER_MS ?? 0
@@ -286,6 +290,8 @@ export class RetainedRunner {
   /** In-memory dedup of the monitor wake: one pending message per owner. */
   private monitorDueAt = 0;
   private monitorArm?: Promise<unknown>;
+  /** The current activation's arm; its input's first commit waits for it. */
+  private activationArm?: Promise<unknown>;
   /** waitId -> the time its latest enqueued durable wake is due. */
   private waitWakes = new Map<string, number>();
   /** Executions whose remote delivery failed without evidence the body ran:
@@ -479,9 +485,18 @@ export class RetainedRunner {
     const operation = async (deferAdvance = false) => {
       const armed = activates ? this.ensureMonitor() : undefined;
       armed?.catch(() => {});
-      const result = await handle(deferAdvance);
-      await armed;
-      return result;
+      this.activationArm = armed;
+      try {
+        const result = await handle(deferAdvance);
+        await armed;
+        // A delivered input (including a queue wake, whose message is only
+        // acknowledged after this) leaves a pending monitor behind whenever
+        // in-process work remains.
+        if (this.localWorkers.size > 0) await this.ensureMonitor();
+        return result;
+      } finally {
+        if (this.activationArm === armed) this.activationArm = undefined;
+      }
     };
     const handle = async (deferAdvance = false) => {
       await this.initialize();
@@ -923,6 +938,13 @@ export class RetainedRunner {
   ): Promise<EventResult> {
     const work = this.commitTail.then(async () => {
       if (this.fault) throw this.fault;
+      // An activation input commits only once its monitor wake is durable, so
+      // a crash can never strand a committed input without a pending wake.
+      const arm = this.activationArm;
+      if (arm) {
+        this.activationArm = undefined;
+        await arm;
+      }
       this.validateStepTransition(event);
       const field = getEventDataPayloadField(event.eventType);
       const payload = field
@@ -1419,7 +1441,10 @@ export class RetainedRunner {
         this.monitorArm = undefined;
         this.monitorDueAt = 0;
       }
-      throw error;
+      throw new MonitorUnavailable('Owner monitor wake could not be armed', {
+        status: 503,
+        cause: error,
+      });
     });
     this.monitorArm = armed;
     return armed;
@@ -2142,8 +2167,10 @@ export class RetainedRunner {
           const result = await operation();
           await this.flushWriter();
           // In-process steps keep the monitor chain alive; when none remain the
-          // chain ends after its pending wake.
-          if (this.localWorkers.size > 0) await this.ensureMonitor();
+          // chain ends after its pending wake. Internal turns (step events,
+          // local timers) acknowledge nobody, so this is best-effort; a failed
+          // arm is retried by the next turn.
+          if (this.localWorkers.size > 0) this.ensureMonitor()?.catch(() => {});
           this.observe('turn', 'end', spanId, { inputId, status: 'completed' });
           return result;
         } catch (cause) {

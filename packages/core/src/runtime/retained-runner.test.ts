@@ -1962,6 +1962,61 @@ it('arms one monitor wake on activation before acknowledging, and dedupes later 
   await fixture.finished;
 });
 
+it('commits an activation input only after its monitor wake is durable', async () => {
+  const fixture = await setup(hookOnlyCode);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      if (options?.idempotencyKey?.startsWith('retained-monitor:')) await gate;
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const sent = fixture.send('a', 'one');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(
+    fixture.owner.events.some((e) => e.eventType === 'hook_received')
+  ).toBe(false);
+  release();
+  await expect(sent).resolves.toEqual({ status: 'accepted' });
+  expect(
+    fixture.owner.events.some((e) => e.eventType === 'hook_received')
+  ).toBe(true);
+  await fixture.finished;
+});
+
+it('rejects an input retryably, without failing the run, when the monitor cannot be armed', async () => {
+  const fixture = await setup(hookOnlyCode);
+  let broken = true;
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      if (broken && options?.idempotencyKey?.startsWith('retained-monitor:'))
+        throw new Error('queue unavailable');
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await expect(fixture.send('a', 'one')).rejects.toMatchObject({
+    status: 503,
+  });
+  expect(
+    fixture.owner.events.some((e) => e.eventType === 'hook_received')
+  ).toBe(false);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
+  // The sender redelivers the same input once the queue recovers.
+  broken = false;
+  await expect(fixture.send('a', 'one')).resolves.toEqual({
+    status: 'accepted',
+  });
+  expect(
+    fixture.owner.events.filter((e) => e.eventType === 'hook_received')
+  ).toHaveLength(1);
+  await fixture.finished;
+});
+
 it('keeps the monitor chain armed only while in-process step work remains', async () => {
   vi.stubEnv('WORKFLOW_RETAINED_MONITOR_MS', '1000');
   cleanups.push(async () => vi.unstubAllEnvs());
