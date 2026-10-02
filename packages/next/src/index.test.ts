@@ -126,6 +126,31 @@ describe('withWorkflow builder config', () => {
   });
 
   it.each([
+    undefined,
+    'max',
+    300,
+    1800,
+  ] as const)('forwards maxDuration %s to the builder', async (maxDuration) => {
+    const config = withWorkflow({}, { workflows: { maxDuration } });
+    await config('phase-production-build', { defaultConfig: {} });
+    expect(builderConfigs[0]).toHaveProperty('maxDuration', maxDuration);
+  });
+
+  it.each([
+    0,
+    -1,
+    0.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects invalid maxDuration %s before building', (maxDuration) => {
+    expect(() => withWorkflow({}, { workflows: { maxDuration } })).toThrow(
+      'workflows.maxDuration must be a positive integer or "max"'
+    );
+    expect(buildMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
     'phase-production-build',
     'phase-development-server',
   ])('prewarms the SWC plugin cache during %s', async (phase) => {
