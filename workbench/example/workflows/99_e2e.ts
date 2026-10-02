@@ -3314,6 +3314,31 @@ export async function hookWithSleepFinalStepWorkflow(token: string) {
 
 //////////////////////////////////////////////////////////
 
+/**
+ * https://github.com/vercel/workflow/issues/4264 A hook raced against sleep()
+ * and awaited again after losing the race. The next payload must reach the
+ * await that is still pending, not the awaiter enrolled by the lost race.
+ */
+export async function hookRaceAfterLostRaceWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const first = await Promise.race([
+    hook.then(() => 'hook' as const),
+    sleep('1s').then(() => 'sleep' as const),
+  ]);
+
+  const second = await Promise.race([
+    hook.then((payload) => payload.value),
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  return { first, second };
+}
+
+//////////////////////////////////////////////////////////
+
 async function addNumbers(a: number, b: number) {
   'use step';
   return a + b;
