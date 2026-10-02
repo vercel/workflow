@@ -25,6 +25,9 @@ describe('WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS', () => {
 
   it('is empty when unset', () => {
     expect(wsEventsTransportOverrideWorkflows()).toEqual([]);
+    // WS is the default, so a deployment that sets nothing can still use it.
+    expect(isWsEventsTransportPossible()).toBe(true);
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     expect(isWsEventsTransportPossible()).toBe(false);
   });
 
@@ -40,6 +43,7 @@ describe('WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS', () => {
   });
 
   it('matches the function name or the full workflow name, exactly', () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS = WORKFLOW;
     expect(isWsEventsTransportEnabledForWorkflow(WORKFLOW)).toBe(true);
 
@@ -49,9 +53,12 @@ describe('WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS', () => {
     }
   });
 
-  it('adds nothing when the deployment already opts in', () => {
-    process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-    expect(isWsEventsTransportEnabledForWorkflow(OTHER)).toBe(true);
-    expect(isWsEventsTransportEnabledForWorkflow(undefined)).toBe(true);
+  it('adds nothing when the deployment is already on WS', () => {
+    for (const value of ['ws', undefined]) {
+      if (value === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = value;
+      expect(isWsEventsTransportEnabledForWorkflow(OTHER)).toBe(true);
+      expect(isWsEventsTransportEnabledForWorkflow(undefined)).toBe(true);
+    }
   });
 });

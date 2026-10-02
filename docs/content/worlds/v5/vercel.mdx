@@ -254,11 +254,11 @@ Each stream WebSocket message is at most [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#work
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
-Opt-in WebSocket transport for workflow run events, which ships them to the Vercel World over one socket per run instead of one HTTP request each. Default: `http`.
+Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
 
-Set `WORKFLOW_EVENTS_TRANSPORT=ws` to opt in. Only that value (case-insensitive) enables the WebSocket — any other value, including unset, empty, or `http`, keeps HTTP — so a typo fails toward the default rather than enabling a transport nobody asked for.
+Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables the WebSocket — any other value, including unset or empty, takes it — so a typo fails toward the default rather than silently pinning a deployment to HTTP.
 
-The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent, because the variable is typically set deployment-wide and a `projectConfig` World (such as the CLI) cannot act on it, and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
+The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent — now that the WebSocket is the default, nothing asked for it — and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
 
 Event writes use the WebSocket only while that run's events channel is open. The queue handler opens it for every delivery, so workflows need nothing extra. Code that writes a run's events outside a delivery, such as a custom driver or a long-lived process, opens the channel with `openEventsChannel(runId)`, or those writes go over HTTP. Call the returned release when you're done, because an open socket keeps the process alive:
 
@@ -294,7 +294,7 @@ The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the c
 
 ### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
 
-Comma-separated workflows whose runs use the WebSocket events transport even when [`WORKFLOW_EVENTS_TRANSPORT`](#workflow_events_transport) is `http` or unset. Use it to move selected workflows onto the WebSocket while the rest of the deployment stays on HTTP. Default: none.
+Comma-separated workflows whose runs use the WebSocket events transport even when [`WORKFLOW_EVENTS_TRANSPORT`](#workflow_events_transport) is `http`. Use it to move selected workflows onto the WebSocket while the rest of the deployment stays on HTTP. Default: none.
 
 Each entry is a workflow's function name, such as `processOrder`, or its full workflow name, such as `workflow//./src/workflows/order//processOrder`. Matching is exact and case-sensitive. A function name matches every workflow with that name, in any file.
 
@@ -302,7 +302,7 @@ Each entry is a workflow's function name, such as `processOrder`, or its full wo
 WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS=processOrder,syncInventory
 ```
 
-The override applies to the events channel the queue handler opens for each delivery of a listed workflow's run. The workflow name comes from the delivery's queue, so it covers the run's workflow and step invocations alike. `openEventsChannel(runId, config, { workflowName })` applies it to channels you open yourself; without `workflowName`, only `WORKFLOW_EVENTS_TRANSPORT=ws` opens one. When `WORKFLOW_EVENTS_TRANSPORT=ws` is set, every workflow already uses the WebSocket and the override has no effect.
+The override applies to the events channel the queue handler opens for each delivery of a listed workflow's run. The workflow name comes from the delivery's queue, so it covers the run's workflow and step invocations alike. `openEventsChannel(runId, config, { workflowName })` applies it to channels you open yourself; without `workflowName`, a deployment with `WORKFLOW_EVENTS_TRANSPORT=http` opens none. Unless `WORKFLOW_EVENTS_TRANSPORT=http` is set, every workflow already uses the WebSocket and the override has no effect.
 
 Like other environment variables, the setting is fixed for each deployment, and a run stays on the deployment it started on. Changing it takes effect for runs started on the next deployment; runs already in progress keep the transport of the deployment they're pinned to.
 
