@@ -543,7 +543,12 @@ describe('runWorkflow', () => {
     }
   );
 
-  // TODO: Date.now determinism is currently broken in the workflow!!
+  // The clock now advances when a delivery reaches the workflow rather than
+  // when the consumer walk reads an event, but that alone does not settle this
+  // race: nothing on this branch orders the second sleep's delivery behind the
+  // cascade the first one woke, so its `wait_completed` still marks itself
+  // delivered — and moves the clock — before the body reaches the `return`.
+  // TODO: Date.now determinism is still broken for racing sleeps.
   it.fails('should maintain determinism of `Date` across executions', async () => {
     const ops: Promise<any>[] = [];
     const workflowRunId = 'test-run-123';
