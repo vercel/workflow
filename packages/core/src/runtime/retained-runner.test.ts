@@ -2267,8 +2267,8 @@ it('wakes a short sleep from an in-owner timer, with the durable wake enqueued b
 });
 
 it('times the remainder in-process when a durable wake arrives before the sleep is due', async () => {
-  // The sleep starts beyond local-timer range, so only the durable wake can
-  // resume it; that wake arrives early, as a Schedules pre-wake does.
+  // The sleep starts beyond local-timer range, so only a durable wake can
+  // resume it; here one arrives early (for example the owner monitor wake).
   vi.stubEnv('WORKFLOW_RETAINED_LOCAL_TIMER_MS', '300');
   cleanups.push(async () => vi.unstubAllEnvs());
   const marks: Array<{ label: string; at: number }> = [];
@@ -2280,7 +2280,8 @@ it('times the remainder in-process when a durable wake arrives before the sleep 
   const queued: string[] = [];
   vi.spyOn(fixture.world, 'queue').mockImplementation(
     async (_name, _message, options) => {
-      queued.push(options?.idempotencyKey ?? '');
+      if (options?.idempotencyKey?.startsWith('retained-wait:'))
+        queued.push(options.idempotencyKey);
       return { messageId: null };
     }
   );
