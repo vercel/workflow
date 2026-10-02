@@ -78,19 +78,37 @@ attempts; it is not the overflow execution or result transport.
 
 ### Sleeps in a retained run (experimental)
 
-A retained owner always arms a durable delayed wake for a pending `sleep()`.
-The queue delivers it to the public flow route, which relays it to the owner
-with `invoke` (affinity = run ID), so a live owner receives it in-process.
+Before a `wait_created` event commits, the owner enqueues the sleep's durable
+wake: a plain run wake delayed until `resumeAt`. A committed wait therefore
+always has a pending wake. Waits longer than one queue hop (about 23 h) chain
+wakes with the remainder. The queue delivers a wake to the public flow route,
+which relays it to the owner with `invoke` (affinity = run ID).
 
-When a sleep ends within `WORKFLOW_RETAINED_LOCAL_TIMER_MS` (default 120,000 ms;
+When a sleep ends within `WORKFLOW_RETAINED_LOCAL_TIMER_MS` (default 30,000 ms;
 `0` disables) and before the function deadline, the owner also arms an
 in-process timer that enters the same mailbox and completes the wait without a
-queue round trip. The durable wake is then scheduled 15 s after `resumeAt` as a
-backstop for a lost owner; when it arrives after the timer it is a no-op. A
-pending local timer keeps the owner alive past its idle window.
-
-A World with a coarser timer service may deliver the durable wake early. Each
+queue round trip. The durable wake then arrives after the wait completed and is
+a no-op. A pending local timer keeps the owner alive past its idle window. Each
 owner pass re-arms the local timer for any pending wait that is now within
-range, so an early wake (to a live or a newly started owner) completes the sleep
-at local-timer precision. A wake that arrives after the wait completed is a
-no-op.
+range, so a wake that arrives before the target simply waits in-process.
+
+### Owner monitor (experimental)
+
+Inputs delivered with `invoke` (run start, hook input, step result) have no
+queue redelivery behind them. To recover an owner that is lost while it holds
+in-process work (for example an inline step that crashes the process), the
+owner keeps a durable **monitor wake** pending, using `queue()` with
+`delaySeconds` and the ordinary run-wake payload:
+
+- An activation input arms it, `WORKFLOW_RETAINED_MONITOR_MS` (default
+  60,000 ms) ahead, before the input is acknowledged. It is deduplicated in
+  memory, so later inputs skip it while one is pending.
+- After each turn, the owner re-arms it while in-process steps remain. When
+  none remain, the chain ends after its pending wake, which then costs one
+  no-op wake.
+- Whichever owner receives the wake runs an ordinary pass. A replacement owner
+  replays and restarts inline steps whose previous owner is gone, within the
+  step's attempt budget.
+
+Remote steps and sleeps keep their own deadline wakes.
+

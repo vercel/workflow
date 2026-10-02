@@ -1911,6 +1911,170 @@ it('reconstructs idempotency and VM state after an idle owner retires', async ()
   ).toHaveLength(3);
 });
 
+const monitorKeys = (calls: Array<{ idempotencyKey?: string }>) =>
+  calls.filter((c) => c.idempotencyKey?.startsWith('retained-monitor:'));
+
+const hookOnlyCode = `
+  const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
+  async function workflow() {
+    const hook = createHook({ token: 'retained-token' });
+    let count = 0;
+    for await (const input of hook) if (++count === 3) break;
+    hook[Symbol.dispose]();
+    return count;
+  }
+  globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+it('arms one monitor wake on activation before acknowledging, and dedupes later inputs', async () => {
+  // No steps: only the activation arm can hold the acknowledgement.
+  const fixture = await setup(hookOnlyCode);
+  const calls: Array<{ idempotencyKey?: string; delaySeconds?: number }> = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      calls.push({
+        idempotencyKey: options?.idempotencyKey,
+        delaySeconds: options?.delaySeconds,
+      });
+      if (options?.idempotencyKey?.startsWith('retained-monitor:')) await gate;
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  let acked = false;
+  const first = fixture.send('a', 'one').then((value) => {
+    acked = true;
+    return value;
+  });
+  await vi.waitFor(() => expect(monitorKeys(calls)).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The hook is processed but not acknowledged until the monitor is durable.
+  expect(acked).toBe(false);
+  release();
+  await expect(first).resolves.toEqual({ status: 'accepted' });
+  await fixture.send('b', 'two');
+  expect(monitorKeys(calls)).toHaveLength(1);
+  expect(monitorKeys(calls)[0].delaySeconds).toBe(60);
+  await fixture.finished;
+});
+
+it('keeps the monitor chain armed only while in-process step work remains', async () => {
+  vi.stubEnv('WORKFLOW_RETAINED_MONITOR_MS', '1000');
+  cleanups.push(async () => vi.unstubAllEnvs());
+  let finishStep!: () => void;
+  const stepDone = new Promise<void>((resolve) => {
+    finishStep = resolve;
+  });
+  registerStepFunction('retainedWrite', async (value) => {
+    if (value === 'slow') await stepDone;
+    return value;
+  });
+  const fixture = await setup(code, false, false, 5000);
+  const calls: Array<{ idempotencyKey?: string }> = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      calls.push({ idempotencyKey: options?.idempotencyKey });
+      return { messageId: null };
+    }
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('a', 'slow');
+  expect(monitorKeys(calls)).toHaveLength(1);
+  // The monitor wake arrives while the step still runs: it re-arms.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  await fixture.owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('monitor-1') }
+  );
+  expect(monitorKeys(calls)).toHaveLength(2);
+  finishStep();
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.filter((e) => e.eventType === 'step_completed')
+    ).toHaveLength(1)
+  );
+  // Idle now: the next monitor wake ends the chain.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  await fixture.owner.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('monitor-2') }
+  );
+  expect(monitorKeys(calls)).toHaveLength(2);
+});
+
+it('restarts an inline step orphaned by a lost owner when the monitor wake reaches a new owner', async () => {
+  let calls = 0;
+  registerStepFunction('retainedWrite', async (value) => {
+    // The first attempt never finishes: its owner is treated as crashed.
+    if (++calls === 1) return new Promise(() => {});
+    return value;
+  });
+  const fixture = await setup(code);
+  vi.spyOn(fixture.world, 'queue').mockResolvedValue({ messageId: null });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('a', 'one');
+  await vi.waitFor(() => expect(calls).toBe(1));
+  const replacement = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    code,
+    fixture.metadata,
+    () => {},
+    40
+  );
+  await replacement.submit(
+    { runId: fixture.runId },
+    { ...fixture.metadata, messageId: MessageId.parse('monitor-wake') }
+  );
+  await vi.waitFor(() =>
+    expect(
+      replacement.events.filter((e) => e.eventType === 'step_completed')
+    ).toHaveLength(1)
+  );
+  expect(calls).toBe(2);
+  const starts = replacement.events.filter(
+    (e) => e.eventType === 'step_started'
+  );
+  expect(starts).toHaveLength(2);
+});
+
+it('commits wait_created only after its durable wake is enqueued', async () => {
+  registerStepFunction('sleepMark', async (label) => label);
+  const fixture = await setup(sleepCode);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let enqueued = false;
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      if (options?.idempotencyKey?.startsWith('retained-wait:')) {
+        await gate;
+        enqueued = true;
+      }
+      return { messageId: null };
+    }
+  );
+  const run = fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(fixture.owner.events.some((e) => e.eventType === 'wait_created')).toBe(
+    false
+  );
+  release();
+  await run;
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.some((e) => e.eventType === 'wait_created')
+    ).toBe(true)
+  );
+  expect(enqueued).toBe(true);
+});
+
 const sleepCode = `
   const sleep = globalThis[Symbol.for('WORKFLOW_SLEEP')];
   const mark = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('sleepMark');
@@ -1922,7 +2086,7 @@ const sleepCode = `
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
 
-it('wakes a short sleep from an in-owner timer and keeps the queued wake only as a later backstop', async () => {
+it('wakes a short sleep from an in-owner timer, with the durable wake enqueued before the wait commits', async () => {
   const marks: Array<{ label: string; at: number }> = [];
   registerStepFunction('sleepMark', async (label) => {
     marks.push({ label: label as string, at: Date.now() });
@@ -1948,10 +2112,17 @@ it('wakes a short sleep from an in-owner timer and keeps the queued wake only as
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
     'completed'
   );
-  // One durable wake, armed after the timer would fire: never the first path.
-  expect(queued).toHaveLength(1);
-  expect(queued[0].delaySeconds).toBeGreaterThanOrEqual(15);
-  expect(queued[0].idempotencyKey).toMatch(/^retained-wait:/);
+  // One durable wake for the wait (due at resumeAt; the in-owner timer wins),
+  // plus the monitor wake kept while the inline step ran.
+  const waits = queued.filter((q) =>
+    q.idempotencyKey?.startsWith('retained-wait:')
+  );
+  expect(waits).toHaveLength(1);
+  expect(waits[0].delaySeconds).toBe(1);
+  expect(
+    queued.filter((q) => q.idempotencyKey?.startsWith('retained-monitor:'))
+      .length
+  ).toBeGreaterThanOrEqual(1);
   expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
 });
 
@@ -1997,8 +2168,10 @@ it('times the remainder in-process when a durable wake arrives before the sleep 
     { timeout: 5000 }
   );
   expect(marks[1].at - marks[0].at).toBeGreaterThanOrEqual(400);
-  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
-    'completed'
+  await vi.waitFor(async () =>
+    expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+      'completed'
+    )
   );
 });
 
@@ -2042,7 +2215,8 @@ it('uses the queued wake when local timers are disabled', async () => {
   const queued: number[] = [];
   vi.spyOn(fixture.world, 'queue').mockImplementation(
     async (_name, _message, options) => {
-      queued.push(options?.delaySeconds ?? 0);
+      if (options?.idempotencyKey?.startsWith('retained-wait:'))
+        queued.push(options?.delaySeconds ?? 0);
       return { messageId: null };
     }
   );

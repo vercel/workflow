@@ -220,10 +220,18 @@ function materializeEntityPayloads<T extends object>(
 
 /** Sleeps that end within this many ms wake the owner from an in-process timer
  * (WORKFLOW_RETAINED_LOCAL_TIMER_MS; 0 disables). */
-const DEFAULT_LOCAL_TIMER_MAX_MS = 120_000;
-/** The queued backstop for a local timer fires this much after resumeAt. */
-const LOCAL_TIMER_BACKSTOP_SECONDS = 15;
+const DEFAULT_LOCAL_TIMER_MAX_MS = 30_000;
 const LOCAL_TIMER_DEADLINE_MARGIN_MS = 5_000;
+/** VQS caps a message's delay; longer waits chain wakes with the remainder. */
+const MAX_WAKE_DELAY_SECONDS = 82_800;
+/** While the owner has in-process work, a durable wake is kept armed this far
+ * ahead so a crashed owner is replaced (WORKFLOW_RETAINED_MONITOR_MS). */
+const DEFAULT_MONITOR_MS = 60_000;
+
+function monitorMs(): number {
+  const value = Number(process.env.WORKFLOW_RETAINED_MONITOR_MS);
+  return Number.isFinite(value) && value >= 1000 ? value : DEFAULT_MONITOR_MS;
+}
 
 function localTimerMaxMs(): number {
   const raw = process.env.WORKFLOW_RETAINED_LOCAL_TIMER_MS;
@@ -275,6 +283,11 @@ export class RetainedRunner {
     { event: Event; digest: string; attempt: number }
   >();
   private recoveryWakeAt = 0;
+  /** In-memory dedup of the monitor wake: one pending message per owner. */
+  private monitorDueAt = 0;
+  private monitorArm?: Promise<unknown>;
+  /** waitId -> the time its latest enqueued durable wake is due. */
+  private waitWakes = new Map<string, number>();
   /** Executions whose remote delivery failed without evidence the body ran:
    * supersede them at this time instead of waiting for the attempt timeout. */
   private undelivered = new Map<string, number>();
@@ -343,7 +356,15 @@ export class RetainedRunner {
           if (id !== runId) {
             return backend.events.create(id, event, options);
           }
-          if (this.inTurn.getStore()) return this.commit(event, options);
+          if (this.inTurn.getStore()) {
+            // A committed wait implies its durable wake is already enqueued.
+            if (event.eventType === 'wait_created')
+              return this.armWaitWake(
+                event.correlationId,
+                new Date(event.eventData.resumeAt)
+              ).then(() => this.commit(event, options));
+            return this.commit(event, options);
+          }
           return this.enqueue(`event:${event.eventType}`, async () => {
             if (
               this.runState &&
@@ -445,7 +466,24 @@ export class RetainedRunner {
 
   submit(message: unknown, metadata: Metadata) {
     const parsed = WorkflowInvokePayloadSchema.parse(message);
+    // Activation inputs (start, hook, step result) arm the monitor before they
+    // are acknowledged; it is overlapped with the input's processing.
+    const activates =
+      parsed.invoke &&
+      !(
+        parsed.input &&
+        typeof parsed.input === 'object' &&
+        'type' in parsed.input &&
+        parsed.input.type === 'run_cancel'
+      );
     const operation = async (deferAdvance = false) => {
+      const armed = activates ? this.ensureMonitor() : undefined;
+      armed?.catch(() => {});
+      const result = await handle(deferAdvance);
+      await armed;
+      return result;
+    };
+    const handle = async (deferAdvance = false) => {
       await this.initialize();
       if (`${this.prefix}${this.run.workflowName}` !== metadata.queueName)
         throw new InputRejected('Invocation target mismatch', { status: 409 });
@@ -1113,32 +1151,12 @@ export class RetainedRunner {
         await handled.deferredBatchWork;
         if (this.fault) throw this.fault;
         if (handled.waitTimeout) {
+          // The durable wake was enqueued before wait_created committed; a
+          // short sleep also gets an in-process timer.
           const wakeKey = handled.waitTimeout.correlationId;
           if (!this.timerWakeups.has(wakeKey)) {
             this.timerWakeups.add(wakeKey);
-            const local = this.armLocalTimer(wakeKey);
-            // The durable wake is always armed. With a local timer it is only a
-            // backstop for a lost owner, scheduled after the timer should fire.
-            // A World may deliver it early; the next pass re-arms the local
-            // timer for the remainder (completeDueWaits).
-            const delaySeconds = local
-              ? Math.ceil(local.delayMs / 1000) + LOCAL_TIMER_BACKSTOP_SECONDS
-              : handled.waitTimeout.seconds;
-            const runState = this.runState;
-            await this.observed(
-              'durable_wake',
-              () =>
-                this.backend.queue(
-                  this.metadata.queueName,
-                  { runId: this.runId },
-                  {
-                    deploymentId: runState.deploymentId,
-                    delaySeconds,
-                    idempotencyKey: `retained-wait:${this.runId}:${wakeKey}`,
-                  }
-                ),
-              { waitId: wakeKey, delaySeconds, localTimer: Boolean(local) }
-            );
+            this.armLocalTimer(wakeKey);
           }
         }
       }
@@ -1337,6 +1355,76 @@ export class RetainedRunner {
   /** Wake this owner in-process for a short sleep instead of waiting for the
    * queue. Only used when the wait ends well before the function deadline;
    * the queued wake remains the durable backstop. */
+  /** Enqueue the durable wake for a wait (a plain run wake at resumeAt, or the
+   * longest hop toward it). Deduplicated per wait in memory and by key. */
+  private async armWaitWake(waitId: string, resumeAt: Date) {
+    const now = Date.now();
+    const delaySeconds = Math.min(
+      Math.max(1, Math.ceil((+resumeAt - now) / 1000)),
+      MAX_WAKE_DELAY_SECONDS
+    );
+    const dueAt = now + delaySeconds * 1000;
+    if ((this.waitWakes.get(waitId) ?? 0) > now) return;
+    const final = dueAt >= +resumeAt;
+    await this.observed(
+      'durable_wake',
+      () =>
+        this.backend.queue(
+          this.metadata.queueName,
+          { runId: this.runId },
+          {
+            ...(this.runState
+              ? { deploymentId: this.runState.deploymentId }
+              : {}),
+            delaySeconds,
+            idempotencyKey: final
+              ? `retained-wait:${this.runId}:${waitId}`
+              : `retained-wait:${this.runId}:${waitId}:${Math.floor(dueAt / 1000)}`,
+          }
+        ),
+      { waitId, delaySeconds }
+    );
+    this.waitWakes.set(waitId, dueAt);
+  }
+
+  /** Keep one durable monitor wake pending while this owner may hold
+   * in-process work. A wake is an ordinary run wake: whichever owner receives
+   * it replays if needed and decides again. */
+  private ensureMonitor(): Promise<unknown> | undefined {
+    if (this.runState && isTerminalWorkflowRunStatus(this.runState.status))
+      return undefined;
+    if (this.monitorArm && this.monitorDueAt > Date.now())
+      return this.monitorArm;
+    const delayMs = monitorMs();
+    const dueAt = Date.now() + delayMs;
+    const delaySeconds = Math.ceil(delayMs / 1000);
+    this.monitorDueAt = dueAt;
+    const armed = this.observed(
+      'monitor_arm',
+      () =>
+        this.backend.queue(
+          this.metadata.queueName,
+          { runId: this.runId },
+          {
+            ...(this.runState
+              ? { deploymentId: this.runState.deploymentId }
+              : {}),
+            delaySeconds,
+            idempotencyKey: `retained-monitor:${this.runId}:${Math.floor(dueAt / delayMs)}`,
+          }
+        ),
+      { delaySeconds }
+    ).catch((error) => {
+      if (this.monitorArm === armed) {
+        this.monitorArm = undefined;
+        this.monitorDueAt = 0;
+      }
+      throw error;
+    });
+    this.monitorArm = armed;
+    return armed;
+  }
+
   private waitResumeAt(waitId: string): Date | undefined {
     let resumeAt: Date | undefined;
     for (const event of this.events)
@@ -1389,7 +1477,10 @@ export class RetainedRunner {
       if (+at > Date.now()) {
         // An early durable wake (or any other input) may arrive once the wait
         // is within local-timer range: time the remainder in-process.
-        this.armLocalTimer(id);
+        // Otherwise keep a durable wake pending (a long wait chains hops; a
+        // new owner re-arms one, deduplicated by key).
+        if (!this.armLocalTimer(id) && !this.localTimers.has(id))
+          await this.armWaitWake(id, new Date(at));
         continue;
       }
       await this.commit({
@@ -2050,6 +2141,9 @@ export class RetainedRunner {
         try {
           const result = await operation();
           await this.flushWriter();
+          // In-process steps keep the monitor chain alive; when none remain the
+          // chain ends after its pending wake.
+          if (this.localWorkers.size > 0) await this.ensureMonitor();
           this.observe('turn', 'end', spanId, { inputId, status: 'completed' });
           return result;
         } catch (cause) {
