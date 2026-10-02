@@ -395,6 +395,32 @@ describe('flushable stream behavior', () => {
     expect(chunks).toContain('slow');
   });
 
+  it('errors the user-facing readable when its source fails', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const source = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+      },
+    });
+    // This is the server-readable -> user transform shape used by revivers.
+    const user = new TransformStream<Uint8Array, Uint8Array>();
+    const state = createFlushableState();
+    const pipe = flushablePipe(source, user.writable, state).catch(() => {});
+    const reader = user.readable.getReader();
+    controller.enqueue(new Uint8Array([1]));
+    await expect(reader.read()).resolves.toEqual({
+      done: false,
+      value: new Uint8Array([1]),
+    });
+    const error = new Error('server stream failed');
+    const reading = expect(reader.read()).rejects.toBe(error);
+    controller.error(error);
+    await reading;
+    await pipe;
+    await expect(state.promise).rejects.toBe(error);
+    reader.releaseLock();
+  });
+
   it('should propagate cancellation when source stream errors', async () => {
     const chunks: string[] = [];
     // Create a sink that tracks writes (representing the response stream)

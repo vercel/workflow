@@ -1030,6 +1030,53 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(1);
   });
 
+  it('writes HTTP immediately after release even if the retired upgrade never settles', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession(undefined, true);
+    await session.write(0, ['one']);
+    await session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    vi.useFakeTimers();
+    await session.release?.();
+    // FakeSocket.close deliberately emits neither close nor error: the old
+    // connection decision is still pending, and its 10s timer never advances.
+    await session.write(2, ['three']);
+    expect(writeHttp).toHaveBeenCalledTimes(3);
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('close', 1000);
+  });
+
+  it('finishes a queued write behind a drain before releasing its replacement', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    sockets[0].reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const writing = session.write(0, ['one']);
+    const releasing = session.release?.();
+    sockets[0].emit('close', 1001);
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    const replacement = sockets[1];
+    replacement.open();
+    await vi.waitFor(() => expect(replacement.sent).toHaveLength(1));
+    expect(replacement.closed).toHaveLength(0);
+    replacement.reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await writing;
+    await releasing;
+    expect(replacement.closed).toContainEqual([1000, 'stream writer released']);
+    expect(writeHttp).not.toHaveBeenCalled();
+    await session.write(1, ['two']);
+    expect(writeHttp).toHaveBeenCalledWith(['two']);
+  });
+
   it('keeps a deferred session socket-free after release and reuse', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp } = makeSession(undefined, true);

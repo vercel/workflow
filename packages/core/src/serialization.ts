@@ -1722,8 +1722,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     });
     Object.defineProperty(this, STREAM_RELEASE_SYMBOL, {
       value: async () => {
-        await drain();
-        const session = await writeSessionPromise;
+        // The owner has already drained. An unused writer whose session failed
+        // to initialize has no transport to release.
+        const session = await writeSessionPromise.catch(() => undefined);
         await session?.release?.();
       },
       enumerable: false,
