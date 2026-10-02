@@ -428,14 +428,18 @@ describe('full round trip through the host serde only', () => {
 describe.skipIf(typeof Float16Array !== 'function')(
   'Float16Array (no reducer: devalue built-in branch)',
   () => {
-    // The node:vm engine's encoding is the contract: `Float16Array` has no
-    // workflow reducer on either engine, so both must emit devalue's built-in
-    // `[tag, buffer]` form, and a subview must carry only its viewed bytes.
-    const nodeEngine = (value: unknown) => text(nodeEngineSerialize(value));
+    // `Float16Array` has no workflow reducer on any codec, so the reference
+    // codec, the node:vm engine and this one must all emit devalue's
+    // built-in `[tag, buffer]` form, and a subview must carry only its
+    // viewed bytes.
+    const expectParity = (bytes: Uint8Array, hostValue: unknown) => {
+      expect(text(bytes)).toBe(text(referenceSerialize(hostValue)));
+      expect(text(bytes)).toBe(text(nodeEngineSerialize(hostValue)));
+    };
 
-    it('matches the node:vm engine for a whole-buffer Float16Array', () => {
+    it('matches the reference codec for a whole-buffer Float16Array', () => {
       const bytes = serializeGuest('new Float16Array([0.5, -1, 65504])');
-      expect(text(bytes)).toBe(nodeEngine(new Float16Array([0.5, -1, 65504])));
+      expectParity(bytes, new Float16Array([0.5, -1, 65504]));
       expect(
         checkInGuest(
           bytes,
@@ -454,13 +458,12 @@ describe.skipIf(typeof Float16Array !== 'function')(
       expect(text(bytes)).toBe(
         'devl[["Float16Array",1],["ArrayBuffer",2],"ADwAQA=="]'
       );
-      expect(text(bytes)).toBe(
-        nodeEngine(
-          new Float16Array(
-            new Uint8Array([1, 2, 0, 60, 0, 64, 7, 8]).buffer,
-            2,
-            2
-          )
+      expectParity(
+        bytes,
+        new Float16Array(
+          new Uint8Array([1, 2, 0, 60, 0, 64, 7, 8]).buffer,
+          2,
+          2
         )
       );
       expect(
@@ -487,9 +490,7 @@ describe.skipIf(typeof Float16Array !== 'function')(
       const bytes = serializeGuest(
         'new Float16Array(new ArrayBuffer(8), 4, 0)'
       );
-      expect(text(bytes)).toBe(
-        nodeEngine(new Float16Array(new ArrayBuffer(8), 4, 0))
-      );
+      expectParity(bytes, new Float16Array(new ArrayBuffer(8), 4, 0));
       expect(
         checkInGuest(
           bytes,
