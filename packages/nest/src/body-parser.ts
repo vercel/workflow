@@ -61,7 +61,11 @@ type ExpressLayer = {
 type ExpressRouter = { stack?: ExpressLayer[] };
 
 type ExpressLike = {
-  /** Express 5 exposes the router directly; Express 4 lazily as `_router`. */
+  /**
+   * Express 5 exposes the router directly. Express 4 keeps it as `_router`
+   * and defines `router` as a getter that throws `'app.router' is
+   * deprecated!`, so `_router` has to be read first.
+   */
   router?: ExpressRouter;
   _router?: ExpressRouter;
 };
@@ -84,7 +88,14 @@ function resolveAdapter(target: unknown): AdapterLike | undefined {
 
 function expressRouterOf(instance: unknown): ExpressRouter | undefined {
   const app = instance as ExpressLike | null | undefined;
-  const router = app?.router ?? app?._router;
+  let router: ExpressRouter | undefined;
+  try {
+    router = app?._router ?? app?.router;
+  } catch {
+    // Express 4 before any middleware was registered: `_router` does not
+    // exist yet and `router` throws. There is no parser to bypass.
+    return undefined;
+  }
   return Array.isArray(router?.stack) ? router : undefined;
 }
 
@@ -109,13 +120,16 @@ function isEncoded(req: unknown): boolean {
   return normalized !== '' && normalized !== 'identity';
 }
 
-function wrap(parser: Middleware): Middleware {
+function wrap(parser: Middleware, globalPrefix: string): Middleware {
   const bypassing: Middleware = function workflowBodyParserBypass(
     req,
     res,
     next
   ) {
-    if (isWorkflowRoutePath(requestPath(req)) && !isEncoded(req)) {
+    if (
+      isWorkflowRoutePath(requestPath(req), globalPrefix) &&
+      !isEncoded(req)
+    ) {
       return next();
     }
     return parser(req, res, next);
@@ -124,7 +138,10 @@ function wrap(parser: Middleware): Middleware {
   return bypassing;
 }
 
-function bypassExpress(instance: unknown): BodyParserBypass {
+function bypassExpress(
+  instance: unknown,
+  globalPrefix: string
+): BodyParserBypass {
   const router = expressRouterOf(instance);
   const bypassed: string[] = [];
   for (const layer of router?.stack ?? []) {
@@ -133,7 +150,7 @@ function bypassExpress(instance: unknown): BodyParserBypass {
     if ((handle as unknown as Record<symbol, boolean>)[BYPASSED]) continue;
     const name = handle.name;
     if (!BODY_PARSER_NAMES.has(name)) continue;
-    const wrapped = wrap(handle as Middleware);
+    const wrapped = wrap(handle as Middleware, globalPrefix);
     layer.handle = wrapped;
     // A future Express could make `handle` a read-only accessor. Only report a
     // parser as bypassed once the replacement is actually in place.
@@ -156,11 +173,18 @@ function fastifyBodyLimit(instance: unknown): number | undefined {
  * `WorkflowModule` does this for you during `onModuleInit` unless
  * `bypassBodyParser` is turned off.
  *
+ * `globalPrefix` is the NestJS global prefix the workflow routes are served
+ * under, so only those routes are matched; an application route that merely
+ * contains `.well-known/workflow/v1` keeps its parser.
+ *
  * On Fastify nothing is patched: its body limit is enforced by the framework
  * before any content-type parser runs and is configured per instance rather
  * than per route, so the reported `bodyLimit` is for the caller to act on.
  */
-export function bypassWorkflowBodyParsers(target: unknown): BodyParserBypass {
+export function bypassWorkflowBodyParsers(
+  target: unknown,
+  globalPrefix = ''
+): BodyParserBypass {
   const adapter = resolveAdapter(target);
   const instance = adapter?.getInstance?.() ?? target;
   const platform = adapter?.getType?.();
@@ -169,7 +193,7 @@ export function bypassWorkflowBodyParsers(target: unknown): BodyParserBypass {
     return { platform: 'fastify', bodyLimit: fastifyBodyLimit(instance) };
   }
   if (platform === 'express' || expressRouterOf(instance)) {
-    return bypassExpress(instance);
+    return bypassExpress(instance, globalPrefix);
   }
   return { platform: 'unknown' };
 }

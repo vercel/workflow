@@ -50,6 +50,55 @@ describe('bypassWorkflowBodyParsers on Express', () => {
     expect(result).toEqual({ platform: 'express', bypassed: ['jsonParser'] });
   });
 
+  it('does not touch the throwing app.router getter on Express 4', () => {
+    // Express 4 defines `app.router` as a getter that throws
+    // `'app.router' is deprecated!`. NestJS 10 runs on Express 4, so reading
+    // it would fail `app.init()` for every NestJS 10 application.
+    const app = expressApp([named('jsonParser')], '_router');
+    Object.defineProperty(app, 'router', {
+      get() {
+        throw new Error("'app.router' is deprecated!");
+      },
+    });
+
+    expect(bypassWorkflowBodyParsers(adapterFor(app, 'express'))).toEqual({
+      platform: 'express',
+      bypassed: ['jsonParser'],
+    });
+  });
+
+  it('bypasses nothing on Express 4 before a middleware is registered', () => {
+    // No `_router` yet, and `router` throws.
+    const app = {};
+    Object.defineProperty(app, 'router', {
+      get() {
+        throw new Error("'app.router' is deprecated!");
+      },
+    });
+
+    expect(bypassWorkflowBodyParsers(adapterFor(app, 'express'))).toEqual({
+      platform: 'express',
+      bypassed: [],
+    });
+  });
+
+  it('only stands aside for the workflow routes under the global prefix', () => {
+    const json = named('jsonParser');
+    const app = expressApp([json], 'router');
+    bypassWorkflowBodyParsers(adapterFor(app, 'express'), 'api');
+    const layer = app.router.stack[0];
+
+    expect(
+      run(layer, '/api/.well-known/workflow/v1/flow')
+    ).toHaveBeenCalledOnce();
+    expect(json.mock.calls).toHaveLength(0);
+
+    // An application route that contains the segment keeps its parser.
+    run(layer, '/api/files/.well-known/workflow/v1/flow');
+    run(layer, '/.well-known/workflow/v1/flow');
+    expect(json.mock.calls).toHaveLength(2);
+  });
+
   it('wraps every parser body-parser can produce and nothing else', () => {
     const app = expressApp(
       [

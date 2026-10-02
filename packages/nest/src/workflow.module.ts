@@ -186,15 +186,16 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
 
   async onModuleInit(): Promise<void> {
     this.#assertNestCoreIsShared();
+    const servedPrefix = this.#servedGlobalPrefix();
 
     // Before anything that can serve a request: NestJS registers its body
     // parsers earlier in `app.init()` than this hook, and they would otherwise
     // 413 the first queue delivery that carries a payload of any size.
     if (this.options.bypassBodyParser) {
-      this.#bypassBodyParser();
+      this.#bypassBodyParser(servedPrefix);
     }
 
-    const basePath = this.#resolveEffectiveBasePath();
+    const basePath = this.#resolveEffectiveBasePath(servedPrefix);
     setWorkflowBasePath(basePath);
 
     if (this.options.skipBuild) {
@@ -251,8 +252,7 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    * prefix of `/api`), so only a `basePath` that cannot reach the prefixed
    * routes at all is reported; see {@link basePathReachesRoutes}.
    */
-  #resolveEffectiveBasePath(): string {
-    const globalPrefix = this.#servedGlobalPrefix();
+  #resolveEffectiveBasePath(globalPrefix: string): string {
     const configured = this.options.basePath;
 
     if (!configured) {
@@ -359,10 +359,24 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    * See `body-parser.ts` for why this is necessary and why it can only happen
    * here.
    */
-  #bypassBodyParser(): void {
+  #bypassBodyParser(servedPrefix: string): void {
     const adapter = this.adapterHost?.httpAdapter;
     if (!adapter) return;
-    const result = bypassWorkflowBodyParsers(adapter);
+    let result: ReturnType<typeof bypassWorkflowBodyParsers>;
+    try {
+      result = bypassWorkflowBodyParsers(adapter, servedPrefix);
+    } catch (error) {
+      // The bypass reaches into the platform's internals. If a platform
+      // version lays them out differently, deliveries over the parser's limit
+      // are rejected, which is worse than before but no reason to fail boot.
+      console.warn(
+        '[@workflow/nest] Could not keep the body parser away from the ' +
+          'workflow routes; queue deliveries over its size limit will be ' +
+          'rejected with 413.',
+        error
+      );
+      return;
+    }
     if (result.platform !== 'fastify') return;
     const advice = fastifyBodyLimitAdvice(result.bodyLimit);
     if (advice) console.warn(advice);

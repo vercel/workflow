@@ -6,6 +6,7 @@
  */
 
 import type { ExecutionContext } from '@nestjs/common';
+import { normalizeBasePath } from './options.js';
 
 /**
  * Path the {@link WorkflowController} is mounted at, without a leading slash so
@@ -14,24 +15,42 @@ import type { ExecutionContext } from '@nestjs/common';
 export const WORKFLOW_ROUTE_PREFIX = '.well-known/workflow/v1';
 
 /**
- * The same path as a slash-delimited segment, which is what a URL is matched
- * against. Matching the segment rather than the start of the path means a
- * global prefix, a reverse-proxy sub-path or a versioning segment in front of
- * it does not defeat the check.
+ * Static property {@link WorkflowController} carries, so a guard can recognise
+ * the controller NestJS selected without importing the class. `Symbol.for`
+ * keeps the check working when the application and `WorkflowModule` load
+ * different copies of this package.
  */
-const WORKFLOW_ROUTE_SEGMENT = `/${WORKFLOW_ROUTE_PREFIX}/`;
+export const WORKFLOW_CONTROLLER_MARKER = Symbol.for(
+  '@workflow/nest/WorkflowController'
+);
 
 /**
  * Whether a request path addresses one of the workflow routes.
  *
- * Accepts a full URL or a path, with or without a query string.
+ * Accepts a full URL or a path, with or without a query string. `globalPrefix`
+ * is the NestJS global prefix the routes are served under (`'api'` or
+ * `'/api'`), and the match is anchored to it: `/files/.well-known/workflow/v1/flow`
+ * is an application route that happens to contain the segment, not a
+ * workflow route.
  */
-export function isWorkflowRoutePath(path: string | undefined | null): boolean {
+export function isWorkflowRoutePath(
+  path: string | undefined | null,
+  globalPrefix = ''
+): boolean {
   if (!path) return false;
   // A path may arrive with the query string attached (`req.url`), and a query
   // value could contain the segment. Compare the pathname only.
-  const pathname = path.split('?')[0]?.split('#')[0] ?? '';
-  return pathname.includes(WORKFLOW_ROUTE_SEGMENT);
+  let pathname = path.split('?')[0]?.split('#')[0] ?? '';
+  if (!pathname.startsWith('/')) {
+    try {
+      pathname = new URL(pathname).pathname;
+    } catch {
+      return false;
+    }
+  }
+  const prefix = normalizeBasePath(globalPrefix);
+  const routes = `${prefix}/${WORKFLOW_ROUTE_PREFIX}/`;
+  return pathname.startsWith(routes) && pathname.length > routes.length;
 }
 
 type RequestLike = { originalUrl?: string; url?: string };
@@ -47,6 +66,9 @@ export function requestPath(request: unknown): string | undefined {
 
 /**
  * Whether the request being handled is a Workflow SDK protocol request.
+ *
+ * Decided by the controller NestJS routed the request to, not by its URL, so a
+ * wildcard application route cannot be made to look like a workflow route.
  *
  * The workflow routes carry queue deliveries and third-party webhooks, not end
  * users, so an application guard that authenticates users has to let them
@@ -73,7 +95,8 @@ export function isWorkflowRequest(context: ExecutionContext): boolean {
   if (typeof context?.getType === 'function' && context.getType() !== 'http') {
     return false;
   }
-  const http = context?.switchToHttp?.();
-  if (!http) return false;
-  return isWorkflowRoutePath(requestPath(http.getRequest()));
+  const controller = context?.getClass?.() as unknown as
+    | Record<symbol, unknown>
+    | undefined;
+  return controller?.[WORKFLOW_CONTROLLER_MARKER] === true;
 }

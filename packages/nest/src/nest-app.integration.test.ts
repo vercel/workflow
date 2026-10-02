@@ -306,7 +306,9 @@ describe('WorkflowModule on Express', () => {
     }
     Req()(OtherController.prototype, 'everything', 0);
     Res()(OtherController.prototype, 'everything', 1);
-    All()(
+    // Includes a wildcard, the shape that can be reached through a URL
+    // containing the workflow segment.
+    All(['', '*path'])(
       OtherController.prototype,
       'everything',
       Object.getOwnPropertyDescriptor(OtherController.prototype, 'everything')
@@ -333,6 +335,9 @@ describe('WorkflowModule on Express', () => {
         .status
     ).toBe(200);
     expect((await post(base, '/private', '{}')).status).toBe(403);
+    // A wildcard application route reached through a URL that contains the
+    // workflow segment is still the application's route, and still guarded.
+    expect((await post(base, `/private/x${FLOW}`, '{}')).status).toBe(403);
   });
 
   it('parses a compressed body rather than passing bytes nothing can read', async () => {

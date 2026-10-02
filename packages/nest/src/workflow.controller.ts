@@ -29,7 +29,10 @@ import {
   sendWebResponse,
   toWebRequest,
 } from './request-response.js';
-import { WORKFLOW_ROUTE_PREFIX } from './workflow-routes.js';
+import {
+  WORKFLOW_CONTROLLER_MARKER,
+  WORKFLOW_ROUTE_PREFIX,
+} from './workflow-routes.js';
 
 /**
  * Fallback output directory for apps still calling the deprecated
@@ -100,6 +103,9 @@ type FlowHandler = (request: Request) => Promise<Response>;
  */
 @Controller({ path: WORKFLOW_ROUTE_PREFIX, version: VERSION_NEUTRAL })
 export class WorkflowController {
+  /** Read by `isWorkflowRequest()`; see {@link WORKFLOW_CONTROLLER_MARKER}. */
+  static readonly [WORKFLOW_CONTROLLER_MARKER] = true;
+
   #basePathChecked = false;
 
   constructor(

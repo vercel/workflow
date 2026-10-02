@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,7 +98,9 @@ describe('importMetaShim', () => {
       // NestJS app that builds a `createRequire(import.meta.url)` gets
       // `undefined` and throws ERR_INVALID_ARG_TYPE at cold start. The build
       // only warns, among everything else it prints.
-      const dir = mkdtempSync(join(tmpdir(), 'wf-nest-meta-'));
+      // `realpathSync`: on macOS the tmpdir is behind the `/var` ->
+      // `/private/var` symlink, and the bundle reports its resolved path.
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wf-nest-meta-')));
       temporaryDirectories.push(dir);
       const entry = join(dir, 'entry.mjs');
       const outfile = join(dir, 'out.js');

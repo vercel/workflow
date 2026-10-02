@@ -7,7 +7,7 @@ prerequisites:
   - /docs/getting-started/nestjs
 ---
 
-Returns `true` when the request a NestJS `ExecutionContext` is handling is one of the Workflow SDK's own protocol routes under `.well-known/workflow/v1`.
+Returns `true` when NestJS routed the request an `ExecutionContext` is handling to [`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller), which serves the Workflow SDK's protocol routes under `.well-known/workflow/v1`. The check is on the selected controller rather than the URL, so an application route that can be reached through a URL containing `.well-known/workflow/v1` (a wildcard such as `files/*path`) is still treated as your route.
 
 [`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller) is a controller inside your application, so a global guard runs for it too. A guard that rejects unauthenticated requests rejects every queue delivery and webhook with `403`, and runs stop making progress with no other symptom. Use this helper to exempt them.
 
@@ -40,7 +40,7 @@ export class AuthGuard implements CanActivate {
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `context` | `ExecutionContext` | The execution context NestJS passes to a guard, interceptor, or filter. |
+| `context` | `ExecutionContext` | The execution context NestJS passes to a guard or interceptor. |
 
 ### Returns
 
@@ -50,7 +50,7 @@ export class AuthGuard implements CanActivate {
 
 | Export | Description |
 | --- | --- |
-| `isWorkflowRoutePath(path)` | The same check against a raw URL or path, for middleware that has a request rather than an `ExecutionContext`. |
+| `isWorkflowRoutePath(path, globalPrefix?)` | Whether a raw URL or path addresses a workflow route, for middleware that has a request rather than an `ExecutionContext`. The match is anchored to `globalPrefix` (default `''`), so pass the prefix given to `app.setGlobalPrefix()` unless it excludes the workflow routes. |
 | `WORKFLOW_ROUTE_PREFIX` | `'.well-known/workflow/v1'`, the path the controller is mounted at. |
 
 <Callout type="info">
