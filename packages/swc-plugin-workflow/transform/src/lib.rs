@@ -420,15 +420,44 @@ pub struct StepTransform {
     // Track object properties that need to be converted to initializer calls in workflow mode
     // (parent_var_name, prop_name, step_id)
     object_property_workflow_conversions: Vec<(String, String, String)>,
-    // Map from a step's bare name (e.g. "_anonymousStep0") to the full
-    // namespaced step name used to compute its registered step ID
-    // (e.g. "myWorkflow/_anonymousStep0"). Steps not present in this map
-    // use their bare name (which produces the same ID as the registered
-    // one). Populated when a nested step is hoisted out of a workflow
-    // function so that the `__internal_workflows` manifest comment matches
-    // the actual runtime step ID used by both the step-mode registration
-    // and the workflow-mode `WORKFLOW_USE_STEP` proxy lookup.
-    nested_step_full_names: HashMap<String, String>,
+    // Local names of steps hoisted out of an enclosing function (e.g.
+    // "_anonymousStep0"). Their manifest entries are keyed by the namespaced
+    // name in `nested_step_full_names` instead of the bare local name.
+    nested_step_local_names: HashSet<String>,
+    // Namespaced names (e.g. "myWorkflow/_anonymousStep0") of steps hoisted
+    // out of an enclosing function. Each is emitted as its own
+    // `__internal_workflows` manifest entry with the same step ID that is
+    // registered in step mode and looked up by the `WORKFLOW_USE_STEP` proxy
+    // in workflow mode. Keying by the namespaced name keeps same-named nested
+    // steps of different workflows from overwriting each other's entries.
+    nested_step_full_names: HashSet<String>,
+    // Namespaced names already claimed by steps hoisted out of an enclosing
+    // function (e.g. "myWorkflow/act", "myWorkflow/helpers/act"). Two steps
+    // with the same local name in different block scopes are distinct
+    // functions, so the second one is given a `~N` suffix to keep its step ID
+    // from colliding with (and silently replacing) the first.
+    claimed_step_names: HashSet<String>,
+    // Workflow mode only: the namespaced name step mode assigns to each step,
+    // keyed by the step's source span (see `step_names_from_step_mode`).
+    // Workflow mode doesn't see every step that step mode does (e.g. steps
+    // nested in a step body), so it reuses step mode's names rather than
+    // claiming its own; otherwise the two modes could assign the same ID to
+    // different function bodies.
+    step_mode_step_names: HashMap<(u32, u32), String>,
+    // (span lo, span hi, namespaced step name) for every step whose name was
+    // claimed via `claim_unique_step_name`, in claim order. Both transform
+    // modes must assign the same name to the same source span.
+    step_name_assignments: Vec<(u32, u32, String)>,
+    // Names of steps declared at module level (as opposed to steps hoisted
+    // out of an enclosing function).
+    module_level_step_names: HashSet<String>,
+    // Module-level bindings created for steps hoisted out of an enclosing
+    // function in step mode. Unlike step IDs these aren't durable, so a
+    // binding that would collide is simply renamed.
+    hoisted_step_bindings: HashSet<String>,
+    // Hoisted binding of each object property step in step mode, keyed by
+    // (workflow name, parent variable path, claimed property key).
+    object_property_step_bindings: HashMap<(String, String, String), String>,
     // Current context: variable name being processed when visiting object properties
     #[allow(dead_code)]
     current_var_context: Option<String>,
@@ -1649,7 +1678,7 @@ impl StepTransform {
                 );
 
                 if self.should_transform_function(&fn_decl.function, false) {
-                    self.step_function_names.insert(fn_name.clone());
+                    self.insert_step_function_name(fn_name.clone());
 
                     if !self.in_module_level {
                         match self.mode {
@@ -1669,7 +1698,7 @@ impl StepTransform {
                                     ident: Some(fn_decl.ident.clone()),
                                     function: cloned_function,
                                 };
-                                self.nested_step_functions.push((
+                                self.push_nested_step_function((
                                     fn_name.clone(),
                                     fn_expr,
                                     fn_decl.function.span,
@@ -1688,13 +1717,13 @@ impl StepTransform {
                                 return;
                             }
                             TransformMode::Workflow => {
-                                // Include parent workflow name in step ID
+                                // Use current_parent_function_name to match step mode's ID generation
                                 let parent_workflow = self
-                                    .current_workflow_function_name
+                                    .current_parent_function_name
                                     .clone()
                                     .unwrap_or_default();
                                 let step_fn_name =
-                                    self.record_nested_step_name(&fn_name, &parent_workflow);
+                                    self.record_nested_step_name(&fn_name, &parent_workflow, fn_decl.function.span);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_decl.function.span,
@@ -1904,7 +1933,14 @@ impl StepTransform {
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
             object_property_workflow_conversions: Vec::new(),
-            nested_step_full_names: HashMap::new(),
+            nested_step_local_names: HashSet::new(),
+            nested_step_full_names: HashSet::new(),
+            claimed_step_names: HashSet::new(),
+            step_mode_step_names: HashMap::new(),
+            module_level_step_names: HashSet::new(),
+            step_name_assignments: Vec::new(),
+            hoisted_step_bindings: HashSet::new(),
+            object_property_step_bindings: HashMap::new(),
             current_var_context: None,
             module_imports: HashSet::new(),
             current_class_name: None,
@@ -1950,15 +1986,243 @@ impl StepTransform {
     /// (empty if there is no enclosing workflow). When `parent_workflow_name`
     /// is non-empty, the returned name is `parent/fn_name`; otherwise it is
     /// just `fn_name`. The mapping is recorded only when a prefix is added.
-    fn record_nested_step_name(&mut self, fn_name: &str, parent_workflow_name: &str) -> String {
-        if parent_workflow_name.is_empty() {
-            fn_name.to_string()
+    ///
+    /// If another step hoisted out of the same parent already uses `fn_name`
+    /// (e.g. two block-scoped `const act = async () => { "use step" }`), the
+    /// name gets a `~N` suffix via `claim_unique_step_name`.
+    fn record_nested_step_name(
+        &mut self,
+        fn_name: &str,
+        parent_workflow_name: &str,
+        span: swc_core::common::Span,
+    ) -> String {
+        self.claim_nested_step_name(fn_name, parent_workflow_name, span)
+            .1
+    }
+
+    /// Queue a nested step for hoisting in step mode. Its name is claimed now,
+    /// at discovery, so that claims happen in the same order as in workflow
+    /// mode (which claims while visiting). Claiming while hoisting instead
+    /// would let a same-named object property step that is discovered later
+    /// claim the name first, swapping which body gets which step ID.
+    /// The stored name is the claimed local name (`fn_name` or `fn_name~N`).
+    fn push_nested_step_function(
+        &mut self,
+        (fn_name, fn_expr, span, closure_vars, was_arrow, parent_name, references_lexical_this): (
+            String,
+            FnExpr,
+            swc_core::common::Span,
+            Vec<String>,
+            bool,
+            String,
+            bool,
+        ),
+    ) {
+        let (local_name, _) = self.claim_nested_step_name(&fn_name, &parent_name, span);
+        self.nested_step_functions.push((
+            local_name,
+            fn_expr,
+            span,
+            closure_vars,
+            was_arrow,
+            parent_name,
+            references_lexical_this,
+        ));
+    }
+
+    /// The (span lo, span hi, namespaced step name) assigned to each step
+    /// whose name may need a `~N` suffix, in claim order. Exposed for tests
+    /// that check both transform modes assign the same names.
+    #[doc(hidden)]
+    pub fn step_name_assignments(&self) -> &[(u32, u32, String)] {
+        &self.step_name_assignments
+    }
+
+    /// Like `record_nested_step_name`, but also returns the unique local name
+    /// (`fn_name`, or `fn_name~N` on a collision).
+    fn claim_nested_step_name(
+        &mut self,
+        fn_name: &str,
+        parent_workflow_name: &str,
+        span: swc_core::common::Span,
+    ) -> (String, String) {
+        let local_name = self.claim_step_name_at(parent_workflow_name, fn_name, span);
+        let full = if parent_workflow_name.is_empty() {
+            local_name.clone()
         } else {
-            let full = format!("{}/{}", parent_workflow_name, fn_name);
-            self.nested_step_full_names
-                .insert(fn_name.to_string(), full.clone());
-            full
+            format!("{}/{}", parent_workflow_name, local_name)
+        };
+        self.nested_step_local_names.insert(fn_name.to_string());
+        self.nested_step_full_names.insert(full.clone());
+        self.step_name_assignments
+            .push((span.lo.0, span.hi.0, full.clone()));
+        (local_name, full)
+    }
+
+    /// Return `name`, or `name~N` for the smallest `N` that is not yet
+    /// claimed under `scope`, and claim it.
+    ///
+    /// `~` can't appear in a JS identifier, and explicit object property step
+    /// keys containing it are rejected (see `claim_object_property_step_name`),
+    /// so a generated `name~N` never equals an explicitly written step name.
+    /// Its value therefore only depends on the same-named steps in `scope`.
+    fn claim_unique_step_name(&mut self, scope: &str, name: &str) -> String {
+        let qualify = |candidate: &str| {
+            if scope.is_empty() {
+                candidate.to_string()
+            } else {
+                format!("{}/{}", scope, candidate)
+            }
+        };
+        let mut candidate = name.to_string();
+        let mut counter = 0;
+        while self.claimed_step_names.contains(&qualify(&candidate)) {
+            counter += 1;
+            candidate = format!("{}~{}", name, counter);
         }
+        self.claimed_step_names.insert(qualify(&candidate));
+        candidate
+    }
+
+    /// Claim the name for the step at `span`. In workflow mode this is the name
+    /// step mode assigns to the same span; otherwise (and for a span step mode
+    /// didn't name) it is claimed via `claim_unique_step_name`.
+    fn claim_step_name_at(
+        &mut self,
+        scope: &str,
+        name: &str,
+        span: swc_core::common::Span,
+    ) -> String {
+        if let Some(full) = self.step_mode_step_names.get(&(span.lo.0, span.hi.0)) {
+            let local = if scope.is_empty() {
+                Some(full.as_str())
+            } else {
+                full.strip_prefix(scope)
+                    .and_then(|rest| rest.strip_prefix('/'))
+            };
+            if let Some(local) = local {
+                return local.to_string();
+            }
+        }
+        self.claim_unique_step_name(scope, name)
+    }
+
+    /// Run step mode over a copy of `program` and record the name it assigns
+    /// to each step, so workflow mode can use the same names. Diagnostics from
+    /// the copy are discarded; this transform emits its own.
+    fn step_names_from_step_mode(&self, program: &Program) -> HashMap<(u32, u32), String> {
+        let mut program = program.clone();
+        let mut step_mode = StepTransform::new(
+            TransformMode::Step,
+            self.filename.clone(),
+            self.module_specifier.clone(),
+        );
+        let silent = swc_core::common::errors::Handler::with_emitter_writer(
+            Box::new(std::io::sink()),
+            None,
+        );
+        HANDLER.set(&silent, || program.visit_mut_with(&mut step_mode));
+        step_mode
+            .step_name_assignments
+            .into_iter()
+            .map(|(lo, hi, name)| ((lo, hi), name))
+            .collect()
+    }
+
+    /// Claim a unique naming key for an object property step. `parent_var_name`
+    /// is the (possibly compound) variable path, e.g. `helpers` or `a/b`.
+    fn claim_object_property_step_name(
+        &mut self,
+        parent_var_name: &str,
+        prop_key: &str,
+        span: swc_core::common::Span,
+    ) -> String {
+        if prop_key.contains('~') {
+            HANDLER.with(|handler| {
+                handler
+                    .struct_span_err(
+                        span,
+                        &format!(
+                            "Step property key `{}` contains `~`, which is reserved for generated step names. Rename the property.",
+                            prop_key
+                        ),
+                    )
+                    .emit()
+            });
+        }
+        let scope = match &self.current_workflow_function_name {
+            Some(wf_name) => format!("{}/{}", wf_name, parent_var_name),
+            None => parent_var_name.to_string(),
+        };
+        let claimed = self.claim_step_name_at(&scope, prop_key, span);
+        self.step_name_assignments
+            .push((span.lo.0, span.hi.0, format!("{}/{}", scope, claimed)));
+        claimed
+    }
+
+    /// Return a module-level binding for a hoisted step, based on `base`
+    /// (with any `~` from a generated step name replaced by `$`), that doesn't
+    /// redeclare another hoisted step or a module-level name. A redeclared
+    /// `var`/`function` would silently replace the earlier function, so the
+    /// step registered under one ID would run another step's body.
+    fn claim_hoisted_step_binding(&mut self, base: &str) -> String {
+        let base = base.replace('~', "$");
+        let mut binding = base.clone();
+        let mut counter = 0;
+        while self.declared_identifiers.contains(&binding)
+            || self.hoisted_step_bindings.contains(&binding)
+        {
+            counter += 1;
+            binding = format!("{}${}", base, counter);
+        }
+        self.hoisted_step_bindings.insert(binding.clone());
+        binding
+    }
+
+    /// Hoisted binding for an object property step (e.g.
+    /// `myWorkflow$helpers$act`), claimed on first use so that the object
+    /// literal reference and the hoisted declaration agree.
+    fn object_property_step_binding(
+        &mut self,
+        workflow_name: &str,
+        parent_var_name: &str,
+        prop_key: &str,
+    ) -> String {
+        let key = (
+            workflow_name.to_string(),
+            parent_var_name.to_string(),
+            prop_key.to_string(),
+        );
+        if let Some(binding) = self.object_property_step_bindings.get(&key) {
+            return binding.clone();
+        }
+        let safe_parent_name = parent_var_name.replace('/', "$");
+        let base = if workflow_name.is_empty() {
+            format!("{}${}", safe_parent_name, prop_key)
+        } else {
+            format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
+        };
+        let binding = self.claim_hoisted_step_binding(&base);
+        self.object_property_step_bindings
+            .insert(key, binding.clone());
+        binding
+    }
+
+    /// Whether a module-level declaration named `name` is a step. A name in
+    /// `step_function_names` may instead belong only to a step nested in some
+    /// function (e.g. a module-level `const act = 1` next to a workflow's
+    /// nested step `act`), which must not turn the declaration into a step.
+    fn is_module_level_step(&self, name: &str) -> bool {
+        self.step_function_names.contains(name)
+            && (!self.nested_step_local_names.contains(name)
+                || self.module_level_step_names.contains(name))
+    }
+
+    fn insert_step_function_name(&mut self, name: String) {
+        if self.in_module_level {
+            self.module_level_step_names.insert(name.clone());
+        }
+        self.step_function_names.insert(name);
     }
 
     fn create_id(
@@ -2279,6 +2543,13 @@ impl StepTransform {
                                 continue;
                             }
 
+                            // Disambiguate from a same-named step property in another block scope
+                            let prop_key = self.claim_object_property_step_name(
+                                parent_var_name,
+                                &prop_key,
+                                swc_core::common::Spanned::span(&*kv_prop.value),
+                            );
+
                             // Process the transformation
                             match &mut *kv_prop.value {
                                 Expr::Arrow(arrow_expr) => {
@@ -2418,6 +2689,13 @@ impl StepTransform {
                                 continue;
                             }
 
+                            // Disambiguate from a same-named step property in another block scope
+                            let prop_key = self.claim_object_property_step_name(
+                                parent_var_name,
+                                &prop_key,
+                                method_prop.function.span,
+                            );
+
                             // Remove the directive first
                             self.remove_use_step_directive(&mut method_prop.function.body);
 
@@ -2448,17 +2726,15 @@ impl StepTransform {
                                     // Replace method with key-value property referencing the hoisted variable
                                     // so the stepId property is accessible on the same function object.
                                     self.remove_use_step_directive(&mut method_prop.function.body);
-                                    let safe_parent_name = parent_var_name.replace('/', "$");
-                                    let hoist_var_name = if let Some(ref workflow_name) =
-                                        self.current_workflow_function_name
-                                    {
-                                        format!(
-                                            "{}${}${}",
-                                            workflow_name, safe_parent_name, prop_key
-                                        )
-                                    } else {
-                                        format!("{}${}", safe_parent_name, prop_key)
-                                    };
+                                    let workflow_name = self
+                                        .current_workflow_function_name
+                                        .clone()
+                                        .unwrap_or_default();
+                                    let hoist_var_name = self.object_property_step_binding(
+                                        &workflow_name,
+                                        parent_var_name,
+                                        &prop_key,
+                                    );
                                     let step_id = self.create_object_property_id(
                                         parent_var_name,
                                         &prop_key,
@@ -2532,6 +2808,13 @@ impl StepTransform {
                                 );
                                 continue;
                             }
+
+                            // Disambiguate from a same-named step property in another block scope
+                            let prop_key = self.claim_object_property_step_name(
+                                parent_var_name,
+                                &prop_key,
+                                getter_prop.span,
+                            );
 
                             // Getters don't need async validation (they can't be async syntactically)
 
@@ -2665,13 +2948,12 @@ impl StepTransform {
             TransformMode::Step => {
                 // Replace with reference to hoisted variable so the stepId
                 // property is accessible on the same function object.
-                let safe_parent_name = parent_var_name.replace('/', "$");
+                let workflow_name = self
+                    .current_workflow_function_name
+                    .clone()
+                    .unwrap_or_default();
                 let hoist_var_name =
-                    if let Some(ref workflow_name) = self.current_workflow_function_name {
-                        format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
-                    } else {
-                        format!("{}${}", safe_parent_name, prop_key)
-                    };
+                    self.object_property_step_binding(&workflow_name, parent_var_name, prop_key);
                 *kv_prop.value = Expr::Ident(Ident::new(
                     hoist_var_name.into(),
                     DUMMY_SP,
@@ -4732,29 +5014,36 @@ impl StepTransform {
         if !self.step_function_names.is_empty()
             || !self.object_property_workflow_conversions.is_empty()
         {
-            let mut steps_entries: Vec<String> = self
+            // Steps hoisted out of an enclosing function are registered (and
+            // looked up) under a namespaced name like
+            // "myWorkflow/_anonymousStep0", and are listed under that name so
+            // that same-named nested steps of different workflows each get an
+            // entry. Their bare local names are skipped unless a module-level
+            // step also uses the name (e.g. a top-level step `act` alongside
+            // a nested step `act`).
+            let step_names: std::collections::BTreeSet<&String> = self
                 .step_function_names
                 .iter()
+                .filter(|fn_name| self.is_module_level_step(fn_name))
+                .chain(self.nested_step_full_names.iter())
+                .collect();
+            let mut steps_entries: Vec<String> = step_names
+                .into_iter()
                 .map(|fn_name| {
-                    // If this step was hoisted out of a workflow function it
-                    // is registered (and looked up) under a namespaced name
-                    // like "myWorkflow/_anonymousStep0". The manifest must
-                    // report the same step ID so downstream tooling (e.g.
-                    // builders consuming `__internal_workflows`) sees the
-                    // correct ID.
-                    let id_name = self
-                        .nested_step_full_names
-                        .get(fn_name)
-                        .map(|s| s.as_str())
-                        .unwrap_or(fn_name.as_str());
-                    let step_id = self.create_id(Some(id_name), DUMMY_SP, false);
+                    let step_id = self.create_id(Some(fn_name), DUMMY_SP, false);
                     format!("\"{}\":{{\"stepId\":\"{}\"}}", fn_name, step_id)
                 })
                 .collect();
 
-            // Add object property step functions to metadata
+            // Add object property step functions to metadata, keyed by the
+            // namespaced name from the step ID (e.g. "myWorkflow/helpers/act")
+            // so same-named objects in different workflows don't collide.
+            let step_id_prefix = format!("step//{}//", self.get_module_path());
             for (parent_var, prop_name, step_id) in &self.object_property_workflow_conversions {
-                let key = format!("{}/{}", parent_var, prop_name);
+                let key = step_id
+                    .strip_prefix(&step_id_prefix)
+                    .map(|name| name.to_string())
+                    .unwrap_or_else(|| format!("{}/{}", parent_var, prop_name));
                 steps_entries.push(format!("\"{}\":{{\"stepId\":\"{}\"}}", key, step_id));
             }
 
@@ -5786,6 +6075,14 @@ impl StepTransform {
 
 impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
+        if self.mode == TransformMode::Workflow {
+            self.step_mode_step_names = self.step_names_from_step_mode(program);
+            // Reserve every name step mode uses, so a step that only workflow
+            // mode names can't take one of them.
+            self.claimed_step_names
+                .extend(self.step_mode_step_names.values().cloned());
+        }
+
         // First pass: collect step functions
         program.visit_mut_children_with(self);
 
@@ -5826,12 +6123,22 @@ impl VisitMut for StepTransform {
                         references_lexical_this,
                     ) in nested_functions
                     {
-                        // Generate hoisted name including parent workflow function name
-                        let hoisted_name = if parent_workflow_name.is_empty() {
+                        // `fn_name` is the local name claimed at discovery (see
+                        // `push_nested_step_function`), possibly with a `~N` suffix.
+                        let local_name = fn_name.clone();
+                        let step_fn_name = if parent_workflow_name.is_empty() {
                             fn_name.clone()
                         } else {
-                            format!("{}${}", parent_workflow_name, fn_name)
+                            format!("{}/{}", parent_workflow_name, fn_name)
                         };
+                        // Generate hoisted name including parent workflow function name
+                        let hoisted_name = self.claim_hoisted_step_binding(
+                            &if parent_workflow_name.is_empty() {
+                                local_name
+                            } else {
+                                format!("{}${}", parent_workflow_name, local_name)
+                            },
+                        );
                         // If there are closure variables, add destructuring as first statement
                         if !closure_vars.is_empty() {
                             if let Some(body) = &mut fn_expr.function.body {
@@ -5932,8 +6239,6 @@ impl VisitMut for StepTransform {
                         current_insert_pos += 1;
 
                         // Create a registration call or stepId assignment with parent workflow name in the step ID
-                        let step_fn_name =
-                            self.record_nested_step_name(&fn_name, &parent_workflow_name);
                         let step_id = self.create_id(Some(&step_fn_name), span, false);
 
                         // Insert inline IIFE registration right after the hoisted declaration
@@ -5953,18 +6258,17 @@ impl VisitMut for StepTransform {
 
                     // Then process object property step functions (they typically appear later)
                     // Collect hoisting information before the loop
-                    let hoisting_info: Vec<_> = self
-                        .object_property_step_functions
+                    let object_property_steps: Vec<_> =
+                        self.object_property_step_functions.drain(..).collect();
+                    let hoisting_info: Vec<_> = object_property_steps
                         .iter()
                         .map(
                             |(parent_var, prop_name, fn_expr, _span, workflow_name, _was_arrow)| {
-                                // Replace slashes with $ in parent_var to create valid JS identifier
-                                let safe_parent_var = parent_var.replace('/', "$");
-                                let hoist_var_name = if !workflow_name.is_empty() {
-                                    format!("{}${}${}", workflow_name, safe_parent_var, prop_name)
-                                } else {
-                                    format!("{}${}", safe_parent_var, prop_name)
-                                };
+                                let hoist_var_name = self.object_property_step_binding(
+                                    workflow_name,
+                                    parent_var,
+                                    prop_name,
+                                );
                                 let wf_name = if workflow_name.is_empty() {
                                     None
                                 } else {
@@ -5973,15 +6277,13 @@ impl VisitMut for StepTransform {
                                 let step_id = self.create_object_property_id(
                                     parent_var, prop_name, false, wf_name,
                                 );
-                                (hoist_var_name, fn_expr.clone(), step_id, parent_var.clone())
+                                (hoist_var_name, fn_expr.clone(), step_id)
                             },
                         )
                         .collect();
 
-                    // Now drain and process
-                    self.object_property_step_functions.drain(..);
+                    for (hoist_var_name, fn_expr, step_id) in hoisting_info {
 
-                    for (hoist_var_name, fn_expr, step_id, _parent_var) in hoisting_info {
                         // Create a var declaration for the hoisted function
                         // Using function expression (not arrow) to preserve `this` binding
                         let hoisted_decl =
@@ -7181,7 +7483,7 @@ impl VisitMut for StepTransform {
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
                         if let Decl::Fn(fn_decl) = &export_decl.decl {
                             let fn_name = fn_decl.ident.sym.to_string();
-                            if self.step_function_names.contains(&fn_name) {
+                            if self.is_module_level_step(&fn_name) {
                                 // This is a step function - convert to var declaration (for named functions)
                                 let step_id =
                                     self.create_id(Some(&fn_name), fn_decl.function.span, false);
@@ -7214,7 +7516,7 @@ impl VisitMut for StepTransform {
                             let has_step_functions = var_decl.decls.iter().any(|declarator| {
                                 if let Pat::Ident(binding) = &declarator.name {
                                     let name = binding.id.sym.to_string();
-                                    self.step_function_names.contains(&name)
+                                    self.is_module_level_step(&name)
                                 } else {
                                     false
                                 }
@@ -7228,7 +7530,7 @@ impl VisitMut for StepTransform {
                                 for declarator in &mut new_var_decl.decls {
                                     if let Pat::Ident(binding) = &declarator.name {
                                         let name = binding.id.sym.to_string();
-                                        if self.step_function_names.contains(&name) {
+                                        if self.is_module_level_step(&name) {
                                             // This is an exported step function variable - convert to assignment
                                             let step_id =
                                                 self.create_id(Some(&name), declarator.span, false);
@@ -7258,7 +7560,7 @@ impl VisitMut for StepTransform {
                     // Handle non-exported function declarations
                     ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
                         let fn_name = fn_decl.ident.sym.to_string();
-                        if self.step_function_names.contains(&fn_name) {
+                        if self.is_module_level_step(&fn_name) {
                             // This is a non-exported step function - convert to var declaration (for named functions)
                             let step_id =
                                 self.create_id(Some(&fn_name), fn_decl.function.span, false);
@@ -7294,7 +7596,7 @@ impl VisitMut for StepTransform {
                         let has_step_functions = var_decl.decls.iter().any(|declarator| {
                             if let Pat::Ident(binding) = &declarator.name {
                                 let name = binding.id.sym.to_string();
-                                self.step_function_names.contains(&name)
+                                self.is_module_level_step(&name)
                             } else {
                                 false
                             }
@@ -7308,7 +7610,7 @@ impl VisitMut for StepTransform {
                             for declarator in &mut new_var_decl.decls {
                                 if let Pat::Ident(binding) = &declarator.name {
                                     let name = binding.id.sym.to_string();
-                                    if self.step_function_names.contains(&name) {
+                                    if self.is_module_level_step(&name) {
                                         // This is a non-exported step function variable - convert to assignment
                                         let step_id =
                                             self.create_id(Some(&name), declarator.span, false);
@@ -7347,7 +7649,7 @@ impl VisitMut for StepTransform {
         if self.has_step_directive(&fn_decl.function, false) {
             // Validate that it's async - emit error if not
             // It's valid - proceed with transformation
-            self.step_function_names.insert(fn_name.clone());
+            self.insert_step_function_name(fn_name.clone());
 
             match self.mode {
                 TransformMode::Step => {
@@ -7452,7 +7754,7 @@ impl VisitMut for StepTransform {
                 if self.has_step_directive(&fn_decl.function, true) {
                     // Validate that it's async - emit error if not
                     // It's valid - proceed with transformation
-                    self.step_function_names.insert(fn_name.clone());
+                    self.insert_step_function_name(fn_name.clone());
 
                     match self.mode {
                         TransformMode::Step => {
@@ -7658,7 +7960,7 @@ impl VisitMut for StepTransform {
                                     if self.has_step_directive_arrow(arrow_expr, true) {
                                         // Validate that it's async - emit error if not
                                         // It's valid - proceed with transformation
-                                        self.step_function_names.insert(name.clone());
+                                        self.insert_step_function_name(name.clone());
 
                                         match self.mode {
                                             TransformMode::Step => {
@@ -7830,7 +8132,7 @@ impl VisitMut for StepTransform {
                             if has_step {
                                 // Validate that it's async - emit error if not
                                 // It's valid - proceed with transformation
-                                self.step_function_names.insert(name.clone());
+                                self.insert_step_function_name(name.clone());
 
                                 match self.mode {
                                     TransformMode::Step => {
@@ -7979,7 +8281,7 @@ impl VisitMut for StepTransform {
                             if has_step {
                                 // Validate that it's async - emit error if not
                                 // It's valid - proceed with transformation
-                                self.step_function_names.insert(name.clone());
+                                self.insert_step_function_name(name.clone());
 
                                 // Check if we're inside any function (nested), not just workflow functions
                                 if !self.in_module_level {
@@ -8051,7 +8353,7 @@ impl VisitMut for StepTransform {
                                                 }),
                                             };
 
-                                            self.nested_step_functions.push((
+                                            self.push_nested_step_function((
                                                 name.clone(),
                                                 fn_expr,
                                                 arrow_expr.span,
@@ -8072,13 +8374,13 @@ impl VisitMut for StepTransform {
                                         }
                                         TransformMode::Workflow => {
                                             // Replace with proxy reference (not a function call)
-                                            // Include parent workflow name in step ID
+                                            // Use current_parent_function_name to match step mode's ID generation
                                             let parent_workflow = self
-                                                .current_workflow_function_name
+                                                .current_parent_function_name
                                                 .clone()
                                                 .unwrap_or_default();
                                             let step_fn_name = self
-                                                .record_nested_step_name(&name, &parent_workflow);
+                                                .record_nested_step_name(&name, &parent_workflow, arrow_expr.span);
                                             let step_id = self.create_id(
                                                 Some(&step_fn_name),
                                                 arrow_expr.span,
@@ -8641,7 +8943,7 @@ impl VisitMut for StepTransform {
                 let full_name = format!("{}{}{}", class_name, separator, getter_name);
                 let hoisted_parent_name = format!("{}${}", class_name, getter_name);
 
-                self.step_function_names.insert(full_name.clone());
+                self.insert_step_function_name(full_name.clone());
                 if !method.is_static {
                     self.classes_needing_serialization
                         .insert(class_name.clone());
@@ -8750,7 +9052,7 @@ impl VisitMut for StepTransform {
                 // For nested step hoisting, use $ instead of # to produce valid JS identifiers
                 let hoisted_parent_name = format!("{}${}", class_name, method_name);
 
-                self.step_function_names.insert(full_name.clone());
+                self.insert_step_function_name(full_name.clone());
 
                 // Track class for serialization (needed for `this` serialization)
                 self.classes_needing_serialization
@@ -8852,7 +9154,7 @@ impl VisitMut for StepTransform {
                 let full_name = format!("{}.{}", class_name, method_name);
 
                 if has_step {
-                    self.step_function_names.insert(full_name.clone());
+                    self.insert_step_function_name(full_name.clone());
 
                     // Track class for serialization (needed for `this` serialization in static method calls)
                     self.classes_needing_serialization
@@ -9060,7 +9362,7 @@ impl VisitMut for StepTransform {
                             // (the closure above already incremented)
                         }
 
-                        self.step_function_names.insert(name.clone());
+                        self.insert_step_function_name(name.clone());
 
                         match self.mode {
                             TransformMode::Step => {
@@ -9083,7 +9385,7 @@ impl VisitMut for StepTransform {
                                     function: cloned_function,
                                 };
 
-                                self.nested_step_functions.push((
+                                self.push_nested_step_function((
                                     name.clone(),
                                     hoisted_fn_expr,
                                     fn_expr.function.span,
@@ -9109,7 +9411,7 @@ impl VisitMut for StepTransform {
                                     .clone()
                                     .unwrap_or_default();
                                 let step_fn_name =
-                                    self.record_nested_step_name(&name, &parent_workflow);
+                                    self.record_nested_step_name(&name, &parent_workflow, fn_expr.function.span);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_expr.function.span,
@@ -9135,7 +9437,7 @@ impl VisitMut for StepTransform {
                         // Nested step arrow function in an expression (e.g., return statement)
                         let name = format!("_anonymousStep{}", self.anonymous_fn_counter);
                         self.anonymous_fn_counter += 1;
-                        self.step_function_names.insert(name.clone());
+                        self.insert_step_function_name(name.clone());
 
                         // Detect whether the arrow body references the
                         // enclosing function's `this` (lexical capture).
@@ -9193,7 +9495,7 @@ impl VisitMut for StepTransform {
                                     }),
                                 };
 
-                                self.nested_step_functions.push((
+                                self.push_nested_step_function((
                                     name.clone(),
                                     fn_expr,
                                     arrow_expr.span,
@@ -9219,7 +9521,7 @@ impl VisitMut for StepTransform {
                                     .clone()
                                     .unwrap_or_default();
                                 let step_fn_name =
-                                    self.record_nested_step_name(&name, &parent_workflow);
+                                    self.record_nested_step_name(&name, &parent_workflow, arrow_expr.span);
                                 let step_id =
                                     self.create_id(Some(&step_fn_name), arrow_expr.span, false);
 
@@ -9362,7 +9664,7 @@ impl VisitMut for StepTransform {
                         TransformMode::Detect => {}
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
-                    self.step_function_names.insert(fn_name.clone());
+                    self.insert_step_function_name(fn_name.clone());
 
                     match self.mode {
                         TransformMode::Step => {
@@ -9551,7 +9853,7 @@ impl VisitMut for StepTransform {
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
                     // Handle step functions
-                    self.step_function_names.insert("default".to_string());
+                    self.insert_step_function_name("default".to_string());
                     // Similar logic for steps...
                 }
             }
@@ -9651,7 +9953,7 @@ impl VisitMut for StepTransform {
                     }
                 } else if self.has_step_directive_arrow(arrow_expr, true) {
                     // Handle step arrow functions
-                    self.step_function_names.insert("default".to_string());
+                    self.insert_step_function_name("default".to_string());
                     // Similar logic for steps...
                 }
             }
@@ -9711,7 +10013,7 @@ impl VisitMut for StepTransform {
                                                 self.anonymous_fn_counter
                                             );
                                             self.anonymous_fn_counter += 1;
-                                            self.step_function_names.insert(generated_name.clone());
+                                            self.insert_step_function_name(generated_name.clone());
 
                                             // Detect lexical `this` capture so we
                                             // can hoist as a regular function (step
@@ -9780,7 +10082,7 @@ impl VisitMut for StepTransform {
                                                         }),
                                                     };
 
-                                                    self.nested_step_functions.push((
+                                                    self.push_nested_step_function((
                                                         generated_name.clone(),
                                                         fn_expr,
                                                         arrow_expr.span,
@@ -9808,10 +10110,7 @@ impl VisitMut for StepTransform {
                                                         .clone()
                                                         .unwrap_or_default();
                                                     let step_fn_name = self
-                                                        .record_nested_step_name(
-                                                            &generated_name,
-                                                            &parent_workflow,
-                                                        );
+                                                        .record_nested_step_name(&generated_name, &parent_workflow, arrow_expr.span);
                                                     let step_id = self.create_id(
                                                         Some(&step_fn_name),
                                                         arrow_expr.span,
@@ -9839,7 +10138,7 @@ impl VisitMut for StepTransform {
                                                 self.anonymous_fn_counter
                                             );
                                             self.anonymous_fn_counter += 1;
-                                            self.step_function_names.insert(generated_name.clone());
+                                            self.insert_step_function_name(generated_name.clone());
 
                                             match self.mode {
                                                 TransformMode::Step => {
@@ -9861,7 +10160,7 @@ impl VisitMut for StepTransform {
                                                         function: cloned_fn.function,
                                                     };
 
-                                                    self.nested_step_functions.push((
+                                                    self.push_nested_step_function((
                                                         generated_name.clone(),
                                                         hoisted_fn_expr,
                                                         fn_expr.function.span,
@@ -9889,10 +10188,7 @@ impl VisitMut for StepTransform {
                                                         .clone()
                                                         .unwrap_or_default();
                                                     let step_fn_name = self
-                                                        .record_nested_step_name(
-                                                            &generated_name,
-                                                            &parent_workflow,
-                                                        );
+                                                        .record_nested_step_name(&generated_name, &parent_workflow, fn_expr.function.span);
                                                     let step_id = self.create_id(
                                                         Some(&step_fn_name),
                                                         fn_expr.function.span,
@@ -9922,7 +10218,7 @@ impl VisitMut for StepTransform {
                                     let generated_name =
                                         format!("_anonymousStep{}", self.anonymous_fn_counter);
                                     self.anonymous_fn_counter += 1;
-                                    self.step_function_names.insert(generated_name.clone());
+                                    self.insert_step_function_name(generated_name.clone());
 
                                     match self.mode {
                                         TransformMode::Step => {
@@ -9949,7 +10245,7 @@ impl VisitMut for StepTransform {
                                                 function: cloned_function,
                                             };
 
-                                            self.nested_step_functions.push((
+                                            self.push_nested_step_function((
                                                 generated_name.clone(),
                                                 fn_expr,
                                                 method_prop.function.span,
@@ -9976,10 +10272,7 @@ impl VisitMut for StepTransform {
                                                 .current_workflow_function_name
                                                 .clone()
                                                 .unwrap_or_default();
-                                            let step_fn_name = self.record_nested_step_name(
-                                                &generated_name,
-                                                &parent_workflow,
-                                            );
+                                            let step_fn_name = self.record_nested_step_name(&generated_name, &parent_workflow, method_prop.function.span);
                                             let step_id = self.create_id(
                                                 Some(&step_fn_name),
                                                 method_prop.function.span,
