@@ -9,6 +9,27 @@ environment variables below lives in
 The WebSocket **events** transport (`WORKFLOW_EVENTS_TRANSPORT`, step and run
 event writes) is a separate transport and out of scope here.
 
+## Main issue
+
+On both HTTP and WebSocket, a stream append whose outcome is unknown (timeout,
+reset, half-open socket) cannot be retried, so it fails the stream and with it
+the step or run. The client already holds what a retry needs: core keeps each
+group buffered until it is confirmed, and stamps it with a `writerId` and
+`chunkSeq`. What is missing:
+
+1. The backend does not deduplicate on `(writerId, chunkSeq)`, so a resend
+   appends the chunks twice.
+2. HTTP `PUT` appends don't send `writerId` / `chunkSeq` at all; only the
+   WebSocket frames do.
+3. Because of 1, the client fails on purpose instead of replaying: an
+   unacknowledged WebSocket write poisons the writer, and HTTP appends retry
+   only on 429.
+
+The fix is backend dedupe on `(writerId, chunkSeq)` that acknowledges a
+duplicate as applied, the same IDs on HTTP appends, and a client that replays
+unconfirmed groups on retry, reconnect, and transport fallback. See gap 1 and
+new PR 1 below.
+
 ## Current state
 
 ### Writes
@@ -47,7 +68,8 @@ make writer interleaving visible, not to fence or deduplicate writes.
 agent (`STREAM_AGENT_OPTIONS`: `allowH2: true`, `pipelining: 1`,
 `connections: 8`) with no whole-request deadline. Appends retry only on 429
 (`STREAM_RETRY_OPTIONS`), because a resend after an ambiguous failure can
-duplicate chunks. Close is idempotent and also retries 5xx.
+duplicate chunks. Close is idempotent and also retries 5xx. The `PUT` carries
+no `writerId` or `chunkSeq`.
 
 ### Reads
 
@@ -63,9 +85,10 @@ path on `main`.
    with it the step or run. This is the failure reported in production on
    #2731: 4 of 108 concurrent streaming runs failed on a single stalled
    append, and 1 of 108 still failed after client-side transport mitigations.
-   Closing it requires backend deduplication keyed by `(writerId, chunkSeq)`
-   plus a client that replays unacknowledged writes, which in turn makes
-   reconnect and HTTP fallback lossless instead of poisoning.
+   The client-side buffer and IDs already exist; closing the gap needs backend
+   deduplication keyed by `(writerId, chunkSeq)`, the IDs on HTTP appends, and
+   a client that replays unacknowledged writes. That also makes reconnect and
+   HTTP fallback lossless instead of poisoning.
 2. **WebSocket writes are off by default on the client.** Rollout needs
    `WORKFLOW_STREAMS_TRANSPORT=ws` per project. There is no client-side
    default flip or per-workflow override (the events transport has both).
@@ -128,9 +151,9 @@ path on `main`.
 
 1. **`workflow-stream-ws/v2` with deduplication (gap 1).** Backend fences
    `(writerId, chunkSeq)` and acknowledges duplicates as applied. Client
-   replays unacknowledged writes on reconnect and on HTTP fallback instead of
-   poisoning. The HTTP `PUT` path needs the same `writerId` / `chunkSeq`
-   headers so an ambiguous append can be retried there too. Requires a
+   replays the groups core already buffers on reconnect and on HTTP fallback
+   instead of poisoning. The HTTP `PUT` path needs the same `writerId` /
+   `chunkSeq` headers so an ambiguous append can be retried there too. Requires a
    backend change shipped first, and a capability negotiation so older
    backends keep v1 behavior.
 2. **Stream HTTP transport hardening (gap 5).** Port the mitigations from the
