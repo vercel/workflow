@@ -9,6 +9,7 @@
 import { globalSingleton } from '@workflow/utils';
 import { getEventDataRefFields } from '@workflow/world/event-metadata';
 import { parse, unflatten } from 'devalue';
+import { splitChainEnvelope } from './serialization/chain-envelope.js';
 
 // ---------------------------------------------------------------------------
 // Key material (browser-safe re-exports)
@@ -375,6 +376,7 @@ export type Revivers = Record<string, (value: any) => any>;
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
+    value = splitChainEnvelope(value).payload;
     // Encrypted data passes through untouched: o11y layers detect it with
     // isEncryptedData() and handle display (web: named constructor object,
     // CLI: EncryptedDataRef with util.inspect.custom).

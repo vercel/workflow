@@ -6,6 +6,7 @@
  */
 
 import { SerializationError } from '@workflow/errors';
+import { splitChainEnvelope } from './chain-envelope.js';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
 import { compress, decompress } from './compression.js';
@@ -32,9 +33,10 @@ export async function serialize(
       SerializationFormat.DEVALUE_V1,
       payload
     ) as Uint8Array;
+    const plaintext = options?.wrapPlaintext?.(prefixed) ?? prefixed;
     // Compress before encrypting, since encrypted bytes don't compress.
     const compressed = await compress(
-      prefixed,
+      plaintext,
       options?.compression === true,
       options?.compressionStats
     );
@@ -59,16 +61,21 @@ export async function deserialize(
     options?.compressionStats
   );
 
-  if (!(decrypted instanceof Uint8Array)) {
+  const nested =
+    decrypted instanceof Uint8Array
+      ? splitChainEnvelope(decrypted).payload
+      : decrypted;
+
+  if (!(nested instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {
-      return devalueCodec.deserializeLegacy(decrypted, 'step', options);
+      return devalueCodec.deserializeLegacy(nested, 'step', options);
     }
     throw new Error(
       'Cannot deserialize non-binary data without legacy support'
     );
   }
 
-  const { format, payload } = decodeFormatPrefix(decrypted);
+  const { format, payload } = decodeFormatPrefix(nested);
 
   if (format === SerializationFormat.DEVALUE_V1) {
     return devalueCodec.deserialize(payload, 'step', options);

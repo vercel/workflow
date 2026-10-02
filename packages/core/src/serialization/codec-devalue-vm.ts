@@ -120,6 +120,11 @@ function getReviversForMode(mode: SerializationMode): Partial<Revivers> {
   switch (mode) {
     case 'workflow':
       return {
+        Chain: () => {
+          throw new Error(
+            'Chain is not supported by the QuickJS workflow engine; use WORKFLOW_VM=node.'
+          );
+        },
         ...getAbortReviversVM(),
         ...getClassRevivers(),
         ...getStepFunctionReviver(),

@@ -1,11 +1,16 @@
+import { Chain } from '@workflow/core';
 import { importKey } from '@workflow/core/encryption';
 import {
   dehydrateStepError,
   dehydrateStepReturnValue,
 } from '@workflow/core/serialization';
-import { hydrateData } from '@workflow/core/serialization-format';
+import {
+  hydrateData,
+  hydrateDataWithKey,
+} from '@workflow/core/serialization-format';
 import { FatalError, RetryableError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
+import { getCLIRevivers } from '../../cli/src/lib/inspect/hydration.js';
 import {
   getWebRevivers,
   hasEncryptedFields,
@@ -175,6 +180,68 @@ describe('getWebRevivers — error family', () => {
     expect(revived.name).toBe('RetryableError');
     expect(revived.message).toBe('try again');
     expect(revived.retryAfter).toBeUndefined();
+  });
+});
+
+describe('front hydration — Chain envelopes', () => {
+  it.each([
+    ['truncated header', new TextEncoder().encode('chn1')],
+    [
+      'truncated recipe table',
+      Uint8Array.from([99, 104, 110, 49, 0, 0, 0, 4, 123]),
+    ],
+  ])('rejects a %s', (_name, wire) => {
+    expect(() => hydrateData(wire, REVIVERS)).toThrow('Truncated Chain');
+  });
+
+  it('hydrates encrypted and compressed real step output without reading recipes', async () => {
+    const runId = 'wrun_chain';
+    const rawKey = new Uint8Array(32).fill(9);
+    const cryptoKey = await importKey(rawKey);
+    const wire = await dehydrateStepReturnValue(
+      {
+        chain: Chain.from([1, 2]),
+        ordinary: 'visible',
+      },
+      runId,
+      cryptoKey,
+      [],
+      globalThis,
+      false,
+      false,
+      true,
+      undefined,
+      [],
+      'step_chain'
+    );
+
+    expect(wire).toBeInstanceOf(Uint8Array);
+    expect(textDecoder.decode((wire as Uint8Array).subarray(0, 4))).toBe(
+      'encr'
+    );
+
+    const hydrated = (await hydrateResourceIOWithKey(
+      { stepId: 'step_chain', output: wire },
+      rawKey
+    )) as { output: { chain: object; ordinary: string } };
+    expect(hydrated.output.ordinary).toBe('visible');
+    expect(hydrated.output.chain.constructor.name).toBe('Chain');
+    const ref = {
+      runId,
+      stepId: 'step_chain',
+      slot: 'hslot_0',
+      length: 2,
+    };
+    expect(Object.assign({}, hydrated.output.chain)).toEqual(ref);
+
+    const cliHydrated = (await hydrateDataWithKey(
+      wire,
+      getCLIRevivers(),
+      cryptoKey
+    )) as { chain: object; ordinary: string };
+    expect(cliHydrated.ordinary).toBe('visible');
+    expect(cliHydrated.chain.constructor.name).toBe('CLIClassInstanceRef');
+    expect(cliHydrated.chain).toMatchObject({ data: ref });
   });
 });
 

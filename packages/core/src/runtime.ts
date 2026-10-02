@@ -2107,6 +2107,7 @@ export function workflowEntrypoint(
                             // gate, verified against the recorded step_started
                             // count once it crosses the ceiling (see above).
                             authoritativeAttempt: bgAuthoritativeAttempt,
+                            replayPayloadCache: startReplayPayloadCache(),
                             ...(bgResumeTracking
                               ? { resumeTracking: bgResumeTracking }
                               : {}),
@@ -5088,6 +5089,7 @@ export function workflowEntrypoint(
                                     }
                                   : {}),
                                 replayRecoveryReporter,
+                                replayPayloadCache,
                               });
                             };
                             // Invariant bookkeeping: this invocation owns
@@ -5377,6 +5379,14 @@ export function workflowEntrypoint(
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
                           if (only.type === 'completed' && only.inlineDelta) {
+                            // The returned delta is the authoritative committed
+                            // event set from the World, not the submitted
+                            // candidate bytes. Feed it through the same
+                            // invocation-local observer as replay loads before
+                            // the next inline step executes.
+                            for (const event of only.inlineDelta.events) {
+                              prepareReplayEvent(event);
+                            }
                             appendEventLog(eventLog, only.inlineDelta);
                             eventLogFromInlineDelta = !only.inlineDelta.hasMore;
                             eventLog = only.inlineDelta.hasMore

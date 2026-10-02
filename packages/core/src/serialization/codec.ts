@@ -92,6 +92,8 @@ export interface CodecOptions {
    * Serialize side only.
    */
   guestCodeStats?: GuestCodeStats;
+  /** Output-specific plaintext wrapper, applied before compression/encryption. */
+  wrapPlaintext?: (payload: Uint8Array) => Uint8Array;
 }
 
 export interface Codec {

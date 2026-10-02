@@ -61,6 +61,7 @@ process.stdout.write(JSON.stringify(await step()));`,
  */
 async function writeWorkflowRuntimeStub(workingDir: string): Promise<void> {
   const packageDir = join(workingDir, 'node_modules/workflow');
+  const coreDir = join(workingDir, 'node_modules/@workflow/core');
   await write(
     join(packageDir, 'package.json'),
     JSON.stringify({
@@ -74,6 +75,16 @@ async function writeWorkflowRuntimeStub(workingDir: string): Promise<void> {
       },
     })
   );
+  await write(
+    join(coreDir, 'package.json'),
+    JSON.stringify({
+      name: '@workflow/core',
+      version: '1.0.0',
+      type: 'module',
+      exports: { './_workflow-bootstrap': './workflow-bootstrap.js' },
+    })
+  );
+  await write(join(coreDir, 'workflow-bootstrap.js'), 'export {};\n');
   await write(
     join(packageDir, 'api.js'),
     'export async function resumeWebhook() { return new Response(null, { status: 204 }); }\n'

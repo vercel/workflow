@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { FlushableStreamState } from '../flushable-stream.js';
+import type { ReplayPayloadCache } from '../replay-payload-cache.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
 import type { StepMetadata } from './get-step-metadata.js';
@@ -56,6 +57,8 @@ export type StepContext = {
    * the ordering guarantee back to background-flush behavior.
    */
   preCompletionOps: Promise<void>[];
+  /** Invocation-local authoritative replay event/output cache. */
+  replayPayloadCache?: ReplayPayloadCache;
   closureVars?: Record<string, any>;
   encryptionKey?: PayloadKey;
   writables?: Map<string, CachedWritable>;
