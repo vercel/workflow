@@ -14,7 +14,7 @@ import {
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -313,6 +313,48 @@ describe('createWorkflowRunEventV4 over ws', () => {
     expect(result.event.runId).toBe('wrun_1');
     expect(result.event.eventType).toBe('step_completed');
     expect(result.step).toMatchObject({ stepId: 'step_1' });
+  });
+
+  it("carries omitStepEntity in the frame's event meta and accepts a step-less ack", async () => {
+    // The WS request frame wraps the same meta the HTTP frame carries, so the
+    // response directive rides it unchanged; a supporting server's ack then
+    // has no `step`.
+    let sentMeta: Record<string, unknown> | undefined;
+    const { step: _step, ...stepless } = decode(materializedBody()) as Record<
+      string,
+      unknown
+    >;
+    (
+      requestMock as unknown as {
+        mockImplementationOnce(
+          fn: (build: (reqId: number) => Uint8Array) => Promise<WsFrameReply>
+        ): void;
+      }
+    ).mockImplementationOnce(async (build) => {
+      const frame = build(1);
+      const metaLen = new DataView(
+        frame.buffer,
+        frame.byteOffset,
+        frame.byteLength
+      ).getUint32(0, false);
+      sentMeta = decode(frame.subarray(4, 4 + metaLen)) as Record<
+        string,
+        unknown
+      >;
+      return ack({}, new Uint8Array(encode(stepless)));
+    });
+
+    const result = await createWorkflowRunEventV4(
+      { ...input, omitStepEntity: true },
+      { token: 'test-token' }
+    );
+
+    expect(sentMeta?.type).toBe('event');
+    expect((sentMeta?.event as Record<string, unknown>).omitStepEntity).toBe(
+      true
+    );
+    expect(result.event.eventType).toBe('step_completed');
+    expect(result.step).toBeUndefined();
   });
 
   it('falls back to HTTP when this World has no usable WS transport', async () => {
