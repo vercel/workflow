@@ -1672,6 +1672,170 @@ ${apiFileContent}`
         await expectHmrLogCounts(unrelatedRemovalLogCursor, { skip: 1 });
       }
     );
+
+    // A module that defines both a custom-serialized class and a step taking
+    // that class as an argument. Crossing the step boundary deserializes the
+    // class inside the step bundle, so the class has to stay registered there
+    // across every dev rebuild, including rebuilds of unrelated step files.
+    test.runIf(shouldRunNextFlowRouteHmrTests)(
+      'should keep a hybrid serializer + step module deserializable across HMR edits',
+      { timeout: flowRouteHmrFuzzTimeoutMs },
+      async () => {
+        assert(deploymentUrl);
+        setupWorld(deploymentUrl);
+
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+
+        const files = {
+          workflow: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-hybrid-serde-workflow.ts'
+          ),
+          hybrid: path.join(appPath, workflowsDir, 'hmr-hybrid-serde.ts'),
+          sibling: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-hybrid-serde-sibling.ts'
+          ),
+        };
+        for (const file of Object.values(files)) {
+          restoreFiles.push({ path: file, content: '' });
+        }
+
+        // No hand-written `static classId`: the SWC plugin registers the
+        // class under its generated id and only fills `classId` in when the
+        // class has none, so a custom one would never resolve in the step.
+        const hybridSource = (marker: string) => `export class HmrHybridBox {
+  constructor(public label: string) {}
+
+  static [Symbol.for('workflow-serialize')](value: HmrHybridBox) {
+    return { label: value.label + '-${marker}' };
+  }
+
+  static [Symbol.for('workflow-deserialize')](value: { label: string }) {
+    return new HmrHybridBox(value.label);
+  }
+}
+
+export async function hmrHybridRoundTrip(value: HmrHybridBox) {
+  'use step';
+  return value;
+}
+`;
+        const siblingSource = (marker: string) =>
+          `export async function hmrHybridSibling() {
+  'use step';
+  return 'sibling-${marker}';
+}
+`;
+
+        await waitForHmrReady();
+        await Promise.all([
+          fs.writeFile(files.hybrid, hybridSource('serde-0')),
+          fs.writeFile(files.sibling, siblingSource('0')),
+          fs.writeFile(
+            files.workflow,
+            `import { HmrHybridBox, hmrHybridRoundTrip } from './hmr-hybrid-serde';
+import { hmrHybridSibling } from './hmr-hybrid-serde-sibling';
+
+export async function hmrHybridSerdeWorkflow() {
+  'use workflow';
+  const sibling = await hmrHybridSibling();
+  const box = await hmrHybridRoundTrip(new HmrHybridBox('box'));
+  return { sibling, label: box.label };
+}
+`
+          ),
+        ]);
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/hmr-hybrid-serde-workflow';
+${apiFileContent}`
+        );
+
+        await pollUntil({
+          description: 'hybrid serde fixture to appear in the Next manifest',
+          timeoutMs: flowRouteHmrRediscoveryTimeoutMs,
+          check: async () => {
+            await prewarm();
+            const steps = await readManifestStepFunctionNames();
+            expect(steps).toContain('hmrHybridRoundTrip');
+            expect(steps).toContain('hmrHybridSibling');
+            expect(await readManifestWorkflowFunctionNames()).toContain(
+              'hmrHybridSerdeWorkflow'
+            );
+          },
+        });
+
+        let workflow:
+          | Awaited<ReturnType<typeof getWorkflowMetadata>>
+          | undefined;
+        await pollUntil({
+          description: 'hybrid serde workflow metadata to be readable',
+          timeoutMs: 50_000,
+          intervalMs: 500,
+          check: async () => {
+            workflow = await getWorkflowMetadata(
+              deploymentUrl,
+              `${workflowsDir}/hmr-hybrid-serde-workflow.ts`,
+              'hmrHybridSerdeWorkflow'
+            );
+          },
+        });
+        assert(workflow);
+        const hybridWorkflow = workflow;
+
+        const expectResult = async (
+          description: string,
+          expected: { sibling: string; label: string }
+        ) => {
+          await pollUntil({
+            description,
+            timeoutMs: 90_000,
+            intervalMs: 500,
+            check: async () => {
+              const run = await start<[], { sibling: string; label: string }>(
+                hybridWorkflow,
+                []
+              );
+              const result = await run.returnValue;
+              expect(result.sibling).toBe(expected.sibling);
+              expect(result.label).toContain(expected.label);
+            },
+          });
+        };
+
+        // Phase 1: no edits yet. A failure here means the hybrid module is
+        // broken in dev regardless of HMR.
+        await waitForGeneratedArtifactStability();
+        await expectResult(
+          'hybrid serde module to round-trip before any edit',
+          {
+            sibling: 'sibling-0',
+            label: 'serde-0',
+          }
+        );
+
+        // Phase 2: body-only edit of a *different* step file. This is the
+        // rebuild that dropped the class registration on the HMR stack.
+        await fs.writeFile(files.sibling, siblingSource('1'));
+        await expectResult(
+          'hybrid serde module to survive an unrelated step-file edit',
+          { sibling: 'sibling-1', label: 'serde-0' }
+        );
+
+        // Phase 3: edit the serializer itself.
+        await waitForGeneratedArtifactStability();
+        await fs.writeFile(files.hybrid, hybridSource('serde-1'));
+        await expectResult(
+          'hybrid serde module to pick up an edited serializer',
+          { sibling: 'sibling-1', label: 'serde-1' }
+        );
+      }
+    );
   });
 }
 
