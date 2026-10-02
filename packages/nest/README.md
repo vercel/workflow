@@ -131,6 +131,11 @@ WorkflowModule.forRoot({
   // Defaults to true, or false when VERCEL is set.
   preloadBundles: true,
 
+  // Keep the application's body parser away from the workflow routes so queue
+  // deliveries are not capped at Express's 100 KB limit and webhook bodies stay
+  // byte-exact. Defaults to true. See "Request bodies" below.
+  bypassBodyParser: true,
+
   // SWC module type: 'es6' (default) or 'commonjs'
   // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
   moduleType: 'es6',
@@ -156,20 +161,89 @@ WorkflowModule.forRootAsync({
 });
 ```
 
-### Raw request bodies
+### Request bodies
 
-Create the app with `rawBody` so a signed webhook body reaches the workflow
-byte-for-byte:
+The queue delivers run inputs, step inputs and step outputs in the HTTP body of
+a `POST /.well-known/workflow/v1/flow`, so those bodies are as large as the data
+your workflows pass around. Express caps request bodies at 100 KB, and NestJS
+installs that parser by default, which would answer any larger delivery with
+`413` before the request reached a controller.
 
-{/*@skip-typecheck: Shows the NestFactory.create option*/}
+`WorkflowModule` therefore makes the application's body parsers stand aside for
+`.well-known/workflow/v1`, and nothing else. Workflow requests are read straight
+from the request stream, which also means a signed webhook body arrives
+byte-for-byte without `{ rawBody: true }`. Your own routes keep the parsers, and
+the limits, you configured. Set `bypassBodyParser: false` to turn this off.
+
+A body that arrives with a `content-encoding` still goes through the parser,
+because that is what inflates it.
+
+#### Fastify
+
+Fastify enforces its body limit before any content-type parser runs, and that
+limit is per instance rather than per route, so it cannot be scoped to the
+workflow routes. Raise it on the adapter instead; `WorkflowModule` logs a
+warning at startup while it is still at Fastify's 1 MiB default:
+
+{/*@skip-typecheck: Shows the FastifyAdapter option*/}
 
 ```typescript
-const app = await NestFactory.create(AppModule, { rawBody: true });
+const app = await NestFactory.create(
+  AppModule,
+  new FastifyAdapter({ bodyLimit: 16 * 1024 * 1024 })
+);
 ```
 
-Without it the parsed body has to be re-serialized, which changes whitespace and
-key order and breaks signature verification. A warning is logged once when that
-fallback is used.
+Fastify also answers content types it has no parser for with `415` before the
+request reaches a controller. If you receive webhooks as `application/octet-stream`
+or another unparsed media type, register a catch-all parser:
+
+{/*@skip-typecheck: Shows a Fastify content type parser*/}
+
+```typescript
+app
+  .getHttpAdapter()
+  .getInstance()
+  .addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) =>
+    done(null, body)
+  );
+```
+
+### Guards, interceptors and pipes
+
+The workflow routes are served by a controller inside your application, so a
+global guard runs for them too. A guard that rejects unauthenticated requests
+rejects every queue delivery and webhook with `403`, and runs stop making
+progress. Let them through with `isWorkflowRequest`:
+
+{/*@skip-typecheck: Shows a guard that exempts the workflow routes*/}
+
+```typescript
+import { isWorkflowRequest } from '@workflow/nest';
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  canActivate(context: ExecutionContext) {
+    if (isWorkflowRequest(context)) return true;
+    // ...your own checks
+  }
+}
+```
+
+These routes authenticate their own callers — queue deliveries are signed and
+webhook tokens are single-use secrets — so exempting them exposes nothing.
+
+Interceptors and exception filters are safe to leave in place: the handlers
+write through `@Res()`, so the status and body the workflow runtime produced
+reach the caller unchanged.
+
+### Route versioning
+
+`app.enableVersioning()` moves every route under a version segment, which would
+put the workflow routes somewhere the SDK does not generate URLs for. The
+controller is registered as `VERSION_NEUTRAL`, so it stays at
+`.well-known/workflow/v1` whichever versioning strategy you enable. A global
+prefix still applies, and is adopted automatically.
 
 ### Dependency injection is not available in workflows and steps
 
@@ -249,9 +323,27 @@ the `VERCEL` env var is set (pass `--vercel` to force it locally):
 the workflow client transform. Then, `@workflow/nest build` bundles the app and
 the workflow functions into `.vercel/output`.
 
+### Dependencies the bundler cannot follow
+
+The app function is bundled with esbuild. A package that resolves a dependency
+at runtime behind a `try`/`catch` — a database driver reached through an ORM, an
+optional logger transport — looks like a hard dependency to the bundler, which
+fails the build on the first one your app has not installed. NestJS's own
+optional peers (`class-validator`, `@nestjs/microservices`, and friends) are
+handled for you. Pass anything else to `--external`:
+
+```bash
+npx @workflow/nest build --vercel --external oracledb,mysql2
+```
+
+Only list packages the deployed code path never loads: an externalized package
+is left as a bare `require()` that has to resolve inside the function.
+
 > **Note:** Native addons (`*.node`) are not bundled or traced into the deployed
 > function, so NestJS apps that depend on native modules are not yet supported by
-> `--vercel`.
+> `--vercel`. The build warns and names the addons it can see; one loaded through
+> `bindings()` or `node-gyp-build` computes its path at runtime and is invisible
+> to the bundler.
 
 ## How it works
 
@@ -262,6 +354,10 @@ The `@workflow/nest` package provides:
 3. **NestLocalBuilder**: Builds workflow bundles (`steps.mjs` and `workflows.mjs`) from your source files. Exposed at the `@workflow/nest/builder` subpath (not the package root, which stays free of build-time dependencies so importing `WorkflowModule` never adds the compiler to your runtime bundle).
 4. **NestVercelBuilder**: Emits a Vercel Build Output API directory for deploying on Vercel. Exposed at the `@workflow/nest/vercel-builder` subpath.
 5. **CLI**: Generates `.swcrc` configuration with the SWC plugin resolved and builds workflow bundles or the Vercel Build Output
+6. **isWorkflowRequest()**: Recognises a workflow request from an `ExecutionContext`, so an application guard can let queue deliveries and webhooks through
+
+Both NestJS platforms are supported: `@nestjs/platform-express` and
+`@nestjs/platform-fastify`.
 
 ## Why the CLI?
 
@@ -342,6 +438,7 @@ npx @workflow/nest --help
 | `--max-duration <secs>` | `maxDuration` for the app function. | `300` |
 | `--runtime <runtime>` | Vercel runtime for the emitted functions, e.g. `nodejs22.x`. | platform default |
 | `--app-function <name>` | Name of the catch-all app function. | `__nest` |
+| `--external <pkgs>` | Comma-separated packages to leave as bare `require()` calls instead of bundling, for dependencies resolved at runtime behind `try`/`catch`. Vercel builds only. | none |
 
 ## License
 

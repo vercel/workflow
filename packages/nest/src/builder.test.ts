@@ -116,6 +116,54 @@ async function buildCjsStepsBundle(workingDir: string): Promise<string> {
 }
 
 /**
+ * The same shape as {@link writeCjsApp} but for an ESM NestJS project: no
+ * `dist/` output, because an ESM steps bundle has no rewrite pass to point
+ * imports at. The service uses an `enum`, which Node's type stripping rejects
+ * outright, so a bundle that externalizes the import is unloadable on *every*
+ * Node version rather than only on those without type stripping.
+ */
+async function writeEsmApp(workingDir: string): Promise<void> {
+  await writeWorkflowRuntimeStub(workingDir);
+  await write(
+    join(workingDir, 'src/services/greeter.service.ts'),
+    `export enum Greeting {
+  Hello = 'hello from the bundle',
+}
+
+export class GreeterService {
+  greet(): string {
+    return Greeting.Hello;
+  }
+}
+`
+  );
+  await write(
+    join(workingDir, 'src/workflows/greet.ts'),
+    `import { GreeterService } from '../services/greeter.service';
+
+export async function greetStep(): Promise<string> {
+  'use step';
+  return new GreeterService().greet();
+}
+
+export async function greetWorkflow(): Promise<string> {
+  'use workflow';
+  return greetStep();
+}
+`
+  );
+}
+
+async function buildEsmStepsBundle(workingDir: string): Promise<string> {
+  await writeEsmApp(workingDir);
+
+  const builder = new NestLocalBuilder({ workingDir, dirs: ['src'] });
+  await builder.build();
+
+  return join(builder.outDir, 'steps.mjs');
+}
+
+/**
  * Import the steps bundle in a fresh Node process and invoke the step it
  * registered, returning what the step resolved to.
  *
@@ -202,6 +250,48 @@ describe('NestLocalBuilder CommonJS steps bundle', () => {
       // so nothing short of loading the bundle catches a break here.
       await expect(runFirstRegisteredStep(workingDir, stepsPath)).resolves.toBe(
         'hello from dist'
+      );
+    }
+  );
+});
+
+describe('NestLocalBuilder ESM steps bundle', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(
+      join(realpathSync(tmpdir()), 'workflow-nest-esm-')
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    'bundles project-local step dependencies instead of importing TypeScript',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      const stepsPath = await buildEsmStepsBundle(workingDir);
+      const bundle = await readFile(stepsPath, 'utf8');
+
+      // The WorkflowController loads this file with Node's own ESM loader. A
+      // leftover `.ts` specifier makes every workflow request answer 503 with
+      // `Unknown file extension ".ts"` on Node below 22.18, and the enum in
+      // the fixture breaks type stripping above it too.
+      expect(bundle).not.toMatch(/from\s+["'][^"']+\.tsx?["']/);
+      expect(bundle).toContain('hello from the bundle');
+    }
+  );
+
+  it(
+    'loads under Node and runs a step',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      const stepsPath = await buildEsmStepsBundle(workingDir);
+
+      await expect(runFirstRegisteredStep(workingDir, stepsPath)).resolves.toBe(
+        'hello from the bundle'
       );
     }
   );
