@@ -426,6 +426,21 @@ class VercelStreamWriteSession implements StreamWriteSession {
     if (this.mode === 'deferred') this.mode = 'waiting_to_connect';
   }
 
+  release(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.mode === 'closed' || this.mode === 'poisoned') return;
+      // A released handle can be acquired again. Retire only its socket and
+      // keep the writer usable over HTTP, with the same sequence space. Set
+      // the mode before closing so neither a late OPEN nor close reconnects.
+      this.mode = 'http';
+      this.drainReason = undefined;
+      const socket = this.socket;
+      this.socket = undefined;
+      this.finishDrainWait();
+      if (socket) beginNormalWsClose(socket, 'stream writer released');
+    });
+  }
+
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
@@ -655,6 +670,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
             // Like close, let an already-delivered reply finish decoding so
             // a reset right behind a 429 sees the throttled state.
             void this.inbound.then(() => {
+              // A released/replaced socket no longer owns this writer. Its
+              // teardown error must not poison later HTTP writes.
+              if (ws !== this.socket) return;
               if (this.isIdleThrottledSocket(ws)) {
                 this.leaveThrottledSocketForHttp();
                 return;

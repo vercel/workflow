@@ -2,7 +2,11 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
-Steps wait for released stream writers to drain before recording completion.
+Steps wait for released stream writers to drain before recording completion,
+then release idle transport resources when the World supports it. Reacquiring
+the same writable remains supported. Aborting a public writable drains its
+accepted prefix and disposes the underlying writer transport without closing
+the shared server stream.
 Streams that finish draining after the inline wait budget expires do not force
 an extra queued continuation unless other background operations remain pending.
 

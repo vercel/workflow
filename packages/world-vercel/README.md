@@ -38,6 +38,13 @@ It returns `undefined`, and writes stay on HTTP, when the transport is
 disabled or the World cannot hold a socket (a `projectConfig` World, as the
 CLI uses).
 
+## Stream writer sockets
+
+With `WORKFLOW_STREAMS_TRANSPORT=ws`, releasing a writer after its writes drain
+retires its socket without closing the shared stream. Reacquiring that handle
+continues over HTTP; a new step's writer can upgrade independently. Released
+writers do not keep idle WebSockets or reconnect them in the background.
+
 ## Custom dispatcher
 
 HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:

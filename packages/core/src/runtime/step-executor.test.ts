@@ -107,6 +107,8 @@ async function runWritableStep(options: {
   delayBeforeWriterMs?: number;
   closeAfterRelease?: boolean;
   writeImpl?: () => Promise<void>;
+  session?: ReturnType<NonNullable<World['streams']['createWriteSession']>>;
+  throwAfterRelease?: boolean;
 }): Promise<{
   execution: Promise<Awaited<ReturnType<typeof executeStep>>>;
   world: World;
@@ -115,6 +117,8 @@ async function runWritableStep(options: {
 }> {
   const world = makeWorld();
   setWorld(world);
+  if (options.session)
+    world.streams.createWriteSession = () => options.session!;
   if (options.writeImpl) {
     world.streams.write = vi.fn(
       options.writeImpl
@@ -140,6 +144,7 @@ async function runWritableStep(options: {
     if (options.awaitWrite !== false) await write;
     if (options.releaseLock) writer.releaseLock();
     if (options.closeAfterRelease) await writable.close();
+    if (options.throwAfterRelease) throw new Error('step failed after release');
     return 'ok';
   });
 
@@ -176,6 +181,28 @@ describe('executeStep — stream durability barrier', () => {
     setWorld(undefined);
     delete process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS;
     counter += 1;
+  });
+
+  it.each([
+    false,
+    true,
+  ])('releases stateful writers when the step ends (throws: %s)', async (throwAfterRelease) => {
+    const session = {
+      write: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    };
+    const { execution } = await runWritableStep({
+      releaseLock: true,
+      session,
+      throwAfterRelease,
+    });
+    await execution;
+    expect(session.write).toHaveBeenCalledTimes(1);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(session.close).not.toHaveBeenCalled();
+    expect(session.dispose).not.toHaveBeenCalled();
   });
 
   it('writes step_completed only after a released writer drains', async () => {
