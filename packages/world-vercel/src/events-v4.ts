@@ -992,7 +992,7 @@ const STRICT_WS_EVENT_TYPES: ReadonlySet<string> = new Set(['step_completed']);
  * rather than burning the retry budget on a condition no retry can fix.
  */
 function assertWsFallbackAllowed(eventType: EventType): void {
-  // Only a deployment-wide opt-in promises a socket for every run. Under a
+  // Only the deployment-wide gate promises a socket for every run. Under a
   // per-workflow override, most runs have no channel by design.
   if (!isWsEventsTransportStrict() || !isWsEventsTransportEnabled()) return;
   if (!STRICT_WS_EVENT_TYPES.has(eventType)) return;

@@ -585,10 +585,10 @@ describe('connection span', () => {
 
 describe('transport parity', () => {
   it('does not tag an HTTP event read as an event-write transport', async () => {
-    // Explicitly HTTP, overriding the suite's `ws`: this test is about the
-    // HTTP path. A read would take HTTP either way (only the POST write is
-    // wired to the socket), so leaving `ws` set would still pass — while no
-    // longer testing what it says it does.
+    // Explicit opt-out rather than an absent variable: the default is ws now,
+    // and this test is about the HTTP path. A read would take HTTP either way
+    // (only the POST write is wired to the socket), so leaving this unset
+    // would still pass — while no longer testing what it says it does.
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const agent = new MockAgent();
     agent.disableNetConnect();

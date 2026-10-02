@@ -268,8 +268,7 @@ class WsEventsTransport {
    * That de-opt covers the handshake only. A channel that connects and then
    * fails every write stays registered and keeps taking the WS path, so the
    * fallback is per-invocation rather than a circuit breaker. Tolerable while
-   * the transport is opt-in; defaulting it on would need a write-failure
-   * de-opt too.
+   * the transport is opt-in; defaulting it on needs a write-failure de-opt too.
    */
   open(): void {
     if (this.closed) return;
@@ -630,7 +629,7 @@ class WsEventsTransport {
       // Debug-gated, because both reasons are routine rather than faults: a
       // socket outliving the server's max duration, or its bearer approaching
       // expiry. Neither loses a write — the drain is a heads-up ahead of a
-      // close the transport reconnects from — so on the WS transport every
+      // close the transport reconnects from — so on the WS default every
       // long-lived run would otherwise print this on a healthy path.
       const reason: DrainReason =
         decoded.meta.reason === 'auth_expiry' ? 'auth_expiry' : 'max_duration';
@@ -895,8 +894,8 @@ export function openWsChannel(
     /**
      * The run's workflow name. Lets a workflow listed in
      * `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS` open a channel on a
-     * deployment otherwise on HTTP; without it only the deployment-wide
-     * `WORKFLOW_EVENTS_TRANSPORT=ws` does.
+     * deployment pinned to `WORKFLOW_EVENTS_TRANSPORT=http`; without it such a
+     * deployment opens none.
      */
     workflowName?: string;
   } = {}
@@ -908,10 +907,11 @@ export function openWsChannel(
   if (!resolved) return undefined;
   if (!wsState.loggedWsInUse) {
     wsState.loggedWsInUse = true;
-    // Debug-gated: every opted-in deployment would otherwise print it on its
-    // first invocation after each cold start, describing the transport it was
-    // configured to use. `workflow.events.transport` on the per-write span is
-    // the durable answer to "which transport carried this run".
+    // Debug-gated: this said something when WS was opt-in, and says nothing now
+    // that it is the default — every deployment would print it on its first
+    // invocation after each cold start, describing the transport it was always
+    // going to use. `workflow.events.transport` on the per-write span is the
+    // durable answer to "which transport carried this run".
     debugLog(`world-vercel: using ws events transport (${resolved}).`);
   }
   // Cheap: a URL plus a map lookup, no token mint and no I/O. The socket work
@@ -989,11 +989,13 @@ function resolveChannelUrl(
     // "experimental_upgradeWebSocket is not available in the current runtime
     // environment". Fall back rather than fail a connection it can't serve.
     //
-    // Debug-gated rather than a warning: `WORKFLOW_EVENTS_TRANSPORT` is
-    // typically set deployment-wide, so a `projectConfig` World sharing that
-    // environment — every CLI command and the observability app — would warn
-    // about a fallback its caller neither chose nor can act on. The HTTP path
-    // it falls back to is the same default path every other World uses.
+    // Debug-gated rather than a warning, and the flip to the WS default is why:
+    // "requested but unavailable" was a real mismatch to report while the
+    // transport was opt-in, because someone had asked for it. Nobody asks now,
+    // so a `projectConfig` World — every CLI command and the observability app —
+    // would warn about a fallback its caller neither chose nor can act on. The
+    // HTTP path it falls back to is the same one it used before the default
+    // flipped.
     if (!wsState.loggedWsProxyFallback) {
       wsState.loggedWsProxyFallback = true;
       debugLog(
