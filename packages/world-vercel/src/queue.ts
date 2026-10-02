@@ -30,11 +30,6 @@ import {
 import { logInvocationRouting } from './invocation-diagnostics.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
-import {
-  createScheduledWakes,
-  RETAINED_SLEEP_WAKE_PREFIX,
-  scheduledWakesEnabled,
-} from './scheduled-wakes.js';
 import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
@@ -160,13 +155,6 @@ class DualTransport implements Transport<unknown> {
       if (value) chunks.push(value);
     }
     const buffer = Buffer.concat(chunks);
-    // `{` is a short CBOR text string, never a message wrapper, so a leading
-    // brace means JSON (for example a message published by Vercel Schedules).
-    if (buffer[0] === 0x7b) {
-      try {
-        return JSON.parse(buffer.toString());
-      } catch {}
-    }
     try {
       return cborDecode(buffer);
     } catch {
@@ -203,27 +191,6 @@ const MessageWrapper = z.compile(
     deploymentId: z.string().optional(),
   })
 );
-
-/**
- * Vercel Schedules publish the configured payload inside an envelope
- * (`{ payload, ... }`), so a scheduled wake carries the wrapper one level down.
- */
-function parseMessageWrapper(message: unknown) {
-  const direct = MessageWrapper.safeParse(message);
-  if (direct.success) return direct.data;
-  const nested =
-    message && typeof message === 'object' && 'payload' in message
-      ? MessageWrapper.safeParse(message.payload)
-      : undefined;
-  if (nested?.success) return nested.data;
-  console.warn('[workflow] Unrecognized queue message shape', {
-    keys:
-      message && typeof message === 'object'
-        ? Object.keys(message)
-        : typeof message,
-  });
-  throw direct.error;
-}
 
 /**
  * Sleep Implementation via Message Delays
@@ -636,36 +603,12 @@ export function createQueue(config?: APIConfig): Queue {
       transport: route.useCbor ? cborTransport : jsonTransport,
     });
 
-  const scheduledWakes = scheduledWakesEnabled()
-    ? createScheduledWakes()
-    : undefined;
-
   const queue: QueueFunction = async (
     queueName,
     payload,
     opts?: QueueOptions
   ) => {
     const prepared = prepareSend(queueName, payload, opts);
-    // A retained owner's sleep wake (identified by its idempotency key) goes
-    // through Vercel Schedules. The schedule publishes the same message to the
-    // run's flow topic, whose consumer relays it to the owner. It may arrive
-    // early; the owner times the remainder. Other delayed messages, such as
-    // step recovery wakes, need their delay honoured and stay on the queue.
-    if (
-      scheduledWakes &&
-      opts?.delaySeconds &&
-      opts.idempotencyKey?.startsWith(RETAINED_SLEEP_WAKE_PREFIX) &&
-      orchestrationRunId(payload)
-    ) {
-      await scheduledWakes.schedule({
-        idempotencyKey: opts.idempotencyKey,
-        wakeAt: new Date(Date.now() + opts.delaySeconds * 1000),
-        topic: prepared.topic,
-        // Schedules deliver JSON; the handler's transport accepts it.
-        payload: prepared.wrapper,
-      });
-      return { messageId: null };
-    }
     const client = clientFor(prepared);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
@@ -856,7 +799,7 @@ export function createQueue(config?: APIConfig): Queue {
         if (!message || !metadata) return;
         const context = requestIdStorage.getStore();
         const { payload, queueName, deploymentId } =
-          parseMessageWrapper(message);
+          MessageWrapper.parse(message);
 
         const executorRunId = orchestrationRunId(payload);
         const invokeHandler = () =>

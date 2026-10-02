@@ -60,25 +60,6 @@ vi.mock('@vercel/queue', () => ({
   ConsumerDiscoveryError: MockConsumerDiscoveryError,
 }));
 
-const { mockScheduleCreate } = vi.hoisted(() => ({
-  mockScheduleCreate: vi.fn(),
-}));
-
-vi.mock('@vercel/schedules', () => ({
-  // biome-ignore lint/complexity/useArrowFunction: needs to be newable
-  SchedulesClient: vi.fn().mockImplementation(function () {
-    return { create: mockScheduleCreate };
-  }),
-  SchedulesApiError: class extends Error {
-    constructor(
-      readonly status: number,
-      message: string
-    ) {
-      super(message);
-    }
-  },
-}));
-
 vi.mock('./utils.js', () => ({
   getHttpUrl: vi
     .fn()
@@ -1569,102 +1550,5 @@ describe('queueBatch trace propagation', () => {
       // The kill switch is trace-only; message routing headers stay.
       expect(headers?.['x-vercel-workflow-run-id']).toBe('wrun_trace');
     }
-  });
-});
-
-describe('scheduled timer wakes', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '1');
-    vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_test');
-  });
-  afterEach(() => vi.unstubAllEnvs());
-
-  it('schedules a retained sleep wake instead of sending a delayed message', async () => {
-    mockScheduleCreate.mockResolvedValue({});
-    const queue = createQueue();
-    const before = Date.now();
-    const result = await queue.queue(
-      '__wkf_workflow_test',
-      { runId: 'wrun_A' },
-      {
-        deploymentId: 'dpl_run',
-        delaySeconds: 1800,
-        idempotencyKey: 'retained-wait:wrun_A:wait_B',
-      }
-    );
-    expect(result).toEqual({ messageId: null });
-    expect(mockSend).not.toHaveBeenCalled();
-    expect(mockScheduleCreate).toHaveBeenCalledTimes(1);
-    const params = mockScheduleCreate.mock.calls[0][0];
-    expect(params.name).toBe('retained-wait-wrun_A-wait_B');
-    expect(params.target).toEqual({ topic: '__wkf_workflow_test' });
-    // Due in 30 min: the schedule fires one to two minutes before that.
-    const at = Date.parse(`${params.expression.at}:00Z`);
-    expect(at).toBeLessThanOrEqual(before + 1800_000 - 60_000);
-    expect(at).toBeGreaterThan(before + 1800_000 - 120_000 - 1000);
-    expect(params.payload).toEqual({
-      payload: { runId: 'wrun_A' },
-      queueName: '__wkf_workflow_test',
-      deploymentId: 'dpl_run',
-    });
-  });
-
-  it('accepts the wrapper inside a Schedules delivery envelope', async () => {
-    vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '');
-    let capturedHandler!: (
-      message: unknown,
-      metadata: unknown
-    ) => Promise<void>;
-    mockHandleCallback.mockImplementation((handler) => {
-      capturedHandler = handler;
-      return async () => new Response('ok');
-    });
-    const handled: unknown[] = [];
-    createQueue().createQueueHandler('__wkf_workflow_', async (payload) => {
-      handled.push(payload);
-    });
-    await capturedHandler(
-      {
-        payload: {
-          payload: { runId: 'wrun_A' },
-          queueName: '__wkf_workflow_test',
-          deploymentId: 'dpl_run',
-        },
-      },
-      {
-        messageId: 'msg-1',
-        deliveryCount: 1,
-        createdAt: new Date(),
-        topicName: '__wkf_workflow_test',
-        consumerGroup: 'default',
-      }
-    );
-    expect(handled).toEqual([{ runId: 'wrun_A' }]);
-  });
-
-  it('keeps step messages and wakes without wakeAt on the queue', async () => {
-    mockSend.mockResolvedValue({ messageId: 'msg-1' });
-    const queue = createQueue();
-    await queue.queue(
-      '__wkf_workflow_test',
-      { runId: 'wrun_A' },
-      { delaySeconds: 5, idempotencyKey: 'step-recovery:wrun_A:x' }
-    );
-    expect(mockScheduleCreate).not.toHaveBeenCalled();
-    expect(mockSend).toHaveBeenCalledTimes(1);
-  });
-
-  it('is off without WORKFLOW_SCHEDULED_WAKES', async () => {
-    vi.stubEnv('WORKFLOW_SCHEDULED_WAKES', '');
-    mockSend.mockResolvedValue({ messageId: 'msg-1' });
-    const queue = createQueue();
-    await queue.queue(
-      '__wkf_workflow_test',
-      { runId: 'wrun_A' },
-      { delaySeconds: 600, idempotencyKey: 'retained-wait:wrun_A:wait_B' }
-    );
-    expect(mockScheduleCreate).not.toHaveBeenCalled();
-    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });
