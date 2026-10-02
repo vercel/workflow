@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.2
+
+### Patch Changes
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Mark `step_failed` writes that record a failed step body with `afterStepBody`, so a World can keep waiting out a throttled write instead of re-running the body.
+
 ## 5.0.1
 
 ### Patch Changes
