@@ -449,7 +449,10 @@ that lifetime, so the session's `write(chunkSeq, chunks)` receives a sequence
 number that is writer-local rather than stream-global. That is what lets a
 World order concurrent writers to the same stream. The session's `close()` must
 not resolve before every prior write is durable; `dispose()` is optional and
-releases transport resources without ending the stream. A World that does not
+releases transport resources without ending the stream. Optional `release()`
+retires an idle transport after the runtime drains a released writer. Unlike
+`dispose()`, it must leave later `write()` and `close()` usable, for example
+by switching that writer to stateless HTTP. A World that does not
 implement `createWriteSession` is unaffected: the runtime uses
 `write`/`writeMulti`/`close` exactly as before.
 

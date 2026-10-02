@@ -51,6 +51,13 @@ export interface StreamWriteSession {
   /** Close this writer lifetime after all prior writes are durable. */
   close(): Promise<void>;
 
+  /**
+   * Release an idle transport after accepted writes are durable, without
+   * closing the stream or invalidating this writer. Later writes and close
+   * must remain usable (for example, over stateless HTTP).
+   */
+  release?(): Promise<void> | void;
+
   /** Release transport resources without semantically closing the stream. */
   dispose?(): Promise<void> | void;
 }
