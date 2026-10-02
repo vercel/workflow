@@ -2916,6 +2916,88 @@ describe('DataView serialization', () => {
   });
 });
 
+describe.skipIf(typeof Float16Array !== 'function')(
+  'unclaimed typed array serialization',
+  () => {
+    /**
+     * No reducer claims `Float16Array`, so it reaches devalue's built-in
+     * typed-array encoding, which emits the view's whole backing buffer plus
+     * offset/length. The hardened `viewInfo` operation must hand devalue only
+     * the viewed bytes, or a view onto Node's shared `Buffer` pool leaks
+     * unrelated allocations into the event log. See the `DataView` tests
+     * above for the same hazard on a claimed type.
+     */
+    it('writes only the viewed bytes of a pooled Float16Array to a step return', async () => {
+      const neighbour = Buffer.allocUnsafe(256);
+      neighbour.fill('SECRET-POOL-RESIDUE-');
+
+      const viewed = Buffer.allocUnsafe(4);
+      viewed.set([0x00, 0x3c, 0x00, 0x40]); // 1.0, 2.0 as little-endian f16
+      const f16 = new Float16Array(viewed.buffer, viewed.byteOffset, 2);
+
+      // Precondition: really a pooled view.
+      expect(f16.buffer.byteLength).toBeGreaterThan(f16.byteLength);
+
+      const serialized = (await dehydrateStepReturnValue(
+        f16,
+        mockRunId,
+        noEncryptionKey,
+        []
+      )) as Uint8Array;
+
+      const wire = new TextDecoder().decode(serialized);
+      expect(wire).not.toContain(Buffer.from('SECRET').toString('base64'));
+      expect(wire).toBe(
+        `devl[["Float16Array",1],["ArrayBuffer",2],"${Buffer.from([0x00, 0x3c, 0x00, 0x40]).toString('base64')}"]`
+      );
+
+      const hydrated = (await hydrateStepReturnValue(
+        serialized,
+        mockRunId,
+        noEncryptionKey
+      )) as Float16Array;
+
+      expect(hydrated).toBeInstanceOf(Float16Array);
+      expect(hydrated.byteOffset).toBe(0);
+      expect(hydrated.buffer.byteLength).toBe(4);
+      expect([...hydrated]).toEqual([1, 2]);
+    });
+
+    it('round-trips a Float16Array that spans its whole buffer', async () => {
+      const f16 = new Float16Array([0.5, -1, 65504]);
+      const serialized = await dehydrateStepReturnValue(
+        f16,
+        mockRunId,
+        noEncryptionKey,
+        []
+      );
+      const hydrated = (await hydrateStepReturnValue(
+        serialized,
+        mockRunId,
+        noEncryptionKey
+      )) as Float16Array;
+      expect([...hydrated]).toEqual([0.5, -1, 65504]);
+    });
+
+    it('round-trips a zero-length Float16Array subview', async () => {
+      const serialized = await dehydrateStepReturnValue(
+        new Float16Array(new ArrayBuffer(8), 4, 0),
+        mockRunId,
+        noEncryptionKey,
+        []
+      );
+      const hydrated = (await hydrateStepReturnValue(
+        serialized,
+        mockRunId,
+        noEncryptionKey
+      )) as Float16Array;
+      expect(hydrated).toBeInstanceOf(Float16Array);
+      expect(hydrated.length).toBe(0);
+      expect(hydrated.buffer.byteLength).toBe(0);
+    });
+  }
+);
+
 describe('step function serialization', () => {
   const { globalThis: vmGlobalThis } = createContext({
     seed: 'test',
