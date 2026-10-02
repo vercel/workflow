@@ -7,6 +7,7 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
+import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -438,6 +439,88 @@ describe('executeStep — stream durability barrier', () => {
       backgroundOp.resolve();
       await execution;
       vi.useRealTimers();
+    }
+  });
+
+  it('bounds a throwing step drain and preserves the user error on retry', async () => {
+    process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS = '400';
+    const world = makeWorld();
+    setWorld(world);
+    const writeGate = Promise.withResolvers<void>();
+    const settlementStarted = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    world.streams.createWriteSession = () => ({
+      write: () => writeGate.promise,
+      close: async () => {},
+      release: () => released.resolve(),
+    });
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      await writer.write('accepted prefix');
+      writer.releaseLock();
+      const state = contextStorage.getStore()!.streamStates![0];
+      const settle = state.settleReleasedWrites!;
+      vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
+        settlementStarted.resolve();
+        return settle();
+      });
+      throw new Error('original step failure');
+    });
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const createEvent = vi.spyOn(world.events, 'create');
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    try {
+      await settlementStarted.promise;
+      await vi.advanceTimersByTimeAsync(399);
+      expect(
+        createEvent.mock.calls.some(
+          ([, event]) => event.eventType === 'step_retrying'
+        )
+      ).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(execution).resolves.toMatchObject({ type: 'retry' });
+      expect(warn).toHaveBeenCalledWith(
+        'Failed to drain released streams after step error',
+        {
+          workflowRunId: runId,
+          stepId,
+          error: 'Timed out draining step stream writes after 400ms',
+        }
+      );
+      const retrying = await eventsFor(world, runId, stepId, 'step_retrying');
+      expect(retrying).toHaveLength(1);
+      const error = (await hydrateStepError(
+        (retrying[0].eventData as { error: unknown }).error,
+        runId,
+        undefined
+      )) as Error;
+      expect(error.message).toBe('original step failure');
+    } finally {
+      writeGate.resolve();
+      await released.promise;
+      await execution;
+      vi.useRealTimers();
+      warn.mockRestore();
+      createEvent.mockRestore();
     }
   });
 
