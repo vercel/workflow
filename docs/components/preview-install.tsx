@@ -16,8 +16,10 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <Button
-      variant="ghost"
-      size="icon"
+      variant="tertiary"
+      size="tiny"
+      shape="square"
+      svgOnly
       className="size-6 shrink-0"
       onClick={handleCopy}
     >

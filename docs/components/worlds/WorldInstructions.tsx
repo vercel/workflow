@@ -25,16 +25,14 @@ export function WorldInstructions({ id, world }: WorldInstructionsProps) {
         </p>
         <div className="flex gap-3 flex-wrap">
           {world.repository && (
-            <Button asChild>
-              <a
-                href={world.repository}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2"
-              >
-                View on GitHub
-                <ExternalLink className="h-4 w-4" />
-              </a>
+            <Button
+              Component="a"
+              href={world.repository}
+              target="_blank"
+              rel="noopener noreferrer"
+              suffix={<ExternalLink className="h-4 w-4" />}
+            >
+              View on GitHub
             </Button>
           )}
         </div>

@@ -1,10 +1,6 @@
 'use client';
 
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
+import { Tooltip } from '@vercel/geistdocs/components/tooltip';
 import { BadgeCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
@@ -32,13 +28,16 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
               <CardTitle className="text-lg flex items-center gap-1.5 flex-wrap">
                 <span className="truncate">{world.name}</span>
                 {world.type === 'official' && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <BadgeCheck className="size-4 text-gray-900 shrink-0" />
-                    </TooltipTrigger>
-                    <TooltipContent side="top">
-                      <span className="text-xs">Maintained by Vercel</span>
-                    </TooltipContent>
+                  <Tooltip
+                    text="Maintained by Vercel"
+                    position="top"
+                    tabIndex={null}
+                  >
+                    <BadgeCheck
+                      aria-hidden
+                      className="size-4 text-gray-900 shrink-0"
+                    />
+                    <span className="sr-only">Maintained by Vercel</span>
                   </Tooltip>
                 )}
               </CardTitle>
@@ -55,16 +54,15 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
         </CardContent>
         <div className="flex min-h-8 items-center justify-end px-4 pb-4 pt-2">
           {world.features.includes('encryption') && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge className="bg-blue-300 text-blue-700 border-transparent">
-                  <ShieldCheck className="h-3.5 w-3.5" />
-                  <span>Encrypted</span>
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-[200px]">
-                <p className="text-xs">End-to-end user data encryption</p>
-              </TooltipContent>
+            <Tooltip
+              text="End-to-end user data encryption"
+              position="bottom"
+              tabIndex={null}
+            >
+              <Badge className="bg-blue-300 text-blue-700 border-transparent">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                <span>Encrypted</span>
+              </Badge>
             </Tooltip>
           )}
         </div>

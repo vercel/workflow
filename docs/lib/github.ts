@@ -247,10 +247,7 @@ export function parseE2EResults(results: E2ETestResult | null): {
     for (const assertion of testFile.assertionResults) {
       tests.push({
         name: assertion.fullName,
-        status:
-          assertion.status === 'pending'
-            ? 'skipped'
-            : (assertion.status as 'passed' | 'failed'),
+        status: assertion.status,
         duration: assertion.duration,
       });
     }

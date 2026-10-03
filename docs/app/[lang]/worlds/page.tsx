@@ -156,19 +156,22 @@ export default async function WorldsPage() {
               to any storage or queuing backend.
             </p>
             <div className="flex justify-center gap-3 mt-8">
-              <Button asChild size="lg">
-                <Link href="/worlds/building-a-world">
-                  World Interface Docs
-                </Link>
+              <Button
+                Component={Link}
+                href="/worlds/building-a-world"
+                size="large"
+              >
+                World Interface Docs
               </Button>
-              <Button asChild variant="outline" size="lg">
-                <a
-                  href="https://github.com/vercel/workflow/blob/main/worlds-manifest.json"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Submit Your World
-                </a>
+              <Button
+                Component="a"
+                href="https://github.com/vercel/workflow/blob/main/worlds-manifest.json"
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="secondary"
+                size="large"
+              >
+                Submit Your World
               </Button>
             </div>
           </div>

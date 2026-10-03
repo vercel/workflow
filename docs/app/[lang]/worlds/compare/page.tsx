@@ -46,12 +46,13 @@ export default async function CompareBenchmarksPage() {
             </p>
           </div>
           <Button
-            asChild
-            variant="outline"
-            size="lg"
+            Component={Link}
+            href="/worlds"
+            variant="secondary"
+            size="large"
             className="h-[44px] text-base"
           >
-            <Link href="/worlds">Back to Worlds</Link>
+            Back to Worlds
           </Button>
         </section>
 

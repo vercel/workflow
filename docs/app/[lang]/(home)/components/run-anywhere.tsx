@@ -128,14 +128,22 @@ export const RunAnywhere = () => (
           deploy on Vercel.
         </p>
         <div className="flex flex-col sm:flex-row items-start sm:items-center sm:justify-center gap-3 mt-2">
-          <Button asChild className="rounded-full h-10">
-            <Link href="https://vercel.com/workflows" target="_blank">
-              Workflows on Vercel
-            </Link>
+          <Button
+            Component={Link}
+            href="https://vercel.com/workflows"
+            target="_blank"
+            className="rounded-full h-10"
+          >
+            Workflows on Vercel
           </Button>
           {/* Outline variant appears smaller due to inset border — h-[42px] compensates to match the filled button visually */}
-          <Button asChild variant="outline" className="rounded-full h-[42px]">
-            <Link href="/worlds">Learn about self-hosting</Link>
+          <Button
+            Component={Link}
+            href="/worlds"
+            variant="secondary"
+            className="rounded-full h-[42px]"
+          >
+            Learn about self-hosting
           </Button>
         </div>
       </div>

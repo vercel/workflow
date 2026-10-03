@@ -1,6 +1,10 @@
 'use client';
 
 import { Button } from '@vercel/geistdocs/components/button';
+import { CheckIcon, CopyIcon, ExternalLinkIcon, EyeIcon } from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
   DialogContent,
@@ -8,11 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@vercel/geistdocs/components/dialog';
-import { CheckIcon, CopyIcon, ExternalLinkIcon, EyeIcon } from 'lucide-react';
-import { useState } from 'react';
-import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
+} from '@/components/ui/dialog';
 
 type PreviewBadgeProps = {
   deploymentUrl: string;
@@ -51,8 +51,10 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <Button
-      variant="ghost"
-      size="icon"
+      variant="tertiary"
+      size="tiny"
+      shape="square"
+      svgOnly
       className="size-6 shrink-0"
       onClick={handleCopy}
     >

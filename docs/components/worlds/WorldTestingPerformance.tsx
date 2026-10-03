@@ -1,10 +1,6 @@
 'use client';
 
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
+import { Tooltip } from '@vercel/geistdocs/components/tooltip';
 import {
   AlertCircle,
   CheckCircle2,
@@ -29,13 +25,15 @@ import { formatTime, type World } from './types';
 const TimeColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
     <span>Time</span>
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[200px]">
-        Time from workflow created to workflow completed
-      </TooltipContent>
+    <Tooltip
+      text="Time from workflow created to workflow completed"
+      position="top"
+    >
+      <Info
+        aria-hidden
+        className="h-3.5 w-3.5 text-muted-foreground cursor-help"
+      />
+      <span className="sr-only">Explain workflow completion time</span>
     </Tooltip>
   </div>
 );
@@ -43,13 +41,12 @@ const TimeColumnHeader = () => (
 const TTFBColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
     <span>TTFB</span>
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[200px]">
-        Time to first byte
-      </TooltipContent>
+    <Tooltip text="Time to first byte" position="top">
+      <Info
+        aria-hidden
+        className="h-3.5 w-3.5 text-muted-foreground cursor-help"
+      />
+      <span className="sr-only">Explain time to first byte</span>
     </Tooltip>
   </div>
 );
@@ -57,13 +54,12 @@ const TTFBColumnHeader = () => (
 const SlurpColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
     <span>Slurp</span>
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[200px]">
-        Time from first byte to stream completion
-      </TooltipContent>
+    <Tooltip text="Time from first byte to stream completion" position="top">
+      <Info
+        aria-hidden
+        className="h-3.5 w-3.5 text-muted-foreground cursor-help"
+      />
+      <span className="sr-only">Explain stream completion time</span>
     </Tooltip>
   </div>
 );
