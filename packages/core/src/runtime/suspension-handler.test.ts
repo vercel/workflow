@@ -1757,7 +1757,9 @@ describe('resilient step dispatch', () => {
       idempotencyKey: stepDispatchIdempotencyKey('s4', 's4'),
     });
     // Reported so the caller skips its own dispatch for this step.
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+    expect([...result.queuedStepDispatchKeys]).toEqual([
+      stepDispatchIdempotencyKey('s4', 's4'),
+    ]);
     expect(result.createdStepCorrelationIds).toContain('s4');
   });
 
@@ -1779,7 +1781,9 @@ describe('resilient step dispatch', () => {
 
     // The publish carried the payload, so the consumer re-ensures the event.
     expect(queue).toHaveBeenCalledTimes(1);
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+    expect([...result.queuedStepDispatchKeys]).toEqual([
+      stepDispatchIdempotencyKey('s4', 's4'),
+    ]);
     // The write did NOT land, so this handler does not claim creation.
     expect(result.createdStepCorrelationIds.has('s4')).toBe(false);
   });
@@ -1828,7 +1832,7 @@ describe('resilient step dispatch', () => {
     });
 
     expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
+    expect(result.queuedStepDispatchKeys.size).toBe(0);
   });
 
   it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH is unset', async () => {
@@ -1843,7 +1847,7 @@ describe('resilient step dispatch', () => {
     });
 
     expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
+    expect(result.queuedStepDispatchKeys.size).toBe(0);
   });
 
   it('never queues from here when no stepDispatch is provided (terminal drain)', async () => {
@@ -1856,7 +1860,7 @@ describe('resilient step dispatch', () => {
     });
 
     expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
+    expect(result.queuedStepDispatchKeys.size).toBe(0);
   });
 });
 
@@ -3111,7 +3115,7 @@ describe('handleSuspension batched fan-out', () => {
       expect(await probe(result.deferredBatchWork)).toBe('pending');
       // Every eager step is claimed for in-flush publishing up front, so
       // the caller's dispatch pass skips them all.
-      expect(result.queuedStepCorrelationIds.size).toBe(33);
+      expect(result.queuedStepDispatchKeys.size).toBe(33);
       // The pair chunk carries no eager step, so nothing has published yet:
       // each plain chunk's messages wait for THAT chunk's commit.
       await tick();
@@ -3194,7 +3198,10 @@ describe('handleSuspension batched fan-out', () => {
           opts: { idempotencyKey: stepDispatchIdempotencyKey(stepId, stepId) },
         }))
       );
-      expect([...result.queuedStepCorrelationIds]).toEqual(['s2', 's3']);
+      expect([...result.queuedStepDispatchKeys]).toEqual([
+        stepDispatchIdempotencyKey('s2', 's2'),
+        stepDispatchIdempotencyKey('s3', 's3'),
+      ]);
       for (const { event } of createBatch.mock.calls[0][1]) {
         expect(event.eventData).not.toHaveProperty('runContext');
       }
@@ -3263,7 +3270,9 @@ describe('handleSuspension batched fan-out', () => {
       const result = await pending;
       expect(result.inlineClaims.get('s1')?.owned).toBe(true);
       expect(result.inlineClaims.get('s2')?.owned).toBe(true);
-      expect([...result.queuedStepCorrelationIds]).toEqual(['s3']);
+      expect([...result.queuedStepDispatchKeys]).toEqual([
+        stepDispatchIdempotencyKey('s3', 's3'),
+      ]);
       expect(result.createdStepCorrelationIds.size).toBe(0);
       expect(await probe(result.deferredBatchWork)).toBe('pending');
       await tick();
