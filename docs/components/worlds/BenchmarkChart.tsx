@@ -140,7 +140,7 @@ export function BenchmarkBar({
         id,
         name: w.name,
         type: w.type,
-        time: w.benchmark!.metrics[benchmarkName].mean,
+        time: w.benchmark?.metrics?.[benchmarkName]?.mean ?? 0,
       }))
       .sort((a, b) => a.time - b.time);
 

@@ -27,6 +27,10 @@ export const nav: { label: string; href: string; preview?: boolean }[] = [
     href: '/worlds',
   },
   {
+    label: 'Changelog',
+    href: '/changelog',
+  },
+  {
     label: 'Examples',
     href: examplesRepositoryUrl,
   },
@@ -76,6 +80,11 @@ export const agent = {
       label: 'Workflow examples',
       href: examplesRepositoryUrl,
       description: 'Example applications using Workflow SDK.',
+    },
+    {
+      label: 'Workflow changelog',
+      href: 'https://workflow-sdk.dev/changelog',
+      description: 'Package releases, improvements, and fixes.',
     },
   ],
 } satisfies GeistdocsAgentReadinessConfig;

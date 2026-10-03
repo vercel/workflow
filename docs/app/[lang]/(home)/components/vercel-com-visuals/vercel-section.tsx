@@ -14,10 +14,13 @@ export function VercelSection(): JSX.Element {
           Zero infrastructure management, atomic versioning, and out of the box
           observability. Vercel makes Workflows easy.
         </p>
-        <Button asChild size="default" className="rounded-full h-10 w-fit mt-2">
-          <Link href="https://vercel.com/workflow" target="_blank">
-            Learn more
-          </Link>
+        <Button
+          Component={Link}
+          href="https://vercel.com/workflow"
+          target="_blank"
+          className="rounded-full h-10 w-fit mt-2"
+        >
+          Learn more
         </Button>
       </div>
       <div className="col-span-12 md:col-span-7 self-center [mask-image:linear-gradient(to_bottom,black_40%,transparent_90%)]">

@@ -1,11 +1,7 @@
 'use client';
 
 import { Button } from '@vercel/geistdocs/components/button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
+import { Tooltip } from '@vercel/geistdocs/components/tooltip';
 import {
   BadgeCheck,
   CheckIcon,
@@ -100,22 +96,14 @@ export function WorldDetailHero({
           <h1 className="text-heading-40 sm:text-heading-48 flex items-center gap-4">
             {world.name}
             {world.type === 'official' ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <BadgeCheck className="h-8 w-8 text-blue-900" />
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  <p className="text-xs">Maintained by Vercel</p>
-                </TooltipContent>
+              <Tooltip text="Maintained by Vercel" position="top">
+                <BadgeCheck aria-hidden className="h-8 w-8 text-blue-900" />
+                <span className="sr-only">Maintained by Vercel</span>
               </Tooltip>
             ) : (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <HeartHandshake className="h-8 w-8 text-pink-900" />
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  <p className="text-xs">Maintained by the community</p>
-                </TooltipContent>
+              <Tooltip text="Maintained by the community" position="top">
+                <HeartHandshake aria-hidden className="h-8 w-8 text-pink-900" />
+                <span className="sr-only">Maintained by the community</span>
               </Tooltip>
             )}
           </h1>
@@ -135,8 +123,10 @@ export function WorldDetailHero({
                 </pre>
                 <Button
                   onClick={handleCopy}
-                  size="icon"
-                  variant="ghost"
+                  size="tiny"
+                  variant="tertiary"
+                  shape="square"
+                  svgOnly
                   className="absolute right-1 top-1/2 -translate-y-1/2"
                 >
                   <CopyButtonIcon className="size-4 text-muted-foreground" />
@@ -144,20 +134,16 @@ export function WorldDetailHero({
               </div>
               {world.repository && (
                 <Button
-                  asChild
-                  variant="outline"
-                  size="lg"
+                  Component="a"
+                  href={world.repository}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="secondary"
+                  size="large"
+                  suffix={<ExternalLink className="h-4 w-4" />}
                   className="h-[44px] text-base"
                 >
-                  <a
-                    href={world.repository}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2"
-                  >
-                    GitHub
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
+                  GitHub
                 </Button>
               )}
             </div>
@@ -208,25 +194,18 @@ export function WorldDetailHero({
 
           {/* Encryption */}
           {world.features.includes('encryption') && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Link
-                  href="/docs/how-it-works/encryption"
-                  className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />
-                  <span>E2E Encrypted</span>
-                </Link>
-              </TooltipTrigger>
-              <TooltipContent
-                side="top"
-                align="start"
-                className="max-w-[200px]"
+            <Tooltip
+              text="User data is encrypted end-to-end in the event log"
+              position="top"
+              tabIndex={null}
+            >
+              <Link
+                href="/docs/how-it-works/encryption"
+                className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
               >
-                <p className="text-xs">
-                  User data is encrypted end-to-end in the event log
-                </p>
-              </TooltipContent>
+                <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />
+                <span>E2E Encrypted</span>
+              </Link>
             </Tooltip>
           )}
         </div>
