@@ -1178,12 +1178,15 @@ export async function handleSuspension({
   // outcomes) instead of one write per event. Engages only for a CLEAN
   // fan-out (no attribute writes, no resilient dispatch whose creates are
   // each paired with a queue publish) on a World that implements the optional
-  // method and a run whose events are slot-numbered. Hook writes cannot ride
-  // a batch (see `createBatch`), but they need no barrier against one either:
-  // they commit through the single path alongside the batch. Everything
+  // method, explicitly advertises the batch contract, and a run whose events
+  // are slot-numbered. Hook writes cannot ride a batch (see `createBatch`),
+  // but they need no barrier against one either: they commit through the
+  // single path alongside the batch. Method presence alone is insufficient:
+  // it cannot detect an adapter pointing at an older backend. Everything
   // outside the gate keeps the single-event path byte-for-byte.
   const batchFanoutEligible =
     isBatchTransitionsEnabled() &&
+    world.capabilities?.eventsCreateBatch === true &&
     typeof world.events.createBatch === 'function' &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
     !resilientDispatchEligible &&
