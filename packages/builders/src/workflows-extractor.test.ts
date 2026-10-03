@@ -46,6 +46,69 @@ describe('extractWorkflowGraphs', () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
+  it('reads the workflowCode literal from a re-bundled route without parsing the rest of it', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
+    const bundlePath = join(tempDir, 'workflow-bundle.js');
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+
+    await writeFile(
+      bundlePath,
+      [
+        // Not valid ECMAScript: the route around the literal is never parsed.
+        'var runtime: unknown = 1;',
+        'var workflowCode = `',
+        'var stepOne = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input.ts//stepOne");',
+        'async function testWorkflow(input) {',
+        String.raw`  const label = \`step \${input}\`;`,
+        '  return await stepOne(label, "\\\\u00C6");',
+        '}',
+        'testWorkflow.workflowId = "workflow//./input.ts//testWorkflow";',
+        '`;',
+      ].join('\n')
+    );
+
+    await expect(extractWorkflowGraphs(bundlePath)).resolves.toEqual({
+      './input.ts': {
+        testWorkflow: expect.objectContaining({
+          workflowId: 'workflow//./input.ts//testWorkflow',
+          graph: expect.objectContaining({
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                type: 'step',
+                data: expect.objectContaining({
+                  stepId: 'step//./input.ts//stepOne',
+                }),
+              }),
+            ]),
+          }),
+        }),
+      },
+    });
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('falls back to parsing the route when workflowCode is not a plain template literal', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
+    const bundlePath = join(tempDir, 'workflow-bundle.js');
+
+    await writeFile(
+      bundlePath,
+      [
+        'var workflowCode = "async function testWorkflow() {}\\ntestWorkflow.workflowId = \\"workflow//./input.ts//testWorkflow\\";";',
+      ].join('\n')
+    );
+
+    await expect(extractWorkflowGraphs(bundlePath)).resolves.toEqual({
+      './input.ts': {
+        testWorkflow: expect.objectContaining({
+          workflowId: 'workflow//./input.ts//testWorkflow',
+        }),
+      },
+    });
+  });
+
   it('extracts step nodes when step proxies include pure annotations', async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
     const bundlePath = join(tempDir, 'workflow-bundle.js');
