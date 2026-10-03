@@ -10,7 +10,7 @@ import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
-import { Mutex } from './util.js';
+import { createPagedStream } from './paged-stream.js';
 
 const StreamPublishMessage = z.compile(
   z.object({
@@ -18,32 +18,6 @@ const StreamPublishMessage = z.compile(
     chunkId: z.templateLiteral(['chnk_', z.string()]),
   })
 );
-
-interface StreamChunkEvent {
-  id: `chnk_${string}`;
-  data: Uint8Array;
-  eof: boolean;
-}
-
-class Rc<T extends { drop(): void }> {
-  private refCount = 0;
-  constructor(private resource: T) {}
-  acquire() {
-    this.refCount++;
-    return {
-      ...this.resource,
-      [Symbol.dispose]: () => {
-        this.release();
-      },
-    };
-  }
-  release() {
-    this.refCount--;
-    if (this.refCount <= 0) {
-      this.resource.drop();
-    }
-  }
-}
 
 /**
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
@@ -90,11 +64,10 @@ export type PostgresStreamer = Streamer & {
 export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const ulid = monotonicFactory();
   const events = new EventEmitter<{
-    [key: `strm:${string}`]: [StreamChunkEvent];
+    [key: `strm:${string}`]: [];
   }>();
   const { streams } = Schema;
   const genChunkId = () => `chnk_${ulid()}` as const;
-  const mutexes = new Map<string, Rc<{ drop(): void; mutex: Mutex }>>();
   // One abort function per reader that has not yet reached a terminal state
   // (EOF, cancel, or initial-query failure). `close()` drains this set so a
   // streamer shutdown detaches every listener still registered on `events`
@@ -104,60 +77,19 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   let closed = false;
   const streamerClosedError = () =>
     new Error('Cannot read stream: the Postgres streamer has been closed');
-  const getMutex = (key: string) => {
-    let mutex = mutexes.get(key);
-    if (!mutex) {
-      mutex = new Rc({
-        mutex: new Mutex(),
-        drop: () => mutexes.delete(key),
-      });
-      mutexes.set(key, mutex);
-    }
-    return mutex.acquire();
-  };
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
+  // A notification carries no rows: it wakes the readers of its stream, and
+  // each reader queries the persisted rows from its own keyset cursor.
   const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
-    const parsed = StreamPublishMessage.parse(JSON.parse(msg));
-
-    const key = `strm:${parsed.streamId}` as const;
-    if (!events.listenerCount(key)) {
-      return;
-    }
-
-    const resource = getMutex(key);
-    await resource.mutex.andThen(async () => {
-      const [value] = await drizzle
-        .select({ eof: streams.eof, data: streams.chunkData })
-        .from(streams)
-        .where(
-          and(
-            eq(streams.streamId, parsed.streamId),
-            eq(streams.chunkId, parsed.chunkId)
-          )
-        )
-        .limit(1);
-      if (!value) return;
-      const { data, eof } = value;
-      events.emit(key, { id: parsed.chunkId, data, eof });
-    });
+    const { streamId } = StreamPublishMessage.parse(JSON.parse(msg));
+    events.emit(`strm:${streamId}`);
   });
 
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
   };
-
-  const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
-    drizzle
-      .select({
-        id: streams.chunkId,
-        eof: streams.eof,
-        data: streams.chunkData,
-      })
-      .from(streams)
-      .where(and(eq(streams.streamId, name)))
-      .orderBy(streams.chunkId);
 
   // The chunkId of the first EOF row, if any has been written. A producer
   // that retries a terminal write can append data and EOF rows after it;
@@ -173,6 +105,57 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       .orderBy(asc(streams.chunkId))
       .limit(1);
     return row?.chunkId ?? null;
+  };
+
+  // Data rows before the first EOF: the rows a `streams.get()` start index
+  // counts. A close() may commit between the EOF lookup and the count, so a
+  // stream found open is looked up once more and recounted if it closed.
+  const countDataRows = async (name: string) => {
+    const count = async (firstEof: `chnk_${string}` | null) => {
+      const [row] = await drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(streams)
+        .where(
+          and(
+            eq(streams.streamId, name),
+            eq(streams.eof, false),
+            ...(firstEof ? [lt(streams.chunkId, firstEof)] : [])
+          )
+        );
+      return Number(row?.count ?? 0);
+    };
+    const firstEof = await findFirstEofChunkId(name);
+    if (firstEof !== null) return { count: await count(firstEof), firstEof };
+    const openCount = await count(null);
+    const closedSince = await findFirstEofChunkId(name);
+    return closedSince === null
+      ? { count: openCount, firstEof: null }
+      : { count: await count(closedSince), firstEof: closedSince };
+  };
+
+  // The id of the data row at zero-based `position` before the first EOF.
+  const findDataRowAt = async (
+    name: string,
+    firstEof: `chnk_${string}` | null,
+    position: number
+  ): Promise<`chnk_${string}`> => {
+    const [row] = await drizzle
+      .select({ chunkId: streams.chunkId })
+      .from(streams)
+      .where(
+        and(
+          eq(streams.streamId, name),
+          eq(streams.eof, false),
+          ...(firstEof ? [lt(streams.chunkId, firstEof)] : [])
+        )
+      )
+      .orderBy(asc(streams.chunkId))
+      .offset(position)
+      .limit(1);
+    if (!row) {
+      throw new Error('Stream rows changed while positioning the start index');
+    }
+    return row.chunkId;
   };
 
   // Helper to convert chunk to Buffer
@@ -392,120 +375,61 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         name: string,
         startIndex?: number
       ): Promise<ReadableStream<Uint8Array>> {
-        if (closed) {
-          throw streamerClosedError();
-        }
-
-        const cleanups: (() => void)[] = [];
-        let cleanedUp = false;
-        // Idempotent: reachable from EOF, cancel(), initial-query failure,
-        // and streamer close(), and more than one of those can fire for the
-        // same reader (e.g. cancel() while the initial query is in flight).
-        const cleanup = () => {
-          if (cleanedUp) return;
-          cleanedUp = true;
-          activeReaders.delete(abort);
-          cleanups.forEach((fn) => void fn());
-        };
-        // `start()` runs synchronously inside the ReadableStream constructor
-        // up to its first `await`, so `controller` is assigned before `get()`
-        // returns and before `abort` can be invoked from `close()`.
-        let controller!: ReadableStreamDefaultController<Uint8Array>;
-        const abort = () => {
-          cleanup();
-          controller.error(streamerClosedError());
-        };
-        activeReaders.add(abort);
-
-        return new ReadableStream<Uint8Array>({
-          async start(ctrl) {
-            controller = ctrl;
-            // an empty string is always < than any string,
-            // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
-            let lastChunkId = '';
-            let offset = startIndex ?? 0;
-            let buffer = [] as StreamChunkEvent[] | null;
-
-            function enqueue(msg: {
-              id: string;
-              data: Uint8Array;
-              eof: boolean;
-            }) {
-              if (cleanedUp) {
-                // The reader was cancelled or the streamer closed while the
-                // initial query was in flight; the controller is no longer
-                // writable. Also true once the first EOF has been delivered
-                // (cleanup() runs below): a producer that retries a
-                // terminal write (lost ACK, overlapping attempts) can append
-                // data and EOF rows after it, and enqueuing those on the
-                // already-closed controller would throw out of `start()`,
-                // discarding every chunk still queued.
-                return;
+        // History is read in keyset pages of persisted rows, pulled as the
+        // consumer reads. NOTIFY only wakes a reader that has caught up, so
+        // the stream never sits in memory as a whole and a row seen by both a
+        // query and a notification is delivered (or skipped) exactly once.
+        // The first EOF row closes the reader; rows a retried terminal write
+        // appends after it are never read.
+        return createPagedStream(
+          {
+            isClosed: () => closed,
+            closedError: streamerClosedError,
+            subscribe(wake) {
+              events.on(`strm:${name}`, wake);
+              return () => {
+                events.off(`strm:${name}`, wake);
+              };
+            },
+            registerAbort(abort) {
+              activeReaders.add(abort);
+              return () => {
+                activeReaders.delete(abort);
+              };
+            },
+            async prepareStart(index) {
+              const { count, firstEof } = await countDataRows(name);
+              const offset = index < 0 ? Math.max(0, count + index) : index;
+              const skip = Math.min(offset, count);
+              if (skip === 0) {
+                return { cursor: undefined, remainingOffset: offset };
               }
-
-              if (lastChunkId >= msg.id) {
-                // already sent or out of order
-                return;
-              }
-              lastChunkId = msg.id;
-
-              // The EOF marker is not a data chunk (`getInfo`'s tailIndex
-              // excludes it), so it never counts toward `offset`: a start
-              // index at or past the data count must still close the
-              // stream rather than consume the marker and then hang, or
-              // surface rows written after it.
-              if (offset > 0 && !msg.eof) {
-                offset--;
-                return;
-              }
-
-              if (msg.data.byteLength) {
-                controller.enqueue(new Uint8Array(msg.data));
-              }
-              if (msg.eof) {
-                cleanup();
-                controller.close();
-              }
-            }
-
-            function onData(data: StreamChunkEvent) {
-              if (buffer) {
-                buffer.push(data);
-                return;
-              }
-              enqueue(data);
-            }
-            events.on(`strm:${name}`, onData);
-            cleanups.push(() => {
-              events.off(`strm:${name}`, onData);
-            });
-
-            // A rejection here fails the stream; detach the listener that was
-            // registered above so a failing stream does not leak on each read.
-            const chunks = await loadPersistedChunks(name).catch((err) => {
-              cleanup();
-              throw err;
-            });
-
-            // Resolve negative offset relative to the data chunk count: the
-            // rows before the first EOF marker. Rows after it (a retried
-            // terminal write) are ignored by `enqueue`, so they must not
-            // count here either.
-            if (typeof offset === 'number' && offset < 0) {
-              const firstEof = chunks.findIndex((chunk) => chunk.eof);
-              const dataCount = firstEof === -1 ? chunks.length : firstEof;
-              offset = Math.max(0, dataCount + offset);
-            }
-
-            for (const chunk of [...chunks, ...(buffer ?? [])]) {
-              enqueue(chunk);
-            }
-            buffer = null;
+              return {
+                cursor: await findDataRowAt(name, firstEof, skip - 1),
+                remainingOffset: offset - skip,
+              };
+            },
+            loadPage: (cursor, limit) =>
+              drizzle
+                .select({
+                  id: streams.chunkId,
+                  eof: streams.eof,
+                  data: streams.chunkData,
+                })
+                .from(streams)
+                .where(
+                  and(
+                    eq(streams.streamId, name),
+                    ...(cursor === undefined
+                      ? []
+                      : [gt(streams.chunkId, cursor)])
+                  )
+                )
+                .orderBy(asc(streams.chunkId))
+                .limit(limit),
           },
-          cancel() {
-            cleanup();
-          },
-        });
+          startIndex ?? 0
+        );
       },
 
       async list(runId: string): Promise<string[]> {
