@@ -6,6 +6,10 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
+Experimental owner-managed overflow messages marked `input.executionMode: 'remote'`
+require an installed direct-execution transport. The VQS adapter rejects these
+messages rather than silently falling back to queued execution.
+
 ## Connection failures
 
 Backend connection failures and interrupted event streams follow existing retry policies, including failures with unrecognized error codes. Repeated HTTP/2 session failures rebuild the shared events connection pool. Invalid backend URL protocols, embedded credentials, Fetch-blocked ports, and unsupported request headers fail immediately. Interrupted event writes retain their existing in-process retries; caller cancellations are excluded.
@@ -91,9 +95,10 @@ Step bodies currently run in the owning process; the mailbox remains available
 while they await I/O. Queue wakes enter through the direct endpoint instead of
 starting a second execution path.
 
-An input's `hook_received` event is committed before it is fed to the retained
-VM. Follow-up events emitted by the VM must also commit before the input is
-acknowledged. The idle wait is 60 seconds, bounded by the host deadline; the
+An immediate writer commits `hook_received` before advancing the retained VM.
+A buffered writer can advance private VM state while its prefix is pending;
+the receipt and follow-up events must commit before user-step execution or input
+acknowledgement. The idle wait is 60 seconds, bounded by the host deadline; the
 caller does not wait for that idle interval. After retirement, the next owner
 reconstructs its state from committed history.
 
@@ -102,7 +107,8 @@ optional `events.createWriteSession(runId)` before loading the initial run,
 history and step snapshot in parallel. In this World the writer opens the run's
 events WebSocket early, joins its readiness before writes, and retains the
 channel across inputs, asynchronous steps and bounded idle waits. Initial
-history reads still use GET/LIST. The channel is released with owner retirement,
+history reads use the session's canonical readers when provided, otherwise GET/LIST.
+The channel is released with owner retirement,
 not with the input HTTP response. A warm owner automatically reuses it for hook
 and step event writes; unexpected channel loss cannot silently demote that
 writer to HTTP. An explicit HTTP transport configuration or a World using an
@@ -118,6 +124,15 @@ entity state. It does not read its own payload back. Resolved payload mismatches
 and conflicting acknowledgement metadata remain fatal; diagnostics identify the
 failed check.
 
+Owner-managed queued step messages use the existing flow queue and step identity.
+They bypass retained orchestration wake forwarding and do not open an owner event
+channel. The worker returns its result through the existing direct invoke path;
+the single owner commits the native outcome. Step delivery remains queue-based,
+with pinned deployment routing and normal queue backpressure/redelivery.
+
+V4 response schemas are compiled once and reused. Each acknowledgement still
+validates its shape and returned event type, including native hook-conflict outcomes.
+
 Unexpected returned events or persistence failures stop the owner. It attempts
 to persist `run_failed` and rejects unfinished inputs. No event-write retries or
 conflict reconciliation are performed in this mode. If the terminal failure
@@ -128,6 +143,23 @@ persistence, step execution, and terminal-failure recording. Messages include
 owner/span identities and timing, not workflow payloads. `workflow.execution`
 reports replay versus retained VM passes. Older pinned runs retain their prior
 execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
+
+### Owner-journal mode (experimental)
+
+`WORKFLOW_OWNER_JOURNAL=1` opts newly created retained-owner runs into
+`executionContext.ownerJournalVersion: 1`. It requires a compatible eventsync
+backend (`WORKFLOW_EVENTS_TRANSPORT=eventsync`) and guaranteed exclusive ownership,
+including handoff and unfinished storage requests. One experimental eventsync
+wire contract uses the persisted storage-mode marker; older runs retain their
+original persistence behavior. There is no `?protocol=` selector. Update the
+experimental client and endpoint together when changing that contract.
+
+The owner validates transitions locally and commits contiguous event prefixes
+sequentially. Canonical events remain intact; derived Step state is reconstructed
+from them by the backend. Single-event prefixes use a normal Put and larger
+prefixes use an atomic transaction. Queued progress is not a durability ACK.
+Terminal failure uses the same writer. If that writer is broken, diagnostics
+report `terminalPersisted=false`; no competing fallback writer is started.
 
 ## Custom dispatcher
 

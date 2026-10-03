@@ -1093,6 +1093,36 @@ describe('v4 transport uses global fetch (observability)', () => {
 });
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
+  it('rejects a valid response body with the wrong event type when reusing compiled schemas', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        createEventBody({
+          eventType: 'step_created',
+          specVersion: 2,
+          correlationId: 'step_1',
+          eventData: { stepName: 'step', input: new Uint8Array() },
+        })
+      )
+    );
+    try {
+      await expect(
+        createWorkflowRunEventV4(
+          {
+            runId: 'wrun_1',
+            eventType: 'step_completed',
+            specVersion: 2,
+            correlationId: 'step_1',
+          },
+          { token: 'test-token' }
+        )
+      ).rejects.toMatchObject({
+        code: 'SCHEMA_VALIDATION',
+        cause: { issues: [{ code: 'custom', path: ['event', 'eventType'] }] },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
   it.each([
     [
       'an empty body',

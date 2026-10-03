@@ -41,8 +41,34 @@ import type {
 } from './steps.js';
 
 /** Run-scoped transport resources for a single in-memory event writer.
- * This does not acquire ownership or change event persistence semantics. */
+ * This does not acquire ownership. Buffered writers explicitly expose a durability barrier. */
 export interface EventWriteSession {
+  /** Writer-local positions, when available. Queued progress is not a durability
+   * acknowledgement; only committed progress may be exposed as official state. */
+  readonly heads?: {
+    readonly queued: number | undefined;
+    readonly committed: number | undefined;
+  };
+  /** Optional catch-up over the owner's own transport: every committed event
+   * after the writer's (initially empty) position, plus the run fields that
+   * are not events. Called once, before the first write. Event-sourced run,
+   * step and hook state is derived from these events by the owner. */
+  catchUp?(): Promise<{
+    events: Event[];
+    head: number;
+    expiredAt?: Date;
+  }>;
+  /** Optional tentative transition, paired with flush(). The owning loop must
+   * flush before input acknowledgement or externally visible step execution. */
+  stage?(
+    event: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  /** Make all previously staged transitions durable, or reject permanently.
+   * Return canonical acknowledgements for staged events when the backend
+   * materializes additional entity fields. The owner confirms these before
+   * executing a step or acknowledging the input. */
+  flush?(): Promise<void | readonly EventResult[]>;
   create(
     event: CreateEventRequest,
     params?: CreateEventParams

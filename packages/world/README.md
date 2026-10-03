@@ -37,6 +37,14 @@ known Workflow error classes for the caller. A transport failure leaves the
 processing outcome unknown. A handler error can occur after event writes have
 committed.
 
+## Owner event sessions
+
+`events.createWriteSession(runId)` optionally supplies a run-scoped writer with
+canonical bootstrap readers and a flush-through durability barrier. Its optional
+`heads` exposes writer-local `queued` and `committed` positions. Queued progress
+may advance private execution state; only committed progress authorizes input
+acknowledgement or user-step execution. The session does not acquire ownership.
+
 ## Step dispatch context
 
 `WorkflowInvokePayload.runContext` carries the run's deployment ID, spec version,

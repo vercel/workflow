@@ -68,6 +68,7 @@ import {
   type ListEventsV4Params,
   VercelEventWireSchema,
 } from './events-v4.js';
+import { affinityCellSize, recordRunAffinity } from './run-affinity.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
@@ -151,6 +152,9 @@ interface SplitEventData {
      * it without holding the run's symmetric key.
      */
     encryptionPublicKey?: string;
+    /** run_created's opt-in shared affinity cell size (experimental). Not a
+     *  World field: world-vercel adds it from its own configuration. */
+    affinityCellSize?: number;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -362,6 +366,10 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.encryptionPublicKey === 'string') {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
+  }
+  if (data.eventType === 'run_created') {
+    const cellSize = affinityCellSize();
+    if (cellSize !== undefined) meta.affinityCellSize = cellSize;
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -616,24 +624,35 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    const result = await withEventPostRetry(
-      () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType,
-      {
-        // The atomic lazy-resume shape is deduplicated server-side by the
-        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
-        // though plain hook_received is not; see EVENT_RETRY_ELIGIBILITY.
-        idempotentHookResume:
-          data.eventType === 'hook_received' &&
-          params?.resumeId !== undefined &&
-          params?.resumePayloadDigest !== undefined,
-      }
-    );
+    const result = config?.failStopEventWrites
+      ? await createWorkflowRunEventInner(id, data, params, config)
+      : await withEventPostRetry(
+          () => createWorkflowRunEventInner(id, data, params, config),
+          data.eventType,
+          {
+            // The atomic lazy-resume shape is deduplicated server-side by the
+            // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+            // though plain hook_received is not; see EVENT_RETRY_ELIGIBILITY.
+            idempotentHookResume:
+              data.eventType === 'hook_received' &&
+              params?.resumeId !== undefined &&
+              params?.resumePayloadDigest !== undefined,
+          }
+        );
     if (data.eventType === 'run_created' && !result.run) {
       throw new WorkflowWorldError(
         `${data.eventType} response is missing the run entity`,
         { code: 'SCHEMA_VALIDATION' }
       );
+    }
+    if (data.eventType === 'run_created' && result.run) {
+      // The server's routing decision for the new run; kept out of the
+      // World-facing run object.
+      const { affinityId, ...run } = result.run as typeof result.run & {
+        affinityId?: string;
+      };
+      recordRunAffinity(run.runId, affinityId);
+      (result as { run?: unknown }).run = run;
     }
     if (data.eventType === 'run_started' && !result.run?.startedAt) {
       throw new WorkflowWorldError(

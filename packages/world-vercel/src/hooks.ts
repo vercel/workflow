@@ -8,6 +8,7 @@ import type {
 } from '@workflow/world';
 import { HookSchema, PaginatedResponseSchema } from '@workflow/world';
 import z from 'zod';
+import { recordRunAffinity } from './run-affinity.js';
 import { normalizeHookData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
@@ -106,14 +107,18 @@ export async function getHookByToken(
   config?: APIConfig
 ): Promise<Hook> {
   try {
-    return await makeRequest({
+    const { affinityId, ...hook } = await makeRequest({
       endpoint: `/v2/hooks/by-token?token=${encodeURIComponent(token)}`,
       options: {
         method: 'GET',
       },
       config,
-      schema: HookSchema,
+      schema: HookSchema.and(z.object({ affinityId: z.string().optional() })),
     });
+    // The server's current routing for the hook's run, used by the resume's
+    // invocation right after this lookup.
+    recordRunAffinity(hook.runId, affinityId);
+    return hook as Hook;
   } catch (error) {
     if (WorkflowWorldError.is(error) && error.status === 404) {
       throw new HookNotFoundError(token);

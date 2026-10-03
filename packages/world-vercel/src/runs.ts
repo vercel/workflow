@@ -21,6 +21,7 @@ import {
 } from '@workflow/world';
 import { z } from 'zod';
 import { getRequestTimeoutMs } from './http-core.js';
+import { recordRunAffinity } from './run-affinity.js';
 import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
@@ -51,6 +52,8 @@ export const WorkflowRunWireBaseSchema = z.compile(
     // Not part of the World interface, but passed through for direct consumers and debugging
     blobStorageBytes: z.number().optional(),
     streamStorageBytes: z.number().optional(),
+    // Routing state (shared affinity cell); recorded, then removed.
+    affinityId: z.string().optional(),
   })
 );
 
@@ -87,9 +90,11 @@ function filterRunData(
 // re-hydrates run errors through `hydrateRunError`, which decompresses
 // on its own, so it deliberately does not route through here.
 function filterRunData(
-  run: any,
+  wire: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
+  // Routing state is world-vercel internal, never part of the World run.
+  const { affinityId: _affinityId, ...run } = wire;
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
     const deserialized = normalizeWorkflowRunData(
@@ -266,6 +271,10 @@ async function readRun(
       : WorkflowRunWireSchema) as any,
   });
 
+  recordRunAffinity(
+    (run as { runId: string }).runId,
+    (run as { affinityId?: string }).affinityId
+  );
   return filterRunData(run, resolveData);
 }
 
