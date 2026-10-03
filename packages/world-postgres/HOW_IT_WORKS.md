@@ -26,7 +26,7 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 - Stream chunks stored in `workflow_stream_chunks` table
 - `pg_notify` triggers sent on writes to `workflow_event_chunk` topic
-- Subscribers receive notifications and fetch chunk data
+- Readers query persisted chunks in pages of at most 64 rows as the consumer pulls; a notification only wakes a reader that has caught up
 - ULID-based ordering ensures correct sequence
 - One long-lived dedicated `LISTEN` client, with an in-process EventEmitter for distributing events to multiple subscribers
 
