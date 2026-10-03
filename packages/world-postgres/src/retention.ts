@@ -125,8 +125,9 @@ export async function purgeRunUserData(
 /**
  * Purge a terminal run's user data if it asked for zero retention.
  *
- * Call this after the run's terminal event row has committed and before the
- * terminal `NOTIFY`: the terminal event is itself payload-bearing
+ * Call this after the run's terminal event row has been written (the terminal
+ * transition runs it in the same transaction) and before the terminal
+ * `NOTIFY`: the terminal event is itself payload-bearing
  * (`run_completed` carries the output), so purging earlier would leave that
  * one behind, and purging before the notify means a waiter woken by it
  * re-reads a run that is already expired rather than catching the output on

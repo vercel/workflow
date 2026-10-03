@@ -13,6 +13,7 @@ import type {
   AnyEventRequest,
   AttributeChange,
   CreateEventParams,
+  CreateEventRequest,
   Event,
   EventResult,
   EventsResolveData,
@@ -833,7 +834,8 @@ async function handleLegacyEventPostgres(
   eventId: string,
   data: any,
   currentRun: { status: string; specVersion: number | null },
-  params?: { resolveData?: ResolveData }
+  params: { resolveData?: ResolveData } | undefined,
+  announceRunTerminal: (runId: string) => Promise<void>
 ): Promise<EventResult> {
   const resolveData = params?.resolveData ?? 'all';
 
@@ -880,7 +882,7 @@ async function handleLegacyEventPostgres(
       // Wake `runs.waitForTerminalStatus` waiters. This shortcut returns
       // before the notify in `createEventsStorage`, so without this a legacy
       // run's cancellation is only noticed by the backstop re-read.
-      await notifyRunTerminal(drizzle, runId);
+      await announceRunTerminal(runId);
 
       // Return without event (legacy behavior skips event storage)
       // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
@@ -958,7 +960,41 @@ async function handleLegacyEventPostgres(
   }
 }
 
-export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
+/**
+ * Events whose guarded entity update must commit together with their event
+ * row. A crash or failed insert between the two otherwise leaves a terminal
+ * step, run or wait that the event log does not record: replay re-issues the
+ * transition, the conditional update rejects it as already done, and the run
+ * wedges (#3081). `step_retrying` is included so a retry cannot reopen a step
+ * the log still shows as running.
+ */
+const ATOMIC_STATE_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+  'step_completed',
+  'step_failed',
+  'step_retrying',
+  'wait_completed',
+]);
+
+/** Set when an events storage runs inside the atomic state-event transaction. */
+interface AtomicEventTransaction {
+  /** Records a run that became terminal; announced only after commit. */
+  onRunTerminal(runId: string): void;
+}
+
+export function createEventsStorage(
+  drizzle: Drizzle,
+  transaction?: AtomicEventTransaction
+): Storage['events'] {
+  // Inside the atomic transaction a terminal announcement waits for commit:
+  // a rolled-back transition must not wake a waiter, and a failed
+  // best-effort NOTIFY must not abort the transaction it would share.
+  const announceRunTerminal = async (runId: string) => {
+    if (transaction) transaction.onRunTerminal(runId);
+    else await notifyRunTerminal(drizzle, runId);
+  };
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -1050,6 +1086,28 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       data: AnyEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult> {
+      if (
+        !transaction &&
+        runId !== null &&
+        ATOMIC_STATE_EVENT_TYPES.has(data.eventType)
+      ) {
+        // One transaction owns the guarded state update, its event row and,
+        // for a run, the hook/wait cleanup. READ COMMITTED, like every event
+        // insert that may allocate a slot (see SLOT_INSERT_TRANSACTION).
+        const terminalRuns: string[] = [];
+        const result = await drizzle.transaction(
+          (tx) =>
+            createEventsStorage(tx as unknown as Drizzle, {
+              onRunTerminal: (terminalRunId) =>
+                terminalRuns.push(terminalRunId),
+            }).create(runId, data as CreateEventRequest, params),
+          SLOT_INSERT_TRANSACTION
+        );
+        for (const terminalRunId of terminalRuns) {
+          await notifyRunTerminal(drizzle, terminalRunId);
+        }
+        return result;
+      }
       if (
         data.eventType === 'hook_created' &&
         data.eventData.tokenRetentionUntil !== undefined &&
@@ -1269,7 +1327,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             `wevt_${legacyEventUlid()}`,
             data,
             currentRun,
-            params && { resolveData: entityResolveData(params.resolveData) }
+            params && { resolveData: entityResolveData(params.resolveData) },
+            announceRunTerminal
           );
         }
       }
@@ -2994,16 +3053,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // Wake `runs.waitForTerminalStatus` waiters. Every current-spec
       // run-terminal transition passes through here (run_completed /
-      // run_failed / run_cancelled all update the row above), and the update
-      // has committed by now, so a woken waiter re-reads a terminal run. The
-      // early-return paths above are the idempotent ones: a run that was
+      // run_failed / run_cancelled all update the row above). Those events
+      // run inside the atomic state-event transaction, so the announcement
+      // is sent once it commits and a woken waiter re-reads a terminal run.
+      // The early-return paths above are the idempotent ones: a run that was
       // *already* terminal, whose original transition announced itself. The
       // one terminal write that does NOT reach here is the legacy
       // (specVersion < 2) `run_cancelled` shortcut, which returns from
-      // `handleLegacyEventPostgres` and notifies for itself.
+      // `handleLegacyEventPostgres` and announces itself the same way.
       if (run && isTerminalWorkflowRunStatus(run.status)) {
         // Honor `$retention: 0` before the announcement, not after. The
-        // terminal event row committed above is itself payload-bearing
+        // terminal event row written above is itself payload-bearing
         // (`run_completed` carries the output), so this is the first point
         // where a purge can cover the whole run; and going before the notify
         // means a waiter woken by it re-reads an already-expired run instead
@@ -3016,7 +3076,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           run.attributes,
           now
         );
-        await notifyRunTerminal(drizzle, effectiveRunId);
+        await announceRunTerminal(effectiveRunId);
       }
 
       const eventResult: EventResult = {
