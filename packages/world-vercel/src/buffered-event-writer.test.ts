@@ -74,6 +74,30 @@ it('sends the whole input/create/start prefix before any durable response, then 
   expect(await writer.flush()).toEqual([]);
 });
 
+it('pipelines run_started with the first step prefix behind one barrier', async () => {
+  const { writer, calls } = fixture();
+  const runStarted: CreateEventRequest = {
+    eventType: 'run_started',
+    specVersion: 6,
+  };
+  const expected: EventResult[] = [];
+  for (const [i, event] of [runStarted, createStep, startStep].entries())
+    expected.push(await writer.stage(event, { eventCount: 1 + i }));
+  // All three are on the wire before any acknowledgement.
+  expect(calls.map((call) => call.event.eventType)).toEqual([
+    'run_started',
+    'step_created',
+    'step_started',
+  ]);
+  expect(expected[0].event?.eventType).toBe('run_started');
+  expect(calls[0].params.occurredAt).toEqual(expected[0].event!.createdAt);
+  const barrier = writer.flush();
+  for (const [i, call] of calls.entries()) call.resolve(expected[i]);
+  expect(await barrier).toEqual(expected);
+  // run_created is slot 1; the pipelined prefix occupies slots 2–4.
+  expect(writer.heads).toEqual({ queued: 4, committed: 4 });
+});
+
 it('preserves native hook registration instead of inventing its materialization or conflict outcome', async () => {
   const { writer, calls } = fixture();
   const request = {

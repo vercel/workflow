@@ -396,11 +396,15 @@ export class BufferedEventWriter implements EventWriteSession {
       : undefined;
     // Only deterministic, non-expanding transitions may advance the private VM
     // before ACK. Hook registration/conflict and other server-selected outcomes
-    // first drain the prefix, then return their native result.
+    // first drain the prefix, then return their native result. `run_started`
+    // qualifies because the exclusive owner writes it only for a run it read as
+    // not yet started, and a slot-identity run takes `startedAt` from the
+    // writer's `occurredAt`: the staged instant is the committed one.
     const eligible =
       (event.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
       size <= 8 * 1024 * 1024 &&
       (event.eventType === 'hook_received' ||
+        event.eventType === 'run_started' ||
         event.eventType === 'step_created' ||
         (event.eventType === 'step_started' &&
           previous?.status === 'pending') ||
