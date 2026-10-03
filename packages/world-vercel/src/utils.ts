@@ -34,6 +34,7 @@ import {
   WorkflowHttpTransport,
   WorldParseFormat,
 } from './telemetry.js';
+import { fetchWithDispatcher, undiciFetchFor } from './undici-runtime.js';
 import { version } from './version.js';
 
 /**
@@ -455,13 +456,24 @@ export async function makeRequest<T>({
                 headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
                 bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
               })
-            : await fetch(
-                undiciRequest as Request,
-                {
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+            : undiciFetchFor(undiciDispatcher)
+              ? // The selected undici's `fetch` cannot take this `Request`: its
+                // input check is `instanceof` its own class, so a global
+                // `Request` would be read as a URL string. Same init instead.
+                await fetchWithDispatcher(url, {
+                  ...options,
+                  body,
+                  headers,
+                  signal,
                   dispatcher: undiciDispatcher,
-                } as any
-              );
+                })
+              : await fetch(
+                  undiciRequest as Request,
+                  {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                    dispatcher: undiciDispatcher,
+                  } as any
+                );
         } catch (error) {
           const elapsed = Date.now() - fetchStart;
           // AbortSignal.timeout() surfaces as a DOMException with name

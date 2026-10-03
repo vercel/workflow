@@ -6,13 +6,8 @@ import {
   destroyNodeHttpAgents,
   type NodeHttpAgents,
 } from '@workflow/world/node-http.js';
-import {
-  Agent,
-  DecoratorHandler,
-  type Dispatcher,
-  RetryAgent,
-  type RetryHandler,
-} from 'undici';
+import type { Dispatcher, RetryHandler, Agent as UndiciAgent } from 'undici';
+import { Agent, DecoratorHandler, RetryAgent } from './undici-runtime.js';
 import type { APIConfig } from './utils.js';
 import { version } from './version.js';
 
@@ -1011,7 +1006,7 @@ function makeRetryDispatcher(
  * EVENTS_AGENT_OPTIONS alone cannot catch the composition being dropped.
  */
 export function createEventsDispatcher(
-  agentOverrides?: Partial<Agent.Options>
+  agentOverrides?: Partial<UndiciAgent.Options>
 ): RetryAgent {
   const h2 = h2EventsEnabled();
   const agent = new RetryAgent(
@@ -1049,20 +1044,20 @@ export function createEventsDispatcher(
 /**
  * Whether `dispatcher` can take interceptors through `Dispatcher.compose()`.
  *
- * False under Bun: `import { Agent } from 'undici'` resolves to Bun's built-in
- * `undici` module even when the package is installed, and its dispatcher
- * classes are stubs with no `compose` or `dispatch`. Bun's `fetch` also ignores
- * the `dispatcher` option, so there is nothing for an interceptor to wrap;
- * callers skip composing and return the plain dispatcher.
+ * False only where undici-runtime.ts falls back to Bun's built-in `undici`
+ * module (a Bun older than MIN_BUN_VERSION, or a package it cannot load), whose
+ * dispatcher classes are stubs with no `compose` or `dispatch`. Bun's global
+ * `fetch` ignores the `dispatcher` option there, so there is nothing for an
+ * interceptor to wrap; callers skip composing and return the plain dispatcher,
+ * and every dispatcher setting in this file is inert.
  *
- * Under Bun every dispatcher setting in this file is therefore inert, not just
- * the interceptors: `connections`, `pipelining`, `allowH2`, `keepAliveTimeout`,
- * `headersTimeout`, `bodyTimeout`, the retry options, and the queue path's
- * deadline (deadlineInterceptor). A hung queue request is bounded only by Bun's
- * own `fetch` default (300s, the length of the message lease), so the
- * visibility-renewal loop gets no retry window. The runtime-neutral fix is an
- * `AbortSignal` on the `fetch` call inside `@vercel/queue`, which Bun honors;
- * that needs a change there and is out of scope here.
+ * The queue path is inert under every Bun, including where world-vercel's own
+ * requests are routed through undici: `QueueClient` calls the global `fetch`
+ * itself (see getQueueDispatcher), so `connections`, the per-phase timeouts and
+ * the deadline (deadlineInterceptor) never apply. A hung queue request is then
+ * bounded only by Bun's `fetch` default (300s, the length of the message
+ * lease), which leaves the visibility-renewal loop no retry window. Closing
+ * that needs `@vercel/queue` to accept a `fetch` (or a per-request signal).
  */
 export function supportsCompose(dispatcher: Agent | RetryAgent): boolean {
   return typeof (dispatcher as Partial<Agent>).compose === 'function';
@@ -1112,7 +1107,7 @@ function withBoundLifecycle(
  */
 export function createStreamDispatcher(
   retryOptions: RetryHandler.RetryOptions,
-  agentOverrides?: Partial<Agent.Options>
+  agentOverrides?: Partial<UndiciAgent.Options>
 ): RetryAgent {
   return new RetryAgent(
     new Agent({ ...STREAM_AGENT_OPTIONS, ...agentOverrides }),

@@ -4,10 +4,10 @@ import {
   decodeSnapshotEnvelope,
   encodeSnapshotEnvelope,
 } from '@workflow/world';
-import { request as undiciRequest } from 'undici';
 import { getDispatcher } from './http-client.js';
 import { HTTP_DEBUG_ENABLED } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
+import { fetchWithDispatcher, requestFor } from './undici-runtime.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -127,11 +127,12 @@ export function createSnapshotsStorage(
       // (handler returns 500 -> queue retries handler -> save fails
       // again -> 5xx loop until the run TTL).
       const putStart = performance.now();
-      const response = await undiciRequest(url, {
+      const dispatcher = getDispatcher(config);
+      const response = await requestFor(dispatcher)(url, {
         method: 'PUT',
         body: envelope,
         headers: headersToRecord(headers),
-        dispatcher: getDispatcher(config) as never,
+        dispatcher: dispatcher as never,
       });
       const putDurationMs = Math.round(performance.now() - putStart);
 
@@ -169,12 +170,11 @@ export function createSnapshotsStorage(
       await injectTraceContextIntoHeaders(headers);
 
       const getStart = performance.now();
-      const response = await fetch(url, {
+      const response = await fetchWithDispatcher(url, {
         method: 'GET',
         headers,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
         dispatcher: getDispatcher(config),
-      } as any);
+      });
       const getDurationMs = Math.round(performance.now() - getStart);
 
       if (response.status === 404) {
@@ -224,12 +224,11 @@ export function createSnapshotsStorage(
       const url = `${baseUrl}/v2/runs/${encodeURIComponent(runId)}/snapshot`;
       await injectTraceContextIntoHeaders(headers);
 
-      const response = await fetch(url, {
+      const response = await fetchWithDispatcher(url, {
         method: 'DELETE',
         headers,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
         dispatcher: getDispatcher(config),
-      } as any);
+      });
 
       // 404 is success: delete is idempotent by interface contract —
       // terminal-state cleanup retries, runs twice, and runs for runs
