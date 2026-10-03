@@ -27,6 +27,7 @@ import {
   forgetRunAffinity,
   freshRunAffinity,
   noteOwnerAffinity,
+  ownerAffinity,
 } from './run-affinity.js';
 import { getWorkflowRun } from './runs.js';
 import {
@@ -67,10 +68,11 @@ export function invocationConfig(
 
 /**
  * The affinity ID to route a run's invocation with: the mapping from a recent
- * server response for the run, or the run ID itself (per-run affinity).
+ * server response for the run, else the affinity this process was invoked
+ * under as the run's owner, else the run ID itself (per-run affinity).
  */
 export function invocationAffinity(runId: string): string {
-  return freshRunAffinity(runId) ?? runId;
+  return freshRunAffinity(runId) ?? ownerAffinity(runId) ?? runId;
 }
 
 const Envelope = z.object({

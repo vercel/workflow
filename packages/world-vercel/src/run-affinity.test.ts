@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { invocationAffinity } from './invocation.js';
 import {
   affinityCellSize,
   forgetRunAffinity,
@@ -33,6 +34,9 @@ describe('run affinity', () => {
   it('remembers the affinity an owner was invoked under', () => {
     noteOwnerAffinity('wrun_d', 'cell-iad1-abc123-1');
     expect(ownerAffinity('wrun_d')).toBe('cell-iad1-abc123-1');
+    // The owner labels and routes its own run with it when it has no
+    // fresher server mapping.
+    expect(invocationAffinity('wrun_d')).toBe('cell-iad1-abc123-1');
   });
 
   it('reads the requested cell size from the environment', () => {
