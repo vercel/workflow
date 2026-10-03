@@ -11,7 +11,7 @@ interface WorldsFilteredGridProps {
   worlds: [string, World][];
 }
 
-const managedIds = new Set(['vercel']);
+const managedIds = new Set(['vercel', 'fantasticfour-cloudflare']);
 const embeddedIds = new Set([
   'local',
   'redis',
