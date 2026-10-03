@@ -56,25 +56,25 @@ describe('Postgres stream offsets', () => {
   });
 
   test('a repeated notification for a skipped chunk does not consume the offset twice', async () => {
-    // The streamer subscribes in the background; a NOTIFY sent before its
-    // LISTEN is registered would be lost and the test would hang on read().
-    await expect
-      .poll(async () => {
-        const result = await pool.query(
-          `SELECT count(*)::int AS count FROM pg_stat_activity
-           WHERE application_name = $1
-           AND query = 'LISTEN workflow_event_chunk' AND state = 'idle'`,
-          [applicationName]
-        );
-        return result.rows[0].count;
-      })
-      .toBe(1);
-
     const runId = `run_${randomUUID()}`;
     const name = `stream_${randomUUID()}`;
     const stream = await streamer.streams.get(runId, name, 2);
     const reader = stream.getReader();
     try {
+      // The stream reader opens LISTEN lazily. Wait for it before writing so
+      // the first notification cannot arrive before the subscription exists.
+      await expect
+        .poll(async () => {
+          const result = await pool.query(
+            `SELECT count(*)::int AS count FROM pg_stat_activity
+             WHERE application_name = $1
+             AND query = 'LISTEN workflow_event_chunk' AND state = 'idle'`,
+            [applicationName]
+          );
+          return result.rows[0].count;
+        })
+        .toBe(1);
+
       await streamer.streams.write(runId, name, 'first');
       const first = await pool.query(
         'SELECT id FROM workflow.workflow_stream_chunks WHERE stream_id = $1',

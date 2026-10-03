@@ -118,7 +118,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
-  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
+  const onNotification = async (msg: string) => {
     const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
     const key = `strm:${parsed.streamId}` as const;
@@ -142,7 +142,26 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       const { data, eof } = value;
       events.emit(key, { id: parsed.chunkId, data, eof });
     });
-  });
+  };
+
+  let listenSubscription: Promise<{ close: () => Promise<void> }> | undefined;
+  const ensureListening = () => {
+    if (closed) return Promise.reject(streamerClosedError());
+
+    if (!listenSubscription) {
+      listenSubscription = listenChannel(
+        pool,
+        STREAM_TOPIC,
+        onNotification
+      ).catch((err) => {
+        // A failed connection or LISTEN command must not poison later reads.
+        listenSubscription = undefined;
+        throw err;
+      });
+    }
+
+    return listenSubscription;
+  };
 
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
@@ -416,6 +435,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           controller.error(streamerClosedError());
         };
         activeReaders.add(abort);
+        const ensureReaderListening = async () => {
+          try {
+            await ensureListening();
+            if (closed) throw streamerClosedError();
+          } catch (err) {
+            cleanup();
+            throw err;
+          }
+        };
 
         return new ReadableStream<Uint8Array>({
           async start(ctrl) {
@@ -480,6 +508,8 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               events.off(`strm:${name}`, onData);
             });
 
+            await ensureReaderListening();
+
             // A rejection here fails the stream; detach the listener that was
             // registered above so a failing stream does not leak on each read.
             const chunks = await loadPersistedChunks(name).catch((err) => {
@@ -524,7 +554,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       for (const abort of [...activeReaders]) {
         abort();
       }
-      const sub = await listenSubscription.catch(() => undefined);
+      const sub = await listenSubscription?.catch(() => undefined);
       if (sub) await sub.close();
     },
   };

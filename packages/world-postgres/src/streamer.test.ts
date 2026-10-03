@@ -3,15 +3,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Drizzle } from './drizzle/index.js';
 import { createStreamer } from './streamer.js';
 
+const pgMocks = vi.hoisted(() => ({
+  clients: [] as Array<{
+    connect: ReturnType<typeof vi.fn>;
+    query: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    removeListener: ReturnType<typeof vi.fn>;
+    end: ReturnType<typeof vi.fn>;
+  }>,
+  connect: undefined as (() => Promise<void>) | undefined,
+}));
+
 vi.mock('pg', () => ({
   Client: vi.fn(function Client() {
-    return {
-      connect: vi.fn(async () => {}),
+    const client = {
+      connect: vi.fn(async () => pgMocks.connect?.()),
       query: vi.fn(async () => {}),
       on: vi.fn(),
       removeListener: vi.fn(),
       end: vi.fn(async () => {}),
     };
+    pgMocks.clients.push(client);
+    return client;
   }),
   Pool: vi.fn(),
 }));
@@ -39,6 +52,123 @@ function createFakeDrizzle(
     }),
   } as unknown as Drizzle;
 }
+
+beforeEach(() => {
+  pgMocks.clients.length = 0;
+  pgMocks.connect = undefined;
+});
+
+describe('postgres streamer LISTEN subscription lifecycle', () => {
+  it('does not open a LISTEN client for stream writes', async () => {
+    const drizzle = Object.assign(
+      createFakeDrizzle(async () => []),
+      {
+        insert: () => ({ values: vi.fn(async () => undefined) }),
+      }
+    ) as unknown as Drizzle;
+    const streamer = createStreamer(fakePool, drizzle);
+
+    try {
+      await streamer.streams.write('run_1', 'stream-write', 'hello');
+      expect(pgMocks.clients).toHaveLength(0);
+    } finally {
+      await streamer.close();
+    }
+  });
+
+  it('opens one LISTEN client on the first stream read and shares it across readers', async () => {
+    const drizzle = createFakeDrizzle(async () => [
+      {
+        id: 'chnk_00000000000000000000000001',
+        eof: true,
+        data: Buffer.alloc(0),
+      },
+    ]);
+    const streamer = createStreamer(fakePool, drizzle);
+
+    try {
+      expect(pgMocks.clients).toHaveLength(0);
+
+      const streams = await Promise.all([
+        streamer.streams.get('run_1', 'stream-a'),
+        streamer.streams.get('run_1', 'stream-b'),
+      ]);
+      for (const stream of streams) {
+        await expect(stream.getReader().read()).resolves.toEqual({
+          done: true,
+          value: undefined,
+        });
+      }
+
+      expect(pgMocks.clients).toHaveLength(1);
+      expect(pgMocks.clients[0]?.connect).toHaveBeenCalledTimes(1);
+    } finally {
+      await streamer.close();
+    }
+  });
+
+  it('retries a stream read after LISTEN connection setup fails', async () => {
+    let connectAttempts = 0;
+    pgMocks.connect = async () => {
+      connectAttempts++;
+      if (connectAttempts === 1) {
+        throw new Error('connection refused');
+      }
+    };
+
+    const drizzle = createFakeDrizzle(async () => [
+      {
+        id: 'chnk_00000000000000000000000001',
+        eof: true,
+        data: Buffer.alloc(0),
+      },
+    ]);
+    const streamer = createStreamer(fakePool, drizzle);
+
+    try {
+      const failedStream = await streamer.streams.get('run_1', 'stream-retry');
+      await expect(failedStream.getReader().read()).rejects.toThrow(
+        'connection refused'
+      );
+      expect(pgMocks.clients[0]?.end).toHaveBeenCalledTimes(1);
+
+      const retriedStream = await streamer.streams.get('run_1', 'stream-retry');
+      await expect(retriedStream.getReader().read()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      expect(pgMocks.clients).toHaveLength(2);
+      expect(connectAttempts).toBe(2);
+    } finally {
+      await streamer.close();
+    }
+  });
+
+  it('closes a LISTEN client that finishes connecting after streamer shutdown', async () => {
+    let resolveConnect!: () => void;
+    pgMocks.connect = () =>
+      new Promise((resolve) => (resolveConnect = resolve));
+
+    const streamer = createStreamer(
+      fakePool,
+      createFakeDrizzle(async () => [])
+    );
+    const stream = await streamer.streams.get('run_1', 'stream-shutdown');
+    const pendingRead = stream.getReader().read();
+
+    const closePromise = streamer.close();
+    resolveConnect();
+
+    await expect(pendingRead).rejects.toThrow('streamer has been closed');
+    await closePromise;
+
+    expect(pgMocks.clients).toHaveLength(1);
+    expect(pgMocks.clients[0]?.query).toHaveBeenCalledWith(
+      'UNLISTEN workflow_event_chunk'
+    );
+    expect(pgMocks.clients[0]?.end).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('postgres streamer reader listener cleanup', () => {
   // `createStreamer()` keeps its EventEmitter private, so capture any
@@ -216,14 +346,20 @@ describe('postgres streamer reader listener cleanup', () => {
     let resolveQuery!: (
       rows: Array<{ id: string; eof: boolean; data: Buffer }>
     ) => void;
-    const drizzle = createFakeDrizzle(
-      () => new Promise((resolve) => (resolveQuery = resolve))
+    let resolveQueryStarted!: () => void;
+    const queryStarted = new Promise<void>(
+      (resolve) => (resolveQueryStarted = resolve)
     );
+    const drizzle = createFakeDrizzle(() => {
+      resolveQueryStarted();
+      return new Promise((resolve) => (resolveQuery = resolve));
+    });
     const streamer = createStreamer(fakePool, drizzle);
 
     try {
       const stream = await streamer.streams.get('run_1', 'stream-cancel-early');
       const reader = stream.getReader();
+      await queryStarted;
       expect(listenerCount('stream-cancel-early')).toBe(1);
       await reader.cancel();
       expect(listenerCount('stream-cancel-early')).toBe(0);
