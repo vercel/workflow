@@ -210,7 +210,7 @@ This package uses PostgreSQL with the following components:
 
 - **Graphile Worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
-- **pg** (node-postgres): For PostgreSQL client connections. Drizzle and Graphile Worker share a `pg.Pool`, while LISTEN uses a dedicated `pg.Client` created from the same connection options.
+- **pg** (node-postgres): For PostgreSQL client connections. Drizzle and Graphile Worker share a `pg.Pool`. Invocation notifications and live stream reads use separate dedicated `pg.Client` connections created from the same connection options; each opens only when needed.
 
 ### Quick setup with CLI
 
@@ -270,6 +270,10 @@ and its token can be reused. If the token is never reused, the expired
 - **Streaming**: Real-time event streaming capabilities
 - **Health checks**: Built-in connection health monitoring
 - **Configurable concurrency**: Adjustable worker concurrency for queue processing
+
+The stream notification connection is shared by the World and opens on the
+first `streams.get()` call. Creating a World or writing stream chunks does not
+open this connection. `world.close()` closes it when it has been opened.
 
 ## Queue behavior
 
