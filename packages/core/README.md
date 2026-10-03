@@ -42,3 +42,10 @@ Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
 The callback's `waitUntil` scope also drains background operations for streams
 hydrated from the persisted failure, including when a handler throws.
+
+Replay payload preparation shares decrypt/decompress work within an invocation
+while bounding concurrent jobs, serialized input in flight, and cached plaintext.
+Demanded payloads take priority over speculative preparation without starving it.
+Each replay still deserializes fresh VM objects. See
+[replay preparation admission](src/REPLAY_PREPARATION.md) for the defaults,
+oversized-payload behavior, and memory accounting boundaries.
