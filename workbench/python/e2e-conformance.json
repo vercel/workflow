@@ -39,6 +39,7 @@
     "nullByteWorkflow",
     "outputStreamInsideStepWorkflow",
     "outputStreamWorkflow",
+    "payloadCompressionWorkflow",
     "parallelSleepWorkflow",
     "promiseAllWorkflow",
     "promiseAnyWorkflow",
