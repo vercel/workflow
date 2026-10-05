@@ -45,38 +45,74 @@ class Rc<T extends { drop(): void }> {
   }
 }
 
+/** Delay before a dropped `LISTEN` connection is opened again. */
+export const LISTEN_RECONNECT_DELAY_MS = 5_000;
+
 /**
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
  * from the pool's connection options. `channel` must be a trusted identifier.
+ *
+ * The first connection failure rejects. After that, a dropped connection (for
+ * example a database restart) is reported through the client's `error` event,
+ * which must be handled or it ends the process, and is replaced after
+ * {@link LISTEN_RECONNECT_DELAY_MS} until it succeeds or the subscription
+ * closes. Notifications sent while no connection is listening are lost.
  */
 export const listenChannel = async (
   pool: Pool,
   channel: string,
   onPayload: (payload: string) => Promise<void>
 ): Promise<{ close: () => Promise<void> }> => {
-  const client = new Client(pool.options);
-
-  try {
-    await client.connect();
-    await client.query(`LISTEN ${channel}`);
-  } catch (err) {
-    await client.end().catch(() => {});
-    throw err;
-  }
+  let client: Client | undefined;
+  let closed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   const onNotification = (msg: { payload?: string | undefined }) => {
     onPayload(msg.payload ?? '').catch(() => {});
   };
 
-  client.on('notification', onNotification);
+  const connect = async () => {
+    const next = new Client(pool.options);
+    next.on('error', () => {});
+    try {
+      await next.connect();
+      await next.query(`LISTEN ${channel}`);
+    } catch (err) {
+      await next.end().catch(() => {});
+      throw err;
+    }
+    next.on('notification', onNotification);
+    next.on('end', () => {
+      if (client !== next) return;
+      client = undefined;
+      if (!closed) scheduleReconnect();
+    });
+    client = next;
+  };
+
+  const scheduleReconnect = () => {
+    reconnectTimer = setTimeout(() => {
+      connect().catch(() => {
+        if (!closed) scheduleReconnect();
+      });
+    }, LISTEN_RECONNECT_DELAY_MS);
+    reconnectTimer.unref?.();
+  };
+
+  await connect();
 
   return {
     close: async () => {
-      client.removeListener('notification', onNotification);
+      closed = true;
+      clearTimeout(reconnectTimer);
+      const current = client;
+      client = undefined;
+      if (!current) return;
+      current.removeListener('notification', onNotification);
       try {
-        await client.query(`UNLISTEN ${channel}`);
+        await current.query(`UNLISTEN ${channel}`);
       } finally {
-        await client.end();
+        await current.end();
       }
     },
   };
