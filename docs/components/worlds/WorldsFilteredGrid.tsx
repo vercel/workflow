@@ -11,7 +11,7 @@ interface WorldsFilteredGridProps {
   worlds: [string, World][];
 }
 
-const managedIds = new Set(['vercel']);
+const managedIds = new Set(['vercel', 'fantasticfour-cloudflare']);
 const embeddedIds = new Set([
   'local',
   'redis',
@@ -25,7 +25,7 @@ const sections = [
     key: 'managed',
     title: 'Managed',
     description:
-      'Production grade — zero configuration, high throughput, infinitely-scalable, e2e encrypted, and integrated observability',
+      'Production grade — zero configuration, high throughput, infinitely-scalable, and integrated observability, plus end-to-end encryption on Worlds marked Encrypted',
     match: (id: string) => managedIds.has(id),
   },
   {
