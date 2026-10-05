@@ -1,18 +1,24 @@
 'use client';
 
 import { Button } from '@vercel/geistdocs/components/button';
-import { CheckIcon, CopyIcon, ExternalLinkIcon, EyeIcon } from 'lucide-react';
-import { useState } from 'react';
-import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
+} from '@vercel/geistdocs/components/dialog';
+import {
+  CheckIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+  EyeIcon,
+  XIcon,
+} from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
 
 type PreviewBadgeProps = {
   deploymentUrl: string;
@@ -72,71 +78,86 @@ export function PreviewBadge({
   deploymentUrl,
   tarballsUrl,
 }: PreviewBadgeProps) {
+  const [dialogOpen, setDialogOpen] = useState(false);
   const baseUrl = (tarballsUrl || deploymentUrl).replace(/\/$/, '');
   const installCmd = `pnpm i ${baseUrl}/workflow.tgz`;
   const npxCmd = `npx workflow@${baseUrl}/workflow.tgz web`;
 
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button type="button" className="cursor-pointer">
-          <Badge
-            variant="outline"
-            className="gap-1.5 border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors dark:text-amber-400"
+    <>
+      <button
+        type="button"
+        className="cursor-pointer"
+        onClick={() => setDialogOpen(true)}
+      >
+        <Badge
+          variant="outline"
+          className="gap-1.5 border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors dark:text-amber-400"
+        >
+          <EyeIcon className="size-3" />
+          Preview
+        </Badge>
+      </button>
+      <Dialog active={dialogOpen} onClickOutside={() => setDialogOpen(false)}>
+        <DialogContent>
+          <DialogClose
+            aria-label="Close"
+            className="absolute top-3 right-3"
+            onClick={() => setDialogOpen(false)}
+            shape="square"
+            svgOnly
+            variant="tertiary"
           >
-            <EyeIcon className="size-3" />
-            Preview
-          </Badge>
-        </button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Preview Deployment</DialogTitle>
-          <DialogDescription>
-            {"You're viewing a preview deployment. Helpful links:"}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <p className="text-sm text-muted-foreground">
-              Install the workflow package from this commit:
-            </p>
-            <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
-              <code className="flex-1 text-xs break-all font-mono">
-                {installCmd}
-              </code>
-              <CopyButton text={installCmd} />
+            <XIcon aria-hidden="true" className="size-4" />
+          </DialogClose>
+          <DialogHeader>
+            <DialogTitle>Preview Deployment</DialogTitle>
+            <DialogDescription>
+              {"You're viewing a preview deployment. Helpful links:"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="text-sm text-muted-foreground">
+                Install the workflow package from this commit:
+              </p>
+              <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
+                <code className="flex-1 text-xs break-all font-mono">
+                  {installCmd}
+                </code>
+                <CopyButton text={installCmd} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-sm text-muted-foreground">
+                Run the web UI in your project:
+              </p>
+              <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
+                <code className="flex-1 text-xs break-all font-mono">
+                  {npxCmd}
+                </code>
+                <CopyButton text={npxCmd} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-sm text-muted-foreground">
+                SWC Compiler Playground:
+              </p>
+              <a
+                href="https://workflow-swc-playground.labs.vercel.dev/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-xs font-mono hover:bg-muted transition-colors"
+              >
+                <span className="flex-1">
+                  workflow-swc-playground.labs.vercel.dev
+                </span>
+                <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground" />
+              </a>
             </div>
           </div>
-          <div className="space-y-1.5">
-            <p className="text-sm text-muted-foreground">
-              Run the web UI in your project:
-            </p>
-            <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
-              <code className="flex-1 text-xs break-all font-mono">
-                {npxCmd}
-              </code>
-              <CopyButton text={npxCmd} />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <p className="text-sm text-muted-foreground">
-              SWC Compiler Playground:
-            </p>
-            <a
-              href="https://workflow-swc-playground.labs.vercel.dev/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-xs font-mono hover:bg-muted transition-colors"
-            >
-              <span className="flex-1">
-                workflow-swc-playground.labs.vercel.dev
-              </span>
-              <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground" />
-            </a>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

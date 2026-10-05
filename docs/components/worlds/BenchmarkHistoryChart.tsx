@@ -1,6 +1,14 @@
 'use client';
 
-import { Minus, TrendingDown, TrendingUp } from 'lucide-react';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@vercel/geistdocs/components/dialog';
+import { Minus, TrendingDown, TrendingUp, XIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Area,
@@ -12,13 +20,6 @@ import {
 } from 'recharts';
 import type { ChartConfig } from '@/components/ui/chart';
 import { ChartContainer, ChartTooltip } from '@/components/ui/chart';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatTime } from './types';
@@ -163,8 +164,22 @@ export function BenchmarkHistoryChart({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+    <Dialog
+      active={open}
+      onClickOutside={() => onOpenChange(false)}
+      width={768}
+    >
+      <DialogContent>
+        <DialogClose
+          aria-label="Close"
+          className="absolute top-3 right-3"
+          onClick={() => onOpenChange(false)}
+          shape="square"
+          svgOnly
+          variant="tertiary"
+        >
+          <XIcon aria-hidden="true" className="size-4" />
+        </DialogClose>
         <DialogHeader>
           <DialogTitle className="text-lg font-semibold">
             {metricName}
