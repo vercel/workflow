@@ -53,7 +53,6 @@
     "fumadocs-typescript": "^4.0.13",
     "fumadocs-ui": "16.2.2",
     "github-slugger": "^2.0.0",
-    "jszip": "3.10.2",
     "lucide-react": "^0.555.0",
     "mermaid": "^11.12.2",
     "motion": "^12.23.25",
