@@ -101,12 +101,13 @@ describe('getStreamDispatcher', () => {
 
   // Stream writes (PUT) append chunks and are NOT idempotent. Retrying a write
   // the server already applied would duplicate a chunk, so the retry policy is
-  // deliberately narrowed: only transient connection errors and HTTP 429 (both
-  // of which guarantee nothing was persisted) are retryable. A 5xx must never
-  // be retried — it can mean the chunk was written but the response failed.
-  it('retries stream writes only on transient errors and 429, never on 5xx', () => {
+  // deliberately narrowed to a confirmed HTTP 429 refusal. A connection error
+  // or 5xx can mean the chunk was written but the response failed.
+  it('retries stream writes only on 429, never on connection errors or 5xx', () => {
     expect(STREAM_RETRY_OPTIONS.methods).toEqual(['PUT']);
     expect(STREAM_RETRY_OPTIONS.statusCodes).toEqual([429]);
+    expect(STREAM_RETRY_OPTIONS.errorCodes).toEqual([]);
+    expect(STREAM_RETRY_OPTIONS.retryAfter).toBe(true);
     for (const code of [500, 502, 503, 504]) {
       expect(STREAM_RETRY_OPTIONS.statusCodes).not.toContain(code);
     }
@@ -317,6 +318,10 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
 // requests over 8 TCP connections, exactly like the H1 agent.
 describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   const CONCURRENCY = 16;
+  const RETRY_STATUSES: Record<string, number> = {
+    '/flaky': 503,
+    '/rate-limited': 429,
+  };
 
   let server: Http2SecureServer;
   let port: number;
@@ -368,9 +373,10 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
           receivedBodies.push(Buffer.concat(chunks).toString());
           await onArrival(path);
           if (path.startsWith('/req-')) inFlight--;
-          // `/flaky` fails once so RetryAgent re-dispatches it.
-          if (path === '/flaky' && ++flakyAttempts === 1) {
-            stream.respond({ ':status': 503 });
+          // Refuse once so RetryAgent re-dispatches the request body.
+          const retryStatus = RETRY_STATUSES[path];
+          if (retryStatus && ++flakyAttempts === 1) {
+            stream.respond({ ':status': retryStatus, 'retry-after': '0.001' });
             stream.end('retry me');
             return;
           }
@@ -485,6 +491,26 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
       } as any);
       expect(response.status).toBe(200);
+      expect(flakyAttempts).toBe(2);
+      expect(receivedBodies).toEqual([payload, payload]);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('resends an HTTP/2 stream append in full after a confirmed 429', async () => {
+    const agent = createStreamDispatcher(STREAM_RETRY_OPTIONS, LOOPBACK);
+    receivedBodies = [];
+    flakyAttempts = 0;
+    const payload = 'Synthetic caf\u00e9 \ud83d\ude00 bytes.';
+    try {
+      const response = await fetch(`https://127.0.0.1:${port}/rate-limited`, {
+        method: 'PUT',
+        body: payload,
+        dispatcher: agent,
+      } as RequestInit);
+      expect(response.status).toBe(200);
+      await response.text();
       expect(flakyAttempts).toBe(2);
       expect(receivedBodies).toEqual([payload, payload]);
     } finally {

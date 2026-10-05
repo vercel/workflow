@@ -12,6 +12,12 @@ Backend connection failures and interrupted event streams follow existing retry 
 
 See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
 
+The built-in undici stream-write dispatcher retries HTTP appends only after a
+confirmed 429 refusal, preserving the complete body and honoring `Retry-After`
+within its retry limits. Connection errors and 5xx responses surface without
+replaying the append because the server may already have stored it. Stream close
+is idempotent and retains its separate retry policy, including 5xx responses.
+
 ## Events channel
 
 Event writes go over a per-run WebSocket (the default `WORKFLOW_EVENTS_TRANSPORT`;

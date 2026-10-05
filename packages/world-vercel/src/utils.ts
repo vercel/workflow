@@ -116,8 +116,9 @@ export interface APIConfig {
    * the one used for stream writes (the `PUT` write/close path). Stream appends
    * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
    * default, which can duplicate a chunk the server already persisted. A custom
-   * dispatcher used with stream writes should therefore not retry `PUT` on 5xx
-   * (the built-in stream dispatcher retries only on transient errors and 429).
+   * dispatcher used with stream appends should therefore not retry `PUT` on
+   * connection errors or 5xx. The built-in append dispatcher retries only a
+   * confirmed 429 refusal, using a replayable body.
    */
   dispatcher?: unknown;
   projectConfig?: {

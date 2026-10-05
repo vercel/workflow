@@ -10,6 +10,7 @@ import {
   Agent,
   DecoratorHandler,
   type Dispatcher,
+  errors,
   RetryAgent,
   type RetryHandler,
 } from 'undici';
@@ -419,11 +420,9 @@ export const EVENTS_AGENT_OPTIONS_NO_H2 = {
  * connection.
  *
  * Stream appends are not idempotent. Multiplexing N appends onto one connection
- * makes a single RST_STREAM / GOAWAY / socket reset fail all N at once, and
- * STREAM_RETRY_OPTIONS retries PUT on exactly those transient `errorCodes`, so
- * a connection-level blip would resend chunks the server may already have
- * applied and duplicate them. Serializing keeps the existing
- * one-request-per-connection failure isolation that policy was written against.
+ * makes a single RST_STREAM / GOAWAY / socket reset fail all N at once, with
+ * each append's outcome unknown. Serializing keeps one request per connection
+ * so a connection failure leaves at most one append's outcome uncertain.
  *
  * Note this is currently belt-and-braces: undici's H2 `busy()` check already
  * serializes non-idempotent requests (`client-h2.js`: `if
@@ -486,25 +485,22 @@ export const EVENTS_RETRY_AGENT_OPTIONS: RetryHandler.RetryOptions = {
 /**
  * Retry options for stream writes (PUT). Stream appends are NOT idempotent, so
  * we must never retry a write the server may already have applied. We therefore
- * narrow undici's defaults to only the conditions that guarantee the request was
- * rejected *before* the chunk was persisted:
- *  - transient connection errors (undici's default `errorCodes`: ECONNRESET,
- *    ECONNREFUSED, ENOTFOUND, …): the request never reached, or was not
- *    accepted by, the server, and
- *  - HTTP 429: the server rejected the request outright (rate limited), so no
- *    chunk was written; honoring Retry-After backs off cleanly.
+ * narrow undici's defaults to HTTP 429: the server rejected the request
+ * outright (rate limited), so no chunk was written. Honor Retry-After within
+ * undici's bounded retry policy.
  *
  * Crucially, 5xx is excluded from the default `[500, 502, 503, 504, 429]`: a
  * 5xx can mean the chunk *was* written but the response failed, and a retry
- * would duplicate it. Other 4xx are client errors a retry can't fix. `methods`
- * is pinned to PUT (the only stream-write verb) for clarity; `errorCodes` is
- * left at undici's transient-network-error defaults. Exported so a test can
- * assert that 5xx never sneaks back into the retryable set.
+ * would duplicate it. Connection errors can also happen after persistence but
+ * before the response arrives, so explicitly disable undici's default network
+ * retries. Other 4xx are client errors a retry can't fix. Exported so tests can
+ * pin this policy independently of the request body's replayability.
  */
 export const STREAM_RETRY_OPTIONS: RetryHandler.RetryOptions = {
   retryAfter: true,
   methods: ['PUT'],
   statusCodes: [429],
+  errorCodes: [],
 };
 
 /**
@@ -979,8 +975,8 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
  * Resolves the dispatcher for stream writes (the PUT write/close path): the
  * caller's override, or the shared HTTP/2 stream agent. See
  * getDefaultStreamDispatcher (and STREAM_RETRY_OPTIONS) for its deliberately
- * narrowed retry policy (transient connection errors + HTTP 429 only, never
- * 5xx), chosen because stream appends are not idempotent.
+ * narrowed retry policy (HTTP 429 only), chosen because stream appends are not
+ * idempotent.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
   return resolveDispatcher(config, getDefaultStreamDispatcher);
@@ -1105,18 +1101,90 @@ function withBoundLifecycle(
   });
 }
 
+async function bufferStreamBody(
+  body: AsyncIterable<Uint8Array | string>,
+  length: number
+): Promise<Buffer> {
+  const buffered = Buffer.allocUnsafe(length);
+  let offset = 0;
+  for await (const chunk of body) {
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    if (offset + bytes.length > length) {
+      throw new errors.RequestContentLengthMismatchError();
+    }
+    buffered.set(bytes, offset);
+    offset += bytes.length;
+  }
+  if (offset !== length) {
+    throw new errors.RequestContentLengthMismatchError();
+  }
+  return buffered;
+}
+
 /**
- * Builds a stream write/close dispatcher. Exported for the same reason as
- * `createEventsDispatcher`, so a test can assert the inverse property, that
- * these deliberately do NOT multiplex.
+ * Restore the materialized stream append body before RetryHandler captures it.
+ * Global fetch turns strings and byte arrays into one-shot async iterables;
+ * retrying those after a 429 otherwise re-sends an exhausted body. Unlike the
+ * events interceptor, this does not mark appends idempotent or enable H2
+ * multiplexing. Appends can exceed the events re-buffering cap, so the buffer
+ * is bounded by their known content length instead. Unknown-length bodies are
+ * passed through, since the stream API never supplies one.
  */
+function replayableStreamBodyInterceptor(
+  dispatch: Dispatcher['dispatch']
+): Dispatcher['dispatch'] {
+  return (opts, handler) => {
+    const body = opts.body;
+    const length = contentLength(opts.headers);
+    if (
+      !body ||
+      typeof body === 'string' ||
+      Buffer.isBuffer(body) ||
+      typeof (body as unknown as Record<symbol, unknown>)[
+        Symbol.asyncIterator
+      ] !== 'function' ||
+      !Number.isSafeInteger(length) ||
+      length < 0
+    ) {
+      return dispatch(opts, handler);
+    }
+
+    void bufferStreamBody(body as AsyncIterable<Uint8Array | string>, length)
+      .then((buffered) => dispatch({ ...opts, body: buffered }, handler))
+      .catch((error: Error) => {
+        // compose() supplies v2 handlers. Buffering can fail before a
+        // connection exists, so report an already-aborted controller.
+        handler.onResponseError?.(
+          {
+            aborted: true,
+            paused: false,
+            reason: error,
+            abort() {},
+            pause() {},
+            resume() {},
+          },
+          error
+        );
+      });
+    return true;
+  };
+}
+
+/** Builds a stream write/close dispatcher without enabling multiplexing. */
 export function createStreamDispatcher(
   retryOptions: RetryHandler.RetryOptions,
   agentOverrides?: Partial<Agent.Options>
 ): RetryAgent {
-  return new RetryAgent(
+  const agent = new RetryAgent(
     new Agent({ ...STREAM_AGENT_OPTIONS, ...agentOverrides }),
     retryOptions
+  );
+  if (!supportsCompose(agent)) return agent;
+  // Buffer outside RetryAgent so its captured body is replayable on every
+  // attempt. Keep lifecycle methods bound to the underlying RetryAgent.
+  return withBoundLifecycle(
+    agent,
+    agent.compose(replayableStreamBodyInterceptor) as unknown as RetryAgent
   );
 }
 
@@ -1178,18 +1246,17 @@ function getDefaultDispatcher(): RetryAgent {
 }
 
 /**
- * Returns the shared HTTP/2 RetryAgent used for stream writes (PUT write/close).
+ * Returns the shared HTTP/2 RetryAgent used for stream appends (PUT).
  *
  * Stream writes append chunks and are NOT idempotent, so this dispatcher uses a
  * deliberately narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only
- * on transient connection errors and HTTP 429 (both of which guarantee the
- * chunk was not persisted) and never on 5xx or other 4xx, where a retry could
- * duplicate an already-applied write. It opts into H2 (the write/close requests
+ * on HTTP 429 and never on connection errors, 5xx or other 4xx, where a retry
+ * could duplicate an already-applied write. It opts into H2 (the write requests
  * send a fully-buffered body, or none, so they don't hit the duplex-streaming H2
  * issues that keep the long-lived live-read on plain `fetch`) via
  * STREAM_AGENT_OPTIONS, which, unlike the events agent, keeps multiplexing off
- * so one connection-level failure cannot fail (and thus retry) several appends
- * at once.
+ * so one connection-level failure cannot leave several appends with unknown
+ * outcomes at once.
  */
 function getDefaultStreamDispatcher(): RetryAgent {
   pools.streamDispatcher ??= createStreamDispatcher(STREAM_RETRY_OPTIONS);

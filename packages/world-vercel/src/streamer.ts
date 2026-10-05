@@ -69,12 +69,12 @@ export const getMaxChunksPerRequest = (): number =>
 //
 // Writes (the PUT write/close path) go through the H2 stream dispatcher (see
 // getStreamDispatcher): they send a fully-buffered body (or none), so they
-// benefit from H2 multiplexing without hitting the duplex issues that keep the
-// long-lived live-read (GET) on the global dispatcher. Because stream appends
+// use H2 without hitting the duplex issues that keep the long-lived live-read
+// (GET) on the global dispatcher. Multiplexing stays disabled. Because appends
 // aren't idempotent, that stream dispatcher uses a deliberately narrowed retry
-// policy (see STREAM_RETRY_OPTIONS): it retries only on transient connection
-// errors and HTTP 429 (both of which guarantee the chunk was never persisted)
-// and never on 5xx, so a retry can't duplicate an already-applied write.
+// policy (see STREAM_RETRY_OPTIONS): it retries only a confirmed HTTP 429
+// refusal, preserving the full body for each attempt. Connection errors and
+// 5xx may follow persistence, so they surface without replaying the append.
 // Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
 // the live-read (GET) and list keep the global dispatcher (no custom retry) and
 // no request timeout. The live read is long-lived and a whole-request deadline
