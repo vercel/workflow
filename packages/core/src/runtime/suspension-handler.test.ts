@@ -958,31 +958,45 @@ describe('handleSuspension', () => {
     });
 
     it('counts only the stretch a hook create outlasts the other writes', async () => {
-      const delay = (ms: number) =>
-        new Promise((resolve) => setTimeout(resolve, ms));
-      const suspend = (hookMs: number, stepMs: number) => {
-        const eventsCreate = vi.fn(async (_runId, event) => {
-          await delay(event.eventType === 'hook_created' ? hookMs : stepMs);
-          return { event };
-        });
-        return handleSuspension({
-          suspension: new WorkflowSuspension(
-            new Map<string, QueueItem>([
-              hook('hook_1'),
-              step('s_lazy'),
-              step('s_eager'),
-            ]),
-            globalThis
-          ),
-          world: createWorld(eventsCreate),
-          run,
-        });
-      };
+      // Fake timers: with real ones, one event-loop stall longer than the hook
+      // delay fires both timers in the same tick and the measured stretch
+      // collapses to 0 on a loaded CI runner.
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) =>
+          new Promise((resolve) => setTimeout(resolve, ms));
+        const suspend = async (hookMs: number, stepMs: number) => {
+          const eventsCreate = vi.fn(async (_runId, event) => {
+            await delay(event.eventType === 'hook_created' ? hookMs : stepMs);
+            return { event };
+          });
+          const result = handleSuspension({
+            suspension: new WorkflowSuspension(
+              new Map<string, QueueItem>([
+                hook('hook_1'),
+                step('s_lazy'),
+                step('s_eager'),
+              ]),
+              globalThis
+            ),
+            world: createWorld(eventsCreate),
+            run,
+          });
+          let settled = false;
+          void result.finally(() => {
+            settled = true;
+          });
+          while (!settled) await vi.advanceTimersByTimeAsync(1);
+          return result;
+        };
 
-      // The step write outlasts the hook create: the hook never blocked.
-      expect((await suspend(5, 120)).hookCreationMs).toBeLessThan(60);
-      // The hook create outlasts the step write by ~115ms.
-      expect((await suspend(120, 5)).hookCreationMs).toBeGreaterThanOrEqual(60);
+        // The step write outlasts the hook create: the hook never blocked.
+        expect((await suspend(5, 120)).hookCreationMs).toBe(0);
+        // The hook create outlasts the step write by exactly the difference.
+        expect((await suspend(120, 5)).hookCreationMs).toBe(115);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
