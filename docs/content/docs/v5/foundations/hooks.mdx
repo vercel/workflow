@@ -200,31 +200,36 @@ Each time you call `resumeHook()` with the same token, the loop receives another
 
 ### Waiting with a timeout
 
-Race a hook against `sleep()` to stop waiting after a deadline. The race can run again in a loop: an event that arrives after an earlier race timed out still reaches the race that is currently waiting.
+Race a hook against `sleep()` to stop waiting after a deadline. To wait again after a timeout, create the hook's promise once and race that same promise on every attempt:
 
 ```typescript lineNumbers
 import { createHook, sleep } from "workflow";
+
+declare function sendReminder(): Promise<void>; // @setup
 
 export async function reminderWorkflow() {
   "use workflow";
 
   using hook = createHook<{ approved: boolean }>();
+  const approval = hook.then((payload) => payload); // [!code highlight]
 
   for (let reminder = 0; reminder < 3; reminder++) {
     const result = await Promise.race([
-      hook.then((payload) => payload),
+      approval, // [!code highlight]
       sleep("1d").then(() => "timeout" as const),
     ]);
 
     if (result !== "timeout") {
       return result.approved;
     }
-    // Send a reminder, then wait again
+    await sendReminder();
   }
 
   return false;
 }
 ```
+
+Racing a fresh `hook.then()` on each attempt also receives an event that arrives while that race is running. An event that arrives between races, for example while `sendReminder()` runs, is delivered to the earlier race's `hook.then()`, which already timed out, so the workflow never sees it.
 
 Every `await` on a hook that happens while no event is available waits for the same next event, so `Promise.all([hook, hook])` resolves both with one payload. To receive separate events, await them one after another or iterate with `for await...of`.
 
