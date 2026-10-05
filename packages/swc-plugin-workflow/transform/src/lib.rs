@@ -84,6 +84,80 @@ fn sanitize_ident_part(name: &str) -> String {
         .collect()
 }
 
+fn block_has_use_step_directive(body: Option<&BlockStmt>) -> bool {
+    body.is_some_and(|body| {
+        body.stmts.iter().any(|stmt| {
+            matches!(
+                stmt,
+                Stmt::Expr(ExprStmt { expr, .. })
+                    if matches!(&**expr, Expr::Lit(Lit::Str(value)) if value.value == "use step")
+            )
+        })
+    })
+}
+
+/// Cheaply determine whether step mode can discover a step that workflow mode
+/// cannot see after replacing an enclosing function body. Most modules only
+/// contain module-level steps, so they do not need the authoritative step-mode
+/// naming pre-pass.
+struct NestedStepDetector {
+    function_depth: usize,
+    found: bool,
+}
+
+impl NestedStepDetector {
+    fn detect(program: &Program) -> bool {
+        let mut detector = Self {
+            function_depth: 0,
+            found: false,
+        };
+        program.visit_with(&mut detector);
+        detector.found
+    }
+
+    fn inspect_body(&mut self, body: Option<&BlockStmt>) {
+        if self.function_depth > 0 && block_has_use_step_directive(body) {
+            self.found = true;
+        }
+    }
+}
+
+impl Visit for NestedStepDetector {
+    noop_visit_type!();
+
+    fn visit_function(&mut self, function: &Function) {
+        if self.found {
+            return;
+        }
+        self.inspect_body(function.body.as_ref());
+        self.function_depth += 1;
+        function.visit_children_with(self);
+        self.function_depth -= 1;
+    }
+
+    fn visit_arrow_expr(&mut self, arrow: &ArrowExpr) {
+        if self.found {
+            return;
+        }
+        if let BlockStmtOrExpr::BlockStmt(body) = &*arrow.body {
+            self.inspect_body(Some(body));
+        }
+        self.function_depth += 1;
+        arrow.visit_children_with(self);
+        self.function_depth -= 1;
+    }
+
+    fn visit_getter_prop(&mut self, getter: &GetterProp) {
+        if self.found {
+            return;
+        }
+        self.inspect_body(getter.body.as_ref());
+        self.function_depth += 1;
+        getter.visit_children_with(self);
+        self.function_depth -= 1;
+    }
+}
+
 fn emit_error(error: WorkflowErrorKind) {
     let (span, msg) = match error {
         WorkflowErrorKind::NonAsyncFunction { span, directive } => (
@@ -2107,10 +2181,9 @@ impl StepTransform {
         self.claim_unique_step_name(scope, name)
     }
 
-    /// Run step mode over a copy of `program` and record the name it assigns
-    /// to each step, so workflow mode can use the same names. Diagnostics from
-    /// the copy are discarded; this transform emits its own.
-    fn step_names_from_step_mode(&self, program: &Program) -> HashMap<(u32, u32), String> {
+    /// Run step mode over a copy of `program`. Diagnostics from the copy are
+    /// discarded; the real transform emits its own.
+    fn step_mode_prepass(&self, program: &Program) -> Self {
         let mut program = program.clone();
         let mut step_mode = StepTransform::new(
             TransformMode::Step,
@@ -2123,6 +2196,12 @@ impl StepTransform {
         );
         HANDLER.set(&silent, || program.visit_mut_with(&mut step_mode));
         step_mode
+    }
+
+    /// Record the name step mode assigns to each step, so workflow mode can
+    /// use the same names.
+    fn step_names_from_step_mode(&self, program: &Program) -> HashMap<(u32, u32), String> {
+        self.step_mode_prepass(program)
             .step_name_assignments
             .into_iter()
             .map(|(lo, hi, name)| ((lo, hi), name))
@@ -6062,7 +6141,10 @@ impl StepTransform {
 
 impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
-        if self.mode == TransformMode::Workflow {
+        let has_nested_steps = matches!(self.mode, TransformMode::Workflow | TransformMode::Detect)
+            && NestedStepDetector::detect(program);
+
+        if self.mode == TransformMode::Workflow && has_nested_steps {
             self.step_mode_step_names = self.step_names_from_step_mode(program);
             // Reserve every name step mode uses, so a step that only workflow
             // mode names can't take one of them.
@@ -6070,8 +6152,28 @@ impl VisitMut for StepTransform {
                 .extend(self.step_mode_step_names.values().cloned());
         }
 
+        // Detect mode does not rewrite nested functions, so use step mode's
+        // completed metadata as the authoritative source when nested steps are
+        // present. This keeps discovery manifests aligned with the step and
+        // workflow transforms without teaching every Detect branch to repeat
+        // the naming walk.
+        let detect_step_mode = if self.mode == TransformMode::Detect && has_nested_steps {
+            Some(self.step_mode_prepass(program))
+        } else {
+            None
+        };
+
         // First pass: collect step functions
         program.visit_mut_children_with(self);
+
+        if let Some(step_mode) = detect_step_mode {
+            self.step_function_names = step_mode.step_function_names;
+            self.nested_step_local_names = step_mode.nested_step_local_names;
+            self.nested_step_full_names = step_mode.nested_step_full_names;
+            self.module_level_step_names = step_mode.module_level_step_names;
+            self.object_property_workflow_conversions =
+                step_mode.object_property_workflow_conversions;
+        }
 
         // Preserve class names for manifest before they get drained during
         // registration. Class expressions were already drained (and recorded)
