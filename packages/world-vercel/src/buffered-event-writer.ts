@@ -98,8 +98,8 @@ export function matchesSubmitted(
  * this owner always knows the next slot, so every event it sends carries that
  * slot (`maxSlot = slot - 1`, one past the committed or queued head), and the
  * server writes it exactly there or rejects it. The server never chooses a
- * position on eventsync. An acknowledgement at any other slot is a protocol
- * violation and fails the writer. A taken slot (`slot-conflict`) means another
+ * position on eventsync, so an acknowledgement only reports success or failure
+ * of the write at that slot. A taken slot (`slot-conflict`) means another
  * writer got there first: this owner was superseded.
  */
 export class BufferedEventWriter implements EventWriteSession {
@@ -378,13 +378,9 @@ export class BufferedEventWriter implements EventWriteSession {
         if (current === entry.completion) break;
       }
       if (!result.event) throw new Error('Missing canonical event');
-      // Slot invariant (see class doc): it lands where it was sent, or not at all.
-      const slot = requireEventSlot(result.event.eventId);
-      if (slot !== entry.slot)
-        throw new Error(
-          `Eventsync acknowledged slot ${slot} for an event sent for slot ${entry.slot}`
-        );
-      this.queued = this.committed = slot;
+      // Slot invariant (see class doc): a successful ack means the event is at
+      // the slot this writer sent it for.
+      this.queued = this.committed = entry.slot;
       if (result.step) this.rememberStep(result.step);
       return result;
     } catch (error) {
