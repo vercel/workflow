@@ -1,4 +1,4 @@
 ---
 ---
 
-Test-only: use a header that undici still rejects locally on Node 24.21+ in the world-vercel request-validation tests.
+Test-only: keep the world-vercel request-validation and core pipeTo ordering tests passing on Node 24.21+.
