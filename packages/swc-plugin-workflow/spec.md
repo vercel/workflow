@@ -203,11 +203,11 @@ Two nested steps with the same local name in different block scopes of one enclo
 
 Step mode's assignment is authoritative. Workflow mode doesn't see every step that step mode does (steps nested in a step body are only visible to step mode), so it first runs step mode over a copy of the module and reuses the name step mode assigned to each step's source span. This keeps both modes from giving the same ID to different function bodies.
 
-`~N` is the generated collision suffix. Names are claimed in source order, and each claim takes the smallest free `~N`; an explicitly written name that already matches the pattern (only possible as a quoted object property key, e.g. `"act~1"`) is claimed like any other name, so it is either kept or suffixed further, and later duplicates skip it. `N` depends only on the same-named steps in the same namespace; unrelated names elsewhere in the file don't affect it.
+`~N` is the generated collision suffix. Explicitly written names are reserved before suffixes are assigned, so adding a duplicate earlier in the file cannot rename an existing quoted object step such as `"act~1"`. Each duplicate takes the smallest `~N` that is neither already claimed nor explicitly reserved in the same namespace. Unrelated names elsewhere in the file don't affect it.
 
 | Claim order | Assigned names |
 |---|---|
-| `act`, `act`, `act~1` | `act`, `act~1`, `act~1~1` |
+| `act`, `act`, `act~1` | `act`, `act~2`, `act~1` |
 | `act~1`, `act`, `act` | `act~1`, `act`, `act~2` |
 | `act~1` only | `act~1` |
 
