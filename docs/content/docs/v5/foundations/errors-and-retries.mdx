@@ -172,8 +172,6 @@ The SDK also replaces its shared events connection pool after repeated HTTP/2 se
 
 A connection failure does not prove that the backend rejected a write: it may have accepted it before the response was lost. Continue to make step side effects [idempotent](/docs/foundations/idempotency).
 
-When the Vercel backend rate-limits (429) the write that records a step's result, the SDK keeps retrying it until the invocation's deadline, where other throttled writes give up after 30 seconds. A throttled result write therefore doesn't re-run the step body, repeat its side effects, or use up one of its retries.
-
 Failed-run logs include the underlying error causes and their codes, exposing socket, DNS, or TLS errors behind messages such as `TypeError: fetch failed`. If a cause cannot be read, the log includes `[unavailable cause]` and the run can still be recorded as failed.
 
 ## Error codes
