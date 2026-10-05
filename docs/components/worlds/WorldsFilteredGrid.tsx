@@ -1,7 +1,7 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
 import type { World } from './types';
 import { WorldCardSimple } from './WorldCardSimple';
 
@@ -81,13 +81,11 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
           {filters.map(({ id, label }) => (
             <Badge
               key={id}
-              variant="outline"
-              className={`text-sm font-normal py-1 px-3 cursor-pointer select-none ${
-                filter === id
-                  ? 'bg-gray-1000 text-background-100 border-transparent'
-                  : ''
-              }`}
+              variant={filter === id ? 'inverted' : 'pill'}
+              size="lg"
+              className="cursor-pointer select-none font-normal outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
               role="button"
+              aria-pressed={filter === id}
               tabIndex={0}
               onClick={() => setFilter(id)}
               onKeyDown={(e) => {

@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@vercel/geistdocs/components/dialog';
+import { Tabs } from '@vercel/geistdocs/components/tabs';
 import { Minus, TrendingDown, TrendingUp, XIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -21,7 +22,6 @@ import {
 import type { ChartConfig } from '@/components/ui/chart';
 import { ChartContainer, ChartTooltip } from '@/components/ui/chart';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatTime } from './types';
 
 interface BenchmarkHistoryPoint {
@@ -191,21 +191,16 @@ export function BenchmarkHistoryChart({
 
         <div className="min-h-[420px]">
           {/* Tabs for switching between releases and commits */}
-          <Tabs
-            value={mode}
-            onValueChange={(v) => setMode(v as HistoryMode)}
-            variant="underline"
+          <Tabs<HistoryMode>
             className="mb-4"
-          >
-            <TabsList>
-              <TabsTrigger value="releases" disabled={loading}>
-                Releases
-              </TabsTrigger>
-              <TabsTrigger value="commits" disabled={loading}>
-                Commits
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+            disabled={loading}
+            selected={mode}
+            setSelected={setMode}
+            tabs={[
+              { title: 'Releases', value: 'releases' },
+              { title: 'Commits', value: 'commits' },
+            ]}
+          />
 
           {/* Loading skeleton matching the stat cards + chart layout */}
           {!hasLoadedOnce && data.length === 0 && (

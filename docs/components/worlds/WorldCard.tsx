@@ -1,8 +1,8 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { ExternalLinkIcon } from 'lucide-react';
 import Link from 'next/link';
-import { Badge } from '@/components/ui/badge';
 import {
   Card,
   CardContent,
@@ -36,7 +36,7 @@ export function WorldCard({ world }: WorldCardProps) {
                 {world.name}
               </span>
               {world.type === 'official' && (
-                <Badge variant="outline" className="text-xs font-normal">
+                <Badge variant="pill" size="sm">
                   Official
                 </Badge>
               )}

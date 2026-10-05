@@ -1,8 +1,8 @@
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { Button } from '@vercel/geistdocs/components/button';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { PlainGlobe } from '@/app/[lang]/(home)/components/vercel-com-visuals/plain-globe';
-import { Badge } from '@/components/ui/badge';
 import { WorldsFilteredGrid } from '@/components/worlds/WorldsFilteredGrid';
 import { getWorldsData } from '@/lib/worlds-data';
 
@@ -81,9 +81,7 @@ export default async function WorldsPage() {
                 <h2 className="text-heading-24 sm:text-heading-32">
                   Provider Benchmarks
                 </h2>
-                <Badge variant="outline" className="text-sm">
-                  Coming soon
-                </Badge>
+                <Badge variant="pill">Coming soon</Badge>
               </div>
               <p className="text-muted-foreground max-w-md">
                 See how workflows compare across the different worlds deployed

@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { Button } from '@vercel/geistdocs/components/button';
 import {
   Dialog,
@@ -18,7 +19,6 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
 
 type PreviewBadgeProps = {
   deploymentUrl: string;
@@ -91,10 +91,11 @@ export function PreviewBadge({
         onClick={() => setDialogOpen(true)}
       >
         <Badge
-          variant="outline"
-          className="gap-1.5 border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors dark:text-amber-400"
+          variant="amber"
+          size="sm"
+          icon={<EyeIcon />}
+          className="transition-opacity hover:opacity-80"
         >
-          <EyeIcon className="size-3" />
           Preview
         </Badge>
       </button>

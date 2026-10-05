@@ -1,9 +1,9 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { Tooltip } from '@vercel/geistdocs/components/tooltip';
 import { BadgeCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
-import { Badge } from '@/components/ui/badge';
 import {
   Card,
   CardContent,
@@ -59,9 +59,8 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
               position="bottom"
               tabIndex={null}
             >
-              <Badge className="bg-blue-300 text-blue-700 border-transparent">
-                <ShieldCheck className="h-3.5 w-3.5" />
-                <span>Encrypted</span>
+              <Badge variant="blue" size="sm" icon={<ShieldCheck />}>
+                Encrypted
               </Badge>
             </Tooltip>
           )}

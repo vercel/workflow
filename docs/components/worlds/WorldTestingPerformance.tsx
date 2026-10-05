@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { Tooltip } from '@vercel/geistdocs/components/tooltip';
 import {
   AlertCircle,
@@ -10,7 +11,6 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
 import {
   Table,
   TableBody,
@@ -79,24 +79,24 @@ const statusConfig = {
   passing: {
     label: 'Passing',
     icon: CheckCircle2,
-    className: 'bg-green-900 dark:bg-green-600 text-white',
+    variant: 'green',
   },
   partial: {
     label: 'Partial',
     icon: AlertCircle,
-    className: 'bg-amber-700 text-white',
+    variant: 'amber',
   },
   failing: {
     label: 'Failing',
     icon: XCircle,
-    className: 'bg-red-900 dark:bg-red-800 text-white',
+    variant: 'red',
   },
   pending: {
     label: 'Pending',
     icon: Clock,
-    className: 'bg-gray-300 text-gray-1000',
+    variant: 'gray',
   },
-};
+} as const;
 
 export function WorldTestingPerformance({
   worldId,
@@ -166,10 +166,7 @@ export function WorldTestingPerformance({
             <>
               {/* Summary - based on nextjs-turbopack for canonical scoring */}
               <div className="flex flex-wrap items-center gap-3">
-                <Badge
-                  className={`gap-1 text-sm py-1 px-3 ${config.className}`}
-                >
-                  <StatusIcon className="h-4 w-4" />
+                <Badge variant={config.variant} size="lg" icon={<StatusIcon />}>
                   {config.label}
                 </Badge>
                 <span className="text-lg font-medium">

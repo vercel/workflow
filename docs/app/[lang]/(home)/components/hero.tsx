@@ -10,7 +10,7 @@ import {
   CommandPromptTrigger,
   CommandPromptTriggerDivider,
   CommandPromptViewport,
-} from '@/components/ui/command-prompt';
+} from '@vercel/geistdocs/components/command-prompt';
 
 const COMMAND_FOR_HUMANS = 'npm install workflow';
 const COMMAND_FOR_AGENTS = 'npx skills add vercel/workflow';

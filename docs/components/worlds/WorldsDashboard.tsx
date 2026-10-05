@@ -1,8 +1,11 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
+import {
+  TabContent,
+  TabsWithChildren,
+} from '@vercel/geistdocs/components/tabs-with-children';
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BenchmarkBar, BenchmarkChart } from './BenchmarkChart';
 import type { WorldsStatus } from './types';
 import { WorldCard } from './WorldCard';
@@ -47,25 +50,24 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
     <div className="space-y-8">
       {/* Summary */}
       <div className="flex flex-wrap gap-3">
-        <Badge variant="outline" className="text-sm py-1 px-3">
+        <Badge variant="pill" size="lg">
           {stats.total} Worlds
         </Badge>
-        <Badge variant="outline" className="text-sm py-1 px-3">
+        <Badge variant="pill" size="lg">
           {stats.official} Official
         </Badge>
-        <Badge variant="outline" className="text-sm py-1 px-3">
+        <Badge variant="pill" size="lg">
           🌐 {stats.community} Community
         </Badge>
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="overview" className="w-full">
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="benchmarks">Benchmarks</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="overview" className="space-y-6 pt-4">
+      <TabsWithChildren
+        ariaLabel="Worlds dashboard"
+        className="w-full"
+        tabs={['Overview', 'Benchmarks']}
+      >
+        <TabContent order={1} className="space-y-6 pt-4">
           {/* Filter */}
           <div className="flex gap-2">
             <button
@@ -109,9 +111,9 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
               <WorldCard key={id} id={id} world={world} />
             ))}
           </div>
-        </TabsContent>
+        </TabContent>
 
-        <TabsContent value="benchmarks" className="space-y-8 pt-4">
+        <TabContent order={2} className="space-y-8 pt-4">
           {/* Benchmark comparison */}
           <div className="space-y-4">
             <h3 className="text-heading-20">Performance Comparison</h3>
@@ -129,8 +131,8 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
               <BenchmarkBar data={data} benchmarkName={benchName} />
             </div>
           ))}
-        </TabsContent>
-      </Tabs>
+        </TabContent>
+      </TabsWithChildren>
 
       {/* Last updated */}
       <div className="text-xs text-muted-foreground border-t pt-4">

@@ -134,9 +134,9 @@ still adds overhead. Pulling in `workflow/runtime` from a server-startup hook pu
 the whole runtime into the cold-start path before the first request is served.
 </Callout>
 
-<Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
+<TabsWithChildren tabs={["Next.js","SvelteKit","Nitro"]}>
 
-<Tab value="Next.js">
+<TabContent order={1}>
 
 Create an `instrumentation.ts` file in your project root:
 
@@ -154,9 +154,9 @@ export async function register() {
 Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
 </Callout>
 
-</Tab>
+</TabContent>
 
-<Tab value="SvelteKit">
+<TabContent order={2}>
 
 Create a `src/hooks.server.ts` file:
 
@@ -174,9 +174,9 @@ export const init: ServerInit = async () => {
 Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 </Callout>
 
-</Tab>
+</TabContent>
 
-<Tab value="Nitro">
+<TabContent order={3}>
 
 Create a plugin to start the world on server initialization:
 
@@ -205,9 +205,9 @@ export default defineNitroConfig({
 Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 </Callout>
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
