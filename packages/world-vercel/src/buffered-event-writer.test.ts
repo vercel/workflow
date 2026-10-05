@@ -123,6 +123,27 @@ it('preserves native hook registration instead of inventing its materialization 
   expect(await result).toBe(canonical);
 });
 
+it('rejects a native write acknowledged at a slot other than the one it was sent for', async () => {
+  // Eventsync slot invariant: the owner sent hook_created for slot 4; the
+  // server must write it there or fail it, never pick slot 5 instead.
+  const { writer, calls } = fixture();
+  const request = {
+    eventType: 'hook_created',
+    specVersion: 6,
+    correlationId: 'hook_new',
+    eventData: { token: 'new-token' },
+  } as CreateEventRequest;
+  const result = writer.create(request, { eventCount: 3 });
+  await vi.waitFor(() => expect(calls).toHaveLength(1));
+  calls[0].resolve({
+    event: { eventId: 'evnt_00000000000000000000000005' },
+  } as unknown as EventResult);
+  await expect(result).rejects.toThrow(
+    'Eventsync acknowledged slot 5 for an event sent for slot 4'
+  );
+  await expect(writer.create(request, { eventCount: 3 })).rejects.toThrow();
+});
+
 it('fails the barrier and future staging when any member fails', async () => {
   const { writer, calls, release } = fixture();
   const first = await writer.stage(hook, { eventCount: 3 });
