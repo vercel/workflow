@@ -1919,6 +1919,15 @@ async function workflow() {
       );
     });
 
+    it('records the current Node.js version for a same-deployment start', async () => {
+      await start(validWorkflow, []);
+
+      const eventData = mockEventsCreate.mock.calls[0]?.[1]?.eventData;
+      expect(eventData.executionContext.nodeVersion).toBe(
+        process.versions.node
+      );
+    });
+
     it('omits replayedFromRunId from executionContext when not provided', async () => {
       await start(validWorkflow, []);
 
@@ -2323,6 +2332,38 @@ async function workflow() {
         await expect(
           hydrateWorkflowArguments(input, 'wrun_x', keys)
         ).resolves.toEqual(['hello', 42]);
+      });
+
+      it('stamps the probed Node.js version and writes a codec it decodes', async () => {
+        const bigArg = 'argument '.repeat(500);
+        worldWithProbe({
+          workflowCoreVersion: '5.0.0',
+          nodeVersion: '20.19.0',
+        });
+
+        await start(validWorkflow, [bigArg], { deploymentId: 'dpl_other' });
+
+        const eventData = mockEventsCreate.mock.calls[0][1].eventData;
+        // The target's version, not the caller's, so later hook resumes know
+        // what the run's runtime can decode.
+        expect(eventData.executionContext.nodeVersion).toBe('20.19.0');
+        expect(peekFormatPrefix(eventData.input)).toBe(
+          SerializationFormat.GZIP
+        );
+      });
+
+      it('omits nodeVersion when the probe does not report one', async () => {
+        worldWithProbe({ workflowCoreVersion: '5.0.0' });
+
+        await start(validWorkflow, ['argument '.repeat(500)], {
+          deploymentId: 'dpl_other',
+        });
+
+        const eventData = mockEventsCreate.mock.calls[0][1].eventData;
+        expect(eventData.executionContext).not.toHaveProperty('nodeVersion');
+        expect(peekFormatPrefix(eventData.input)).toBe(
+          SerializationFormat.GZIP
+        );
       });
 
       it('falls back to the key lookup when the probe returns no key', async () => {

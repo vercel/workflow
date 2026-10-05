@@ -325,6 +325,24 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBeUndefined();
   });
 
+  it('surfaces nodeVersion from the target and drops a non-string value', async () => {
+    const ok = await healthCheck(
+      makeWorldWithResponse(
+        JSON.stringify({ healthy: true, specVersion: 3, nodeVersion: '24.1.0' })
+      ),
+      { timeout: 1000 }
+    );
+    expect(ok.nodeVersion).toBe('24.1.0');
+
+    const bad = await healthCheck(
+      makeWorldWithResponse(
+        JSON.stringify({ healthy: true, specVersion: 3, nodeVersion: 24 })
+      ),
+      { timeout: 1000 }
+    );
+    expect(bad.nodeVersion).toBeUndefined();
+  });
+
   it('surfaces hookResumeInputVersion from the target so the caller stamps the consumer value', async () => {
     // Blocker 1: the marker must reflect the TARGET deployment (the queue
     // consumer that re-ensures the event), not the caller. The responder
@@ -1065,6 +1083,19 @@ describe('health check run public key', () => {
     expect(writtenResponse(write).encryptionPublicKey).toBe(
       bytesToBase64(publicKey)
     );
+  });
+
+  it('reports the responding deployment Node.js version', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_node' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).nodeVersion).toBe(process.versions.node);
   });
 
   it('omits the key when the probe names no run', async () => {

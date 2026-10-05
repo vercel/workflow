@@ -21,7 +21,11 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
-import { getRunCapabilities } from '../capabilities.js';
+import {
+  getCompressionMode,
+  getCurrentNodeVersion,
+  getRunCapabilities,
+} from '../capabilities.js';
 import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
@@ -31,11 +35,11 @@ import {
   decodeRunPublicKey,
   deriveRunKeyPair,
 } from '../sealed-box.js';
+import type { CompressionMode } from '../serialization/compression.js';
 import {
   dehydrateDynamicWorkflowCode,
   dehydrateWorkflowArguments,
   type PayloadKey,
-  SerializationFormat,
   sealTo,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -724,7 +728,12 @@ export async function start<TArgs extends unknown[], TResult>(
       }
 
       let framedByteStreams: boolean;
-      let targetSupportsCompression: boolean;
+      let targetCompression: CompressionMode;
+      // Node.js version of the runtime that will execute this run, stamped
+      // onto it so later cross-deployment writers (hook resumes) know whether
+      // it decodes zstd. `undefined` when it could not be attested, which
+      // restricts those writers to gzip.
+      let targetNodeVersion: string | undefined;
       // The consumer's hook-resume protocol version, stamped onto the new
       // run. Current producers write the hook_received event durably before
       // publishing the wake and never read it; OLDER producers gate their
@@ -742,7 +751,8 @@ export async function start<TArgs extends unknown[], TResult>(
       let specVersionSource: SpecVersionSource;
       if (!crossDeployment) {
         framedByteStreams = true;
-        targetSupportsCompression = true;
+        targetCompression = true;
+        targetNodeVersion = getCurrentNodeVersion();
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
@@ -750,7 +760,8 @@ export async function start<TArgs extends unknown[], TResult>(
         specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
-        targetSupportsCompression = false;
+        targetCompression = false;
+        targetNodeVersion = undefined;
         // No probe channel to the target, so we cannot attest the consumer
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
@@ -772,11 +783,13 @@ export async function start<TArgs extends unknown[], TResult>(
           namespace: opts.namespace,
         });
         probedRunPublicKey = probe?.encryptionPublicKey;
-        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
-        framedByteStreams = capabilities.framedByteStreams;
-        targetSupportsCompression = capabilities.supportedFormats.has(
-          SerializationFormat.GZIP
+        const capabilities = getRunCapabilities(
+          probe?.workflowCoreVersion,
+          probe?.nodeVersion
         );
+        framedByteStreams = capabilities.framedByteStreams;
+        targetCompression = getCompressionMode(capabilities);
+        targetNodeVersion = probe?.nodeVersion;
         // The responder runs inside the target deployment, so its
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
@@ -991,6 +1004,7 @@ export async function start<TArgs extends unknown[], TResult>(
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
+        ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
         features: { encryption: !!encryptionKey },
         ...(targetHookResumeInputVersion !== undefined
           ? { hookResumeInputVersion: targetHookResumeInputVersion }
@@ -1021,9 +1035,10 @@ export async function start<TArgs extends unknown[], TResult>(
       // possibly containing compressed payloads (specVersion >= 5) AND the
       // target deployment can decode them (same-deployment, or probed
       // capability for cross-deployment starts).
-      const compression =
-        targetSupportsCompression &&
-        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+      const compression: CompressionMode =
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
+          ? targetCompression
+          : false;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
