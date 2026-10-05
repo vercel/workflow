@@ -1,6 +1,4 @@
 import type { TableOfContents } from 'fumadocs-core/toc';
-import { Step, Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
@@ -150,10 +148,6 @@ export async function WorldDetailPage({
         <MDX
           components={getMDXComponents({
             a: VersionedLink,
-            Step,
-            Steps,
-            Tabs,
-            Tab,
             FluidComputeCallout,
             WorldTestingPerformance: WorldTestingPerformanceForMDX,
           })}

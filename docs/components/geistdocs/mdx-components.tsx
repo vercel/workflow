@@ -1,6 +1,8 @@
 import { Callout } from '@vercel/geistdocs/components/callout';
 import { createMdxComponents } from '@vercel/geistdocs/mdx';
-import { Step, Steps } from 'fumadocs-ui/components/steps';
+// Content tabs (`<Tabs items>` + `<Tab value>` with prose) still use the
+// Fumadocs API. Code-only tabs use Geistdocs' CodeBlockTabs via `tab="…"`
+// fences, and Steps/Step come from the Geistdocs defaults.
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import type { MDXComponents } from 'mdx/types';
 import { AgentTraces } from '@/components/custom/agent-traces';
@@ -54,8 +56,6 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
     FluidComputeCallout,
     Badge,
     TSDoc,
-    Step,
-    Steps,
     ...AccordionComponents,
     Tabs,
     Tab,
