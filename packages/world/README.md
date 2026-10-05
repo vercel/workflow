@@ -6,6 +6,13 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
+## Stream writer transport lifetime
+
+A stateful `StreamWriteSession` may implement `release()` to retire an idle
+transport after core has drained a released writer. Unlike `dispose()`, release
+must leave subsequent writes and close usable; an adapter can switch that writer
+to a stateless transport. Neither operation semantically closes the shared stream.
+
 ## Optional invocation delivery
 
 `world.invoke(runId, payload, options?)` sends an input to a workflow runner and
