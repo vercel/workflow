@@ -845,7 +845,7 @@ export async function executeStep(
         );
         stepClaimCompletedAtMs = Date.now();
 
-        step = startResult.step;
+        step = startResult.step as StartedStep;
       } catch (err) {
         const mapped = startErrorToResult(err);
         if (mapped) return mapped;

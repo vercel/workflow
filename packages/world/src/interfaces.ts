@@ -10,7 +10,9 @@ import type {
   CreateEventRequest,
   Event,
   EventBatchResult,
+  EventListResponse,
   EventResult,
+  EventsSubscribeOptions,
   GetEventParams,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
@@ -390,6 +392,32 @@ export interface Storage {
    * run's log rather than a prefix with a hole in it. A World that hands a
    * position out earlier, and can therefore let an event land behind one a
    * reader has already passed, breaks the property every replay depends on.
+   *
+   * **Single-orchestrator runs (spec >= 9).** One orchestrator invocation
+   * makes every decision for a run, and the runtime keeps every invariant of
+   * the step and wait lifecycles itself:
+   *
+   * - Step and wait events (`step_created`, `step_started`, `step_retrying`,
+   *   `step_completed`, `step_failed`, `wait_created`, `wait_completed`) are
+   *   appends. A World MAY keep step and wait entities and MAY refuse writes
+   *   that do not fit them (409, 404, 425), but the runtime never relies on a
+   *   refusal for them: it decides from the log alone, so a World that
+   *   accepts every such append is fully correct. Refusing a step or wait
+   *   write on a terminal run (`step_created`, `step_started`,
+   *   `step_retrying`, `wait_created`) is still expected; `step_completed`,
+   *   `step_failed` and `wait_completed` must stay accepted after the run
+   *   ended.
+   * - Each write says whether the orchestrator made it
+   *   ({@link CreateEventParams.inBand}). The **in-band fence** is optional:
+   *   a World that implements it returns a `snapshot` from `list` and
+   *   refuses a stale in-band write with `InBandSupersededError`, which keeps
+   *   the run to one writer even when two orchestrator invocations overlap. A
+   *   World without it ignores `inBand`/`expectedSeqInBand`, returns no
+   *   `snapshot`, and the runtime relies on its queue delivering a run's
+   *   orchestrator messages one at a time.
+   * - A `createBatch` on such a run is not atomic: an event of the batch may
+   *   commit while another fails, and the runtime treats per-item results
+   *   independently.
    */
   events: {
     /**
@@ -471,10 +499,43 @@ export interface Storage {
       params?: GetEventParams
     ): Promise<Event>;
 
-    list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
+    list(params: ListEventsParams): Promise<EventListResponse>;
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<Event>>;
+
+    /**
+     * OPTIONAL live feed of a run's log. The runtime calls it while an
+     * orchestrator invocation is alive and blocked (for example while it runs
+     * a long inline step, or waits on a background step or a hook), so events
+     * other writers commit reach the running workflow without a queue hop.
+     *
+     * Contract:
+     *
+     * - Calls `onEvent` for each event of `runId` whose slot is above
+     *   `afterSlot`, in slot order, each slot at most once per subscription,
+     *   with no gaps while the subscription is healthy. Events carry the same
+     *   shape and data resolution as `list` with `resolveData: 'all'`.
+     * - Best effort. A World may stop delivering at any time (a dropped
+     *   connection, a shutdown), and should call `options.onError` when it
+     *   does. It need not replay what it missed: the runtime also polls the
+     *   log tail, and accepts a pushed event only when it is the next slot
+     *   it expects, so a late, duplicated or out-of-order event is dropped
+     *   rather than misapplied. Correctness never depends on this method.
+     * - Returns an unsubscribe function. Calling it stops delivery promptly
+     *   and is idempotent. `onEvent` must not be called after it returns.
+     * - Must not throw synchronously for a transport failure; report it
+     *   through `options.onError` instead.
+     *
+     * A World that omits it is fully supported: the runtime then polls the
+     * log tail at `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`.
+     */
+    subscribe?(
+      runId: string,
+      afterSlot: number,
+      onEvent: (event: Event) => void,
+      options?: EventsSubscribeOptions
+    ): () => void;
   };
 
   hooks: {
@@ -591,17 +652,14 @@ export interface WorldCapabilities {
 
   /**
    * The World's queue supports `maxConcurrency`-limited consumption, in
-   * particular the per-run flow topics consumed with `maxConcurrency: 1`
-   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
-   * orchestrator invocations. Worlds whose queue has no concurrency-limit
-   * concept must leave this unset.
+   * particular per-run orchestrator topics consumed with `maxConcurrency: 1`
+   * so that a run's orchestrator invocations run one at a time. Worlds whose
+   * queue has no concurrency-limit concept must leave this unset.
    *
-   * Note this declares queue *support*, not deployed configuration: the
-   * serialization also requires the build-time half (a flow trigger emitted
-   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
-   * The core runtime therefore does not yet take any fast path from this
-   * capability alone: it exists so a future build-verified signal can be
-   * combined with it (and so Worlds document the contract explicitly).
+   * Declares queue *support*, not deployed configuration. The runtime takes
+   * no fast path from it: one orchestrator at a time is a frequency
+   * mechanism, and the in-band fence (see `Storage['events']`) is what makes
+   * an overlap safe.
    */
   maxConcurrency?: boolean;
 

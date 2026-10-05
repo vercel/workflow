@@ -1000,6 +1000,45 @@ export class PreconditionFailedError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when a World refuses an in-band write (a write made by the run's
+ * orchestrator) because another orchestrator invocation of the same run has
+ * written in-band since this one loaded the log (HTTP 412,
+ * `in-band-superseded`).
+ *
+ * The in-band fence is what keeps a run to one orchestrator writer. An
+ * invocation that receives this error has been superseded: it stops writing
+ * and stops running step bodies, does not acknowledge its queue message, and
+ * lets the same message be delivered again after a short delay. The next
+ * delivery loads the log afresh. The runtime handles all of this; users
+ * calling a World's storage API directly may encounter it.
+ *
+ * @property seq - The run's allocated position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only.
+ * @property seqInBand - The run's in-band position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only: a client must never
+ *   adopt it as its own count, since that would make it a writer without
+ *   having seen the events the count stands for.
+ */
+/** Error code a World uses for an {@link InBandSupersededError} refusal. */
+export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
+
+export class InBandSupersededError extends WorkflowWorldError {
+  readonly seq?: number;
+  readonly seqInBand?: number;
+
+  constructor(message: string, options?: { seq?: number; seqInBand?: number }) {
+    super(message, { status: 412, code: IN_BAND_SUPERSEDED_CODE });
+    this.name = 'InBandSupersededError';
+    this.seq = options?.seq;
+    this.seqInBand = options?.seqInBand;
+  }
+
+  static is(value: unknown): value is InBandSupersededError {
+    return isError(value) && value.name === 'InBandSupersededError';
+  }
+}
+
+/**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
  * This error indicates that the workflow was explicitly cancelled (via
