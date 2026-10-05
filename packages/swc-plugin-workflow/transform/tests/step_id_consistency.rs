@@ -109,3 +109,73 @@ fn modes_assign_same_step_names(input: PathBuf) {
         mismatched
     );
 }
+
+/// Values that occur more than once.
+fn duplicates<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut seen = BTreeSet::new();
+    let mut dups: Vec<_> = items.into_iter().filter(|item| !seen.insert(*item)).collect();
+    dups.sort_unstable();
+    dups.dedup();
+    dups
+}
+
+/// Names declared by top-level `var`/`const`/`let`/`function` statements.
+fn top_level_declarations(code: &str) -> Vec<&str> {
+    code.lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            ["var ", "const ", "let ", "async function ", "function "]
+                .iter()
+                .find_map(|kw| line.strip_prefix(kw))
+        })
+        .filter_map(|rest| {
+            rest.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                .next()
+                .filter(|name| !name.is_empty())
+        })
+        .collect()
+}
+
+/// Each step is registered once, under its own ID and binding, and generated
+/// bindings never redeclare a top-level name in either output.
+#[testing::fixture("tests/fixture/**/input.js")]
+#[testing::fixture("tests/fixture/**/input.ts")]
+fn registrations_and_bindings_are_unique(input: PathBuf) {
+    let dir = input.parent().unwrap();
+    let step = fs::read_to_string(dir.join("output-step.js")).unwrap();
+    let workflow = fs::read_to_string(dir.join("output-workflow.js")).unwrap();
+
+    // Inline registrations end with `})(binding, "step//...");`.
+    let registrations: Vec<(&str, &str)> = step
+        .lines()
+        .filter_map(|line| line.strip_prefix("})("))
+        .filter_map(|rest| rest.split_once(", \""))
+        .filter_map(|(binding, rest)| Some((binding, rest.split('"').next()?)))
+        .filter(|(_, id)| id.starts_with("step//"))
+        .collect();
+    let dup_ids = duplicates(registrations.iter().map(|(_, id)| *id));
+    assert!(dup_ids.is_empty(), "{}: step IDs registered more than once: {:?}", dir.display(), dup_ids);
+    let dup_bindings = duplicates(
+        registrations
+            .iter()
+            .map(|(binding, _)| *binding)
+            .filter(|b| b.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')),
+    );
+    assert!(
+        dup_bindings.is_empty(),
+        "{}: one binding registered for several step IDs: {:?}",
+        dir.display(),
+        dup_bindings
+    );
+
+    for (mode, code) in [("step", &step), ("workflow", &workflow)] {
+        let dups = duplicates(top_level_declarations(code));
+        assert!(
+            dups.is_empty(),
+            "{}: {} mode declares top-level names more than once: {:?}",
+            dir.display(),
+            mode,
+            dups
+        );
+    }
+}

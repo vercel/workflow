@@ -2137,19 +2137,6 @@ impl StepTransform {
         prop_key: &str,
         span: swc_core::common::Span,
     ) -> String {
-        if prop_key.contains('~') {
-            HANDLER.with(|handler| {
-                handler
-                    .struct_span_err(
-                        span,
-                        &format!(
-                            "Step property key `{}` contains `~`, which is reserved for generated step names. Rename the property.",
-                            prop_key
-                        ),
-                    )
-                    .emit()
-            });
-        }
         let scope = match &self.current_workflow_function_name {
             Some(wf_name) => format!("{}/{}", wf_name, parent_var_name),
             None => parent_var_name.to_string(),
@@ -2160,13 +2147,17 @@ impl StepTransform {
         claimed
     }
 
-    /// Return a module-level binding for a hoisted step, based on `base`
-    /// (with any `~` from a generated step name replaced by `$`), that doesn't
-    /// redeclare another hoisted step or a module-level name. A redeclared
-    /// `var`/`function` would silently replace the earlier function, so the
-    /// step registered under one ID would run another step's body.
+    /// Return a module-level binding for a hoisted step (or step proxy), based
+    /// on `base`, that is a valid JS identifier and doesn't redeclare another
+    /// hoisted step or a module-level name. `~` (as in a `~N` step-name
+    /// suffix) becomes `$` and any other character not allowed in an
+    /// identifier becomes `_`, so distinct keys such as `act~1`, `act_1` and
+    /// `act-1` may map to the same base; the `$N` suffix keeps them apart. A
+    /// redeclared `var`/`function` would silently replace the earlier
+    /// function, so the step registered under one ID would run another step's
+    /// body.
     fn claim_hoisted_step_binding(&mut self, base: &str) -> String {
-        let base = base.replace('~', "$");
+        let base = sanitize_ident_part(&base.replace('~', "$"));
         let mut binding = base.clone();
         let mut counter = 0;
         while self.declared_identifiers.contains(&binding)
@@ -2880,19 +2871,15 @@ impl StepTransform {
                                         self.current_workflow_function_name.as_deref(),
                                     );
 
-                                    let safe_parent_name = sanitize_ident_part(parent_var_name);
-                                    let safe_prop_key = sanitize_ident_part(&prop_key);
-                                    let var_name = if let Some(ref workflow_name) =
-                                        self.current_workflow_function_name
-                                    {
-                                        let safe_wf = sanitize_ident_part(workflow_name);
-                                        format!(
+                                    let parent_part = parent_var_name.replace('/', "_");
+                                    let base = match &self.current_workflow_function_name {
+                                        Some(workflow_name) => format!(
                                             "__step_{}${}${}",
-                                            safe_wf, safe_parent_name, safe_prop_key
-                                        )
-                                    } else {
-                                        format!("__step_{}${}", safe_parent_name, safe_prop_key)
+                                            workflow_name, parent_part, prop_key
+                                        ),
+                                        None => format!("__step_{}${}", parent_part, prop_key),
                                     };
+                                    let var_name = self.claim_hoisted_step_binding(&base);
 
                                     // Track for hoisting
                                     self.getter_workflow_proxy_hoists

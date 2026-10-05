@@ -203,9 +203,15 @@ Two nested steps with the same local name in different block scopes of one enclo
 
 Step mode's assignment is authoritative. Workflow mode doesn't see every step that step mode does (steps nested in a step body are only visible to step mode), so it first runs step mode over a copy of the module and reuses the name step mode assigned to each step's source span. This keeps both modes from giving the same ID to different function bodies.
 
-`~` can't appear in a JS identifier, so a generated name never equals an explicitly written step name, and `N` depends only on the same-named steps in the same enclosing function. Unrelated names elsewhere in the file don't affect it. Object property step keys written as string literals containing `~` are rejected with an error.
+`~N` is the generated collision suffix. Names are claimed in source order, and each claim takes the smallest free `~N`; an explicitly written name that already matches the pattern (only possible as a quoted object property key, e.g. `"act~1"`) is claimed like any other name, so it is either kept or suffixed further, and later duplicates skip it. `N` depends only on the same-named steps in the same namespace; unrelated names elsewhere in the file don't affect it.
 
-Hoisted bindings aren't part of a step's identity, so a binding that would redeclare another hoisted step or a module-level name gets a `$N` suffix instead (generated `~` becomes `$`). For example, a nested step `helpers$act` and an object property step `helpers.act` in the same workflow are hoisted as `example$helpers$act` and `example$helpers$act$1`.
+| Claim order | Assigned names |
+|---|---|
+| `act`, `act`, `act~1` | `act`, `act~1`, `act~1~1` |
+| `act~1`, `act`, `act` | `act~1`, `act`, `act~2` |
+| `act~1` only | `act~1` |
+
+Step IDs keep the raw names (including `~` and any other characters in a property key), while hoisted bindings and workflow-mode getter proxies are generated as valid JS identifiers: `~` becomes `$`, any other character not allowed in an identifier becomes `_`, and a binding that would redeclare another hoisted step or a module-level name gets a further `$N` suffix. So keys `act~1`, `act_1` and `act-1` on one object get bindings `obj$act$1`, `obj$act_1` and `obj$act_1$1`, while property names in the output are unchanged. Likewise a nested step `helpers$act` and an object property step `helpers.act` in the same workflow are hoisted as `example$helpers$act` and `example$helpers$act$1`.
 
 Nested steps are namespaced by their nearest enclosing named function in both modes, including steps nested in plain helper functions (e.g. `wrapper/fn`).
 
@@ -955,7 +961,6 @@ The plugin emits errors for invalid usage:
 | Invalid exports (`"use step"`) | Module-level `"use step"` files can only export functions (sync or async) |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
 | Nested class | A class with step/workflow methods, step getters, or custom serialization declared inside a function rather than at the module's top level |
-| Reserved `~` in step property key | An object property step key contains `~`, which is reserved for generated step names |
 
 ---
 

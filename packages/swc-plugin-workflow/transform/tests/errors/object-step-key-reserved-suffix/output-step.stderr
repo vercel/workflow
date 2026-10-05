@@ -1,9 +1,0 @@
-  x Step property key `act~1` contains `~`, which is reserved for generated step names. Rename the property.
-   ,-[input.js:5:1]
- 4 |       const helpers = {
- 5 | ,->     "act~1": async () => {
- 6 | |         "use step";
- 7 | |         return 1;
- 8 | `->     },
- 9 |       };
-   `----
