@@ -32,8 +32,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.6.0
-      version: 0.6.0
+      specifier: 0.8.0
+      version: 0.8.0
     '@vitest/coverage-v8':
       specifier: ^4.1.10
       version: 4.1.10
@@ -1417,7 +1417,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.6.0(@opentelemetry/api@1.9.1)
+        version: 0.8.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1472,7 +1472,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.6.0(@opentelemetry/api@1.9.1)
+        version: 0.8.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1622,7 +1622,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.6.0(@opentelemetry/api@1.9.1)
+        version: 0.8.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -10120,8 +10120,8 @@ packages:
     resolution: {integrity: sha512-6pjdXyNfdCQnj1nyeB1rPtll/XUhmciyeZJD0rpIUUwmcIfR+utDl6+iFvlHvsBdqAVT8UC6ydObT0v+xldfUQ==}
     engines: {node: '>=20.0.0'}
 
-  '@vercel/queue@0.6.0':
-    resolution: {integrity: sha512-Le0A3ldZhnItV5f6zO101aBCL/Zty0RURD7b+RDA8+p6fuBhsiA2vSimbA2OysEIXYTEhANokGaSJrV6m7qpxw==}
+  '@vercel/queue@0.8.0':
+    resolution: {integrity: sha512-Rwaoq8DbSN2/qVPMdHzBdBXqpoD2h2s7+gOSaE3Gff9XI1NjNh281uMesP30k1kbsnjgeaibLTSiuYDlNPlw+g==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@opentelemetry/api': 1.9.1
@@ -27021,7 +27021,7 @@ snapshots:
       picocolors: 1.1.1
     optional: true
 
-  '@vercel/queue@0.6.0(@opentelemetry/api@1.9.1)':
+  '@vercel/queue@0.8.0(@opentelemetry/api@1.9.1)':
     dependencies:
       '@vercel/oidc': 3.2.0
       minimatch: 10.2.5
