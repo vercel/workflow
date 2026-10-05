@@ -171,6 +171,28 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
+  const resyncStream = (key: `strm:${string}`) => {
+    const resource = getMutex(key);
+    void resource.mutex
+      .andThen(async () => {
+        for (const chunk of await loadPersistedChunks(
+          key.slice('strm:'.length)
+        )) {
+          events.emit(key, chunk);
+        }
+      })
+      .catch(() => {
+        if (closed || !events.listenerCount(key)) return;
+        console.warn(
+          `[world-postgres] Re-reading ${key} after LISTEN reconnect failed; retrying`
+        );
+        setTimeout(
+          () => resyncStream(key),
+          LISTEN_RECONNECT_DELAY_MS
+        ).unref?.();
+      });
+  };
+
   const listenSubscription = listenChannel(
     pool,
     STREAM_TOPIC,
@@ -203,17 +225,9 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       // Chunks written while LISTEN was down sent no notification. Re-emit each
       // active stream's persisted chunks; readers skip ids they already have.
       for (const key of events.eventNames()) {
-        if (typeof key !== 'string' || !key.startsWith('strm:')) continue;
-        const resource = getMutex(key as `strm:${string}`);
-        void resource.mutex
-          .andThen(async () => {
-            for (const chunk of await loadPersistedChunks(
-              key.slice('strm:'.length)
-            )) {
-              events.emit(key as `strm:${string}`, chunk);
-            }
-          })
-          .catch(() => {});
+        if (typeof key === 'string' && key.startsWith('strm:')) {
+          resyncStream(key as `strm:${string}`);
+        }
       }
     }
   );
