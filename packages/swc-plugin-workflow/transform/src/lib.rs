@@ -158,6 +158,70 @@ impl Visit for NestedStepDetector {
     }
 }
 
+fn prop_name_contains_tilde(name: &PropName) -> bool {
+    match name {
+        PropName::Ident(ident) => ident.sym.contains('~'),
+        PropName::Str(value) => value.value.to_string_lossy().contains('~'),
+        _ => false,
+    }
+}
+
+/// Explicit names can only collide with a generated suffix when they contain
+/// `~`. Avoid the reservation pass for the common case where no step key can
+/// collide with one.
+struct ExplicitTildeStepDetector {
+    found: bool,
+}
+
+impl ExplicitTildeStepDetector {
+    fn detect(program: &Program) -> bool {
+        let mut detector = Self { found: false };
+        program.visit_with(&mut detector);
+        detector.found
+    }
+}
+
+impl Visit for ExplicitTildeStepDetector {
+    noop_visit_type!();
+
+    fn visit_key_value_prop(&mut self, prop: &KeyValueProp) {
+        if self.found {
+            return;
+        }
+        let has_step = match &*prop.value {
+            Expr::Arrow(arrow) => match &*arrow.body {
+                BlockStmtOrExpr::BlockStmt(body) => block_has_use_step_directive(Some(body)),
+                BlockStmtOrExpr::Expr(_) => false,
+            },
+            Expr::Fn(function) => block_has_use_step_directive(function.function.body.as_ref()),
+            _ => false,
+        };
+        if prop_name_contains_tilde(&prop.key) && has_step {
+            self.found = true;
+        } else {
+            prop.visit_children_with(self);
+        }
+    }
+
+    fn visit_method_prop(&mut self, prop: &MethodProp) {
+        if prop_name_contains_tilde(&prop.key)
+            && block_has_use_step_directive(prop.function.body.as_ref())
+        {
+            self.found = true;
+        } else if !self.found {
+            prop.visit_children_with(self);
+        }
+    }
+
+    fn visit_getter_prop(&mut self, prop: &GetterProp) {
+        if prop_name_contains_tilde(&prop.key) && block_has_use_step_directive(prop.body.as_ref()) {
+            self.found = true;
+        } else if !self.found {
+            prop.visit_children_with(self);
+        }
+    }
+}
+
 fn emit_error(error: WorkflowErrorKind) {
     let (span, msg) = match error {
         WorkflowErrorKind::NonAsyncFunction { span, directive } => (
@@ -511,6 +575,10 @@ pub struct StepTransform {
     // functions, so the second one is given a `~N` suffix to keep its step ID
     // from colliding with (and silently replacing) the first.
     claimed_step_names: HashSet<String>,
+    // Explicit source-level names in each namespace. These are collected in a
+    // lightweight reservation pass before step names are assigned so a
+    // generated `~N` suffix never takes a name written later in the file.
+    reserved_step_names: HashSet<String>,
     // Workflow mode only: the namespaced name step mode assigns to each step,
     // keyed by the step's source span (see `step_names_from_step_mode`).
     // Workflow mode doesn't see every step that step mode does (e.g. steps
@@ -2010,6 +2078,7 @@ impl StepTransform {
             nested_step_local_names: HashSet::new(),
             nested_step_full_names: HashSet::new(),
             claimed_step_names: HashSet::new(),
+            reserved_step_names: HashSet::new(),
             step_mode_step_names: HashMap::new(),
             module_level_step_names: HashSet::new(),
             step_name_assignments: Vec::new(),
@@ -2133,13 +2202,10 @@ impl StepTransform {
         (local_name, full)
     }
 
-    /// Return `name`, or `name~N` for the smallest `N` that is not yet
-    /// claimed under `scope`, and claim it.
-    ///
-    /// `~` can't appear in a JS identifier, and explicit object property step
-    /// keys containing it are rejected (see `claim_object_property_step_name`),
-    /// so a generated `name~N` never equals an explicitly written step name.
-    /// Its value therefore only depends on the same-named steps in `scope`.
+    /// Return `name`, or `name~N` for the smallest `N` that is neither claimed
+    /// nor explicitly reserved under `scope`, and claim it. The unsuffixed
+    /// source name itself may use its reservation; only generated suffixes
+    /// skip reserved names.
     fn claim_unique_step_name(&mut self, scope: &str, name: &str) -> String {
         let qualify = |candidate: &str| {
             if scope.is_empty() {
@@ -2148,14 +2214,25 @@ impl StepTransform {
                 format!("{}/{}", scope, candidate)
             }
         };
-        let mut candidate = name.to_string();
-        let mut counter = 0;
-        while self.claimed_step_names.contains(&qualify(&candidate)) {
-            counter += 1;
-            candidate = format!("{}~{}", name, counter);
+        let explicit_name = qualify(name);
+        self.reserved_step_names.insert(explicit_name.clone());
+        if !self.claimed_step_names.contains(&explicit_name) {
+            self.claimed_step_names.insert(explicit_name);
+            return name.to_string();
         }
-        self.claimed_step_names.insert(qualify(&candidate));
-        candidate
+
+        let mut counter = 1;
+        loop {
+            let candidate = format!("{}~{}", name, counter);
+            let qualified = qualify(&candidate);
+            if !self.claimed_step_names.contains(&qualified)
+                && !self.reserved_step_names.contains(&qualified)
+            {
+                self.claimed_step_names.insert(qualified);
+                return candidate;
+            }
+            counter += 1;
+        }
     }
 
     /// Claim the name for the step at `span`. In workflow mode this is the name
@@ -2206,6 +2283,22 @@ impl StepTransform {
             .into_iter()
             .map(|(lo, hi, name)| ((lo, hi), name))
             .collect()
+    }
+
+    /// Collect every source-level nested-step name before assigning generated
+    /// collision suffixes. The collector runs the normal discovery walk on a
+    /// clone but skips program finalization; only its reservations are kept.
+    fn step_name_reservations(&self, program: &Program) -> HashSet<String> {
+        let mut program = program.clone();
+        let mut collector = StepTransform::new(
+            TransformMode::Step,
+            self.filename.clone(),
+            self.module_specifier.clone(),
+        );
+        let silent =
+            swc_core::common::errors::Handler::with_emitter_writer(Box::new(std::io::sink()), None);
+        HANDLER.set(&silent, || program.visit_mut_children_with(&mut collector));
+        collector.reserved_step_names
     }
 
     /// Claim a unique naming key for an object property step. `parent_var_name`
@@ -6141,6 +6234,10 @@ impl StepTransform {
 
 impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
+        if self.mode == TransformMode::Step && ExplicitTildeStepDetector::detect(program) {
+            self.reserved_step_names = self.step_name_reservations(program);
+        }
+
         let has_nested_steps = matches!(self.mode, TransformMode::Workflow | TransformMode::Detect)
             && NestedStepDetector::detect(program);
 

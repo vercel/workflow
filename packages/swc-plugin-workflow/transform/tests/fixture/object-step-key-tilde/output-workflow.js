@@ -1,8 +1,8 @@
-/**__internal_workflows{"workflows":{"input.js":{"explicitFirst":{"workflowId":"workflow//./input//explicitFirst"},"explicitLast":{"workflowId":"workflow//./input//explicitLast"},"getters":{"workflowId":"workflow//./input//getters"},"standalone":{"workflowId":"workflow//./input//standalone"}}},"steps":{"input.js":{"explicitFirst/helpers/act":{"stepId":"step//./input//explicitFirst/helpers/act"},"explicitFirst/helpers/act~1":{"stepId":"step//./input//explicitFirst/helpers/act~1"},"explicitFirst/helpers/act~2":{"stepId":"step//./input//explicitFirst/helpers/act~2"},"explicitLast/helpers/act":{"stepId":"step//./input//explicitLast/helpers/act"},"explicitLast/helpers/act~1":{"stepId":"step//./input//explicitLast/helpers/act~1"},"explicitLast/helpers/act~1~1":{"stepId":"step//./input//explicitLast/helpers/act~1~1"},"getters/obj/act_1":{"stepId":"step//./input//getters/obj/act_1"},"getters/obj/act~1":{"stepId":"step//./input//getters/obj/act~1"},"keys/act-1":{"stepId":"step//./input//keys/act-1"},"keys/act_1":{"stepId":"step//./input//keys/act_1"},"keys/act~1":{"stepId":"step//./input//keys/act~1"},"standalone/helpers/act~1":{"stepId":"step//./input//standalone/helpers/act~1"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"explicitFirst":{"workflowId":"workflow//./input//explicitFirst"},"explicitLast":{"workflowId":"workflow//./input//explicitLast"},"getters":{"workflowId":"workflow//./input//getters"},"standalone":{"workflowId":"workflow//./input//standalone"}}},"steps":{"input.js":{"explicitFirst/helpers/act":{"stepId":"step//./input//explicitFirst/helpers/act"},"explicitFirst/helpers/act~1":{"stepId":"step//./input//explicitFirst/helpers/act~1"},"explicitFirst/helpers/act~2":{"stepId":"step//./input//explicitFirst/helpers/act~2"},"explicitLast/helpers/act":{"stepId":"step//./input//explicitLast/helpers/act"},"explicitLast/helpers/act~1":{"stepId":"step//./input//explicitLast/helpers/act~1"},"explicitLast/helpers/act~2":{"stepId":"step//./input//explicitLast/helpers/act~2"},"getters/obj/act_1":{"stepId":"step//./input//getters/obj/act_1"},"getters/obj/act~1":{"stepId":"step//./input//getters/obj/act~1"},"keys/act-1":{"stepId":"step//./input//keys/act-1"},"keys/act_1":{"stepId":"step//./input//keys/act_1"},"keys/act~1":{"stepId":"step//./input//keys/act~1"},"standalone/helpers/act~1":{"stepId":"step//./input//standalone/helpers/act~1"}}}}*/;
 var __step_getters$obj$act$1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//getters/obj/act~1");
 var __step_getters$obj$act_1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//getters/obj/act_1");
-// `~` is allowed in object step keys. `~N` is also the generated collision
-// suffix, so names are claimed in source order with the smallest free `~N`.
+// `~` is allowed in object step keys. Explicit names are reserved before `~N`
+// collision suffixes are generated, so source order cannot rename them.
 // A standalone "act~1" keeps its name.
 export async function standalone() {
     const helpers = {
@@ -33,7 +33,7 @@ export async function explicitFirst(op) {
 }
 explicitFirst.workflowId = "workflow//./input//explicitFirst";
 globalThis.__private_workflows.set("workflow//./input//explicitFirst", explicitFirst);
-// Explicit "act~1" after two `act`: act, act~1, act~1~1.
+// Explicit "act~1" after two `act`: act, act~2, act~1.
 export async function explicitLast(op) {
     if (op === 0) {
         const helpers = {
@@ -42,12 +42,12 @@ export async function explicitLast(op) {
         return await helpers.act();
     } else if (op === 1) {
         const helpers = {
-            act: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//explicitLast/helpers/act~1")
+            act: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//explicitLast/helpers/act~2")
         };
         return await helpers.act();
     } else {
         const helpers = {
-            "act~1": globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//explicitLast/helpers/act~1~1")
+            "act~1": globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//explicitLast/helpers/act~1")
         };
         return await helpers["act~1"]();
     }
@@ -70,7 +70,7 @@ export async function getters() {
             return __step_getters$obj$act_1();
         }
     };
-    return obj["act~1"] + obj.act_1;
+    return await obj["act~1"] + await obj.act_1;
 }
 getters.workflowId = "workflow//./input//getters";
 globalThis.__private_workflows.set("workflow//./input//getters", getters);

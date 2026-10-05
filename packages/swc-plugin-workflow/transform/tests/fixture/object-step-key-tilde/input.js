@@ -1,5 +1,5 @@
-// `~` is allowed in object step keys. `~N` is also the generated collision
-// suffix, so names are claimed in source order with the smallest free `~N`.
+// `~` is allowed in object step keys. Explicit names are reserved before `~N`
+// collision suffixes are generated, so source order cannot rename them.
 
 // A standalone "act~1" keeps its name.
 export async function standalone() {
@@ -43,7 +43,7 @@ export async function explicitFirst(op) {
   }
 }
 
-// Explicit "act~1" after two `act`: act, act~1, act~1~1.
+// Explicit "act~1" after two `act`: act, act~2, act~1.
 export async function explicitLast(op) {
   "use workflow";
   if (op === 0) {
@@ -102,5 +102,5 @@ export async function getters() {
       return "underscore getter";
     },
   };
-  return obj["act~1"] + obj.act_1;
+  return (await obj["act~1"]) + (await obj.act_1);
 }
