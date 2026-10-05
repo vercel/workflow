@@ -453,21 +453,26 @@ const run = async () => {
     stopServer = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      const hasExited = () =>
+        child.exitCode !== null || child.signalCode !== null;
       const kill = (signal) => {
-        if (process.platform === 'win32') {
-          child.kill(signal);
-        } else {
-          process.kill(-child.pid, signal);
+        if (hasExited()) return;
+        try {
+          if (process.platform === 'win32') {
+            child.kill(signal);
+          } else {
+            process.kill(-child.pid, signal);
+          }
+        } catch (error) {
+          // The process group already exited; nothing left to stop.
+          if (error?.code !== 'ESRCH') throw error;
         }
       };
+      if (hasExited()) return;
+      const exited = new Promise((resolve) => child.once('exit', resolve));
       kill('SIGTERM');
-      await Promise.race([
-        new Promise((resolve) => child.once('exit', resolve)),
-        wait(5_000),
-      ]);
-      if (child.exitCode === null) {
-        kill('SIGKILL');
-      }
+      await Promise.race([exited, wait(5_000)]);
+      kill('SIGKILL');
     };
 
     cleanup = async () => {
