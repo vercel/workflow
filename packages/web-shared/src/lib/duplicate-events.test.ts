@@ -80,17 +80,18 @@ describe('findDuplicateEventIds', () => {
     ).toEqual(new Set([createdAgain.eventId, startedAgain.eventId]));
   });
 
-  it('leaves a class the log has not recorded for the entity yet', () => {
-    // The step finished without a step_started in the log, so this one repeats
-    // nothing. The runtime reports that as divergence rather than passing it
-    // over, and the UI must not present it as a settled repeat.
+  it('reads past a start after the outcome even if it repeats nothing', () => {
+    // Terminal-inert: once the step's outcome is in the log, every later
+    // event for the step is read past, the same as the runtime does.
     const events = [
       event('step_created', { correlationId: 'step_a' }),
       event('step_completed', { correlationId: 'step_a' }),
       event('step_started', { correlationId: 'step_a' }),
     ];
 
-    expect(findDuplicateEventIds(events, COMPLETE)).toEqual(new Set());
+    expect(findDuplicateEventIds(events, COMPLETE)).toEqual(
+      new Set([events[2].eventId])
+    );
   });
 
   it('treats completed and failed as one terminal class', () => {
@@ -266,11 +267,7 @@ describe('findDuplicateEventIds', () => {
     ).toEqual(new Set());
   });
 
-  it('classifies nothing past the point the run diverged', () => {
-    // The step finished without a step_started, so the runtime reports
-    // divergence on the first trailing start and exits. The second start and
-    // the wait's repeat after it went unread, and neither is a repeat the run
-    // passed over. The wait's repeat before it still is.
+  it('reads past every event of an entity after it closed', () => {
     const events = [
       event('wait_created', { correlationId: 'wait_a' }),
       event('wait_completed', { correlationId: 'wait_a' }),
@@ -283,7 +280,7 @@ describe('findDuplicateEventIds', () => {
     ];
 
     expect(findDuplicateEventIds(events, COMPLETE)).toEqual(
-      new Set([events[2].eventId])
+      new Set([2, 5, 6, 7].map((index) => events[index].eventId))
     );
   });
 

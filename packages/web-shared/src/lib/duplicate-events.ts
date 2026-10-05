@@ -21,9 +21,9 @@ import {
  * registered callback has declined it, and a callback registered for a
  * still-open entity legitimately claims a repeat (each retry of a step writes
  * another `step_started`, and a live step consumer absorbs a second
- * `step_created`). So a repeat counts here only once a terminal event for the
+ * `step_created`). So an event counts here only once a terminal event for the
  * same entity sits earlier in the log, which is the point past which no
- * consumer remains.
+ * consumer remains, and from then on every event for that entity counts.
  */
 
 /** Classes with no entity to close first: the log records one per run. */
@@ -107,6 +107,15 @@ function foldDuplicates(ordered: readonly Event[]): Set<string> {
   const closedEntities = new Set<string>();
 
   for (const event of ordered) {
+    // Terminal-inert: once an entity's terminal event is in the log, its
+    // consumer is gone and every later event under the same correlation id
+    // is read past, whatever its class (a start or a retry after the step's
+    // outcome included). This is the rule the runtime applies too.
+    if (event.correlationId && closedEntities.has(event.correlationId)) {
+      duplicates.add(event.eventId);
+      continue;
+    }
+
     // Shared with the runtime's own duplicate detection, deliberately: an
     // event it tracks under no class is one it never reads past, so naming it
     // here would grey out an event the run acted on.
@@ -116,26 +125,19 @@ function foldDuplicates(ordered: readonly Event[]): Set<string> {
     const { eventClass, entity } = classification;
     const classKey = `${eventClass}:${entity}`;
     const repeatsClass = seenClasses.has(classKey);
-    const entityWasClosed = closedEntities.has(entity);
 
     if (TERMINAL_EVENT_CLASSES.has(eventClass)) {
       closedEntities.add(entity);
     }
 
     if (!repeatsClass) {
-      // First of its class, but the entity already finished: no consumer is
-      // left to take it and it repeats nothing, so the runtime reports
-      // divergence here and exits. Everything past this point went unread, so
-      // the fold stops with it rather than recording the class and presenting
-      // a later event of it as a repeat the run passed over.
-      if (entityWasClosed) break;
       seenClasses.add(classKey);
       continue;
     }
 
     // The entity is still open, so a consumer is registered for it and takes
     // this event: another attempt, not a repeat read past.
-    if (entityWasClosed || SINGLETON_EVENT_CLASSES.has(eventClass)) {
+    if (SINGLETON_EVENT_CLASSES.has(eventClass)) {
       duplicates.add(event.eventId);
     }
   }

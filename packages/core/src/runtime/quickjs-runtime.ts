@@ -32,10 +32,12 @@
 import { SerializationError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
+  classifyEntityEvent,
   type Event,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
+  TERMINAL_EVENT_CLASSES,
   type WorkflowRun,
   type WorldCapabilities,
 } from '@workflow/world';
@@ -2310,6 +2312,20 @@ async function processEvents(
     const cid = event.correlationId;
     if (!cid) continue;
 
+    // Terminal-inert, the rule `EventsConsumer` applies on the node:vm
+    // engine: once an entity's terminal event (step outcome, wait
+    // completion, hook disposal, workflow attribute write) has been
+    // processed, every later event under its correlation id is inert.
+    const closed = closedCorrelationIds(vm);
+    if (closed.has(cid)) continue;
+    const entityClass = classifyEntityEvent(event);
+    if (
+      entityClass !== undefined &&
+      TERMINAL_EVENT_CLASSES.has(entityClass.eventClass)
+    ) {
+      closed.add(cid);
+    }
+
     // JSON.stringify handles quotes, backslashes and control characters;
     // correlation ids are host-generated ULIDs today, but the eval-string
     // safety shouldn't depend on that invariant being asserted nowhere.
@@ -2969,6 +2985,18 @@ async function processEvents(
     }
   }
   return resolved;
+}
+
+const closedCorrelationIdsByVm = new WeakMap<QuickJS, Set<string>>();
+
+/** Correlation ids whose terminal event this VM has processed. */
+function closedCorrelationIds(vm: QuickJS): Set<string> {
+  let closed = closedCorrelationIdsByVm.get(vm);
+  if (!closed) {
+    closed = new Set();
+    closedCorrelationIdsByVm.set(vm, closed);
+  }
+  return closed;
 }
 
 /**
