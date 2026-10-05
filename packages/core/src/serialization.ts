@@ -39,6 +39,7 @@ import {
 } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
+  type CompressionMode,
   type CompressionStats,
   compress,
   decompress,
@@ -3824,7 +3825,7 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
@@ -3901,7 +3902,7 @@ export async function dehydrateWorkflowReturnValue(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /**
    * Optional sink receiving the first five samples and exact total count of
    * workflow-code executions serialization could not avoid. The diagnostics
@@ -3977,7 +3978,7 @@ export async function dehydrateStepArguments(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /** See `dehydrateWorkflowReturnValue`. */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
@@ -4061,7 +4062,7 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
@@ -4135,7 +4136,7 @@ export async function dehydrateStepError(
   key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId, key));
@@ -4215,7 +4216,7 @@ export async function hydrateStepError(
 export async function dehydrateDynamicWorkflowCode(
   code: string,
   key: PayloadKey | undefined,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const payload = new TextEncoder().encode(stringify(code));
@@ -4336,7 +4337,7 @@ export async function dehydrateRunError(
   _runId: string,
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getWorkflowReducers(global));

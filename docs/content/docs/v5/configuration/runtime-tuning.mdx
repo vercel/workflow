@@ -284,6 +284,7 @@ What a snapshot contains, and how it is protected:
 - Default: automatic
 - Forces the write-side codec to `zstd` or `gzip`.
 - Invalid values are ignored. Automatic mode prefers `zstd` when the current Node.js runtime supports it, otherwise it falls back to `gzip`.
+- Writes for a run on another deployment (for example `resumeHook()` reaching a run that started before the project moved to a newer Node.js version) use `zstd` only when that run's deployment runs Node.js 22.15+ (or 23.8+), and `gzip` otherwise, since older Node.js versions cannot decode `zstd`. Runs created before `@workflow/core` recorded the Node.js version always receive `gzip`. Setting this to `zstd` does not override that check.
 
 ### `WORKFLOW_TRACE_MODE`
 
