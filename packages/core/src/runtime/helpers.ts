@@ -7,6 +7,7 @@ import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventLogSnapshot,
   EventResult,
   HealthCheckPayload,
   RunDispatchContext,
@@ -661,6 +662,10 @@ export async function loadWorkflowRunEvents(
     });
 
     const loadedEvents: Event[] = [];
+    // The fence snapshot of a full load comes from its FIRST page: that is
+    // the sequencer state the listing as a whole covers.
+    let snapshot: EventLogSnapshot | undefined;
+    let snapshotTaken = false;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -701,6 +706,8 @@ export async function loadWorkflowRunEvents(
           );
           loadedEvents.length = 0;
           loadedEventIds.clear();
+          snapshotTaken = false;
+          snapshot = undefined;
           requestedCursors.clear();
           cursor = null;
           retriedWithoutCursor = true;
@@ -709,6 +716,10 @@ export async function loadWorkflowRunEvents(
         throw error;
       }
 
+      if (!snapshotTaken && !incremental) {
+        snapshotTaken = true;
+        snapshot = response.snapshot;
+      }
       appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
       hasMore = response.hasMore;
       assertEventPaginationProgress(
@@ -752,7 +763,9 @@ export async function loadWorkflowRunEvents(
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
     });
 
-    return { events: loadedEvents, cursor };
+    return snapshot === undefined
+      ? { events: loadedEvents, cursor }
+      : { events: loadedEvents, cursor, snapshot };
   });
 }
 
@@ -764,6 +777,11 @@ export async function loadWorkflowRunEvents(
 export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
+  /**
+   * The fence snapshot from the first page of a full load, when the World
+   * returned one. Absent on incremental loads.
+   */
+  snapshot?: EventLogSnapshot;
 }
 
 /**
