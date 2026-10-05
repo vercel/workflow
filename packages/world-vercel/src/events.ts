@@ -121,6 +121,49 @@ const eventsNeedingResolve = new Set<string>([
   'step_started', // runtime reads result.step (checks attempt, state)
 ]);
 
+// Step events whose POST response `step` no runtime version reads, so the
+// single-event write asks the server to leave it out (`omitStepEntity`).
+//
+// The claim this rests on, checked over every event-sourced @workflow/core
+// version (`git log -G 'Result\.step'` from the event-sourced rewrite, #621,
+// to main): the only POST response `step` the runtime ever reads is the one
+// on `step_started` (`startResult.step` in the step executor, for the attempt
+// and retry budget). `step_completed` reads only the inline delta
+// (`events`/`cursor`/`hasMore`) off its result; `step_retrying` and
+// `step_failed` discard theirs. This client, too, only checks `step` on
+// `step_started` (`step.startedAt`, below), and parses `step` as optional.
+//
+// What the server gains: a transactional step write reads the committed step
+// back (a strongly consistent GetItem) before it can answer. With the entity
+// declined, that read moves after the response, where the server still uses
+// it for usage facts; the response is otherwise identical, including the
+// inline delta.
+//
+// `step_started` must never be in this set. The server ignores the field on
+// a start anyway (its `step` is load-bearing), but this client must not
+// depend on that. Batched writes (`events.createBatch`) do not send it: the
+// server's batch path does not honour it, and the batch item for a
+// pre-claimed start does carry a `step` the runtime reads.
+//
+// Compatibility is fail-safe in both directions: an older server ignores the
+// unknown meta key (its v4 meta parser picks out only the fields it names;
+// the WS request frame's `event` is a loose object) and answers with `step`
+// as before, which nothing reads.
+const eventsOmittingStepEntity: ReadonlySet<string> = new Set<string>([
+  'step_completed',
+  'step_failed',
+  'step_retrying',
+]);
+
+/** The `omitStepEntity` input fields for a single-event write of `eventType`. */
+function omitStepEntityDirective(eventType: string): {
+  omitStepEntity?: true;
+} {
+  return eventsOmittingStepEntity.has(eventType)
+    ? { omitStepEntity: true }
+    : {};
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -843,6 +886,9 @@ async function createWorkflowRunEventInner(
       ? { eventsRemoteRefBehavior: 'skip-step-inputs' as const }
       : {}),
     remoteRefBehavior,
+    // Response directive for step_completed / step_failed / step_retrying;
+    // see `eventsOmittingStepEntity`.
+    ...omitStepEntityDirective(data.eventType),
     payload,
     ...meta,
   };

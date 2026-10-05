@@ -606,6 +606,148 @@ describe('createWorkflowRunEvent computeInstanceId wire field', () => {
   });
 });
 
+/**
+ * `omitStepEntity`: the single-event write declines the response `step` on
+ * exactly the three step events whose `step` no runtime version reads. The
+ * server honours it only on those kinds, so the client sending it anywhere
+ * else would be harmless on today's server but is still a contract bug: a
+ * start's `step` is load-bearing and must never be declined.
+ */
+describe('createWorkflowRunEvent omitStepEntity wire field', () => {
+  const payloadBytes = new TextEncoder().encode('"x"');
+  const stepRow = (status: string) => ({
+    runId: 'wrun_1',
+    stepId: 'step_1',
+    stepName: 'step',
+    status,
+    attempt: 1,
+    startedAt: STARTED_AT,
+    createdAt: STARTED_AT,
+    updatedAt: STARTED_AT,
+  });
+
+  const cases = {
+    step_completed: {
+      request: { result: payloadBytes },
+      status: 'completed',
+    },
+    step_failed: { request: { error: payloadBytes }, status: 'failed' },
+    step_retrying: { request: { error: payloadBytes }, status: 'pending' },
+  } as const;
+
+  /** POSTs one event and returns the decoded frame meta plus the result. */
+  async function post(
+    eventType: string,
+    eventData: Record<string, unknown> | undefined,
+    responseEntities: Record<string, unknown>,
+    params?: CreateEventParams
+  ) {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    const event = {
+      eventType,
+      specVersion: 2,
+      correlationId: 'step_1',
+      ...(eventData ? { eventData } : {}),
+    } as AnyEventRequest;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/wrun_1/events/${eventType}`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return createEventBody(event, responseEntities);
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent('wrun_1', event, params, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+    agent.assertNoPendingInterceptors();
+    return { meta: capturedMeta ?? {}, result };
+  }
+
+  for (const [eventType, { request, status }] of Object.entries(cases)) {
+    it(`sends omitStepEntity: true on ${eventType} and accepts a step-less response`, async () => {
+      // A supporting server answers without `step`.
+      const { meta, result } = await post(eventType, { ...request }, {});
+      expect(meta.omitStepEntity).toBe(true);
+      expect(meta.eventType).toBe(eventType);
+      expect(result.event?.eventType).toBe(eventType);
+      expect(result.step).toBeUndefined();
+    });
+
+    it(`accepts a response that still carries step on ${eventType} (older server)`, async () => {
+      // An older server ignores the key and answers as it always has.
+      const { meta, result } = await post(
+        eventType,
+        { ...request },
+        { step: stepRow(status) }
+      );
+      expect(meta.omitStepEntity).toBe(true);
+      expect(result.step?.status).toBe(status);
+    });
+  }
+
+  it('keeps the inline delta on a step_completed that declines its step', async () => {
+    // The only field the runtime reads off a step_completed response is the
+    // delta; declining the step must not interfere with requesting it.
+    const { meta, result } = await post(
+      'step_completed',
+      { result: payloadBytes },
+      { events: [], cursor: 'eid:evnt_1', hasMore: false },
+      { sinceCursor: 'eid:evnt_0' }
+    );
+    expect(meta.omitStepEntity).toBe(true);
+    expect(meta.sinceCursor).toBe('eid:evnt_0');
+    expect(result.step).toBeUndefined();
+    expect(result.events).toEqual([]);
+    expect(result.cursor).toBe('eid:evnt_1');
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('never sends it on step_started, whose step the runtime reads', async () => {
+    const meta = await postStepStartedMeta(undefined);
+    expect('omitStepEntity' in meta).toBe(false);
+  });
+
+  it('never sends it on step_created or on non-step events', async () => {
+    const created = await post(
+      'step_created',
+      { stepName: 'step', input: payloadBytes },
+      { step: { ...stepRow('pending'), startedAt: undefined } }
+    );
+    expect('omitStepEntity' in created.meta).toBe(false);
+
+    const completedRun = await post(
+      'run_completed',
+      { output: payloadBytes },
+      {
+        run: {
+          ...runningRun,
+          status: 'completed',
+          output: payloadBytes,
+          completedAt: STARTED_AT,
+        },
+      }
+    );
+    expect('omitStepEntity' in completedRun.meta).toBe(false);
+  });
+});
+
 describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
   it('carries recovery telemetry in v4 frame metadata', async () => {
     const agent = mockAgent();
