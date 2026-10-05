@@ -52,16 +52,19 @@ export const LISTEN_RECONNECT_DELAY_MS = 5_000;
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
  * from the pool's connection options. `channel` must be a trusted identifier.
  *
- * The first connection failure rejects. After that, a dropped connection (for
- * example a database restart) is reported through the client's `error` event,
- * which must be handled or it ends the process, and is replaced after
- * {@link LISTEN_RECONNECT_DELAY_MS} until it succeeds or the subscription
- * closes. Notifications sent while no connection is listening are lost.
+ * The first connection failure rejects. After that, when the server ends the
+ * connection (for example a database restart), the client's `error` event is
+ * handled, because an unhandled one ends the process, and a new connection is
+ * opened after {@link LISTEN_RECONNECT_DELAY_MS} until it listens again or the
+ * subscription closes. Notifications sent while no connection listens are
+ * lost; `onReconnect` runs after each re-established `LISTEN` so the caller
+ * can re-read what it may have missed.
  */
 export const listenChannel = async (
   pool: Pool,
   channel: string,
-  onPayload: (payload: string) => Promise<void>
+  onPayload: (payload: string) => Promise<void>,
+  onReconnect?: () => void
 ): Promise<{ close: () => Promise<void> }> => {
   let client: Client | undefined;
   let closed = false;
@@ -81,20 +84,34 @@ export const listenChannel = async (
       await next.end().catch(() => {});
       throw err;
     }
+    if (closed) {
+      await next.end().catch(() => {});
+      return;
+    }
     next.on('notification', onNotification);
     next.on('end', () => {
       if (client !== next) return;
       client = undefined;
-      if (!closed) scheduleReconnect();
+      if (closed) return;
+      console.warn(
+        `[world-postgres] LISTEN ${channel} connection lost; reconnecting`
+      );
+      scheduleReconnect();
     });
     client = next;
   };
 
   const scheduleReconnect = () => {
-    reconnectTimer = setTimeout(() => {
-      connect().catch(() => {
+    reconnectTimer = setTimeout(async () => {
+      try {
+        await connect();
+      } catch {
         if (!closed) scheduleReconnect();
-      });
+        return;
+      }
+      if (closed) return;
+      console.warn(`[world-postgres] LISTEN ${channel} restored`);
+      onReconnect?.();
     }, LISTEN_RECONNECT_DELAY_MS);
     reconnectTimer.unref?.();
   };
@@ -154,31 +171,52 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
-  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
-    const parsed = StreamPublishMessage.parse(JSON.parse(msg));
+  const listenSubscription = listenChannel(
+    pool,
+    STREAM_TOPIC,
+    async (msg) => {
+      const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
-    const key = `strm:${parsed.streamId}` as const;
-    if (!events.listenerCount(key)) {
-      return;
-    }
+      const key = `strm:${parsed.streamId}` as const;
+      if (!events.listenerCount(key)) {
+        return;
+      }
 
-    const resource = getMutex(key);
-    await resource.mutex.andThen(async () => {
-      const [value] = await drizzle
-        .select({ eof: streams.eof, data: streams.chunkData })
-        .from(streams)
-        .where(
-          and(
-            eq(streams.streamId, parsed.streamId),
-            eq(streams.chunkId, parsed.chunkId)
+      const resource = getMutex(key);
+      await resource.mutex.andThen(async () => {
+        const [value] = await drizzle
+          .select({ eof: streams.eof, data: streams.chunkData })
+          .from(streams)
+          .where(
+            and(
+              eq(streams.streamId, parsed.streamId),
+              eq(streams.chunkId, parsed.chunkId)
+            )
           )
-        )
-        .limit(1);
-      if (!value) return;
-      const { data, eof } = value;
-      events.emit(key, { id: parsed.chunkId, data, eof });
-    });
-  });
+          .limit(1);
+        if (!value) return;
+        const { data, eof } = value;
+        events.emit(key, { id: parsed.chunkId, data, eof });
+      });
+    },
+    () => {
+      // Chunks written while LISTEN was down sent no notification. Re-emit each
+      // active stream's persisted chunks; readers skip ids they already have.
+      for (const key of events.eventNames()) {
+        if (typeof key !== 'string' || !key.startsWith('strm:')) continue;
+        const resource = getMutex(key as `strm:${string}`);
+        void resource.mutex
+          .andThen(async () => {
+            for (const chunk of await loadPersistedChunks(
+              key.slice('strm:'.length)
+            )) {
+              events.emit(key as `strm:${string}`, chunk);
+            }
+          })
+          .catch(() => {});
+      }
+    }
+  );
 
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);

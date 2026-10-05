@@ -4,9 +4,13 @@ import { LISTEN_RECONNECT_DELAY_MS, listenChannel } from './streamer.js';
 const { FakeClient, clients, connection } = await vi.hoisted(async () => {
   const { EventEmitter } = await import('node:events');
   const clients: InstanceType<typeof FakeClient>[] = [];
-  const connection = { fail: false };
+  const connection = {
+    fail: false,
+    hold: undefined as Promise<void> | undefined,
+  };
   class FakeClient extends EventEmitter {
     connect = vi.fn(async () => {
+      await connection.hold;
       if (connection.fail) throw new Error('connect ECONNREFUSED');
     });
     query = vi.fn(async (_text: string) => {});
@@ -33,6 +37,7 @@ describe('listenChannel after a dropped connection', () => {
     vi.useFakeTimers();
     clients.length = 0;
     connection.fail = false;
+    connection.hold = undefined;
   });
 
   afterEach(() => {
@@ -41,15 +46,22 @@ describe('listenChannel after a dropped connection', () => {
 
   it('handles the client error and listens again on a new connection', async () => {
     const payloads: string[] = [];
-    const subscription = await listenChannel(pool, 'topic', async (payload) => {
-      payloads.push(payload);
-    });
+    const onReconnect = vi.fn();
+    const subscription = await listenChannel(
+      pool,
+      'topic',
+      async (payload) => {
+        payloads.push(payload);
+      },
+      onReconnect
+    );
 
     expect(() => dropConnection(clients[0])).not.toThrow();
     await vi.advanceTimersByTimeAsync(LISTEN_RECONNECT_DELAY_MS);
 
     expect(clients).toHaveLength(2);
     expect(clients[1].query).toHaveBeenCalledWith('LISTEN topic');
+    expect(onReconnect).toHaveBeenCalledOnce();
     clients[1].emit('notification', { payload: 'after-restart' });
     expect(payloads).toEqual(['after-restart']);
 
@@ -81,6 +93,29 @@ describe('listenChannel after a dropped connection', () => {
 
     await vi.advanceTimersByTimeAsync(LISTEN_RECONNECT_DELAY_MS * 3);
     expect(clients).toHaveLength(1);
+  });
+
+  it('ends a reconnect that completes after close', async () => {
+    const onReconnect = vi.fn();
+    const subscription = await listenChannel(
+      pool,
+      'topic',
+      async () => {},
+      onReconnect
+    );
+    const release = Promise.withResolvers<void>();
+    connection.hold = release.promise;
+    dropConnection(clients[0]);
+    await vi.advanceTimersByTimeAsync(LISTEN_RECONNECT_DELAY_MS);
+    expect(clients).toHaveLength(2);
+
+    await subscription.close();
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(clients[1].end).toHaveBeenCalled();
+    expect(clients[1].listenerCount('notification')).toBe(0);
+    expect(onReconnect).not.toHaveBeenCalled();
   });
 
   it('still rejects when the first connection fails', async () => {
