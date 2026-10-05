@@ -170,10 +170,12 @@ installs that parser by default, which would answer any larger delivery with
 `413` before the request reached a controller.
 
 `WorkflowModule` therefore makes the application's body parsers stand aside for
-`.well-known/workflow/v1`, and nothing else. Workflow requests are read straight
-from the request stream, which also means a signed webhook body arrives
-byte-for-byte without `{ rawBody: true }`. Your own routes keep the parsers, and
-the limits, you configured. Set `bypassBodyParser: false` to turn this off.
+`.well-known/workflow/v1`, and nothing else. On Express, workflow requests are
+read straight from the request stream, which also means a signed webhook body
+arrives byte-for-byte without `{ rawBody: true }`. Fastify always parses the body
+before the route runs, so create a Fastify app with `{ rawBody: true }` to keep
+signed webhook bodies byte-exact. Your own routes keep the parsers, and the
+limits, you configured. Set `bypassBodyParser: false` to turn this off.
 
 A body that arrives with a `content-encoding` still goes through the parser,
 because that is what inflates it.

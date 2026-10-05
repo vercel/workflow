@@ -582,10 +582,12 @@ verification (Stripe, GitHub, Shopify, Slack):
 - **Compressed bodies.** A body that arrives with a `content-encoding` always
   goes through the parser on Express too, because that is what inflates it.
 
-For signed webhooks in either case, create the app with `{ rawBody: true }` (and
-on Fastify register `fastify-raw-body`) so the integration can recover the exact
-bytes the sender signed. Without it, the integration logs a one-time warning and
-falls back to the lossy `JSON.stringify` path.
+For signed webhooks in either case, create the app with `{ rawBody: true }`
+(`NestFactory.create(AppModule, new FastifyAdapter(), { rawBody: true })` on
+Fastify) so the integration can recover the exact bytes the sender signed.
+NestJS keeps them on `req.rawBody` on both platforms, so no extra plugin is
+needed. Without it, the integration logs a one-time warning and falls back to
+the lossy `JSON.stringify` path.
 </Callout>
 
 <Callout type="info">
