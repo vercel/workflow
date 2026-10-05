@@ -15,6 +15,7 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
+import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -932,6 +933,191 @@ export async function hookSupersedeOwnerWorkflow(token: string) {
   }
 
   throw new Error(`Could not claim ${token} after cancelling the owner`);
+}
+
+//////////////////////////////////////////////////////////
+// createHook({ experimental_force: true })
+
+/**
+ * Owns `token` until another run takes it. Awaits one payload; when the token
+ * is taken over first, `await hook` rejects with HookForceClaimedError, which
+ * this workflow catches and reports — the run completes, so a completed run
+ * proves both the durable signal and the wake reached it.
+ */
+export async function hookForceClaimVictimWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, received: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+        claimedByHookId: err.claimedByHookId ?? null,
+        token: err.token,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Takes `token` over and awaits one payload, but — like the victim — reports
+ * a later takeover instead of failing. The middle link of a chain.
+ */
+export async function hookForceClaimVictimWorkflowForced(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, received: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+        claimedByHookId: err.claimedByHookId ?? null,
+        token: err.token,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Takes `token` over from whoever holds it and awaits one payload.
+ */
+export async function hookForceClaimClaimerWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  const conflict = await hook.getConflict();
+  const payload = await hook;
+  return {
+    role: 'claimer' as const,
+    conflict: conflict ? conflict.runId : null,
+    received: payload.message,
+  };
+}
+
+/**
+ * Iterates payloads until the token is taken over, then reports what it
+ * received before that. Payloads delivered before the takeover stay with
+ * this run; the error arrives only once they are drained.
+ */
+export async function hookForceClaimIteratingVictimWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ n: number }>({ token });
+  const received: number[] = [];
+  try {
+    for await (const payload of hook) {
+      received.push(payload.n);
+    }
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return { received, claimedByRunId: err.claimedByRunId };
+    }
+    throw err;
+  }
+  return { received, claimedByRunId: null };
+}
+
+/**
+ * Takes `token` over and collects `count` payloads.
+ */
+export async function hookForceClaimCollectorWorkflow(
+  token: string,
+  count: number
+) {
+  'use workflow';
+
+  using hook = createHook<{ n: number }>({ token, experimental_force: true });
+  const received: number[] = [];
+  for await (const payload of hook) {
+    received.push(payload.n);
+    if (received.length >= count) break;
+  }
+  return { received };
+}
+
+/**
+ * Holds `token` past its own completion (`experimental_minRetention`), so a
+ * later forced creation takes it from a finished run.
+ */
+export async function hookForceClaimRetainedVictimWorkflow(token: string) {
+  'use workflow';
+
+  // Deliberately not `using`: disposing would release the token at scope
+  // exit, and the point is a token that outlives its run.
+  const hook = createHook<{ message: string }>({
+    token,
+    experimental_minRetention: '1h',
+  });
+  const payload = await hook;
+  return { received: payload.message };
+}
+
+/**
+ * Takes over its own earlier hook: the first hook's awaiter rejects with
+ * HookForceClaimedError naming this same run, the second receives the payload.
+ */
+export async function hookForceClaimOwnHookWorkflow(token: string) {
+  'use workflow';
+
+  const first = createHook<{ message: string }>({ token });
+  const firstOutcome = first.then(
+    (payload) => ({ ok: true as const, message: payload.message }),
+    (err: unknown) =>
+      HookForceClaimedError.is(err)
+        ? { ok: false as const, claimedByRunId: err.claimedByRunId }
+        : Promise.reject(err)
+  );
+  using second = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  const payload = await second;
+  const firstResult = await firstOutcome;
+  first.dispose();
+  return { first: firstResult, second: payload.message };
+}
+
+/**
+ * Forces `token` but treats a refusal as the ordinary conflict it is: the
+ * World declines to take a token from a run whose runtime could not read the
+ * disposal (started below `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`), and the
+ * forced hook then rejects with `HookConflictError` naming that run.
+ */
+export async function hookForceClaimTolerantClaimerWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  try {
+    const payload = await hook;
+    return { role: 'claimer' as const, received: payload.message };
+  } catch (err) {
+    if (HookConflictError.is(err)) {
+      return {
+        role: 'refused' as const,
+        conflictingRunId: err.conflictingRunId ?? null,
+      };
+    }
+    throw err;
+  }
 }
 
 //////////////////////////////////////////////////////////
@@ -3974,4 +4160,109 @@ export async function lifecycleHookObserver(token: string) {
   'use workflow';
   using hook = createHook<Record<string, unknown>>({ token });
   return await hook;
+}
+
+//////////////////////////////////////////////////////////
+// Dynamic workflows (source generated by the app at runtime)
+//////////////////////////////////////////////////////////
+
+/**
+ * Stands in for orchestration an app assembles at runtime from its own
+ * templates. Built here rather than inlined as a constant so the source
+ * really is assembled per call.
+ *
+ * Only `steps`, `sleep` and `createHook` are in scope inside it; `steps.add`
+ * resolves to the `add` step this file already exports and deploys.
+ */
+function generateDynamicSource(opts: { sleepFor?: string } = {}) {
+  const pause = opts.sleepFor
+    ? `  await sleep(${JSON.stringify(opts.sleepFor)});\n`
+    : '';
+  return `
+async function workflow(input) {
+  "use workflow";
+  const doubled = await steps.add(input.value, input.value);
+${pause}  const total = await steps.add(doubled, 1);
+  return { total };
+}
+`;
+}
+
+/**
+ * Starts a dynamic run from inside the deployment.
+ *
+ * This is the shape that matters for dynamic workflows and the reason it lives
+ * in the app rather than in the test runner: `experimental_dynamic.steps` is given the
+ * *imported* `add` function, so the `.stepId` the build-time transform stamped
+ * on it is what binds the source to a registered step. A caller outside the
+ * deployment cannot do that — it has no handle on the function — and would
+ * have to fall back to an explicit `{ stepId }` reference.
+ *
+ * In a step rather than in workflow code so the options object (which holds a
+ * function reference) is never serialized across a step boundary.
+ */
+async function startDynamicRun(value: number, sleepFor?: string) {
+  'use step';
+  const run = await start(generateDynamicSource({ sleepFor }), [{ value }], {
+    experimental_dynamic: { steps: { add } },
+  });
+  return { runId: run.runId };
+}
+
+/**
+ * Generates a workflow, starts it, and hands back the child's run ID.
+ *
+ * The child is deliberately NOT awaited here: `returnValue` polls from inside
+ * a step that holds a worker slot until the child finishes, which is the
+ * deadlock hazard documented on `fibonacciWorkflow`. The e2e runner awaits the
+ * child itself, which also lets it read the child's stored record.
+ */
+export async function dynamicWorkflowFromApp(value: number) {
+  'use workflow';
+  const child = await startDynamicRun(value);
+  return { parentInput: value, childRunId: child.runId };
+}
+
+/**
+ * Same, but the generated source suspends partway through.
+ *
+ * The suspension is the point: the delivery that resumes the child holds no
+ * in-memory copy of its code and no run input on the message, so it has to
+ * read the stored code back and decrypt it. That is the path a dynamic run
+ * dies on if the code is not durably stored (see the `world-local` fix in
+ * this PR).
+ */
+export async function dynamicWorkflowFromAppWithSleep(value: number) {
+  'use workflow';
+  const child = await startDynamicRun(value, '2s');
+  return { parentInput: value, childRunId: child.runId };
+}
+
+async function startDisallowedDynamicRun(value: number) {
+  'use step';
+  const run = await start(
+    `
+async function workflow(input) {
+  "use workflow";
+  return await steps.notAuthorized(input.value, 1);
+}
+`,
+    [{ value }],
+    { experimental_dynamic: { steps: { add } } }
+  );
+  return { runId: run.runId };
+}
+
+/**
+ * Generates source that reaches for a step it was never given.
+ *
+ * `steps` is frozen and holds only the aliases passed through
+ * `experimental_dynamic.steps`, so the child must fail rather than dispatch a step the app
+ * did not authorize. Returns the child's run ID for the runner to inspect —
+ * the *child* failing is the expected outcome, so the parent must not.
+ */
+export async function dynamicWorkflowDisallowedStep(value: number) {
+  'use workflow';
+  const child = await startDisallowedDynamicRun(value);
+  return { childRunId: child.runId };
 }

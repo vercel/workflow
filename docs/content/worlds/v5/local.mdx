@@ -70,11 +70,13 @@ How often a wait for a terminal run status re-reads the run file, in millisecond
 
 ### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
 
-Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `30000`. Set to `0` to disable.
+Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `0` (no deadline).
+
+A delivery executes inline steps before the handler responds, so a deadline shorter than your longest step redelivers a healthy delivery while it is still running and executes the same step again. Set this only if you would rather a hung handler be redelivered, and set it above the longest inline work you expect.
 
 ### `WORKFLOW_LOCAL_BODY_TIMEOUT_MS`
 
-Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `30000`. Set to `0` to disable.
+Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `0` (no deadline). The same caution as `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS` applies.
 
 ### `WORKFLOW_NODE_HTTP`
 
@@ -124,4 +126,4 @@ The Local World is designed for development, not production:
 - **Single instance**: The Local World cannot handle distributed deployments.
 - **No authentication**: The Local World is suitable only for local development.
 
-For production deployments, use the [Vercel World](/worlds/vercel) or [Postgres World](/worlds/postgres).
+For production deployments, use the [Vercel World](/worlds/vercel), which handles execution, persistence, multi-tenancy, scale, observability, and security for you on Vercel, or check out the [Postgres World](/worlds/postgres) - a tested reference implementation that implements the complete World spec and can be used to deploy workflows anywhere.

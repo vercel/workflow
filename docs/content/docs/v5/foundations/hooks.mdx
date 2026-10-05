@@ -82,7 +82,7 @@ export async function POST(request: Request) {
 
 The key points:
 - Hooks allow you to pass **any [serializable data](/docs/foundations/serialization)** as the payload
-- You need the hook's `token` to resume it
+- You need the hook's `token` to resume it, but knowing the token does not authorize the caller. Check who is calling before `resumeHook()`; see [Security](#security)
 - The workflow will resume execution right where it left off
 
 ### Checking for token conflicts
@@ -275,6 +275,40 @@ hook.dispose(); // Manually release the token
 After disposal, the hook will no longer receive events and the async iterator will stop yielding values.
 </Callout>
 
+### Taking over a token from another run
+
+Disposing early only works when the run holding the token cooperates. When the newest run should own a token regardless, such as a redeployed bot that must replace the run still waiting on a channel, pass `experimental_force` and let the runtime perform the handoff:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookForceClaimedError } from "workflow/errors";
+
+declare function processMessage(message: { text: string }): Promise<void>; // @setup
+
+export async function channelWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ text: string }>({
+    token: `channel:${channelId}`,
+    experimental_force: true, // [!code highlight]
+  });
+
+  try {
+    for await (const message of hook) {
+      await processMessage(message);
+    }
+  } catch (error) {
+    if (HookForceClaimedError.is(error)) { // [!code highlight]
+      // A newer run for this channel took the token. Wrap up and exit.
+      return { replacedBy: error.claimedByRunId };
+    }
+    throw error;
+  }
+}
+```
+
+The run that held the token is woken and its `await hook` (or `for await...of`) rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) once it has drained the payloads it received before the takeover. Every `resumeHook()` for the token from then on reaches the new run, including one that was already in flight, so senders never notice the handoff. Several runs forcing the same token at once chain in the same way and always end with exactly one owner. A run started at a spec version below 8 cannot be taken from; the forced hook then gets an ordinary `HookConflictError`. See [`createHook()`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for the full semantics.
+
 ## Understanding webhooks
 
 Hooks require you to manually handle HTTP requests and route them to workflows. **Webhooks** provide a higher-level abstraction built on top of hooks that:
@@ -286,7 +320,7 @@ Hooks require you to manually handle HTTP requests and route them to workflows. 
 When using Workflow SDK, webhooks are automatically wired up at `/.well-known/workflow/v1/webhook/:token` without any additional setup.
 
 <Callout type="warn">
-`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. This is convenient for prototypes because you can share the webhook URL (endpoint) without creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. Make sure to read up on [security](#security) before using a webhook for calls that need to be authenticated.
 </Callout>
 
 <Callout type="info">
@@ -460,6 +494,94 @@ export async function eventCollectorWorkflow() {
 - You need to send HTTP responses back to the caller
 - You want automatic URL routing without writing API handlers
 
+## Security
+
+A hook token tells the runtime which hook a payload belongs to. It is not an authentication mechanism, and neither `resumeHook()` nor the webhook endpoint checks who is sending the payload.
+
+### Generated tokens are hard to guess, not secret
+
+When you don't pass a `token`, the SDK generates one inside the workflow function. Workflow code must produce the same values on every replay, so the generated token comes from the run's deterministic random number generator, the same one that backs [`Math.random()` and `crypto.randomUUID()`](/docs/api-reference/workflow-globals) in workflow functions. That generator is seeded from identifiers of the run, including the run ID, not from a secret key.
+
+A generated token is hard to guess without knowing the run, but the values it is derived from are not designed to be kept secret. Treat a generated token like an unlisted link, not like a credential.
+
+Custom tokens passed to `createHook({ token })` are usually built from domain data such as an order ID, so they are even easier to reconstruct. That is what makes them useful for routing, and it is why the route that resumes them must do its own authorization. If you can not perform your own authorization on the route that calls `resume` for any reason, and need to generate an unguessable token instead, generate it in a step where `crypto` is not seeded and pass it as `token`:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+async function generateToken() {
+  "use step";
+  // Steps run outside the workflow sandbox, so this uses the platform's
+  // cryptographic random source instead of the run's seed.
+  return crypto.randomUUID();
+}
+
+export async function approvalWorkflow() {
+  "use workflow";
+
+  const token = await generateToken(); // [!code highlight]
+  using hook = createHook<{ approved: boolean }>({ token }); // [!code highlight]
+
+  return (await hook).approved;
+}
+```
+
+The step result is recorded in the run's event log like any other step result. See [Encryption](/docs/how-it-works/encryption) to keep it encrypted at rest.
+
+### Webhook URLs
+
+[`createWebhook()`](/docs/api-reference/workflow/create-webhook) serves a public route at `/.well-known/workflow/v1/webhook/:token`, and matching the token is the only check it performs. Anyone who has the URL, or can compute its token, can resume the workflow with a request of their choosing. That is fine for low-stakes callbacks and prototypes. When a webhook request triggers something consequential, either:
+
+- Verify each request before acting on it, for example by checking the provider's HMAC signature in a step with [`respondWith: "manual"`](#dynamic-responses-manual-mode), and keep waiting for the next request when verification fails.
+- Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the caller before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), as shown below.
+
+### Authorize before calling `resumeHook()`
+
+`resumeHook()` delivers the payload to whichever hook owns the token. The route that calls it has to authenticate the caller and check that they are allowed to resume that specific hook. Knowing the token is not proof of either. One way is to record who may resume the hook in its `metadata`, then compare it to the signed-in user:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+export async function expenseWorkflow(approverId: string) {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>({
+    metadata: { approverId }, // [!code highlight]
+  });
+
+  return (await hook).approved;
+}
+```
+
+```typescript lineNumbers
+import { getHookByToken, resumeHook } from "workflow/api";
+
+declare function getSession(request: Request): Promise<{ userId: string } | null>; // @setup
+
+export async function POST(request: Request) {
+  const session = await getSession(request); // [!code highlight]
+  if (!session) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { token, approved } = await request.json();
+  const hook = await getHookByToken(token);
+  const metadata = (await hook.metadata) as { approverId?: string } | undefined;
+  if (metadata?.approverId !== session.userId) { // [!code highlight]
+    return Response.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  await resumeHook(token, { approved });
+  return Response.json({ success: true });
+}
+```
+
+Take the user identity from your authentication layer, never from the request body. Other examples in these docs omit authorization to stay short.
+
+### Randomness in workflow functions
+
+The same determinism applies to your own code. `Math.random()`, `crypto.randomUUID()`, and `crypto.getRandomValues()` in a workflow function return values derived from the run's seed, so they are predictable to anyone who knows it. Don't use them for secrets, passwords, one-time codes, or any value that must be unguessable. Generate those in a step, as in the token example above.
+
 ## Advanced patterns
 
 ### Type-safe hooks with `defineHook()`
@@ -515,7 +637,7 @@ This pattern is especially valuable in larger applications where the workflow an
 
 ### Token design
 
-Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own unique tokens. A generated token is not trivial to guess, but it is not a strong security contract either, so anyone who obtains the URL can invoke an unintended webhook resumption. To prevent unauthenticated run resumptions entirely, prefer a **hook** over the **webhook** convenience and implement your own authentication on the route that calls `resumeHook()`.
+Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own unique tokens. Neither kind of token authorizes the sender; see [Security](#security).
 
 When using custom tokens with `createHook()`:
 

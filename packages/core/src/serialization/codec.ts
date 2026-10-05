@@ -14,7 +14,7 @@
  *   plain objects). No Date, Map, Set, typed arrays, etc.
  */
 
-import type { CompressionStats } from './compression.js';
+import type { CompressionMode, CompressionStats } from './compression.js';
 import type { GuestCodeStats } from './hardened.js';
 import type { FormatPrefix } from './types.js';
 
@@ -59,15 +59,15 @@ export interface CodecOptions {
 
   /**
    * Whether to compress the serialized payload (write side only; zstd is
-   * preferred and gzip is the portable fallback). Reads dispatch compressed
-   * payloads by format prefix; zstd decoding still requires runtime or
-   * registered decoder support. Must only be enabled when the target run
-   * supports compressed payloads:
-   * run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
-   * cross-deployment writes the target deployment's capabilities (see
+   * preferred and gzip is the portable fallback), and which codecs are
+   * allowed (see `CompressionMode`). Reads dispatch compressed payloads by
+   * format prefix; zstd decoding still requires runtime or registered
+   * decoder support. Must only be enabled when the target run supports
+   * compressed payloads: run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION,
+   * and for cross-deployment writes the target deployment's capabilities (see
    * `getRunCapabilities` in capabilities.ts). Defaults to `false`.
    */
-  compression?: boolean;
+  compression?: CompressionMode;
 
   /**
    * Optional telemetry sink populated by the compression layer with what

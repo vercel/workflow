@@ -41,6 +41,7 @@ import {
   hydrateStepArguments,
   hydrateStepError,
 } from '../serialization.js';
+import { setErrorStack } from '../set-error-stack.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { recordStepExecutionDuration, trace } from '../telemetry.js';
@@ -56,7 +57,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import { memoizeEncryptionKey } from './helpers.js';
+import { memoizeEncryptionKey, withReplayDelta } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
   computeResumeTtrAttributes,
@@ -393,7 +394,7 @@ export async function executeStep(
     data: T,
     eventParams?: CreateEventParams
   ) =>
-    replayRecoveryReporter.withEventCreate(eventParams, (p) =>
+    replayRecoveryReporter.withEventCreate(withReplayDelta(eventParams), (p) =>
       world.events.create(workflowRunId, data, p)
     );
 
@@ -1147,6 +1148,7 @@ export async function executeStep(
             () => {
               // The last instant before user code: T7 of the resume window.
               reportResumeTtr();
+              world.telemetry?.recordStepExecution?.(stepId);
               return stepFn.apply(thisVal, args);
             }
           );
@@ -1176,6 +1178,19 @@ export async function executeStep(
       // Re-raise a user-code failure now that cleanup has run; the outer
       // catch maps it to step_failed/step_retrying.
       if (userCodeFailed) {
+        // Released writers still own transports when the step body throws.
+        // Settle released writers without retaining abandoned, lock-held ops
+        // through waitUntil. Cleanup failures must not replace the user's error.
+        await settleReleasedStepStreams(streamStates).catch((error) => {
+          runtimeLogger.warn(
+            'Failed to drain released streams after step error',
+            {
+              workflowRunId,
+              stepId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
         throw userCodeError;
       }
 
@@ -1223,15 +1238,21 @@ export async function executeStep(
 
         // Start the V2 inline-loop heuristic concurrently with durability so
         // a held lock costs max(500ms, PUT RTT), not 500ms plus the PUT RTT.
+        opsSettled = false;
         const opsSettledPromise = Promise.race([
           opsPromise.then(
-            () => true as const,
+            () => {
+              opsSettled = true;
+            },
             (err) => {
-              if (isClientDisconnectError(err)) return true as const;
+              if (isClientDisconnectError(err)) {
+                opsSettled = true;
+                return;
+              }
               throw err;
             }
           ),
-          new Promise<false>((r) => setTimeout(() => r(false), 500)),
+          new Promise<void>((resolve) => setTimeout(resolve, 500)),
         ]);
         // The durability wait can outlive an immediate op rejection. Observe
         // this branch now; the awaited copy below still surfaces the error.
@@ -1239,9 +1260,10 @@ export async function executeStep(
 
         await settleReleasedStepStreams(streamStates);
 
-        // This outcome is only the inline-loop heuristic. Durability was
-        // established independently above.
-        opsSettled = await opsSettledPromise;
+        // The timeout only bounds the inline wait. Ops may have settled while
+        // the durability barrier was still waiting, so keep their live status
+        // rather than a stale timeout result when deciding whether to yield.
+        await opsSettledPromise;
       }
 
       // Optimistic start: the body ran before `step_started` was confirmed.
@@ -1342,26 +1364,30 @@ export async function executeStep(
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
         if (types.isNativeError(effectiveErr) && normalizedStack) {
-          (effectiveErr as Error).stack = normalizedStack;
+          setErrorStack(effectiveErr, normalizedStack);
         }
         try {
-          await createEvent({
-            eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              error: await dehydrateStepError(
-                effectiveErr,
-                workflowRunId,
-                await getEncryptionKey(),
-                [],
-                globalThis,
-                compression
-              ),
-              ...latencyEventData,
+          await createEvent(
+            {
+              eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                error: await dehydrateStepError(
+                  effectiveErr,
+                  workflowRunId,
+                  await getEncryptionKey(),
+                  [],
+                  globalThis,
+                  compression
+                ),
+                ...latencyEventData,
+              },
             },
-          });
+            // The body ran: losing this write to redelivery would run it again.
+            { afterStepBody: true }
+          );
         } catch (stepFailErr) {
           if (EntityConflictError.is(stepFailErr)) {
             runtimeLogger.info(
@@ -1414,23 +1440,27 @@ export async function executeStep(
         (wrappedError as Error).cause = err;
         if (normalizedStack) wrappedError.stack = normalizedStack;
         try {
-          await createEvent({
-            eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              error: await dehydrateStepError(
-                wrappedError,
-                workflowRunId,
-                await getEncryptionKey(),
-                [],
-                globalThis,
-                compression
-              ),
-              ...latencyEventData,
+          await createEvent(
+            {
+              eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                error: await dehydrateStepError(
+                  wrappedError,
+                  workflowRunId,
+                  await getEncryptionKey(),
+                  [],
+                  globalThis,
+                  compression
+                ),
+                ...latencyEventData,
+              },
             },
-          });
+            // The body ran: losing this write to redelivery would run it again.
+            { afterStepBody: true }
+          );
         } catch (stepFailErr) {
           if (EntityConflictError.is(stepFailErr)) {
             runtimeLogger.info(
@@ -1474,7 +1504,7 @@ export async function executeStep(
       // serialization. See the FatalError site above for why we use
       // `types.isNativeError` instead of `err instanceof Error`.
       if (types.isNativeError(err) && normalizedStack) {
-        (err as Error).stack = normalizedStack;
+        setErrorStack(err, normalizedStack);
       }
       try {
         await createEvent({

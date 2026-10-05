@@ -152,21 +152,30 @@ export function createFetcher(control: Control) {
      * World can get wrong while every workflow still appears to work, right
      * up until a replay reads one (see `eventIds`).
      */
-    async getEvents(runId: string): Promise<
+    async getEvents(
+      runId: string,
+      resolveData?: string
+    ): Promise<
       {
         eventId: string;
         eventType: string;
         correlationId?: string;
+        /** sha256 of the event's payload field, or null when it has none. */
+        payloadDigest: string | null;
       }[]
     > {
+      const query = resolveData
+        ? `?resolveData=${encodeURIComponent(resolveData)}`
+        : '';
       const x = await fetch(
-        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events`
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events${query}`
       );
       const data = (await x.json()) as {
         events: {
           eventId: string;
           eventType: string;
           correlationId?: string;
+          payloadDigest: string | null;
         }[];
       };
       return data.events;

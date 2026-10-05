@@ -91,13 +91,11 @@ For workflows that rely on runtime features like [hooks](/docs/foundations/hooks
 ### Installation
 
 ```package-install
-npm i -D @workflow/vitest@beta
+npm i -D @workflow/vitest
 ```
 
 <Callout type="warn">
-**Workflow 5 needs the `beta` tag.** `@workflow/vitest@latest` is still the 4.x line, so a plain `npm i -D @workflow/vitest` installs a v4 plugin next to a v5 app. Install `@workflow/vitest@beta`, or pin the beta your app is on (for example `@workflow/vitest@5.0.0-beta.53`), and upgrade it together with `workflow`.
-
-The plugin builds and runs your workflows against the copy of `@workflow/core` it was installed with, so it checks this for you. At the start of each run it compares that copy with the one your app resolves: a different major fails the run with the install command that fixes it, and any other difference logs a warning. Set [`WORKFLOW_VITEST_VERSION_CHECK=off`](/docs/configuration/build-and-diagnostics#workflow_vitest_version_check) to skip the check.
+**Keep `@workflow/vitest` on the same major as `workflow`.** The plugin builds and runs your workflows against the copy of `@workflow/core` it was installed with, so it checks this for you. At the start of each run it compares that copy with the one your app resolves: a different major fails the run with the install command that fixes it, and any other difference logs a warning. Set [`WORKFLOW_VITEST_VERSION_CHECK=off`](/docs/configuration/build-and-diagnostics#workflow_vitest_version_check) to skip the check.
 </Callout>
 
 ### Vitest configuration
@@ -483,7 +481,7 @@ Integration tests are the right place to verify that your workflows handle error
 
 ### Upgrade `@workflow/vitest` with the SDK
 
-`@workflow/vitest` carries its own copy of the Workflow runtime, so treat it as part of the same upgrade as `workflow`. While Workflow 5 is in beta, that means the `beta` tag on both. See [Installation](#installation).
+`@workflow/vitest` carries its own copy of the Workflow runtime, so treat it as part of the same upgrade as `workflow`: bump both together, and keep them on the same major. See [Installation](#installation).
 
 ## Further reading
 

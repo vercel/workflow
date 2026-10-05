@@ -33,13 +33,14 @@ import {
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  readHookDisposeLock,
   readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
   deleteHookByRunMarkerFile,
   ensureHookIndexes,
-  findNewestIndexedHookCreatedEvent,
+  findIndexedHookCreatedEvent,
   listHookByRunMarkers,
   writeHookByRunMarker,
 } from './hook-index.js';
@@ -51,12 +52,21 @@ function getHookCreatedToken(event: Event): string | undefined {
 }
 
 export function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
-  const { token, metadata, isWebhook, isSystem, tokenRetentionUntil } =
-    event.eventData;
+  const {
+    token,
+    metadata,
+    isWebhook,
+    isSystem,
+    tokenRetentionUntil,
+    forceClaimedFrom,
+  } = event.eventData;
   return {
     runId: event.runId,
     hookId: event.correlationId,
     token,
+    // The journaled row is the durable record of a takeover; a rebuilt
+    // entity must say where its token came from just as the original did.
+    ...(forceClaimedFrom !== undefined && { claimedFrom: forceClaimedFrom }),
     metadata,
     ownerId: 'local-owner',
     projectId: 'local-project',
@@ -111,33 +121,33 @@ async function findAvailableHookCreatedEvent(
   matches: (event: Event) => boolean,
   tag?: string
 ): Promise<HookCreatedEvent | null> {
-  const newest = await findNewestIndexedHookCreatedEvent(
+  // Liveness is decided per entry, inside the iteration: a token's index
+  // can name several runs' hooks (a disposed one beside its successor, a
+  // force-claim victim beside its claimer) and at most one of them is live,
+  // so the first entry to pass is the answer and a closed one must not end
+  // the search.
+  const isLive = async (event: HookCreatedEvent): Promise<boolean> => {
+    if (await isTerminalRunCache(basedir, event.runId, tag)) {
+      const retainedUntil = event.eventData.tokenRetentionUntil;
+      if (!retainedUntil || retainedUntil.getTime() <= Date.now()) {
+        return false;
+      }
+    }
+    // A committed disposal (dispose lock on disk) closes the hook even when
+    // its `hook_disposed` event has not landed in the log yet: the disposer
+    // writes the lock, releases the token claim and hook entity, and only
+    // then appends the event. Rebuilding the caches from the log in that
+    // window would resurrect a claim for a hook that is being torn down. A
+    // force-claim takeover writes the same lock for the victim.
+    return !(await isHookDisposalCommitted(basedir, event.correlationId, tag));
+  };
+  const found = await findIndexedHookCreatedEvent(
     basedir,
     index,
-    (event) => isMatchingHookCreatedEvent(event, matches),
+    (event) => isMatchingHookCreatedEvent(event, matches) && isLive(event),
     tag
   );
-  if (!newest || !isMatchingHookCreatedEvent(newest, matches)) {
-    return null;
-  }
-
-  if (await isTerminalRunCache(basedir, newest.runId, tag)) {
-    const retainedUntil = newest.eventData.tokenRetentionUntil;
-    if (!retainedUntil || retainedUntil.getTime() <= Date.now()) {
-      return null;
-    }
-  }
-
-  // A committed disposal (dispose lock on disk) closes the hook even when
-  // its `hook_disposed` event has not landed in the log yet: the disposer
-  // writes the lock, releases the token claim and hook entity, and only
-  // then appends the event. Rebuilding the caches from the log in that
-  // window would resurrect a claim for a hook that is being torn down.
-  if (await isHookDisposalCommitted(basedir, newest.correlationId, tag)) {
-    return null;
-  }
-
-  return newest;
+  return found && isMatchingHookCreatedEvent(found, matches) ? found : null;
 }
 
 async function restoreHookCachesFromEvent(
@@ -156,6 +166,7 @@ async function restoreHookCachesFromEvent(
       runId: hook.runId,
       eventId: event.eventId,
       tokenRetentionUntil: event.eventData.tokenRetentionUntil,
+      ...(hook.claimedFrom && { claimedFrom: hook.claimedFrom }),
     })
   );
   // Marker before entity (see hook-index.ts crash-ordering invariant).
@@ -217,6 +228,18 @@ export function createHooksStorage(
     return !(await isTerminalRunCache(basedir, hook.runId, tag));
   }
 
+  /**
+   * A hook whose token another run took over (`experimental_force`): its
+   * disposal lock names the claimer. The token then belongs to that claimer's
+   * hook, which the takeover wrote before locking this one, so a lookup that
+   * lands on this hook falls through to the entity that holds the token now
+   * instead of answering not-found for a token that has an owner.
+   */
+  async function isForceDisposed(hook: Hook): Promise<boolean> {
+    const lock = await readHookDisposeLock(basedir, hook.hookId, tag);
+    return lock.committed && lock.forceClaimedBy !== undefined;
+  }
+
   async function findHookByToken(token: string): Promise<Hook | null> {
     // Fast path: the token claim file points at the owning hookId.
     const claim = await readHookTokenClaim(hookTokenClaimPath(basedir, token));
@@ -230,33 +253,48 @@ export function createHooksStorage(
           tag
         );
         if (hook?.token === token) {
-          if (!(await isHookAvailable(hook))) {
+          if (await isHookAvailable(hook)) {
+            return { ...hook, isWebhook: hook.isWebhook ?? true };
+          }
+          if (!(await isForceDisposed(hook))) {
             throw new HookNotFoundError(token);
           }
-          return { ...hook, isWebhook: hook.isWebhook ?? true };
+          // Taken over mid-flight: the claim still names the old owner for
+          // an instant. Resolve to whoever holds the token now (below).
+        } else if (hook) {
+          return null;
         }
       } catch (error) {
         if (!UnsafeEntityIdError.is(error)) {
           throw error;
         }
+        return null;
       }
-      return null;
     }
 
     // Slow path for legacy states (e.g. a lost claim file while the
-    // entity is still on disk).
+    // entity is still on disk) and for a token mid-takeover: skip the
+    // force-disposed owner, return the live successor.
     const hooksDir = path.join(basedir, 'hooks');
     const files = await listJSONFiles(hooksDir);
 
+    let disposedMatch = false;
     for (const file of files) {
       const hookPath = path.join(hooksDir, `${file}.json`);
       const hook = await readJSON(hookPath, HookSchema);
       if (hook?.token === token) {
-        if (!(await isHookAvailable(hook))) {
-          throw new HookNotFoundError(token);
+        if (await isHookAvailable(hook)) {
+          return { ...hook, isWebhook: hook.isWebhook ?? true };
         }
-        return { ...hook, isWebhook: hook.isWebhook ?? true };
+        if (await isForceDisposed(hook)) {
+          disposedMatch = true;
+          continue;
+        }
+        throw new HookNotFoundError(token);
       }
+    }
+    if (disposedMatch) {
+      throw new HookNotFoundError(token);
     }
 
     return null;

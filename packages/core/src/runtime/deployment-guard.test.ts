@@ -1,11 +1,16 @@
 import {
+  EntityConflictError,
   RUN_ERROR_CODES,
+  RunExpiredError,
   WorkflowDeploymentMismatchError,
 } from '@workflow/errors';
 import type { WorkflowRun, World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hydrateRunError } from '../serialization.js';
 import { guardDeploymentAffinity } from './deployment-guard.js';
+import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+
+vi.mock('./lifecycle-hooks.js', () => ({ dispatchRunFailedHooks: vi.fn() }));
 
 const run = {
   runId: 'wrun_test',
@@ -42,10 +47,56 @@ async function hydrateFailure(eventsCreate: ReturnType<typeof vi.fn>) {
 }
 
 afterEach(() => {
+  vi.clearAllMocks();
   delete process.env.WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES;
 });
 
 describe('guardDeploymentAffinity', () => {
+  it('dispatches the exact persisted failure only after the write lands', async () => {
+    const { world, eventsCreate } = createWorld('dpl_current');
+    let finishWrite!: () => void;
+    const pendingWrite = new Promise<void>((resolve) => {
+      finishWrite = resolve;
+    });
+    eventsCreate.mockReturnValueOnce(pendingWrite);
+    const execution = guardDeploymentAffinity({
+      world,
+      run,
+      workflowName: 'wf',
+    });
+    await vi.waitFor(() => expect(eventsCreate).toHaveBeenCalledOnce());
+    expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
+    finishWrite();
+    await expect(execution).resolves.toMatchObject({ outcome: 'failed' });
+    expect(dispatchRunFailedHooks).toHaveBeenCalledExactlyOnceWith(
+      run.runId,
+      'wf',
+      eventsCreate.mock.calls[0][1].eventData.error,
+      undefined,
+      RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
+    );
+  });
+
+  it.each([
+    new EntityConflictError('already finished'),
+    new RunExpiredError('expired'),
+    new Error('write failed'),
+  ])('does not dispatch on terminal write rejection: %s', async (error) => {
+    const { world, eventsCreate } = createWorld('dpl_current');
+    eventsCreate.mockRejectedValueOnce(error);
+    const execution = guardDeploymentAffinity({
+      world,
+      run,
+      workflowName: 'wf',
+    });
+    if (EntityConflictError.is(error) || RunExpiredError.is(error)) {
+      await expect(execution).resolves.toMatchObject({ outcome: 'failed' });
+    } else {
+      await expect(execution).rejects.toBe(error);
+    }
+    expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
+  });
+
   it('continues when the run is pinned to the current deployment', async () => {
     const { world, eventsCreate, getEncryptionKeyForRun } =
       createWorld('dpl_pinned');
@@ -151,6 +202,9 @@ describe('guardDeploymentAffinity', () => {
       }),
       { requestId: 'req_test' }
     );
+    // Written by a deployment that is not the run's own, so stamped with the
+    // run's version, which its pinned runtime can read.
+    expect(eventsCreate.mock.calls[0][1].specVersion).toBe(run.specVersion);
 
     const error = await hydrateFailure(eventsCreate);
     expect(WorkflowDeploymentMismatchError.is(error)).toBe(true);
