@@ -59,6 +59,8 @@ const once = Object.assign(
 );
 registerStepFunction('so_once', once);
 
+let currentEngine: 'node' | 'quickjs' = 'node';
+
 async function setup(
   code: string,
   args: unknown[],
@@ -71,6 +73,7 @@ async function setup(
     workflowName: 'workflow',
     deploymentId: 'dpl_test',
     status: 'pending',
+    executionContext: { workflowVm: currentEngine },
     input: await dehydrateWorkflowArguments(args, runId, undefined, []),
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -97,7 +100,14 @@ afterEach(() => {
   setWorld(undefined);
 });
 
-describe('single orchestrator against an append-only World', () => {
+describe.each([
+  'node',
+  'quickjs',
+] as const)('single orchestrator against an append-only World (%s engine)', (engine) => {
+  beforeEach(() => {
+    currentEngine = engine;
+  });
+
   it('runs a step inline, marks every orchestrator write in-band, and advances the fence', async () => {
     const { world } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
@@ -142,7 +152,13 @@ describe('single orchestrator against an append-only World', () => {
 
       expect(eventsOf(world, 'run_completed')).toHaveLength(1);
       const created = eventsOf(world, 'step_created');
-      expect(created.map((e) => data(e)?.inline)).toEqual([true, false, false]);
+      // One inline step and two background ones (the engines may write
+      // them in different orders).
+      expect(created.map((e) => data(e)?.inline).sort()).toEqual([
+        false,
+        false,
+        true,
+      ]);
       const stepMessages = world.queueCalls.filter(
         (call) => (call.message as { stepId?: string }).stepId !== undefined
       );
@@ -165,7 +181,8 @@ describe('single orchestrator against an append-only World', () => {
       const bgWrites = world.creates.filter(
         (c) =>
           c.event.eventType.startsWith('step_') &&
-          c.event.correlationId !== created[0]?.correlationId &&
+          c.event.correlationId !==
+            created.find((e) => data(e)?.inline === true)?.correlationId &&
           c.event.eventType !== 'step_created'
       );
       expect(bgWrites.length).toBe(4);
