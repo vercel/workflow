@@ -144,8 +144,8 @@ export interface ObservedPoint {
    *
    * Recorded so the level-triggered check agrees with `CallMatch.failed`. A
    * `runToEventCommitted` that ignored this would count a rejected write as the
-   * commit it was waiting for, which is routine under the fence, where a 412
-   * is an expected step on the way to a successful retry.
+   * commit it was waiting for, which is routine under the in-band fence, where
+   * a 412 is how an overlapped orchestrator learns to stop.
    */
   failed: boolean;
 }
@@ -156,7 +156,7 @@ export interface RejectedCall {
   call: WorldCallName;
   writer: WriterId;
   eventType?: EventType;
-  /** Error constructor name, e.g. `PreconditionFailedError`. */
+  /** Error constructor name, e.g. `InBandSupersededError`. */
   errorName: string;
   message: string;
 }
@@ -175,9 +175,9 @@ export interface WorldSnapshot {
   /**
    * Every intercepted world call that threw, in order.
    *
-   * Rejections are the visible mechanism behind a run that self-corrects (a
-   * `PreconditionFailedError` from the optimistic-concurrency fence, an
-   * `EntityConflictError` from a write against an already-terminal run), so
+   * Rejections are the visible mechanism behind a run that self-corrects (an
+   * `InBandSupersededError` from the in-band fence, an `EntityConflictError`
+   * from a write against an already-terminal run), so
    * they are recorded unconditionally rather than left to a scenario to
    * instrument.
    */
