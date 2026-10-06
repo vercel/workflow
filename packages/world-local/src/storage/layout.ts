@@ -28,6 +28,14 @@ import {
  * A file already at the destination is never overwritten: if it is the same
  * inode (hard-linked at both paths) the flat name is dropped, otherwise the
  * flat file is left in place and reported as skipped.
+ *
+ * Stop every process running an older version of this package on the data
+ * directory before upgrading. The pass runs once per process, so a flat file
+ * an older writer adds afterwards stays invisible to this process (its run
+ * looks truncated) until the next process start moves it. There is no
+ * automatic downgrade: older versions only read the flat layout, so rolling
+ * back means moving each `events/<runId>/` and `steps/<runId>/` file back up
+ * one level, under the same name, with every process stopped.
  */
 
 /** Per-entity id prefix of the second half of a file id, `${runId}-${id}`. */
@@ -46,25 +54,31 @@ export interface FlatLayoutMigrationResult {
 }
 
 /**
- * The run a flat file belongs to, from its name: `${runId}-${entityId}` plus
- * an optional `.${tag}` and the `.json` extension. Run ids may contain `-`
- * (custom ids), so split at the last `-evnt_` / `-step_`. Falls back to the
- * file's own `runId` for names that do not carry the prefix.
+ * The run a flat file belongs to. Its name is `${runId}-${entityId}` plus an
+ * optional `.${tag}` and the `.json` extension, but both halves may contain
+ * `-` (custom run ids, and step ids such as `step_a-step_b`), so the name
+ * alone is only conclusive when the `-evnt_` / `-step_` separator occurs
+ * exactly once. Otherwise the run id stored in the file decides, provided the
+ * name really starts with it; anything else is left in place.
  */
 async function runIdOfFlatFile(
   entityDir: RunScopedEntityDir,
   filePath: string
 ): Promise<string | null> {
   const name = path.basename(filePath);
-  const split = name.lastIndexOf(ENTITY_ID_PREFIX[entityDir]);
-  if (split > 0) {
-    return name.slice(0, split);
+  const separator = ENTITY_ID_PREFIX[entityDir];
+  const first = name.indexOf(separator);
+  if (first > 0 && name.indexOf(separator, first + 1) === -1) {
+    return name.slice(0, first);
   }
+  let stored: string | undefined;
   try {
-    return (await readJSON(filePath, RunIdSchema))?.runId ?? null;
+    stored = (await readJSON(filePath, RunIdSchema))?.runId;
   } catch {
     return null;
   }
+  if (!stored || !name.startsWith(`${stored}-`)) return null;
+  return stored;
 }
 
 /**

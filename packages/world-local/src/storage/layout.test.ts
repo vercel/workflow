@@ -239,7 +239,7 @@ describe('run-scoped layout migration', () => {
     expect(after).toEqual(before);
   });
 
-  it('routes run ids containing dashes by their last entity-id prefix', async () => {
+  it('routes run ids containing dashes by their entity-id prefix', async () => {
     const runId = 'wrun_custom-id-with-dashes';
     const eventsDir = path.join(dataDir, 'events');
     await fs.mkdir(eventsDir, { recursive: true });
@@ -253,5 +253,92 @@ describe('run-scoped layout migration', () => {
     await expect(
       fs.access(path.join(eventsDir, runId, name))
     ).resolves.toBeUndefined();
+  });
+
+  it('routes step ids containing the separator by the stored run id', async () => {
+    const storage = createStorage(dataDir);
+    const run = await createRun(storage, {
+      deploymentId: 'dep-1',
+      workflowName: 'wf',
+      input: new Uint8Array([1]),
+    });
+    await updateRun(storage, run.runId, 'run_started');
+    const stepId = 'step_a-step_b';
+    await createStep(storage, run.runId, {
+      stepId,
+      stepName: 'my-step',
+      input: new Uint8Array([7]),
+    });
+    const before = await storage.steps.get(run.runId, stepId, {
+      resolveData: 'all',
+    });
+
+    await flatten(dataDir);
+    resetRunScopedLayoutCache();
+    const result = await migrateFlatRunScopedFiles(dataDir);
+    expect(result.skipped).toBe(0);
+    await expect(
+      fs.access(
+        path.join(dataDir, 'steps', run.runId, `${run.runId}-${stepId}.json`)
+      )
+    ).resolves.toBeUndefined();
+    const stepDirs = await fs.readdir(path.join(dataDir, 'steps'));
+    expect(stepDirs).toEqual([run.runId]);
+
+    resetRunScopedLayoutCache();
+    const after = await createStorage(dataDir).steps.get(run.runId, stepId, {
+      resolveData: 'all',
+    });
+    expect(after).toEqual(before);
+  });
+
+  it('leaves an ambiguous file whose stored run id does not match its name', async () => {
+    const stepsDir = path.join(dataDir, 'steps');
+    await fs.mkdir(stepsDir, { recursive: true });
+    const name = 'wrun_x-step_a-step_b.json';
+    await fs.writeFile(
+      path.join(stepsDir, name),
+      JSON.stringify({ runId: 'wrun_other' })
+    );
+    expect(await migrateFlatRunScopedFiles(dataDir)).toEqual({
+      moved: 0,
+      skipped: 1,
+    });
+    await expect(fs.access(path.join(stepsDir, name))).resolves.toBeUndefined();
+  });
+
+  it('tagged clear() on an unmigrated flat store removes only that tag', async () => {
+    const { createWorld } = await import('../index.js');
+    const keepUntagged = await seedRun(dataDir);
+    const keepOther = await seedRun(dataDir, 'vitest-1');
+    const drop = await seedRun(dataDir, 'vitest-0');
+    const before = {
+      untagged: await snapshot(dataDir, keepUntagged),
+      other: await snapshot(dataDir, keepOther, 'vitest-1'),
+    };
+    await flatten(dataDir);
+    resetRunScopedLayoutCache();
+
+    // clear() is the first call in this process: nothing has migrated yet.
+    const world = createWorld({ dataDir, tag: 'vitest-0' });
+    await world.clear();
+
+    const files = await walk(dataDir);
+    expect(files.filter((f) => f.includes('vitest-0'))).toEqual([]);
+    expect(files.filter((f) => f.includes(drop))).toEqual([]);
+    // Every remaining event and step file sits in its run's directory.
+    for (const f of files) {
+      const [entityDir, ...rest] = f.split(path.sep);
+      if (entityDir === 'events' || entityDir === 'steps') {
+        expect(rest).toHaveLength(2);
+      }
+    }
+
+    resetRunScopedLayoutCache();
+    expect({
+      untagged: await snapshot(dataDir, keepUntagged),
+      other: await snapshot(dataDir, keepOther, 'vitest-1'),
+    }).toEqual(before);
+    await world.close?.();
   });
 });

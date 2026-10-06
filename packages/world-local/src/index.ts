@@ -21,6 +21,7 @@ import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
+import { ensureRunScopedLayout } from './storage/layout.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -164,7 +165,11 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         );
 
         // Delete tagged entity files across all directories. Steps and
-        // events are stored one subdirectory per run.
+        // events are stored one subdirectory per run; finish converting a
+        // flat store first, so this pass sees every one of them. The flat
+        // `events/` and `steps/` directories are cleared too, for files the
+        // conversion left in place.
+        await ensureRunScopedLayout(basedir);
         const runScopedDirs = (
           await Promise.all([
             listRunScopedDirs(basedir, 'steps'),
@@ -175,6 +180,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           .map((dir) => path.relative(basedir, dir));
         const entityDirs = [
           'runs',
+          'steps',
+          'events',
           ...runScopedDirs,
           'hooks',
           'hooks/by-run',
