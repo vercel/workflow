@@ -421,6 +421,16 @@ export interface StartOptionsBase {
   experimental_retention?: RunRetention;
 
   /**
+   * Set to `false` to store the run's arguments uncompressed.
+   *
+   * Arguments are compressed by default when the target run can decode
+   * them. The attempt costs CPU proportional to the input size and is
+   * wasted on incompressible data (media, encrypted or random bytes),
+   * so callers that know their inputs will not shrink can skip it.
+   */
+  compression?: boolean;
+
+  /**
    * The ID of an existing run this run is being replayed from, if any.
    *
    * Recorded on the new run's `executionContext` as `replayedFromRunId` so
@@ -1036,7 +1046,8 @@ export async function start<TArgs extends unknown[], TResult>(
       // target deployment can decode them (same-deployment, or probed
       // capability for cross-deployment starts).
       const compression: CompressionMode =
-        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION &&
+        opts.compression !== false
           ? targetCompression
           : false;
       const workflowArguments = await dehydrateWorkflowArguments(
