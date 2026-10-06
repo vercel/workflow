@@ -1564,10 +1564,16 @@ export function workflowEntrypoint(
                     );
                     // A log without `run_created` (a legacy run, or a World
                     // whose log starts later) takes the input from the run.
-                    const runInputValue = runCreated
-                      ? runCreated.eventData.input
-                      : (await world.runs.get(runId, { resolveData: 'all' }))
-                          .input;
+                    let runInputValue: unknown;
+                    try {
+                      runInputValue = runCreated
+                        ? runCreated.eventData.input
+                        : (await world.runs.get(runId, { resolveData: 'all' }))
+                            .input;
+                    } catch (err) {
+                      if (!(await recordWorkflowSetupFailure(err))) throw err;
+                      return undefined;
+                    }
                     const runStarted = log.events.find(
                       (event) => event.eventType === 'run_started'
                     );
