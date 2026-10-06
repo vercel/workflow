@@ -427,6 +427,13 @@ export interface StartOptionsBase {
    * them. The attempt costs CPU proportional to the input size and is
    * wasted on incompressible data (media, encrypted or random bytes),
    * so callers that know their inputs will not shrink can skip it.
+   *
+   * `true` is the default and does not force compression: a target that
+   * cannot decode compressed payloads, or a process with
+   * `WORKFLOW_DISABLE_COMPRESSION=1` set, still stores them uncompressed.
+   * This option is the per-call counterpart of that environment variable
+   * and only affects the arguments; a dynamic workflow's code is
+   * compressed regardless.
    */
   compression?: boolean;
 
@@ -1041,15 +1048,17 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
-      // Compress workflow arguments only when the run itself is marked as
-      // possibly containing compressed payloads (specVersion >= 5) AND the
-      // target deployment can decode them (same-deployment, or probed
-      // capability for cross-deployment starts).
+      // Compress only when the run itself is marked as possibly containing
+      // compressed payloads (specVersion >= 5) AND the target deployment can
+      // decode them (same-deployment, or probed capability for
+      // cross-deployment starts). The caller's `compression: false` opt-out
+      // applies to the arguments alone, not to dynamic workflow code.
       const compression: CompressionMode =
-        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION &&
-        opts.compression !== false
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
           ? targetCompression
           : false;
+      const argumentCompression: CompressionMode =
+        opts.compression === false ? false : compression;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -1058,7 +1067,7 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        compression
+        argumentCompression
       );
 
       // Dynamic workflow code goes through the same serialization pipeline as
