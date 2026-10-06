@@ -10,8 +10,10 @@ import {
   hasTag,
   isUntagged,
   listJSONFiles,
+  listRunScopedDirs,
   readJSON,
   resolveWithinBase,
+  runEntityDir,
   stripTag,
   taggedPath,
   writeExclusive,
@@ -264,32 +266,32 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     // Marker absent, so backfill below.
   }
 
-  const eventsDir = path.join(basedir, 'events');
-  await forEachConcurrent(
-    await listJSONFiles(eventsDir),
-    32,
-    async (fileId) => {
-      const event = await readEventLenient(
-        path.join(eventsDir, `${fileId}.json`)
-      );
-      if (!event || event.eventType !== 'hook_created') return;
-      if (typeof event.correlationId !== 'string') return;
-      const token = (event.eventData as { token?: unknown } | undefined)?.token;
-      if (typeof token !== 'string') return;
-      try {
-        await writeHookCreatedIndexEntries(
-          basedir,
-          token,
-          event.runId,
-          event.correlationId,
-          event.eventId,
-          tagOf(fileId)
-        );
-      } catch {
-        // Unsafe ids cannot have been written by this storage layer; skip.
-      }
+  const eventFiles: string[] = [];
+  for (const runDir of await listRunScopedDirs(basedir, 'events')) {
+    for (const fileId of await listJSONFiles(runDir)) {
+      eventFiles.push(path.join(runDir, `${fileId}.json`));
     }
-  );
+  }
+  await forEachConcurrent(eventFiles, 32, async (eventFile) => {
+    const fileId = path.basename(eventFile, '.json');
+    const event = await readEventLenient(eventFile);
+    if (!event || event.eventType !== 'hook_created') return;
+    if (typeof event.correlationId !== 'string') return;
+    const token = (event.eventData as { token?: unknown } | undefined)?.token;
+    if (typeof token !== 'string') return;
+    try {
+      await writeHookCreatedIndexEntries(
+        basedir,
+        token,
+        event.runId,
+        event.correlationId,
+        event.eventId,
+        tagOf(fileId)
+      );
+    } catch {
+      // Unsafe ids cannot have been written by this storage layer; skip.
+    }
+  });
 
   const hooksDir = path.join(basedir, 'hooks');
   await forEachConcurrent(await listJSONFiles(hooksDir), 32, async (fileId) => {
@@ -373,7 +375,7 @@ export async function findIndexedHookCreatedEvent(
     try {
       eventPath = taggedPath(
         basedir,
-        'events',
+        runEntityDir('events', entry.runId),
         `${entry.runId}-${eventId}`,
         tagOf(entryId)
       );

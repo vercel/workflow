@@ -13,6 +13,7 @@ import {
   isUntagged,
   readJSON,
   resolveWithinBase,
+  runEntityDir,
   stripTag,
   ulidToDate,
   withWindowsRetry,
@@ -335,11 +336,10 @@ export interface RunEventIdScan {
 }
 
 /**
- * Scans the events directory for one run's ids, honoring tag visibility.
+ * Scans one run's events directory for its ids, honoring tag visibility.
  *
- * O(all event files), like every other directory-walking read in this
- * backend. Callers that run it per write memoize the result and use the
- * publish itself to detect when the memo has fallen behind.
+ * O(the run's event files). Callers that run it per write memoize the result
+ * and use the publish itself to detect when the memo has fallen behind.
  */
 export async function scanRunEventIds(
   basedir: string,
@@ -348,7 +348,7 @@ export async function scanRunEventIds(
 ): Promise<RunEventIdScan> {
   let files: string[] = [];
   try {
-    files = await fs.readdir(path.join(basedir, 'events'));
+    files = await fs.readdir(path.join(basedir, runEntityDir('events', runId)));
   } catch (error) {
     // Only ENOENT ("no events directory yet") means there is provably
     // nothing visible. Any other failure would silently report an empty run,

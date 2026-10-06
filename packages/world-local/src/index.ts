@@ -11,6 +11,7 @@ import {
   deleteJSON,
   hasTag,
   isUntagged,
+  listRunScopedDirs,
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
@@ -162,11 +163,19 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           })
         );
 
-        // Delete tagged entity files across all directories
+        // Delete tagged entity files across all directories. Steps and
+        // events are stored one subdirectory per run.
+        const runScopedDirs = (
+          await Promise.all([
+            listRunScopedDirs(basedir, 'steps'),
+            listRunScopedDirs(basedir, 'events'),
+          ])
+        )
+          .flat()
+          .map((dir) => path.relative(basedir, dir));
         const entityDirs = [
           'runs',
-          'steps',
-          'events',
+          ...runScopedDirs,
           'hooks',
           'hooks/by-run',
           'waits',
@@ -180,6 +189,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
               files.map((f) => deleteJSON(path.join(fullDir, f)))
             );
           })
+        );
+        // Drop the run directories that clearing left empty. `rmdir` refuses
+        // a non-empty one, so another tag's (or untagged) files keep theirs.
+        await Promise.all(
+          runScopedDirs.map((dir) =>
+            fs.rmdir(path.join(basedir, dir)).catch(() => {})
+          )
         );
         // Delete tagged hook-index entries (nested per-key directories)
         for (const indexDir of ['token-index', 'id-index']) {

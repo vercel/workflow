@@ -220,6 +220,31 @@ export function taggedPath(
 }
 
 /**
+ * Entity directories whose files are stored one subdirectory per run.
+ *
+ * Event and step files are only ever looked up or listed for one run at a
+ * time, so they live under `<entityDir>/<runId>/`. That keeps every per-run
+ * read and listing proportional to that run's own files rather than to every
+ * file the data directory has accumulated. File names keep their
+ * `${runId}-` prefix, so a file moved from the old flat layout keeps its name.
+ */
+export const RUN_SCOPED_ENTITY_DIRS = ['events', 'steps'] as const;
+export type RunScopedEntityDir = (typeof RUN_SCOPED_ENTITY_DIRS)[number];
+
+/**
+ * The entity-relative directory holding one run's files for a run-scoped
+ * entity: `runEntityDir('events', 'wrun_ABC')` → `events/wrun_ABC`.
+ * Pass the result as the `entityDir` of {@link taggedPath} and friends.
+ */
+export function runEntityDir(
+  entityDir: RunScopedEntityDir,
+  runId: string
+): string {
+  assertSafeEntityId('runId', runId);
+  return path.join(entityDir, runId);
+}
+
+/**
  * Read a JSON entity with tagged fallback.
  * When a tag is set, tries the tagged path first, then falls back to the
  * untagged path (so a tagged world can read entities written without a tag).
@@ -573,6 +598,28 @@ export async function listFilesByExtension(
     if ((error as any).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+/**
+ * Every run subdirectory of a run-scoped entity directory, as absolute paths.
+ * For the few whole-store walks (index backfills, tagged `clear()`); per-run
+ * reads go straight to {@link runEntityDir}.
+ */
+export async function listRunScopedDirs(
+  basedir: string,
+  entityDir: RunScopedEntityDir
+): Promise<string[]> {
+  const root = path.join(basedir, entityDir);
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as any).code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(root, entry.name));
 }
 
 interface PaginatedFileSystemQueryConfig<T> {

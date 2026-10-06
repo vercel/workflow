@@ -730,6 +730,7 @@ describe('Storage', () => {
         const filePath = path.join(
           testDir,
           'steps',
+          testRunId,
           `${testRunId}-step_123.json`
         );
         const fileExists = await fs
@@ -1318,6 +1319,7 @@ describe('Storage', () => {
         const filePath = path.join(
           testDir,
           'events',
+          testRunId,
           `${testRunId}-${event.eventId}.json`
         );
         const fileExists = await fs
@@ -4002,7 +4004,12 @@ describe('Storage', () => {
       // Simulate a crash after the hook entity write but before the
       // event write by deleting the just-written event from disk.
       await fs.unlink(
-        path.join(testDir, 'events', `${testRunId}-${first.event.eventId}.json`)
+        path.join(
+          testDir,
+          'events',
+          testRunId,
+          `${testRunId}-${first.event.eventId}.json`
+        )
       );
 
       // Sanity: the hook entity is still durable but the
@@ -4200,7 +4207,12 @@ describe('Storage', () => {
       await fs.unlink(hookPath);
       await fs.unlink(tokenClaimPath);
       await fs.writeFile(
-        path.join(testDir, 'events', 'wrun_malformed-event.json'),
+        path.join(
+          testDir,
+          'events',
+          testRunId,
+          `${testRunId}-evnt_malformed.json`
+        ),
         '{'
       );
 
@@ -4571,7 +4583,7 @@ describe('Storage', () => {
         JSON.stringify({ token, hookId, runId: run.runId })
       );
       const preExistingEventId = 'evnt_pre_upgrade_existing';
-      const eventsDir = path.join(testDir, 'events');
+      const eventsDir = path.join(testDir, 'events', run.runId);
       await fs.mkdir(eventsDir, { recursive: true });
       await fs.writeFile(
         path.join(eventsDir, `${run.runId}-${preExistingEventId}.json`),
@@ -5482,6 +5494,7 @@ describe('Storage', () => {
       const eventPath = path.join(
         testDir,
         'events',
+        run.runId,
         `${run.runId}-${stalledEventId}.json`
       );
       await expect(promoteExclusive(stagedPath, eventPath)).resolves.toBe(
@@ -5629,7 +5642,7 @@ describe('Storage', () => {
           workflowName: 'test-workflow',
           input: new Uint8Array(),
         });
-        const eventsDir = path.join(testDir, 'events');
+        const eventsDir = path.join(testDir, 'events', run.runId);
         await fs.chmod(eventsDir, 0o000);
 
         try {
