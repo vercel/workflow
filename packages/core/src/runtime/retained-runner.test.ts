@@ -2605,6 +2605,7 @@ it('runs no step before a durable invoke-first creation, and acknowledges once t
     executionContext: { retainedRunnerVersion: 1 },
   };
   let acknowledged = false;
+  let flushedAtAck: string[][] = [];
   const started = owner
     .submit(
       {
@@ -2617,9 +2618,11 @@ it('runs no step before a durable invoke-first creation, and acknowledges once t
     )
     .then(() => {
       acknowledged = true;
+      flushedAtAck = flushed.map((barrier) => [...barrier]);
     });
   await vi.waitFor(() => expect(flushed).toHaveLength(1));
-  // Only run_created is behind the first barrier; nothing has run yet.
+  // Only run_created is behind the first barrier; nothing has run yet, and
+  // run_started waits for the first advance.
   expect(flushed[0]).toEqual(['run_created']);
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(marks).toEqual([]);
@@ -2628,8 +2631,11 @@ it('runs no step before a durable invoke-first creation, and acknowledges once t
   // The start is acknowledged once the run exists, while its first step is
   // still running.
   await started;
+  // The acknowledgement waited for no write beyond run_created.
+  for (const barrier of flushedAtAck) expect(barrier).toEqual(['run_created']);
   await vi.waitFor(() => expect(marks).toEqual(['first']));
   expect(acknowledged).toBe(true);
+  expect(staged.slice(0, 2)).toEqual(['run_created', 'run_started']);
   releaseStep();
   await vi.waitFor(async () =>
     expect((await world.runs.get(runId)).status).toBe('completed')

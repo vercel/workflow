@@ -586,6 +586,11 @@ export class RetainedRunner {
       await this.initialize();
       if (`${this.prefix}${this.run.workflowName}` !== metadata.queueName)
         throw new InputRejected('Invocation target mismatch', { status: 409 });
+      // Only the creating start defers run_started; any other input records it.
+      if (this.createdDurably && !start?.success) {
+        this.createdDurably = false;
+        await this.markStarted();
+      }
       if (parsed.invoke) {
         if (
           parsed.input &&
@@ -619,7 +624,10 @@ export class RetainedRunner {
           // is armed); its first advance is the mailbox's next serialized item.
           if (this.createdDurably) {
             this.createdDurably = false;
-            this.enqueue('run_start.advance', advance).catch(() => {});
+            this.enqueue('run_start.advance', async () => {
+              await this.markStarted();
+              await advance();
+            }).catch(() => {});
           } else await advance();
           return { status: 'accepted' };
         }
@@ -912,6 +920,12 @@ export class RetainedRunner {
       );
     }
     this.initialized = true;
+    // A durably created run's start is acknowledged before its first advance,
+    // which records run_started instead.
+    if (!this.createdDurably) await this.markStarted();
+  }
+
+  private async markStarted() {
     if (!isTerminalWorkflowRunStatus(this.run.status) && !this.run.startedAt)
       await this.commit({
         eventType: 'run_started',
