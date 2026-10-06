@@ -1,6 +1,11 @@
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createFlushableState, flushablePipe } from './flushable-stream.js';
+import {
+  createFlushableState,
+  drainFlushableSnapshot,
+  flushablePipe,
+  trackFlushableWritable,
+} from './flushable-stream.js';
 import { setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -503,15 +508,24 @@ describe('WorkflowServerWritableStream', () => {
       await expect(piped).rejects.toThrow('producer failed');
       await new Promise((r) => setTimeout(r, 25));
 
-      // Every accepted chunk was delivered; the stream was not closed.
+      // Every accepted chunk was delivered, in order; the stream was not
+      // closed. How chunks split between write() and writeMulti() depends on
+      // how fast pipeTo hands them over (Node 24.21 batches the first two), so
+      // reconstruct the order the World actually received them in.
       const delivered = [
-        ...mockStreams.write.mock.calls.map(
-          (call: unknown[]) => (call[2] as Uint8Array)[0]
+        ...mockStreams.write.mock.calls.map((call: unknown[], i: number) => ({
+          order: mockStreams.write.mock.invocationCallOrder[i],
+          chunks: [(call[2] as Uint8Array)[0]],
+        })),
+        ...mockStreams.writeMulti.mock.calls.map(
+          (call: unknown[], i: number) => ({
+            order: mockStreams.writeMulti.mock.invocationCallOrder[i],
+            chunks: (call[2] as Uint8Array[]).map((c) => c[0]),
+          })
         ),
-        ...mockStreams.writeMulti.mock.calls.flatMap((call: unknown[]) =>
-          (call[2] as Uint8Array[]).map((c) => c[0])
-        ),
-      ];
+      ]
+        .sort((a, b) => a.order - b.order)
+        .flatMap((call) => call.chunks);
       expect(delivered).toEqual([1, 2, 3]);
       expect(mockStreams.close).not.toHaveBeenCalled();
     });
@@ -569,6 +583,103 @@ describe('WorkflowServerWritableStream', () => {
       new WorkflowServerWritableStream('run-123', 'test-stream');
       await waitFor(() => expect(writerIds).toHaveLength(2));
       expect(new Set(writerIds).size).toBe(2);
+    });
+  });
+
+  describe('public writer transport cleanup', () => {
+    function makePipe() {
+      const session = {
+        write: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        release: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      const state = createFlushableState();
+      const transform = new TransformStream<Uint8Array, Uint8Array>();
+      const pipe = flushablePipe(
+        transform.readable,
+        new WorkflowServerWritableStream('run-123', 'test-stream'),
+        state
+      ).catch(() => {});
+      const writable = trackFlushableWritable(transform.writable, state);
+      return { session, state, pipe, writable };
+    }
+
+    it('releases only after durability and keeps the same handle usable', async () => {
+      const { session, state, pipe, writable } = makePipe();
+      let acknowledge!: () => void;
+      session.write.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            acknowledge = resolve;
+          })
+      );
+      const writer = writable.getWriter();
+      await writer.write(new Uint8Array([1]));
+      writer.releaseLock();
+      const settling = state.settleReleasedWrites!();
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      expect(session.release).not.toHaveBeenCalled();
+      acknowledge();
+      await expect(settling).resolves.toBe(true);
+      expect(session.release).toHaveBeenCalledTimes(1);
+      expect(session.dispose).not.toHaveBeenCalled();
+      expect(session.close).not.toHaveBeenCalled();
+      expect(state.streamEnded).toBe(false);
+
+      const nextWriter = writable.getWriter();
+      await nextWriter.write(new Uint8Array([2]));
+      await nextWriter.close();
+      await pipe;
+      expect(mockStreams.createWriteSession).toHaveBeenCalledTimes(1);
+      expect(session.write).toHaveBeenNthCalledWith(2, 1, [
+        new Uint8Array([2]),
+      ]);
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('settles an unused released writer whose session could not initialize', async () => {
+      mockStreams.createWriteSession = vi.fn(() => {
+        throw new Error('session setup failed');
+      });
+      const transform = new TransformStream<Uint8Array, Uint8Array>();
+      const state = createFlushableState();
+      const pipe = flushablePipe(
+        transform.readable,
+        new WorkflowServerWritableStream('run-123', 'test-stream'),
+        state
+      ).catch(() => {});
+      const writable = trackFlushableWritable(transform.writable, state);
+      await expect(state.settleReleasedWrites?.()).resolves.toBe(true);
+      await expect(state.promise).resolves.toBeUndefined();
+      await writable.abort();
+      await pipe;
+    });
+
+    it('does not release a held writer or a durability-only snapshot', async () => {
+      const { session, state, pipe, writable } = makePipe();
+      const writer = writable.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await drainFlushableSnapshot(state);
+      await expect(state.settleReleasedWrites!()).resolves.toBe(false);
+      expect(session.release).not.toHaveBeenCalled();
+      await writer.close();
+      await pipe;
+      expect(session.release).not.toHaveBeenCalled();
+    });
+
+    it('disposes the server sink when the public writer aborts', async () => {
+      const { session, state, pipe, writable } = makePipe();
+      const writer = writable.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.abort(new Error('producer failed'));
+      await pipe;
+      await expect(state.promise).rejects.toThrow('producer failed');
+      expect(session.write).toHaveBeenCalledWith(0, [new Uint8Array([1])]);
+      expect(session.dispose).toHaveBeenCalledTimes(1);
+      expect(session.release).not.toHaveBeenCalled();
+      expect(session.close).not.toHaveBeenCalled();
     });
   });
 

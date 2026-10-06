@@ -48,41 +48,21 @@ WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
 
 Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` or `DATABASE_URL` is set when running this command:
 
-<Tabs items={["npm", "pnpm", "Yarn", "Bun"]}>
-
-<Tab value="npm">
-
-```bash
+```bash tab="npm"
 npx --package=@workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-<Tab value="pnpm">
-
-```bash
+```bash tab="pnpm"
 pnpm dlx --package @workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-<Tab value="Yarn">
-
-```bash
+```bash tab="Yarn"
 yarn dlx --package @workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-<Tab value="Bun">
-
-```bash
+```bash tab="Bun"
 bunx --package @workflow/world-postgres bootstrap
 ```
-
-</Tab>
-
-</Tabs>
 
 <Callout type="info">
 The migration is idempotent and can safely be run as a post-deployment lifecycle script.
@@ -154,9 +134,9 @@ still adds overhead. Pulling in `workflow/runtime` from a server-startup hook pu
 the whole runtime into the cold-start path before the first request is served.
 </Callout>
 
-<Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
+<TabsWithChildren tabs={["Next.js","SvelteKit","Nitro"]}>
 
-<Tab value="Next.js">
+<TabContent order={1}>
 
 Create an `instrumentation.ts` file in your project root:
 
@@ -174,9 +154,9 @@ export async function register() {
 Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
 </Callout>
 
-</Tab>
+</TabContent>
 
-<Tab value="SvelteKit">
+<TabContent order={2}>
 
 Create a `src/hooks.server.ts` file:
 
@@ -194,9 +174,9 @@ export const init: ServerInit = async () => {
 Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 </Callout>
 
-</Tab>
+</TabContent>
 
-<Tab value="Nitro">
+<TabContent order={3}>
 
 Create a plugin to start the world on server initialization:
 
@@ -225,9 +205,9 @@ export default defineNitroConfig({
 Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 </Callout>
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
@@ -277,6 +257,10 @@ Prefix for graphile-worker queue job names. Useful when sharing a database betwe
 Number of concurrent workers polling for jobs. Default: `50`.
 
 This value also bounds how many parent→child workflow polls can be in flight simultaneously. Every `await childRun.returnValue` inside a workflow holds a worker slot until the child run terminates. If you expect recursive or highly-fanned-out parent/child workflows, raise this ceiling above the peak number of concurrent polls. With the default of 50, the included `fibonacciWorkflow` end-to-end test (`fib(6)`, about 24 concurrent polls at peak) passes; deeper recursion or larger fanouts need a correspondingly larger setting.
+
+### `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
+
+Milliseconds between idle job fetches per worker. Each worker polls on its own, so an idle process runs about `queueConcurrency × 1000 / pollInterval` fetches per second. Default: `500`.
 
 ### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
 

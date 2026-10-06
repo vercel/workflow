@@ -62,7 +62,11 @@ import {
   AttributeValidationError,
   validateAttributeEventDataSize,
 } from '@workflow/world/attributes-validation';
-import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
+import {
+  AfterCommitError,
+  ReplayEventObserverError,
+  withEventPostRetry,
+} from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
@@ -159,6 +163,16 @@ interface SplitEventData {
      * it without holding the run's symmetric key.
      */
     encryptionPublicKey?: string;
+    /**
+     * A dynamic run's serialized workflow VM code, inline on run_created (and
+     * on run_started for resilient start). Rides the meta rather than the
+     * frame body because the body slot already carries the run's `input`; the
+     * backend stores it behind a ref on the run and never decodes it.
+     */
+    dynamicWorkflowCode?: Uint8Array;
+    /** Ref key of dynamic workflow code uploaded ahead of the write, for
+     *  definitions too large to send inline. */
+    dynamicWorkflowCodeRef?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -213,6 +227,8 @@ type MetaSourceField =
   | 'writer'
   | 'allowReservedAttributes'
   | 'encryptionPublicKey'
+  | 'dynamicWorkflowCode'
+  | 'dynamicWorkflowCodeRef'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -382,6 +398,16 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.encryptionPublicKey === 'string') {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
+  }
+  // Dynamic workflow code arrives one of two ways and never both: the bytes
+  // inline for a small definition, or a ref to an earlier upload for a large
+  // one. Both are metadata as far as the frame is concerned — the single body
+  // slot on run_created/run_started is the run's input.
+  if (eventData.dynamicWorkflowCode instanceof Uint8Array) {
+    meta.dynamicWorkflowCode = eventData.dynamicWorkflowCode;
+  }
+  if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
+    meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -652,6 +678,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           data.eventType === 'hook_received' &&
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
+        afterStepBody: params?.afterStepBody === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -675,6 +702,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     return result as EventResult<T['eventType']>;
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
+    if (err instanceof AfterCommitError) throw err.error;
     // 409 hook-force-claimed on hook_received: the hook's token was taken
     // over by another run and the server has already re-pointed it. Re-key
     // with the token this write carried so `resumeHook()` can follow it.

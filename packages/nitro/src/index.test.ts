@@ -20,6 +20,7 @@ type StubOptions = {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
   };
   vercel?: Record<string, unknown>;
+  moduleSideEffects?: string[];
 };
 
 function createNitroStub({
@@ -32,6 +33,7 @@ function createNitroStub({
   workflow = {},
   externals,
   vercel,
+  moduleSideEffects,
 }: StubOptions) {
   return {
     routing,
@@ -42,6 +44,7 @@ function createNitroStub({
       dev,
       externals: externals ?? {},
       handlers: [],
+      ...(moduleSideEffects ? { moduleSideEffects } : {}),
       preset,
       rootDir,
       typescript: {},
@@ -479,4 +482,86 @@ describe('@workflow/nitro externals forwarding', () => {
       });
     });
   }
+});
+
+describe('@workflow/nitro published-package bundling', () => {
+  async function forceInlinePlugin() {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.hooks.hook = (
+      name: string,
+      hook: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(hook);
+    };
+    await nitroModule.setup(nitro);
+    const config: { plugins: any[] } = { plugins: [] };
+    for (const hook of rollupBeforeHooks) hook(nitro, config);
+    return config.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'workflow:force-inline'
+    );
+  }
+
+  // pnpm layout of an installed `@workflow/core`.
+  const corePackageDir =
+    '/app/node_modules/.pnpm/@workflow+core@5.0.0/node_modules/@workflow/core';
+
+  it('inlines relative imports between files of an installed workflow package', async () => {
+    const plugin = await forceInlinePlugin();
+    const resolve = vi.fn(async () => ({
+      id: `${corePackageDir}/dist/runtime/run.js`,
+      external: true,
+    }));
+
+    const result = await plugin.resolveId.handler.call(
+      { resolve },
+      './run.js',
+      `${corePackageDir}/dist/runtime/lifecycle-hooks.js`,
+      {}
+    );
+
+    expect(result).toEqual({
+      id: `${corePackageDir}/dist/runtime/run.js`,
+      external: false,
+    });
+  });
+
+  it('leaves relative imports inside other packages to Nitro', async () => {
+    const plugin = await forceInlinePlugin();
+    const resolve = vi.fn();
+
+    const result = await plugin.resolveId.handler.call(
+      { resolve },
+      './utils.js',
+      '/app/node_modules/.pnpm/h3@1.0.0/node_modules/h3/dist/index.mjs',
+      {}
+    );
+
+    expect(result).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('keeps module side effects of workflow packages', async () => {
+    const nitro = createNitroStub({
+      routing: false,
+      moduleSideEffects: ['unenv/polyfill/'],
+    });
+
+    await nitroModule.setup(nitro);
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options.moduleSideEffects).toEqual([
+      'unenv/polyfill/',
+      '@workflow/',
+      'workflow/',
+    ]);
+  });
+
+  it('does not add moduleSideEffects when Nitro has no such option', async () => {
+    const nitro = createNitroStub({ routing: true });
+
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options).not.toHaveProperty('moduleSideEffects');
+  });
 });

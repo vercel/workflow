@@ -75,6 +75,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      // Stored whole on the run record; no upload path, so `start()` always
+      // sends the code inline.
+      dynamicWorkflowCode: true,
       // world-local deduplicates concurrent `hook_received` writes sharing a
       // `(runId, resumeId)` via a filesystem sidecar claim (see
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast

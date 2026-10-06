@@ -25,6 +25,59 @@ function escapeRegex(value: string): string {
 }
 
 /**
+ * The runtime `createVcConfig` falls back to when none is configured. Kept in
+ * step with it so the esbuild target and the deployed runtime agree.
+ */
+const DEFAULT_VERCEL_NODE_RUNTIME = 'nodejs22.x';
+
+const IMPORT_META_SHIM = '__workflowNestImportMeta';
+
+/**
+ * Give `import.meta` a working value inside the CommonJS app bundle.
+ *
+ * The app function is emitted as CJS, where esbuild replaces `import.meta`
+ * with `{}`. A NestJS app declared `"type": "module"` — the setup the
+ * getting-started guide documents — reaches for `import.meta.url` to build a
+ * `createRequire` or to resolve a path next to the module, and gets
+ * `undefined`. That throws `ERR_INVALID_ARG_TYPE` at cold start in production,
+ * while the build only emits an esbuild warning among the rest of its output.
+ *
+ * Pointing it at the bundle's own file is the honest answer: after bundling,
+ * that is where the code actually lives.
+ *
+ * @internal Exported for regression tests.
+ */
+export const importMetaShim = {
+  banner:
+    `var ${IMPORT_META_SHIM} = { url: require("node:url").pathToFileURL(__filename).href, ` +
+    `filename: __filename, dirname: __dirname };`,
+  define: { 'import.meta': IMPORT_META_SHIM },
+} as const;
+
+/**
+ * Translate a Vercel Node runtime (`nodejs20.x`) into an esbuild target
+ * (`node20`).
+ *
+ * The app function is bundled for the runtime it is deployed on. Hardcoding a
+ * newer target lets esbuild pass through syntax the deployed Node cannot parse
+ * — import attributes are the live example between Node 20 and 22 — and the
+ * failure is a `SyntaxError` at cold start with no build-time warning.
+ * Anything that is not a recognised Node runtime falls back to the same
+ * default `createVcConfig` uses.
+ *
+ * @internal Exported for regression tests.
+ */
+export function esbuildTargetForRuntime(runtime: string | undefined): string {
+  const match = /^nodejs(\d+)(?:\.\d+)?\.x$/.exec(
+    runtime ?? DEFAULT_VERCEL_NODE_RUNTIME
+  );
+  if (!match) {
+    return `node${DEFAULT_VERCEL_NODE_RUNTIME.slice('nodejs'.length, -'.x'.length)}`;
+  }
+  return `node${match[1]}`;
+}
+
+/**
  * Compose the Build Output routes owned by the Nest integration.
  *
  * Dedicated workflow functions must be rewritten explicitly before the Nest
@@ -42,9 +95,13 @@ export function createNestVercelRoutes(
 ): unknown[] {
   const prefix = escapeRegex(normalizeBasePath(basePath));
   const workflowPrefix = `${prefix}/\\.well-known/workflow/v1`;
+  // Anchored, like the webhook rewrite the shared builder emits. An unanchored
+  // `src` is a substring match, so `/anything/.well-known/workflow/v1/flowers`
+  // would be rewritten into the workflow function instead of reaching the
+  // NestJS catch-all.
   const workflowRoutes: unknown[] = [
     {
-      src: `${workflowPrefix}/flow`,
+      src: `^${workflowPrefix}/flow$`,
       dest: FLOW_DESTINATION,
     },
   ];
@@ -53,7 +110,7 @@ export function createNestVercelRoutes(
   // prefixed form when generated callback URLs include a base path.
   if (prefix) {
     workflowRoutes.push({
-      src: `${workflowPrefix}/webhook/([^/]+)`,
+      src: `^${workflowPrefix}/webhook/([^/]+)$`,
       dest: WEBHOOK_DESTINATION,
     });
   }
@@ -216,6 +273,23 @@ export interface NestVercelBuilderOptions {
    * so the runtime generates matching callback URLs.
    */
   basePath?: string;
+  /**
+   * Package specifiers to leave as bare `require()` calls instead of bundling
+   * them, in both the app function and the workflow functions.
+   *
+   * NestJS's own optional peers are handled automatically. This is the escape
+   * hatch for everything else that resolves its dependencies at runtime behind
+   * a `try`/`catch` — database drivers reached through TypeORM or Knex,
+   * optional logger transports, and similar. esbuild cannot know those are
+   * optional, so it fails the build on the first one the application has not
+   * installed.
+   *
+   * Externalizing a package the deployed function *does* load leaves it
+   * unresolvable at runtime, so only list packages the code path in question
+   * never reaches. Supports esbuild's trailing wildcard, e.g. `'oracledb'` or
+   * `'@scope/*'`.
+   */
+  external?: string[];
 }
 
 /**
@@ -234,10 +308,12 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
   #entryPoint: string;
   #appFunctionName: string;
   #maxDuration: number;
+  #external: string[];
 
   constructor(options: NestVercelBuilderOptions) {
     const workingDir = options.workingDir ?? process.cwd();
     const dirs = options.dirs ?? ['src'];
+    const external = options.external ?? [];
     // Note: unlike the local-dev NestLocalBuilder (whose bundles run inside the
     // app's node_modules), the Build Output functions must be self-contained,
     // so we do NOT externalize the target world; it is bundled into flow.func.
@@ -253,7 +329,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
         // optional peers behind try/catch. Without this the build fails to
         // resolve `class-validator` and friends in any app that does not
         // install them.
-        externalPackages: resolveAbsentNestPeers(workingDir),
+        externalPackages: [...resolveAbsentNestPeers(workingDir), ...external],
       }),
       basePath: options.basePath,
       buildTarget: 'vercel-build-output-api',
@@ -262,6 +338,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
     this.#entryPoint = options.entryPoint;
     this.#appFunctionName = options.appFunctionName ?? '__nest';
     this.#maxDuration = options.maxDuration ?? 300;
+    this.#external = external;
   }
 
   override async build(): Promise<void> {
@@ -293,7 +370,8 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
    * so bundling esbuild/SWC/native binaries would only bloat the function.
    *
    * NestJS's optional peers are handled by `resolveAbsentNestPeers`, which
-   * externalizes only the ones the app has not installed.
+   * externalizes only the ones the app has not installed. Anything else that
+   * resolves dependencies at runtime goes through the `external` option.
    */
   #resolveExternals(): string[] {
     return [
@@ -306,11 +384,59 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       // Native addons are externalized so esbuild does not fail on a `.node`
       // file it cannot bundle. NOTE: this builder does not trace/copy native
       // artifacts into the .func, so an app that actually loads a native addon
-      // is not yet supported on Vercel; see the limitation called out in the
-      // README's "Deploying to Vercel" section and the changeset.
+      // is not yet supported on Vercel; `#warnAboutNativeAddons` reports the
+      // ones it can see, and the README's "Deploying to Vercel" section calls
+      // out the limitation.
       '*.node',
       ...resolveAbsentNestPeers(this.#workingDir),
+      ...this.#external,
     ];
+  }
+
+  /**
+   * Report native addons the bundle statically requires.
+   *
+   * They are externalized so the build succeeds, but nothing copies the `.node`
+   * artifact into the function, so the deployed app fails at the first call
+   * into the addon — at runtime, in production, with a module-resolution error
+   * pointing at a path that only existed on the build machine. Saying so at
+   * build time is the difference between a known limitation and a mystery.
+   *
+   * Only statically analysable requires are visible here. An addon loaded
+   * through `bindings()` or `node-gyp-build` computes its path at runtime and
+   * esbuild never sees it.
+   */
+  #warnAboutNativeAddons(addons: Map<string, string>): void {
+    if (addons.size === 0) return;
+    const listed = [...addons]
+      .map(([path, importer]) => `  ${path} (from ${importer})`)
+      .join('\n');
+    console.warn(
+      `[@workflow/nest] This app loads native addons, which are not copied ` +
+        `into the deployed function:\n${listed}\n` +
+        `  The build succeeds and the deployment fails the first time one is ` +
+        `required. Replace them with pure-JS equivalents, or deploy the ` +
+        `NestJS app outside the Build Output.`
+    );
+  }
+
+  /**
+   * An esbuild plugin that externalizes `.node` binaries and records them.
+   *
+   * `external: ['*.node']` alone would also keep the build green, but it does
+   * so silently; resolving through a plugin is what makes the report possible.
+   */
+  #nativeAddonPlugin(found: Map<string, string>): esbuild.Plugin {
+    const entryPoint = this.#entryPoint;
+    return {
+      name: 'workflow-nest-native-addons',
+      setup(build) {
+        build.onResolve({ filter: /\.node$/ }, (args) => {
+          found.set(args.path, args.importer || entryPoint);
+          return { path: args.path, external: true };
+        });
+      },
+    };
   }
 
   async #buildAppFunction(): Promise<void> {
@@ -328,19 +454,36 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
     // metadata), so esbuild only bundles already-transformed JS. Truly
     // optional NestJS peers are externalized: NestJS `require()`s them behind
     // try/catch, so if unused they are never loaded at runtime.
-    await esbuild.build({
-      entryPoints: [entryPointPath],
-      bundle: true,
-      platform: 'node',
-      target: 'node22',
-      format: 'cjs',
-      outfile: join(appFuncDir, 'index.js'),
-      external: this.#resolveExternals(),
-      keepNames: true,
-      logLevel: 'warning',
-      sourcemap: false,
-      minify: false,
-    });
+    const nativeAddons = new Map<string, string>();
+    try {
+      await esbuild.build({
+        entryPoints: [entryPointPath],
+        bundle: true,
+        platform: 'node',
+        target: esbuildTargetForRuntime(this.config.runtime),
+        format: 'cjs',
+        outfile: join(appFuncDir, 'index.js'),
+        external: this.#resolveExternals(),
+        plugins: [this.#nativeAddonPlugin(nativeAddons)],
+        banner: { js: importMetaShim.banner },
+        define: { ...importMetaShim.define },
+        keepNames: true,
+        logLevel: 'warning',
+        sourcemap: false,
+        minify: false,
+      });
+    } catch (error) {
+      throw new Error(
+        `[@workflow/nest] Could not bundle the NestJS app function from ` +
+          `${this.#entryPoint}.\n` +
+          `  A package that resolves its dependencies at runtime (a database ` +
+          `driver reached through an ORM, an optional logger transport, ...) ` +
+          `looks like a hard dependency to the bundler. Pass the ones this ` +
+          `app never loads to \`workflow-nest build --external <pkg,pkg>\`.`,
+        { cause: error }
+      );
+    }
+    this.#warnAboutNativeAddons(nativeAddons);
 
     await this.createPackageJson(appFuncDir, 'commonjs');
     await this.createVcConfig(appFuncDir, {

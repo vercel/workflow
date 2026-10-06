@@ -39,6 +39,7 @@ import {
 } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
+  type CompressionMode,
   type CompressionStats,
   compress,
   decompress,
@@ -104,6 +105,7 @@ import {
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
+  STREAM_RELEASE_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
@@ -1716,6 +1718,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // are still client-buffered or in flight.
     Object.defineProperty(this, STREAM_DRAIN_SYMBOL, {
       value: drain,
+      enumerable: false,
+      writable: false,
+    });
+    Object.defineProperty(this, STREAM_RELEASE_SYMBOL, {
+      value: async () => {
+        // The owner has already drained. An unused writer whose session failed
+        // to initialize has no transport to release.
+        const session = await writeSessionPromise.catch(() => undefined);
+        await session?.release?.();
+      },
       enumerable: false,
       writable: false,
     });
@@ -3813,7 +3825,7 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
@@ -3890,7 +3902,7 @@ export async function dehydrateWorkflowReturnValue(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /**
    * Optional sink receiving the first five samples and exact total count of
    * workflow-code executions serialization could not avoid. The diagnostics
@@ -3966,7 +3978,7 @@ export async function dehydrateStepArguments(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /** See `dehydrateWorkflowReturnValue`. */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
@@ -4050,7 +4062,7 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
@@ -4124,7 +4136,7 @@ export async function dehydrateStepError(
   key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId, key));
@@ -4182,6 +4194,134 @@ export async function hydrateStepError(
 }
 
 /**
+ * Serialize a dynamic run's generated workflow VM code for storage.
+ *
+ * Dynamic workflow code is application source, so it gets the same treatment
+ * as any other run payload: compressed (it is plain text, which compresses
+ * very well), then encrypted with the run's key. At rest it is opaque
+ * ciphertext, which is the point — generated orchestration can name internal
+ * step ids, prompts, and business rules, and observability surfaces must not
+ * read it without going through the decrypt flow.
+ *
+ * The code is a plain string, so it needs none of the reducers the other
+ * payloads go through, but it is still written as real devalue under the
+ * `DEVALUE_V1` prefix: the generic hydrators (`hydrateData` behind the CLI
+ * and the observability UI) trust that prefix and hand the bytes to
+ * devalue's `parse`, which rejects a bare JSON string as invalid input.
+ *
+ * @param code - Generated workflow VM code.
+ * @param key - Encryption key (undefined to skip encryption).
+ * @param compression - Whether the target run may carry compressed payloads.
+ */
+export async function dehydrateDynamicWorkflowCode(
+  code: string,
+  key: PayloadKey | undefined,
+  compression: CompressionMode = false
+): Promise<Uint8Array> {
+  try {
+    const payload = new TextEncoder().encode(stringify(code));
+    const serialized = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      payload
+    ) as Uint8Array;
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
+  } catch (error) {
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError(
+      'dynamic workflow code',
+      cause
+    );
+    throw new SerializationError(message, { hint, cause });
+  }
+}
+
+/**
+ * Hydrate a dynamic run's workflow VM code back into source, on the replay
+ * path.
+ *
+ * When the run has key material, or its execution context records that it was
+ * started with encryption, only the symmetric `encr` envelope is accepted.
+ * Plaintext would let anyone who can write the run record supply code, and a
+ * sealed `encp` envelope can be produced by anyone holding the run's public
+ * key, so neither is evidence that the run's own key encrypted it. This gives
+ * confidentiality and narrows who can supply code; it is not an integrity
+ * guarantee against a holder of the run key.
+ *
+ * Without key material (Worlds with no encryption), plaintext is accepted.
+ *
+ * @param value - Stored bytes from the run's `dynamicWorkflowCode`.
+ * @param key - Encryption key (undefined when encryption is disabled).
+ * @param options.encryptionRequired - The run was started with encryption
+ *   (`executionContext.features.encryption`), so plaintext is refused even
+ *   when no key was resolved.
+ * @throws SerializationError when the payload is not `encr` although
+ *   encryption is required, or does not decode to a string: a corrupted or
+ *   foreign payload must not reach the workflow VM as code.
+ */
+export async function hydrateDynamicWorkflowCode(
+  value: Uint8Array | unknown,
+  key: PayloadKey | undefined,
+  options: { encryptionRequired?: boolean } = {}
+): Promise<string> {
+  if (key !== undefined || options.encryptionRequired === true) {
+    const envelope = peekFormatPrefix(value);
+    if (envelope !== SerializationFormat.ENCRYPTED) {
+      throw new SerializationError(
+        `Dynamic workflow code must be encrypted with the run's key ("${SerializationFormat.ENCRYPTED}"), but the stored payload is ${envelope ? `"${envelope}"` : 'not a recognized format'}.`
+      );
+    }
+  }
+
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+
+  if (!(decrypted instanceof Uint8Array)) {
+    throw new SerializationError(
+      'Dynamic workflow code did not decode to binary data.'
+    );
+  }
+
+  const { format, payload } = decodeFormatPrefix(decrypted);
+  if (format !== SerializationFormat.DEVALUE_V1) {
+    throw new SerializationError(
+      `Unsupported serialization format for dynamic workflow code: ${format}`
+    );
+  }
+
+  let code: unknown;
+  try {
+    code = parse(new TextDecoder().decode(payload));
+  } catch (cause) {
+    throw new SerializationError(
+      'Dynamic workflow code payload is not valid devalue.',
+      { cause }
+    );
+  }
+  if (typeof code !== 'string') {
+    throw new SerializationError(
+      `Dynamic workflow code decoded to ${typeof code}, expected a string.`
+    );
+  }
+  return code;
+}
+
+/**
  * Called from the workflow handler when the workflow itself throws.
  * Dehydrates the thrown value from within the workflow execution environment
  * into a format that can be saved to the database in a `run_failed` event.
@@ -4197,7 +4337,7 @@ export async function dehydrateRunError(
   _runId: string,
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getWorkflowReducers(global));

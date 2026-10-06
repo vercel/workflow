@@ -32,6 +32,7 @@ import {
   type DiscoveredEntries,
   fastDiscoverEntries,
 } from './fast-discovery.js';
+import { assertFlowBundleIsSandboxSafe } from './flow-bundle-safety.js';
 import {
   hashManifestSource,
   type ManifestEntryLocation,
@@ -56,6 +57,18 @@ import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
+
+/**
+ * esbuild treats import attributes (`import data from './x.json' with
+ * { type: 'json' }`) as unsupported for the `es2022` target and drops them
+ * from the output. A JSON import that stays external is then rejected by
+ * Node's ESM loader with ERR_IMPORT_ATTRIBUTE_MISSING. Every Node.js version
+ * the SDK supports accepts the `with` keyword, so each bundle that Node loads
+ * directly opts in.
+ */
+const NODE_ESBUILD_SUPPORTED = {
+  'import-attributes': true,
+} as const;
 
 /**
  * Order the per-file manifest sections deterministically.
@@ -1174,6 +1187,7 @@ export const __steps_registered = true;
       platform: 'node',
       conditions: ['node'],
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       keepNames: true,
@@ -1286,7 +1300,6 @@ export const __steps_registered = true;
     outfile,
     bundleFinalOutput = true,
     keepInterimBundleContext = this.config.watch,
-    includeMetafile = false,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -1296,7 +1309,6 @@ export const __steps_registered = true;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
     keepInterimBundleContext?: boolean;
-    includeMetafile?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
@@ -1304,7 +1316,7 @@ export const __steps_registered = true;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     /** The raw workflow VM code (before wrapping with entrypoint) */
     interimBundleText?: string;
-    /** The initial workflow VM build graph, when requested by a caller. */
+    /** The initial workflow VM build graph. */
     interimBundleMetafile?: esbuild.Metafile;
   }> {
     const discovered =
@@ -1407,12 +1419,18 @@ export const __steps_registered = true;
       platform: 'neutral', // The platform is neither node nor browser
       mainFields: ['module', 'main'], // To support npm style imports
       conditions: ['workflow'], // Allow packages to export 'workflow' compliant versions
+      // No `supported: NODE_ESBUILD_SUPPORTED` here: this bundle runs in the
+      // workflow VM, which has no module loader, and it has no `external`, so
+      // every JSON import is inlined and no import attribute reaches the output.
       target: 'es2022',
       write: false,
       treeShaking: true,
       keepNames: true,
       minify: false,
-      metafile: includeMetafile,
+      // `assertFlowBundleIsSandboxSafe()` below and
+      // `createNodeModuleErrorPlugin()` (which sets this itself) both need the
+      // build graph to attribute externalized imports back to user code.
+      metafile: true,
       // Initialize the workflow registry at the beginning of the bundle
       // This must be in banner (not the virtual entry) because esbuild's bundling
       // can reorder code, and the .set() calls need the Map to exist first
@@ -1517,6 +1535,16 @@ export const __steps_registered = true;
         });
       }
 
+      // The VM this bundle runs in has no `require`, so any externalized
+      // import or unresolved `require()` left in the CJS output is a
+      // guaranteed `ReferenceError` at load time. Fail here instead of
+      // shipping a bundle that cannot start.
+      await assertFlowBundleIsSandboxSafe({
+        bundleText: interimBundle.outputFiles[0].text,
+        metafile: interimBundle.metafile,
+        warn: (message) => console.warn(chalk.yellow(message)),
+      });
+
       // Serde compliance warnings: check if workflow bundle has Node.js imports
       // alongside serde-registered classes (these will fail at runtime in the sandbox)
       if (
@@ -1612,6 +1640,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           format,
           platform: 'node',
           target: 'es2022',
+          supported: NODE_ESBUILD_SUPPORTED,
           write: true,
           keepNames: true,
           minify: false,
@@ -1823,6 +1852,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         format,
         platform: 'node',
         target: 'es2022',
+        supported: NODE_ESBUILD_SUPPORTED,
         write: true,
         keepNames: true,
         minify: false,
@@ -2010,6 +2040,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       platform: 'node',
       jsx: 'preserve',
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       external: ['@workflow/core'],
@@ -2117,6 +2148,7 @@ export const OPTIONS = handler;`;
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       keepNames: true,

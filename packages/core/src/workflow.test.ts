@@ -7,6 +7,7 @@ import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { compileDynamicWorkflow } from './runtime/dynamic-workflow.js';
 import { setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -32,6 +33,51 @@ describe('runWorkflow', () => {
     `;
 
   describe('successful workflow execution', () => {
+    it('replays dynamic source with caller globals isolated from registration', async () => {
+      const compiled = await compileDynamicWorkflow(
+        `
+const Object = null;
+var globalThis = null;
+function __dynamicWorkflow() {}
+async function workflow() {
+  "use workflow";
+  return 42;
+}
+`,
+        { steps: { unused: { stepId: 'step//./test//unused' } } }
+      );
+      const workflowRun: WorkflowRun = {
+        runId: 'wrun_dynamic',
+        workflowName: compiled.workflowName,
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_dynamic',
+          noEncryptionKey,
+          []
+        ),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        startedAt: new Date(),
+        deploymentId: 'test-deployment',
+      };
+
+      const result = await runWorkflow(
+        compiled.workflowCode,
+        workflowRun,
+        [],
+        noEncryptionKey
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result,
+          workflowRun.runId,
+          noEncryptionKey,
+          []
+        )
+      ).toBe(42);
+    });
+
     it('should execute a simple workflow successfully', async () => {
       const ops: Promise<any>[] = [];
       const workflowCode = `function workflow() { return "success"; }${getWorkflowTransformCode('workflow')}`;

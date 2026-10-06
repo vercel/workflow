@@ -564,21 +564,43 @@ const AttrSetEventSchema = z.compile(
 const RunCreatedEventSchema = z.compile(
   BaseEventSchema.extend({
     eventType: z.literal('run_created'),
-    eventData: z.object({
-      deploymentId: z.string(),
-      workflowName: z.string(),
-      input: SerializedDataSchema,
-      executionContext: z.record(z.string(), z.any()).optional(),
-      attributes: z.record(z.string(), z.string()).optional(),
-      allowReservedAttributes: z.literal(true).optional(),
-      /**
-       * The run's X25519 public key (base64), stamped by SDKs that support
-       * sealed (`encp`) envelopes. Persisted onto the run entity so that
-       * cross-run writers can seal payloads to this run without holding its
-       * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
-       */
-      encryptionPublicKey: z.string().optional(),
-    }),
+    eventData: z
+      .object({
+        deploymentId: z.string(),
+        workflowName: z.string(),
+        input: SerializedDataSchema,
+        executionContext: z.record(z.string(), z.any()).optional(),
+        attributes: z.record(z.string(), z.string()).optional(),
+        allowReservedAttributes: z.literal(true).optional(),
+        /**
+         * A dynamic run's serialized workflow VM code. The World materializes it
+         * onto the run record and does not keep a second copy on the event.
+         * Mutually exclusive with `dynamicWorkflowCodeRef`.
+         */
+        dynamicWorkflowCode: SerializedDataSchema.optional(),
+        /**
+         * Ref for dynamic workflow code uploaded before this write. Worlds must
+         * validate it against the caller and run before attaching it.
+         */
+        dynamicWorkflowCodeRef: z.string().optional(),
+        /**
+         * The run's X25519 public key (base64), stamped by SDKs that support
+         * sealed (`encp`) envelopes. Persisted onto the run entity so that
+         * cross-run writers can seal payloads to this run without holding its
+         * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
+         */
+        encryptionPublicKey: z.string().optional(),
+      })
+      .refine(
+        (value) =>
+          value.dynamicWorkflowCode === undefined ||
+          value.dynamicWorkflowCodeRef === undefined,
+        {
+          path: ['dynamicWorkflowCodeRef'],
+          message:
+            'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+        }
+      ),
   })
 );
 
@@ -609,7 +631,20 @@ const RunStartedEventSchema = z.compile(
          * the run would silently lose its ability to receive sealed writes.
          */
         encryptionPublicKey: z.string().optional(),
+        /** Dynamic code carried for resilient run creation. */
+        dynamicWorkflowCode: SerializedDataSchema.optional(),
+        dynamicWorkflowCodeRef: z.string().optional(),
       })
+      .refine(
+        (value) =>
+          value.dynamicWorkflowCode === undefined ||
+          value.dynamicWorkflowCodeRef === undefined,
+        {
+          path: ['dynamicWorkflowCodeRef'],
+          message:
+            'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+        }
+      )
       .optional(),
   })
 );
@@ -846,6 +881,17 @@ export interface CreateEventParams {
    * may ignore this flag entirely.
    */
   viaStepDispatch?: boolean;
+  /**
+   * Marks a `step_failed` write that records the failure of a step body this
+   * invocation already ran. Losing such a write to queue redelivery runs the
+   * body again, so a World may keep a throttled write waiting longer than it
+   * otherwise would (world-vercel waits until the invocation's deadline).
+   * `step_failed` needs the mark because the runtime also writes it for a step
+   * whose arguments failed to serialize, where no body ran. `step_completed`
+   * and `step_retrying` are only ever written after a body ran. Advisory;
+   * Worlds may ignore it.
+   */
+  afterStepBody?: true;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**

@@ -1,0 +1,553 @@
+/**
+ * Dynamic workflow source: starting a run from a workflow function that is
+ * not in the deployment's build-time manifest.
+ *
+ * The normal path compiles workflow functions at build time — the SWC plugin
+ * rewrites `"use workflow"` bodies, the builder bundles them, and `start()`
+ * names one by the `workflowId` the transform stamped on it. Dynamic source
+ * covers orchestration the application assembles after the deployment exists,
+ * over a fixed catalog of deployed steps.
+ *
+ * This module owns the compile half of that: validating the source, deriving
+ * a stable workflow id from it, and generating the VM code that registers it.
+ * The generated code — not the source — is what gets stored with the run and
+ * replayed, so the module is also the format boundary: a run replays byte-for-byte
+ * the code it started on, and changing the generator here does not retroactively
+ * change what an in-flight run executes.
+ *
+ * Deliberately not a security sandbox. The workflow VM enforces determinism,
+ * not isolation from malicious JavaScript, so dynamic source is trusted
+ * application code with the full privileges of the deployment's functions.
+ * The `steps` allowlist below is a convenience that keeps ordinary code from
+ * reaching a step it was not given; it is not a capability boundary against
+ * code that is actively trying to escape one. Deployments opt in with
+ * `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` before they start or execute it.
+ */
+
+import { WorkflowRuntimeError } from '@workflow/errors';
+import {
+  type ExpressionStatement,
+  type FunctionDeclaration,
+  type Program,
+  parse,
+} from 'acorn';
+import type { StartOptions } from './start.js';
+
+/**
+ * The error `start()` throws when it refuses a dynamic start before anything
+ * is written: invalid source or options, the opt-in, the target deployment,
+ * the World's capability, or its execution-context limit.
+ *
+ * Each refusal is deterministic, so retrying the same `start()` fails the same
+ * way. `fatal` is what tells the step executor so when `start()` runs inside
+ * a step: without it the step spends its retry budget on a refusal, then
+ * replaces the message with its retry-exhaustion wrapper. The type and message
+ * are otherwise a plain `WorkflowRuntimeError`. See `FatalError.is()`.
+ */
+export function dynamicStartRefusal(
+  message: string,
+  options?: ErrorOptions
+): WorkflowRuntimeError & { fatal: true } {
+  return Object.assign(new WorkflowRuntimeError(message, options), {
+    fatal: true as const,
+  });
+}
+
+/**
+ * The refusal for an error thrown by a World's `validateRunExecutionContext`;
+ * the World contract makes that throw the start's refusal, whatever it threw.
+ *
+ * A fresh error carrying the World's message, with the original as `cause`,
+ * rather than a `fatal` flag set on the World's own object: that object may be
+ * frozen, shared across calls, or not an `Error` at all.
+ */
+export function dynamicStartRefusalFrom(
+  error: unknown
+): WorkflowRuntimeError & { fatal: true } {
+  return dynamicStartRefusal(
+    error instanceof Error ? error.message : String(error),
+    { cause: error }
+  );
+}
+
+/**
+ * A step exposed to dynamic source.
+ *
+ * Either an imported step function, or an explicit `{ stepId }` for a step
+ * whose function is not importable from the calling context.
+ *
+ * The function arm is deliberately typed as "any function" rather than as
+ * something carrying `stepId`: the build-time transform stamps `.stepId` on
+ * step functions at *runtime*, and nothing adds it to their declared type. A
+ * type that demanded it would reject the documented call — `steps: { fetchUser,
+ * sendEmail }` with real imports — and only accept the escape hatch. The
+ * runtime check in `resolveStepId` is the real gate, and it fails with a
+ * message naming the alias when a value turns out to carry no step id.
+ */
+export type DynamicWorkflowStepReference =
+  | { readonly stepId: string }
+  | ((...args: any[]) => unknown);
+
+export interface DynamicWorkflowOptions {
+  /**
+   * Already-registered step functions to expose to the source, keyed by the
+   * alias it calls them under (`steps.<alias>(...)`).
+   *
+   * Each value is either an imported step function — the SDK transform stamps
+   * a `.stepId` on it — or an explicit `{ stepId }` reference for a step whose
+   * function is not importable from the calling context.
+   *
+   * There is no way to register a *new* step from dynamic source: only the
+   * orchestration is dynamic, and every step it can reach was deployed with
+   * the app.
+   */
+  steps: Record<string, DynamicWorkflowStepReference>;
+
+  /**
+   * Name of the async workflow function in the source. Defaults to
+   * `"workflow"`.
+   */
+  exportName?: string;
+}
+
+/** `start()` options for the dynamic-source overload. */
+export type DynamicStartOptions = StartOptions & {
+  experimental_dynamic: DynamicWorkflowOptions;
+};
+
+/**
+ * Plaintext metadata recorded on `executionContext.dynamicWorkflow`.
+ *
+ * Deliberately small and non-sensitive: it has to fit the execution-context
+ * budget (2 KB on `world-vercel`) and it is readable without decrypting
+ * anything, which is what lets observability show that a run is dynamic —
+ * and which steps it was allowed to call — while the code itself stays
+ * encrypted behind the run's ref.
+ */
+export interface DynamicWorkflowMetadata {
+  version: 1;
+  /** SHA-256 over the source and its step bindings. */
+  sourceHash: string;
+  /** Name of the workflow function inside the source. */
+  exportName: string;
+  /** Alias → step id map the source was compiled against. */
+  steps: Record<string, string>;
+}
+
+/**
+ * Maximum size of the *source* `start()` accepts.
+ *
+ * This is a product limit rather than a storage one — generated
+ * orchestration functions are small, and a caller handing us a megabyte of
+ * "workflow" has almost certainly made a mistake worth surfacing at the call
+ * site. The storage layer's own cap is far higher; see the Dynamic Workflows
+ * docs.
+ */
+export const DYNAMIC_WORKFLOW_SOURCE_MAX_BYTES = 128 * 1024;
+
+/**
+ * Largest serialized code payload sent inline on `run_created`.
+ *
+ * Above this the code is uploaded separately and referenced, because it stops
+ * fitting comfortably in the creating write's metadata budget (the
+ * `world-vercel` backend caps the inline field at 32 KB). Set below that cap
+ * so a compression ratio worse than expected does not push a run over it.
+ *
+ * Almost every real definition is under this: 24 KB of *compressed,
+ * encrypted* bytes is a lot of JavaScript.
+ */
+export const DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES = 24 * 1024;
+
+const SAFE_DYNAMIC_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
+
+/**
+ * The SDK's limit on `exportName`. The name becomes the last segment of the
+ * generated workflow id, which is also the queue topic name, and it counts
+ * against the run's execution-context budget. Queues cap topic names too
+ * (Vercel's at 256 characters, prefix included), so a long name buys nothing
+ * and fails late.
+ */
+export const DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH = 64;
+
+/**
+ * The export name becomes the final segment of the generated workflow id,
+ * which is also the queue topic name. Queue names do not accept `$`, so this
+ * is the intersection of JavaScript identifiers and the queue-name alphabet.
+ */
+const SAFE_DYNAMIC_EXPORT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Rejects module syntax, which the generated wrapper cannot host: the code is
+ * evaluated as a script in the workflow VM, so an `import` or `export` in it
+ * is a syntax error at replay time rather than at `start()` time. Catching it
+ * here turns a run that can never execute into a failed call.
+ *
+ * Anchored to the start of a line, which is where module syntax lives in any
+ * formatted source. Matching it anywhere would reject a `steps.notify("…
+ * import …")` whose *string* happens to contain the word — a false positive
+ * that costs a caller a working workflow, which is much worse than the
+ * remaining false negative (an `import` indented behind other code on one
+ * line, which still fails loudly at replay).
+ *
+ * The keyword must be followed by whitespace or a module-syntax token (`*`,
+ * `{`, `(`, a quote), never by another identifier character, so ordinary
+ * identifiers that merely start with the word — `importData = …`,
+ * `exports.x = …` — are not mistaken for module syntax.
+ *
+ * This is only an early, targeted diagnostic. Acorn subsequently parses the
+ * complete source in script mode, so module forms this expression does not
+ * recognize still fail before the run is created.
+ */
+const UNSUPPORTED_DYNAMIC_MODULE_SYNTAX =
+  /^[ \t]*(?:import(?:\s+[\w$]|\s*(?:[*{(]|['"]))|export(?:\s+(?:async\s+)?(?:function|const|let|var|class|default)\b|\s*[{*]))/m;
+
+function assertDynamicWorkflowIdentifier(kind: string, value: string): void {
+  if (!SAFE_DYNAMIC_IDENTIFIER.test(value)) {
+    throw dynamicStartRefusal(
+      `Invalid dynamic workflow ${kind} ${JSON.stringify(value)}. Use a valid JavaScript identifier: letters, digits, "_" and "$", not starting with a digit.`
+    );
+  }
+}
+
+/**
+ * Stable stringify for the hash input. `JSON.stringify` on an object is
+ * insertion-ordered, so two callers passing the same steps in a different
+ * order would otherwise hash differently and produce two workflow ids for
+ * one workflow.
+ */
+function stableJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJsonStringify).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, val]) => `${JSON.stringify(key)}:${stableJsonStringify(val)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  // Web Crypto rather than `node:crypto`: this module is reachable from
+  // `start()` in every runtime the SDK supports, including edge.
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(input)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Pinned to the oldest supported replay engine (Node 22 / V8 12.4).
+// Raise only after every supported Node and QuickJS runtime accepts the grammar.
+const DYNAMIC_WORKFLOW_ECMA_VERSION = 2024;
+
+function parseDynamicWorkflowSource(
+  source: string,
+  exportName: string
+): Program {
+  try {
+    return parse(source, {
+      ecmaVersion: DYNAMIC_WORKFLOW_ECMA_VERSION,
+      sourceType: 'script',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A non-async workflow using `await` fails to parse with a bare
+    // "Unexpected token", which reads like one of the other two causes.
+    throw dynamicStartRefusal(
+      `Dynamic workflow source is not valid JavaScript: ${message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or module declarations. If the error is at an \`await\`, declare the function as \`async function ${exportName}(...)\`.`
+    );
+  }
+}
+
+function assertGeneratedWorkflowCodeParses(workflowCode: string): void {
+  try {
+    parse(workflowCode, {
+      ecmaVersion: DYNAMIC_WORKFLOW_ECMA_VERSION,
+      sourceType: 'script',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw dynamicStartRefusal(
+      `Generated dynamic workflow code is not valid JavaScript: ${message}.`
+    );
+  }
+}
+
+function validateDynamicWorkflowSource(
+  source: string,
+  exportName: string
+): void {
+  const byteLength = new TextEncoder().encode(source).byteLength;
+  if (byteLength > DYNAMIC_WORKFLOW_SOURCE_MAX_BYTES) {
+    throw dynamicStartRefusal(
+      `Dynamic workflow source is ${byteLength} bytes, over the ${DYNAMIC_WORKFLOW_SOURCE_MAX_BYTES}-byte limit.`
+    );
+  }
+
+  if (UNSUPPORTED_DYNAMIC_MODULE_SYNTAX.test(source)) {
+    throw dynamicStartRefusal(
+      'Dynamic workflow source cannot use `import` or `export`. Reach registered steps through the injected `steps` object instead.'
+    );
+  }
+
+  const program = parseDynamicWorkflowSource(source, exportName);
+  const declaration = findWorkflowDeclaration(program, exportName);
+
+  const firstStatement = declaration.body.body[0] as
+    | ExpressionStatement
+    | undefined;
+  if (
+    firstStatement?.type !== 'ExpressionStatement' ||
+    firstStatement.directive !== 'use workflow'
+  ) {
+    throw dynamicStartRefusal(
+      `Dynamic workflow function ${JSON.stringify(exportName)} must open with a "use workflow" directive.`
+    );
+  }
+
+  // No transform runs over dynamic source, so a `"use step"` directive in it
+  // would not split a step out: the function would simply run inside the
+  // workflow VM, as ordinary (and non-deterministic) workflow code. Steps
+  // come from `experimental_dynamic.steps` only.
+  if (hasDirective(program, 'use step')) {
+    throw dynamicStartRefusal(
+      'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `experimental_dynamic.steps` instead.'
+    );
+  }
+}
+
+/**
+ * The single top-level `async function <exportName>` declaration, or a
+ * refusal that says what is wrong with the one the source declares.
+ */
+function findWorkflowDeclaration(
+  program: Program,
+  exportName: string
+): FunctionDeclaration {
+  const expected = `Dynamic workflow source must declare \`async function ${exportName}(...)\` at top level`;
+  const declarations = program.body.filter(
+    (node): node is FunctionDeclaration =>
+      node.type === 'FunctionDeclaration' && node.id.name === exportName
+  );
+  const [declaration] = declarations;
+  let problem = '';
+  if (declarations.length > 1) {
+    problem = ` exactly once, but declares \`function ${exportName}\` ${declarations.length} times`;
+  } else if (declaration?.generator) {
+    problem = `, but \`${exportName}\` is a generator function`;
+  } else if (declaration && !declaration.async) {
+    problem = `, but \`${exportName}\` is not async`;
+  }
+  if (!declaration || problem) {
+    throw dynamicStartRefusal(`${expected}${problem}.`);
+  }
+  return declaration;
+}
+
+/**
+ * Whether any directive prologue in the program (the script's own, or any
+ * function's) holds `directive`.
+ *
+ * Acorn marks prologue statements with `directive`, so a string that merely
+ * reads `"use step"` elsewhere, such as an argument or a template literal, is
+ * not one.
+ */
+function hasDirective(program: Program, directive: string): boolean {
+  // Iterative: a long member chain nests the AST far deeper than the call
+  // stack allows, well inside the source size limit.
+  const pending: object[] = [program];
+  while (pending.length > 0) {
+    const node = pending.pop() as { directive?: unknown };
+    if (node.directive === directive) return true;
+    for (const child of childNodes(node)) pending.push(child);
+  }
+  return false;
+}
+
+/** Child nodes of an acorn node, in no particular order. */
+function childNodes(node: object): object[] {
+  const children: object[] = [];
+  for (const value of Object.values(node)) {
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (child && typeof child === 'object' && 'type' in child) {
+        children.push(child);
+      }
+    }
+  }
+  return children;
+}
+
+function resolveStepId(alias: string, value: unknown): string {
+  const stepId =
+    (value && typeof value === 'object') || typeof value === 'function'
+      ? (value as { stepId?: unknown }).stepId
+      : undefined;
+
+  if (typeof stepId !== 'string' || stepId.length === 0) {
+    throw dynamicStartRefusal(
+      `Dynamic workflow step ${JSON.stringify(alias)} must be an imported step function or an object with a non-empty \`stepId\`.`
+    );
+  }
+
+  return stepId;
+}
+
+export interface CompiledDynamicWorkflow {
+  /** Generated workflow id, also the run's `workflowName`. */
+  workflowName: string;
+  /** Workflow VM code to store with the run and replay from. */
+  workflowCode: string;
+  /** Plaintext metadata for `executionContext.dynamicWorkflow`. */
+  metadata: DynamicWorkflowMetadata;
+}
+
+/**
+ * The workflow id a dynamic definition registers under.
+ *
+ * Half the digest. Long enough that a collision is not a practical concern and
+ * short enough to keep queue topic names and observability rows readable.
+ * Delivery recomputes it from a run's `dynamicWorkflow` marker and refuses a
+ * run whose `workflowName` does not match, so a marker cannot turn a static
+ * workflow's run into one that executes stored code.
+ */
+export function dynamicWorkflowName(
+  metadata: Pick<DynamicWorkflowMetadata, 'sourceHash' | 'exportName'>
+): string {
+  return `workflow//dynamic/${metadata.sourceHash.slice(0, 32)}//${metadata.exportName}`;
+}
+
+/**
+ * Validate dynamic source and generate the workflow VM code for it.
+ *
+ * The workflow id is derived from the source and its step bindings rather
+ * than accepted from the caller. Two consequences, both intentional: the same
+ * definition always lands on the same queue topic and groups together in
+ * observability, and a caller cannot claim a static workflow's id — or
+ * another definition's — for arbitrary code.
+ */
+export async function compileDynamicWorkflow(
+  source: string,
+  options: DynamicWorkflowOptions
+): Promise<CompiledDynamicWorkflow> {
+  const exportName = options.exportName ?? 'workflow';
+  if (exportName.length > DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH) {
+    throw dynamicStartRefusal(
+      `Dynamic workflow exportName is ${exportName.length} characters, over the ${DYNAMIC_WORKFLOW_EXPORT_NAME_MAX_LENGTH}-character limit. It becomes part of the workflow id and queue name.`
+    );
+  }
+  assertDynamicWorkflowIdentifier('exportName', exportName);
+  if (!SAFE_DYNAMIC_EXPORT_NAME.test(exportName)) {
+    throw dynamicStartRefusal(
+      `Invalid dynamic workflow exportName ${JSON.stringify(exportName)}. Use letters, digits, and "_", not starting with a digit; "$" cannot appear in workflow queue names.`
+    );
+  }
+  validateDynamicWorkflowSource(source, exportName);
+
+  if (!options.steps || Object.keys(options.steps).length === 0) {
+    throw dynamicStartRefusal(
+      'Dynamic workflow options must expose at least one registered step through `experimental_dynamic.steps`.'
+    );
+  }
+
+  const stepEntries = Object.entries(options.steps)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([alias, value]) => {
+      assertDynamicWorkflowIdentifier('step alias', alias);
+      return [alias, resolveStepId(alias, value)] as const;
+    });
+  const steps = Object.fromEntries(stepEntries);
+
+  const sourceHash = await sha256Hex(
+    `${source}\n${stableJsonStringify(steps)}`
+  );
+
+  const workflowName = dynamicWorkflowName({ sourceHash, exportName });
+
+  const stepBindings = stepEntries
+    .map(
+      ([alias, stepId]) =>
+        `  [${JSON.stringify(alias)}]: __dynamicUseStep(${JSON.stringify(stepId)})`
+    )
+    .join(',\n');
+
+  // The caller's script runs in its own nested lexical scope. Its declarations
+  // therefore keep script-like relationships with one another but cannot
+  // shadow bindings used to initialize or register the wrapper. The outer
+  // factory parameters intentionally expose only the supported runtime
+  // bindings, which the selected workflow closes over.
+  const workflowCode = `const __dynamicGlobalThis = globalThis;
+__dynamicGlobalThis.__private_workflows ??= new Map();
+const __dynamicUseStep = __dynamicGlobalThis[Symbol.for("WORKFLOW_USE_STEP")];
+if (typeof __dynamicUseStep !== "function") {
+  throw new Error("Dynamic workflows require a workflow VM that provides WORKFLOW_USE_STEP.");
+}
+const __dynamicSteps = Object.freeze({
+${stepBindings}
+});
+const __dynamicSleep = __dynamicGlobalThis[Symbol.for("WORKFLOW_SLEEP")];
+const __dynamicCreateHook = __dynamicGlobalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+const __dynamicWorkflow = ((steps, sleep, createHook) => (() => {
+${source}
+return ${exportName};
+})())(__dynamicSteps, __dynamicSleep, __dynamicCreateHook);
+Object.defineProperty(__dynamicWorkflow, "workflowId", {
+  value: ${JSON.stringify(workflowName)},
+  writable: false,
+  enumerable: false,
+  configurable: false
+});
+__dynamicGlobalThis.__private_workflows.set(${JSON.stringify(workflowName)}, __dynamicWorkflow);
+`;
+
+  // The caller's source can be valid in isolation but collide with bindings
+  // supplied by the generated wrapper. Parse the complete script without
+  // evaluating it so such a run fails before upload, creation, or queueing.
+  assertGeneratedWorkflowCodeParses(workflowCode);
+
+  return {
+    workflowName,
+    workflowCode,
+    metadata: { version: 1, sourceHash, exportName, steps },
+  };
+}
+
+/**
+ * Read the dynamic-workflow marker off a run's `executionContext`.
+ *
+ * The runtime uses this to decide whether a run replays from the deployment's
+ * bundle or from its own stored code, so it validates the shape rather than
+ * trusting it: `executionContext` is client-supplied and passes through the
+ * backend unchecked.
+ *
+ * Returns undefined for every static run, which is the overwhelming majority
+ * — this is on the hot path of each delivery.
+ */
+export function readDynamicWorkflowMetadata(
+  executionContext: unknown
+): DynamicWorkflowMetadata | undefined {
+  if (!executionContext || typeof executionContext !== 'object') {
+    return undefined;
+  }
+  const marker = (executionContext as { dynamicWorkflow?: unknown })
+    .dynamicWorkflow;
+  if (!marker || typeof marker !== 'object') return undefined;
+
+  const candidate = marker as Partial<DynamicWorkflowMetadata>;
+  if (candidate.version !== 1) return undefined;
+  if (typeof candidate.exportName !== 'string') return undefined;
+  if (typeof candidate.sourceHash !== 'string') return undefined;
+
+  return {
+    version: 1,
+    sourceHash: candidate.sourceHash,
+    exportName: candidate.exportName,
+    steps:
+      candidate.steps && typeof candidate.steps === 'object'
+        ? candidate.steps
+        : {},
+  };
+}

@@ -26,6 +26,7 @@ import {
   SPEC_VERSION_LEGACY,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { getCurrentNodeVersion } from '../capabilities.js';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
@@ -35,6 +36,7 @@ import {
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -79,6 +81,9 @@ function getHealthCheckStreamName(correlationId: string): string {
   return `__health_check__${correlationId}`;
 }
 
+/** Version of the dynamic-workflow runtime contract advertised by deployments. */
+export const DYNAMIC_WORKFLOW_VERSION = 1;
+
 /**
  * Result of a health check operation.
  */
@@ -98,6 +103,12 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * Node.js version of the responding deployment, used for capability
+   * detection (zstd decoding depends on it; see `getRunCapabilities`).
+   * Omitted when the responder predates this field or is not Node.js.
+   */
+  nodeVersion?: string;
   /**
    * The target run's X25519 public key (base64), returned only when the probe
    * carried a `runId` and the responding deployment has encryption enabled.
@@ -127,6 +138,11 @@ export interface HealthCheckResult {
    * field is missing or malformed.
    */
   format?: 'json' | 'text';
+  /**
+   * Version of dynamic-workflow execution supported by the target runtime.
+   * Present only when the target has opted in to dynamic workflows.
+   */
+  dynamicWorkflowVersion?: number;
 }
 
 /**
@@ -201,10 +217,16 @@ export async function handleHealthCheckMessage(
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    nodeVersion: getCurrentNodeVersion(),
     // We are executing inside the target deployment, so this constant reflects
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    // Advertised only when this deployment has opted in to executing
+    // dynamic workflow code; an absent field reads as "unsupported".
+    ...(isDynamicWorkflowsEnabled()
+      ? { dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION }
+      : {}),
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -359,11 +381,17 @@ function parseHealthCheckResponse(
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
   }
+  if (typeof r.nodeVersion === 'string') {
+    parsed.nodeVersion = r.nodeVersion;
+  }
   if (typeof r.encryptionPublicKey === 'string') {
     parsed.encryptionPublicKey = r.encryptionPublicKey;
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.dynamicWorkflowVersion === 'number') {
+    parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
   }
   return parsed;
 }
@@ -1205,6 +1233,7 @@ export function withHealthCheck(
           endpoint: url.pathname,
           specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
           workflowCoreVersion,
+          nodeVersion: getCurrentNodeVersion(),
         }),
         {
           status: 200,

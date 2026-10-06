@@ -168,7 +168,7 @@ Uncaught, the run fails immediately with the `USER_ERROR` code, without retrying
 
 On Vercel, backend connection failures and interrupted event streams use the existing retry policies, even when their error codes are unrecognized. This lets workflows recover from network failures instead of immediately failing with `USER_ERROR`. Persistent failures can still exhaust the retry budget.
 
-The SDK also replaces its shared events connection pool after repeated HTTP/2 session failures. Invalid backend URLs, including unsupported protocols and embedded credentials, fail immediately. Fetch requests to blocked ports or with unsupported headers (such as `Expect`) also fail without retrying. Interrupted event writes retain their existing retries; caller cancellations do not trigger another write.
+The SDK also replaces its shared events connection pool after repeated HTTP/2 session failures, and retries event-log reads whose HTTP/2 stream the backend resets. An events request that receives no response data for 60 seconds fails and is retried instead of stalling the invocation. Invalid backend URLs, including unsupported protocols and embedded credentials, fail immediately. Fetch requests to blocked ports or with unsupported headers (such as `Expect`) also fail without retrying. Interrupted event writes retain their existing retries; caller cancellations do not trigger another write.
 
 A connection failure does not prove that the backend rejected a write: it may have accepted it before the response was lost. Continue to make step side effects [idempotent](/docs/foundations/idempotency).
 
@@ -206,9 +206,9 @@ try {
 | `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
 | `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically, usually because of non-deterministic workflow code. |
 | `CORRUPTED_EVENT_LOG` | The event log cannot be replayed: it contains orphaned or mismatched events, or one of its stored payloads is no longer readable from the World's storage. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
-| `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code |
+| `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code; retry the run and report persistent failures with the `runId` |
 | `WORLD_CONTRACT_ERROR` | A World response violated the SDK contract; points at a World implementation bug |
-| `DEPLOYMENT_MISMATCH` | The run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it |
+| `DEPLOYMENT_MISMATCH` | The run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it. See [deployment-mismatch](/docs/errors/deployment-mismatch) |
 | `RUNTIME_ERROR` | An internal runtime error. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 
 <Callout type="info">

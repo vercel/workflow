@@ -96,6 +96,34 @@ describe('Run#getWritable', () => {
     }
   });
 
+  it('releases the polled transport and reuses the same writer session', async () => {
+    const world = mockWorld();
+    const session = {
+      write: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    };
+    world.streams.createWriteSession = vi.fn(() => session);
+    const ops: Promise<void>[] = [];
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({ ops });
+    const first = writable.getWriter();
+    await first.write('first');
+    first.releaseLock();
+    await Promise.all(ops);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(session.close).not.toHaveBeenCalled();
+
+    const next = writable.getWriter();
+    await next.write('second');
+    await next.close();
+    await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+    expect(world.streams.createWriteSession).toHaveBeenCalledTimes(1);
+    expect(session.write.mock.calls.map(([seq]) => seq)).toEqual([0, 1]);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(session.dispose).not.toHaveBeenCalled();
+  });
+
   it('targets the owner run namespaced stream', async () => {
     const world = mockWorld();
 

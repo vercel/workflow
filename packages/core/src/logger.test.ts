@@ -59,6 +59,18 @@ describe('logger', () => {
     expect(debugSpy).toHaveBeenCalledTimes(1);
   });
 
+  test('ignores a DEBUG value that a bundler defined as a non-string', () => {
+    const env = process.env;
+    process.env = { ...env, DEBUG: true as unknown as string };
+    try {
+      expect(() => buildLogger.debug('defined')).not.toThrow();
+      expect(() => runtimeLogger.info('defined')).not.toThrow();
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      process.env = env;
+    }
+  });
+
   test('child() merges parent metadata into every call', () => {
     const child = runtimeLogger.child({ workflowRunId: 'run-1' });
     child.error('boom', { stepId: 'step-1' });

@@ -152,4 +152,52 @@ describe('QuickJSLogView', () => {
     view.absorb({ event: slotEvent(4) }, { deliverEvent: true });
     expect(view.bufferedCount).toBe(0);
   });
+
+  describe('events through the cursor', () => {
+    it('counts listed pages and complete inline deltas', () => {
+      const view = new QuickJSLogView([slotEvent(1), slotEvent(2)], 'c2', 2);
+      expect(view.eventsThroughCursor).toBe(2);
+      view.advanceCursor('c3', 1);
+      view.markFed([slotEvent(3)]);
+      expect(view.eventsThroughCursor).toBe(3);
+      // A delta read from the current cursor moves the cursor and the
+      // count together, even before the VM is given its events.
+      view.absorbDelta('c3', {
+        events: [slotEvent(4), slotEvent(5)],
+        cursor: 'c5',
+        hasMore: false,
+      });
+      expect(view.logCursor).toBe('c5');
+      expect(view.eventsThroughCursor).toBe(5);
+      expect(view.bufferedCount).toBe(2);
+    });
+
+    it('covers nothing at the start of the log', () => {
+      const view = new QuickJSLogView([slotEvent(1)], null);
+      expect(view.eventsThroughCursor).toBe(0);
+      view.advanceCursor('c1', 1);
+      expect(view.eventsThroughCursor).toBe(1);
+    });
+
+    it('forgets the count when a read has no count or no cursor', () => {
+      const unknown = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      unknown.advanceCursor('c2');
+      expect(unknown.eventsThroughCursor).toBeUndefined();
+
+      const uncovered = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      uncovered.advanceCursor(null, 1);
+      expect(uncovered.eventsThroughCursor).toBeUndefined();
+
+      const empty = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      empty.advanceCursor(null, 0);
+      expect(empty.eventsThroughCursor).toBe(1);
+    });
+
+    it('resets on a full re-read', () => {
+      const view = new QuickJSLogView([slotEvent(3)], 'c3');
+      expect(view.eventsThroughCursor).toBeUndefined();
+      view.setPosition('c3', 3);
+      expect(view.eventsThroughCursor).toBe(3);
+    });
+  });
 });
