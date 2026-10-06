@@ -16,8 +16,10 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <Button
-      variant="ghost"
-      size="icon"
+      variant="tertiary"
+      size="tiny"
+      shape="square"
+      svgOnly
       className="size-6 shrink-0"
       onClick={handleCopy}
     >
@@ -39,10 +41,10 @@ export function PreviewInstall({ deploymentUrl }: { deploymentUrl: string }) {
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-gray-900">
           Install the workflow package from this preview:
         </p>
-        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
+        <div className="flex items-center gap-2 rounded-md border bg-gray-100/50 px-3 py-2">
           <code className="flex-1 text-xs break-all font-mono">
             {installCmd}
           </code>
@@ -50,10 +52,8 @@ export function PreviewInstall({ deploymentUrl }: { deploymentUrl: string }) {
         </div>
       </div>
       <div className="space-y-1.5">
-        <p className="text-sm text-muted-foreground">
-          Run the web UI in your project:
-        </p>
-        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
+        <p className="text-sm text-gray-900">Run the web UI in your project:</p>
+        <div className="flex items-center gap-2 rounded-md border bg-gray-100/50 px-3 py-2">
           <code className="flex-1 text-xs break-all font-mono">{npxCmd}</code>
           <CopyButton text={npxCmd} />
         </div>

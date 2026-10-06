@@ -22,9 +22,11 @@
  */
 
 import assert from 'node:assert/strict';
+import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
   StreamError,
+  ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
@@ -43,7 +45,11 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
-import { ReplayEventObserverError } from './event-retry.js';
+import {
+  AfterCommitError,
+  createThrottleWaiter,
+  ReplayEventObserverError,
+} from './event-retry.js';
 import {
   type DecodedFrame,
   decodeFrames,
@@ -77,7 +83,9 @@ import {
   WorkflowEventType,
   WorkflowStepStartMode,
   WorkflowStepStartOwnerStamped,
+  WorkflowWsReplyParts,
   WorkflowWsRequestId,
+  WorkflowWsRequestParts,
   WorkflowWsUrl,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
@@ -85,6 +93,7 @@ import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
 import {
   isWsEventsTransportEnabled,
+  isWsEventsTransportPossible,
   isWsEventsTransportStrict,
 } from './ws-transport-enabled.js';
 
@@ -300,6 +309,14 @@ interface CreateEventV4InputBase {
    *  the run entity so cross-run writers can seal to it without holding the
    *  run's symmetric key. */
   encryptionPublicKey?: string;
+  /** A dynamic run's serialized workflow VM code, inline on run_created (and
+   *  run_started for resilient start). Rides the frame meta as a CBOR byte
+   *  string — the body slot on those events already carries the run's input.
+   *  The backend stores it behind a ref on the run and never decodes it. */
+  dynamicWorkflowCode?: Uint8Array;
+  /** Ref key of dynamic workflow code uploaded ahead of this write, for
+   *  definitions too large to ride the meta inline. */
+  dynamicWorkflowCodeRef?: string;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -648,6 +665,12 @@ function buildPostFrameMeta(
   if (input.encryptionPublicKey !== undefined) {
     meta.encryptionPublicKey = input.encryptionPublicKey;
   }
+  if (input.dynamicWorkflowCode !== undefined) {
+    meta.dynamicWorkflowCode = input.dynamicWorkflowCode;
+  }
+  if (input.dynamicWorkflowCodeRef !== undefined) {
+    meta.dynamicWorkflowCodeRef = input.dynamicWorkflowCodeRef;
+  }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
@@ -969,7 +992,9 @@ const STRICT_WS_EVENT_TYPES: ReadonlySet<string> = new Set(['step_completed']);
  * rather than burning the retry budget on a condition no retry can fix.
  */
 function assertWsFallbackAllowed(eventType: EventType): void {
-  if (!isWsEventsTransportStrict()) return;
+  // Only the deployment-wide gate promises a socket for every run. Under a
+  // per-workflow override, most runs have no channel by design.
+  if (!isWsEventsTransportStrict() || !isWsEventsTransportEnabled()) return;
   if (!STRICT_WS_EVENT_TYPES.has(eventType)) return;
   throw new Error(
     `world-vercel: ${eventType} fell back to the HTTP events transport while ` +
@@ -983,9 +1008,10 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
-  if (isWsEventsTransportEnabled()) {
+  if (isWsEventsTransportPossible()) {
     // Absent means no socket was resolvable for this run, not that the write
-    // failed, so fall through to HTTP.
+    // failed, so fall through to HTTP. Under a per-workflow override that is
+    // every run of a workflow that isn't listed.
     const reply = await postEventFrameOverWs(input, config);
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
     assertWsFallbackAllowed(input.eventType);
@@ -1306,6 +1332,15 @@ function replyMetaToHeaderRecord(
  * `transport.request()`, which reconnects on the way through.
  */
 
+/** Part count for a write whose reply was split; see `ws-parts.ts`. Absent
+ *  for the usual single-message reply. The request's own count is recorded
+ *  before it is sent. */
+function recordWsReplyParts(span: Span | undefined, reply: WsFrameReply): void {
+  const { replyParts = 1 } = reply;
+  if (replyParts > 1)
+    span?.setAttributes({ ...WorkflowWsReplyParts(replyParts) });
+}
+
 /**
  * Read the status off a reply frame, failing closed when there isn't one:
  * defaulting to 200 would report success for any frame this client doesn't
@@ -1433,17 +1468,28 @@ async function postEventFrameOverWs(
         // discriminated union on
         // `type` with each type's payload nested under its own name, so a future
         // request type is a new variant rather than a reshape of this one.
-        reply = await transport.request((reqId) => {
-          // Recorded before the frame is sent so a request that fails, or one
-          // that never gets a reply, still carries the id the server logged it
-          // under. Assigned per attempt and per connection, so a retry or a
-          // reconnect legitimately re-uses low numbers.
-          span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
-          return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
-            input.payload ?? new Uint8Array(0)
-          );
-        });
+        reply = await transport.request(
+          (reqId) => {
+            // Recorded before the frame is sent so a request that fails, or
+            // one that never gets a reply, still carries the id the server
+            // logged it under. Assigned per attempt and per connection, so a
+            // retry or a reconnect legitimately re-uses low numbers.
+            span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
+            return encodeFrame(
+              { reqId, type: 'event', event: buildPostFrameMeta(input) },
+              input.payload ?? new Uint8Array(0)
+            );
+          },
+          {
+            // Also before sending, for the same reason: a split request that
+            // ends in a close or a timeout is the case worth spotting.
+            onMessages: (count) => {
+              if (count > 1) {
+                span?.setAttributes({ ...WorkflowWsRequestParts(count) });
+              }
+            },
+          }
+        );
       } catch (err) {
         // Anything `transport.request()` throws means the frame was never acked.
         // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
@@ -1466,6 +1512,7 @@ async function postEventFrameOverWs(
         throw error;
       }
       const ms = Date.now() - start;
+      recordWsReplyParts(span, reply);
 
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);
@@ -1847,19 +1894,27 @@ async function consumeReplayLogResponse(
     );
   }
 
-  const suffix = await getWorkflowRunEventsV4(
-    runId,
-    {
-      cursor: page.cursor,
-      // The suffix of a replay log is the same replay log.
-      remoteRefBehavior:
-        eventsRemoteRefBehavior === 'skip-step-inputs'
-          ? 'skip-step-inputs'
-          : 'resolve',
-    },
-    config,
-    replayEventObserver
-  );
+  let suffix: ListEventsV4Result;
+  try {
+    suffix = await getWorkflowRunEventsV4(
+      runId,
+      {
+        cursor: page.cursor,
+        // The suffix of a replay log is the same replay log.
+        remoteRefBehavior:
+          eventsRemoteRefBehavior === 'skip-step-inputs'
+            ? 'skip-step-inputs'
+            : 'resolve',
+      },
+      config,
+      replayEventObserver
+    );
+  } catch (err) {
+    // The POST committed and the suffix GET already waited out its own
+    // throttle budget. Re-sending the POST would only re-stream the prefix.
+    if (ThrottleError.is(err)) throw new AfterCommitError(err);
+    throw err;
+  }
   return {
     events: [...page.events, ...suffix.events],
     cursor: suffix.cursor ?? page.cursor,
@@ -2037,20 +2092,35 @@ export async function getWorkflowRunEventsV4(
   let cursor = params.cursor ?? null;
   let partialStreamRetries = 0;
   let consumed: EventFrameStreamResult;
+  // A full-log read resends a throttled page from the cursor it asked for,
+  // keeping the events already read, instead of failing the delivery and
+  // reading the log again from the start on redelivery.
+  const fullLog = params.limit === undefined;
+  const waitOutThrottle = createThrottleWaiter('reading events', 'bounded');
 
-  do {
+  for (;;) {
     const pageCursor = cursor ?? undefined;
-    consumed = await consumeListWithSkipFallback(
-      baseUrl,
-      params.remoteRefBehavior,
-      (remoteRefBehavior) =>
-        `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-        paginationToQuery({ ...params, remoteRefBehavior, cursor: pageCursor }),
-      headers,
-      config,
-      'listEvents',
-      replayEventObserver
-    );
+    try {
+      consumed = await consumeListWithSkipFallback(
+        baseUrl,
+        params.remoteRefBehavior,
+        (remoteRefBehavior) =>
+          `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+          paginationToQuery({
+            ...params,
+            remoteRefBehavior,
+            cursor: pageCursor,
+          }),
+        headers,
+        config,
+        'listEvents',
+        replayEventObserver
+      );
+    } catch (err) {
+      if (!fullLog || !ThrottleError.is(err)) throw err;
+      await waitOutThrottle(err);
+      continue;
+    }
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
     if (consumed.kind === 'partial') {
       if (
@@ -2074,7 +2144,8 @@ export async function getWorkflowRunEventsV4(
     for (const event of consumed.events) {
       events.push(event);
     }
-  } while (consumed.kind === 'partial');
+    if (consumed.kind !== 'partial') break;
+  }
 
   return {
     events,

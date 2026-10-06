@@ -12,6 +12,47 @@ Backend connection failures and interrupted event streams follow existing retry 
 
 See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
 
+## Events channel
+
+Event writes go over a per-run WebSocket (the default `WORKFLOW_EVENTS_TRANSPORT`;
+with `http`, only for the workflows listed in
+`WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`) only while that run's
+channel is open. The queue handler opens it for each
+delivery, so workflows need nothing extra. Code that writes a run's events
+outside a delivery (a custom driver, a long-lived process) opens and releases
+it itself; otherwise those writes go over HTTP:
+
+```ts
+import { createWorld, openEventsChannel } from '@workflow/world-vercel';
+
+const world = createWorld();
+const release = openEventsChannel(runId);
+try {
+  await world.events.create(runId, event);
+} finally {
+  release?.();
+}
+```
+
+It returns `undefined`, and writes stay on HTTP, when the transport is
+disabled or the World cannot hold a socket (a `projectConfig` World, as the
+CLI uses).
+
+## Stream writer sockets
+
+With `WORKFLOW_STREAMS_TRANSPORT=ws`, releasing a writer after its writes drain
+retires its socket without closing the shared stream. Reacquiring that handle
+continues over HTTP; a new step's writer can upgrade independently. Released
+writers do not keep idle WebSockets or reconnect them in the background.
+
+Step-local `getWritable()` handles release their transport at step completion,
+not between acquire/write/release cycles within the step. External
+`Run#getWritable()` handles release it on the first observed unlock after pending
+writes drain; subsequent writes through that same handle stay on HTTP. To retain
+WebSocket transport across an external streaming burst, hold the writer lock
+until the burst finishes. Call `releaseLock()` when finished contributing, not
+`close()`, unless you intend to close the shared stream.
+
 ## Custom dispatcher
 
 HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:

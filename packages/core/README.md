@@ -2,7 +2,12 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
-Steps wait for released stream writers to drain before recording completion.
+Steps wait for released stream writers to drain before recording completion,
+then release idle transport resources when the World supports it. Reacquiring
+the same writable remains supported. Aborting a public writable drains its
+accepted prefix and disposes the underlying writer transport without closing
+the shared server stream. Source failures in flushable readable pipes propagate
+to the user-facing reader rather than leaving it waiting for more data.
 Streams that finish draining after the inline wait budget expires do not force
 an extra queued continuation unless other background operations remain pending.
 
@@ -39,3 +44,6 @@ from `workflow/api` for best-effort reporting of terminal transitions written by
 your app. Handlers receive the workflow name without a backend read, a lazy `Run`
 instance, and, for failures, an error hydrated from the persisted payload.
 Callbacks are not retried; the event log remains the system of record.
+Hook-property getters and reporting failures are isolated from terminal writes.
+The callback's `waitUntil` scope also drains background operations for streams
+hydrated from the persisted failure, including when a handler throws.

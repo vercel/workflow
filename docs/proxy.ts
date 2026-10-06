@@ -5,18 +5,25 @@ import { trackMdRequest } from '@/lib/md-tracking';
 const proxy = createProxy({
   config: geistdocsConfig,
   trackMarkdownRequest: trackMdRequest,
+  additionalMarkdownRoutes: [
+    {
+      from: '/changelog/page/*path',
+      to: '/[lang]/changelog-pages.mdx/*path',
+    },
+    { from: '/changelog', to: '/[lang]/changelog.md' },
+  ],
   markdownRoutes: [
     { from: '/docs/*path', to: '/[lang]/llms.mdx/docs/*path' },
     { from: '/cookbook/*path', to: '/[lang]/llms.mdx/cookbook/*path' },
-    { from: '/v5/docs/*path', to: '/[lang]/llms.mdx/v5/docs/*path' },
+    { from: '/v4/docs/*path', to: '/[lang]/llms.mdx/v4/docs/*path' },
     {
-      from: '/v5/cookbook/*path',
-      to: '/[lang]/llms.mdx/v5/cookbook/*path',
+      from: '/v4/cookbook/*path',
+      to: '/[lang]/llms.mdx/v4/cookbook/*path',
     },
     { from: '/worlds/*path', to: '/[lang]/llms.mdx/worlds/*path' },
     {
-      from: '/v5/worlds/*path',
-      to: '/[lang]/llms.mdx/v5/worlds/*path',
+      from: '/v4/worlds/*path',
+      to: '/[lang]/llms.mdx/v4/worlds/*path',
     },
   ],
 });

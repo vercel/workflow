@@ -33,7 +33,6 @@ import {
   getRun,
   getWorld,
   healthCheck,
-  start as rawStart,
   resumeHook,
 } from '../src/runtime';
 import {
@@ -55,6 +54,7 @@ import {
   isLocalDeployment,
   noteTestSettled,
   noteTestStarted,
+  startAtTargetSpecVersion as rawStart,
   requireFixture,
   requireSupported,
   runInTestState,
@@ -2989,13 +2989,49 @@ describe.concurrent('e2e', () => {
         const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
         // A run stamped one spec version below the one that understands
         // `hook_disposed{forceClaimedBy}`. Its runtime here is the current
-        // one, but the World decides from the persisted version alone.
+        // one, and the World decides from the persisted version.
         const victim = await start(
           await e2e('hookForceClaimVictimWorkflow'),
           [token],
           { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM - 1 }
         );
         const victimHook = await waitForHook(token, { runId: victim.runId });
+
+        // A World may raise a run to the version its executor attests on
+        // `run_started` (world-vercel does, see `executorSpecVersion`), and
+        // the victim's executor is this runtime. There the stamp above never
+        // survives to the forced creation: the victim really does read the
+        // disposal, so the correct answer is the takeover, not a refusal. A
+        // runtime that predates the disposal attests nothing and stays below,
+        // which this lane cannot produce; the refusal is covered by the
+        // backend's own tests and by the lanes whose World keeps the stamp.
+        const victimRow = await (await getWorld()).runs.get(victim.runId);
+        if (
+          (victimRow.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+        ) {
+          const claimer = await start(
+            await e2e('hookForceClaimClaimerWorkflow'),
+            [token]
+          );
+          const claimerHook = await waitForHook(token, {
+            runId: claimer.runId,
+            timeoutMs: 60_000,
+          });
+          expect(claimerHook.claimedFrom).toMatchObject({
+            runId: victim.runId,
+            hookId: victimHook.hookId,
+          });
+          expect(await victim.returnValue).toMatchObject({
+            role: 'force_claimed',
+            claimedByRunId: claimer.runId,
+          });
+          await resumeHook(token, { message: 'raised' });
+          expect(await claimer.returnValue).toMatchObject({
+            role: 'claimer',
+            received: 'raised',
+          });
+          return;
+        }
 
         const claimer = await start(
           await e2e('hookForceClaimTolerantClaimerWorkflow'),
@@ -3436,7 +3472,13 @@ describe.concurrent('e2e', () => {
       );
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
-      const { workflowCoreVersion, ...flowBody } = await flowRes.json();
+      const { workflowCoreVersion, nodeVersion, ...flowBody } =
+        await flowRes.json();
+      // Advertised by a JavaScript app on Node.js (so cross-deployment writers
+      // know whether it decodes zstd); absent on Bun, Deno, and other SDKs.
+      expect(nodeVersion === undefined || typeof nodeVersion === 'string').toBe(
+        true
+      );
       expect(flowBody).toEqual({
         healthy: true,
         endpoint: '/.well-known/workflow/v1/flow',

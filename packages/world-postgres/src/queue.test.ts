@@ -486,13 +486,33 @@ describe('postgres queue http execution', () => {
         }),
         expect.objectContaining({
           jobKey: 'step_01ABC',
-          maxAttempts: 49,
+          maxAttempts: 73,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         })
       );
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('defaults pollInterval to 500ms and honors an override from config', async () => {
+    const defaultQueue = buildQueue(
+      { connectionString: 'postgres://test' },
+      pool
+    );
+    await defaultQueue.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ pollInterval: 500 })
+    );
+
+    const overriddenQueue = buildQueue(
+      { connectionString: 'postgres://test', pollInterval: 2000 },
+      pool
+    );
+    await overriddenQueue.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ pollInterval: 2000 })
+    );
   });
 
   it('uses per-run executor queues without serializing step jobs when invoke is enabled', async () => {
@@ -570,6 +590,36 @@ describe('postgres queue http execution', () => {
           jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
           maxAttempts: 6,
         })
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('keeps post-ceiling headroom when transferring a job on the default cap', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    const fetchMock = vi
+      .spyOn(nodeHttp, 'nodeHttpFetch')
+      .mockResolvedValue(Response.json({ ok: true }));
+    try {
+      const payload = buildMessageData('__wkf_workflow_example', {
+        runId: 'run_a',
+      });
+      // Delivery 49 is where core records MAX_DELIVERIES_EXCEEDED. A job with
+      // no stored cap takes the default, so the transferred job must still
+      // have attempts left for core's post-ceiling redeliveries (73 - 49 + 1).
+      await getTaskHandler('workflow_flows')(payload, {
+        job: { attempts: 49 },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_flows_executor',
+        expect.objectContaining({ attempt: 49, attemptOffset: 48 }),
+        expect.objectContaining({ maxAttempts: 25 })
       );
     } finally {
       fetchMock.mockRestore();
@@ -843,9 +893,22 @@ describe('postgres queue http execution', () => {
       }),
       expect.objectContaining({
         jobKey: 'step_01ABC',
-        maxAttempts: 49,
+        maxAttempts: 73,
       })
     );
+  });
+
+  it('leaves job attempts for redeliveries past core max deliveries', async () => {
+    // Core records MAX_DELIVERIES_EXCEEDED on delivery 49 and throws when that
+    // terminal write fails transiently. The job must still have attempts left
+    // for the redelivery, or the run is stranded `running`.
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await queue.queue('__wkf_workflow_example', { runId: 'run_01ABC' });
+
+    const [, , options] = vi.mocked(workerUtilsMock.addJob).mock.calls[0];
+    expect(options?.maxAttempts).toBeGreaterThan(49);
   });
 });
 

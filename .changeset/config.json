@@ -15,7 +15,8 @@
   "fixed": [
     [
       "workflow",
-      "@workflow/core"
+      "@workflow/core",
+      "@workflow/world-vercel"
     ],
     [
       "@workflow/web",

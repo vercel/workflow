@@ -64,4 +64,35 @@ describe('common-vm reducer/reviver drift guard', () => {
       .sort();
     expect(extras).toEqual(VM_ONLY_TYPES);
   });
+
+  it('both sides bound a DataView to its viewed bytes', () => {
+    // The two implementations read the view's range through different
+    // primitives (hardened internal-slot getters vs. plain property reads),
+    // so agreement here is worth pinning: a regression on either side puts
+    // the untouched remainder of the backing buffer on the wire.
+    const backing = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+    const view = new DataView(backing.buffer, 2, 3);
+    const expected = Buffer.from([2, 3, 4]).toString('base64');
+
+    expect(getNodeReducers().DataViewBytes!(view)).toBe(expected);
+    expect(getVmReducers().DataViewBytes!(view)).toBe(expected);
+
+    const revived = getVmRevivers().DataViewBytes!(expected) as DataView;
+    expect(revived.byteLength).toBe(3);
+    expect(Array.from(new Uint8Array(revived.buffer))).toEqual([2, 3, 4]);
+  });
+
+  it('neither side claims the built-in DataView tag', () => {
+    // A custom reviver for that tag would take devalue's built-in branch
+    // out of reach, and with it the bounds recorded in payloads that
+    // predate `DataViewBytes`.
+    for (const set of [
+      getNodeReducers(),
+      getVmReducers(),
+      getNodeRevivers(),
+      getVmRevivers(),
+    ]) {
+      expect(set).not.toHaveProperty('DataView');
+    }
+  });
 });
