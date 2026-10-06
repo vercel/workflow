@@ -110,6 +110,10 @@ import {
   openHookAndWaitState,
 } from './runtime/open-hook-wait-state.js';
 import {
+  type OutOfBandObservation,
+  observeOutOfBandWriters,
+} from './runtime/out-of-band-observation.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -1107,6 +1111,18 @@ export function workflowEntrypoint(
                   // completion that already exists is acted on now rather
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
+                  // Inline-step boundaries this invocation scheduled, split by
+                  // whether an out-of-band event could have changed what they
+                  // led to. Recorded on the span so the share of boundaries a
+                  // future run-ahead could pipeline is measurable. See
+                  // runtime/out-of-band-observation.ts.
+                  const outOfBandBoundaries = {
+                    inert: 0,
+                    observedHook: 0,
+                    abortSignal: 0,
+                    externalStep: 0,
+                    waitDue: 0,
+                  };
                   let loopIteration = 0;
                   // Hooks whose force-claim victim wake this invocation has
                   // already sent (its own forced creations, and the replay's
@@ -4849,6 +4865,57 @@ export function workflowEntrypoint(
                         ) {
                           span?.setAttributes({
                             'workflow.inline_delta_over_pending_wait': true,
+                          });
+                        }
+
+                        // Whether any event an out-of-band writer could append
+                        // now is able to change the decisions this batch leads
+                        // to. Nothing branches on it yet: it is the gate a
+                        // run-ahead of the inline batch must consult before
+                        // continuing past this boundary without the batch's
+                        // terminal writes, and the module documents the de-opt
+                        // and pipeline-depth rules that gate implies.
+                        const outOfBandObservation: OutOfBandObservation =
+                          observeOutOfBandWriters({
+                            items: err.items,
+                            observedHookIds: err.observedHookIds,
+                            selfExecutedStepIds: new Set([
+                              ...inlineCorrelationIds,
+                              ...ownedRecoverySteps.map((s) => s.correlationId),
+                            ]),
+                            waitDue: waitDueThisInvocation,
+                          });
+                        if (lazyInlineSteps.length > 0) {
+                          if (outOfBandObservation.inert) {
+                            outOfBandBoundaries.inert++;
+                          } else {
+                            if (
+                              outOfBandObservation.observedHookCount > 0 ||
+                              outOfBandObservation.unknownHookCount > 0
+                            ) {
+                              outOfBandBoundaries.observedHook++;
+                            }
+                            if (outOfBandObservation.abortSignalHookCount > 0) {
+                              outOfBandBoundaries.abortSignal++;
+                            }
+                            if (outOfBandObservation.externalStepCount > 0) {
+                              outOfBandBoundaries.externalStep++;
+                            }
+                            if (outOfBandObservation.waitDue) {
+                              outOfBandBoundaries.waitDue++;
+                            }
+                          }
+                          span?.setAttributes({
+                            'workflow.out_of_band.inert_boundaries':
+                              outOfBandBoundaries.inert,
+                            'workflow.out_of_band.observed_hook_boundaries':
+                              outOfBandBoundaries.observedHook,
+                            'workflow.out_of_band.abort_signal_boundaries':
+                              outOfBandBoundaries.abortSignal,
+                            'workflow.out_of_band.external_step_boundaries':
+                              outOfBandBoundaries.externalStep,
+                            'workflow.out_of_band.wait_due_boundaries':
+                              outOfBandBoundaries.waitDue,
                           });
                         }
 

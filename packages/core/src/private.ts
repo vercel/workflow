@@ -150,6 +150,17 @@ export interface WorkflowOrchestratorContext {
    * Using Map instead of Array for O(1) lookup/delete operations.
    */
   invocationsQueue: Map<string, QueueItem>;
+  /**
+   * Per open hook, a probe for whether workflow code is currently waiting on
+   * its next payload (an `await hook`, a pending `for await` iteration, or a
+   * `.then` on it). Registered by `createHook` and dropped once the hook can
+   * receive nothing more. Snapshotted into
+   * {@link WorkflowSuspension.observedHookIds} when a suspension is raised.
+   *
+   * Optional so older/out-of-tree contexts (and lightweight test harnesses)
+   * degrade to "every open hook is observed".
+   */
+  hookPayloadAwaiters?: Map<string, () => boolean>;
   onWorkflowError: (error: Error) => void;
   /**
    * Mints the ULID body of a correlation id. Every entity a replay creates
@@ -1022,8 +1033,19 @@ export function scheduleWorkflowSuspension(
   const generation = ctx.suspensionGeneration;
   scheduleWhenIdle(ctx, () => {
     if (generation !== ctx.suspensionGeneration) return;
-    ctx.onWorkflowError(
-      new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+    const suspension = new WorkflowSuspension(
+      ctx.invocationsQueue,
+      ctx.globalThis
     );
+    // Taken at idle, the same instant the queue is: the awaiters that are
+    // pending now are exactly the ones this suspension's outcome depends on.
+    if (ctx.hookPayloadAwaiters) {
+      const observed = new Set<string>();
+      for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+        if (isAwaited()) observed.add(correlationId);
+      }
+      suspension.observedHookIds = observed;
+    }
+    ctx.onWorkflowError(suspension);
   });
 }
