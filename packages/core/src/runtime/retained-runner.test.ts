@@ -977,7 +977,7 @@ it.each([
   await fixture.finished;
 });
 
-it('groups buffered input/create/start and awaits durability before user code or acknowledgement', async () => {
+it('groups buffered input/create/start, starts the local body eagerly, and acknowledges only after durability', async () => {
   const fixture = await setup();
   const create = fixture.world.events.create.bind(fixture.world.events);
   const staged: string[] = [];
@@ -1011,11 +1011,12 @@ it('groups buffered input/create/start and awaits durability before user code or
     acknowledged = true;
   });
   await vi.waitFor(() => expect(staged).toContain('step_started'));
-  expect(body).toBe(false);
+  // Eager local start: the body runs while the barrier is still open, but the
+  // input is not acknowledged until its prefix is durable.
+  await vi.waitFor(() => expect(body).toBe(true));
   expect(acknowledged).toBe(false);
   release();
   await input;
-  await vi.waitFor(() => expect(body).toBe(true));
   expect(batches).toContainEqual([
     'hook_received',
     'step_created',
@@ -1101,7 +1102,7 @@ it('refuses an expired run reported by the catch-up', async () => {
   expect(create).not.toHaveBeenCalled();
 });
 
-it('fails a buffered durability barrier without running the user step', async () => {
+it('fails the run when a buffered durability barrier fails, even after an eager body started', async () => {
   const fixture = await setup();
   const create = fixture.world.events.create.bind(fixture.world.events);
   const body = vi.fn();
@@ -1118,11 +1119,10 @@ it('fails a buffered durability barrier without running the user step', async ()
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   fail = true;
   await expect(fixture.send('buffered-failure', 'one')).rejects.toThrow();
-  expect(body).not.toHaveBeenCalled();
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
 });
 
-it('uses canonical materialized step state returned by flush before invoking the body', async () => {
+it('starts a local body with its staged step state, without waiting for flush', async () => {
   const fixture = await setup();
   const create = fixture.world.events.create.bind(fixture.world.events);
   const results: EventResult[] = [];
@@ -1151,12 +1151,12 @@ it('uses canonical materialized step state returned by flush before invoking the
   await fixture.send('canonical-flush', 'one');
   await vi.waitFor(() => expect(body).toHaveBeenCalled());
   expect(execute.mock.calls[0][0].preclaimedStart?.step.startedAt).toEqual(
-    canonicalStart
+    new Date(+canonicalStart! - 100)
   );
   await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
 });
 
-it('rejects a changed event clock from flush before running user code', async () => {
+it('fails the run on a changed event clock from flush, even after an eager body started', async () => {
   const fixture = await setup();
   const create = fixture.world.events.create.bind(fixture.world.events);
   const results: EventResult[] = [];
@@ -1184,7 +1184,6 @@ it('rejects a changed event clock from flush before running user code', async ()
   });
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   await expect(fixture.send('wrong-clock', 'one')).rejects.toThrow();
-  expect(body).not.toHaveBeenCalled();
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
 });
 
@@ -1547,7 +1546,14 @@ async function setup(
   const world = createWorld({ dataDir: directory }) as World;
   cleanups.push(async () => {
     await world.close?.();
-    await rm(directory, { recursive: true, force: true });
+    // An owner can still be finishing a write when a test ends; retry rather
+    // than fail on the directory it is writing into (ENOTEMPTY).
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   const runId = `wrun_${ulid()}`;
   await world.events.create(runId, {

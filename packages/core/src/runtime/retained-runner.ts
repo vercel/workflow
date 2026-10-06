@@ -1202,18 +1202,33 @@ export class RetainedRunner {
       }> = [];
       const policy = this.queuedSteps;
       if (policy) await this.armStepRecovery();
-      // Make each durable start prefix available as soon as it commits, so a
-      // large fan-out dispatches its first bodies while later starts persist.
+      // Make each start prefix available as soon as it is staged, so a large
+      // fan-out dispatches its first bodies while later starts persist.
       const launch = async () => {
         const chunk = starts;
         starts = [];
         if (!chunk.length) return;
-        // Tentative VM progress is private; user code needs a durable start prefix.
-        await this.flushWriter();
-        const remote: Array<Step & { startedAt: Date }> = [];
+        // Eager local start: a body this process runs begins as soon as its
+        // `step_started` is staged on the single writer's ordered stream, while
+        // the durability barrier below completes in parallel. The stream is
+        // ordered and pinned, so the start commits before anything the body
+        // produces; if persistence fails, the runner faults and the body's
+        // result is never acknowledged. Bodies dispatched to other invocations
+        // still wait for the durable start prefix.
+        const remote: Array<{
+          step: Step;
+          claimed?: Step & { startedAt: Date };
+        }> = [];
         let localSlots =
           policy?.mode === 'hybrid' ? 3 - this.localWorkers.size : 0;
-        for (const { step, claimed } of chunk) {
+        for (const entry of chunk) {
+          if (policy && localSlots-- <= 0) remote.push(entry);
+          else this.startStep(entry.step, entry.claimed);
+        }
+        await this.flushWriter();
+        if (!remote.length) return;
+        const admittedRemote: Array<Step & { startedAt: Date }> = [];
+        for (const { step, claimed } of remote) {
           // Flush may replace tentative entities with the native materialization.
           const canonical = claimed ? this.steps.get(step.stepId) : undefined;
           if (claimed && !canonical?.startedAt)
@@ -1224,17 +1239,14 @@ export class RetainedRunner {
           const admitted = canonical?.startedAt
             ? { ...canonical, startedAt: canonical.startedAt }
             : claimed;
-          if (policy && localSlots-- <= 0) {
-            if (!admitted)
-              throw new RunnerFault(
-                'persistence',
-                new Error('Missing queued step admission')
-              );
-            remote.push(admitted);
-          } else this.startStep(step, admitted);
+          if (!admitted)
+            throw new RunnerFault(
+              'persistence',
+              new Error('Missing queued step admission')
+            );
+          admittedRemote.push(admitted);
         }
-        if (remote.length)
-          await this.dispatchSteps(remote, policy!.attemptTimeoutMs);
+        await this.dispatchSteps(admittedRemote, policy!.attemptTimeoutMs);
       };
       let available =
         (policy?.mode === 'hybrid' ? 100 : 16) -
