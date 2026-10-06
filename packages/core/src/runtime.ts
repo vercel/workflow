@@ -23,6 +23,7 @@ import {
   type Event,
   eventIdToSlot,
   getQueueTopicPrefix,
+  type HookResumeTiming,
   isSealedNoopEvent,
   isTerminalWorkflowRunStatus,
   type RunInput,
@@ -70,6 +71,7 @@ import {
 } from './runtime/dynamic-workflow.js';
 import {
   appendEventLog,
+  type EventCreator,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -137,7 +139,10 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { ReplayRecoveryReporter } from './runtime/replay-recovery-reporter.js';
-import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
+import {
+  resumeTimingForMessage,
+  resumeTrackingFromMessage,
+} from './runtime/resume-latency.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -1127,6 +1132,41 @@ export function workflowEntrypoint(
                    */
                   const slotSnapshot = (): SlotSnapshotParams =>
                     log ? slotSnapshotParams(log.events) : {};
+                  /**
+                   * Folds an accepted in-band write into the loaded log: its
+                   * skipped-slot report, then its own event, in position
+                   * order. Nothing out-of-band can sit between the two except
+                   * what the report names, so the log stays a prefix of the
+                   * run's log, and the next replay needs no read for this
+                   * delivery's own writes. A truncated or incomplete report
+                   * is not merged; the gap check before the next replay then
+                   * reloads.
+                   */
+                  const absorbWrite = (result: {
+                    event?: Event;
+                    events?: Event[];
+                    hasMore?: boolean;
+                    reportIncomplete?: boolean;
+                  }): void => {
+                    if (!log || !result.event) return;
+                    if (result.reportIncomplete || result.hasMore) return;
+                    const own = result.event;
+                    mergeReportedEvents(log.events, [
+                      ...(result.events ?? []).filter(
+                        (event) => event.eventId !== own.eventId
+                      ),
+                      own,
+                    ]);
+                  };
+                  /** The in-band writer, folding each accepted write into the log. */
+                  const writeInBand: EventCreator = async (data, params) => {
+                    const result = await writer.create(data, {
+                      ...slotSnapshot(),
+                      ...params,
+                    });
+                    absorbWrite(result);
+                    return result;
+                  };
                   const createEvent = async <T extends CreateEventRequest>(
                     data: T,
                     params?: CreateEventParams
@@ -1137,7 +1177,7 @@ export function workflowEntrypoint(
                         resolveData: REPLAY_RESOLVE_DATA,
                         ...params,
                       },
-                      (p) => writer.create(data, p)
+                      (p) => writeInBand(data, p)
                     );
                   /** Full load: replaces the log and adopts its fence snapshot. */
                   const fullLoad = async (): Promise<LoadedEventLog> => {
@@ -1676,7 +1716,7 @@ export function workflowEntrypoint(
                           limitMs: replayBudget.configuredLimitMs,
                           slotSnapshot: slotSnapshot(),
                           writeEvent: (data, params) =>
-                            writer.create(data, params),
+                            writeInBand(data, params),
                         });
                         return undefined;
                       }
@@ -1808,7 +1848,7 @@ export function workflowEntrypoint(
                               : {}),
                             worldCapabilities: world.capabilities,
                             writeEvent: (data, params) =>
-                              writer.create(data, params),
+                              writeInBand(data, params),
                           });
                         }
                         await payloadPrewarm;
@@ -1944,6 +1984,9 @@ export function workflowEntrypoint(
                         (run.specVersion ?? 0) >=
                         SPEC_VERSION_SUPPORTS_COMPRESSION;
                       const hasAttributes = suspension.attributeCount > 0;
+                      // The log as the replay saw it, before this
+                      // suspension's own writes are folded in.
+                      const replayedEvents = loaded.events.slice();
 
                       // Hooks, aborts, disposals and attribute writes.
                       const otherItems = suspension.items.filter(
@@ -1974,7 +2017,7 @@ export function workflowEntrypoint(
                             replayRecoveryReporter,
                             forceClaimVictimWakes,
                             writeEvent: (data, params) =>
-                              writer.create(data, params),
+                              writeInBand(data, params),
                           });
                         } catch (suspensionError) {
                           if (
@@ -2033,7 +2076,7 @@ export function workflowEntrypoint(
                       // Steps and waits: decide each new step's execution
                       // mode, commit `step_created`/`wait_created`, then
                       // enqueue the background steps.
-                      const logSteps = analyzeLogSteps(loaded.events);
+                      const logSteps = analyzeLogSteps(replayedEvents);
                       const runnableInline = logSteps.filter(
                         (step) => step.runnableInline
                       );
@@ -2054,6 +2097,7 @@ export function workflowEntrypoint(
                         suspension,
                         run,
                         writer,
+                        onCommitted: absorbWrite,
                         eventCount: () => slotSnapshot().eventCount,
                         encryptionKey: await encryptionKey.value,
                         compression,
@@ -2077,7 +2121,7 @@ export function workflowEntrypoint(
                       // this same message created but never got out.
                       const reenqueue = new Set(
                         stepsToReenqueue({
-                          events: loaded.events,
+                          events: replayedEvents,
                           messageId: metadata.messageId,
                           deliveryCount: metadata.deliveryCount,
                         })
@@ -2103,7 +2147,25 @@ export function workflowEntrypoint(
                             : {}),
                         });
                       }
-                      await enqueueStepMessages(run, toEnqueue);
+                      // Hook-resume TTR: when no inline step will report it,
+                      // the first dispatched step carries the boundaries to
+                      // the invocation that runs it.
+                      const willRunInline =
+                        mayInline &&
+                        (created.createdSteps.some((step) => step.inline) ||
+                          runnableInline.length > 0);
+                      let dispatchedTiming: HookResumeTiming | undefined;
+                      if (!willRunInline && toEnqueue.length > 0) {
+                        dispatchedTiming =
+                          resumeTimingForMessage(resumeTracking);
+                        if (dispatchedTiming) resumeTracking = undefined;
+                      }
+                      await enqueueStepMessages(
+                        run,
+                        toEnqueue,
+                        undefined,
+                        dispatchedTiming
+                      );
 
                       // Inline steps: the ones created inline now, plus inline
                       // steps an earlier invocation started and never
@@ -2121,10 +2183,22 @@ export function workflowEntrypoint(
                           });
                         }
                         for (const step of runnableInline) {
+                          const createdEvent = replayedEvents.find(
+                            (event) => event.eventId === step.createdEventId
+                          );
+                          const loadedInput =
+                            createdEvent?.eventType === 'step_created'
+                              ? createdEvent.eventData.input
+                              : undefined;
                           inlineToRun.push({
                             correlationId: step.correlationId,
                             stepName: step.stepName,
                             createdEventId: step.createdEventId,
+                            // A World may leave step inputs out of replay
+                            // loads; read it back only then.
+                            ...(loadedInput !== undefined
+                              ? { input: loadedInput }
+                              : {}),
                             attempt: step.starts + 1,
                             startReason:
                               step.starts === 0 ? 'first' : 'redelivery',
@@ -2134,7 +2208,7 @@ export function workflowEntrypoint(
 
                       if (inlineToRun.length > 0) {
                         const latencyTracking = computeStepLatencyTracking({
-                          events: loaded.events,
+                          events: replayedEvents,
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
@@ -2218,7 +2292,7 @@ export function workflowEntrypoint(
                                 executeStep({
                                   world,
                                   createEvent: (data, params) =>
-                                    writer.create(data, {
+                                    writeInBand(data, {
                                       ...params,
                                       ...slotSnapshot(),
                                       resolveData: REPLAY_RESOLVE_DATA,
@@ -2372,7 +2446,8 @@ export function workflowEntrypoint(
                     async function enqueueStepMessages(
                       run: WorkflowRun,
                       steps: StepMessageSpec[],
-                      delaySeconds?: number
+                      delaySeconds?: number,
+                      hookResumeTiming?: HookResumeTiming
                     ): Promise<void> {
                       if (steps.length === 0) return;
                       const traceCarrier = await nextTraceCarrier();
@@ -2382,7 +2457,7 @@ export function workflowEntrypoint(
                       await queueMessages(
                         world,
                         getWorkflowQueueName(workflowName, namespace),
-                        steps.map((step) => {
+                        steps.map((step, index) => {
                           const maxRetries =
                             getStepFunction(step.stepName)?.maxRetries ??
                             DEFAULT_STEP_MAX_RETRIES;
@@ -2413,6 +2488,9 @@ export function workflowEntrypoint(
                                 : {}),
                               ...(step.stepAttempt && step.stepAttempt > 1
                                 ? { stepAttempt: step.stepAttempt }
+                                : {}),
+                              ...(index === 0 && hookResumeTiming
+                                ? { hookResumeTiming }
                                 : {}),
                             },
                             opts: {

@@ -75,6 +75,13 @@ export async function createStepsAndWaits(params: {
   creatorMessageId: string;
   inlineSlots: number;
   requestId?: string;
+  /** Called with each accepted write, to fold it into the loaded log. */
+  onCommitted?: (result: {
+    event?: Event;
+    events?: Event[];
+    hasMore?: boolean;
+    reportIncomplete?: boolean;
+  }) => void;
 }): Promise<StepWaitCreationResult> {
   const { suspension, run, encryptionKey, compression } = params;
   const runId = run.runId;
@@ -207,6 +214,12 @@ async function writeAll(
     eventCount: () => number | undefined;
     requestId?: string;
     run: WorkflowRun;
+    onCommitted?: (result: {
+      event?: Event;
+      events?: Event[];
+      hasMore?: boolean;
+      reportIncomplete?: boolean;
+    }) => void;
   },
   events: CreateEventRequest[]
 ): Promise<Event[]> {
@@ -215,10 +228,25 @@ async function writeAll(
   if (events.length > 1 && writer.supportsBatch) {
     const batch: BatchEventRequest[] = events.map((event) => ({ event }));
     const eventCount = params.eventCount();
-    const { results } = await writer.createBatch(batch, {
+    const batchResult = await writer.createBatch(batch, {
       ...(params.requestId ? { requestId: params.requestId } : {}),
       ...(eventCount !== undefined ? { eventCount } : {}),
     });
+    const { results } = batchResult;
+    let first = true;
+    for (const result of results) {
+      if (result.error !== undefined) continue;
+      params.onCommitted?.({
+        event: result.event,
+        ...(first
+          ? {
+              events: batchResult.events,
+              reportIncomplete: batchResult.reportIncomplete,
+            }
+          : {}),
+      });
+      first = false;
+    }
     const committed: Event[] = [];
     results.forEach((result, index) => {
       if (result.error === undefined) {
@@ -251,6 +279,7 @@ async function writeAll(
       ...(params.requestId ? { requestId: params.requestId } : {}),
       ...(eventCount !== undefined ? { eventCount } : {}),
     });
+    params.onCommitted?.(result);
     if (result.event) committed.push(result.event);
   }
   return committed;

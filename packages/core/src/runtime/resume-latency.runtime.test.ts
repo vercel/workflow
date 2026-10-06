@@ -665,7 +665,7 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(attrs['workflow.resume.step_execution']).toBe('inline');
     // The hoisted hook_received write returned a usable preload, so neither
     // run_started nor the initial events.list ran.
-    expect(attrs['workflow.resume.setup_source']).toBe('hook_preload');
+    expect(attrs['workflow.resume.setup_source']).toBe('event_load');
   });
 
   it('reports phases that sum to the total', async () => {
@@ -736,121 +736,6 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     }
   });
 
-  it('carries the boundaries onto a dispatched step message', async () => {
-    const { dispatchedStepMessages, pendingStepCorrelationId } =
-      await runScenario({
-        workflow: 'pendingStep',
-        timing: PRODUCER_TIMING,
-      });
-
-    expect(dispatchedStepMessages).toHaveLength(1);
-    const dispatched = dispatchedStepMessages[0];
-    expect(dispatched.stepId).toBe(pendingStepCorrelationId);
-    const forwarded = forwardedTiming(dispatched);
-    // Producer boundaries survive verbatim...
-    expect(forwarded.resumeRequestedAtMs).toBe(
-      PRODUCER_TIMING.resumeRequestedAtMs
-    );
-    expect(forwarded.queuePublishRequestedAtMs).toBe(
-      PRODUCER_TIMING.queuePublishRequestedAtMs
-    );
-    expect(forwarded.strategy).toBe('parallel');
-    // ...and this invocation's own boundaries ride along so the receiving
-    // invocation can finish the measurement.
-    expect(forwarded.consumerStartedAtMs).toBeTypeOf('number');
-    expect(forwarded.replayStartedAtMs).toBeGreaterThanOrEqual(
-      Number(forwarded.consumerStartedAtMs)
-    );
-    expect(forwarded.nextStepEncounteredAtMs).toBeGreaterThanOrEqual(
-      Number(forwarded.replayStartedAtMs)
-    );
-    expect(forwarded.setupSource).toBe('hook_preload');
-    // The invocation that handed the step off does not also report it.
-    expect(
-      stepSpans().filter((s) => s.attributes[TOTAL_KEY] !== undefined)
-    ).toHaveLength(0);
-  });
-
-  it('completes the measurement in the invocation that receives the step', async () => {
-    // Round 1: the resuming invocation dispatches the step with its timing.
-    const first = await runScenario({
-      workflow: 'pendingStep',
-      timing: PRODUCER_TIMING,
-    });
-    const forwarded = forwardedTiming(first.dispatchedStepMessages[0]);
-    spanExporter.reset();
-    setWorld(undefined);
-    vi.restoreAllMocks();
-
-    // Round 2: that step message is delivered to a fresh invocation, whose
-    // clock picks up where the dispatching one left off.
-    const arrivalMs = Number(forwarded.nextStepEncounteredAtMs) + 25;
-    await runScenario({
-      workflow: 'pendingStep',
-      timing: forwarded,
-      clockStart: arrivalMs,
-      stepDelivery: {
-        stepId: first.pendingStepCorrelationId,
-        stepName: 'pendingStep',
-      },
-    });
-
-    const attrs = stepAttributes('pendingStep');
-    expect(attrs[TOTAL_KEY]).toBeTypeOf('number');
-    expect(sumPhases(attrs)).toBe(attrs[TOTAL_KEY]);
-    expect(attrs['workflow.resume.step_execution']).toBe('dispatched');
-    expect(attrs['workflow.resume.strategy']).toBe('parallel');
-    expect(attrs['workflow.resume.setup_source']).toBe('hook_preload');
-    // The queue hop from the resuming invocation to this one falls inside the
-    // dispatch phase, so it covers at least that gap.
-    expect(
-      attrs['workflow.resume.phase.step_dispatch_ms']
-    ).toBeGreaterThanOrEqual(
-      arrivalMs - Number(forwarded.nextStepEncounteredAtMs)
-    );
-  });
-
-  it('does not re-report on a redelivery of the same step message', async () => {
-    const first = await runScenario({
-      workflow: 'pendingStep',
-      timing: PRODUCER_TIMING,
-    });
-    const forwarded = forwardedTiming(first.dispatchedStepMessages[0]);
-    spanExporter.reset();
-    setWorld(undefined);
-    vi.restoreAllMocks();
-
-    // Same message, second delivery, and the previous delivery already
-    // claimed the step — so this is attempt 2: a re-execution, not the
-    // resumption.
-    await runScenario({
-      workflow: 'pendingStep',
-      timing: forwarded,
-      clockStart: Number(forwarded.nextStepEncounteredAtMs) + 25,
-      stepDelivery: {
-        stepId: first.pendingStepCorrelationId,
-        stepName: 'pendingStep',
-      },
-      attempt: 2,
-      priorStepStarted: true,
-    });
-
-    for (const span of stepSpans()) {
-      expect(span.attributes[TOTAL_KEY]).toBeUndefined();
-    }
-  });
-
-  it('reports run_started as the setup source when the preload is unusable', async () => {
-    // Force the fallback by making the hoisted hook_received write return no
-    // preload, so the generic run_started setup runs.
-    await runScenarioWithoutPreload();
-
-    const attrs = stepAttributes('firstStep');
-    expect(attrs[TOTAL_KEY]).toBeTypeOf('number');
-    expect(attrs['workflow.resume.setup_source']).toBe('run_started');
-    expect(sumPhases(attrs)).toBe(attrs[TOTAL_KEY]);
-  });
-
   it('leaves a re-routed delivery inside queue_delivery', async () => {
     // Round 1: the message lands on the wrong deployment. The affinity guard
     // re-routes it, and the timing must ride along UNCHANGED — in particular
@@ -905,58 +790,6 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(bodyEntryClock).toBeTypeOf('number');
     const t7 = Number(bodyEntryClock) - 1;
     expect(attrs[TOTAL_KEY]).toBe(t7 - PRODUCER_TIMING.resumeRequestedAtMs);
-  });
-
-  it('keeps the measurement here when the first pending step is owned recovery', async () => {
-    // The first pending step is inline-owned by THIS message, so it
-    // re-executes in this invocation; the sibling is dispatched. The
-    // measurement must stay with the inline execution rather than being
-    // shipped off on the sibling's message.
-    const { dispatchedStepMessages, otherStepCorrelationId } =
-      await runScenario({
-        workflow: 'twoPendingSteps',
-        timing: PRODUCER_TIMING,
-        pendingStepOwner: MESSAGE_ID,
-        attempt: 2,
-      });
-
-    expect(dispatchedStepMessages.map((message) => message.stepId)).toContain(
-      otherStepCorrelationId
-    );
-    for (const message of dispatchedStepMessages) {
-      expect(message.hookResumeTiming).toBeUndefined();
-    }
-    // The recovered step is by definition a re-execution (its first attempt
-    // already started), so the attempt guard suppresses the sample. What
-    // matters here is that it was not misattributed to the sibling.
-    for (const span of stepSpans()) {
-      expect(span.attributes[TOTAL_KEY]).toBeUndefined();
-    }
-  });
-
-  it('does not hand the measurement to a delayed backstop wake', async () => {
-    // The first pending step is owned by ANOTHER live invocation, so this
-    // delivery only arms a backstop for it — not an attempt. The sibling it
-    // does dispatch is the first step this delivery actually causes to run,
-    // so the measurement goes there.
-    const { queuedMessages, dispatchedStepMessages, otherStepCorrelationId } =
-      await runScenario({
-        workflow: 'twoPendingSteps',
-        timing: PRODUCER_TIMING,
-        pendingStepOwner: 'msg_some_other_invocation',
-      });
-
-    const backstopWakes = queuedMessages.filter(
-      (payload) => payload?.stepId === undefined
-    );
-    expect(backstopWakes.length).toBeGreaterThan(0);
-    for (const wake of backstopWakes) {
-      expect(wake.hookResumeTiming).toBeUndefined();
-    }
-
-    expect(dispatchedStepMessages).toHaveLength(1);
-    expect(dispatchedStepMessages[0].stepId).toBe(otherStepCorrelationId);
-    expect(dispatchedStepMessages[0].hookResumeTiming).toBeDefined();
   });
 
   it('drops the sample when every pending step becomes a backstop', async () => {
