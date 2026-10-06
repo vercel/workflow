@@ -16,11 +16,10 @@ const config: NextConfig = {
   },
 
   outputFileTracingIncludes: {
+    // Next matches these keys as unanchored globs against the route, so this
+    // one key covers every /[lang]/changelog* route (HTML, numbered pages,
+    // data, and both Markdown handlers).
     '/changelog': ['../packages/workflow/CHANGELOG.md'],
-    '/changelog/page/[page]': ['../packages/workflow/CHANGELOG.md'],
-    '/changelog/data/[page]': ['../packages/workflow/CHANGELOG.md'],
-    '/changelog.md': ['../packages/workflow/CHANGELOG.md'],
-    '/changelog-pages.mdx/[page]': ['../packages/workflow/CHANGELOG.md'],
     '/og/\\[\\.\\.\\.slug\\]': ['./lib/og/assets/**/*'],
     '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
   },
