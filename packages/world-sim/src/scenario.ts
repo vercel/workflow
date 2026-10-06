@@ -309,6 +309,17 @@ export async function runScenario(
         message: `advanced virtual time by ${ms}ms`,
       });
     },
+    expireLease(options) {
+      const expired = world.simQueue.expireLeases(runId, options);
+      world.pushTrace({
+        kind: 'note',
+        message:
+          expired.length > 0
+            ? `lease expired: ${expired.map((l) => l.messageId).join(', ')} keeps running, and the queue treats the run as free${options?.redeliver ? '; the message is pending again' : ''}`
+            : 'expireLease: no orchestrator delivery of the run is in flight',
+      });
+      return expired.length;
+    },
     async deliverQueued(select) {
       const pending = world.simQueue.view();
       const chosen = select ? select(pending) : pending[0]?.messageId;

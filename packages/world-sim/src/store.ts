@@ -129,6 +129,12 @@ function countRecordedAtOrBelow(
   return index.total - above;
 }
 
+/**
+ * In-band positions a new run holds: `run_created`'s. The in-band fence's
+ * count starts here.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
+
 export interface SimStoreOptions {
   now(): number;
   ids: IdFactory;
@@ -705,7 +711,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const seqInBandByRun = new Map<string, number>();
   const fenceLocks = new Map<string, Promise<unknown>>();
   const readSeqInBand = (runId: string): number =>
-    seqInBandByRun.get(runId) ?? 1;
+    seqInBandByRun.get(runId) ?? IN_BAND_SEQ_AT_RUN_CREATION;
 
   async function fencedCreate(
     runIdArg: string | null,
@@ -716,14 +722,25 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       return create(runIdArg, data, params);
     }
     const runId = runIdArg;
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
     const previous = fenceLocks.get(runId) ?? Promise.resolve();
     const run = previous
       .catch(() => undefined)
       .then(async () => {
         const current = readSeqInBand(runId);
-        if (params.expectedSeqInBand !== current) {
+        if (expected !== current) {
           throw new InBandSupersededError(
-            `In-band write on run ${runId} expected seqInBand ${params.expectedSeqInBand}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+            `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
             { seq: eventsForRun(runId).length, seqInBand: current }
           );
         }

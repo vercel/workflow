@@ -253,6 +253,20 @@ are virtual. The scheduler delivers a message 23 hours out by jumping the clock.
 `ScenarioSpec.selectNext` can override the choice to pin an order the default
 would not produce.
 
+A run's orchestrator deliveries go one at a time, as on a per-run topic with
+`maxConcurrency: 1` (`orchestratorRunIdOf` in `@workflow/world` says which
+messages count; step messages and health checks never do). `deliver` takes the
+run's lease before handing the message to the handler and gives it back when the
+handler responds; `takeNext` skips an orchestrator message whose run holds a
+lease, and the loop waits for the lease (or a new message) when only such
+messages are pending. Since the loop is serial, only a script-started delivery
+(`deliverQueued`) can find the lease taken, and it waits too.
+`expireLease` is the explicit overlap: it drops the held delivery's lease (and,
+with `redeliver`, makes its message pending again), which is the production
+case of a delivery stalled past its visibility timeout. What makes that overlap
+safe is the store's in-band fence, so a scenario that expires a lease is a
+scenario about the fence.
+
 ### Scheduler
 
 ```text

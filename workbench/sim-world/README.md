@@ -107,7 +107,11 @@ so virtual time stops with it and no timer can fire while anything is held. If
 the interleaving you need is *a timer firing while a step result is
 outstanding*, no arrangement of holds will reach it. `sim.deliverQueued` is the
 way out. It delivers a queued message from inside the script, concurrently with
-the hold. See
+the hold. A timer is an orchestrator message, though, and the queue never runs
+two of a run's orchestrator deliveries at once, so a timer for a run whose
+orchestrator is held also needs `sim.expireLease()` first: that is the
+scenario stating that the held delivery stalled past its lease, and what it
+then asserts is the in-band fence. See
 [the API reference](../../packages/world-sim/README.md#deliverqueued-and-why-it-is-not-an-advance)
 for the shape, and
 [`unclaimed-payload-under-fork.ts`](./scenarios/unclaimed-payload-under-fork.ts)
