@@ -200,6 +200,102 @@ describe('queue timeout re-enqueue', () => {
     });
   });
 
+  it('redelivers the SAME message on timeoutSeconds: one id, one createdAt, increasing deliveryCount', async () => {
+    const metas: {
+      messageId: string;
+      deliveryCount?: number;
+      attempt: number;
+      createdAt?: Date;
+    }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_body, meta) => {
+        metas.push(meta);
+        return metas.length < 3 ? { timeoutSeconds: 1 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC', retentionSeconds: 3600 }
+    );
+
+    await vi.waitFor(() => {
+      expect(metas).toHaveLength(3);
+    });
+    expect(metas.map((meta) => meta.messageId)).toEqual([
+      messageId,
+      messageId,
+      messageId,
+    ]);
+    expect(metas.map((meta) => meta.deliveryCount)).toEqual([1, 2, 3]);
+    expect(metas.map((meta) => meta.attempt)).toEqual([1, 2, 3]);
+    expect(metas[0]?.createdAt).toBeInstanceOf(Date);
+    expect(new Set(metas.map((meta) => meta.createdAt?.getTime())).size).toBe(
+      1
+    );
+  });
+
+  it('dedupes a second send under the same idempotency key while the first message is retrying', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        if (calls === 1) {
+          await held;
+          return { timeoutSeconds: 1 };
+        }
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const first = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    await vi.waitFor(() => {
+      expect(calls).toBe(1);
+    });
+    const second = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    expect(second.messageId).toBe(first.messageId);
+    release();
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+  });
+
+  it('delivers a wake sent without an idempotency key every time', async () => {
+    let calls = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    const wake = { runId: 'run_01ABC' };
+    const a = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    const b = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    expect(a.messageId).not.toBe(b.messageId);
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+  });
+
   it('queue retries when the handler rejects', async () => {
     let callCount = 0;
     const handler = localQueue.createQueueHandler(
