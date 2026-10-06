@@ -508,15 +508,24 @@ describe('WorkflowServerWritableStream', () => {
       await expect(piped).rejects.toThrow('producer failed');
       await new Promise((r) => setTimeout(r, 25));
 
-      // Every accepted chunk was delivered; the stream was not closed.
+      // Every accepted chunk was delivered, in order; the stream was not
+      // closed. How chunks split between write() and writeMulti() depends on
+      // how fast pipeTo hands them over (Node 24.21 batches the first two), so
+      // reconstruct the order the World actually received them in.
       const delivered = [
-        ...mockStreams.write.mock.calls.map(
-          (call: unknown[]) => (call[2] as Uint8Array)[0]
+        ...mockStreams.write.mock.calls.map((call: unknown[], i: number) => ({
+          order: mockStreams.write.mock.invocationCallOrder[i],
+          chunks: [(call[2] as Uint8Array)[0]],
+        })),
+        ...mockStreams.writeMulti.mock.calls.map(
+          (call: unknown[], i: number) => ({
+            order: mockStreams.writeMulti.mock.invocationCallOrder[i],
+            chunks: (call[2] as Uint8Array[]).map((c) => c[0]),
+          })
         ),
-        ...mockStreams.writeMulti.mock.calls.flatMap((call: unknown[]) =>
-          (call[2] as Uint8Array[]).map((c) => c[0])
-        ),
-      ];
+      ]
+        .sort((a, b) => a.order - b.order)
+        .flatMap((call) => call.chunks);
       expect(delivered).toEqual([1, 2, 3]);
       expect(mockStreams.close).not.toHaveBeenCalled();
     });

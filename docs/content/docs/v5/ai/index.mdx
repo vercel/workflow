@@ -59,9 +59,9 @@ cd workflow-examples/flight-booking-app
 
 ### Configure model access
 
-<Tabs items={['AI Gateway', 'Provider package']}>
+<TabsWithChildren tabs={["AI Gateway","Provider package"]}>
 
-<Tab value="AI Gateway">
+<TabContent order={1}>
 
 AI SDK uses [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) as its default global provider, so plain `"provider/model"` strings need no provider-specific package. Vercel deployments authenticate with OIDC automatically. For local development, link the project and pull a short-lived OIDC token:
 
@@ -72,9 +72,9 @@ vercel env pull .env.local
 
 You can alternatively set `AI_GATEWAY_API_KEY` from the [AI Gateway authentication](https://vercel.com/docs/ai-gateway/authentication) page.
 
-</Tab>
+</TabContent>
 
-<Tab value="Provider package">
+<TabContent order={2}>
 
 `WorkflowAgent` accepts any AI SDK provider. To use OpenAI, install its provider package:
 
@@ -98,9 +98,9 @@ const model = openai("gpt-5.6-sol");
 
 See the [AI SDK provider guide](https://ai-sdk.dev/providers/ai-sdk-providers) for Anthropic, Google, Amazon Bedrock, and other providers.
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 </Step>
 
 <Step>
@@ -111,9 +111,9 @@ Run the app with `npm run dev` and open [http://localhost:3000](http://localhost
 
 The following sections break down the core code. You don't need to make changes yet.
 
-<Tabs items={['API Route', 'Tools', 'Client']}>
+<TabsWithChildren tabs={["API Route","Tools","Client"]}>
 
-<Tab value="API Route">
+<TabContent order={1}>
 
 Our API route calls [AI SDK's `ToolLoopAgent` class](https://ai-sdk.dev/docs/agents/overview), which encapsulates the LLM call, tool execution loop, and stopping conditions on top of [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
 
@@ -137,9 +137,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Tools">
+<TabContent order={2}>
 
 Our tools are mostly mocked out for the sake of the example. We use AI SDK's `tool` function to define the tool, and pass it to the agent. In your own app, this might be any kind of tool call, like database queries, calls to external services, etc.
 
@@ -160,9 +160,9 @@ async function searchFlights({ from, to, date }: { from: string; to: string; dat
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Client">
+<TabContent order={3}>
 
 Our `ChatPage` component contains logic for displaying chat messages, but its core responsibility is managing input and output for the [`useChat` hook](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat#usechat) from AI SDK.
 
@@ -207,9 +207,9 @@ export default function ChatPage() {
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 </Step>
 

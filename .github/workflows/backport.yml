@@ -309,7 +309,7 @@ jobs:
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: false
-          runtime: node@22
+          runtime: node@24
 
       - name: Install opencode
         if: steps.existing-pr.outputs.exists != 'true'
