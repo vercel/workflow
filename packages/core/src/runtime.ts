@@ -70,7 +70,6 @@ import {
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
 import {
-  appendEventLog,
   type EventCreator,
   getQueueOverhead,
   getWorkflowQueueName,
@@ -1132,6 +1131,9 @@ export function workflowEntrypoint(
                    */
                   const slotSnapshot = (): SlotSnapshotParams =>
                     log ? slotSnapshotParams(log.events) : {};
+                  // Set when an accepted write could not be folded into the
+                  // log without leaving a hole; the next pass reads first.
+                  let logBehind = false;
                   /**
                    * Folds an accepted in-band write into the loaded log: its
                    * skipped-slot report, then its own event, in position
@@ -1149,14 +1151,27 @@ export function workflowEntrypoint(
                     reportIncomplete?: boolean;
                   }): void => {
                     if (!log || !result.event) return;
-                    if (result.reportIncomplete || result.hasMore) return;
+                    if (result.reportIncomplete || result.hasMore) {
+                      logBehind = true;
+                      return;
+                    }
                     const own = result.event;
-                    mergeReportedEvents(log.events, [
-                      ...(result.events ?? []).filter(
-                        (event) => event.eventId !== own.eventId
-                      ),
-                      own,
-                    ]);
+                    const report = (result.events ?? []).filter(
+                      (event) => event.eventId !== own.eventId
+                    );
+                    const below = Math.max(
+                      maxEventSlot(log.events) ?? 0,
+                      maxEventSlot(report) ?? 0
+                    );
+                    const ownSlot = eventIdToSlot(own.eventId);
+                    if (ownSlot !== null && ownSlot > below + 1) {
+                      // Something sits between what this delivery holds and
+                      // its own write that the World did not report: read it
+                      // before the next replay rather than leave a hole.
+                      logBehind = true;
+                      return;
+                    }
+                    mergeReportedEvents(log.events, [...report, own]);
                   };
                   /** The in-band writer, folding each accepted write into the log. */
                   const writeInBand: EventCreator = async (data, params) => {
@@ -1185,18 +1200,25 @@ export function workflowEntrypoint(
                     for (const event of loaded.events) {
                       prepareReplayEvent(event);
                     }
+                    logBehind = false;
                     writer.adoptSnapshot(loaded.snapshot);
                     log = { events: loaded.events, cursor: loaded.cursor };
                     return log;
                   };
-                  /** Incremental load from the log's cursor. */
+                  /**
+                   * Incremental load from the log's cursor. Merged in slot
+                   * order, since the log may already hold this delivery's
+                   * own writes above the cursor.
+                   */
                   const loadAfter = async (): Promise<LoadedEventLog> => {
+                    logBehind = false;
                     if (!log || log.cursor === null) return fullLoad();
                     const page = await loadWorkflowRunEvents(runId, log.cursor);
                     for (const event of page.events) {
                       prepareReplayEvent(event);
                     }
-                    appendEventLog(log, page);
+                    mergeReportedEvents(log.events, page.events);
+                    log.cursor = page.cursor ?? log.cursor;
                     return log;
                   };
 
@@ -1738,6 +1760,8 @@ export function workflowEntrypoint(
 
                       let replayStart = 0;
                       try {
+                        if (logBehind) await loadAfter();
+                        assert(log, 'The event log is loaded in the loop');
                         if (hasRecordedTerminalRunEvent(log.events, runId)) {
                           forgetConsumedPosition(world, runId);
                           return undefined;
