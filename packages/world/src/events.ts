@@ -1181,6 +1181,14 @@ export type EventResult<T extends EventType = EventType> = {
    * missing events that sit below its own.
    */
   reportIncomplete?: boolean;
+  /**
+   * How many positions this write allocated on a fenced World (spec >= 9):
+   * 1 for a create that appended its event, 0 for one that converged on an
+   * event the log already held (an idempotent replay). The orchestrator
+   * advances its in-band count by this number. Absent from a World that
+   * does not report it; the runtime then infers it.
+   */
+  allocated?: number;
 } & (
   | {
       /**
@@ -1354,6 +1362,12 @@ export interface EventBatchResult {
   events?: Event[];
   /** As {@link EventResult.reportIncomplete}, for an in-band batch. */
   reportIncomplete?: boolean;
+  /**
+   * How many positions the batch allocated: the admitted items, one block.
+   * As {@link EventResult.allocated}; absent when the World does not report
+   * it.
+   */
+  allocated?: number;
 }
 
 export interface GetEventParams {

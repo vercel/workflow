@@ -168,4 +168,22 @@ describe('InBandWriter', () => {
     await writer.create(waitCreated('wait_b'), { eventCount: 2 });
     expect(world.creates[1]?.params?.eventCount).toBe(2);
   });
+
+  it('advances by the allocation the World reports', async () => {
+    const world = seeded({});
+    const base = world.asWorld();
+    const reporting = {
+      events: {
+        ...base.events,
+        create: async (...args: Parameters<typeof base.events.create>) => ({
+          ...(await base.events.create(...args)),
+          allocated: 0,
+        }),
+      },
+    } as typeof base;
+    const writer = new InBandWriter(reporting, RUN);
+    writer.adoptSnapshot({ seq: 1, seqInBand: 1 });
+    await writer.create(waitCreated('wait_a'));
+    expect(writer.expectedSeqInBand).toBe(1);
+  });
 });

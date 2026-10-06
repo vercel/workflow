@@ -1324,7 +1324,7 @@ export function workflowEntrypoint(
                     !runInput &&
                     !hookInput &&
                     !replayDivergence &&
-                    hasConsumedPosition(runId)
+                    hasConsumedPosition(world, runId)
                   ) {
                     const tail = await world.events.list({
                       runId,
@@ -1337,7 +1337,12 @@ export function workflowEntrypoint(
                         ? undefined
                         : (eventIdToSlot(tailId) ?? undefined);
                     if (
-                      isNoopDelivery({ runId, tailSlot, nowMs: Date.now() })
+                      isNoopDelivery({
+                        world,
+                        runId,
+                        tailSlot,
+                        nowMs: Date.now(),
+                      })
                     ) {
                       span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
                       runtimeLogger.debug(
@@ -1355,9 +1360,12 @@ export function workflowEntrypoint(
                       OrchestratorSupersededError.is(err) ||
                       writer.isSuperseded
                     ) {
-                      forgetConsumedPosition(runId);
+                      forgetConsumedPosition(world, runId);
                       const timeoutSeconds = getFenceRedeliveryDelaySeconds();
-                      runtimeLogger.warn(
+                      // Expected under overlap (a stalled invocation, or a
+                      // transport retry of a write that already committed),
+                      // so not an error.
+                      runtimeLogger.info(
                         'Orchestrator superseded by another invocation of the run; redelivering this message',
                         {
                           workflowRunId: runId,
@@ -1691,7 +1699,7 @@ export function workflowEntrypoint(
                       let replayStart = 0;
                       try {
                         if (hasRecordedTerminalRunEvent(log.events, runId)) {
-                          forgetConsumedPosition(runId);
+                          forgetConsumedPosition(world, runId);
                           return undefined;
                         }
 
@@ -1737,7 +1745,7 @@ export function workflowEntrypoint(
                           }
                         }
                         if (hasRecordedTerminalRunEvent(log.events, runId)) {
-                          forgetConsumedPosition(runId);
+                          forgetConsumedPosition(world, runId);
                           return undefined;
                         }
 
@@ -1829,7 +1837,7 @@ export function workflowEntrypoint(
                             }
                             throw err;
                           }
-                          forgetConsumedPosition(runId);
+                          forgetConsumedPosition(world, runId);
                           dispatchRunCompletedHooks(runId, workflowName);
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('completed'),
@@ -2160,7 +2168,7 @@ export function workflowEntrypoint(
                       if (wroteSomething) await loadAfter();
                       assert(log, 'The event log is loaded on suspend');
                       await armTimers(log.events);
-                      recordConsumedPosition(runId, {
+                      recordConsumedPosition(world, runId, {
                         slot: maxEventSlot(log.events) ?? 0,
                         ...nextTimerAt(log.events),
                       });
@@ -2198,7 +2206,7 @@ export function workflowEntrypoint(
                       let results: Awaited<ReturnType<typeof executeStep>>[];
                       const stepEncryptionKey = await encryptionKey.value;
                       try {
-                        results = await Promise.all(
+                        const settled = await Promise.allSettled(
                           steps.map(async (step, index) => {
                             const input =
                               step.input ??
@@ -2243,6 +2251,28 @@ export function workflowEntrypoint(
                             );
                           })
                         );
+                        // Every body has settled before anything else
+                        // happens, so a superseded delivery leaves nothing
+                        // running behind it. Supersession wins over any other
+                        // failure.
+                        const failures = settled.flatMap((outcome) =>
+                          outcome.status === 'rejected' ? [outcome.reason] : []
+                        );
+                        if (failures.length > 0) {
+                          throw (
+                            failures.find((reason) =>
+                              OrchestratorSupersededError.is(reason)
+                            ) ?? failures[0]
+                          );
+                        }
+                        results = settled.map(
+                          (outcome) =>
+                            (
+                              outcome as PromiseFulfilledResult<
+                                Awaited<ReturnType<typeof executeStep>>
+                              >
+                            ).value
+                        );
                       } finally {
                         replayBudget.resume();
                         feed.stop();
@@ -2254,7 +2284,7 @@ export function workflowEntrypoint(
                         const step = steps[index];
                         assert(step, 'Each inline result has its step');
                         if (result.type === 'gone') {
-                          forgetConsumedPosition(runId);
+                          forgetConsumedPosition(world, runId);
                           return { type: 'return', result: undefined };
                         }
                         if (result.type === 'throttled') {
@@ -2627,7 +2657,7 @@ export function workflowEntrypoint(
                       }
                       throw failErr;
                     }
-                    forgetConsumedPosition(runId);
+                    forgetConsumedPosition(world, runId);
                     dispatchRunFailedHooks(
                       runId,
                       workflowName,

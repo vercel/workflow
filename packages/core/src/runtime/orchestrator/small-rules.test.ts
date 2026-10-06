@@ -20,7 +20,8 @@ import {
   stepMessageRetentionSeconds,
 } from './step-retention.js';
 
-afterEach(() => __resetConsumedPositionsForTests());
+const world = {} as never;
+afterEach(() => __resetConsumedPositionsForTests(world));
 
 describe('step message retention', () => {
   it('gives a retrying step the queue maximum', () => {
@@ -101,18 +102,18 @@ describe('fence redelivery delay', () => {
 
 describe('cheap no-op deliveries', () => {
   it('skips a delivery whose tail is the consumed position and has no due timer', () => {
-    recordConsumedPosition('wrun_a', { slot: 7, nextTimerAtMs: 2_000 });
-    expect(isNoopDelivery({ runId: 'wrun_a', tailSlot: 7, nowMs: 1_000 })).toBe(
-      true
-    );
-    expect(isNoopDelivery({ runId: 'wrun_a', tailSlot: 8, nowMs: 1_000 })).toBe(
-      false
-    );
-    expect(isNoopDelivery({ runId: 'wrun_a', tailSlot: 7, nowMs: 2_000 })).toBe(
-      false
-    );
-    expect(isNoopDelivery({ runId: 'wrun_b', tailSlot: 7, nowMs: 0 })).toBe(
-      false
-    );
+    recordConsumedPosition(world, 'wrun_a', { slot: 7, nextTimerAtMs: 2_000 });
+    expect(
+      isNoopDelivery({ world, runId: 'wrun_a', tailSlot: 7, nowMs: 1_000 })
+    ).toBe(true);
+    expect(
+      isNoopDelivery({ world, runId: 'wrun_a', tailSlot: 8, nowMs: 1_000 })
+    ).toBe(false);
+    expect(
+      isNoopDelivery({ world, runId: 'wrun_a', tailSlot: 7, nowMs: 2_000 })
+    ).toBe(false);
+    expect(
+      isNoopDelivery({ world, runId: 'wrun_b', tailSlot: 7, nowMs: 0 })
+    ).toBe(false);
   });
 });

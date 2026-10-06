@@ -1,4 +1,4 @@
-import { globalSingleton } from '@workflow/utils';
+import type { World } from '@workflow/world';
 
 /**
  * The last position each run's orchestrator consumed in this process, so a
@@ -23,19 +23,26 @@ export interface ConsumedPosition {
 }
 
 const MAX_ENTRIES = 10_000;
-// On `globalThis` (see `globalSingleton`): two copies of this module in one
-// process must share the record, or a delivery handled by one copy would
-// miss the position the other recorded.
-const positions = globalSingleton(
-  '@workflow/core//consumedPositions',
-  1,
-  () => new Map<string, ConsumedPosition>()
-);
+// Held per World instance: a position is only meaningful against the log of
+// the World it was read from.
+// per-copy-ok: a second copy of this module only misses positions the first
+// recorded, which costs a normal replay and never skips work.
+const positionsByWorld = new WeakMap<object, Map<string, ConsumedPosition>>();
+function positionsFor(world: object): Map<string, ConsumedPosition> {
+  let positions = positionsByWorld.get(world);
+  if (!positions) {
+    positions = new Map();
+    positionsByWorld.set(world, positions);
+  }
+  return positions;
+}
 
 export function recordConsumedPosition(
+  world: World,
   runId: string,
   position: ConsumedPosition
 ): void {
+  const positions = positionsFor(world);
   positions.delete(runId);
   positions.set(runId, position);
   if (positions.size > MAX_ENTRIES) {
@@ -44,12 +51,12 @@ export function recordConsumedPosition(
   }
 }
 
-export function hasConsumedPosition(runId: string): boolean {
-  return positions.has(runId);
+export function hasConsumedPosition(world: World, runId: string): boolean {
+  return positionsFor(world).has(runId);
 }
 
-export function forgetConsumedPosition(runId: string): void {
-  positions.delete(runId);
+export function forgetConsumedPosition(world: World, runId: string): void {
+  positionsFor(world).delete(runId);
 }
 
 /**
@@ -57,11 +64,12 @@ export function forgetConsumedPosition(runId: string): void {
  * to do.
  */
 export function isNoopDelivery(params: {
+  world: World;
   runId: string;
   tailSlot: number | undefined;
   nowMs: number;
 }): boolean {
-  const recorded = positions.get(params.runId);
+  const recorded = positionsFor(params.world).get(params.runId);
   if (!recorded || params.tailSlot === undefined) return false;
   if (params.tailSlot !== recorded.slot) return false;
   return (
@@ -71,6 +79,6 @@ export function isNoopDelivery(params: {
 }
 
 /** Test hook. */
-export function __resetConsumedPositionsForTests(): void {
-  positions.clear();
+export function __resetConsumedPositionsForTests(world: World): void {
+  positionsFor(world).clear();
 }

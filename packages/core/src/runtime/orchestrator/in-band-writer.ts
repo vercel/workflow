@@ -67,8 +67,11 @@ export function getFenceRedeliveryDelaySeconds(
  * - The count starts from the first page's `snapshot.seqInBand` of the
  *   delivery's full log load ({@link adoptSnapshot}), never from counting
  *   events: a count cannot say which positions were in-band.
- * - It advances by the number of positions each accepted write allocated (1
- *   for a single create, the event count for a batch).
+ * - It advances by the number of positions each accepted write allocated,
+ *   as the World reports it (`allocated`). A World that does not report it
+ *   is assumed to allocate 1 per create and the whole block per batch,
+ *   except for an event answered at a slot this writer already knew: that
+ *   is an idempotent replay, which allocated nothing.
  * - Writes are serialized. Two concurrent in-band writes would both carry the
  *   same expected count and the second would be refused, so a fan-out goes
  *   through {@link createBatch} or waits its turn.
@@ -154,7 +157,8 @@ export class InBandWriter {
           ...params,
           ...this.fenceParams(),
         });
-        this.advance(this.allocatedBy([result.event]));
+        const inferred = this.allocatedBy([result.event]);
+        this.advance(result.allocated ?? inferred);
         return result;
       } catch (error) {
         throw this.stop(error);
@@ -180,13 +184,23 @@ export class InBandWriter {
           this.runId,
           events,
           {
+            ...this.positionFallback(params?.eventCount),
             ...params,
             ...this.fenceParams(),
           }
         );
-        // The block was allocated whole; a per-item failure leaves a hole
-        // the World seals, and that position still counts.
-        this.advance(events.length);
+        // Without a reported count: the block was allocated whole (a
+        // per-item failure leaves a hole the World seals, and that position
+        // still counts), except items answered with an event at a slot this
+        // writer already knew, which allocated nothing.
+        const replayed = result.results.filter(
+          (item) =>
+            item.error === undefined && !this.isNewSlot(item.event.eventId)
+        ).length;
+        for (const item of result.results) {
+          if (item.error === undefined) this.noteSlot(item.event.eventId);
+        }
+        this.advance(result.allocated ?? events.length - replayed);
         return result;
       } catch (error) {
         throw this.stop(error);

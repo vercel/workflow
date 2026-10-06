@@ -9,7 +9,6 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { setWorld } from '../world.js';
-import { __resetConsumedPositionsForTests } from './consumed-position.js';
 import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -78,7 +77,6 @@ const data = (event: Event | undefined) =>
 beforeEach(() => {
   for (const key of Object.keys(calls)) delete calls[key];
   flakyFailures = 0;
-  __resetConsumedPositionsForTests();
 });
 
 afterEach(() => {
