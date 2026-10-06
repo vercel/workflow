@@ -308,8 +308,10 @@ export class RetainedRunner {
   private freshStart = false;
   /** Invoke-first start that waits for `run_created` before any step body. */
   private durableCreate = false;
-  /** Set once a durable creation is ready for its start to be acknowledged. */
-  private createdDurably = false;
+  /** A durable creation's start: acknowledged once the run exists and its wake
+   * is armed, while the first advance continues behind it. */
+  private startAck?: ReturnType<typeof withResolvers<unknown>>;
+  private startArm?: Promise<unknown>;
   private eventWriter?: EventWriteSession;
   private failureCommitted = false;
   private loopIteration = 0;
@@ -550,6 +552,7 @@ export class RetainedRunner {
         this.freshStart = true;
         this.durableCreate =
           (parsed.input as { durableCreate?: unknown }).durableCreate === true;
+        if (this.durableCreate) this.startAck ??= withResolvers<unknown>();
       } else if (!parsed.invoke && parsed.runInput)
         this.startInput ??= parsed.runInput;
     }
@@ -566,6 +569,7 @@ export class RetainedRunner {
     const operation = async (deferAdvance = false) => {
       const armed = activates ? this.ensureMonitor() : undefined;
       armed?.catch(() => {});
+      if (this.startAck) this.startArm = armed;
       // A fresh start runs ahead of its wake: the wake is the run's backup and
       // is awaited before the start is acknowledged, not before its writes.
       this.activationArm =
@@ -586,11 +590,6 @@ export class RetainedRunner {
       await this.initialize();
       if (`${this.prefix}${this.run.workflowName}` !== metadata.queueName)
         throw new InputRejected('Invocation target mismatch', { status: 409 });
-      // Only the creating start defers run_started; any other input records it.
-      if (this.createdDurably && !start?.success) {
-        this.createdDurably = false;
-        await this.markStarted();
-      }
       if (parsed.invoke) {
         if (
           parsed.input &&
@@ -616,19 +615,8 @@ export class RetainedRunner {
             throw new InputRejected('Invalid start input', { status: 400 });
           // A retained session means the run already advanced to a
           // suspension; re-advancing without new events is not a valid resume.
-          const advance = async () => {
-            if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
-              await this.advance();
-          };
-          // A durably created run is acknowledged once it exists (and its wake
-          // is armed); its first advance is the mailbox's next serialized item.
-          if (this.createdDurably) {
-            this.createdDurably = false;
-            this.enqueue('run_start.advance', async () => {
-              await this.markStarted();
-              await advance();
-            }).catch(() => {});
-          } else await advance();
+          if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
+            await this.advance();
           return { status: 'accepted' };
         }
         if (
@@ -716,11 +704,15 @@ export class RetainedRunner {
             finish: () => this.advance(),
           }
         : undefined;
-    return this.enqueue(
+    const done = this.enqueue(
       parsed.requestId ?? metadata.messageId,
       () => operation(),
       batch
     );
+    // A durable creation answers its start once the run exists and its wake is
+    // armed; the rest of the first advance runs on behind it.
+    const ack = start?.success ? this.startAck : undefined;
+    return ack ? Promise.race([ack.promise, done]) : done;
   }
 
   private async observed<T>(
@@ -792,17 +784,30 @@ export class RetainedRunner {
       await this.observed('create_run', () => this.createRun(startInput), {
         parentSpanId,
       });
-      // Durable creation: no step body runs before the run exists. Validation
-      // overlaps the flush; later transitions stay pipelined behind it.
-      await Promise.all([
-        this.durableCreate
-          ? this.observed('create_run_durable', () => this.flushWriter(), {
-              parentSpanId,
-            })
-          : undefined,
-        this.observed('load_run', () => this.validateRun(), { parentSpanId }),
-      ]);
-      this.createdDurably = this.durableCreate;
+      if (this.durableCreate) {
+        // Durable creation: one barrier covers run_created and run_started.
+        // Validation and the first workflow pass proceed meanwhile, but every
+        // later write queues behind the barrier, so no step body runs before
+        // the run exists.
+        await this.markStarted();
+        const durable = this.observed(
+          'create_run_durable',
+          () => this.flushWriter(),
+          { parentSpanId }
+        );
+        durable.catch(() => {});
+        const tail = this.commitTail;
+        this.commitTail = tail.then(() => durable).catch(() => {});
+        const ack = this.startAck;
+        if (ack)
+          Promise.all([durable, this.startArm]).then(
+            () => ack.resolve({ status: 'accepted' }),
+            ack.reject
+          );
+      }
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
     } else if (catchUp) {
       // The owner's transport streams its whole committed history; run, Step
       // and Hook state is derived from those events alone.
@@ -920,9 +925,7 @@ export class RetainedRunner {
       );
     }
     this.initialized = true;
-    // A durably created run's start is acknowledged before its first advance,
-    // which records run_started instead.
-    if (!this.createdDurably) await this.markStarted();
+    await this.markStarted();
   }
 
   private async markStarted() {
@@ -1449,7 +1452,16 @@ export class RetainedRunner {
     }
   }
 
-  private async flushWriter() {
+  private flushChain: Promise<unknown> = Promise.resolve();
+
+  /** Barriers never overlap: each drains the outbox after the previous one. */
+  private flushWriter(): Promise<void> {
+    const flush = this.flushChain.then(() => this.flushOnce());
+    this.flushChain = flush.catch(() => {});
+    return flush;
+  }
+
+  private async flushOnce() {
     if (!this.eventWriter?.flush) return;
     const spanId = randomUUID();
     this.observe('flush', 'begin', spanId, { eventCount: this.events.length });
