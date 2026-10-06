@@ -3,6 +3,7 @@
  * Durable Objects World. Used by `poc/test/e2e.test.ts` under `wrangler dev`.
  */
 
+import { unwrapInvocationOutcome } from '@workflow/errors/invocation';
 import encoding from 'quickjs-wasi/encoding.so';
 import headers from 'quickjs-wasi/headers.so';
 import quickjs from 'quickjs-wasi/quickjs.wasm';
@@ -113,6 +114,13 @@ export default {
             text += decoder.decode(next.value, { stream: true });
           }
           return json({ text });
+        }
+        if (request.method === 'GET' && parts[2] === 'debug') {
+          return json(
+            unwrapInvocationOutcome(
+              await env.WORKFLOW_RUNS.getByName(runId).inspect()
+            )
+          );
         }
         if (request.method === 'POST' && parts[2] === 'reset') {
           await env.WORKFLOW_RUNS.getByName(runId)

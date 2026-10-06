@@ -31,8 +31,10 @@ import {
 } from '@workflow/errors/invocation';
 import {
   type CreateEventParams,
+  decodeSnapshotEnvelope,
   type Event,
   type EventResult,
+  encodeSnapshotEnvelope,
   getQueueTopicPrefix,
   type InvocationOutcome,
   type InvokeOptions,
@@ -41,6 +43,7 @@ import {
   type QueueOptions,
   type QueuePayload,
   requireEventSlot,
+  type SnapshotMetadata,
   SPEC_VERSION_CURRENT,
   type ValidQueueName,
   type WorkflowRun,
@@ -80,6 +83,9 @@ const SIGNAL_PREFIX = 'sig:';
 const KEY_PREFIX = 'key:';
 const INVOKE_PREFIX = 'inv:';
 const FENCE_PREFIX = 'fence:';
+const SNAPSHOT_PREFIX = 'snap:';
+/** Snapshot chunk size: storage values are capped at 2 MB with their key. */
+const SNAPSHOT_CHUNK_BYTES = 1_900_000;
 
 /** Re-arm interval while deliveries are in flight. */
 const BACKSTOP_MS = 10_000;
@@ -181,6 +187,12 @@ export class RunObject extends DurableObject<Record<string, unknown>> {
         this.#enqueue(queueName, message, opts),
       invoke: (runId, payload, options) =>
         this.#invoke(runId, payload, options),
+      snapshotSave: async (runId, data, metadata) =>
+        this.#withRun(runId, async () => this.#saveSnapshot(data, metadata)),
+      snapshotLoad: async (runId) =>
+        this.#withRun(runId, async () => this.#loadSnapshot()),
+      snapshotDelete: async (runId) =>
+        this.#withRun(runId, async () => this.#deleteSnapshot()),
     };
     ctx.blockConcurrencyWhile(async () => this.#load());
   }
@@ -222,6 +234,33 @@ export class RunObject extends DurableObject<Record<string, unknown>> {
     debug('alarm', this.#runId);
     this.#alarmAt = undefined;
     this.#drive();
+  }
+
+  /** Test hook: what this object holds. */
+  async inspect() {
+    return serve(() => {
+      const meta = this.ctx.storage.kv.get<{ parts: number; bytes: number }>(
+        `${SNAPSHOT_PREFIX}meta`
+      );
+      const snapshot = meta ? this.#loadSnapshot() : null;
+      return {
+        runId: this.#runId,
+        events: this.#log.length,
+        signals: [...this.#signals.values()].map((s) => ({
+          kind: s.kind,
+          runAt: s.runAt,
+          attempt: s.attempt,
+        })),
+        snapshot: snapshot
+          ? {
+              bytes: meta?.bytes,
+              parts: meta?.parts,
+              eventCount: snapshot.metadata.eventCount,
+              eventsCursor: snapshot.metadata.eventsCursor,
+            }
+          : null,
+      };
+    });
   }
 
   /** Test hook: drop this instance, as a deploy or eviction would. */
@@ -781,6 +820,76 @@ export class RunObject extends DurableObject<Record<string, unknown>> {
 
   #queueName(run: Pick<WorkflowRun, 'workflowName'>): ValidQueueName {
     return `${getQueueTopicPrefix('workflow')}${run.workflowName}` as ValidQueueName;
+  }
+
+  // ---------------------------------------------------------------------------
+  // VM snapshots
+
+  /**
+   * One envelope (metadata + bytes), split across storage values and
+   * written in one synchronous transaction, so a snapshot can never be read
+   * with another suspension's metadata.
+   */
+  #saveSnapshot(data: Uint8Array, metadata: SnapshotMetadata) {
+    const envelope = encodeSnapshotEnvelope(metadata, data);
+    const parts = Math.max(
+      1,
+      Math.ceil(envelope.length / SNAPSHOT_CHUNK_BYTES)
+    );
+    this.ctx.storage.transactionSync(() => {
+      this.#deleteSnapshotSync();
+      for (let i = 0; i < parts; i++) {
+        this.ctx.storage.kv.put(
+          `${SNAPSHOT_PREFIX}${i}`,
+          envelope.slice(
+            i * SNAPSHOT_CHUNK_BYTES,
+            (i + 1) * SNAPSHOT_CHUNK_BYTES
+          )
+        );
+      }
+      this.ctx.storage.kv.put(`${SNAPSHOT_PREFIX}meta`, {
+        parts,
+        bytes: envelope.length,
+      });
+    });
+    debug(
+      'snapshot saved',
+      `${envelope.length} bytes`,
+      `eventCount ${metadata.eventCount}`
+    );
+  }
+
+  #loadSnapshot(): { data: Uint8Array; metadata: SnapshotMetadata } | null {
+    const kv = this.ctx.storage.kv;
+    const meta = kv.get<{ parts: number; bytes: number }>(
+      `${SNAPSHOT_PREFIX}meta`
+    );
+    if (!meta) return null;
+    const envelope = new Uint8Array(meta.bytes);
+    let offset = 0;
+    for (let i = 0; i < meta.parts; i++) {
+      const part = kv.get<Uint8Array>(`${SNAPSHOT_PREFIX}${i}`);
+      if (!part) return null;
+      envelope.set(part, offset);
+      offset += part.length;
+    }
+    if (offset !== meta.bytes) return null;
+    const decoded = decodeSnapshotEnvelope(envelope);
+    if (decoded)
+      debug('snapshot loaded', `eventCount ${decoded.metadata.eventCount}`);
+    return decoded;
+  }
+
+  #deleteSnapshot() {
+    this.ctx.storage.transactionSync(() => this.#deleteSnapshotSync());
+  }
+
+  #deleteSnapshotSync() {
+    const kv = this.ctx.storage.kv;
+    const meta = kv.get<{ parts: number }>(`${SNAPSHOT_PREFIX}meta`);
+    if (!meta) return;
+    for (let i = 0; i < meta.parts; i++) kv.delete(`${SNAPSHOT_PREFIX}${i}`);
+    kv.delete(`${SNAPSHOT_PREFIX}meta`);
   }
 
   // ---------------------------------------------------------------------------

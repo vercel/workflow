@@ -94,3 +94,14 @@ export async function hookDuringStep(token: string) {
   const [payload, label] = await Promise.all([hook, slow(3000, 'step')]);
   return `${label}:${payload.value}`;
 }
+
+/** Enough events before a sleep for the VM to be snapshotted while it waits. */
+export async function snapshotted(steps: number, seconds: number) {
+  'use workflow';
+  let total = 0;
+  for (let i = 0; i < steps; i++) {
+    total = await add(total, i);
+  }
+  await sleep(`${seconds}s`);
+  return add(total, 1000);
+}

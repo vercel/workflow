@@ -23,6 +23,7 @@ import type {
   PaginatedResponse,
   QueueOptions,
   QueuePayload,
+  SnapshotMetadata,
   StreamChunksResponse,
   StreamInfoResponse,
   ValidQueueName,
@@ -30,6 +31,7 @@ import type {
 } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { ulid } from 'ulid';
+import { getEncryptionKeyForRun } from './encryption.js';
 import { call, RUNS_BINDING, STREAMS_BINDING, TOKENS_BINDING } from './rpc.js';
 import {
   createQueueHandler,
@@ -64,6 +66,15 @@ export interface RunApi {
     payload: unknown,
     options?: InvokeOptions
   ): Promise<unknown>;
+  snapshotSave(
+    runId: string,
+    data: Uint8Array,
+    metadata: SnapshotMetadata
+  ): Promise<void>;
+  snapshotLoad(
+    runId: string
+  ): Promise<{ data: Uint8Array; metadata: SnapshotMetadata } | null>;
+  snapshotDelete(runId: string): Promise<void>;
 }
 
 type RunMethod = keyof RunApi;
@@ -185,6 +196,18 @@ export function createCloudflareWorld(): World {
       // At most one runner per run: every ordinary delivery for a run is
       // executed by that run's Durable Object, one at a time. See run-object.ts.
       invoke: true,
+    },
+
+    getEncryptionKeyForRun:
+      getEncryptionKeyForRun as World['getEncryptionKeyForRun'],
+
+    // VM snapshots live in the run's object next to its event log, so a
+    // snapshot and the log position it was taken at can never disagree.
+    experimental_snapshots: {
+      save: (runId, data, metadata) =>
+        onRun(runId, 'snapshotSave', runId, data, metadata),
+      load: (runId) => onRun(runId, 'snapshotLoad', runId),
+      delete: (runId) => onRun(runId, 'snapshotDelete', runId),
     },
 
     async getDeploymentId() {

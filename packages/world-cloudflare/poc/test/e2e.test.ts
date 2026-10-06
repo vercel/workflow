@@ -191,6 +191,28 @@ describe('Durable Objects World (local workerd)', () => {
     expect(health).toMatchObject({ healthy: true });
   });
 
+  it('snapshots the VM while it waits and drops the snapshot at the end', async () => {
+    const runId = await start('snapshotted', [6, 3]);
+    await sleep(1500);
+    const waiting = await api(`/runs/${runId}/debug`);
+    expect(waiting.snapshot).toMatchObject({ eventCount: waiting.events });
+    expect(await result(runId)).toEqual({ status: 'completed', value: 1015 });
+    expect((await api(`/runs/${runId}/debug`)).snapshot).toBeNull();
+  });
+
+  it('restores a snapshot after the isolate dies mid-sleep', async () => {
+    const runId = await start('snapshotted', [6, 4]);
+    await sleep(1500);
+    expect((await api(`/runs/${runId}/debug`)).snapshot).not.toBeNull();
+    await server.stop();
+    server = await startDev(port, persistTo);
+    expect(await result(runId, 60_000)).toEqual({
+      status: 'completed',
+      value: 1015,
+    });
+    expectWellFormedLog(await events(runId));
+  });
+
   it('recovers a run whose isolate died mid-sleep', async () => {
     const runId = await start('sleeper', [4]);
     await sleep(1500);
