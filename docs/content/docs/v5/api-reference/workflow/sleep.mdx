@@ -64,5 +64,3 @@ async function testWorkflow() {
     await sleep(new Date(Date.now() + 10_000)) // [!code highlight]
 }
 ```
-
-`sleep()` throws if it receives an Invalid Date, such as `new Date("not a date")`, or a duration that ends past the latest time a `Date` can represent.
