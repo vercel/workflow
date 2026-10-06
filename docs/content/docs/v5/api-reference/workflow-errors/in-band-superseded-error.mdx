@@ -1,0 +1,68 @@
+---
+title: InBandSupersededError
+description: A World throws this error when it refuses an in-band write from an orchestrator invocation that another invocation of the same run has superseded.
+type: reference
+summary: InBandSupersededError is the in-band fence's refusal. The runtime handles it by stopping the superseded orchestrator invocation and redelivering its message.
+related:
+  - /docs/api-reference/workflow-errors/workflow-world-error
+  - /docs/configuration/runtime-tuning
+---
+
+A World that implements the in-band fence throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log.
+
+<Callout>
+The Workflow runtime handles this error. The refused invocation stops writing and starts no further inline step bodies, does not acknowledge its queue message, and asks for the same message again after a short delay ([`WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`](/docs/configuration/runtime-tuning#workflow_fence_redelivery_delay_seconds)). The next delivery loads the log afresh. It never adopts the counts the error carries. You will only encounter it when interacting with World storage APIs directly.
+</Callout>
+
+See [One orchestrator per run, and the in-band fence](/docs/configuration/runtime-tuning#one-orchestrator-per-run-and-the-in-band-fence).
+
+```typescript lineNumbers
+import { InBandSupersededError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
+
+try {
+  await world.events.create(runId, event, { inBand: true, expectedSeqInBand: 3 });
+} catch (error) {
+  if (InBandSupersededError.is(error)) { // [!code highlight]
+    console.log("Another orchestrator invocation holds this run");
+  }
+}
+```
+
+## API signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface InBandSupersededError {
+  /** The run's highest allocated position at the refusal, when the World reports it. Diagnostic only. */
+  seq?: number;
+  /** The run's in-band position count at the refusal, when the World reports it. Diagnostic only: never adopt it. */
+  seqInBand?: number;
+  /** HTTP status: 412. */
+  status?: number;
+  /** Error code: 'in-band-superseded'. */
+  code?: string;
+  /** The error message. */
+  message: string;
+}
+export default InBandSupersededError;`}
+/>
+
+### Static methods
+
+#### `InBandSupersededError.is(value)`
+
+Type-safe check for `InBandSupersededError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { InBandSupersededError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (InBandSupersededError.is(error)) {
+  // error is typed as InBandSupersededError
+}
+```

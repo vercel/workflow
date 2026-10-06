@@ -1,0 +1,35 @@
+---
+title: Single orchestrator
+description: One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces turbo mode, lazy inline start, batched claims, inline step ownership and resilient step dispatch.
+---
+
+# Single orchestrator
+
+## What changes
+
+Runs created at spec version 9 follow one rule: **only the run's orchestrator decides**.
+
+- One orchestrator invocation at a time replays the run, runs the workflow code, writes every decision (`step_created`, `wait_created`, `wait_completed`, hook and attribute events, `run_completed` or `run_failed`), and runs inline steps.
+- A step that runs from its own queue message only runs its body. It writes `step_started` and the outcome, then wakes the orchestrator. It never replays the workflow or continues the run.
+- Each step's execution mode is fixed on its `step_created` (`inline`), together with the queue message that created it (`creatorMessageId`). An enqueued step never runs inline, and only a redelivery of its creating message enqueues it again, while it has not started.
+- A background step keeps one queue message for its whole life and retries in place on it. Any delivery other than a plain first one reads the log before running the body, so a committed outcome is not run again and a `maxRetries: 0` step runs at most once.
+- Step events carry `stepName`, and `step_started` carries `attempt` and `startReason` (`first`, `retry`, `redelivery`). The share of `redelivery` starts is the platform-caused re-execution rate.
+- Wakes carry no idempotency key, a wake with nothing new exits without a replay, and a sleep's timer is armed only by the delivery that created the wait.
+
+## Why
+
+The backend used to keep step and wait rows, written in the same transaction as each event, and those rows were what refused a second start or a second outcome. With one decider per run and a fence on its writes, the rows have nothing left to guard, so step and wait events become plain appends and the transactions go away.
+
+## The fence
+
+The queue delivers a run's orchestrator messages one at a time, but an invocation whose event loop stalls past its lease can be redelivered while it is still alive. The World counts the positions allocated to in-band (orchestrator) writes. A log load returns that count, the orchestrator sends it with each in-band write, and the World refuses a stale one with `InBandSupersededError`. The refused invocation stops writing and running inline steps, does not acknowledge its message, and is delivered again. A write that resolves a promise (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports below it, so the workflow sees events in log order.
+
+## What is removed
+
+Turbo mode, lazy inline step start, batched step claims, optimistic inline start, inline step ownership and its backstop wakes, resilient step dispatch, and the precondition guard. Their settings are listed under [Removed settings](/docs/configuration/runtime-tuning#removed-settings).
+
+## Costs
+
+- A background step's outcome reaches the workflow through the orchestrator: over the World's live event feed or the tail poll when the orchestrator is running, otherwise one queue hop.
+- An inline step costs one more write than lazy start did (`step_created` before `step_started`).
+- Hooks, aborts and cancellations that arrive while the orchestrator runs a long inline step reach it through the live feed or the tail poll ([`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`](/docs/configuration/runtime-tuning#workflow_orchestrator_poll_interval_ms)).

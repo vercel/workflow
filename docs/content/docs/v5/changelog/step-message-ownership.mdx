@@ -5,6 +5,9 @@ description: Why inline step_started now records its owning queue message ID, wh
 
 # Inline step message ownership
 
+> Superseded by the [single orchestrator](/docs/changelog/single-orchestrator) model: runs at spec version 9 no longer use this mechanism.
+
+
 > Fixes [#2780](https://github.com/vercel/workflow/issues/2780) (duplicate
 > inline step execution when a hook or wait wakes a run mid-step). This page
 > is the design defense for the change: what it does, why each choice was

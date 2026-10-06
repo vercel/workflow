@@ -2,6 +2,7 @@
   "title": "Changelog",
   "pages": [
     "index",
+    "single-orchestrator",
     "lazy-hook-resume",
     "eager-processing",
     "resilient-resume",

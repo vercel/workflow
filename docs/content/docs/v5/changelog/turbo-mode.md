@@ -5,6 +5,9 @@ description: Fast-path the first delivery of the first invocation by backgroundi
 
 # Turbo mode
 
+> Superseded by the [single orchestrator](/docs/changelog/single-orchestrator) model: runs at spec version 9 no longer use this mechanism.
+
+
 ## Motivation
 
 The first invocation of a workflow run is where time-to-first-step matters most, yet it pays the most fixed network latency before any user code runs. Three round-trips sit on that critical path today:
