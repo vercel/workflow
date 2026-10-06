@@ -512,6 +512,9 @@ const CreateEventV4BodyBaseSchema = z.compile(
     // Single-orchestrator in-band writes: the skipped-slot report in
     // `events` could not be completed within the backend's request budget.
     reportIncomplete: z.boolean().optional(),
+    // Positions the backend allocated for this write (single-orchestrator
+    // runs). Not declared on `EventResult`; passed through under this name.
+    allocated: z.number().int().nonnegative().optional(),
   })
 );
 
@@ -596,6 +599,27 @@ const EventLogSnapshotWireSchema = z.compile(
     seqInBand: z.number().int().nonnegative(),
   })
 );
+
+const SNAPSHOT_SEQ_HEADER = 'x-wf-snapshot-seq';
+const SNAPSHOT_SEQ_IN_BAND_HEADER = 'x-wf-snapshot-seq-in-band';
+
+/**
+ * The fence snapshot from the list response's headers, which the backend
+ * sends alongside the end frame's `snapshot`. Used only when the end frame
+ * has none; `undefined` unless both headers parse.
+ */
+function snapshotFromHeaders(headers: {
+  get(name: string): string | null;
+}): EventLogSnapshot | undefined {
+  const seq = headers.get(SNAPSHOT_SEQ_HEADER);
+  const seqInBand = headers.get(SNAPSHOT_SEQ_IN_BAND_HEADER);
+  if (seq === null || seqInBand === null) return undefined;
+  const parsed = EventLogSnapshotWireSchema.safeParse({
+    seq: Number(seq),
+    seqInBand: Number(seqInBand),
+  });
+  return parsed.success ? parsed.data : undefined;
+}
 
 const EventStreamEndSchema = z.compile(
   z.object({
@@ -1244,7 +1268,29 @@ export type CreateEventBatchV4ItemResult =
 
 export interface CreateEventBatchV4Result {
   results: CreateEventBatchV4ItemResult[];
+  /**
+   * The skipped-slot report of an in-band batch on a single-orchestrator run:
+   * the events between the writer's `maxSlot` and the batch's block, in
+   * position order. Rides at the top level of the response.
+   */
+  events?: Event[];
+  cursor?: string | null;
+  hasMore?: boolean;
+  /** The report could not be completed; the writer reloads before consuming. */
+  reportIncomplete?: boolean;
+  /** Positions the backend allocated for the batch, when it says. */
+  allocated?: number;
 }
+
+const BatchReportSchema = z.compile(
+  z.object({
+    events: z.array(VercelEventWireSchema).optional(),
+    cursor: z.string().nullable().optional(),
+    hasMore: z.boolean().optional(),
+    reportIncomplete: z.boolean().optional(),
+    allocated: z.number().int().nonnegative().optional(),
+  })
+);
 
 const BatchItemFailureSchema = z.compile(
   z.object({
@@ -1333,7 +1379,7 @@ export async function createWorkflowRunEventsBatchV4(
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const decoded =
     bodyBytes.byteLength > 0
-      ? (decode(bodyBytes) as { results?: unknown[] })
+      ? (decode(bodyBytes) as { results?: unknown[] } & Record<string, unknown>)
       : {};
   // A 200 MUST carry exactly one outcome per submitted frame, in request
   // order: callers index `results` positionally. A missing / non-array /
@@ -1394,7 +1440,22 @@ export async function createWorkflowRunEventsBatchV4(
     }
   );
 
-  return { results };
+  const report = BatchReportSchema.safeParse(decoded);
+  if (!report.success) {
+    throw new WorkflowWorldError(
+      'v4 createEventBatch: invalid skipped-slot report',
+      { code: 'SCHEMA_VALIDATION', cause: report.error }
+    );
+  }
+  const { events, cursor, hasMore, reportIncomplete, allocated } = report.data;
+  return {
+    results,
+    ...(events !== undefined ? { events } : {}),
+    ...(cursor !== undefined ? { cursor } : {}),
+    ...(hasMore !== undefined ? { hasMore } : {}),
+    ...(reportIncomplete !== undefined ? { reportIncomplete } : {}),
+    ...(allocated !== undefined ? { allocated } : {}),
+  };
 }
 
 /** The only two members a decoded transport result is read for. `fetch`'s
@@ -1922,12 +1983,13 @@ async function consumeEventFrameStream(
     for await (const frame of decodeFrames(response.body)) {
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
+        const snapshot = end.snapshot ?? snapshotFromHeaders(response.headers);
         return {
           kind: 'complete',
           events,
           cursor: end.next ?? null,
           hasMore: end.hasMore,
-          ...(end.snapshot ? { snapshot: end.snapshot } : {}),
+          ...(snapshot ? { snapshot } : {}),
         };
       }
       if (frame.meta._error === 1) {

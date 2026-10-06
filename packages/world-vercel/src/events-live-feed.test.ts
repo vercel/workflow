@@ -103,22 +103,21 @@ function sentMetas(socket: { sent: Uint8Array[] }) {
   });
 }
 
-function pushed(slot: number, runId = RUN) {
-  return encodeFrame(
+function pushed(slot: number, runId = RUN, reqId = 1) {
+  // A whole event frame as the body, like a list frame.
+  const eventFrame = encodeFrame(
     {
-      type: RUN_EVENT_FRAME_TYPE,
-      event: {
-        eventId: slotToEventId(slot),
-        runId,
-        eventType: 'hook_received',
-        correlationId: 'hook_1',
-        createdAt: new Date('2026-10-05T00:00:00.000Z'),
-        specVersion: 9,
-        eventData: { token: 'tok' },
-      },
+      eventId: slotToEventId(slot),
+      runId,
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      createdAt: new Date('2026-10-05T00:00:00.000Z'),
+      specVersion: 9,
+      eventData: { token: 'tok' },
     },
     new Uint8Array([slot])
   );
+  return encodeFrame({ reqId, type: RUN_EVENT_FRAME_TYPE, slot }, eventFrame);
 }
 
 /** Subscribe and drive the socket until the subscribe frame is on the wire. */
@@ -174,7 +173,10 @@ describe('subscribeRunEvents', () => {
   it('delivers pushed events in arrival order, each slot once, nothing at or below afterSlot', async () => {
     const { events, onError, socket, meta } = await subscribed(2);
     socket.deliver(
-      encodeFrame({ reqId: meta?.reqId, type: 'ack', status: 200 }, EMPTY)
+      encodeFrame(
+        { reqId: meta?.reqId, type: 'subscribe_ack', status: 200 },
+        EMPTY
+      )
     );
     await tick();
     for (const slot of [2, 3, 4, 4, 3, 5]) socket.deliver(pushed(slot));
@@ -273,7 +275,9 @@ describe('subscribeRunEvents', () => {
 
   it('fails the feed on a malformed push instead of passing it on', async () => {
     const { events, onError, socket } = await subscribed(2);
-    socket.deliver(encodeFrame({ type: RUN_EVENT_FRAME_TYPE }, EMPTY));
+    socket.deliver(
+      encodeFrame({ reqId: 1, type: RUN_EVENT_FRAME_TYPE, slot: 3 }, EMPTY)
+    );
     expect(onError).toHaveBeenCalledTimes(1);
     socket.deliver(pushed(3));
     expect(events).toHaveLength(0);

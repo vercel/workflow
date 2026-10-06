@@ -7,16 +7,19 @@
  *
  *   { reqId, type: 'subscribe', afterSlot }
  *
- * which the backend answers like any request, with a reply under the same
- * `reqId` whose `status` says whether it accepted the subscription. From then
- * on it pushes, unsolicited and in slot order,
+ * which the backend answers with `subscribe_ack` (status 200), or an `error`
+ * reply (400 for a run that is not single-orchestrator). From then on it
+ * pushes, unsolicited and in slot order,
  *
- *   { type: 'run_event', event: <event meta> }   body: the event's payload
+ *   { reqId: <the subscribe's>, type: 'run_event', slot }
+ *   body: one complete event frame, byte-identical to a list frame
  *
- * for every event appended to the run with a slot above `afterSlot`. The
- * event meta and body are encoded exactly like a list frame, so a pushed
- * event decodes to the same `Event` a `list` with `resolveData: 'all'`
- * returns.
+ * for every event appended to the run with a slot above `afterSlot`, sealed
+ * `noop` positions included, so a pushed event decodes to the same `Event` a
+ * `list` with `resolveData: 'all'` returns. A second `subscribe` on the same
+ * connection replaces the first; invocations of one run share a socket, so
+ * every subscriber on it receives whatever the connection's latest
+ * subscription pushes, filtered to slots it has not delivered yet.
  *
  * The subscription lives on the connection. When the socket closes (drain,
  * transport failure, release) the feed ends and `onError` is called once; it
@@ -37,7 +40,7 @@ import {
   eventIdToSlot,
 } from '@workflow/world';
 import { decodeEventFrame } from './events-v4.js';
-import { type DecodedFrame, encodeFrame } from './frames.js';
+import { type DecodedFrame, decodeFrame, encodeFrame } from './frames.js';
 import type { APIConfig } from './utils.js';
 import { isWsEventsTransportPossible } from './ws-transport-enabled.js';
 
@@ -54,15 +57,8 @@ export class LiveFeedError extends Error {
 
 /** The event a `run_event` push carries, or `undefined` if it is malformed. */
 function decodePushedEvent(frame: DecodedFrame): Event | undefined {
-  const { event } = frame.meta;
-  if (typeof event !== 'object' || event === null || Array.isArray(event)) {
-    return undefined;
-  }
   try {
-    return decodeEventFrame({
-      meta: event as Record<string, unknown>,
-      body: frame.body,
-    });
+    return decodeEventFrame(decodeFrame(frame.body));
   } catch {
     return undefined;
   }
@@ -118,7 +114,11 @@ export function subscribeRunEvents(
       return;
     }
     if (event.runId !== runId) return;
-    const slot = eventIdToSlot(event.eventId);
+    const slot =
+      typeof frame.meta.slot === 'number' &&
+      Number.isSafeInteger(frame.meta.slot)
+        ? frame.meta.slot
+        : eventIdToSlot(event.eventId);
     if (slot !== null) {
       // At most once per slot; the runtime discards anything else out of
       // order on its own.

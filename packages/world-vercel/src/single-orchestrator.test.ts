@@ -291,9 +291,11 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
         cursor: 'eid:evnt_4',
         hasMore: false,
         reportIncomplete: true,
+        allocated: 1,
       }
     );
     expect(result.reportIncomplete).toBe(true);
+    expect((result as { allocated?: number }).allocated).toBe(1);
     expect(result.events?.map((event) => event.eventId)).toEqual(['evnt_4']);
   });
 });
@@ -506,6 +508,35 @@ describe('list snapshot', () => {
     expect(page).not.toHaveProperty('snapshot');
   });
 
+  it('falls back to the snapshot headers when the end frame carries none', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${EVENTS_API_VERSION}/runs/wrun_1/events?returnAll=true&remoteRefBehavior=resolve`,
+        method: 'GET',
+      })
+      .reply(
+        200,
+        concat([
+          eventFrame('evnt_1', 'run_created'),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-snapshot-seq': '1',
+            'x-wf-snapshot-seq-in-band': '1',
+          },
+        }
+      );
+    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    expect(page.snapshot).toEqual({ seq: 1, seqInBand: 1 });
+  });
+
   it('rejects a malformed snapshot instead of handing the runtime a bad count', async () => {
     const agent = mockAgent();
     agent
@@ -640,7 +671,7 @@ describe('fenced batch', () => {
     const result = await createWorkflowRunEventBatch(
       'wrun_1',
       events,
-      { inBand: true, expectedSeqInBand: 5, eventCount: 6 } as never,
+      { inBand: true, expectedSeqInBand: 5, eventCount: 6 },
       config(agent)
     );
     expect(result.results.map((item) => item.status)).toEqual([200, 200]);
@@ -654,6 +685,52 @@ describe('fenced batch', () => {
       });
     }
     expect(metas[0]?.inline).toBe(false);
+  });
+
+  it('returns the top-level skipped-slot report and allocated count of an in-band batch', async () => {
+    const agent = mockAgent();
+    const reported = {
+      eventId: 'evnt_3',
+      runId: 'wrun_1',
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      createdAt: CREATED_AT,
+      specVersion: SPEC,
+      eventData: { token: 'tok' },
+    };
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${EVENTS_API_VERSION}/runs/wrun_1/events/batch`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          results: events.map(({ event }, index) => ({
+            status: 200,
+            event: {
+              ...event,
+              eventId: `evnt_${index + 4}`,
+              runId: 'wrun_1',
+              createdAt: CREATED_AT,
+            },
+          })),
+          events: [reported],
+          reportIncomplete: false,
+          allocated: 2,
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+    const result = await createWorkflowRunEventBatch(
+      'wrun_1',
+      events,
+      { inBand: true, expectedSeqInBand: 5, eventCount: 2 },
+      config(agent)
+    );
+    expect(result.events?.map((event) => event.eventId)).toEqual(['evnt_3']);
+    expect(result.reportIncomplete).toBe(false);
+    expect((result as { allocated?: number }).allocated).toBe(2);
   });
 
   it('throws InBandSupersededError when the batch was refused by the fence', async () => {
@@ -679,7 +756,7 @@ describe('fenced batch', () => {
       createWorkflowRunEventBatch(
         'wrun_1',
         events,
-        { inBand: true, expectedSeqInBand: 5 } as never,
+        { inBand: true, expectedSeqInBand: 5 },
         config(agent)
       )
     ).rejects.toSatisfy((err: unknown) => InBandSupersededError.is(err));
@@ -702,7 +779,7 @@ describe('fenced batch', () => {
       createWorkflowRunEventBatch(
         'wrun_1',
         events,
-        { inBand: true, expectedSeqInBand: 5 } as never,
+        { inBand: true, expectedSeqInBand: 5 },
         config(agent)
       )
     ).rejects.toSatisfy((err: unknown) => InBandSupersededError.is(err));

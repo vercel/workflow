@@ -576,30 +576,16 @@ export async function getWorkflowRunEvents(
  * own entity condition server-side, so a retry of a batch that (partially)
  * committed converges to per-event 409 results with nothing written twice.
  */
-/**
- * Fence fields a batch may carry on a single-orchestrator run (spec >= 9).
- *
- * `CreateEventBatchParams` does not declare them, so they are read
- * structurally: a caller that passes them gets the fenced allocation, one
- * that does not gets an unfenced one (which the backend refuses on a
- * single-orchestrator run). The backend allocates the whole batch in one
- * fenced step, and every event of a batch must share one `inBand` value, so
- * each frame carries the same values.
- */
-type BatchFenceParams = Pick<
-  CreateEventParams,
-  'inBand' | 'expectedSeqInBand' | 'eventCount'
->;
-
 export async function createWorkflowRunEventBatch(
   runId: string,
   events: BatchEventRequest[],
   params?: CreateEventBatchParams,
   config?: APIConfig
 ): Promise<EventBatchResult> {
-  const fence = params as
-    | (CreateEventBatchParams & BatchFenceParams)
-    | undefined;
+  // The backend allocates a fenced batch in one step from the first frame's
+  // `expectedSeqInBand` and `maxSlot`, and refuses a batch whose frames
+  // disagree on `inBand`, so every frame carries the same values.
+  const fence = params;
   if (events.length === 0) {
     throw new WorkflowWorldError(
       'world-vercel: createBatch requires at least one event',
@@ -695,7 +681,19 @@ export async function createWorkflowRunEventBatch(
     throw new InBandSupersededError(superseded.message);
   }
 
+  // The skipped-slot report of an in-band batch, and the positions the
+  // backend allocated for it (`allocated` is not declared on
+  // `EventBatchResult`; it rides along under that name).
+  const report = {
+    ...(wire.events !== undefined ? { events: wire.events } : {}),
+    ...(wire.reportIncomplete !== undefined
+      ? { reportIncomplete: wire.reportIncomplete }
+      : {}),
+    ...(wire.allocated !== undefined ? { allocated: wire.allocated } : {}),
+  };
+
   return {
+    ...report,
     results: wire.results.map((item): BatchEventItemResult => {
       if (item.error !== undefined) {
         return {
