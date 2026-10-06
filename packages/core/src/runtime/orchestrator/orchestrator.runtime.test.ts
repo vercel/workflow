@@ -61,6 +61,22 @@ registerStepFunction('so_once', once);
 
 let currentEngine: 'node' | 'quickjs' = 'node';
 
+// A step body that keeps running until the run's log holds a wait_completed
+// (or gives up after a bound), to observe whether the orchestrator advances
+// the workflow while an inline body runs.
+let currentWorld: AppendOnlyWorld | undefined;
+registerStepFunction('so_until_wait_completed', async () => {
+  count('so_until_wait_completed');
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (currentWorld?.events.some((e) => e.eventType === 'wait_completed')) {
+      return 'saw the timer';
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return 'timed out';
+});
+
 async function setup(
   code: string,
   args: unknown[],
@@ -78,6 +94,7 @@ async function setup(
     createdAt: new Date(),
     updatedAt: new Date(),
   } as unknown as WorkflowRun);
+  currentWorld = world;
   setWorld(world.asWorld());
   await workflowEntrypoint(code)(new Request('https://example.test'));
   const start = world.enqueue(QUEUE, { runId, requestedAt: new Date() });
@@ -441,6 +458,33 @@ describe.each([
       inBand: true,
       expectedSeqInBand: expect.any(Number),
     });
+  });
+
+  it('keeps advancing the workflow while an inline step body runs', async () => {
+    const { world } = await setup(
+      `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_until_wait_completed");
+       const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() {
+         const body = step();
+         await sleep("500ms");
+         return await body;
+       }${transform('workflow')}`,
+      []
+    );
+    await world.deliver(world.held[0]!);
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const slot = (type: string) =>
+      world.events.findIndex((e) => e.eventType === type);
+    // The sleep completed while the body ran, written by the delivery that
+    // runs the body (the timer message it armed comes later), and the body
+    // saw it before it finished.
+    expect(slot('wait_completed')).toBeGreaterThan(-1);
+    expect(slot('wait_completed')).toBeLessThan(slot('step_completed'));
+    const firstDelivery = world.deliveries[0]?.messageId;
+    expect(firstDelivery).toBeDefined();
+    expect(calls.so_until_wait_completed).toBe(1);
   });
 
   it('runs against a World without the fence or a live feed', async () => {
