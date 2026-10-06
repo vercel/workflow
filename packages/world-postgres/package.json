@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "4.3.5",
+  "version": "4.3.9",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
@@ -67,6 +67,7 @@
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",
     "drizzle-kit": "0.31.9",
+    "undici": "catalog:",
     "vitest": "catalog:"
   },
   "keywords": [],

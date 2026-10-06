@@ -4,7 +4,19 @@
 // not the internal name (_LanguageModel) which is only scoped inside the class body.
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"steps":{"input.js":{"LanguageModel#doStream":{"stepId":"step//./input//LanguageModel#doStream"},"LanguageModel.generate":{"stepId":"step//./input//LanguageModel.generate"}}},"classes":{"input.js":{"LanguageModel":{"classId":"class//./input//LanguageModel"}}}}*/;
-var LanguageModel = class _LanguageModel {
+var LanguageModel = function(__wf_cls) {
+    (function(__wf_cls, __wf_id) {
+        var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+        __wf_reg.set(__wf_id, __wf_cls);
+        Object.defineProperty(__wf_cls, "classId", {
+            value: __wf_id,
+            writable: false,
+            enumerable: false,
+            configurable: false
+        });
+    })(__wf_cls, "class//./input//LanguageModel");
+    return __wf_cls;
+}(class _LanguageModel {
     constructor(modelId, config){
         this.modelId = modelId;
         this.config = config;
@@ -28,15 +40,5 @@ var LanguageModel = class _LanguageModel {
             result: input
         };
     }
-};
+});
 export { LanguageModel };
-(function(__wf_cls, __wf_id) {
-    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
-        value: __wf_id,
-        writable: false,
-        enumerable: false,
-        configurable: false
-    });
-})(LanguageModel, "class//./input//LanguageModel");

@@ -1,5 +1,84 @@
 # @workflow/core
 
+## 4.8.12
+
+### Patch Changes
+
+- [#4213](https://github.com/vercel/workflow/pull/4213) [`69a4b76`](https://github.com/vercel/workflow/commit/69a4b76218cae869673fe16b1dffa6b62fc74b71) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an issue with the workflow's deterministic clock tracking advancement on consumption, not on write, which could lead to a determinism issue when concurrent replays called `Date.now` with different amounts of events read from the log
+
+- [#4215](https://github.com/vercel/workflow/pull/4215) [`8b3bb55`](https://github.com/vercel/workflow/commit/8b3bb5584db3d4df723ef8be32d6705c8d7f4e9f) Thanks [@gaojude](https://github.com/gaojude)! - Order hook registration and conflict settlements with earlier workflow deliveries so replay preserves concurrent step correlation IDs.
+
+## 4.8.11
+
+### Patch Changes
+
+- Updated dependencies [[`3c033a9`](https://github.com/vercel/workflow/commit/3c033a9ceefcdfcb5a1150a3d4f98555131f6d2d), [`b5a78f8`](https://github.com/vercel/workflow/commit/b5a78f8b6856d2b9bbce69ab865d135d52200ecd)]:
+  - @workflow/world-vercel@4.7.6
+
+## 4.8.10
+
+### Patch Changes
+
+- [#4176](https://github.com/vercel/workflow/pull/4176) [`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix an unhandled rejection that could exit the process when the encryption-key lookup for a forwarded writable stream failed (for example a run metadata read that timed out) before anything was written to that stream. The lookup now starts on the first write, and a failure rejects that stream instead.
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serialize a `DataView` as the bytes it views. It previously fell through to devalue's built-in encoding, which persists the whole backing `ArrayBuffer` — for a view onto Node's pooled `Buffer` allocator, unrelated process memory.
+
+- [#4422](https://github.com/vercel/workflow/pull/4422) [`bc6a97f`](https://github.com/vercel/workflow/commit/bc6a97f110da76d768df5f1cc51794396c0d8d1d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Retry the max-deliveries `run_failed`/`step_failed` write and the step handler's workflow re-queue through queue redelivery when they fail transiently (429, 5xx, transport) instead of acking and leaving the run stuck `running`.
+
+- [#4408](https://github.com/vercel/workflow/pull/4408) [`b23170d`](https://github.com/vercel/workflow/commit/b23170d63c8215e4ea15bdcb1e675dc0a9f7931b) Thanks [@pranaygp](https://github.com/pranaygp)! - `start()` with an explicit `deploymentId` (and so `recreateRunFromExisting`, i.e. Replay Run) no longer fails in a process that is not itself a deployment; it takes the cross-deployment path instead.
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, and make `FatalError.is()` honor the `fatal` marker, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+
+- [#4179](https://github.com/vercel/workflow/pull/4179) [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Route unrecognized backend connection and stream failures through existing retry policies, rebuilding shared event connections after repeated HTTP/2 failures. Keep invalid backend URLs, blocked ports, and unsupported request headers out of those retries. Include error cause chains in run-failure logs to expose underlying socket, DNS, and TLS failures.
+
+- Updated dependencies [[`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77), [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1), [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77)]:
+  - @workflow/world-vercel@4.7.5
+  - @workflow/errors@4.2.2
+  - @workflow/world-local@4.4.2
+
+## 4.8.9
+
+### Patch Changes
+
+- [#3882](https://github.com/vercel/workflow/pull/3882) [`b7385f0`](https://github.com/vercel/workflow/commit/b7385f0eb6838f6228bbd1c75aaaf43b6ebce1b5) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Stop framed stream reconnects after the consumer cancels, including while completion checks or reconnect acquisition are still pending.
+
+- [#3843](https://github.com/vercel/workflow/pull/3843) [`284d7c0`](https://github.com/vercel/workflow/commit/284d7c0e6874691248d1a74ccd9f58b32d164c8b) Thanks [@Rich-Harris](https://github.com/Rich-Harris)! - Bump `devalue` to 5.9.2 to address published security advisory.
+
+- [#4070](https://github.com/vercel/workflow/pull/4070) [`a158f81`](https://github.com/vercel/workflow/commit/a158f8162064af30bf211e41967af0eeabfd96e1) Thanks [@torsello](https://github.com/torsello)! - Allow parentheses and square brackets in workflow names
+
+  A workflow name is derived from the module path it is defined in, so Next.js App
+  Router conventions end up in the name verbatim. `SAFE_WORKFLOW_NAME_PATTERN` did
+  not permit `(`, `)`, `[` or `]`, so any workflow inside a route group
+  (`app/(dashboard)/…`) or a dynamic segment (`app/[teamId]/…`, `app/[...slug]/…`)
+  threw `Invalid workflow name` before it could be enqueued, with no way to
+  override the generated name.
+
+  These characters are inert in the queue name the pattern guards: `ValidQueueName`
+  already accepts any suffix after its prefix, and the name is never interpolated
+  into a URL or a SQL identifier.
+
+## 4.8.8
+
+### Patch Changes
+
+- Updated dependencies [[`4607916`](https://github.com/vercel/workflow/commit/460791641747bc2fd9454cc33f7e061a348248fe), [`5f2fb36`](https://github.com/vercel/workflow/commit/5f2fb36a1c6added3bff75cc04ffa8b580d05eb5)]:
+  - @workflow/world-vercel@4.7.4
+
+## 4.8.7
+
+### Patch Changes
+
+- Updated dependencies [[`0e56bb8`](https://github.com/vercel/workflow/commit/0e56bb864d685972464f827bd75ed1436250e8c7)]:
+  - @workflow/world-vercel@4.7.3
+
+## 4.8.6
+
+### Patch Changes
+
+- Updated dependencies [[`0deceda`](https://github.com/vercel/workflow/commit/0deceda53aac030f98aba00badeb996e3f97e610), [`7024b5b`](https://github.com/vercel/workflow/commit/7024b5b00eaa8ede82d27c44fbfeb3fa0014c7d8), [`41abe2d`](https://github.com/vercel/workflow/commit/41abe2dda3a8e191c8ad8f91e0bf9b7b28449d6a)]:
+  - @workflow/world-vercel@4.7.2
+  - @workflow/world-local@4.4.1
+
 ## 4.8.5
 
 ### Patch Changes

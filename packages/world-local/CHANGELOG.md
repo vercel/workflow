@@ -1,5 +1,20 @@
 # @workflow/world-local
 
+## 4.4.2
+
+### Patch Changes
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade undici to 7.30.0, which stops a failed HTTP/2 stream from leaving a phantom in-flight request on its connection.
+
+- Updated dependencies [[`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0)]:
+  - @workflow/errors@4.2.2
+
+## 4.4.1
+
+### Patch Changes
+
+- [#3824](https://github.com/vercel/workflow/pull/3824) [`41abe2d`](https://github.com/vercel/workflow/commit/41abe2dda3a8e191c8ad8f91e0bf9b7b28449d6a) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Abort active local queue deliveries when the World closes, including when transport timeouts are disabled.
+
 ## 4.4.0
 
 ### Minor Changes

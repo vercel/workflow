@@ -1,5 +1,58 @@
 # @workflow/web-shared
 
+## 4.1.28
+
+### Patch Changes
+
+- Updated dependencies [[`69a4b76`](https://github.com/vercel/workflow/commit/69a4b76218cae869673fe16b1dffa6b62fc74b71), [`8b3bb55`](https://github.com/vercel/workflow/commit/8b3bb5584db3d4df723ef8be32d6705c8d7f4e9f)]:
+  - @workflow/core@4.8.12
+
+## 4.1.27
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.11
+
+## 4.1.26
+
+### Patch Changes
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add a `DataView` reviver so run payloads containing one still hydrate in the observability UI and CLI.
+  </content>
+- Updated dependencies [[`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984), [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb), [`bc6a97f`](https://github.com/vercel/workflow/commit/bc6a97f110da76d768df5f1cc51794396c0d8d1d), [`b23170d`](https://github.com/vercel/workflow/commit/b23170d63c8215e4ea15bdcb1e675dc0a9f7931b), [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1)]:
+  - @workflow/core@4.8.10
+
+## 4.1.25
+
+### Patch Changes
+
+- Updated dependencies [[`b7385f0`](https://github.com/vercel/workflow/commit/b7385f0eb6838f6228bbd1c75aaaf43b6ebce1b5), [`284d7c0`](https://github.com/vercel/workflow/commit/284d7c0e6874691248d1a74ccd9f58b32d164c8b), [`a158f81`](https://github.com/vercel/workflow/commit/a158f8162064af30bf211e41967af0eeabfd96e1)]:
+  - @workflow/core@4.8.9
+
+## 4.1.24
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.8
+
+## 4.1.23
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.7
+
+## 4.1.22
+
+### Patch Changes
+
+- [#3906](https://github.com/vercel/workflow/pull/3906) [`bf5cd3a`](https://github.com/vercel/workflow/commit/bf5cd3a033646bddfc64a060bf5a9737ecd570d1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Prevent event payload flicker during decryption.
+
+- Updated dependencies []:
+  - @workflow/core@4.8.6
+
 ## 4.1.21
 
 ### Patch Changes

@@ -155,6 +155,11 @@ export function getCLIRevivers(): Revivers {
       new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
+    // Deliberately not registered under `DataView`: payloads written before
+    // core gained this reducer use devalue's built-in encoding, and a custom
+    // reviver for that tag would strip their bounds and render the whole
+    // backing buffer. See `getCommonReducers()` in core's `serialization.ts`.
+    DataViewBytes: (value: string) => new DataView(reviveArrayBuffer(value)),
     Date: (value) => new Date(value),
     Error: (value) => {
       const error = new Error(value.message);

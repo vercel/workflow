@@ -1,5 +1,66 @@
 # @workflow/next
 
+## 4.1.16
+
+### Patch Changes
+
+- Updated dependencies [[`69a4b76`](https://github.com/vercel/workflow/commit/69a4b76218cae869673fe16b1dffa6b62fc74b71), [`8b3bb55`](https://github.com/vercel/workflow/commit/8b3bb5584db3d4df723ef8be32d6705c8d7f4e9f)]:
+  - @workflow/core@4.8.12
+  - @workflow/builders@4.1.17
+
+## 4.1.15
+
+### Patch Changes
+
+- Updated dependencies [[`08b4420`](https://github.com/vercel/workflow/commit/08b44209e1eb219d1a9c87af848ad36e83f5f75d), [`6bb5224`](https://github.com/vercel/workflow/commit/6bb52248b022115f878f4857ce219d5f672191a4)]:
+  - @workflow/builders@4.1.16
+  - @workflow/core@4.8.11
+
+## 4.1.14
+
+### Patch Changes
+
+- [#4337](https://github.com/vercel/workflow/pull/4337) [`304e5dc`](https://github.com/vercel/workflow/commit/304e5dca34eff62bfcf504b60f771544251528c5) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix `next dev` sometimes running the workflow build (and starting a second watcher) twice on startup when Next.js resets `process.env` between `next.config` evaluations
+
+- Updated dependencies [[`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984), [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb), [`bc6a97f`](https://github.com/vercel/workflow/commit/bc6a97f110da76d768df5f1cc51794396c0d8d1d), [`b23170d`](https://github.com/vercel/workflow/commit/b23170d63c8215e4ea15bdcb1e675dc0a9f7931b), [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1)]:
+  - @workflow/core@4.8.10
+  - @workflow/builders@4.1.15
+
+## 4.1.13
+
+### Patch Changes
+
+- Updated dependencies [[`b7385f0`](https://github.com/vercel/workflow/commit/b7385f0eb6838f6228bbd1c75aaaf43b6ebce1b5), [`46851a3`](https://github.com/vercel/workflow/commit/46851a3eafef9e60b25c884dcd860d424088616e), [`284d7c0`](https://github.com/vercel/workflow/commit/284d7c0e6874691248d1a74ccd9f58b32d164c8b), [`a158f81`](https://github.com/vercel/workflow/commit/a158f8162064af30bf211e41967af0eeabfd96e1)]:
+  - @workflow/core@4.8.9
+  - @workflow/builders@4.1.14
+
+## 4.1.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.8
+  - @workflow/builders@4.1.13
+
+## 4.1.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.7
+  - @workflow/builders@4.1.12
+
+## 4.1.10
+
+### Patch Changes
+
+- [#3801](https://github.com/vercel/workflow/pull/3801) [`680c263`](https://github.com/vercel/workflow/commit/680c2631edb26af4de70f599fce4796404c8e562) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by every Next.js file convention entrypoint.
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/builders@4.1.11
+  - @workflow/core@4.8.6
+
 ## 4.1.9
 
 ### Patch Changes

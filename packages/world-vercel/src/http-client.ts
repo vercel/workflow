@@ -1,13 +1,21 @@
-import { isNodeHttpEnabled } from '@workflow/world';
+import type { IncomingHttpHeaders } from 'node:http';
+import { envNumber, isNodeHttpEnabled } from '@workflow/world';
 import {
   createNodeHttpAgents,
   destroyNodeHttpAgents,
   type NodeHttpAgents,
 } from '@workflow/world/node-http.js';
-import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
+import {
+  Agent,
+  DecoratorHandler,
+  type Dispatcher,
+  RetryAgent,
+  type RetryHandler,
+} from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
+let _queueDispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
 let _streamCloseDispatcher: RetryAgent | undefined;
 let _nodeHttpAgents: NodeHttpAgents | undefined;
@@ -224,6 +232,201 @@ export function getAgentOptions() {
 }
 
 /**
+ * Connections the queue client's agent may open to VQS.
+ *
+ * Deliberately far above `getBaseAgentOptions()`'s `connections` (8). That cap
+ * is sized for the control-plane paths, where a single invocation issues a
+ * handful of requests and the pool is what stops one process opening a
+ * connection per request. The queue client's shape is the opposite: it issues
+ * roughly two small requests per invocation (one `acknowledgeMessage`, plus a
+ * `changeVisibility` per renewal interval), so its concurrency tracks how many
+ * invocations the compute instance is serving at once, not any per-request
+ * fan-out.
+ *
+ * With the two sharing one 8-connection pool, invocation concurrency became the
+ * binding constraint on acknowledging messages, and that is a worse place for a
+ * queue than a slow ack: waiting for a free connection is not covered by
+ * `headersTimeout`, which undici only arms once a request reaches a socket.
+ * The k-th queued request therefore settled at `ceil(k / 8) x headersTimeout`,
+ * so a transport fault that should have surfaced as one timed-out ack instead
+ * grew without bound as the backlog deepened, and each invocation the platform
+ * killed for exceeding `maxDuration` left its message unacknowledged for the
+ * queue to redeliver, adding another ack to the same queue.
+ *
+ * Override with `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`.
+ */
+export const QUEUE_AGENT_CONNECTIONS = 64;
+
+/**
+ * Total deadline for one queue-client request, measured from `dispatch`.
+ *
+ * The queue client is the only request path in this package with no deadline of
+ * its own: `makeRequest` and `instrumentedFetch` wrap every call in
+ * `AbortSignal.timeout(getRequestTimeoutMs())`, but `QueueClient` calls global
+ * `fetch` itself and cannot be handed one (it accepts a `dispatcher` and no
+ * `fetch` override). Left alone it gets only the shared agent's per-phase
+ * `headersTimeout`, plus however long the request waited for a connection
+ * first — and neither of those bounds the request as a whole.
+ *
+ * 30s rather than `REQUEST_TIMEOUT_MS` (60s): this bounds the calls that hold a
+ * message's lease, and it has to leave the visibility-renewal loop room to
+ * notice a failure and retry (`@vercel/queue` renews at 60s intervals and
+ * retries a failed renewal after 3s) before the 300s lease lapses.
+ *
+ * Override with `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`; the clamp floor keeps a
+ * misconfigured value from failing healthy acknowledgements.
+ */
+export const QUEUE_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Effective queue-request deadline, read per call so tests can override it. */
+export const getQueueRequestTimeoutMs = (): number =>
+  envNumber('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', QUEUE_REQUEST_TIMEOUT_MS, {
+    integer: true,
+    min: 5_000,
+    max: 120_000,
+  });
+
+/**
+ * Options for the queue client's undici Agent: the default H1 configuration,
+ * with its own connection budget (see QUEUE_AGENT_CONNECTIONS) and per-phase
+ * deadlines pinned to the queue deadline rather than inherited from
+ * `getBaseAgentOptions()`, since nothing else bounds this path.
+ */
+export function getQueueAgentOptions() {
+  const timeoutMs = getQueueRequestTimeoutMs();
+  return {
+    ...getAgentOptions(),
+    connections: envNumber(
+      'WORKFLOW_VERCEL_QUEUE_CONNECTIONS',
+      QUEUE_AGENT_CONNECTIONS,
+      { integer: true, min: 1, max: 1024 }
+    ),
+    headersTimeout: timeoutMs,
+    bodyTimeout: timeoutMs,
+  };
+}
+
+/**
+ * Wraps a dispatcher so every request it carries is abandoned after `timeoutMs`
+ * measured from `dispatch`, including any time spent waiting for a connection.
+ *
+ * Neither of the two obvious ways to do this works:
+ *
+ * - `opts.signal` is ignored at the `dispatch` level. undici's higher-level
+ *   `request` / `fetch` entry points translate a signal before dispatching;
+ *   injecting one from an interceptor has no effect (measured: a request with a
+ *   2s injected signal still settled at the 60s `headersTimeout`).
+ * - A timer armed in `onRequestStart` cannot see the wait, because undici
+ *   raises that callback only once the request reaches a connection.
+ *
+ * So the timer is armed in the interceptor, at dispatch, and the abort is
+ * delivered through the controller `onRequestStart` hands over. A request whose
+ * deadline expires while it is still queued is aborted the instant it reaches a
+ * connection, which is what keeps the bound flat: the whole backlog drains at
+ * the deadline instead of at `deadline x queue depth`.
+ */
+/**
+ * `DecoratorHandler` forwards every dispatch callback to the handler it wraps,
+ * but its published type declares only a constructor, so `super.onRequestStart`
+ * and friends are invisible to TypeScript. This re-types the base with the three
+ * callbacks the subclass below overrides, as present rather than optional, so
+ * the subclass can be written against real types instead of `any`.
+ */
+interface ForwardingHandler {
+  onRequestStart(
+    controller: Dispatcher.DispatchController,
+    context: unknown
+  ): void;
+  onResponseEnd(
+    controller: Dispatcher.DispatchController,
+    trailers: IncomingHttpHeaders
+  ): void;
+  onResponseError(
+    controller: Dispatcher.DispatchController,
+    error: Error
+  ): void;
+}
+type ForwardingHandlerCtor = new (
+  handler: Dispatcher.DispatchHandler
+) => ForwardingHandler;
+const ForwardingHandler = DecoratorHandler as unknown as ForwardingHandlerCtor;
+
+/**
+ * Wraps a dispatcher so every request it carries is abandoned after
+ * `timeoutMs`, measured from `dispatch` and therefore including any time spent
+ * waiting for a free connection.
+ *
+ * That last part is the whole point, and neither of the two obvious ways to get
+ * it works:
+ *
+ * - `opts.signal` is ignored at the `dispatch` level. undici's higher-level
+ *   `request` / `fetch` entry points translate a signal before dispatching, so
+ *   injecting one from an interceptor changes nothing (measured: a request
+ *   given a 2s injected signal still settled at the 60s `headersTimeout`).
+ * - A timer armed in `onRequestStart` cannot see the wait either, because
+ *   undici raises that callback only once the request reaches a connection.
+ *
+ * So the timer is armed in the interceptor, at dispatch, and the abort is
+ * delivered through the controller `onRequestStart` hands over. A request whose
+ * deadline expires while it is still queued is aborted the instant it reaches a
+ * connection, and that is what keeps the bound flat: the backlog drains at the
+ * deadline rather than at `deadline x queue depth`.
+ */
+function deadlineInterceptor(
+  timeoutMs: number
+): (dispatch: Dispatcher['dispatch']) => Dispatcher['dispatch'] {
+  class DeadlineHandler extends ForwardingHandler {
+    #expired = false;
+    #controller: Dispatcher.DispatchController | undefined;
+    #timer: ReturnType<typeof setTimeout>;
+
+    constructor(handler: Dispatcher.DispatchHandler) {
+      super(handler);
+      this.#timer = setTimeout(() => {
+        this.#expired = true;
+        this.#abort();
+      }, timeoutMs);
+      // Never hold the process open for a deadline with nothing left to abort.
+      this.#timer.unref?.();
+    }
+
+    #abort(): void {
+      this.#controller?.abort(
+        new Error(`Queue request exceeded its ${timeoutMs}ms deadline`)
+      );
+    }
+
+    onRequestStart(
+      controller: Dispatcher.DispatchController,
+      context: unknown
+    ): void {
+      this.#controller = controller;
+      super.onRequestStart(controller, context);
+      if (this.#expired) this.#abort();
+    }
+
+    onResponseEnd(
+      controller: Dispatcher.DispatchController,
+      trailers: IncomingHttpHeaders
+    ): void {
+      clearTimeout(this.#timer);
+      super.onResponseEnd(controller, trailers);
+    }
+
+    onResponseError(
+      controller: Dispatcher.DispatchController,
+      error: Error
+    ): void {
+      clearTimeout(this.#timer);
+      super.onResponseError(controller, error);
+    }
+  }
+
+  return (dispatch) => (opts, handler) =>
+    dispatch(opts, new DeadlineHandler(handler));
+}
+
+/**
  * Options for the events API undici Agent. Exported so tests can assert that
  * HTTP/2 stays enabled *and* that it is actually configured to multiplex.
  *
@@ -343,6 +546,31 @@ function getRetryAgentOptions(): RetryHandler.RetryOptions {
 }
 
 /**
+ * Retry options for the events agents: getRetryAgentOptions(), plus a retry
+ * when the peer resets a single HTTP/2 stream.
+ *
+ * The Vercel edge resets individual streams on a busy multiplexed connection
+ * with RST_STREAM ENHANCE_YOUR_CALM or INTERNAL_ERROR, which Node surfaces as
+ * ERR_HTTP2_STREAM_ERROR. Neither undici's default `errorCodes` nor
+ * RETRY_ERROR_CODES include it, so without this a reset event-log read fails
+ * the whole delivery instead of being re-sent. The rest of the shared policy
+ * (including the two timeout codes) is kept as-is.
+ *
+ * Only idempotent methods are affected: `methods` keeps undici's default, which
+ * excludes POST, so an event write that may already have committed is never
+ * replayed (the multiplexing interceptor's `idempotent` flag feeds only the
+ * `busy()` gates, not retries; see h2MultiplexInterceptor).
+ *
+ * Built on each call for the same reason as getRetryAgentOptions().
+ */
+export function getEventsRetryAgentOptions(): RetryHandler.RetryOptions {
+  return {
+    ...getRetryAgentOptions(),
+    errorCodes: [...RETRY_ERROR_CODES, 'ERR_HTTP2_STREAM_ERROR'],
+  };
+}
+
+/**
  * Retry options for stream writes (PUT). Stream appends are NOT idempotent, so
  * we must never retry a write the server may already have applied. We therefore
  * narrow undici's defaults to only the conditions that guarantee the request was
@@ -444,52 +672,80 @@ function contentLength(headers: unknown): number {
  *    async iterable on the way down. Draining it back into a Buffer restores the
  *    buffered-body shape undici needs, at the cost of one copy of an
  *    already-in-memory payload. Bodies without a usable `content-length`, or
- *    above H2_REBUFFER_MAX_BYTES, are passed through untouched (and stay
- *    serialized) rather than buffered blind.
+ *    above H2_REBUFFER_MAX_BYTES, are not buffered blind; see below.
  *
  * Without both of these, `pipelining` alone leaves the events agent at one
  * in-flight request per connection.
+ *
+ * A streamed body that is NOT re-buffered must not reach the H2 connection at
+ * all. `busy()` holds it until the connection has zero in-flight streams, and
+ * undici's `_resume` (`client.js`) stops dispatching at the first busy request,
+ * so everything queued behind it waits too. On an instance running many
+ * workflows at once the shared connection never drains, and the request (plus
+ * the queue behind it) hangs with no timer armed, since `headersTimeout` only
+ * starts once a request reaches a socket. In production this was the first POST
+ * of a delivery carrying a multi-MiB run input (`run_started`) or event batch,
+ * which never left the process and pinned the invocation until the replay
+ * budget or `maxDuration` ran out. Before undici 7.30.0 a failed stream also
+ * left a phantom running slot behind (nodejs/undici#5410, #5569), so one peer
+ * reset shut the gate on that connection for good; the upgrade fixes the count,
+ * but a busy connection still starves the request. When `fallback` is given, such requests are
+ * sent over it instead; createEventsDispatcher passes a plain HTTP/1.1 agent,
+ * where a streamed body occupies one connection of its own.
  */
-export function h2MultiplexInterceptor(
-  dispatch: Dispatcher['dispatch']
-): Dispatcher['dispatch'] {
-  return (opts, handler) => {
-    const body = opts.body;
-    const isAsyncIterable =
-      !!body &&
-      typeof body !== 'string' &&
-      !Buffer.isBuffer(body) &&
-      typeof (body as unknown as Record<symbol, unknown>)[
-        Symbol.asyncIterator
-      ] === 'function';
-    const length = contentLength(opts.headers);
+export function createH2MultiplexInterceptor(
+  fallback?: Pick<Dispatcher, 'dispatch'>
+) {
+  return (dispatch: Dispatcher['dispatch']): Dispatcher['dispatch'] =>
+    (opts, handler) => {
+      const body = opts.body;
+      const isAsyncIterable =
+        !!body &&
+        typeof body !== 'string' &&
+        !Buffer.isBuffer(body) &&
+        typeof (body as unknown as Record<symbol, unknown>)[
+          Symbol.asyncIterator
+        ] === 'function';
+      const length = contentLength(opts.headers);
 
-    if (!isAsyncIterable || !(length >= 0) || length > H2_REBUFFER_MAX_BYTES) {
-      return dispatch({ ...opts, idempotent: true }, handler);
-    }
-
-    // Drain asynchronously, then dispatch. Returning `true` reports "no
-    // backpressure", which is accurate: the request is accepted, and the pool
-    // gate we are lifting is exactly the one that would have reported drain.
-    void (async () => {
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of body as AsyncIterable<Uint8Array>) {
-          chunks.push(Buffer.from(chunk));
-        }
-        dispatch(
-          { ...opts, body: Buffer.concat(chunks), idempotent: true },
-          handler
-        );
-      } catch (error) {
-        // Surface a drain failure the way undici would have surfaced a body
-        // error, so the awaiting caller rejects instead of hanging.
-        handler.onError?.(error as Error);
+      if (!isAsyncIterable) {
+        return dispatch({ ...opts, idempotent: true }, handler);
       }
-    })();
-    return true;
-  };
+      if (!(length >= 0) || length > H2_REBUFFER_MAX_BYTES) {
+        return fallback
+          ? fallback.dispatch(opts, handler)
+          : dispatch({ ...opts, idempotent: true }, handler);
+      }
+
+      // Drain asynchronously, then dispatch. Returning `true` reports "no
+      // backpressure", which is accurate: the request is accepted, and the pool
+      // gate we are lifting is exactly the one that would have reported drain.
+      void (async () => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of body as AsyncIterable<Uint8Array>) {
+            chunks.push(Buffer.from(chunk));
+          }
+          dispatch(
+            { ...opts, body: Buffer.concat(chunks), idempotent: true },
+            handler
+          );
+        } catch (error) {
+          // Surface a drain failure the way undici would have surfaced a body
+          // error, so the awaiting caller rejects instead of hanging.
+          handler.onError?.(error as Error);
+        }
+      })();
+      return true;
+    };
 }
+
+/**
+ * The multiplexing interceptor with no fallback: a streamed body it does not
+ * re-buffer is passed through to the H2 connection. Kept for callers composing
+ * their own dispatcher; createEventsDispatcher supplies an H1 fallback.
+ */
+export const h2MultiplexInterceptor = createH2MultiplexInterceptor();
 
 /**
  * Consecutive transport failures on the *same* shared dispatcher before it is
@@ -533,8 +789,8 @@ const RETIRED_CLOSE_DELAY_MS = 5_000;
 const RETIRED_DESTROY_DELAY_MS = 60_000;
 
 /**
- * undici error codes that mean "no response arrived over a connection that was
- * already established". These are the failures a rebuild can fix; DNS, connect
+ * Errors from an established connection or a session that can no longer accept
+ * requests. These are the failures a rebuild can fix; DNS, connect
  * and TLS errors are excluded because a new agent would hit the same wall, and an
  * abort is excluded because it is the caller's own doing.
  */
@@ -543,6 +799,14 @@ const RECYCLABLE_ERROR_CODES = new Set([
   'UND_ERR_INFO',
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT',
+  // Node can surface these directly instead of undici's UND_ERR_INFO. Once
+  // repeated, retire the pool even when classification used its fallback.
+  // Keep this scoped to session/stream failures: ERR_HTTP2_* also contains
+  // request-validation and caller-cancellation errors a new pool cannot fix.
+  'ERR_HTTP2_GOAWAY_SESSION',
+  'ERR_HTTP2_INVALID_SESSION',
+  'ERR_HTTP2_SESSION_ERROR',
+  'ERR_HTTP2_STREAM_ERROR',
 ]);
 
 /** Guard against a self-referential `cause` chain. */
@@ -735,19 +999,39 @@ export function getDispatcher(config?: APIConfig): unknown {
 /**
  * Resolves the dispatcher for the `@vercel/queue` client's HTTP sends.
  *
- * Unlike `getDispatcher`, this never returns `undefined` under
- * `WORKFLOW_NODE_HTTP`. The `QueueClient` exposes no `fetch` override, so it
- * cannot be moved onto `node:http` the way `instrumentedFetch` / `makeRequest`
- * are: the flag has nothing to hand the request off to on this path. Returning
- * `undefined` there would therefore not switch transports — it would just drop
- * the tuned shared agent (`getAgentOptions()`: 8 connections, ~10s
- * keep-alive) and let undici fall back to its GLOBAL agent (unlimited
- * connections, 4s keep-alive), an unintended regression from a flag this path
- * can't honor. So the queue send stays on the shared default undici agent
- * regardless of the flag, while still honoring an explicit `config.dispatcher`.
+ * This path is the one exception to `WORKFLOW_NODE_HTTP`'s promise of taking
+ * every request off undici, because `QueueClient` accepts a `dispatcher` and no
+ * `fetch` override: there is nothing here to hand the request off to. What
+ * `undefined` does instead is drop the request onto the runtime's OWN undici,
+ * the copy behind global `fetch`, rather than the copy this package bundles.
+ *
+ * That distinction is the whole reason the flag has to reach this path. The
+ * deployments the flag exists for are the ones where *the bundled copy* is
+ * unusable: a bundler that mangles undici's internals, or a build that pairs a
+ * bundled undici with a different one inside the runtime. On such a deployment
+ * every other request survives (the flag moves them to `node:http`) while the
+ * queue client keeps dispatching through the broken copy, and a queue message
+ * whose `acknowledgeMessage` never resolves is redelivered for as long as the
+ * platform keeps killing the invocation that holds it.
+ *
+ * The cost of honoring the flag is real but much smaller than that: the request
+ * loses this path's own agent (see getQueueAgentOptions) and lands on undici's
+ * global agent (unlimited connections, 4s keep-alive, and no deadline of the
+ * kind deadlineInterceptor arms). Under a flag whose entire premise is "the
+ * bundled undici is not usable here", losing that tuning is the correct trade:
+ * the global agent's unlimited connections at least cannot reproduce the pool
+ * queue wait the dedicated agent exists to bound.
+ *
+ * With the flag off the fallback is the queue's OWN dispatcher, not the shared
+ * default one. The two paths have opposite concurrency shapes and only this one
+ * has no deadline of its own; see QUEUE_AGENT_CONNECTIONS and
+ * QUEUE_REQUEST_TIMEOUT_MS.
+ *
+ * An explicit `config.dispatcher` still wins over the flag, exactly as it does
+ * on every other path, because supplying one is an instruction to use undici.
  */
 export function getQueueDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultDispatcher();
+  return resolveDispatcher(config, getDefaultQueueDispatcher);
 }
 
 /**
@@ -806,11 +1090,17 @@ export function createEventsDispatcher(
       ...(h2 ? getEventsAgentOptions() : getEventsAgentOptionsNoH2()),
       ...agentOverrides,
     }),
-    getRetryAgentOptions()
+    getEventsRetryAgentOptions()
   );
-  if (!h2) {
+  if (!h2 || !supportsCompose(agent)) {
     return agent;
   }
+  // HTTP/1.1 agent for the bodies the interceptor will not re-buffer; see
+  // createH2MultiplexInterceptor for why they cannot share the H2 connection.
+  const streamedBodyAgent = new RetryAgent(
+    new Agent({ ...getEventsAgentOptionsNoH2(), ...agentOverrides }),
+    getEventsRetryAgentOptions()
+  );
   // The interceptor wraps the RetryAgent (rather than the Agent inside it) so
   // that retries re-send the *drained* body. RetryHandler captures its own copy
   // of the request body up front — `wrapRequestBody` (undici core/util.js) hands
@@ -820,8 +1110,33 @@ export function createEventsDispatcher(
   // outside, RetryHandler captures the Buffer and replays it verbatim.
   return withBoundLifecycle(
     agent,
-    agent.compose(h2MultiplexInterceptor) as unknown as RetryAgent
+    agent.compose(
+      createH2MultiplexInterceptor(streamedBodyAgent)
+    ) as unknown as RetryAgent,
+    streamedBodyAgent
   );
+}
+
+/**
+ * Whether `dispatcher` can take interceptors through `Dispatcher.compose()`.
+ *
+ * False under Bun: `import { Agent } from 'undici'` resolves to Bun's built-in
+ * `undici` module even when the package is installed, and its dispatcher
+ * classes are stubs with no `compose` or `dispatch`. Bun's `fetch` also ignores
+ * the `dispatcher` option, so there is nothing for an interceptor to wrap;
+ * callers skip composing and return the plain dispatcher.
+ *
+ * Under Bun every dispatcher setting in this file is therefore inert, not just
+ * the interceptors: `connections`, `pipelining`, `allowH2`, `keepAliveTimeout`,
+ * `headersTimeout`, `bodyTimeout`, the retry options, and the queue path's
+ * deadline (deadlineInterceptor). A hung queue request is bounded only by Bun's
+ * own `fetch` default (300s, the length of the message lease), so the
+ * visibility-renewal loop gets no retry window. The runtime-neutral fix is an
+ * `AbortSignal` on the `fetch` call inside `@vercel/queue`, which Bun honors;
+ * that needs a change there and is out of scope here.
+ */
+export function supportsCompose(dispatcher: Agent | RetryAgent): boolean {
+  return typeof (dispatcher as Partial<Agent>).compose === 'function';
 }
 
 /**
@@ -833,16 +1148,31 @@ export function createEventsDispatcher(
  * `TypeError: Cannot read private member #agent from an object whose class did
  * not declare it`. Binding the lifecycle methods to the real instance keeps the
  * composed dispatcher disposable.
+ *
+ * `companion` is a second dispatcher the composed one routes some requests to
+ * (the events path's HTTP/1.1 agent for streamed bodies). It is closed and
+ * destroyed together with `agent`, so retiring the dispatcher (see
+ * createDispatcherRecycler) releases both pools.
  */
 function withBoundLifecycle(
   agent: RetryAgent,
-  composed: RetryAgent
+  composed: RetryAgent,
+  companion?: RetryAgent
 ): RetryAgent {
   return new Proxy(composed, {
-    get: (target, key) =>
-      key === 'close' || key === 'destroy'
-        ? (agent[key] as (...args: unknown[]) => unknown).bind(agent)
-        : target[key as keyof RetryAgent],
+    get: (target, key) => {
+      if (key !== 'close' && key !== 'destroy') {
+        return target[key as keyof RetryAgent];
+      }
+      const own = (agent[key] as (...args: unknown[]) => unknown).bind(agent);
+      if (!companion) return own;
+      const other = (companion[key] as (...args: unknown[]) => unknown).bind(
+        companion
+      );
+      return async (...args: unknown[]) => {
+        await Promise.all([own(...args), other(...args)]);
+      };
+    },
   });
 }
 
@@ -859,6 +1189,46 @@ export function createStreamDispatcher(
     new Agent({ ...getStreamAgentOptions(), ...agentOverrides }),
     retryOptions
   );
+}
+
+/**
+ * Builds the queue client's dispatcher: its own H1 agent (see
+ * getQueueAgentOptions), carrying the deadline interceptor, wrapped in the
+ * shared retry policy.
+ *
+ * The interceptor sits INSIDE the RetryAgent, unlike the events path's
+ * multiplexing interceptor (see createEventsDispatcher). Two reasons, and the
+ * first is not optional: `RetryAgent.prototype.close` reads a private field
+ * through `this`, and `compose()` returns a Proxy, so composing on the outside
+ * leaves a dispatcher that throws on `close()`. The second is that it costs
+ * nothing here: every request this dispatcher carries is a POST
+ * (`acknowledgeMessage`, `changeVisibility`), and getRetryAgentOptions()
+ * inherits undici's default `methods`, which never retries POST. Per-attempt
+ * and per-request are therefore the same deadline on this path. They would
+ * diverge if a retryable method were ever added here.
+ *
+ * Exported so a test can exercise this exact wiring rather than the singleton.
+ */
+export function createQueueDispatcher(): RetryAgent {
+  const agent = new Agent(getQueueAgentOptions());
+  return new RetryAgent(
+    supportsCompose(agent)
+      ? agent.compose(deadlineInterceptor(getQueueRequestTimeoutMs()))
+      : agent,
+    getRetryAgentOptions()
+  );
+}
+
+/**
+ * Returns the shared dispatcher for the `@vercel/queue` client.
+ *
+ * Separate from the default agent because the two paths have opposite
+ * concurrency shapes and only this one has no deadline of its own; see
+ * QUEUE_AGENT_CONNECTIONS and QUEUE_REQUEST_TIMEOUT_MS.
+ */
+function getDefaultQueueDispatcher(): RetryAgent {
+  _queueDispatcher ??= createQueueDispatcher();
+  return _queueDispatcher;
 }
 
 /**

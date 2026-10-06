@@ -1,5 +1,55 @@
 # @workflow/rollup
 
+## 4.0.27
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.17
+
+## 4.0.26
+
+### Patch Changes
+
+- Updated dependencies [[`08b4420`](https://github.com/vercel/workflow/commit/08b44209e1eb219d1a9c87af848ad36e83f5f75d), [`6bb5224`](https://github.com/vercel/workflow/commit/6bb52248b022115f878f4857ce219d5f672191a4)]:
+  - @workflow/builders@4.1.16
+
+## 4.0.25
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.15
+
+## 4.0.24
+
+### Patch Changes
+
+- Updated dependencies [[`46851a3`](https://github.com/vercel/workflow/commit/46851a3eafef9e60b25c884dcd860d424088616e)]:
+  - @workflow/builders@4.1.14
+
+## 4.0.23
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.13
+
+## 4.0.22
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.12
+
+## 4.0.21
+
+### Patch Changes
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/builders@4.1.11
+
 ## 4.0.20
 
 ### Patch Changes

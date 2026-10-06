@@ -1,5 +1,46 @@
 # @workflow/world-postgres
 
+## 4.3.9
+
+### Patch Changes
+
+- [#4219](https://github.com/vercel/workflow/pull/4219) [`50e8b41`](https://github.com/vercel/workflow/commit/50e8b419af434029f2cc868d647d0ab965fe5ff1) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Allow same-run queue wakes to reach a workflow while an inline step is pending, so hook-driven cancellation and steering do not wait for the step to finish.
+
+- [#3908](https://github.com/vercel/workflow/pull/3908) [`5637f10`](https://github.com/vercel/workflow/commit/5637f109f6977cd1e4021c5f59a8558c74a5dd42) Thanks [@pranaygp](https://github.com/pranaygp)! - Document that this is a reference implementation whose workflow HTTP routes are unauthenticated, and how to restrict them.
+
+## 4.3.8
+
+### Patch Changes
+
+- [#4458](https://github.com/vercel/workflow/pull/4458) [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade undici to 7.30.0, which stops a failed HTTP/2 stream from leaving a phantom in-flight request on its connection.
+
+- Updated dependencies [[`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77)]:
+  - @workflow/errors@4.2.2
+  - @workflow/world-local@4.4.2
+
+## 4.3.7
+
+### Patch Changes
+
+- [#4111](https://github.com/vercel/workflow/pull/4111) [`f72c6a6`](https://github.com/vercel/workflow/commit/f72c6a63c97a262f08ebe84da5b21d602ed6f379) Thanks [@komly](https://github.com/komly)! - Fix run creation and slot allocation not happening transactionally
+
+- [#4114](https://github.com/vercel/workflow/pull/4114) [`9595a5a`](https://github.com/vercel/workflow/commit/9595a5abef32adac2a791daec46f0a460a7d01f8) Thanks [@komly](https://github.com/komly)! - Queue deliveries no longer inherit `fetch`'s 300s headers/body deadlines, which redelivered healthy long-running inline work while it was still executing. Deadlines can be set with `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` and `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`.
+
+- [#4117](https://github.com/vercel/workflow/pull/4117) [`ee29d15`](https://github.com/vercel/workflow/commit/ee29d15816349bbd703ccec8db57cfaf1e97d8fc) Thanks [@komly](https://github.com/komly)! - Preserve error names, messages, stacks, and nested causes in Graphile Worker log metadata.
+
+- [#4113](https://github.com/vercel/workflow/pull/4113) [`73465bc`](https://github.com/vercel/workflow/commit/73465bc4576c1deddb3d265c1a4df23a167e35bd) Thanks [@komly](https://github.com/komly)! - Fix stream cursors not being advanced for skipped chunks, so repeated notifications cannot consume the requested start offset twice
+
+- [#4125](https://github.com/vercel/workflow/pull/4125) [`d86d752`](https://github.com/vercel/workflow/commit/d86d7521bac9b464f1a0bd3092c5cfb99104e79f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix stream readers leaking EventEmitter listeners on EOF, initial query failure, and World close, and fail pending readers when the World is closed.
+
+- [#3712](https://github.com/vercel/workflow/pull/3712) [`e3862bc`](https://github.com/vercel/workflow/commit/e3862bc13a9b6f1f5da13829030fededc5be110a) Thanks [@himself65](https://github.com/himself65)! - Fix `readFromStream` erroring when rows were written after the stream's first EOF marker. Rows past the first EOF are now ignored consistently across `readFromStream()`, `getStreamChunks()`, and `getStreamInfo()`.
+
+## 4.3.6
+
+### Patch Changes
+
+- Updated dependencies [[`41abe2d`](https://github.com/vercel/workflow/commit/41abe2dda3a8e191c8ad8f91e0bf9b7b28449d6a)]:
+  - @workflow/world-local@4.4.1
+
 ## 4.3.5
 
 ### Patch Changes

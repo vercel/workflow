@@ -27,9 +27,15 @@ import {
 } from './constants.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
-  fastDiscoverEntries,
   type DiscoveredEntries,
+  fastDiscoverEntries,
 } from './fast-discovery.js';
+import {
+  hashManifestSource,
+  type ManifestEntryLocation,
+  mergeWorkflowManifest,
+  WorkflowBuildError,
+} from './manifest-ids.js';
 import {
   getImportPath,
   resolveModuleSpecifier,
@@ -45,6 +51,18 @@ import { extractWorkflowGraphs } from './workflows-extractor.js';
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
 
+/**
+ * esbuild treats import attributes (`import data from './x.json' with
+ * { type: 'json' }`) as unsupported for the `es2022` target and drops them
+ * from the output. A JSON import that stays external is then rejected by
+ * Node's ESM loader with ERR_IMPORT_ATTRIBUTE_MISSING. Every Node.js version
+ * the SDK supports accepts the `with` keyword, so each bundle that Node loads
+ * directly opts in.
+ */
+const NODE_ESBUILD_SUPPORTED = {
+  'import-attributes': true,
+} as const;
+
 export type { DiscoveredEntries } from './fast-discovery.js';
 
 /**
@@ -57,31 +75,6 @@ export interface DiscoveredEntriesInput {
   discoveredSteps: string[] | Set<string>;
   discoveredWorkflows: string[] | Set<string>;
   discoveredSerdeFiles: string[] | Set<string>;
-}
-
-interface WorkflowBuildErrorOptions extends ErrorOptions {
-  /**
-   * An optional actionable hint appended to the main message, explaining how
-   * the user can resolve the failure.
-   */
-  hint?: string;
-}
-
-/**
- * Thrown when the workflow build pipeline (esbuild, SWC transform, file
- * discovery, bundler integration) fails in a way the user can act on.
- */
-class WorkflowBuildError extends Error {
-  readonly hint?: string;
-
-  constructor(message: string, options?: WorkflowBuildErrorOptions) {
-    const body = options?.hint
-      ? `${message}\n\nhint: ${options.hint}`
-      : message;
-    super(body, { cause: options?.cause });
-    this.name = 'WorkflowBuildError';
-    this.hint = options?.hint;
-  }
 }
 
 /**
@@ -143,75 +136,6 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
     return stripPackageVersion(moduleSpecifier);
   }
   return file.replace(/\\/g, '/');
-}
-
-type ManifestEntryLocation = {
-  filePath: string;
-  name: string;
-};
-
-function formatIdLocation(location: ManifestEntryLocation): string {
-  return `${location.filePath}#${location.name}`;
-}
-
-function assertUniqueManifestIds<TEntry>(
-  entriesByFile: Record<string, Record<string, TEntry>> | undefined,
-  ids: Map<string, ManifestEntryLocation>,
-  getId: (entry: TEntry) => string,
-  label: 'step' | 'workflow'
-): void {
-  for (const [filePath, entries] of Object.entries(entriesByFile || {})) {
-    for (const [name, data] of Object.entries(entries)) {
-      const id = getId(data);
-      const existing = ids.get(id);
-      const current = { filePath, name };
-      if (
-        existing &&
-        (existing.filePath !== current.filePath ||
-          existing.name !== current.name)
-      ) {
-        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
-        const functionName = `${label} function`;
-        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
-        throw new WorkflowBuildError(
-          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
-          {
-            hint:
-              `${capitalizedLabel} IDs must be unique across a build. ` +
-              `If you own one of the colliding files, rename the ${functionName} or export ` +
-              `the package file through a unique package subpath. If the collision is in a ` +
-              `transitive dependency you don't control, file an issue with the upstream ` +
-              `package or pin to a non-colliding version.`,
-          }
-        );
-      }
-      ids.set(id, current);
-    }
-  }
-}
-
-function mergeWorkflowManifest(
-  target: WorkflowManifest,
-  incoming: WorkflowManifest,
-  stepIds: Map<string, ManifestEntryLocation>,
-  workflowIds: Map<string, ManifestEntryLocation>
-): void {
-  assertUniqueManifestIds(
-    incoming.steps,
-    stepIds,
-    (data) => data.stepId,
-    'step'
-  );
-  assertUniqueManifestIds(
-    incoming.workflows,
-    workflowIds,
-    (data) => data.workflowId,
-    'workflow'
-  );
-
-  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
-  target.steps = Object.assign(target.steps || {}, incoming.steps);
-  target.classes = Object.assign(target.classes || {}, incoming.classes);
 }
 
 /**
@@ -793,11 +717,17 @@ export const __steps_registered = true;
           this.transformProjectRoot,
           this.moduleSpecifierRoot
         );
+        // Fingerprint the source so equivalent duplicate copies of the same
+        // module (e.g. pnpm peer-dependency variants of one package version)
+        // can be deduplicated instead of failing the build with a
+        // duplicate-ID error.
+        const contentHash = hashManifestSource(source);
         mergeWorkflowManifest(
           workflowManifest,
           fileManifest,
           stepIds,
-          workflowIds
+          workflowIds,
+          contentHash
         );
       })
     );
@@ -987,6 +917,7 @@ export const __steps_registered = true;
       platform: 'node',
       conditions: ['node'],
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       keepNames: true,
@@ -1117,6 +1048,8 @@ export const __steps_registered = true;
     manifest: WorkflowManifest;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
+    /** The raw workflow VM code (before wrapping with entrypoint) */
+    interimBundleText?: string;
   }> {
     this.startWorkflowBuildTimer();
 
@@ -1205,6 +1138,9 @@ export const __steps_registered = true;
       platform: 'neutral', // The platform is neither node nor browser
       mainFields: ['module', 'main'], // To support npm style imports
       conditions: ['workflow'], // Allow packages to export 'workflow' compliant versions
+      // No `supported: NODE_ESBUILD_SUPPORTED` here: this bundle runs in the
+      // workflow VM, which has no module loader, and it has no `external`, so
+      // every JSON import is inlined and no import attribute reaches the output.
       target: 'es2022',
       write: false,
       treeShaking: true,
@@ -1398,6 +1334,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           format,
           platform: 'node',
           target: 'es2022',
+          supported: NODE_ESBUILD_SUPPORTED,
           write: true,
           keepNames: true,
           minify: false,
@@ -1417,7 +1354,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           `${Date.now() - bundleStartTime}ms`
         );
       };
-      await bundleFinal(interimBundle.outputFiles[0].text);
+      const interimBundleText = interimBundle.outputFiles[0].text;
+      await bundleFinal(interimBundleText);
 
       if (keepInterimBundleContext) {
         shouldDisposeInterimBundleCtx = false;
@@ -1425,9 +1363,10 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           manifest: workflowManifest,
           interimBundleCtx,
           bundleFinal,
+          interimBundleText,
         };
       }
-      return { manifest: workflowManifest };
+      return { manifest: workflowManifest, interimBundleText };
     } catch (error) {
       shouldDisposeInterimBundleCtx = true;
       throw error;
@@ -1544,6 +1483,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       platform: 'node',
       jsx: 'preserve',
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       external: ['@workflow/core'],
@@ -1650,6 +1590,7 @@ export const OPTIONS = handler;`;
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       keepNames: true,

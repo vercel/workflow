@@ -44,33 +44,361 @@ export const generatedWorkflowPathPattern =
 export const workflowSdkPathPattern =
   /[/\\](?:node_modules[/\\](?:@workflow[/\\]|workflow[/\\]|\.pnpm[/\\][^/\\]+[/\\]node_modules[/\\](?:@workflow[/\\]|workflow[/\\]))|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
 
-function hasDirective(source: string, directive: 'use workflow' | 'use step') {
-  let previousMeaningfulLine: string | undefined;
+// `<` is left out on purpose. `</` closes every JSX element, while a regex
+// right after `<` almost never appears in real code.
+const REGEX_PREFIX_CHARS = new Set([
+  '(',
+  '{',
+  '[',
+  '=',
+  ':',
+  ',',
+  ';',
+  '!',
+  '?',
+  '&',
+  '|',
+  '+',
+  '-',
+  '*',
+  '~',
+  '^',
+  '>',
+  '%',
+]);
+const REGEX_PREFIX_KEYWORDS =
+  /\b(?:return|throw|case|delete|void|typeof|instanceof|in|yield|await)$/;
 
-  for (const line of source.split(/\r?\n/)) {
-    const trimmedLine = line.trim();
-    if (trimmedLine === '') {
+// The keyword check looks at this many characters, ending with the last one
+// that is not whitespace or a comment. The longest keyword is 10 characters,
+// so the character before it is always inside the window for the `\b` check.
+const REGEX_LOOKBACK_LENGTH = 16;
+
+const isWhitespace = (char: string) =>
+  char <= ' ' || (char > '~' && /\s/.test(char));
+
+/**
+ * `significantEnd` is the index just past the last character of code that is
+ * not whitespace or a comment. The output always has the same length as the
+ * source, so this reads the source: indexing the output string while it is
+ * being built would copy it on every slash.
+ */
+const canStartRegexLiteral = (source: string, significantEnd: number) => {
+  if (significantEnd === 0) {
+    return true;
+  }
+  return (
+    REGEX_PREFIX_CHARS.has(source[significantEnd - 1]) ||
+    REGEX_PREFIX_KEYWORDS.test(
+      source.slice(
+        Math.max(0, significantEnd - REGEX_LOOKBACK_LENGTH),
+        significantEnd
+      )
+    )
+  );
+};
+
+// Characters that can change the scanner's state. The scanner jumps between
+// them and copies everything in between as one slice.
+const codeSpecialPattern = /['"`{}/]/g;
+const templateSpecialPattern = /[`\\$]/g;
+const regexSpecialPattern = /[\\[\]/]/g;
+const singleQuoteSpecialPattern = /['\\\n]/g;
+const doubleQuoteSpecialPattern = /["\\\n]/g;
+
+// Every pattern above matches a single character, so the match starts one
+// before `lastIndex`.
+const findNext = (pattern: RegExp, source: string, from: number) => {
+  pattern.lastIndex = from;
+  return pattern.test(source) ? pattern.lastIndex - 1 : -1;
+};
+
+const blankExceptNewlines = (text: string) => {
+  let newline = text.indexOf('\n');
+  if (newline === -1) {
+    return ' '.repeat(text.length);
+  }
+  let blanked = '';
+  let start = 0;
+  while (newline !== -1) {
+    blanked += `${' '.repeat(newline - start)}\n`;
+    start = newline + 1;
+    newline = text.indexOf('\n', start);
+  }
+  return blanked + ' '.repeat(text.length - start);
+};
+
+// Returns the index just past the closing quote, the index of the newline
+// that ends an unterminated string, or the source length. A quoted string
+// cannot contain an unescaped newline, so a stray quote (such as an
+// apostrophe in JSX text) only swallows the rest of its line.
+const findStringEnd = (source: string, start: number, pattern: RegExp) => {
+  let from = start + 1;
+  for (;;) {
+    const at = findNext(pattern, source, from);
+    if (at === -1) {
+      return source.length;
+    }
+    if (source[at] === '\n') {
+      return at;
+    }
+    if (source[at] !== '\\') {
+      return at + 1;
+    }
+    from = at + 2;
+  }
+};
+
+// Returns the index just past the closing `/`, or the source length.
+const findRegexEnd = (source: string, start: number) => {
+  let from = start + 1;
+  let charClass = false;
+  for (;;) {
+    const at = findNext(regexSpecialPattern, source, from);
+    if (at === -1) {
+      return source.length;
+    }
+    const char = source[at];
+    if (char === '\\') {
+      from = at + 2;
       continue;
     }
+    if (char === '[') {
+      charClass = true;
+    } else if (char === ']') {
+      charClass = false;
+    } else if (!charClass) {
+      return at + 1;
+    }
+    from = at + 1;
+  }
+};
 
-    const directiveMatch = directiveLinePattern.exec(trimmedLine);
-    if (directiveMatch) {
-      if (
-        directiveMatch[2] === directive &&
-        (previousMeaningfulLine === undefined ||
-          previousMeaningfulLine.endsWith('{') ||
-          stringDirectiveLinePattern.test(previousMeaningfulLine))
-      ) {
-        return true;
+// Returns the index of the closing backtick or of the `$` in `${`, or the
+// source length.
+const findTemplateTextEnd = (source: string, start: number) => {
+  let from = start;
+  for (;;) {
+    const at = findNext(templateSpecialPattern, source, from);
+    if (at === -1) {
+      return source.length;
+    }
+    const char = source[at];
+    if (char === '`' || (char === '$' && source[at + 1] === '{')) {
+      return at;
+    }
+    from = char === '\\' ? at + 2 : at + 1;
+  }
+};
+
+/**
+ * Replaces comments with spaces, keeping newlines so line numbers and line
+ * based checks still work. Strings, template literals, and regex literals are
+ * scanned so that comment markers inside them are left alone.
+ *
+ * With `maskTemplateLiterals`, the contents of template literals are replaced
+ * with spaces as well, including any nested templates inside `${...}`. The
+ * backtick and `${` `}` delimiters stay, and code inside `${...}` is kept.
+ * Directive detection uses this so a directive quoted inside a template
+ * literal is not mistaken for a real one.
+ *
+ * With `maskQuotedStrings`, the contents of single- and double-quoted strings
+ * are replaced with spaces too, and the quotes stay. Serde discovery uses this
+ * so code quoted in a string, such as an error message showing
+ * `static [WORKFLOW_SERIALIZE](...)`, is not mistaken for a class.
+ *
+ * The output always has the same length as the source.
+ *
+ * Whether a `/` starts a regex is decided from the previous character, which
+ * is a heuristic. Known gaps: a regex right after `)` is read as a division,
+ * and JSX text is scanned as code, so an apostrophe in it opens a string that
+ * runs to the end of the line.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
+export function stripCommentsFromSource(
+  source: string,
+  maskTemplateLiterals = false,
+  maskQuotedStrings = false
+): string {
+  const length = source.length;
+  let output = '';
+  let significantEnd = 0;
+  let index = 0;
+  let inTemplate = false;
+  // Depth of `{` nesting in code, and for each open `${...}` the depth at
+  // which its closing `}` returns to the enclosing template literal.
+  let braceDepth = 0;
+  const templateBraceDepths: number[] = [];
+
+  while (index < length) {
+    if (inTemplate) {
+      const end = findTemplateTextEnd(source, index);
+      const text = source.slice(index, end);
+      output += maskTemplateLiterals ? blankExceptNewlines(text) : text;
+      index = end;
+      if (index >= length) {
+        break;
       }
-      previousMeaningfulLine = trimmedLine;
+      inTemplate = false;
+      if (source[index] === '`') {
+        output += '`';
+        index++;
+      } else {
+        output += '${';
+        index += 2;
+        templateBraceDepths.push(braceDepth);
+        braceDepth++;
+      }
+      significantEnd = index;
       continue;
     }
 
-    previousMeaningfulLine = trimmedLine;
+    const special = findNext(codeSpecialPattern, source, index);
+    const codeEnd = special === -1 ? length : special;
+    if (codeEnd > index) {
+      output += source.slice(index, codeEnd);
+      let trimmedEnd = codeEnd;
+      while (trimmedEnd > index && isWhitespace(source[trimmedEnd - 1])) {
+        trimmedEnd--;
+      }
+      if (trimmedEnd > index) {
+        significantEnd = trimmedEnd;
+      }
+      index = codeEnd;
+      if (index >= length) {
+        break;
+      }
+    }
+
+    const char = source[index];
+    const next = source[index + 1];
+    let end = index + 1;
+
+    if (char === "'" || char === '"') {
+      end = findStringEnd(
+        source,
+        index,
+        char === "'" ? singleQuoteSpecialPattern : doubleQuoteSpecialPattern
+      );
+      if (maskQuotedStrings) {
+        const contentEnd =
+          end - 1 > index && source[end - 1] === char ? end - 1 : end;
+        output += `${char}${blankExceptNewlines(source.slice(index + 1, contentEnd))}${source.slice(contentEnd, end)}`;
+        index = end;
+        significantEnd = end;
+        continue;
+      }
+    } else if (char === '`') {
+      inTemplate = true;
+    } else if (char === '{') {
+      braceDepth++;
+    } else if (char === '}') {
+      braceDepth--;
+      if (
+        templateBraceDepths.length > 0 &&
+        templateBraceDepths[templateBraceDepths.length - 1] === braceDepth
+      ) {
+        templateBraceDepths.pop();
+        inTemplate = true;
+      }
+    } else if (char === '/' && next === '/') {
+      const lineEnd = source.indexOf('\n', index);
+      end = lineEnd === -1 ? length : lineEnd;
+      output += ' '.repeat(end - index);
+      index = end;
+      continue;
+    } else if (char === '/' && next === '*') {
+      const commentEnd = source.indexOf('*/', index + 2);
+      end = commentEnd === -1 ? length : commentEnd + 2;
+      output += blankExceptNewlines(source.slice(index, end));
+      index = end;
+      continue;
+    } else if (char === '/' && canStartRegexLiteral(source, significantEnd)) {
+      end = findRegexEnd(source, index);
+    }
+
+    output += source.slice(index, end);
+    index = end;
+    significantEnd = end;
   }
 
-  return false;
+  return output;
+}
+
+// Returns the trimmed line before `lineStart` that is not blank, if any.
+function previousMeaningfulLine(source: string, lineStart: number) {
+  let end = lineStart - 1;
+  while (end >= 0) {
+    // `lastIndexOf` reads a negative position as 0, which would find the
+    // newline at index 0 again and loop forever.
+    const start = end > 0 ? source.lastIndexOf('\n', end - 1) + 1 : 0;
+    const line = source.slice(start, end).trim();
+    if (line !== '') {
+      return line;
+    }
+    end = start - 1;
+  }
+  return undefined;
+}
+
+function hasDirective(source: string, directive: 'use workflow' | 'use step') {
+  let from = 0;
+  for (;;) {
+    const at = source.indexOf(directive, from);
+    if (at === -1) {
+      return false;
+    }
+    const lineStart = source.lastIndexOf('\n', at) + 1;
+    let lineEnd = source.indexOf('\n', at);
+    if (lineEnd === -1) {
+      lineEnd = source.length;
+    }
+    from = lineEnd;
+
+    const directiveMatch = directiveLinePattern.exec(
+      source.slice(lineStart, lineEnd).trim()
+    );
+    if (directiveMatch?.[2] !== directive) {
+      continue;
+    }
+    const previousLine = previousMeaningfulLine(source, lineStart);
+    if (
+      previousLine === undefined ||
+      previousLine.endsWith('{') ||
+      stringDirectiveLinePattern.test(previousLine)
+    ) {
+      return true;
+    }
+  }
+}
+
+const blankMatch = (match: string) => match.replace(/[^\r\n]/g, ' ');
+
+/**
+ * Returns a check for directives outside comments and template literals. Two
+ * maskings are tried. The scanner handles backticks in comments, strings, and
+ * regex literals, which the older regex masking pairs with a later template
+ * literal, hiding a real directive. The regex masking does not share the
+ * scanner's known gaps (see `stripCommentsFromSource`). A directive found by
+ * either counts: a missed directive drops the file silently, while an extra
+ * match only costs a transform that finds nothing.
+ */
+function createDirectiveCheck(source: string) {
+  let scanned: string | undefined;
+  let regexMasked: string | undefined;
+  return (directive: 'use workflow' | 'use step') => {
+    if (!source.includes('`') && !source.includes('/')) {
+      return hasDirective(source, directive);
+    }
+    scanned ??= stripCommentsFromSource(source, true);
+    if (hasDirective(scanned, directive)) {
+      return true;
+    }
+    regexMasked ??= source
+      .replace(templateLiteralPattern, blankMatch)
+      .replace(commentPattern, blankMatch);
+    return hasDirective(regexMasked, directive);
+  };
 }
 
 /**
@@ -97,22 +425,11 @@ export interface WorkflowPatternMatch {
  * @returns Object with flags for each detected pattern
  */
 export function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
-  const hasDirectiveSubstring =
-    source.includes('use workflow') || source.includes('use step');
-  const sourceForDirectives =
-    hasDirectiveSubstring && (source.includes('`') || source.includes('/'))
-      ? source
-          .replace(templateLiteralPattern, (match) =>
-            match.replace(/[^\r\n]/g, ' ')
-          )
-          .replace(commentPattern, (match) => match.replace(/[^\r\n]/g, ' '))
-      : source;
+  const hasDirectiveInCode = createDirectiveCheck(source);
   const hasUseWorkflow =
-    source.includes('use workflow') &&
-    hasDirective(sourceForDirectives, 'use workflow');
+    source.includes('use workflow') && hasDirectiveInCode('use workflow');
   const hasUseStep =
-    source.includes('use step') &&
-    hasDirective(sourceForDirectives, 'use step');
+    source.includes('use step') && hasDirectiveInCode('use step');
   const hasSerdeImport =
     source.includes('@workflow/serde') &&
     workflowSerdeImportPattern.test(source);

@@ -5,6 +5,7 @@ import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { isRetryableEventPostError } from './event-retry.js';
 import {
   getHeaders,
   getHttpConfig,
@@ -420,6 +421,60 @@ describe('makeRequest body-parse retry', () => {
   });
 });
 
+describe('makeRequest URL validation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    'http',
+    'https',
+  ])('preserves Fetch port-blocking errors for %s backend URLs', async (scheme) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', `${scheme}://127.0.0.1:21`);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema: z.unknown(),
+      config: { token: 'test-token' },
+    }).catch((error: unknown) => error);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      message: 'fetch failed',
+      cause: { message: 'bad port' },
+    });
+    expect(isRetryableEventPostError(rejection)).toBe(false);
+  });
+
+  it.each([
+    '0',
+    '1',
+  ])('rejects unsupported backend protocols before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, mode);
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'ftp://localhost');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema: z.unknown(),
+        config: { token: 'test-token' },
+      })
+    ).rejects.toThrow(TypeError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('makeRequest transport errors', () => {
   const schema = z.object({ value: z.string() });
   const originalEnv = process.env;
@@ -494,8 +549,68 @@ describe('makeRequest transport errors', () => {
     expect(rejection.cause).toBe(fetchErr);
   });
 
-  it('rethrows a non-transient fetch error unchanged', async () => {
-    const fetchErr = new Error('some unexpected non-network error');
+  it('maps a fetch failure whose code the allowlist has never seen to TRANSPORT', async () => {
+    // A dead h2 session is the shape that motivated inverting the default:
+    // the events pool negotiates HTTP/2, `ERR_HTTP2_GOAWAY_SESSION` is not in
+    // TRANSIENT_TRANSPORT_ERROR_CODES, and no response was produced either
+    // way. The unknown code still names the failure in the message.
+    const cause = Object.assign(new Error('The session has been destroyed'), {
+      code: 'ERR_HTTP2_GOAWAY_SESSION',
+    });
+    const fetchErr = Object.assign(new TypeError('fetch failed'), { cause });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+    });
+    expect(rejection.message).toContain('ERR_HTTP2_GOAWAY_SESSION');
+    expect(rejection.cause).toBe(fetchErr);
+  });
+
+  it('maps a bare `TypeError: fetch failed` to a retryable TRANSPORT error', async () => {
+    // undici's wrapper with nothing usable underneath (the AggregateError a
+    // happy-eyeballs connect raises hangs its codes off `errors[]`, where a
+    // `cause` walk cannot see them). Rethrown raw, this reached
+    // `classifyRunError` as an ordinary `TypeError` and failed the run as
+    // USER_ERROR — a backend outage billed to the customer — without the
+    // queue ever redelivering it.
+    const fetchErr = new TypeError('fetch failed');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+    });
+    expect(rejection.cause).toBe(fetchErr);
+    // That code is what queue redelivery in `@workflow/core` keys on
+    // (isRetryableWorldError, which also classifies the terminal failure as
+    // WORLD_CONTRACT_ERROR rather than USER_ERROR).
+  });
+
+  it('rethrows a request-construction fault unchanged', async () => {
+    // A malformed URL or header is permanent: every redelivery re-forms the
+    // same broken request, so it must not be dressed up as retryable.
+    const fetchErr = Object.assign(
+      new TypeError('Failed to parse URL from nonsense'),
+      {
+        cause: Object.assign(new TypeError('Invalid URL'), {
+          code: 'ERR_INVALID_URL',
+        }),
+      }
+    );
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
 
     await expect(

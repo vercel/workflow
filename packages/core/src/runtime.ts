@@ -56,7 +56,12 @@ import {
   withTraceContext,
   withWorkflowBaggage,
 } from './telemetry.js';
-import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
+import {
+  formatErrorCauseChain,
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import { runWorkflow } from './workflow.js';
 
@@ -223,6 +228,21 @@ export function workflowEntrypoint(
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             // Run already finished, consume the message silently
             return;
+          }
+          // A transient backend failure (429 / 5xx / transport) must not
+          // abandon the run: acking here leaves it `running` with no message
+          // left to drive it. Throw so the queue redelivers; the redelivery is
+          // still past the ceiling, so it only retries this terminal write.
+          if (isRetryableWorldError(err)) {
+            runtimeLogger.warn(
+              'Transient error marking run as failed after max deliveries, retrying via queue redelivery',
+              {
+                workflowRunId: runId,
+                attempt: metadata.attempt,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+            throw err;
           }
           runtimeLogger.error(
             `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
@@ -919,6 +939,15 @@ export function workflowEntrypoint(
                     errorCode,
                     errorName,
                     errorStack,
+                    // Neither the message nor the stack reaches a wrapped
+                    // error's reason: `TypeError: fetch failed` carries an
+                    // empty message by design and a stack of pure
+                    // `node:internal/` frames, and the world layer's own
+                    // wrappers name the request that failed rather than what
+                    // failed about it. Undefined when there is no cause, so
+                    // the field disappears for an ordinary user throw.
+                    errorCause:
+                      formatErrorCauseChain(terminalError) || undefined,
                   });
 
                   // Fail the workflow run via event (event-sourced architecture)

@@ -1,5 +1,79 @@
 # @workflow/cli
 
+## 4.3.16
+
+### Patch Changes
+
+- Updated dependencies [[`69a4b76`](https://github.com/vercel/workflow/commit/69a4b76218cae869673fe16b1dffa6b62fc74b71), [`8b3bb55`](https://github.com/vercel/workflow/commit/8b3bb5584db3d4df723ef8be32d6705c8d7f4e9f)]:
+  - @workflow/core@4.8.12
+  - @workflow/builders@4.1.17
+  - @workflow/web@4.1.28
+
+## 4.3.15
+
+### Patch Changes
+
+- Updated dependencies [[`3c033a9`](https://github.com/vercel/workflow/commit/3c033a9ceefcdfcb5a1150a3d4f98555131f6d2d), [`08b4420`](https://github.com/vercel/workflow/commit/08b44209e1eb219d1a9c87af848ad36e83f5f75d), [`6bb5224`](https://github.com/vercel/workflow/commit/6bb52248b022115f878f4857ce219d5f672191a4), [`b5a78f8`](https://github.com/vercel/workflow/commit/b5a78f8b6856d2b9bbce69ab865d135d52200ecd)]:
+  - @workflow/world-vercel@4.7.6
+  - @workflow/builders@4.1.16
+  - @workflow/core@4.8.11
+  - @workflow/web@4.1.27
+
+## 4.3.14
+
+### Patch Changes
+
+- [#4443](https://github.com/vercel/workflow/pull/4443) [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add a `DataView` reviver so run payloads containing one still hydrate in the observability UI and CLI.
+  </content>
+- Updated dependencies [[`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77), [`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984), [`3699c30`](https://github.com/vercel/workflow/commit/3699c30ec3a018be8831422de4cb05bf2121eadb), [`bc6a97f`](https://github.com/vercel/workflow/commit/bc6a97f110da76d768df5f1cc51794396c0d8d1d), [`b23170d`](https://github.com/vercel/workflow/commit/b23170d63c8215e4ea15bdcb1e675dc0a9f7931b), [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0), [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1), [`42c9810`](https://github.com/vercel/workflow/commit/42c981028a66e08d0bae5ef75294108dcd448a77)]:
+  - @workflow/world-vercel@4.7.5
+  - @workflow/core@4.8.10
+  - @workflow/errors@4.2.2
+  - @workflow/world-local@4.4.2
+  - @workflow/web@4.1.26
+  - @workflow/builders@4.1.15
+
+## 4.3.13
+
+### Patch Changes
+
+- Updated dependencies [[`b7385f0`](https://github.com/vercel/workflow/commit/b7385f0eb6838f6228bbd1c75aaaf43b6ebce1b5), [`46851a3`](https://github.com/vercel/workflow/commit/46851a3eafef9e60b25c884dcd860d424088616e), [`284d7c0`](https://github.com/vercel/workflow/commit/284d7c0e6874691248d1a74ccd9f58b32d164c8b), [`a158f81`](https://github.com/vercel/workflow/commit/a158f8162064af30bf211e41967af0eeabfd96e1)]:
+  - @workflow/core@4.8.9
+  - @workflow/builders@4.1.14
+  - @workflow/web@4.1.25
+
+## 4.3.12
+
+### Patch Changes
+
+- Updated dependencies [[`4607916`](https://github.com/vercel/workflow/commit/460791641747bc2fd9454cc33f7e061a348248fe), [`5f2fb36`](https://github.com/vercel/workflow/commit/5f2fb36a1c6added3bff75cc04ffa8b580d05eb5)]:
+  - @workflow/world-vercel@4.7.4
+  - @workflow/core@4.8.8
+  - @workflow/web@4.1.24
+  - @workflow/builders@4.1.13
+
+## 4.3.11
+
+### Patch Changes
+
+- Updated dependencies [[`0e56bb8`](https://github.com/vercel/workflow/commit/0e56bb864d685972464f827bd75ed1436250e8c7)]:
+  - @workflow/world-vercel@4.7.3
+  - @workflow/core@4.8.7
+  - @workflow/web@4.1.23
+  - @workflow/builders@4.1.12
+
+## 4.3.10
+
+### Patch Changes
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800), [`0deceda`](https://github.com/vercel/workflow/commit/0deceda53aac030f98aba00badeb996e3f97e610), [`7024b5b`](https://github.com/vercel/workflow/commit/7024b5b00eaa8ede82d27c44fbfeb3fa0014c7d8), [`41abe2d`](https://github.com/vercel/workflow/commit/41abe2dda3a8e191c8ad8f91e0bf9b7b28449d6a)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/world-vercel@4.7.2
+  - @workflow/world-local@4.4.1
+  - @workflow/web@4.1.22
+  - @workflow/builders@4.1.11
+  - @workflow/core@4.8.6
+
 ## 4.3.9
 
 ### Patch Changes
