@@ -1,0 +1,38 @@
+{
+  "name": "@workflow/world-cloudflare",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Proof of concept: a Workflow World where each run is a Cloudflare Durable Object that stores and runs the workflow",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-cloudflare"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "poc:build": "node poc/build.mjs",
+    "poc:dev": "node poc/build.mjs && npx --yes wrangler@4.146.0 dev --config poc/wrangler.jsonc",
+    "test:poc": "node poc/build.mjs && vitest run --config poc/vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workflow/core": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-sim": "workspace:*",
+    "quickjs-wasi": "3.4.0",
+    "ulid": "catalog:",
+    "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

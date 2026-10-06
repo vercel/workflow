@@ -14,7 +14,7 @@ import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import { getWritable } from '../step/writable-stream.js';
 import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { getComputeInstanceId } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
@@ -827,7 +827,7 @@ describe('executeStep — compute instance stamping', () => {
     expect(started).toHaveLength(1);
     expect(started[0]?.[2]).toMatchObject({
       requestId: 'req_step_executor',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     // An executor write names no log position: it has no log to merge a
     // skipped-slot report into, so it must not ask the World to read one.
@@ -864,7 +864,7 @@ describe('executeStep — compute instance stamping', () => {
     );
     expect(started?.[2]).toMatchObject({
       requestId: 'req_unregistered',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
   });
 
@@ -917,7 +917,7 @@ describe('executeStep — compute instance stamping', () => {
       ([, data]) => data.eventType === 'step_started'
     );
     expect(started?.[2]).toMatchObject({
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     expect(started?.[2]?.requestId).toBeUndefined();
   });

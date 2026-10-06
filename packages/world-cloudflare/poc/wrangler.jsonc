@@ -1,0 +1,27 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "workflow-cloudflare-poc",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    // Workers have no node:vm; core runs workflow code in its QuickJS engine.
+    "WORKFLOW_VM": "quickjs",
+    "WORKFLOW_CLOUDFLARE_DEBUG": "0"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKFLOW_RUNS", "class_name": "RunObject" },
+      { "name": "WORKFLOW_TOKENS", "class_name": "TokenObject" },
+      { "name": "WORKFLOW_STREAMS", "class_name": "StreamObject" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RunObject", "TokenObject", "StreamObject"]
+    }
+  ],
+  // QuickJS native extensions ship as `.so` WebAssembly modules.
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.so"], "fallthrough": true }]
+}

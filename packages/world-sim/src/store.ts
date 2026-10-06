@@ -90,6 +90,14 @@ interface SimCreateParams {
    * See `SimStoreOptions.preconditionGuard` and `SimWorldOptions.countGuard`.
    */
   snapshot?: LoadedSnapshot;
+  /**
+   * The run that holds a `hook_created`'s token in a token registry *outside*
+   * this store. A store that holds a single run (one per Durable Object, say)
+   * cannot see other runs' hooks, so the facade claims the token first and
+   * passes the current owner here. Journals `hook_conflict` naming that run,
+   * exactly as a conflict this store detected itself would.
+   */
+  externalTokenOwner?: string;
 }
 
 /** What a replay-context writer had loaded when it decided to write. */
@@ -989,7 +997,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       case 'hook_created': {
         const { token } = data.eventData;
         const owner = tokenOwners.get(token);
-        if (owner && owner !== data.correlationId) {
+        const externalOwner = internal?.externalTokenOwner;
+        if ((owner && owner !== data.correlationId) || externalOwner) {
           // Someone else holds the token. This is not an error for the
           // *caller* (the workflow needs to observe it and fail its awaited
           // hook), so it is journaled as a `hook_conflict` event instead.
@@ -1002,7 +1011,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             correlationId: data.correlationId,
             eventData: {
               token,
-              conflictingRunId: hooks.get(owner)?.runId,
+              conflictingRunId:
+                externalOwner ?? (owner ? hooks.get(owner)?.runId : undefined),
             },
           } as Event);
           // The conflict answers the inline delta the same way the
