@@ -453,6 +453,10 @@ export async function executeStep(
     // Latency telemetry to attach to this step's terminal event.
     let latencyEventData: StepLatencyEventData | undefined;
 
+    // Outside the try: a throw here (the orchestrator was superseded) must
+    // not be recorded as a step failure.
+    params.beforeBody?.();
+
     try {
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
       const hydratedInput = await trace(
@@ -551,8 +555,6 @@ export async function executeStep(
         tracking.reported = true;
         span?.setAttributes(attributes);
       };
-
-      params.beforeBody?.();
 
       let stepExecutionStatus: 'ok' | 'error' = 'ok';
       const stepExecutionStartTime = performance.now();
