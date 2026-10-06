@@ -6,6 +6,7 @@ import {
   FatalError,
   RetryableError,
 } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import type {
   CreateEventParams,
   CreateEventRequest,
@@ -370,7 +371,7 @@ describe('executeStep — stream durability barrier', () => {
   });
 
   it('writes step_completed only after a released writer drains', async () => {
-    const writeGate = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
     const { execution, world, runId, stepId } = await runWritableStep({
       releaseLock: true,
       writeImpl: () => writeGate.promise,
@@ -390,7 +391,7 @@ describe('executeStep — stream durability barrier', () => {
   });
 
   it('does not durably block a step that keeps its writer lock', async () => {
-    const writeGate = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
     const { execution } = await runWritableStep({
       releaseLock: false,
       awaitWrite: false,
@@ -404,7 +405,7 @@ describe('executeStep — stream durability barrier', () => {
   });
 
   it('does not settle before the step acquires and releases its writer', async () => {
-    const writeGate = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
     const { execution, world, runId, stepId } = await runWritableStep({
       releaseLock: true,
       delayBeforeWriterMs: LOCK_POLL_INTERVAL_MS * 3,
@@ -421,7 +422,7 @@ describe('executeStep — stream durability barrier', () => {
   });
 
   it('orders unsettled writes before the release checkpoint', async () => {
-    const writeGate = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
     const { execution, world, runId, stepId } = await runWritableStep({
       releaseLock: true,
       awaitWrite: false,
@@ -436,7 +437,7 @@ describe('executeStep — stream durability barrier', () => {
   });
 
   it('drains a revived forwarded writable argument before completion', async () => {
-    const writeGate = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
     const world = makeLocalWorld();
     setWorld(world);
     world.streams.write = vi.fn(
@@ -494,12 +495,12 @@ describe('executeStep — stream durability barrier', () => {
   ])('reports remaining ops after a slow released writable close drains (background op: %s)', async (hasBackgroundOp) => {
     const world = makeLocalWorld();
     setWorld(world);
-    const backgroundOp = Promise.withResolvers<void>();
-    const closeGate = Promise.withResolvers<void>();
-    const closeStarted = Promise.withResolvers<void>();
-    const settlementStarted = Promise.withResolvers<void>();
+    const backgroundOp = withResolvers<void>();
+    const closeGate = withResolvers<void>();
+    const closeStarted = withResolvers<void>();
+    const settlementStarted = withResolvers<void>();
     const close = world.streams.close.bind(world.streams);
-    world.streams.close = vi.fn(async (...args) => {
+    world.streams.close = vi.fn(async (...args: Parameters<typeof close>) => {
       closeStarted.resolve();
       await closeGate.promise;
       return close(...args);
@@ -557,9 +558,9 @@ describe('executeStep — stream durability barrier', () => {
     process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS = '400';
     const world = makeLocalWorld();
     setWorld(world);
-    const writeGate = Promise.withResolvers<void>();
-    const settlementStarted = Promise.withResolvers<void>();
-    const released = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
+    const settlementStarted = withResolvers<void>();
+    const released = withResolvers<void>();
     world.streams.createWriteSession = () => ({
       write: () => writeGate.promise,
       close: async () => {},
@@ -645,7 +646,7 @@ describe('executeStep — stream durability barrier', () => {
   });
 
   it('an aborted stream does not bypass another stream drain', async () => {
-    const writeGate = Promise.withResolvers<void>();
+    const writeGate = withResolvers<void>();
     const world = makeLocalWorld();
     setWorld(world);
     world.streams.write = vi.fn(async (_runId, name) => {

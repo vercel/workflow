@@ -80,7 +80,8 @@ describe('InBandWriter', () => {
     } as never);
 
     expect(
-      (written.event as { eventData: { result?: unknown } }).eventData.result
+      (written as unknown as { event: { eventData: { result?: unknown } } })
+        .event.eventData.result
     ).toEqual(payload);
   });
 

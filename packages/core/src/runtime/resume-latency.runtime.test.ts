@@ -342,10 +342,19 @@ async function runScenario(options: ScenarioOptions = {}) {
     startedAt,
     createdAt: startedAt,
     updatedAt: startedAt,
+    attributes: {},
   };
 
   let eventIndex = 0;
-  const event = (data: CreateEventRequest): Event => {
+  const event = (
+    data:
+      | CreateEventRequest
+      | {
+          eventType: 'run_created';
+          specVersion?: number;
+          eventData: Record<string, unknown>;
+        }
+  ): Event => {
     const t = +startedAt + ++eventIndex * 100;
     return {
       ...data,
@@ -527,7 +536,7 @@ async function runScenario(options: ScenarioOptions = {}) {
         lazyClaimRejected = true;
         throw new EntityConflictError('step already created');
       }
-      let effective = request;
+      let effective: CreateEventRequest = request;
       if (lazyStepStart) {
         const lazy = request.eventData as {
           stepName?: string;

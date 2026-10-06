@@ -33,6 +33,7 @@ const run: WorkflowRun = {
   updatedAt: new Date(),
   startedAt: new Date(),
   deploymentId: 'test-deployment',
+  attributes: {},
 };
 
 function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
@@ -181,7 +182,7 @@ describe('handleSuspension', () => {
       expect.anything()
     );
     expect(result.hasAwaitedHookCreation).toBe(true);
-    expect(result.timeoutSeconds).toBeUndefined();
+    expect('timeoutSeconds' in result).toBe(false);
   });
 
   it('still returns owned pending steps when an awaited hook is created with a step', async () => {
@@ -219,7 +220,7 @@ describe('handleSuspension', () => {
     });
 
     expect(result.hasAwaitedHookCreation).toBe(true);
-    expect(result.timeoutSeconds).toBeUndefined();
+    expect('timeoutSeconds' in result).toBe(false);
     expect(result.pendingSteps).toHaveLength(1);
     expect(result.createdStepCorrelationIds).toContain('step_parallel');
   });
@@ -249,7 +250,7 @@ describe('handleSuspension', () => {
     });
 
     expect(result.hasAwaitedHookCreation).toBe(false);
-    expect(result.timeoutSeconds).toBeUndefined();
+    expect('timeoutSeconds' in result).toBe(false);
   });
 
   describe('force-claim victim wake', () => {
@@ -269,7 +270,13 @@ describe('handleSuspension', () => {
       }: {
         createdAt?: Date;
         hookId?: string;
-        from?: Record<string, unknown>;
+        from?: {
+          runId: string;
+          hookId: string;
+          workflowName?: string;
+          deploymentId?: string;
+          runSpecVersion?: number;
+        };
       } = {}
     ): Event =>
       ({
@@ -552,21 +559,17 @@ describe('handleSuspension', () => {
       vi.unstubAllEnvs();
     });
 
-    const step = (id: string) =>
-      [
-        id,
-        { type: 'step' as const, correlationId: id, stepName: id, args: [] },
-      ] as const;
-    const hook = (id: string, extra: Record<string, unknown> = {}) =>
-      [
-        id,
-        {
-          type: 'hook' as const,
-          correlationId: id,
-          token: `tok-${id}`,
-          ...extra,
-        },
-      ] as const;
+    const step = (id: string): [string, QueueItem] => [
+      id,
+      { type: 'step', correlationId: id, stepName: id, args: [] },
+    ];
+    const hook = (
+      id: string,
+      extra: Record<string, unknown> = {}
+    ): [string, QueueItem] => [
+      id,
+      { type: 'hook', correlationId: id, token: `tok-${id}`, ...extra },
+    ];
 
     it('writes step and wait events without waiting for a hook create', async () => {
       // The end-of-run drain hands every pending item to this handler. The
@@ -1292,7 +1295,7 @@ describe('handleSuspension', () => {
 
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(
-          new Map([
+          new Map<string, QueueItem>([
             awaitedHook('hook_taken'),
             [
               'w1',
@@ -1608,7 +1611,8 @@ describe('step-argument serialization failure in the end-of-run drain', () => {
                 type: 'step',
                 correlationId: 's_bad',
                 stepName: 's_bad',
-                args: [new Unserializable()],
+                // Deliberately not Serializable: it is what the drain refuses.
+                args: [new Unserializable() as never],
               },
             ],
           ]),
