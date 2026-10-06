@@ -111,3 +111,5 @@ async function retryStep() {
     })
 }
 ```
+
+The `RetryableError` constructor throws if `retryAfter` is an Invalid Date or a duration that ends past the latest time a `Date` can represent.
