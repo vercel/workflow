@@ -5,8 +5,10 @@ import { FatalError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
+import { ulid } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
+import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -107,6 +109,8 @@ async function runWritableStep(options: {
   delayBeforeWriterMs?: number;
   closeAfterRelease?: boolean;
   writeImpl?: () => Promise<void>;
+  session?: ReturnType<NonNullable<World['streams']['createWriteSession']>>;
+  throwAfterRelease?: boolean;
 }): Promise<{
   execution: Promise<Awaited<ReturnType<typeof executeStep>>>;
   world: World;
@@ -115,6 +119,8 @@ async function runWritableStep(options: {
 }> {
   const world = makeWorld();
   setWorld(world);
+  if (options.session)
+    world.streams.createWriteSession = () => options.session!;
   if (options.writeImpl) {
     world.streams.write = vi.fn(
       options.writeImpl
@@ -140,6 +146,7 @@ async function runWritableStep(options: {
     if (options.awaitWrite !== false) await write;
     if (options.releaseLock) writer.releaseLock();
     if (options.closeAfterRelease) await writable.close();
+    if (options.throwAfterRelease) throw new Error('step failed after release');
     return 'ok';
   });
 
@@ -176,6 +183,28 @@ describe('executeStep — stream durability barrier', () => {
     setWorld(undefined);
     delete process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS;
     counter += 1;
+  });
+
+  it.each([
+    false,
+    true,
+  ])('releases stateful writers when the step ends (throws: %s)', async (throwAfterRelease) => {
+    const session = {
+      write: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    };
+    const { execution } = await runWritableStep({
+      releaseLock: true,
+      session,
+      throwAfterRelease,
+    });
+    await execution;
+    expect(session.write).toHaveBeenCalledTimes(1);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(session.close).not.toHaveBeenCalled();
+    expect(session.dispose).not.toHaveBeenCalled();
   });
 
   it('writes step_completed only after a released writer drains', async () => {
@@ -261,6 +290,100 @@ describe('executeStep — stream durability barrier', () => {
 
     releaseWrite();
     await expect(execution).resolves.toMatchObject({ type: 'completed' });
+  });
+
+  it.each([
+    'chunk',
+    'empty close',
+  ] as const)('orders a turbo writable argument %s after durable run creation', async (operation) => {
+    const world = makeWorld();
+    setWorld(world);
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', '1');
+    const runId = `wrun_${ulid()}`;
+    const stepId = `step_${ulid()}`;
+    const stepName = uniqueStepName();
+    const streamId = `strm_${runId.slice(5)}_user`;
+    const argument = new WritableStream<string>();
+    Object.defineProperty(argument, STREAM_NAME_SYMBOL, { value: streamId });
+    const input = await dehydrateStepArguments(
+      { args: [argument] },
+      runId,
+      undefined
+    );
+    const runInput = await dehydrateStepArguments([], runId, undefined);
+    const createGate = Promise.withResolvers<void>();
+    const bodyEntered = Promise.withResolvers<void>();
+    // Use real world-local run/event/stream persistence. Its stream store
+    // accepts orphan writes, so add the server's run-existence precondition
+    // to reproduce the HTTP PUT failure rather than silently accepting it.
+    const write = world.streams.write.bind(world.streams);
+    const close = world.streams.close.bind(world.streams);
+    const writeSpy = vi
+      .spyOn(world.streams, 'write')
+      .mockImplementation(async (...args) => {
+        await world.runs.get(args[0]);
+        return write(...args);
+      });
+    const closeSpy = vi
+      .spyOn(world.streams, 'close')
+      .mockImplementation(async (...args) => {
+        await world.runs.get(args[0]);
+        return close(...args);
+      });
+    const runReadyBarrier = createGate.promise.then(async () => {
+      await world.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'wf',
+          input: runInput,
+        },
+      });
+    });
+    registerStepFunction(stepName, async (writable: WritableStream<string>) => {
+      bodyEntered.resolve();
+      const writer = writable.getWriter();
+      if (operation === 'chunk') await writer.write('first chunk');
+      await writer.close();
+      return 'ok';
+    });
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: input,
+      forceOptimisticStart: true,
+      runReadyBarrier,
+      authoritativeAttempt: 1,
+    });
+    try {
+      await bodyEntered.promise;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await expect(world.runs.get(runId)).rejects.toThrow();
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(closeSpy).not.toHaveBeenCalled();
+    } finally {
+      createGate.resolve();
+      await execution;
+      vi.unstubAllEnvs();
+      vi.restoreAllMocks();
+    }
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+    const reader = (await world.streams.get(runId, streamId)).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    expect(chunks).toHaveLength(operation === 'chunk' ? 1 : 0);
   });
 
   it('drains a revived forwarded writable argument before completion', async () => {
@@ -411,6 +534,88 @@ describe('executeStep — stream durability barrier', () => {
       backgroundOp.resolve();
       await execution;
       vi.useRealTimers();
+    }
+  });
+
+  it('bounds a throwing step drain and preserves the user error on retry', async () => {
+    process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS = '400';
+    const world = makeWorld();
+    setWorld(world);
+    const writeGate = Promise.withResolvers<void>();
+    const settlementStarted = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    world.streams.createWriteSession = () => ({
+      write: () => writeGate.promise,
+      close: async () => {},
+      release: () => released.resolve(),
+    });
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      await writer.write('accepted prefix');
+      writer.releaseLock();
+      const state = contextStorage.getStore()!.streamStates![0];
+      const settle = state.settleReleasedWrites!;
+      vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
+        settlementStarted.resolve();
+        return settle();
+      });
+      throw new Error('original step failure');
+    });
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const createEvent = vi.spyOn(world.events, 'create');
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    try {
+      await settlementStarted.promise;
+      await vi.advanceTimersByTimeAsync(399);
+      expect(
+        createEvent.mock.calls.some(
+          ([, event]) => event.eventType === 'step_retrying'
+        )
+      ).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(execution).resolves.toMatchObject({ type: 'retry' });
+      expect(warn).toHaveBeenCalledWith(
+        'Failed to drain released streams after step error',
+        {
+          workflowRunId: runId,
+          stepId,
+          error: 'Timed out draining step stream writes after 400ms',
+        }
+      );
+      const retrying = await eventsFor(world, runId, stepId, 'step_retrying');
+      expect(retrying).toHaveLength(1);
+      const error = (await hydrateStepError(
+        (retrying[0].eventData as { error: unknown }).error,
+        runId,
+        undefined
+      )) as Error;
+      expect(error.message).toBe('original step failure');
+    } finally {
+      writeGate.resolve();
+      await released.promise;
+      await execution;
+      vi.useRealTimers();
+      warn.mockRestore();
+      createEvent.mockRestore();
     }
   });
 
@@ -878,6 +1083,96 @@ describe('executeStep — pre-claimed inline start', () => {
 
     expect(result).toEqual({ type: 'skipped' });
     expect(createSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeStep — turbo run-ready barrier on the awaited start', () => {
+  afterEach(() => {
+    counter += 1;
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  // Turbo backgrounds `run_started` and forces optimistic start, but an
+  // explicit opt-out sends the lazy `step_started` on the awaited branch. That
+  // write must still wait for the run to be started, or a world that requires
+  // a running run rejects the step's first start.
+  it.each([
+    { name: 'explicit opt-out under turbo', env: '0', force: true },
+    { name: 'optimistic start left off', env: undefined, force: false },
+  ])('holds the lazy step_started until run_started lands ($name)', async ({
+    env,
+    force,
+  }) => {
+    const world = makeWorld();
+    if (env !== undefined) vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', env);
+    const stepName = uniqueStepName();
+    const stepId = `step_${ulid()}`;
+    const runInput = await dehydrateStepArguments([], 'run', undefined);
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'wf',
+        input: runInput,
+      },
+    });
+    const runId = created.run!.runId;
+    const input = await dehydrateStepArguments(
+      { args: [], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+    let bodyRuns = 0;
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+
+    // The run's status at the moment each step_started is sent.
+    const runStatusAtStart: string[] = [];
+    const create = world.events.create.bind(world.events);
+    vi.spyOn(world.events, 'create').mockImplementation(async (...args) => {
+      const [targetRunId, event] = args;
+      if (targetRunId && event.eventType === 'step_started') {
+        runStatusAtStart.push((await world.runs.get(targetRunId)).status);
+      }
+      return create(...args);
+    });
+
+    const startGate = Promise.withResolvers<void>();
+    const runReadyBarrier = startGate.promise.then(() =>
+      create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      } as never)
+    );
+
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: input,
+      forceOptimisticStart: force,
+      runReadyBarrier,
+      authoritativeAttempt: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(runStatusAtStart).toEqual([]);
+    expect(bodyRuns).toBe(0);
+
+    startGate.resolve();
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(runStatusAtStart).toEqual(['running']);
+    expect(bodyRuns).toBe(1);
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
   });
 });
 

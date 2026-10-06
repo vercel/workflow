@@ -26,6 +26,7 @@ import {
   SPEC_VERSION_LEGACY,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { getCurrentNodeVersion } from '../capabilities.js';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
@@ -102,6 +103,12 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * Node.js version of the responding deployment, used for capability
+   * detection (zstd decoding depends on it; see `getRunCapabilities`).
+   * Omitted when the responder predates this field or is not Node.js.
+   */
+  nodeVersion?: string;
   /**
    * The target run's X25519 public key (base64), returned only when the probe
    * carried a `runId` and the responding deployment has encryption enabled.
@@ -210,6 +217,7 @@ export async function handleHealthCheckMessage(
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    nodeVersion: getCurrentNodeVersion(),
     // We are executing inside the target deployment, so this constant reflects
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
@@ -372,6 +380,9 @@ function parseHealthCheckResponse(
   }
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
+  }
+  if (typeof r.nodeVersion === 'string') {
+    parsed.nodeVersion = r.nodeVersion;
   }
   if (typeof r.encryptionPublicKey === 'string') {
     parsed.encryptionPublicKey = r.encryptionPublicKey;
@@ -1222,6 +1233,7 @@ export function withHealthCheck(
           endpoint: url.pathname,
           specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
           workflowCoreVersion,
+          nodeVersion: getCurrentNodeVersion(),
         }),
         {
           status: 200,

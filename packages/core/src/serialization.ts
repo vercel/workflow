@@ -39,6 +39,7 @@ import {
 } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
+  type CompressionMode,
   type CompressionStats,
   compress,
   decompress,
@@ -104,6 +105,7 @@ import {
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
+  STREAM_RELEASE_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
@@ -1716,6 +1718,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // are still client-buffered or in flight.
     Object.defineProperty(this, STREAM_DRAIN_SYMBOL, {
       value: drain,
+      enumerable: false,
+      writable: false,
+    });
+    Object.defineProperty(this, STREAM_RELEASE_SYMBOL, {
+      value: async () => {
+        // The owner has already drained. An unused writer whose session failed
+        // to initialize has no transport to release.
+        const session = await writeSessionPromise.catch(() => undefined);
+        await session?.release?.();
+      },
       enumerable: false,
       writable: false,
     });
@@ -3357,7 +3369,8 @@ function getStepRevivers(
   runId: string,
   cryptoKey: EncryptionKeyParam,
   deploymentId?: string,
-  streamStates?: FlushableStreamState[]
+  streamStates?: FlushableStreamState[],
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -3522,7 +3535,15 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
+          getStepRevivers(
+            global,
+            ops,
+            runId,
+            cryptoKey,
+            deploymentId,
+            streamStates,
+            runReadyBarrier
+          ),
           cryptoKey
         );
         const state = createFlushableState();
@@ -3569,13 +3590,26 @@ function getStepRevivers(
               value.encryptionPublicKey
             );
 
+      // Argument hydration precedes the step's contextStorage frame, so it
+      // must receive turbo's creation barrier explicitly. A forwarded writable
+      // belongs to another run: this barrier says nothing about its readiness.
+      const targetRunReady =
+        targetRunId === runId ? runReadyBarrier : undefined;
       const serialize = getSerializeStream(
-        getStepReducers(global, ops, targetRunId, targetKey),
+        getStepReducers(
+          global,
+          ops,
+          targetRunId,
+          targetKey,
+          false,
+          targetRunReady
+        ),
         targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        targetRunReady
       );
 
       // Create flushable state for this stream
@@ -3813,7 +3847,7 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
@@ -3890,7 +3924,7 @@ export async function dehydrateWorkflowReturnValue(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /**
    * Optional sink receiving the first five samples and exact total count of
    * workflow-code executions serialization could not avoid. The diagnostics
@@ -3966,7 +4000,7 @@ export async function dehydrateStepArguments(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /** See `dehydrateWorkflowReturnValue`. */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
@@ -4008,14 +4042,23 @@ export async function hydrateStepArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
-  streamStates?: FlushableStreamState[]
+  streamStates?: FlushableStreamState[],
+  runReadyBarrier?: Promise<unknown>
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
   const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
-        getStepRevivers(global, ops, runId, key, deploymentId, streamStates)
+        getStepRevivers(
+          global,
+          ops,
+          runId,
+          key,
+          deploymentId,
+          streamStates,
+          runReadyBarrier
+        )
       ),
       ...extraRevivers,
     },
@@ -4050,7 +4093,7 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
@@ -4124,7 +4167,7 @@ export async function dehydrateStepError(
   key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId, key));
@@ -4204,7 +4247,7 @@ export async function hydrateStepError(
 export async function dehydrateDynamicWorkflowCode(
   code: string,
   key: PayloadKey | undefined,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const payload = new TextEncoder().encode(stringify(code));
@@ -4325,7 +4368,7 @@ export async function dehydrateRunError(
   _runId: string,
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getWorkflowReducers(global));

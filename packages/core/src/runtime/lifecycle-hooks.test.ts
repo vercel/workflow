@@ -14,6 +14,7 @@ import {
   hydrateRunError,
   SerializationFormat,
 } from '../serialization.js';
+import { contextStorage, type StepContext } from '../step/context-storage.js';
 import * as telemetry from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
@@ -246,7 +247,7 @@ describe('lifecycle hooks', () => {
     await flushDispatches();
     expect(later).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(
-      `Workflow lifecycle ${event} handler threw`,
+      `Workflow lifecycle ${event} handler property access threw`,
       expect.objectContaining({ errorMessage: failure.message })
     );
   });
@@ -317,16 +318,116 @@ describe('lifecycle hooks', () => {
     );
   });
 
-  it('shares one registry across module copies via the Symbol.for global', async () => {
-    const onRunCompleted = vi.fn();
-    register({ onRunCompleted });
+  it('rejects registration inside a step without accumulating a handler', () => {
+    const handler = vi.fn();
+    expect(() =>
+      contextStorage.run({} as StepContext, () =>
+        registerLifecycleHooks({ onRunCompleted: handler })
+      )
+    ).toThrow('at host startup, not inside a step function');
+    dispatchRunCompletedHooks('wrun_step_registration', workflowName);
+    expect(waitUntil.safeWaitUntil).not.toHaveBeenCalled();
+  });
 
-    const registry = (globalThis as Record<symbol, unknown>)[
-      Symbol.for('@workflow/core//lifecycleHooks')
-    ] as WorkflowLifecycleHooks[];
-    expect(Array.isArray(registry)).toBe(true);
-    expect(registry.some((h) => h.onRunCompleted === onRunCompleted)).toBe(
-      true
+  it('logs unreadable error fields independently and still invokes later handlers', async () => {
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    const hostile = {
+      toString() {
+        throw new Error('unprintable');
+      },
+    };
+    const partlyReadable = new Error('readable message');
+    Object.defineProperty(partlyReadable, 'stack', {
+      get() {
+        throw new Error('no stack');
+      },
+    });
+    register({
+      onRunCompleted() {
+        throw hostile;
+      },
+    });
+    register({
+      onRunCompleted() {
+        throw partlyReadable;
+      },
+    });
+    const later = vi.fn();
+    register({ onRunCompleted: later });
+    dispatchRunCompletedHooks('wrun_hostile_error', workflowName);
+    await flushDispatches();
+    expect(later).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      expect.objectContaining({
+        errorName: 'Error',
+        errorMessage: '[unavailable error message]',
+        errorStack: '',
+      })
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      expect.objectContaining({
+        errorName: 'Error',
+        errorMessage: 'readable message',
+        errorStack: '',
+      })
+    );
+  });
+
+  it('correlates the lifecycle span and records isolated reporting failures', async () => {
+    const span = { addEvent: vi.fn() };
+    vi.spyOn(telemetry, 'trace').mockImplementationOnce(
+      async (_name, ...args) => {
+        await Promise.resolve();
+        const fn = typeof args[0] === 'function' ? args[0] : args[1];
+        return fn?.(span as any);
+      }
+    );
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    vi.mocked(hydrateRunError).mockRejectedValueOnce(
+      new Error('missing error class')
+    );
+    register({
+      onRunFailed() {
+        throw new Error('reporter failed');
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_span',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(telemetry.trace).toHaveBeenCalledWith(
+      'workflow.lifecycle.onRunFailed',
+      {
+        attributes: {
+          'workflow.run.id': 'wrun_span',
+          'workflow.name': workflowName,
+        },
+      },
+      expect.any(Function)
+    );
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'workflow.lifecycle.failure',
+      expect.objectContaining({
+        phase: 'error hydration failed',
+        'exception.message': 'missing error class',
+      })
+    );
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'workflow.lifecycle.failure',
+      expect.objectContaining({
+        phase: 'handler threw',
+        'exception.message': 'reporter failed',
+      })
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunFailed error hydration failed',
+      expect.objectContaining({ errorMessage: 'missing error class' })
     );
   });
 
@@ -379,6 +480,9 @@ describe('lifecycle hooks', () => {
     );
     expect(span).toHaveBeenCalledWith(
       'workflow.lifecycle.onRunFailed',
+      {
+        attributes: { 'workflow.run.id': runId, 'workflow.name': workflowName },
+      },
       expect.any(Function)
     );
     const { error } = onRunFailed.mock.calls[0][0];
@@ -515,6 +619,46 @@ describe('lifecycle hooks', () => {
     await flushDispatches();
     expect(settled).toHaveBeenCalledOnce();
     await stream.cancel();
+  });
+
+  it('settles the stream drain when a handler cancels a pending read', async () => {
+    const cancel = vi.fn();
+    const get = vi.fn().mockResolvedValue(new ReadableStream({ cancel }));
+    vi.mocked(getWorldLazy).mockResolvedValue({ streams: { get } } as any);
+    const bytes = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["ReadableStream",1],{"name":2,"type":3},"error-body","bytes"]'
+      )
+    );
+    const finished = vi.fn();
+    register({
+      async onRunFailed({ error }) {
+        const reader = (error.cause as ReadableStream).getReader();
+        const reading = reader.read();
+        await vi.waitFor(() => expect(get).toHaveBeenCalledOnce());
+        try {
+          await reader.cancel('enough diagnostics');
+          await expect(reading).resolves.toEqual({
+            value: undefined,
+            done: true,
+          });
+        } finally {
+          reader.releaseLock();
+        }
+        finished();
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_cancel_read',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(finished).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
   });
 
   it.each([

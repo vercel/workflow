@@ -18,7 +18,7 @@ import {
   type Hook as WorldHook,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { getRunCapabilities } from '../capabilities.js';
+import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import { decodeRunPublicKey } from '../sealed-box.js';
@@ -137,12 +137,14 @@ function resumeContextFromRun(run: WorkflowRun): HookResumeContext {
   const coreVersion = run.executionContext?.workflowCoreVersion;
   const traceCarrier = run.executionContext?.traceCarrier;
   const hookResumeInputVersion = run.executionContext?.hookResumeInputVersion;
+  const nodeVersion = run.executionContext?.nodeVersion;
   return {
     deploymentId: run.deploymentId,
     workflowName: run.workflowName,
     runSpecVersion: run.specVersion,
     workflowCoreVersion:
       typeof coreVersion === 'string' ? coreVersion : undefined,
+    nodeVersion: typeof nodeVersion === 'string' ? nodeVersion : undefined,
     traceCarrier:
       traceCarrier && typeof traceCarrier === 'object'
         ? (traceCarrier as HookResumeContext['traceCarrier'])
@@ -695,7 +697,10 @@ async function resumeHookAttempt<T = any>(
     // runs created before encryption support was added cannot decode
     // the 'encr' serialization format, and runs created before
     // byte-stream framing support cannot decode framed byte streams.
-    const capabilities = getRunCapabilities(resumeContext.workflowCoreVersion);
+    const capabilities = getRunCapabilities(
+      resumeContext.workflowCoreVersion,
+      resumeContext.nodeVersion
+    );
 
     // Resolve how to encrypt the payload for the target run (a WRITE).
     //
@@ -740,11 +745,13 @@ async function resumeHookAttempt<T = any>(
     }
 
     // Compress only when the target run and its deployment support the
-    // compression formats introduced with spec version 5.
+    // compression formats introduced with spec version 5, and only with a
+    // codec the run's runtime decodes: the writer may run a newer Node.js
+    // than the deployment the run is pinned to.
     const compression =
-      (resumeContext.runSpecVersion ?? 0) >=
-        SPEC_VERSION_SUPPORTS_COMPRESSION &&
-      capabilities.supportedFormats.has(SerializationFormat.GZIP);
+      (resumeContext.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+        ? getCompressionMode(capabilities)
+        : false;
 
     // Dehydrate the payload for storage
     const ops: Promise<any>[] = [];

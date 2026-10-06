@@ -62,6 +62,16 @@ const ZSTD_LEVEL = 3;
 export type CompressionCodec = 'zstd' | 'gzip' | 'none';
 
 /**
+ * Which compressed formats a write may produce for its target run:
+ * - `false`: none, the payload is stored uncompressed.
+ * - `'gzip'`: gzip only. The target can read compressed payloads but its
+ *   runtime cannot decode zstd (e.g. a run pinned to a Node.js < 22.15
+ *   deployment; see `getRunCapabilities` in capabilities.ts).
+ * - `true`: any codec, zstd preferred.
+ */
+export type CompressionMode = boolean | 'gzip';
+
+/**
  * Escape hatch: set WORKFLOW_DISABLE_COMPRESSION=1 to disable
  * write-side compression entirely. Reads are unaffected: payloads
  * that were already written compressed remain readable.
@@ -308,12 +318,15 @@ function recordStats(
 }
 
 /**
- * Choose the write-side codec given runtime availability and the optional
- * env override. zstd is preferred; gzip is the portable fallback.
+ * Choose the write-side codec given what the target can decode, runtime
+ * availability, and the optional env override. zstd is preferred; gzip is
+ * the portable fallback.
  */
-function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
+function selectWriteCodec(mode: true | 'gzip'): 'zstd' | 'gzip' | 'none' {
   const override = codecOverrideFromEnv();
-  if (override === 'gzip') return isGzipAvailable() ? 'gzip' : 'none';
+  if (mode === 'gzip' || override === 'gzip') {
+    return isGzipAvailable() ? 'gzip' : 'none';
+  }
   // Default and explicit 'zstd' both prefer zstd, then fall back to gzip.
   if (isZstdAvailable()) return 'zstd';
   if (isGzipAvailable()) return 'gzip';
@@ -325,18 +338,17 @@ function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
  * target run and the payload is worth compressing.
  *
  * @param data - The format-prefixed serialized data (e.g. 'devl' + bytes)
- * @param enabled - Whether the target run supports compressed payloads
- *   (run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
+ * @param mode - Which compressed formats the target run can decode (run
+ *   specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
  *   cross-deployment writes, the target deployment's capabilities; see
- *   `getRunCapabilities` in capabilities.ts). zstd and gzip read
- *   support co-ship, so a single boolean is sufficient.
+ *   `getRunCapabilities` and `getCompressionMode` in capabilities.ts).
  * @param stats - Optional telemetry sink; populated when `data` is binary.
  * @returns The compressed data with a codec prefix, or the original data
  *   when compression is disabled, unavailable, or not worthwhile.
  */
 export async function compress(
   data: Uint8Array | unknown,
-  enabled: boolean,
+  mode: CompressionMode,
   stats?: CompressionStats,
   opts?: {
     /**
@@ -352,7 +364,7 @@ export async function compress(
   if (!(data instanceof Uint8Array)) return data;
   // From here `data` is binary, so every return path records stats.
   if (
-    !enabled ||
+    !mode ||
     data.length < COMPRESSION_MIN_BYTES ||
     isCompressionDisabledByEnv()
   ) {
@@ -360,7 +372,7 @@ export async function compress(
     return data;
   }
 
-  const codec = selectWriteCodec();
+  const codec = selectWriteCodec(mode);
   if (codec === 'none') {
     recordStats(stats, 'none', data.length, data.length);
     return data;

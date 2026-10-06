@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { getRunCapabilities } from '../capabilities.js';
+import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import {
   dehydrateStepError,
@@ -436,7 +436,9 @@ describe('o11y hydration of compressed payloads', () => {
 });
 
 describe('run capabilities for compression codecs', () => {
-  // gzip and zstd co-ship, so both are gated on the same min version.
+  // gzip and zstd co-ship, so both are gated on the same min core version.
+  // zstd additionally needs a Node.js version that decodes it.
+  const ZSTD_CAPABLE_NODE = '24.0.0';
   for (const fmt of [
     SerializationFormat.GZIP,
     SerializationFormat.ZSTD,
@@ -448,9 +450,11 @@ describe('run capabilities for compression codecs', () => {
         '5.0.0',
         '6.0.0',
       ])
-        expect(getRunCapabilities(version).supportedFormats.has(fmt)).toBe(
-          true
-        );
+        expect(
+          getRunCapabilities(version, ZSTD_CAPABLE_NODE).supportedFormats.has(
+            fmt
+          )
+        ).toBe(true);
     });
 
     it(`does not support ${fmt} for older core versions`, () => {
@@ -471,9 +475,55 @@ describe('run capabilities for compression codecs', () => {
     });
 
     it(`assumes no ${fmt} support when the version is unknown`, () => {
-      expect(getRunCapabilities(undefined).supportedFormats.has(fmt)).toBe(
-        false
-      );
+      expect(
+        getRunCapabilities(undefined, ZSTD_CAPABLE_NODE).supportedFormats.has(
+          fmt
+        )
+      ).toBe(false);
     });
   }
+
+  it('keeps gzip but drops zstd when the Node.js version is unknown', () => {
+    const { supportedFormats } = getRunCapabilities('5.0.0');
+    expect(supportedFormats.has(SerializationFormat.GZIP)).toBe(true);
+    expect(supportedFormats.has(SerializationFormat.ZSTD)).toBe(false);
+  });
+});
+
+describe('gzip-only compression mode', () => {
+  // A producer on a zstd-capable runtime writing for a run whose runtime
+  // cannot decode zstd (e.g. pinned to a Node.js 20 deployment).
+  it('writes gzip, never zstd, and the payload round-trips', async () => {
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, undefined, {
+      compression: getCompressionMode(getRunCapabilities('5.0.0', '20.19.0')),
+    });
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.GZIP);
+    expect(await hydrateDataWithKey(data, {}, undefined)).toEqual(value);
+  });
+
+  it('still prefers zstd when the target runtime decodes it', async () => {
+    const data = await stepModule.serialize(
+      makeCompressibleValue(),
+      undefined,
+      {
+        compression: getCompressionMode(getRunCapabilities('5.0.0', '22.15.0')),
+      }
+    );
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+  });
+
+  it('gzip mode also overrides a zstd codec env override', async () => {
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'zstd';
+    try {
+      const original = encodeWithFormatPrefix(
+        SerializationFormat.DEVALUE_V1,
+        textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+      ) as Uint8Array;
+      const compressed = await compress(original, 'gzip');
+      expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
+    } finally {
+      delete process.env.WORKFLOW_COMPRESSION_CODEC;
+    }
+  });
 });
