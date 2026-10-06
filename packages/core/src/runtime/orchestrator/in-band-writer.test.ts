@@ -50,6 +50,40 @@ describe('InBandWriter', () => {
     expect(world.creates.every((c) => c.params?.inBand === true)).toBe(true);
   });
 
+  it('fills in a payload the World left out of the committed event', async () => {
+    const world = seeded({ fence: true });
+    const base = world.asWorld();
+    // A World that stores the payload but does not echo it on the create.
+    const stripping = {
+      ...base,
+      events: {
+        ...base.events,
+        create: async (...args: Parameters<typeof base.events.create>) => {
+          const result = await base.events.create(...args);
+          if (!result.event) return result;
+          const { result: _omitted, ...eventData } = (
+            result.event as { eventData: Record<string, unknown> }
+          ).eventData;
+          return { ...result, event: { ...result.event, eventData } as never };
+        },
+      },
+    } as typeof base;
+    const writer = new InBandWriter(stripping, RUN);
+    writer.adoptSnapshot((await loadWorkflowRunEventsFrom(base, RUN)).snapshot);
+
+    const payload = new Uint8Array([1, 2, 3]);
+    const written = await writer.create({
+      eventType: 'step_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'step_a',
+      eventData: { stepName: 'add', result: payload },
+    } as never);
+
+    expect(
+      (written.event as { eventData: { result?: unknown } }).eventData.result
+    ).toEqual(payload);
+  });
+
   it('out-of-band writes move seq but not the in-band count', async () => {
     const world = seeded({ fence: true });
     const writer = new InBandWriter(world.asWorld(), RUN);

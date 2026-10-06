@@ -159,7 +159,9 @@ export class InBandWriter {
         });
         const inferred = this.allocatedBy([result.event]);
         this.advance(result.allocated ?? inferred);
-        return result;
+        return result.event
+          ? { ...result, event: withWrittenEventData(result.event, data) }
+          : result;
       } catch (error) {
         throw this.stop(error);
       }
@@ -201,7 +203,15 @@ export class InBandWriter {
           if (item.error === undefined) this.noteSlot(item.event.eventId);
         }
         this.advance(result.allocated ?? events.length - replayed);
-        return result;
+        return {
+          ...result,
+          results: result.results.map((item, index) => {
+            const request = events[index]?.event;
+            return item.error === undefined && request
+              ? { ...item, event: withWrittenEventData(item.event, request) }
+              : item;
+          }),
+        };
       } catch (error) {
         throw this.stop(error);
       }
@@ -280,4 +290,26 @@ export class InBandWriter {
     this.tail = run.catch(() => {});
     return run;
   }
+}
+
+/**
+ * The committed event with the `eventData` this writer sent filled in where
+ * the World left it out.
+ *
+ * A World may answer a create without echoing the payload it stored (the
+ * event comes back without its `input`, `result` or `error`), while the
+ * orchestrator folds its own writes into the log it replays from, and replay
+ * needs those payloads. Only keys the response omits are taken from the
+ * request: when a write converged on an event that already existed, the
+ * World's copy is the canonical one.
+ */
+export function withWrittenEventData<E extends Event>(
+  event: E,
+  request: CreateEventRequest
+): E {
+  if (event.eventType !== request.eventType) return event;
+  const sent = (request as { eventData?: Record<string, unknown> }).eventData;
+  if (!sent) return event;
+  const stored = (event as { eventData?: Record<string, unknown> }).eventData;
+  return { ...event, eventData: { ...sent, ...(stored ?? {}) } };
 }
