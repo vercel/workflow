@@ -44,7 +44,7 @@ type Listener = (...args: unknown[]) => void;
 it('selects canonical eventsync only on explicit opt-in', () => {
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync'
+    'wss://example.test/api/websockets/v1/runs/wrun_test/experimental_eventsync'
   );
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
@@ -59,7 +59,7 @@ it.each([
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
   vi.stubEnv('WORKFLOW_OWNER_JOURNAL', mode);
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync'
+    'wss://example.test/api/websockets/v1/runs/wrun_test/experimental_eventsync'
   );
   vi.stubEnv('WORKFLOW_OWNER_JOURNAL', '');
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
@@ -648,7 +648,7 @@ describe('owner event writer', () => {
         staged.push(
           await writer.stage!(event, { eventCount: 3 + i, resolveData: 'none' })
         );
-      expect(socket.url).toContain('/eventsync');
+      expect(socket.url).toContain('/experimental_eventsync');
       expect(new URL(socket.url).searchParams.has('protocol')).toBe(false);
       expect(socket.sent).toHaveLength(3);
       let durable = false;

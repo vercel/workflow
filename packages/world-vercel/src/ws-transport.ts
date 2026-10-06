@@ -979,7 +979,7 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
   if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
-    url.pathname += '/eventsync';
+    url.pathname += '/experimental_eventsync';
   }
   return url.toString();
 }
