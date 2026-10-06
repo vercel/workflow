@@ -397,6 +397,15 @@ export const WorkflowInvokePayloadSchema = z.compile(
       })
       .optional()
       .catch(undefined),
+    /**
+     * Waits the orchestrator completes on this delivery whatever their
+     * `resumeAt` (spec >= 9): `run.wakeUp()` names them here instead of
+     * writing `wait_completed` itself, so the orchestrator writes it in-band,
+     * in log order with its own decisions. A wait already completed, or not
+     * open, is ignored. `.catch(undefined)` so a malformed value degrades to
+     * "no waits named" rather than failing the parse.
+     */
+    completeWaits: z.array(z.string()).optional().catch(undefined),
     /** Step ID for inline step execution in combined handler. If provided, the flow execution
      * will jump directly to execute the step with the given ID before doing an event replay. */
     stepId: z.string().optional(),

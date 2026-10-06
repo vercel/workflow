@@ -229,6 +229,7 @@ export {
   cancelRun,
   cancelRuns,
   listStreams,
+  pendingWakeUpWaits,
   type ReadStreamOptions,
   type RecreateRunOptions,
   type ReenqueueRunOptions,
@@ -867,7 +868,11 @@ export function workflowEntrypoint(
           runContext,
           hookResumeTiming,
           waitContinuation,
+          completeWaits,
         } = WorkflowInvokePayloadSchema.parse(message_);
+        // Waits a `run.wakeUp()` asked this delivery to complete now,
+        // whatever their `resumeAt`. Spent on the first pass that sees them.
+        const wakeUpWaits = new Set(completeWaits ?? []);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
         // Threaded through this invocation and CONSUMED by the first durable
@@ -1563,6 +1568,7 @@ export function workflowEntrypoint(
                     !hookInput &&
                     !replayDivergence &&
                     !waitContinuation &&
+                    wakeUpWaits.size === 0 &&
                     hasConsumedPosition(world, runId)
                   ) {
                     const tail = await world.events.list({
@@ -2061,6 +2067,7 @@ export function workflowEntrypoint(
                           ownerMessageId: metadata.messageId,
                           requestId,
                           writer,
+                          ...(wakeUpWaits.size > 0 ? { wakeUpWaits } : {}),
                           ...(turboRunStarted && runReadyBarrier
                             ? {
                                 turbo: {
@@ -2277,7 +2284,12 @@ export function workflowEntrypoint(
                           // Complete elapsed waits. `wait_completed` resolves a
                           // promise, so it is consumed only after it commits,
                           // behind whatever its report says landed below it.
-                          for (const wait of dueWaits(log.events, Date.now())) {
+                          for (const wait of dueWaits(
+                            log.events,
+                            Date.now(),
+                            wakeUpWaits
+                          )) {
+                            wakeUpWaits.delete(wait.correlationId);
                             const completed = await createEvent(
                               {
                                 eventType: 'wait_completed' as const,

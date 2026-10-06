@@ -213,16 +213,19 @@ describe('writes to a run started by a newer SDK', () => {
     });
   });
 
-  it("caps wakeUpRun's wait_completed and wake at this SDK's version", async () => {
+  it("caps wakeUpRun's wake at this SDK's version, and leaves the wait to the orchestrator", async () => {
     const world = createMockWorld({
       run: { specVersion: NEWER_THAN_THIS_SDK },
       events: [waitCreated],
     });
     await wakeUpRun(world, 'wrun_123');
 
-    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
-      eventType: 'wait_completed',
-      specVersion: SPEC_VERSION_CURRENT,
+    // A single-orchestrator run's waits are completed in-band by its
+    // orchestrator: the wake names them instead.
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(vi.mocked(world.queue).mock.calls[0][1]).toMatchObject({
+      runId: 'wrun_123',
+      completeWaits: [waitCreated.correlationId],
     });
     expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
       specVersion: SPEC_VERSION_CURRENT,

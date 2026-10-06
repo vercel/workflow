@@ -1137,6 +1137,11 @@ export async function runWorkflowWithQuickJS(params: {
    * before their `step_created`/`step_started` commit, until a suspension has
    * an operation other than a step.
    */
+  /**
+   * Waits a `run.wakeUp()` asked this delivery to complete whatever their
+   * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
+   */
+  wakeUpWaits?: ReadonlySet<string>;
   turbo?: {
     /** The backgrounded `run_started`, folded into the log view on landing. */
     runStarted: Promise<EventResult>;
@@ -1654,7 +1659,11 @@ export async function runWorkflowWithQuickJS(params: {
           ? (event.eventData as Record<string, unknown>)
           : undefined;
       const resumeAt = eventData?.resumeAt;
-      if (resumeAt && now >= new Date(resumeAt as string).getTime()) {
+      if (
+        resumeAt &&
+        (now >= new Date(resumeAt as string).getTime() ||
+          params.wakeUpWaits?.has(event.correlationId))
+      ) {
         try {
           const result = await createEvent({
             eventType: 'wait_completed',
@@ -2554,7 +2563,12 @@ export async function runWorkflowWithQuickJS(params: {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (completedWaitIds2.has(wait.correlationId)) continue;
-        if (new Date(wait.resumeAt).getTime() - Date.now() > 0) continue;
+        if (
+          new Date(wait.resumeAt).getTime() - Date.now() > 0 &&
+          !params.wakeUpWaits?.has(wait.correlationId)
+        ) {
+          continue;
+        }
         completedWaitIds2.add(wait.correlationId);
         waitCompletePromises.push(
           (async () => {

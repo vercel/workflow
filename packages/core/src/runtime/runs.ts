@@ -3,6 +3,7 @@ import {
   StreamError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
@@ -10,6 +11,7 @@ import {
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -359,8 +361,47 @@ export async function reenqueueRun(
   }
 }
 
+// On `globalThis` (see `globalSingleton`): the waits a `wakeUpRun` in this
+// process named and their orchestrator may not have completed yet, by run.
+// Read by `@workflow/vitest`'s `waitForSleep`, which would otherwise hand
+// back a sleep that is already being woken. Bounded: the oldest runs are
+// forgotten first.
+const MAX_TRACKED_WAKE_UP_RUNS = 1000;
+const wakeUps = globalSingleton(
+  '@workflow/core//pendingWakeUpWaits',
+  1,
+  () => ({ byRun: new Map<string, Set<string>>() })
+);
+
+/**
+ * Waits of `runId` that a `run.wakeUp()` in this process asked its
+ * orchestrator to complete. On a single-orchestrator run `wakeUp` returns
+ * before the orchestrator writes their `wait_completed`; a caller looking for
+ * the run's next pending sleep skips these.
+ */
+export function pendingWakeUpWaits(runId: string): ReadonlySet<string> {
+  return wakeUps.byRun.get(runId) ?? new Set();
+}
+
+function rememberWakeUp(runId: string, correlationIds: readonly string[]) {
+  const waits = wakeUps.byRun.get(runId) ?? new Set<string>();
+  for (const id of correlationIds) waits.add(id);
+  wakeUps.byRun.delete(runId);
+  wakeUps.byRun.set(runId, waits);
+  while (wakeUps.byRun.size > MAX_TRACKED_WAKE_UP_RUNS) {
+    const oldest = wakeUps.byRun.keys().next().value;
+    if (oldest === undefined) break;
+    wakeUps.byRun.delete(oldest);
+  }
+}
+
 /**
  * Wake up a workflow run by interrupting pending sleep() calls.
+ *
+ * On a single-orchestrator run (spec version 9 and later) the run's
+ * orchestrator completes the waits: this names them on an orchestrator
+ * message and returns once that message is enqueued, so their
+ * `wait_completed` lands shortly after. Older runs get it written here.
  */
 export async function wakeUpRun(
   world: World,
@@ -403,6 +444,30 @@ export async function wakeUpRun(
         (event: Event) =>
           event.correlationId && targetCorrelationIds.has(event.correlationId)
       );
+    }
+
+    // A single-orchestrator run's waits are completed by its orchestrator
+    // alone (in-band), so a wake-up names the waits on an orchestrator
+    // message instead of writing `wait_completed` beside it.
+    if ((run.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+      const correlationIds = pendingWaits.flatMap((event) =>
+        event.correlationId ? [event.correlationId] : []
+      );
+      if (correlationIds.length > 0) {
+        rememberWakeUp(runId, correlationIds);
+        await world.queue(
+          getWorkflowQueueName(run.workflowName, options?.namespace),
+          { runId, completeWaits: correlationIds },
+          {
+            deploymentId: run.deploymentId,
+            specVersion: specVersionForRunWrite(
+              run.specVersion,
+              SPEC_VERSION_LEGACY
+            ),
+          }
+        );
+      }
+      return { stoppedCount: correlationIds.length };
     }
 
     const errors: Error[] = [];

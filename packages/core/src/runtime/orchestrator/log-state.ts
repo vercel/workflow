@@ -142,9 +142,18 @@ export function openWaits(events: readonly Event[]): OpenWait[] {
   return out;
 }
 
-/** Open waits whose deadline has passed. */
-export function dueWaits(events: readonly Event[], nowMs: number): OpenWait[] {
-  return openWaits(events).filter((wait) => wait.resumeAtMs <= nowMs);
+/**
+ * Open waits whose deadline has passed, and open waits named in `wakeUp`
+ * (`run.wakeUp()`), whatever their deadline.
+ */
+export function dueWaits(
+  events: readonly Event[],
+  nowMs: number,
+  wakeUp?: ReadonlySet<string>
+): OpenWait[] {
+  return openWaits(events).filter(
+    (wait) => wait.resumeAtMs <= nowMs || wakeUp?.has(wait.correlationId)
+  );
 }
 
 /** The earliest open wait's deadline, as `ConsumedPosition` fields. */
