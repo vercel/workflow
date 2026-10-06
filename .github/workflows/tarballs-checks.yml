@@ -24,11 +24,10 @@ jobs:
     # smoke-test. The version-bumped tarballs get this same check on the push
     # to main that follows the version PR merge.
     if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
-    timeout-minutes: 10
+    # Allow the resolver's 1000-second wait plus setup and endpoint checks.
+    timeout-minutes: 30
     permissions:
       contents: read
-      deployments: read
-      statuses: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -44,14 +43,12 @@ jobs:
           runtime: node@24
           cache: true
 
-      - name: Waiting for the Tarballs Vercel deployment
-        id: waitForTarballsDeployment
-        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+      - name: Resolve Tarballs Vercel deployment
+        id: deployment
+        uses: ./.github/actions/resolve-vercel-deployment
         with:
-          project-slug: workflow-tarballs
-          timeout: 1000
-          check-interval: 15
-          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          project-id: prj_vhbMZuiy9isKtNimwWNhdRGuqla9
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
 
       - name: Verify tarball endpoints
         # The tarballs project must be publicly accessible (no Deployment
@@ -60,4 +57,4 @@ jobs:
         # if a login redirect or non-2xx response is returned.
         run: pnpm --filter tarballs test:smoke
         env:
-          DEPLOYMENT_URL: ${{ steps.waitForTarballsDeployment.outputs.deployment-url }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}

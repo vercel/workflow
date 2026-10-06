@@ -343,6 +343,104 @@ describe('resumeHook', () => {
     });
   });
 
+  describe('payload compression codec', () => {
+    // Above the compression threshold and highly compressible.
+    const LARGE_PAYLOAD = { note: 'recommendation '.repeat(500) };
+
+    function makeHook(resumeContext?: Hook['resumeContext']): Hook {
+      return {
+        runId: 'wrun_1',
+        hookId: 'hook_1',
+        token: 'order:1',
+        ownerId: 'owner_1',
+        projectId: 'project_1',
+        environment: 'production',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        ...(resumeContext ? { resumeContext } : {}),
+      } as Hook;
+    }
+
+    function setupWorld(
+      hook: Hook,
+      executionContext: Record<string, unknown> = {}
+    ) {
+      const createEvent = vi.fn().mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+        runs: {
+          get: vi.fn().mockResolvedValue({
+            runId: 'wrun_1',
+            status: 'running',
+            deploymentId: 'deployment_1',
+            workflowName: 'processOrder',
+            specVersion: SPEC_VERSION_CURRENT,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            attributes: {},
+            executionContext: {
+              workflowCoreVersion: '5.0.0-beta.40',
+              ...executionContext,
+            },
+          }),
+        },
+        events: { create: createEvent },
+        // Encryption disabled, so the stored payload's outer prefix is the
+        // compression codec.
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('deployment_2'),
+      } as unknown as World);
+      return () =>
+        peekFormatPrefix(
+          createEvent.mock.calls[0][1].eventData.payload as Uint8Array
+        );
+    }
+
+    it('writes gzip for a run pinned to a Node.js version without zstd', async () => {
+      // The producer here runs on a zstd-capable Node.js; the run's
+      // deployment does not, so zstd would fail its replay.
+      const codec = setupWorld(makeHook(), { nodeVersion: '20.19.0' });
+      await resumeHook('order:1', LARGE_PAYLOAD);
+      expect(codec()).toBe(SerializationFormat.GZIP);
+    });
+
+    it('writes gzip for a run that did not record its Node.js version', async () => {
+      const codec = setupWorld(makeHook());
+      await resumeHook('order:1', LARGE_PAYLOAD);
+      expect(codec()).toBe(SerializationFormat.GZIP);
+    });
+
+    it('writes zstd for a run on a Node.js version that decodes it', async () => {
+      const codec = setupWorld(makeHook(), { nodeVersion: '24.0.0' });
+      await resumeHook('order:1', LARGE_PAYLOAD);
+      expect(codec()).toBe(SerializationFormat.ZSTD);
+    });
+
+    it('reads the Node.js version from the stored resume context', async () => {
+      const resumeContext = {
+        deploymentId: 'deployment_1',
+        workflowName: 'processOrder',
+        runSpecVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: '5.0.0-beta.40',
+      };
+      const zstd = setupWorld(
+        makeHook({ ...resumeContext, nodeVersion: '24.0.0' })
+      );
+      await resumeHook('order:1', LARGE_PAYLOAD);
+      expect(zstd()).toBe(SerializationFormat.ZSTD);
+
+      // A context without the field (e.g. from a backend that does not mirror
+      // it yet) falls back to gzip even though the run itself recorded 24.
+      const gzip = setupWorld(makeHook(resumeContext), {
+        nodeVersion: '24.0.0',
+      });
+      await resumeHook('order:1', LARGE_PAYLOAD);
+      expect(gzip()).toBe(SerializationFormat.GZIP);
+    });
+  });
+
   describe('force-claim redirect', () => {
     const baseHook = (overrides: Partial<Hook>): Hook =>
       ({
