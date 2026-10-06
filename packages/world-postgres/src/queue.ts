@@ -412,11 +412,13 @@ export function createQueue(
     jobKey,
     executorRunId,
     attemptOffset,
+    createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
     idempotencyKey?: string;
     headers?: Record<string, string>;
@@ -444,6 +446,7 @@ export function createQueue(
         attempt,
         ...(attemptOffset !== undefined ? { attemptOffset } : {}),
         messageId,
+        ...(createdAt ? { createdAt } : {}),
         idempotencyKey,
         headers,
       }),
@@ -469,6 +472,7 @@ export function createQueue(
       queueId: message.id,
       body: message.data,
       messageId: message.messageId,
+      createdAt: message.createdAt,
       attempt,
       attemptOffset: attempt - 1,
       maxAttempts: remainingAttempts,
@@ -603,6 +607,7 @@ export function createQueue(
   async function executeMessageOverHttp({
     queueName,
     messageId,
+    createdAt,
     attempt,
     body,
     headers: extraHeaders,
@@ -611,6 +616,7 @@ export function createQueue(
   }: {
     queueName: ValidQueueName;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
     body: Uint8Array;
     headers?: Record<string, string>;
@@ -622,6 +628,8 @@ export function createQueue(
     headers.set('x-vqs-queue-name', queueName);
     headers.set('x-vqs-message-id', messageId);
     headers.set('x-vqs-message-attempt', String(attempt));
+    if (createdAt) headers.set('x-vqs-message-created-at', createdAt);
+    else headers.delete('x-vqs-message-created-at');
     // Strip caller-supplied provenance case-insensitively. Only the verified
     // executor task may set these headers, including on retries.
     headers.delete(EXECUTOR_JOB_HEADER);
@@ -793,6 +801,7 @@ export function createQueue(
       queueId,
       body,
       messageId,
+      createdAt: new Date().toISOString(),
       attempt: 1,
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
@@ -893,6 +902,7 @@ export function createQueue(
         const result = await executeMessageOverHttp({
           queueName,
           messageId: messageData.messageId,
+          createdAt: messageData.createdAt,
           attempt,
           body: messageData.data,
           headers: messageData.headers,
@@ -912,7 +922,10 @@ export function createQueue(
           await addGraphileJob({
             queueId: messageData.id,
             body: messageData.data,
+            // The same message: its id and creation time carry over, and
+            // the handler sees the next deliveryCount.
             messageId: messageData.messageId,
+            createdAt: messageData.createdAt,
             attempt: attempt + 1,
             attemptOffset: messageData.attemptOffset,
             idempotencyKey: messageData.idempotencyKey,

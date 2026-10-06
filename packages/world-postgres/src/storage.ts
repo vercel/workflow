@@ -1,8 +1,10 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import {
   EntityConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
@@ -14,6 +16,8 @@ import type {
   AttributeChange,
   CreateEventParams,
   Event,
+  EventListResponse,
+  EventLogSnapshot,
   EventResult,
   EventsResolveData,
   ExperimentalSetAttributesResult,
@@ -102,7 +106,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * whichever one the caller is already inside, so the position an insert takes
  * commits or rolls back with the insert itself.
  */
-type DrizzleLike = Pick<Drizzle, 'insert' | 'update' | 'select'>;
+type DrizzleLike = Pick<
+  Drizzle,
+  'insert' | 'update' | 'select' | 'with' | '$with'
+>;
 
 /** Only for legacy (pre-slot) runs; see `allocateEventId`. */
 const legacyEventUlid = monotonicFactory();
@@ -280,6 +287,138 @@ async function forceClaimRefusal(
 }
 
 /**
+ * The in-band writer fence for single-orchestrator runs (spec >= 9).
+ *
+ * `workflow_event_slots.seq_in_band` counts the positions accepted from
+ * in-band writes (writes by the run's orchestrator), `run_created` included,
+ * so a run starts at {@link IN_BAND_SEQ_AT_RUN_CREATION}. An in-band create
+ * is accepted only when its `expectedSeqInBand` equals the count, and the
+ * check and the advance happen in the INSERT that takes the event's slot: a
+ * data-modifying CTE runs
+ *
+ *   UPDATE workflow_event_slots SET seq_in_band = seq_in_band + 1
+ *   WHERE run_id = $run AND seq_in_band = $expected
+ *
+ * and the event's id is the next slot only when that UPDATE matched, NULL
+ * otherwise. A NULL id violates the primary key's NOT NULL, so a refused
+ * write fails as a whole and allocates nothing, and an accepted one commits
+ * its event and its count together: a reader never sees the count include an
+ * event it cannot list. Concurrent in-band writers holding the same count
+ * serialize on the UPDATE's row lock, and every one after the first finds the
+ * count moved. No transaction is added: the fence runs on whichever handle
+ * the insert already uses.
+ *
+ * A primary-key conflict (another writer took the slot first) is absorbed by
+ * `ON CONFLICT DO NOTHING` after the CTE has already advanced the count, so
+ * the insert puts it back before it retries at the next slot; when it cannot
+ * (another in-band writer moved it meanwhile), this writer has been
+ * superseded.
+ *
+ * Out-of-band writes never touch the count.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
+
+/** Postgres error code for a NOT NULL violation. */
+const NOT_NULL_VIOLATION = '23502';
+
+/** The fence one in-band create applies to the first event it inserts for its run. */
+interface PendingFence {
+  runId: string;
+  expected: number;
+  /** Set once the fenced insert committed; later inserts are unfenced. */
+  consumed: boolean;
+}
+
+// per-copy-ok: set and read within one `create` call, which runs entirely
+// inside the module copy that defines it, so a context never has to cross a
+// copy boundary.
+const pendingFence = new AsyncLocalStorage<PendingFence>();
+
+async function readSeqInBand(
+  db: DrizzleLike,
+  runId: string
+): Promise<number | undefined> {
+  const [row] = await db
+    .select({ seqInBand: Schema.eventSlots.seqInBand })
+    .from(Schema.eventSlots)
+    .where(eq(Schema.eventSlots.runId, runId))
+    .limit(1);
+  return row?.seqInBand;
+}
+
+async function supersededError(
+  db: DrizzleLike,
+  runId: string,
+  expected: number
+): Promise<InBandSupersededError> {
+  const current = await readSeqInBand(db, runId).catch(() => undefined);
+  return new InBandSupersededError(
+    `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current ?? 'unknown'}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+    current !== undefined ? { seqInBand: current } : undefined
+  );
+}
+
+/**
+ * One attempt of a fenced insert. Returns the committed row, `undefined` for
+ * a slot conflict (the count was advanced and must be put back), or throws
+ * {@link InBandSupersededError} when the count did not match.
+ */
+async function fencedInsertAttempt(
+  db: DrizzleLike,
+  values: Omit<typeof Schema.events.$inferInsert, 'eventId'> & {
+    eventId: SQL<string>;
+  },
+  fence: PendingFence
+): Promise<{ eventId: string; createdAt: Date } | undefined> {
+  const slots = Schema.eventSlots;
+  const advanced = db
+    .$with('in_band_fence', { runId: slots.runId })
+    .as(
+      sql`update ${slots} set ${sql.identifier(slots.seqInBand.name)} = ${slots.seqInBand} + 1 where ${slots.runId} = ${fence.runId} and ${slots.seqInBand} = ${sql`${fence.expected}::integer`} returning ${slots.runId}`
+    );
+  try {
+    const [row] = await db
+      .with(advanced)
+      .insert(Schema.events)
+      .values({
+        ...values,
+        eventId: sql<string>`(select ${values.eventId} from ${advanced})`,
+      } as unknown as typeof Schema.events.$inferInsert)
+      .onConflictDoNothing({
+        target: [Schema.events.runId, Schema.events.eventId],
+      })
+      .returning({
+        eventId: Schema.events.eventId,
+        createdAt: Schema.events.createdAt,
+      });
+    return row;
+  } catch (err) {
+    if (pgErrorOf(err).code === NOT_NULL_VIOLATION) {
+      throw await supersededError(db, fence.runId, fence.expected);
+    }
+    throw err;
+  }
+}
+
+/** Puts back the count a fenced attempt advanced before losing its slot. */
+async function revertFenceAdvance(
+  db: DrizzleLike,
+  fence: PendingFence
+): Promise<boolean> {
+  const rows = await db
+    .update(Schema.eventSlots)
+    .set({ seqInBand: sql`${Schema.eventSlots.seqInBand} - 1` })
+    .where(
+      and(
+        eq(Schema.eventSlots.runId, fence.runId),
+        eq(Schema.eventSlots.seqInBand, fence.expected + 1)
+      )
+    )
+    .returning({ runId: Schema.eventSlots.runId });
+  return rows.length > 0;
+}
+
+/**
  * Inserts one event row, retrying while the position it computed is taken.
  *
  * The primary-key conflict is absorbed by `ON CONFLICT DO NOTHING` rather than
@@ -300,19 +439,38 @@ async function insertEventRow(
 ): Promise<{ eventId: string; createdAt: Date } | undefined> {
   const runId = values.runId;
   const allocates = typeof values.eventId !== 'string';
+  // The create's own event on a fenced run is the first slot-allocating
+  // insert for that run; see IN_BAND_SEQ_AT_RUN_CREATION.
+  const fence = pendingFence.getStore();
+  const fenced =
+    allocates && fence !== undefined && !fence.consumed && fence.runId === runId
+      ? fence
+      : undefined;
   for (let attempt = 0; ; attempt++) {
-    const [row] = await db
-      .insert(Schema.events)
-      .values(values as typeof Schema.events.$inferInsert)
-      .onConflictDoNothing({
-        target: [Schema.events.runId, Schema.events.eventId],
-      })
-      .returning({
-        eventId: Schema.events.eventId,
-        createdAt: Schema.events.createdAt,
-      });
+    const [row] = fenced
+      ? [
+          await fencedInsertAttempt(
+            db,
+            values as typeof values & { eventId: SQL<string> },
+            fenced
+          ),
+        ]
+      : await db
+          .insert(Schema.events)
+          .values(values as typeof Schema.events.$inferInsert)
+          .onConflictDoNothing({
+            target: [Schema.events.runId, Schema.events.eventId],
+          })
+          .returning({
+            eventId: Schema.events.eventId,
+            createdAt: Schema.events.createdAt,
+          });
     if (row) {
+      if (fenced) fenced.consumed = true;
       return row;
+    }
+    if (fenced && !(await revertFenceAdvance(db, fenced))) {
+      throw await supersededError(db, fenced.runId, fenced.expected);
     }
     if (!allocates || attempt >= SLOT_INSERT_MAX_ATTEMPTS) {
       if (!allocates) {
@@ -958,7 +1116,90 @@ async function handleLegacyEventPostgres(
   }
 }
 
+/**
+ * The events storage, with the in-band writer fence (see
+ * {@link IN_BAND_SEQ_AT_RUN_CREATION}) around `create` and the fence
+ * snapshot on `list`.
+ */
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
+  const events = createUnfencedEventsStorage(drizzle);
+  const unfencedCreate = events.create as (
+    runId: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
+  return {
+    ...events,
+    async create(
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<EventResult> {
+      // `run_created` opens the count and is never fenced itself.
+      if (!params?.inBand || !runId || data.eventType === 'run_created') {
+        return unfencedCreate(runId, data, params);
+      }
+      const expected = params.expectedSeqInBand;
+      if (
+        expected === undefined ||
+        !Number.isSafeInteger(expected) ||
+        expected < 0
+      ) {
+        throw new WorkflowWorldError(
+          `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+          { status: 400 }
+        );
+      }
+      // Refuse a stale writer before anything else: several event types
+      // update their entity row (run status, attributes, a step or wait)
+      // outside a transaction, ahead of the event insert, and that update
+      // must not land for a write the fence then refuses. The insert below
+      // re-checks atomically; this read only keeps a writer that is already
+      // behind from touching entity rows. Two writers holding the same count
+      // at the same instant can both pass it, and then only one event lands.
+      const current = await readSeqInBand(drizzle, runId);
+      if (current !== undefined && current !== expected) {
+        throw await supersededError(drizzle, runId, expected);
+      }
+      return pendingFence.run({ runId, expected, consumed: false }, () =>
+        unfencedCreate(runId, data, params)
+      );
+    },
+    async list(params: ListEventsParams): Promise<EventListResponse> {
+      // Read before listing, in one statement: the count, then the highest
+      // slot. Every in-band write the count includes committed with it, so
+      // the listing that follows sees its event.
+      const snapshot = await readEventLogSnapshot(drizzle, params.runId);
+      const page = await events.list(params);
+      return snapshot ? { ...page, snapshot } : page;
+    },
+  } as Storage['events'];
+}
+
+/**
+ * The fence snapshot of a slot-numbered run, or `undefined` for one that
+ * predates slots (no `workflow_event_slots` row).
+ */
+async function readEventLogSnapshot(
+  drizzle: Drizzle,
+  runId: string
+): Promise<EventLogSnapshot | undefined> {
+  const [row] = await drizzle
+    .select({
+      seqInBand: Schema.eventSlots.seqInBand,
+      topEventId: sql<
+        string | null
+      >`(select e.id from ${Schema.events} e where e.run_id = ${runId} and e.id like ${`${EVENT_ID_PREFIX}%`} order by e.id desc limit 1)`,
+    })
+    .from(Schema.eventSlots)
+    .where(eq(Schema.eventSlots.runId, runId))
+    .limit(1);
+  if (!row) return undefined;
+  const seq = row.topEventId ? (eventIdToSlot(row.topEventId) ?? 0) : 0;
+  return { seq, seqInBand: row.seqInBand };
+}
+
+function createUnfencedEventsStorage(drizzle: Drizzle): Storage['events'] {
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -3057,7 +3298,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return stripEventDataRefs(parsed, resolveData);
     },
-    async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
+    async list(params: ListEventsParams): Promise<EventListResponse> {
       const limit = params.pagination?.limit ?? getMaxEventsPerRun();
       const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =

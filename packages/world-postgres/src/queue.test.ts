@@ -495,6 +495,59 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('stamps createdAt on a new message and keeps an idempotency key off a wake', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await queue.queue('__wkf_workflow_test', { runId: 'run_01ABC' });
+    const [, data, options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0] as [string, MessageData, { jobKey?: string }];
+    expect(new Date(data.createdAt ?? '').getTime()).not.toBeNaN();
+    expect(data.idempotencyKey).toBeUndefined();
+    // A wake's job key is its own message id, so two wakes never collapse.
+    expect(options.jobKey).toBe(data.messageId);
+  });
+
+  it('redelivers the same message on timeoutSeconds: same id and createdAt, next attempt', async () => {
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      undefined,
+      undefined,
+      { timeoutSeconds: 7 }
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    const createdAt = '2026-10-05T00:00:00.000Z';
+    const messageId = MessageId.parse('msg_01STEP');
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__wkf_workflow_test-step',
+        { runId: 'run_01ABC', stepId: 'step_01ABC', stepName: 'test-step' },
+        { messageId, createdAt, idempotencyKey: 'step_01ABC', attempt: 2 }
+      ),
+      { job: { attempts: 2 } }
+    );
+
+    expect(requests[0]?.headers).toMatchObject({
+      'x-vqs-message-id': messageId,
+      'x-vqs-message-attempt': '2',
+      'x-vqs-message-created-at': createdAt,
+    });
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({
+        messageId,
+        createdAt,
+        attempt: 3,
+        idempotencyKey: 'step_01ABC',
+      }),
+      expect.objectContaining({ jobKey: 'step_01ABC' })
+    );
+  });
+
   it('defaults pollInterval to 500ms and honors an override from config', async () => {
     const defaultQueue = buildQueue(
       { connectionString: 'postgres://test' },
@@ -929,6 +982,7 @@ function buildMessageData(
     headers?: Record<string, string>;
     idempotencyKey?: string;
     messageId?: MessageId;
+    createdAt?: string;
   }
 ) {
   const { id } = parseQueueName(queueName);
@@ -940,6 +994,7 @@ function buildMessageData(
     headers: opts?.headers,
     idempotencyKey: opts?.idempotencyKey,
     messageId: opts?.messageId ?? MessageId.parse('msg_01ABC'),
+    ...(opts?.createdAt ? { createdAt: opts.createdAt } : {}),
   });
 }
 
@@ -959,7 +1014,8 @@ async function startWorkflowHttpServer(
   }>,
   port = 0,
   path = '/.well-known/workflow/v1/flow',
-  beforeResponse?: () => Promise<void>
+  beforeResponse?: () => Promise<void>,
+  responseBody: unknown = { ok: true }
 ) {
   const server = createServer(async (req, res) => {
     const body = await new Promise<string>((resolve, reject) => {
@@ -983,7 +1039,7 @@ async function startWorkflowHttpServer(
     if (req.method === 'POST' && req.url === path) {
       if (beforeResponse) await beforeResponse();
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(JSON.stringify(responseBody));
       return;
     }
 

@@ -7,7 +7,7 @@ import { createWorkflowRunEventBatch } from './events.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
- * POST /api/v4/runs/:runId/events/batch — the client wire half.
+ * POST /api/v5/runs/:runId/events/batch — the client wire half.
  *
  * What these tests pin down:
  *  - the request body is the events' single-POST frames back-to-back, in
@@ -176,7 +176,7 @@ describe('createWorkflowRunEventBatch', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
         body: (raw) => {
           requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
@@ -246,7 +246,7 @@ describe('createWorkflowRunEventBatch', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
         body: (raw) => {
           requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
@@ -287,7 +287,7 @@ describe('createWorkflowRunEventBatch', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(
@@ -330,7 +330,7 @@ describe('createWorkflowRunEventBatch', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(
@@ -357,7 +357,7 @@ describe('createWorkflowRunEventBatch', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(
@@ -388,7 +388,7 @@ describe('createWorkflowRunEventBatch', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(
@@ -414,7 +414,7 @@ describe('createWorkflowRunEventBatch', () => {
     const pool = agent.get(ORIGIN);
     pool
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(503, JSON.stringify({ message: 'unavailable' }), {
@@ -422,7 +422,7 @@ describe('createWorkflowRunEventBatch', () => {
       });
     pool
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(
@@ -486,7 +486,7 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
         body: (raw) => {
           requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
@@ -518,7 +518,7 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(503, JSON.stringify({ message: 'unavailable' }), {
@@ -545,7 +545,7 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(503, JSON.stringify({ message: 'unavailable' }), {
@@ -592,7 +592,7 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(
@@ -625,7 +625,7 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        path: `/api/v5/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
       .reply(

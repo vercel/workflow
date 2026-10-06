@@ -174,7 +174,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // Not in the strict set on purpose: after vercel/workflow#3732 a write
     // issued before the socket finishes connecting takes HTTP by design, and
     // on a cold instance that can be the first step_started of a run.
-    const agent = httpReply('/api/v4/runs/wrun_1/events/step_started');
+    const agent = httpReply('/api/v5/runs/wrun_1/events/step_started');
 
     // The claim is only that strict mode did not block the fallback, so this
     // asserts on that and on the request having been made. Decoding the reply
@@ -197,7 +197,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // leaks into every later test, since clearAllMocks resets calls, not
     // implementations.
     resolveWsTransportMock.mockReturnValueOnce(null);
-    const agent = httpReply('/api/v4/runs/wrun_1/events/step_completed');
+    const agent = httpReply('/api/v5/runs/wrun_1/events/step_completed');
 
     const result = await createWorkflowRunEventV4(input, {
       token: 'test-token',
@@ -218,7 +218,7 @@ describe('per-workflow override (WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -279,7 +279,7 @@ describe('transport gate', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -333,7 +333,7 @@ describe('createWorkflowRunEventV4 over ws', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
