@@ -6,29 +6,18 @@ import type { StepExecutionResult } from './step-executor.js';
  * In-process single-flight for step body execution, keyed by
  * `runId:correlationId`.
  *
- * This is a required companion to inline step ownership (see
- * `isInlineOwnershipEnabled` in constants.ts): the ownership lease is a
- * *death proof* only on platforms with a bounded invocation lifetime. On
- * worlds without an invocation kill bound (world-local's single process,
- * self-hosted deployments) a delayed backstop can fire while the owning
- * execution is still mid-body, in the same process. This map absorbs that
- * race: the loser awaits the winner's settlement and then acks WITHOUT
- * executing. On Vercel Fluid compute it also absorbs same-instance races
- * between an owner redelivery and a backstop.
+ * A step has one queue message, so two executions of one step in one process
+ * are two deliveries of that message: the queue redelivered it while the
+ * first delivery was still running the body (an event loop stalled past the
+ * lease, or a world without an invocation kill bound). The second delivery
+ * awaits the first one's settlement and then asks for the same message again
+ * after a short delay instead of running the body. It never acknowledges on
+ * the first one's behalf: the message is acknowledged only once a terminal
+ * step event is committed, and the redelivery confirms that from the log.
  *
- * The loser must not ack-and-skip early (before the winner settles): a crash
- * after an early ack would consume the loser's queue message while the
- * winner's outcome is still unknown, potentially orphaning the step with no
- * message left to drive it. Awaiting settlement first keeps the at-least-once
- * envelope intact: if the loser's own invocation hits its deadline while
- * waiting, its message redelivers and re-checks, degrading gracefully to
- * polling.
- *
- * Cross-instance duplicates (two separate processes racing the same step)
- * are out of scope here; that is what the ownership lease bounds on
- * platforms where it is a death proof, and the documented residual risk on
- * multi-instance self-hosted worlds (mitigate by raising
- * `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`).
+ * Cross-instance duplicates (two processes racing one step) are not covered.
+ * Background step invocations are not fenced; such a duplicate runs the body
+ * twice and is recorded as a `redelivery` start.
  */
 // On `globalThis` (see `globalSingleton`), not module scope: a per-copy map is
 // not single-flight. Two invocations reaching this module through different
@@ -41,14 +30,14 @@ const singleFlight = globalSingleton(
   () => ({ inFlight: new Map<string, Promise<StepExecutionResult>>() })
 );
 
+/** Delay before a delivery that lost the single-flight is redelivered. */
+export const STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS = 1;
+
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
- * already in flight in this process. The winner's result is returned to the
- * winner; a loser awaits the winner's settlement (success OR failure) and
- * then returns `{ type: 'skipped' }` so its caller acks without running the
- * body. A winner failure is not propagated to the loser: the winner's own
- * queue message redelivers and drives the retry, so exactly one message
- * keeps owning the outcome.
+ * already in flight in this process. A loser awaits the winner's settlement
+ * (success OR failure) and then returns a `throttled` result, so its caller
+ * redelivers the message and the redelivery re-checks the log.
  */
 export async function runStepSingleFlight(
   runId: string,
@@ -68,10 +57,13 @@ export async function runStepSingleFlight(
     try {
       await existing;
     } catch {
-      // The winner failed (typically a transient world error). Its own queue
-      // message redelivers and retries; this loser still skips.
+      // The winner failed (typically a transient world error). The
+      // redelivery below re-checks the log either way.
     }
-    return { type: 'skipped' };
+    return {
+      type: 'throttled',
+      timeoutSeconds: STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,
+    };
   }
 
   const promise = execute();
