@@ -845,8 +845,11 @@ export function workflowEntrypoint(
         // log line and child loggers below, so callers don't repeat it.
         const runLogger = runtimeLogger.forRun(runId, workflowName);
 
+        // A step message is exempt: it is retried in place for its whole
+        // life (each userland retry is a redelivery), so its delivery count
+        // is bounded by the step's retries and the message's retention.
         const maxQueueDeliveries = getMaxQueueDeliveries();
-        if (metadata.attempt > maxQueueDeliveries) {
+        if (metadata.attempt > maxQueueDeliveries && !incomingStepId) {
           const maxDeliveriesDescription = describeError(
             undefined,
             RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED

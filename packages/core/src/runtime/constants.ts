@@ -180,8 +180,8 @@ export function getReplayTimeoutMaxRetries(): number {
  */
 export const MAX_INLINE_STEPS = 3;
 
-/** Lower bound for the inline-steps env override (1 = single inline step). */
-export const MIN_MAX_INLINE_STEPS = 1;
+/** Lower bound for the inline-steps env override (0 = every step is enqueued). */
+export const MIN_MAX_INLINE_STEPS = 0;
 
 /**
  * Upper bound for the inline-steps env override. Inline bodies run in parallel
@@ -201,11 +201,11 @@ export function getMaxInlineSteps(): number {
   const raw = process.env.WORKFLOW_MAX_INLINE_STEPS;
   if (!raw) return MAX_INLINE_STEPS;
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!Number.isInteger(parsed) || parsed < 0) {
     if (!warned.maxInlineStepsValues.has(raw)) {
       warned.maxInlineStepsValues.add(raw);
       runtimeLogger.warn(
-        'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a positive integer; using default',
+        'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a nonnegative integer; using default',
         { raw, defaultValue: MAX_INLINE_STEPS }
       );
     }

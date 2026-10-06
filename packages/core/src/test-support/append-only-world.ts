@@ -18,6 +18,24 @@ export interface RecordedQueueCall {
   opts?: Record<string, unknown>;
 }
 
+/** A queue message the World holds until a test delivers it. */
+export interface HeldMessage {
+  message: unknown;
+  messageId: string;
+  queueName: string;
+  deliveryCount: number;
+  createdAt: Date;
+  opts?: Record<string, unknown>;
+}
+
+/** One delivery a test made, with what the handler returned. */
+export interface RecordedDelivery {
+  message: unknown;
+  messageId: string;
+  deliveryCount: number;
+  result: unknown;
+}
+
 /** One `events.create` call recorded by {@link AppendOnlyWorld}. */
 export interface RecordedCreate {
   event: Event;
@@ -46,6 +64,12 @@ export class AppendOnlyWorld {
   readonly events: Event[] = [];
   readonly creates: RecordedCreate[] = [];
   readonly queueCalls: RecordedQueueCall[] = [];
+  /** Messages enqueued and not yet acknowledged. */
+  readonly held: HeldMessage[] = [];
+  readonly deliveries: RecordedDelivery[] = [];
+  private handler:
+    | ((message: unknown, meta: Record<string, unknown>) => Promise<unknown>)
+    | undefined;
   seq = 0;
   seqInBand = 0;
   private readonly subscribers = new Set<{
@@ -59,6 +83,11 @@ export class AppendOnlyWorld {
       fence?: boolean;
       subscribe?: boolean;
       reportIncomplete?: boolean;
+      /**
+       * Called with the delay of every `{ timeoutSeconds }` result, so a
+       * test with fake timers can let that time pass before the redelivery.
+       */
+      advanceClock?: (seconds: number) => void;
     } = {}
   ) {}
 
@@ -160,6 +189,83 @@ export class AppendOnlyWorld {
     return { events: skipped, cursor: null, hasMore: false };
   }
 
+  /**
+   * Deliver one held message to the registered queue handler, the way a
+   * queue would: a `{ timeoutSeconds }` result keeps the same message (same
+   * id, next delivery count); anything else acknowledges it; a rejection
+   * keeps it too.
+   */
+  async deliver(held: HeldMessage): Promise<unknown> {
+    if (!this.handler) throw new Error('no queue handler registered');
+    const index = this.held.indexOf(held);
+    if (index !== -1) this.held.splice(index, 1);
+    let result: unknown;
+    try {
+      result = await this.handler(held.message, {
+        attempt: held.deliveryCount,
+        deliveryCount: held.deliveryCount,
+        createdAt: held.createdAt,
+        messageId: held.messageId,
+        queueName: held.queueName,
+        requestId: `req_${this.deliveries.length + 1}`,
+      });
+    } catch (error) {
+      this.deliveries.push({
+        message: held.message,
+        messageId: held.messageId,
+        deliveryCount: held.deliveryCount,
+        result: error,
+      });
+      this.held.push({ ...held, deliveryCount: held.deliveryCount + 1 });
+      throw error;
+    }
+    this.deliveries.push({
+      message: held.message,
+      messageId: held.messageId,
+      deliveryCount: held.deliveryCount,
+      result,
+    });
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'timeoutSeconds' in result
+    ) {
+      this.options.advanceClock?.(
+        (result as { timeoutSeconds: number }).timeoutSeconds
+      );
+      this.held.push({ ...held, deliveryCount: held.deliveryCount + 1 });
+    }
+    return result;
+  }
+
+  /** Enqueue a message as `start()` or a test would. */
+  enqueue(queueName: string, message: unknown): HeldMessage {
+    const held: HeldMessage = {
+      message,
+      messageId: `msg_${this.queueCalls.length + this.held.length + 1}_ext`,
+      queueName,
+      deliveryCount: 1,
+      createdAt: new Date(),
+    };
+    this.held.push(held);
+    return held;
+  }
+
+  /**
+   * Deliver held messages, oldest first, until none is left or `limit`
+   * deliveries were made. Delays are ignored.
+   */
+  async runUntilIdle(limit = 100): Promise<void> {
+    for (let i = 0; i < limit; i++) {
+      const next = this.held[0];
+      if (!next) return;
+      await this.deliver(next);
+    }
+    throw new Error(
+      `still ${this.held.length} message(s) after ${limit} deliveries`
+    );
+  }
+
   asWorld(): World {
     const self = this;
     const events: World['events'] = {
@@ -245,13 +351,41 @@ export class AppendOnlyWorld {
         },
       },
       async queue(queueName: string, message: unknown, opts?: object) {
-        self.queueCalls.push({
-          queueName,
+        const options = opts as Record<string, unknown> | undefined;
+        self.queueCalls.push({ queueName, message, opts: options });
+        const messageId = `msg_${self.queueCalls.length}`;
+        const key = options?.idempotencyKey;
+        // Deduplicate like a queue does while the keyed message exists.
+        if (
+          key !== undefined &&
+          self.held.some((held) => held.opts?.idempotencyKey === key)
+        ) {
+          return { messageId: null };
+        }
+        self.held.push({
           message,
-          opts: opts as Record<string, unknown>,
+          messageId,
+          queueName,
+          deliveryCount: 1,
+          createdAt: new Date(),
+          opts: options,
         });
-        return { messageId: `msg_${self.queueCalls.length}` };
+        return { messageId };
       },
+      createQueueHandler(
+        _prefix: string,
+        handler: (
+          message: unknown,
+          meta: Record<string, unknown>
+        ) => Promise<unknown>
+      ) {
+        self.handler = handler;
+        return async () => new Response(null, { status: 204 });
+      },
+      async getEncryptionKeyForRun() {
+        return undefined;
+      },
+      capabilities: {},
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';
       },
