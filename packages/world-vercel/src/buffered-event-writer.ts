@@ -40,6 +40,10 @@ type Pending = {
   completion: Promise<EventResult>;
   /** Settles when the current attempt settles, however it settles. */
   attempt: Promise<unknown>;
+  /** Settles once the first attempt's frame reached the socket (or failed). */
+  transmitted?: Promise<unknown>;
+  /** Set when `transmitted` has settled. */
+  sent?: boolean;
   /** Identifies the current completion; a recovery replaces it. */
   token?: object;
 };
@@ -525,6 +529,14 @@ export class BufferedEventWriter implements EventWriteSession {
       (error: unknown) =>
         isTransportFailure(error) && this.resync ? sent() : sendFailed(error)
     );
+    entry.transmitted = transmitted.then(
+      () => {
+        entry.sent = true;
+      },
+      () => {
+        entry.sent = true;
+      }
+    );
     entry.completion = this.settle(entry, attempt);
     // Observe errors immediately; flush still receives the original rejection.
     void entry.completion.catch(() => {});
@@ -541,6 +553,13 @@ export class BufferedEventWriter implements EventWriteSession {
     if (this.failure) throw this.failure;
     if (!this.pending.length) return;
     try {
+      // A flush must follow every event it covers onto the socket: the server
+      // refuses a flush ahead of what it has received. A fresh session's
+      // stage() returns before transmission, so wait for it here.
+      if (this.pending.some((entry) => entry.transmitted && !entry.sent)) {
+        await Promise.all(this.pending.map((entry) => entry.transmitted));
+        if (this.failure) throw this.failure;
+      }
       for (;;) {
         try {
           await this.flushThrough(this.queued!, this.generation);

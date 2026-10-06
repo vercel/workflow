@@ -259,6 +259,45 @@ it('stages a fresh run’s run_created and later events before its connection is
   synced({ after: 0, head: 0, events: [], generation: 1 });
 });
 
+it("sends a fresh session's flush only after the events it covers", async () => {
+  const order: string[] = [];
+  const transmit: (() => void)[] = [];
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    (event, _params, onSent) => {
+      transmit.push(() => {
+        order.push(event.eventType);
+        onSent?.();
+      });
+      return new Promise<EventResult>(() => {});
+    },
+    vi.fn(async () => {}),
+    async (through) => {
+      order.push(`flush:${through}`);
+    },
+    (async () => ({ after: 0, head: 0, events: [], generation: 1 })) as never
+  );
+  writer.startFresh();
+  await writer.stage(
+    {
+      eventType: 'run_created',
+      specVersion: 6,
+      eventData: {
+        deploymentId: 'dpl',
+        workflowName: 'wf',
+        input: Uint8Array.of(1),
+      },
+    } as unknown as CreateEventRequest,
+    { eventCount: 0 }
+  );
+  void writer.flush().catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // The server refuses a flush ahead of the events it has received.
+  expect(order).toEqual([]);
+  transmit[0]();
+  await vi.waitFor(() => expect(order).toEqual(['run_created', 'flush:1']));
+});
+
 it('fails a fresh session whose run already exists, as superseded', async () => {
   const writer = new BufferedEventWriter(
     'wrun_test',
