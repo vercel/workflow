@@ -1148,6 +1148,12 @@ export function workflowEntrypoint(
                   // Set when an accepted write could not be folded into the
                   // log without leaving a hole; the next pass reads first.
                   let logBehind = false;
+                  // Slots of this delivery's accepted in-band writes, and the
+                  // highest slot the latest replay pass consumed. Any other
+                  // event above that slot reached the log after the VM
+                  // decided, so the delivery must not suspend past it.
+                  const ownSlots = new Set<number>();
+                  let passConsumedSlot = 0;
                   /**
                    * Folds an accepted in-band write into the loaded log: its
                    * skipped-slot report, then its own event, in position
@@ -1185,6 +1191,7 @@ export function workflowEntrypoint(
                       logBehind = true;
                       return;
                     }
+                    if (ownSlot !== null) ownSlots.add(ownSlot);
                     mergeReportedEvents(log.events, [...report, own]);
                   };
                   /** The in-band writer, folding each accepted write into the log. */
@@ -1875,6 +1882,7 @@ export function workflowEntrypoint(
                           workflowRun,
                           log.events
                         );
+                        passConsumedSlot = maxEventSlot(log.events) ?? 0;
                         let workflowResult: WorkflowResumeResult = session
                           ? await resumeWorkflow(session, log.events)
                           : { type: 'replay' };
@@ -2314,6 +2322,23 @@ export function workflowEntrypoint(
                         (hookResult !== undefined && otherItems.length > 0);
                       if (wroteSomething) await loadAfter();
                       assert(log, 'The event log is loaded on suspend');
+                      // An event that landed after the VM decided (a hook
+                      // payload, a background step's outcome) has a wake of
+                      // its own, but that wake would find this position
+                      // already recorded as consumed. Replay it now instead.
+                      if (
+                        log.events.some((event) => {
+                          const slot = eventIdToSlot(event.eventId);
+                          return (
+                            slot !== null &&
+                            slot > passConsumedSlot &&
+                            !ownSlots.has(slot) &&
+                            event.eventType !== 'noop'
+                          );
+                        })
+                      ) {
+                        return { type: 'continue', retainSession: false };
+                      }
                       await armTimers(log.events);
                       recordConsumedPosition(world, runId, {
                         slot: maxEventSlot(log.events) ?? 0,
