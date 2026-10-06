@@ -9,6 +9,7 @@ import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import * as workflowModule from '../../workflow.js';
 import { getMaxQueueDeliveries } from '../constants.js';
 import { setWorld } from '../world.js';
 import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
@@ -197,6 +198,30 @@ describe.each([
       attempt: 1,
     });
     expect(calls.so_add ?? 0).toBe(0);
+  });
+
+  it('takes one workflow pass per inline step when the live feed echoes its own writes', async () => {
+    const steps = 20;
+    const resume = vi.spyOn(workflowModule, 'resumeWorkflow');
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(n) {
+         let x = 0;
+         for (let i = 0; i < n; i++) x = await add(x, 1);
+         return x;
+       }${transform('workflow')}`,
+      [steps],
+      { fence: true, subscribe: true }
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    // The feed pushes every event, the orchestrator's own included. Those
+    // echoes are not progress: one pass per step settling, no more.
+    if (engine === 'node') {
+      expect(resume.mock.calls.length).toBeLessThanOrEqual(steps);
+    }
+    resume.mockRestore();
   });
 
   it('enqueues background steps once with a stable key and retention, and wakes without a key', async () => {

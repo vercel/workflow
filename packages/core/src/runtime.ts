@@ -1814,6 +1814,28 @@ export function workflowEntrypoint(
                     // folded in, and that pass must not read the step as an
                     // unfinished inline step to run again.
                     const ranInline = new Set<string>();
+                    /**
+                     * Whether a live-feed event is this delivery's own write
+                     * echoed back, so it brings the workflow nothing new: a
+                     * slot its own write was answered with, an event of one of
+                     * its inline steps (only this delivery writes those), or
+                     * one already in the log.
+                     */
+                    const isOwnEvent = (event: Event): boolean => {
+                      const slot = eventIdToSlot(event.eventId);
+                      if (slot !== null && ownSlots.has(slot)) return true;
+                      if (
+                        event.eventType.startsWith('step_') &&
+                        event.correlationId !== undefined &&
+                        ranInline.has(event.correlationId)
+                      ) {
+                        return true;
+                      }
+                      return (
+                        log?.events.some((e) => e.eventId === event.eventId) ??
+                        false
+                      );
+                    };
                     const settledInline: InlineSettled[] = [];
                     // The longest backoff of the inline starts this delivery
                     // had refused for load. Once every body has settled the
@@ -2624,7 +2646,24 @@ export function workflowEntrypoint(
                       if (log) await armTimers(log.events);
                       replayBudget.pause();
                       try {
-                        await waitForProgress();
+                        // Wake for a settled body, an event from someone
+                        // else, or a due timer. Anything else (the feed's echo
+                        // of this delivery's own writes) would only cost the
+                        // workflow a pass with nothing new to act on.
+                        while (true) {
+                          await waitForProgress();
+                          if (settledInline.length > 0) break;
+                          if (pendingFeedEvents.some((e) => !isOwnEvent(e))) {
+                            break;
+                          }
+                          if (
+                            log &&
+                            dueWaits(log.events, Date.now()).length > 0
+                          ) {
+                            break;
+                          }
+                          if (inFlight.size === 0) break;
+                        }
                       } finally {
                         replayBudget.resume();
                       }
