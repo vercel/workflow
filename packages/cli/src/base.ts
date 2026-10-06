@@ -4,6 +4,12 @@ import { Command } from '@oclif/core';
  * Whether a command in this process created (or started creating) a World.
  * These are the process-wide cache keys `getWorld()` and `setWorld()` from
  * `@workflow/core/runtime` use, read here without importing the runtime.
+ *
+ * Because this module does not import the runtime, a command that needs a
+ * World must import `@workflow/core/runtime` itself (usually through
+ * `setupCliWorld()`). With the published oclif manifest only the invoked
+ * command's modules are loaded, so it cannot rely on another command having
+ * loaded the runtime, as it can in a checkout without a manifest.
  */
 function hasCachedWorld(): boolean {
   const cache = globalThis as Record<symbol, unknown>;

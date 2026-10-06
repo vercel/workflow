@@ -24,7 +24,7 @@
   "scripts": {
     "build": "rm -f oclif.manifest.json && tsc && chmod +x bin/run.js",
     "clean": "tsc --build --clean && rm -r dist ||:",
-    "dev": "tsc --watch",
+    "dev": "rm -f oclif.manifest.json && tsc --watch",
     "prepack": "node scripts/generate-oclif-manifest.mjs",
     "postpack": "rm -f oclif.manifest.json",
     "test": "vitest run src",
