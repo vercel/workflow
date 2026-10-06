@@ -419,7 +419,9 @@ export class AppendOnlyWorld {
             try {
               self.checkRunAcceptsWork(data.eventType);
             } catch (error) {
-              self.seq++;
+              // A refused item's position is sealed, as a World seals it, so
+              // a later load reads a `noop` there rather than a hole.
+              self.append({ eventType: 'noop' } as Partial<Event>);
               return {
                 status: 410,
                 error: 'gone',

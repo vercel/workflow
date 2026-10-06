@@ -126,10 +126,7 @@ export interface SuspensionHandlerResult {
   reportedEventCount: number;
   /**
    * The soonest pending wait, if any: seconds until it elapses and the
-   * correlationId of the wait that produced that timeout. The
-   * correlationId seeds the idempotency key for the wait-continuation
-   * queue message so that repeated suspension passes over the same
-   * pending wait collapse into a single delayed continuation. `resumeAtMs`
+   * correlationId of the wait that produced that timeout. `resumeAtMs`
    * is that wait's absolute deadline, for gates that ask whether it can fire
    * within some window rather than how long until it does.
    *
@@ -374,7 +371,7 @@ export async function handleSuspension({
 
   // Every recent forced creation in the loaded log may still owe its victim a
   // wake (the invocation that created it may have died before publishing), so
-  // it is republished under the hook's idempotency key; see
+  // it is republished, as an unkeyed wake; see
   // `forcedCreationsOwingWake` for the rule and its window. The rule reads
   // nothing this suspension writes, so the republish goes out alongside the
   // writes below instead of ahead of them, and is joined before returning.

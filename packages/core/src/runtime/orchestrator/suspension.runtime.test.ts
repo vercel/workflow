@@ -374,6 +374,47 @@ describe.each([
       }
     );
 
+    it.skipIf(engine === 'quickjs')(
+      'leaves no hole in the log when a cancellation refuses the batch',
+      async () => {
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+        let cancelled = false;
+        const { store, start } = await setup(
+          `const [a, b] = await Promise.all([add(1, 1), add(2, 2)]);
+         return a + b;`,
+          {
+            tweak: (world, s) => {
+              const createBatch = world.events.createBatch!.bind(world.events);
+              world.events.createBatch = (async (
+                id: string,
+                batch: BatchEventRequest[],
+                params?: never
+              ) => {
+                if (!cancelled) {
+                  cancelled = true;
+                  s.appendOutOfBand({
+                    eventType: 'run_cancelled',
+                  } as Partial<Event>);
+                }
+                return createBatch(id, batch, params);
+              }) as World['events']['createBatch'];
+            },
+          }
+        );
+        await store.deliver(start);
+
+        expect(cancelled).toBe(true);
+        expect(eventsOf(store, 'step_created')).toEqual([]);
+        expect(eventsOf(store, 'noop')).toHaveLength(2);
+        expect(eventsOf(store, 'run_failed')).toEqual([]);
+        expect(stepMessages(store)).toEqual([]);
+        // Every allocated position holds an event.
+        expect(
+          store.events.map((e) => Number(e.eventId.slice('evnt_'.length)))
+        ).toEqual(store.events.map((_, i) => i + 1));
+      }
+    );
+
     // A 5xx/429 batch item fails the delivery as a retryable World error.
     it.skipIf(engine === 'quickjs')(
       'fails the delivery on a batch item refused with a 5xx, and its redelivery finishes the run',
