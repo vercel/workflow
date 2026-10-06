@@ -1773,6 +1773,11 @@ export function workflowEntrypoint(
                       >;
                     };
                     const inFlight = new Map<string, Promise<void>>();
+                    // Every step whose body this delivery started. A body can
+                    // settle while a pass replays, before its outcome is
+                    // folded in, and that pass must not read the step as an
+                    // unfinished inline step to run again.
+                    const ranInline = new Set<string>();
                     const settledInline: InlineSettled[] = [];
                     const pendingAbsorbs: Array<
                       Parameters<typeof absorbWrite>[0]
@@ -2257,7 +2262,7 @@ export function workflowEntrypoint(
                       const runnableInline = logSteps.filter(
                         (step) =>
                           step.runnableInline &&
-                          !inFlight.has(step.correlationId)
+                          !ranInline.has(step.correlationId)
                       );
                       const mayInline =
                         !hookAwaitingConflict &&
@@ -2485,7 +2490,8 @@ export function workflowEntrypoint(
                       const stepEncryptionKey = await encryptionKey.value;
                       let first = true;
                       for (const step of steps) {
-                        if (inFlight.has(step.correlationId)) continue;
+                        if (ranInline.has(step.correlationId)) continue;
+                        ranInline.add(step.correlationId);
                         const isFirst = first;
                         first = false;
                         const body = (async () => {
