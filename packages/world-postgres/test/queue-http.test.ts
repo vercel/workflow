@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue } from '../src/queue.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 /**
  * Queue deliveries execute the workflow body inline, so response headers
@@ -40,6 +41,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     connectionString = container.getConnectionUri();
     pool = new Pool({ connectionString, max: 4 });
+    tolerateTeardown(pool);
     server = createServer(async (request, response) => {
       const body = (await request.toArray()) as Buffer[];
       attempts.push(String(request.headers['x-vqs-message-attempt']));

@@ -9,6 +9,7 @@ import {
   LISTEN_RECONNECT_DELAY_MS,
   listenChannel,
 } from '../src/streamer.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 const STREAM_TOPIC = 'workflow_event_chunk';
 const decode = (bytes?: Uint8Array) => new TextDecoder().decode(bytes);
@@ -41,6 +42,7 @@ describe('Postgres LISTEN connection drop', () => {
     });
 
     pool = new Pool({ connectionString: dbUrl, max: 4 });
+    tolerateTeardown(pool);
   }, 120_000);
 
   afterAll(async () => {
