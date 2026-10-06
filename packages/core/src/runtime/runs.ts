@@ -10,8 +10,10 @@ import {
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_LEGACY,
+  type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { runtimeLogger } from '../logger.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
@@ -150,6 +152,39 @@ export async function recreateRunFromExisting(
 }
 
 /**
+ * Wakes a run's orchestrator after an out-of-band write (a cancellation), so
+ * a live or later orchestrator observes it. No idempotency key: a duplicate
+ * wake costs a cheap delivery, a key could lose the wakeup. Best effort: the
+ * write already committed, and the next delivery of the run reads it either
+ * way.
+ */
+export async function wakeRunAfterOutOfBandWrite(
+  world: World,
+  run: Pick<
+    WorkflowRun,
+    'runId' | 'workflowName' | 'deploymentId' | 'specVersion'
+  >
+): Promise<void> {
+  try {
+    await world.queue(
+      getWorkflowQueueName(run.workflowName),
+      { runId: run.runId, requestedAt: new Date() },
+      {
+        deploymentId: run.deploymentId,
+        ...(run.specVersion !== undefined
+          ? { specVersion: run.specVersion }
+          : {}),
+      }
+    );
+  } catch (err) {
+    runtimeLogger.warn('Failed to wake the run after an out-of-band write', {
+      workflowRunId: run.runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Cancel a workflow run.
  *
  * @param options - Optional cancellation settings. `cancelReason` records a
@@ -174,7 +209,11 @@ export async function cancelRun(
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
     };
-    await world.events.create(runId, eventRequest, { v1Compat: compatMode });
+    await world.events.create(runId, eventRequest, {
+      v1Compat: compatMode,
+      inBand: false,
+    });
+    await wakeRunAfterOutOfBandWrite(world, run);
   } catch (err) {
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -385,7 +424,10 @@ export async function wakeUpRun(
             },
           };
       try {
-        await world.events.create(runId, eventData, { v1Compat: compatMode });
+        await world.events.create(runId, eventData, {
+          v1Compat: compatMode,
+          inBand: false,
+        });
         stoppedCount++;
       } catch (err) {
         if (EntityConflictError.is(err)) {

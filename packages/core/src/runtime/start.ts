@@ -1136,7 +1136,7 @@ export async function start<TArgs extends unknown[], TResult>(
             ...dynamicWorkflowSeed,
           },
         },
-        { v1Compat }
+        { v1Compat, inBand: false }
       );
 
       // A dynamic run publishes only once the backend has confirmed it stored

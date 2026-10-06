@@ -557,8 +557,7 @@ async function dispatchPendingOps(params: {
               runId,
               traceCarrier: await nextTraceCarrier(),
               requestedAt: new Date(),
-            },
-            { idempotencyKey: `hook_conflict_${hook.correlationId}` }
+            }
           );
         }
       } catch (err) {

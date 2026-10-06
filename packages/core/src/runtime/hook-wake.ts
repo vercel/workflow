@@ -136,7 +136,6 @@ export async function publishForceClaimVictimWake(
               deploymentId: from.deploymentId,
             }),
             specVersion: from.runSpecVersion ?? SPEC_VERSION_LEGACY,
-            idempotencyKey: `hook-force-claim-${hook.hookId}`,
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

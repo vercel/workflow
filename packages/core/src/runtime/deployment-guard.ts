@@ -214,7 +214,7 @@ export async function guardDeploymentAffinity({
             errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
           },
         },
-        { requestId }
+        { requestId, inBand: false }
       );
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or

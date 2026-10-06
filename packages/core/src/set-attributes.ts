@@ -56,15 +56,19 @@ export async function setAttributes(
   // runs inside a step body, which holds no replay snapshot, so there is no
   // event log to compare against and nothing a precondition could fence. It is
   // a genuinely out-of-band write from the event log's point of view.
-  await world.events.create(runId, {
-    eventType: 'attr_set',
-    specVersion: SPEC_VERSION_CURRENT,
-    eventData: {
-      changes,
-      writer,
-      ...(options.allowReservedAttributes === true
-        ? { allowReservedAttributes: true }
-        : {}),
+  await world.events.create(
+    runId,
+    {
+      eventType: 'attr_set',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        changes,
+        writer,
+        ...(options.allowReservedAttributes === true
+          ? { allowReservedAttributes: true }
+          : {}),
+      },
     },
-  });
+    { inBand: false }
+  );
 }

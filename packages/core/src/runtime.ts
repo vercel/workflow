@@ -443,7 +443,9 @@ async function recordFatalRunError({
           errorCode,
         },
       },
-      { requestId }
+      // Written by the step invocation or before the delivery loaded the
+      // log, so it carries no fence count.
+      { requestId, inBand: false }
     );
   } catch (failErr) {
     if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
@@ -881,7 +883,8 @@ export function workflowEntrypoint(
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
-              { requestId }
+              // Before any log load, so there is no fence count to carry.
+              { requestId, inBand: false }
             );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
