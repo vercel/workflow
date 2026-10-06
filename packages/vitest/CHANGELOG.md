@@ -1,5 +1,16 @@
 # @workflow/vitest
 
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4), [`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4), [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117), [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/world-local@5.0.2
+  - @workflow/core@5.1.0
+  - @workflow/builders@5.0.2
+  - @workflow/world@5.0.2
+  - @workflow/rollup@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes
