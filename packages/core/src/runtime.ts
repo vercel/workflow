@@ -1405,10 +1405,14 @@ export function workflowEntrypoint(
                   // process last consumed, and no due timer, exits without a
                   // replay. Only consulted when this process holds a
                   // position for the run, so a miss costs nothing.
+                  // A timer delivery is excluded: one that arrives before its
+                  // wait is due (a long sleep spans several queue hops) has
+                  // to arm the next hop, which a no-op exit would skip.
                   if (
                     !runInput &&
                     !hookInput &&
                     !replayDivergence &&
+                    !waitContinuation &&
                     hasConsumedPosition(world, runId)
                   ) {
                     const tail = await world.events.list({
@@ -1756,287 +1760,382 @@ export function workflowEntrypoint(
 
                     let session: WorkflowSession | null = null;
                     const continuedHookIds = new Set<string>();
+
+                    // Inline steps run as background work of this delivery,
+                    // so the VM keeps advancing (a due timer, a hook payload,
+                    // a sibling's outcome) while a body runs. Their writes
+                    // and the live feed's events are buffered and folded into
+                    // the log only between passes, never under a replay.
+                    type InlineSettled = {
+                      spec: InlineStepSpec;
+                      outcome: PromiseSettledResult<
+                        Awaited<ReturnType<typeof executeStep>>
+                      >;
+                    };
+                    const inFlight = new Map<string, Promise<void>>();
+                    const settledInline: InlineSettled[] = [];
+                    const pendingAbsorbs: Array<
+                      Parameters<typeof absorbWrite>[0]
+                    > = [];
+                    const pendingFeedEvents: Event[] = [];
+                    let liveFeed: LiveLogFeed | undefined;
+                    // Timer messages this delivery already sent, by wait and
+                    // `resumeAt`.
+                    const armedTimers = new Set<string>();
+                    // Set when an inline step finished with stream writes
+                    // still flushing; the delivery hands off once no body runs.
+                    let pendingStreamOps = false;
+                    type InlineProgress =
+                      | {
+                          type: 'return';
+                          result: { timeoutSeconds: number } | undefined;
+                        }
+                      | { type: 'reload-full' }
+                      | { type: 'continue'; retainSession: boolean };
+                    let progressDirty = false;
+                    let progressWaiter: (() => void) | undefined;
+                    const notifyProgress = (): void => {
+                      progressDirty = true;
+                      const waiter = progressWaiter;
+                      progressWaiter = undefined;
+                      waiter?.();
+                    };
+                    /** Folds buffered feed events and inline writes into the log. */
+                    const flushPending = (): void => {
+                      if (!log) return;
+                      if (pendingFeedEvents.length > 0) {
+                        const events = pendingFeedEvents.splice(0);
+                        for (const event of events) prepareReplayEvent(event);
+                        mergeReportedEvents(log.events, events);
+                      }
+                      if (pendingAbsorbs.length > 0) {
+                        const results = pendingAbsorbs.splice(0);
+                        results.sort(
+                          (a, b) =>
+                            (eventIdToSlot(a.event?.eventId ?? '') ?? 0) -
+                            (eventIdToSlot(b.event?.eventId ?? '') ?? 0)
+                        );
+                        for (const result of results) absorbWrite(result);
+                      }
+                    };
+                    /** Waits for the next settle, feed event or due timer. */
+                    const waitForProgress = async (): Promise<void> => {
+                      if (progressDirty) {
+                        progressDirty = false;
+                        return;
+                      }
+                      const timer = log ? nextTimerAt(log.events) : {};
+                      const delayMs =
+                        timer.nextTimerAtMs === undefined
+                          ? undefined
+                          : Math.max(0, timer.nextTimerAtMs - Date.now());
+                      let handle: ReturnType<typeof setTimeout> | undefined;
+                      await new Promise<void>((resolve) => {
+                        progressWaiter = resolve;
+                        if (delayMs !== undefined) {
+                          handle = setTimeout(resolve, delayMs);
+                        }
+                      });
+                      if (handle) clearTimeout(handle);
+                      progressWaiter = undefined;
+                      progressDirty = false;
+                    };
+                    /** Lets every running inline body settle; stops the feed. */
+                    const drainInline = async (): Promise<void> => {
+                      while (inFlight.size > 0) {
+                        await Promise.allSettled([...inFlight.values()]);
+                      }
+                      liveFeed?.stop();
+                      liveFeed = undefined;
+                    };
                     const inlineDeadlineMs =
                       invocationStartTime + noInlineReplayAfterMs;
                     const inlineMarginMs = getInlineStepDeadlineMarginMs();
 
                     // Main loop: replay, decide, write, run inline steps.
-                    while (true) {
-                      loopIteration++;
-                      assert(log, 'The event log is loaded in the loop');
-
-                      if (replayBudget.isExhausted()) {
-                        await handleReplayBudgetExhausted({
-                          runId,
-                          workflowName,
-                          requestId,
-                          attempt: metadata.attempt,
-                          limitMs: replayBudget.configuredLimitMs,
-                          slotSnapshot: slotSnapshot(),
-                          writeEvent: (data, params) =>
-                            writeInBand(data, params),
-                        });
-                        return undefined;
-                      }
-
-                      // Hand off before the function's deadline: the next
-                      // delivery continues from the log.
-                      if (Date.now() >= inlineDeadlineMs) {
-                        runtimeLogger.info(
-                          'Invocation deadline reached, handing the run to the next delivery',
-                          {
-                            workflowRunId: runId,
-                            loopIteration,
-                            elapsedMs: Date.now() - invocationStartTime,
-                          }
-                        );
-                        await wakeSelf();
-                        return undefined;
-                      }
-
-                      let replayStart = 0;
-                      try {
-                        if (logBehind) await loadAfter();
-                        assert(log, 'The event log is loaded in the loop');
-                        if (hasRecordedTerminalRunEvent(log.events, runId)) {
-                          forgetConsumedPosition(world, runId);
-                          return undefined;
-                        }
-
-                        // Complete elapsed waits. `wait_completed` resolves a
-                        // promise, so it is consumed only after it commits,
-                        // behind whatever its report says landed below it.
-                        for (const wait of dueWaits(log.events, Date.now())) {
-                          const completed = await createEvent(
-                            {
-                              eventType: 'wait_completed' as const,
-                              specVersion: SPEC_VERSION_CURRENT,
-                              correlationId: wait.correlationId,
-                              eventData: { resumeAt: wait.resumeAt },
-                            },
-                            { requestId }
-                          );
-                          if (
-                            consumeOwnResolvingWrite(log.events, completed)
-                              .type === 'reload'
-                          ) {
-                            session = null;
-                            await fullLoad();
-                          }
-                        }
+                    try {
+                      while (true) {
+                        loopIteration++;
                         assert(log, 'The event log is loaded in the loop');
 
-                        if (isSlotGapCheckEnabled()) {
-                          const settled = await settleEventSlotGap(runId, {
-                            events: log.events,
-                            cursor: log.cursor,
-                          });
-                          if (settled.log.events !== log.events) {
-                            session = null;
-                          }
-                          log = {
-                            events: settled.log.events,
-                            cursor: settled.log.cursor,
-                          };
-                          if (settled.gap !== undefined) {
-                            throw new CorruptedEventLogError(
-                              `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-                            );
-                          }
-                        }
-                        if (hasRecordedTerminalRunEvent(log.events, runId)) {
-                          forgetConsumedPosition(world, runId);
-                          return undefined;
-                        }
-
-                        if (maxEventsLimit !== undefined) {
-                          const workflowEventCount = log.events.reduce(
-                            (n, e) => (isSealedNoopEvent(e) ? n : n + 1),
-                            0
-                          );
-                          if (workflowEventCount >= maxEventsLimit) {
-                            throw new MaxEventsExceededError(
-                              workflowEventCount,
-                              maxEventsLimit
-                            );
-                          }
-                        }
-
-                        runtimeLogger.debug('Starting workflow execution', {
-                          workflowRunId: runId,
-                          loopIteration,
-                          eventCount: log.events.length,
-                          executionMode: session ? 'retained' : 'replay',
-                        });
-                        replayStart = Date.now();
-                        if (resumeTracking) {
-                          resumeTracking.replayStartedAtMs ??= replayStart;
-                        }
-                        const replayPayloadCache =
-                          startReplayPayloadCache(workflowRun);
-                        assert(
-                          replayPayloadCache,
-                          'Node workflow replay requires payload preparation'
-                        );
-                        const payloadPrewarm = replayPayloadCache.prewarm(
-                          workflowRun,
-                          log.events
-                        );
-                        passConsumedSlot = maxEventSlot(log.events) ?? 0;
-                        let workflowResult: WorkflowResumeResult = session
-                          ? await resumeWorkflow(session, log.events)
-                          : { type: 'replay' };
-                        const servedByRetained =
-                          session !== null && workflowResult.type !== 'replay';
-                        if (workflowResult.type === 'replay') {
-                          session = null;
-                          const compiled = startWorkflowCompile(workflowRun);
-                          assert(
-                            compiled || dynamicWorkflowScripts,
-                            'Node workflow replay requires compiled scripts'
-                          );
-                          workflowResult = await replayWorkflow({
-                            workflowCode: effectiveWorkflowCode,
-                            workflowRun,
-                            events: log.events,
-                            encryptionKey: await encryptionKey.value,
-                            replayPayloadCache,
-                            ...((compiled ?? dynamicWorkflowScripts)
-                              ? {
-                                  compiledWorkflowScripts: await (compiled ??
-                                    dynamicWorkflowScripts),
-                                }
-                              : {}),
-                            worldCapabilities: world.capabilities,
+                        if (replayBudget.isExhausted()) {
+                          await handleReplayBudgetExhausted({
+                            runId,
+                            workflowName,
+                            requestId,
+                            attempt: metadata.attempt,
+                            limitMs: replayBudget.configuredLimitMs,
+                            slotSnapshot: slotSnapshot(),
                             writeEvent: (data, params) =>
                               writeInBand(data, params),
                           });
-                        }
-                        await payloadPrewarm;
-
-                        if (workflowResult.type === 'completed') {
-                          replayRecoveryReporter.activate();
-                          let completed: EventResult;
-                          try {
-                            completed = await createEvent(
-                              {
-                                eventType: 'run_completed',
-                                specVersion: SPEC_VERSION_CURRENT,
-                                eventData: { output: workflowResult.output },
-                              },
-                              { requestId }
-                            );
-                          } catch (err) {
-                            if (
-                              EntityConflictError.is(err) ||
-                              RunExpiredError.is(err)
-                            ) {
-                              runtimeLogger.info(
-                                'Tried completing workflow run, but run has already finished.',
-                                { workflowRunId: runId, message: err.message }
-                              );
-                              return undefined;
-                            }
-                            throw err;
-                          }
-                          forgetConsumedPosition(world, runId);
-                          // An out-of-band terminal event (a `run_cancelled`,
-                          // or a `run_failed` from a step's invocation) can
-                          // land below this one; the first terminal event by
-                          // position decides the run. Only announce a
-                          // completion the World recorded as the outcome.
-                          const recordedStatus = completed.run?.status;
-                          if (
-                            recordedStatus !== undefined &&
-                            recordedStatus !== 'completed'
-                          ) {
-                            runtimeLogger.info(
-                              'Run reached another terminal state first; not dispatching completion hooks',
-                              { workflowRunId: runId, status: recordedStatus }
-                            );
-                            return undefined;
-                          }
-                          dispatchRunCompletedHooks(runId, workflowName);
-                          span?.setAttributes({
-                            ...Attribute.WorkflowRunStatus('completed'),
-                          });
                           return undefined;
                         }
 
-                        replayRecoveryReporter.activate();
-                        const suspension = workflowResult.suspension;
-                        session = workflowResult.session;
-                        if (resumeTracking && suspension.stepCount > 0) {
-                          resumeTracking.nextStepEncounteredAtMs ??= Date.now();
-                        }
-                        const suspensionMessage =
-                          buildWorkflowSuspensionMessage(
-                            suspension.stepCount,
-                            suspension.hookCount,
-                            suspension.waitCount
-                          );
-                        if (suspensionMessage) {
-                          runtimeLogger.debug(suspensionMessage);
-                        }
-
-                        const outcome = await handleOrchestratorSuspension(
-                          suspension,
-                          workflowRun,
-                          log,
-                          Date.now() - replayStart,
-                          servedByRetained
-                        );
-                        if (outcome.type === 'return') {
-                          return outcome.result;
-                        }
-                        if (outcome.type === 'reload-full') {
-                          session = null;
-                          await fullLoad();
-                        } else if (outcome.type === 'reload') {
-                          if (!outcome.retainSession) session = null;
-                          await loadAfter();
-                        } else if (!outcome.retainSession) {
-                          session = null;
-                        }
-                      } catch (err) {
-                        if (
-                          OrchestratorSupersededError.is(err) ||
-                          writer.isSuperseded
-                        ) {
-                          throw err;
-                        }
-                        if (isRetryableWorldError(err)) {
-                          runLogger.warn(
-                            'Transient world error during replay; redelivering via queue instead of failing the run',
+                        // Hand off before the function's deadline: the next
+                        // delivery continues from the log.
+                        if (Date.now() >= inlineDeadlineMs) {
+                          runtimeLogger.info(
+                            'Invocation deadline reached, handing the run to the next delivery',
                             {
-                              errorName:
-                                err instanceof Error
-                                  ? err.name
-                                  : 'UnknownError',
-                              errorMessage:
-                                err instanceof Error
-                                  ? err.message
-                                  : String(err),
-                              deliveryAttempt: metadata.attempt,
+                              workflowRunId: runId,
+                              loopIteration,
+                              elapsedMs: Date.now() - invocationStartTime,
                             }
                           );
-                          throw err;
+                          await wakeSelf();
+                          return undefined;
                         }
-                        if (ReplayDivergenceError.is(err)) {
-                          const recovery = await maybeRecoverDivergence(err);
-                          if (recovery.type === 'queued') return undefined;
-                          return await failRun(
-                            recovery.error,
-                            effectiveWorkflowCode,
-                            recovery.divergenceCount,
-                            recovery.logFields
+
+                        let replayStart = 0;
+                        try {
+                          flushPending();
+                          if (logBehind) await loadAfter();
+                          assert(log, 'The event log is loaded in the loop');
+                          if (hasRecordedTerminalRunEvent(log.events, runId)) {
+                            forgetConsumedPosition(world, runId);
+                            return undefined;
+                          }
+
+                          // Complete elapsed waits. `wait_completed` resolves a
+                          // promise, so it is consumed only after it commits,
+                          // behind whatever its report says landed below it.
+                          for (const wait of dueWaits(log.events, Date.now())) {
+                            const completed = await createEvent(
+                              {
+                                eventType: 'wait_completed' as const,
+                                specVersion: SPEC_VERSION_CURRENT,
+                                correlationId: wait.correlationId,
+                                eventData: { resumeAt: wait.resumeAt },
+                              },
+                              { requestId }
+                            );
+                            if (
+                              consumeOwnResolvingWrite(log.events, completed)
+                                .type === 'reload'
+                            ) {
+                              session = null;
+                              await fullLoad();
+                            }
+                          }
+                          assert(log, 'The event log is loaded in the loop');
+
+                          if (isSlotGapCheckEnabled()) {
+                            const settled = await settleEventSlotGap(runId, {
+                              events: log.events,
+                              cursor: log.cursor,
+                            });
+                            if (settled.log.events !== log.events) {
+                              session = null;
+                            }
+                            log = {
+                              events: settled.log.events,
+                              cursor: settled.log.cursor,
+                            };
+                            if (settled.gap !== undefined) {
+                              throw new CorruptedEventLogError(
+                                `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+                              );
+                            }
+                          }
+                          if (hasRecordedTerminalRunEvent(log.events, runId)) {
+                            forgetConsumedPosition(world, runId);
+                            return undefined;
+                          }
+
+                          if (maxEventsLimit !== undefined) {
+                            const workflowEventCount = log.events.reduce(
+                              (n, e) => (isSealedNoopEvent(e) ? n : n + 1),
+                              0
+                            );
+                            if (workflowEventCount >= maxEventsLimit) {
+                              throw new MaxEventsExceededError(
+                                workflowEventCount,
+                                maxEventsLimit
+                              );
+                            }
+                          }
+
+                          runtimeLogger.debug('Starting workflow execution', {
+                            workflowRunId: runId,
+                            loopIteration,
+                            eventCount: log.events.length,
+                            executionMode: session ? 'retained' : 'replay',
+                          });
+                          replayStart = Date.now();
+                          if (resumeTracking) {
+                            resumeTracking.replayStartedAtMs ??= replayStart;
+                          }
+                          const replayPayloadCache =
+                            startReplayPayloadCache(workflowRun);
+                          assert(
+                            replayPayloadCache,
+                            'Node workflow replay requires payload preparation'
                           );
-                        }
-                        if (replayStart > 0) {
+                          const payloadPrewarm = replayPayloadCache.prewarm(
+                            workflowRun,
+                            log.events
+                          );
+                          passConsumedSlot = maxEventSlot(log.events) ?? 0;
+                          let workflowResult: WorkflowResumeResult = session
+                            ? await resumeWorkflow(session, log.events)
+                            : { type: 'replay' };
+                          const servedByRetained =
+                            session !== null &&
+                            workflowResult.type !== 'replay';
+                          if (workflowResult.type === 'replay') {
+                            session = null;
+                            const compiled = startWorkflowCompile(workflowRun);
+                            assert(
+                              compiled || dynamicWorkflowScripts,
+                              'Node workflow replay requires compiled scripts'
+                            );
+                            workflowResult = await replayWorkflow({
+                              workflowCode: effectiveWorkflowCode,
+                              workflowRun,
+                              events: log.events,
+                              encryptionKey: await encryptionKey.value,
+                              replayPayloadCache,
+                              ...((compiled ?? dynamicWorkflowScripts)
+                                ? {
+                                    compiledWorkflowScripts: await (compiled ??
+                                      dynamicWorkflowScripts),
+                                  }
+                                : {}),
+                              worldCapabilities: world.capabilities,
+                              writeEvent: (data, params) =>
+                                writeInBand(data, params),
+                            });
+                          }
+                          await payloadPrewarm;
+
+                          if (workflowResult.type === 'completed') {
+                            replayRecoveryReporter.activate();
+                            let completed: EventResult;
+                            try {
+                              completed = await createEvent(
+                                {
+                                  eventType: 'run_completed',
+                                  specVersion: SPEC_VERSION_CURRENT,
+                                  eventData: { output: workflowResult.output },
+                                },
+                                { requestId }
+                              );
+                            } catch (err) {
+                              if (
+                                EntityConflictError.is(err) ||
+                                RunExpiredError.is(err)
+                              ) {
+                                runtimeLogger.info(
+                                  'Tried completing workflow run, but run has already finished.',
+                                  { workflowRunId: runId, message: err.message }
+                                );
+                                return undefined;
+                              }
+                              throw err;
+                            }
+                            forgetConsumedPosition(world, runId);
+                            // An out-of-band terminal event (a `run_cancelled`,
+                            // or a `run_failed` from a step's invocation) can
+                            // land below this one; the first terminal event by
+                            // position decides the run. Only announce a
+                            // completion the World recorded as the outcome.
+                            const recordedStatus = completed.run?.status;
+                            if (
+                              recordedStatus !== undefined &&
+                              recordedStatus !== 'completed'
+                            ) {
+                              runtimeLogger.info(
+                                'Run reached another terminal state first; not dispatching completion hooks',
+                                { workflowRunId: runId, status: recordedStatus }
+                              );
+                              return undefined;
+                            }
+                            dispatchRunCompletedHooks(runId, workflowName);
+                            span?.setAttributes({
+                              ...Attribute.WorkflowRunStatus('completed'),
+                            });
+                            return undefined;
+                          }
+
                           replayRecoveryReporter.activate();
+                          const suspension = workflowResult.suspension;
+                          session = workflowResult.session;
+                          if (resumeTracking && suspension.stepCount > 0) {
+                            resumeTracking.nextStepEncounteredAtMs ??=
+                              Date.now();
+                          }
+                          const suspensionMessage =
+                            buildWorkflowSuspensionMessage(
+                              suspension.stepCount,
+                              suspension.hookCount,
+                              suspension.waitCount
+                            );
+                          if (suspensionMessage) {
+                            runtimeLogger.debug(suspensionMessage);
+                          }
+
+                          const outcome = await handleOrchestratorSuspension(
+                            suspension,
+                            workflowRun,
+                            log,
+                            Date.now() - replayStart,
+                            servedByRetained
+                          );
+                          if (outcome.type === 'return') {
+                            return outcome.result;
+                          }
+                          if (outcome.type === 'reload-full') {
+                            session = null;
+                            await fullLoad();
+                          } else if (outcome.type === 'reload') {
+                            if (!outcome.retainSession) session = null;
+                            await loadAfter();
+                          } else if (!outcome.retainSession) {
+                            session = null;
+                          }
+                        } catch (err) {
+                          if (
+                            OrchestratorSupersededError.is(err) ||
+                            writer.isSuperseded
+                          ) {
+                            throw err;
+                          }
+                          if (isRetryableWorldError(err)) {
+                            runLogger.warn(
+                              'Transient world error during replay; redelivering via queue instead of failing the run',
+                              {
+                                errorName:
+                                  err instanceof Error
+                                    ? err.name
+                                    : 'UnknownError',
+                                errorMessage:
+                                  err instanceof Error
+                                    ? err.message
+                                    : String(err),
+                                deliveryAttempt: metadata.attempt,
+                              }
+                            );
+                            throw err;
+                          }
+                          if (ReplayDivergenceError.is(err)) {
+                            const recovery = await maybeRecoverDivergence(err);
+                            if (recovery.type === 'queued') return undefined;
+                            return await failRun(
+                              recovery.error,
+                              effectiveWorkflowCode,
+                              recovery.divergenceCount,
+                              recovery.logFields
+                            );
+                          }
+                          if (replayStart > 0) {
+                            replayRecoveryReporter.activate();
+                          }
+                          return await failRun(err, effectiveWorkflowCode);
                         }
-                        return await failRun(err, effectiveWorkflowCode);
                       }
+                    } finally {
+                      await drainInline();
                     }
 
                     /**
@@ -2156,7 +2255,9 @@ export function workflowEntrypoint(
                       // enqueue the background steps.
                       const logSteps = analyzeLogSteps(replayedEvents);
                       const runnableInline = logSteps.filter(
-                        (step) => step.runnableInline
+                        (step) =>
+                          step.runnableInline &&
+                          !inFlight.has(step.correlationId)
                       );
                       const mayInline =
                         !hookAwaitingConflict &&
@@ -2168,7 +2269,9 @@ export function workflowEntrypoint(
                       const inlineSlots = mayInline
                         ? Math.max(
                             0,
-                            getMaxInlineSteps() - runnableInline.length
+                            getMaxInlineSteps() -
+                              runnableInline.length -
+                              inFlight.size
                           )
                         : 0;
                       const created = await createStepsAndWaits({
@@ -2313,6 +2416,12 @@ export function workflowEntrypoint(
                           ? { type: 'continue', retainSession: retain }
                           : ran;
                       }
+                      if (inFlight.size > 0 || settledInline.length > 0) {
+                        const progressed = await awaitInlineProgress(run);
+                        return progressed.type === 'continue'
+                          ? { type: 'continue', retainSession: retain }
+                          : progressed;
+                      }
 
                       // Suspend: nothing to run here. Arm the timers this
                       // delivery owns and acknowledge.
@@ -2347,117 +2456,152 @@ export function workflowEntrypoint(
                       return { type: 'return', result: undefined };
                     }
 
-                    /** Runs a batch of inline steps in this process. */
+                    /**
+                     * Starts inline steps as background work of this
+                     * delivery, then waits for the next progress.
+                     */
                     async function runInlineSteps(
                       run: WorkflowRun,
                       steps: InlineStepSpec[],
                       latencyTracking?: ReturnType<
                         typeof computeStepLatencyTracking
                       >
-                    ): Promise<
-                      | {
-                          type: 'return';
-                          result: { timeoutSeconds: number } | undefined;
-                        }
-                      | { type: 'reload-full' }
-                      | { type: 'continue'; retainSession: boolean }
-                    > {
+                    ): Promise<InlineProgress> {
                       assert(log, 'The event log is loaded for inline steps');
-                      const feed = new LiveLogFeed(world, runId, {
-                        afterSlot: maxEventSlot(log.events) ?? 0,
-                        cursor: log.cursor,
-                        pollIntervalMs: getOrchestratorPollIntervalMs(),
-                        onEvents: (events) => {
-                          if (log) mergeReportedEvents(log.events, events);
-                        },
-                      });
-                      feed.start();
+                      if (!liveFeed) {
+                        liveFeed = new LiveLogFeed(world, runId, {
+                          afterSlot: maxEventSlot(log.events) ?? 0,
+                          cursor: log.cursor,
+                          pollIntervalMs: getOrchestratorPollIntervalMs(),
+                          onEvents: (events) => {
+                            pendingFeedEvents.push(...events);
+                            notifyProgress();
+                          },
+                        });
+                        liveFeed.start();
+                      }
                       const tracking = resumeTracking;
                       resumeTracking = undefined;
-                      replayBudget.pause();
-                      let results: Awaited<ReturnType<typeof executeStep>>[];
                       const stepEncryptionKey = await encryptionKey.value;
-                      try {
-                        const settled = await Promise.allSettled(
-                          steps.map(async (step, index) => {
-                            const input =
-                              step.input ??
-                              (await readStepInput(step.createdEventId));
-                            return runStepSingleFlight(
-                              runId,
-                              step.correlationId,
-                              () =>
-                                executeStep({
-                                  world,
-                                  createEvent: (data, params) =>
-                                    writeInBand(data, {
-                                      ...params,
-                                      ...slotSnapshot(),
-                                      resolveData: REPLAY_RESOLVE_DATA,
-                                    }),
-                                  workflowRunId: runId,
-                                  workflowDeploymentId: run.deploymentId,
-                                  workflowName,
-                                  workflowStartedAt,
-                                  rootRunId: rootRunIdFrom(
-                                    run.attributes,
-                                    runId
-                                  ),
-                                  requestId,
-                                  stepId: step.correlationId,
-                                  stepName: step.stepName,
-                                  encryptionKey: stepEncryptionKey,
-                                  runSpecVersion: run.specVersion,
-                                  attempt: step.attempt,
-                                  startReason: step.startReason,
-                                  ...(step.firstStartedAt
-                                    ? { firstStartedAt: step.firstStartedAt }
-                                    : {}),
-                                  input,
-                                  beforeBody: () => writer.assertActive(),
-                                  ...(index === 0 && tracking
-                                    ? { resumeTracking: tracking }
-                                    : {}),
-                                  ...(index === 0 && latencyTracking
-                                    ? { latencyTracking }
-                                    : {}),
-                                }),
-                              'debug'
-                            );
+                      let first = true;
+                      for (const step of steps) {
+                        if (inFlight.has(step.correlationId)) continue;
+                        const isFirst = first;
+                        first = false;
+                        const body = (async () => {
+                          const input =
+                            step.input ??
+                            (await readStepInput(step.createdEventId));
+                          return runStepSingleFlight(
+                            runId,
+                            step.correlationId,
+                            () =>
+                              executeStep({
+                                world,
+                                createEvent: async (data, params) => {
+                                  const result = await writer.create(data, {
+                                    ...params,
+                                    ...slotSnapshot(),
+                                    resolveData: REPLAY_RESOLVE_DATA,
+                                  });
+                                  pendingAbsorbs.push(result);
+                                  return result;
+                                },
+                                workflowRunId: runId,
+                                workflowDeploymentId: run.deploymentId,
+                                workflowName,
+                                workflowStartedAt,
+                                rootRunId: rootRunIdFrom(run.attributes, runId),
+                                requestId,
+                                stepId: step.correlationId,
+                                stepName: step.stepName,
+                                encryptionKey: stepEncryptionKey,
+                                runSpecVersion: run.specVersion,
+                                attempt: step.attempt,
+                                startReason: step.startReason,
+                                ...(step.firstStartedAt
+                                  ? { firstStartedAt: step.firstStartedAt }
+                                  : {}),
+                                input,
+                                beforeBody: () => writer.assertActive(),
+                                ...(isFirst && tracking
+                                  ? { resumeTracking: tracking }
+                                  : {}),
+                                ...(isFirst && latencyTracking
+                                  ? { latencyTracking }
+                                  : {}),
+                              }),
+                            'debug'
+                          );
+                        })();
+                        const tracked = body.then(
+                          (value) => {
+                            settledInline.push({
+                              spec: step,
+                              outcome: { status: 'fulfilled', value },
+                            });
+                          },
+                          (reason: unknown) => {
+                            settledInline.push({
+                              spec: step,
+                              outcome: { status: 'rejected', reason },
+                            });
+                          }
+                        );
+                        inFlight.set(
+                          step.correlationId,
+                          tracked.finally(() => {
+                            inFlight.delete(step.correlationId);
+                            notifyProgress();
                           })
                         );
-                        // Every body has settled before anything else
-                        // happens, so a superseded delivery leaves nothing
-                        // running behind it. Supersession wins over any other
-                        // failure.
-                        const failures = settled.flatMap((outcome) =>
-                          outcome.status === 'rejected' ? [outcome.reason] : []
-                        );
-                        if (failures.length > 0) {
-                          throw (
-                            failures.find((reason) =>
-                              OrchestratorSupersededError.is(reason)
-                            ) ?? failures[0]
-                          );
-                        }
-                        results = settled.map(
-                          (outcome) =>
-                            (
-                              outcome as PromiseFulfilledResult<
-                                Awaited<ReturnType<typeof executeStep>>
-                              >
-                            ).value
-                        );
+                      }
+                      return awaitInlineProgress(run);
+                    }
+
+                    /**
+                     * Waits for an inline body to settle, a live-feed event
+                     * or the next due timer, then takes in what settled.
+                     */
+                    async function awaitInlineProgress(
+                      run: WorkflowRun
+                    ): Promise<InlineProgress> {
+                      // The timer also goes out as a queue message, as on
+                      // suspend: this delivery completes a due wait itself
+                      // while it is alive, and the message covers the wait if
+                      // the delivery ends first.
+                      if (log) await armTimers(log.events);
+                      replayBudget.pause();
+                      try {
+                        await waitForProgress();
                       } finally {
                         replayBudget.resume();
-                        feed.stop();
+                      }
+                      flushPending();
+                      const settled = settledInline.splice(0);
+                      // Supersession wins over any other failure; the outer
+                      // drain lets the remaining bodies settle.
+                      const failures = settled.flatMap((item) =>
+                        item.outcome.status === 'rejected'
+                          ? [item.outcome.reason]
+                          : []
+                      );
+                      if (failures.length > 0) {
+                        throw (
+                          failures.find((reason) =>
+                            OrchestratorSupersededError.is(reason)
+                          ) ?? failures[0]
+                        );
                       }
 
                       let reload = false;
-                      let pendingOps = false;
-                      for (const [index, result] of results.entries()) {
-                        const step = steps[index];
-                        assert(step, 'Each inline result has its step');
+                      for (const item of settled) {
+                        const step = item.spec;
+                        const result = (
+                          item.outcome as PromiseFulfilledResult<
+                            Awaited<ReturnType<typeof executeStep>>
+                          >
+                        ).value;
                         if (result.type === 'gone') {
                           forgetConsumedPosition(world, runId);
                           return { type: 'return', result: undefined };
@@ -2492,7 +2636,7 @@ export function workflowEntrypoint(
                           result.type === 'completed' &&
                           result.hasPendingOps
                         ) {
-                          pendingOps = true;
+                          pendingStreamOps = true;
                         }
                         assert(
                           log,
@@ -2505,7 +2649,7 @@ export function workflowEntrypoint(
                           reload = true;
                         }
                       }
-                      if (pendingOps) {
+                      if (pendingStreamOps && inFlight.size === 0) {
                         // Stream writes are still flushing through
                         // `waitUntil`; hand the run to the next delivery so
                         // this one can end.
@@ -2638,6 +2782,12 @@ export function workflowEntrypoint(
                         }
                       }
                       if (!earliest) return;
+                      // One message per wait per delivery: a delivery that
+                      // waits on inline bodies arms the timer early, and its
+                      // suspend would otherwise send a second one.
+                      const armKey = `${earliest.correlationId}@${earliest.resumeAtMs}`;
+                      if (armedTimers.has(armKey)) return;
+                      armedTimers.add(armKey);
                       const seconds = Math.max(
                         0,
                         Math.ceil((earliest.resumeAtMs - now) / 1000)
