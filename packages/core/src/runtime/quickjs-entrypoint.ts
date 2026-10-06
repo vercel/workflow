@@ -122,6 +122,7 @@ import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import {
   getSnapshotThresholdForHandler,
+  isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
 } from './vm-mode.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
@@ -1255,7 +1256,8 @@ export async function runWorkflowWithQuickJS(params: {
   const encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
   // VM-memory snapshotting policy for this run. 0 = disabled (pure
-  // replay). When enabled, suspensions persist a snapshot once at least
+  // replay). Enabled by default (DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD);
+  // WORKFLOW_SNAPSHOT_THRESHOLD=0 opts out. When enabled, suspensions persist a snapshot once at least
   // `snapshotThreshold` events have been processed since the last one,
   // and resumptions restore the VM and replay only the delta events.
   //
@@ -1287,13 +1289,18 @@ export async function runWorkflowWithQuickJS(params: {
     !encryptionKey &&
     !isUnencryptedSnapshottingAllowed()
   ) {
-    warnOnce('snapshot-unencrypted', () =>
-      runtimeLogger.warn(
-        'QuickJS runtime: VM snapshotting is configured but this run has no encryption key; ' +
-          'snapshots are disabled. Set WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1 to store them unencrypted.',
-        { workflowRunId: runId }
-      )
-    );
+    // Only warn when snapshotting was explicitly configured: with the
+    // default threshold, worlds without run encryption keys (world-local,
+    // world-postgres) would otherwise warn on every QuickJS deployment.
+    if (isSnapshotThresholdConfigured(workflowRun)) {
+      warnOnce('snapshot-unencrypted', () =>
+        runtimeLogger.warn(
+          'QuickJS runtime: VM snapshotting is configured but this run has no encryption key; ' +
+            'snapshots are disabled. Set WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1 to store them unencrypted.',
+          { workflowRunId: runId }
+        )
+      );
+    }
     snapshotThreshold = 0;
   }
 

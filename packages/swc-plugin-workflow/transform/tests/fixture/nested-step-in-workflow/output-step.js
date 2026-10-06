@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"arrowStep":{"stepId":"step//./input//example/arrowStep"},"helpers/objectStep":{"stepId":"step//./input//example/helpers/objectStep"},"letArrowStep":{"stepId":"step//./input//example/letArrowStep"},"step":{"stepId":"step//./input//example/step"},"varArrowStep":{"stepId":"step//./input//example/varArrowStep"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"example/arrowStep":{"stepId":"step//./input//example/arrowStep"},"example/helpers/objectStep":{"stepId":"step//./input//example/helpers/objectStep"},"example/letArrowStep":{"stepId":"step//./input//example/letArrowStep"},"example/step":{"stepId":"step//./input//example/step"},"example/varArrowStep":{"stepId":"step//./input//example/varArrowStep"}}}}*/;
 // Function declaration step
 async function example$step(a, b) {
     return a + b;

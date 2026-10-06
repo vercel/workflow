@@ -78,6 +78,10 @@ overrides:
   devalue: 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
   postcss@<8.5.18: 8.5.22
+  simple-git: ^4.0.2
+
+patchedDependencies:
+  '@nuxt/devtools@3.2.4': 1f9ac5a3e532cbba977e983fd48228c72f73097949f63cdc2b37412a62c4bb97
 
 importers:
 
@@ -9121,6 +9125,12 @@ packages:
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
 
+  '@simple-git/args-pathspec@1.0.4':
+    resolution: {integrity: sha512-EtMX6XjRWSastG2SdkmSQByPtJ9dx/NIjnHbpQPCYt62j4RmSx5rgLTGpw0YCjF5h191gZOmBfheOT23cRSFdw==}
+
+  '@simple-git/argv-parser@2.0.1':
+    resolution: {integrity: sha512-M++IaVWrN+vYalilOHfwvT2IL3wYZtVEBQpmX6DLSOJLtxbZ+SUeIDE3IiPogzhPACLajwtxfa5rp+ZX1FczzQ==}
+
   '@sindresorhus/is@5.6.0':
     resolution: {integrity: sha512-TV7t8GKYaJWsn00tFDqBw8+Uqmr8A0fRU1tvTQhyZzGv0sJCGRQL3JGMI3ucuKo3XIZdUP+Lx7/gh2t3lewy7g==}
     engines: {node: '>=14.16'}
@@ -16137,8 +16147,8 @@ packages:
   simple-get@4.0.1:
     resolution: {integrity: sha512-brv7p5WgH0jmQJr1ZDDfKDOSeWWg+OVypG99A/5vYGPqJ6pxiaHLy8nxtFjBA7oMa01ebA9gfh1uMCFqOuXxvA==}
 
-  simple-git@3.33.0:
-    resolution: {integrity: sha512-D4V/tGC2sjsoNhoMybKyGoE+v8A60hRawKQ1iFRA1zwuDgGZCBJ4ByOzZ5J8joBbi4Oam0qiPH+GhzmSBwbJng==}
+  simple-git@4.0.2:
+    resolution: {integrity: sha512-l0sIsv9VrPwovKELFDBOj/lhmIcbMvxBk2B+hRhsMM4/VL3gKtuZvYnBNixVo+N/0HnqQx2cBdLvxnAbygHpqA==}
 
   sirv@3.0.2:
     resolution: {integrity: sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g==}
@@ -20572,7 +20582,7 @@ snapshots:
       pkg-types: 2.3.1
       semver: 7.8.5
 
-  '@nuxt/devtools@3.2.4(supports-color@10.2.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@6.0.3))':
+  '@nuxt/devtools@3.2.4(patch_hash=1f9ac5a3e532cbba977e983fd48228c72f73097949f63cdc2b37412a62c4bb97)(supports-color@10.2.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@6.0.3))':
     dependencies:
       '@nuxt/devtools-kit': 3.2.4(magicast@0.5.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       '@nuxt/devtools-wizard': 3.2.4
@@ -20598,7 +20608,7 @@ snapshots:
       perfect-debounce: 2.1.0
       pkg-types: 2.3.1
       semver: 7.8.5
-      simple-git: 3.33.0(supports-color@10.2.2)
+      simple-git: 4.0.2(supports-color@10.2.2)
       sirv: 3.0.2
       structured-clone-es: 2.0.0
       tinyglobby: 0.2.17
@@ -20613,7 +20623,7 @@ snapshots:
       - utf-8-validate
       - vue
 
-  '@nuxt/devtools@3.2.4(supports-color@10.2.2)(vite@8.1.3(@types/node@22.19.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@5.9.3))':
+  '@nuxt/devtools@3.2.4(patch_hash=1f9ac5a3e532cbba977e983fd48228c72f73097949f63cdc2b37412a62c4bb97)(supports-color@10.2.2)(vite@8.1.3(@types/node@22.19.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@5.9.3))':
     dependencies:
       '@nuxt/devtools-kit': 3.2.4(magicast@0.5.2)(vite@8.1.3(@types/node@22.19.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       '@nuxt/devtools-wizard': 3.2.4
@@ -20639,7 +20649,7 @@ snapshots:
       perfect-debounce: 2.1.0
       pkg-types: 2.3.1
       semver: 7.8.5
-      simple-git: 3.33.0(supports-color@10.2.2)
+      simple-git: 4.0.2(supports-color@10.2.2)
       sirv: 3.0.2
       structured-clone-es: 2.0.0
       tinyglobby: 0.2.17
@@ -26062,6 +26072,12 @@ snapshots:
       '@types/hast': 3.0.4
 
   '@shikijs/vscode-textmate@10.0.2': {}
+
+  '@simple-git/args-pathspec@1.0.4': {}
+
+  '@simple-git/argv-parser@2.0.1':
+    dependencies:
+      '@simple-git/args-pathspec': 1.0.4
 
   '@sindresorhus/is@5.6.0': {}
 
@@ -33506,7 +33522,7 @@ snapshots:
     dependencies:
       '@dxup/nuxt': 0.4.1(magicast@0.5.2)(typescript@6.0.3)
       '@nuxt/cli': 3.35.2(@nuxt/schema@4.4.8)(cac@6.7.14)(magicast@0.5.2)(supports-color@10.2.2)
-      '@nuxt/devtools': 3.2.4(supports-color@10.2.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@6.0.3))
+      '@nuxt/devtools': 3.2.4(patch_hash=1f9ac5a3e532cbba977e983fd48228c72f73097949f63cdc2b37412a62c4bb97)(supports-color@10.2.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@6.0.3))
       '@nuxt/kit': 4.4.8(magicast@0.5.2)
       '@nuxt/nitro-server': 4.4.8(@babel/plugin-syntax-typescript@7.28.6(@babel/core@7.29.0(supports-color@10.2.2)))(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(better-sqlite3@11.10.0)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(ioredis@5.10.1(supports-color@10.2.2))(magicast@0.5.2)(nuxt@4.4.8(27aaccb2a4ee33104bd33a279934dcb2))(oxc-parser@0.133.0)(rolldown@1.1.4)(srvx@0.11.22)(supports-color@10.2.2)(typescript@6.0.3)
       '@nuxt/schema': 4.4.8
@@ -33634,7 +33650,7 @@ snapshots:
     dependencies:
       '@dxup/nuxt': 0.4.1(magicast@0.5.2)(typescript@6.0.3)
       '@nuxt/cli': 3.35.2(@nuxt/schema@4.4.8)(cac@6.7.14)(magicast@0.5.2)(supports-color@10.2.2)
-      '@nuxt/devtools': 3.2.4(supports-color@10.2.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@6.0.3))
+      '@nuxt/devtools': 3.2.4(patch_hash=1f9ac5a3e532cbba977e983fd48228c72f73097949f63cdc2b37412a62c4bb97)(supports-color@10.2.2)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@6.0.3))
       '@nuxt/kit': 4.4.8(magicast@0.5.2)
       '@nuxt/nitro-server': 4.4.8(@babel/plugin-syntax-typescript@7.28.6(@babel/core@7.29.7(supports-color@10.2.2)))(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(better-sqlite3@11.10.0)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(ioredis@5.10.1(supports-color@10.2.2))(magicast@0.5.2)(nuxt@4.4.8(31148bb3f18c22d30c79eea86474aafe))(oxc-parser@0.133.0)(rolldown@1.1.4)(supports-color@10.2.2)(typescript@6.0.3)
       '@nuxt/schema': 4.4.8
@@ -33762,7 +33778,7 @@ snapshots:
     dependencies:
       '@dxup/nuxt': 0.4.1(magicast@0.5.2)(typescript@5.9.3)
       '@nuxt/cli': 3.35.2(@nuxt/schema@4.4.8)(cac@6.7.14)(magicast@0.5.2)(supports-color@10.2.2)
-      '@nuxt/devtools': 3.2.4(supports-color@10.2.2)(vite@8.1.3(@types/node@22.19.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@5.9.3))
+      '@nuxt/devtools': 3.2.4(patch_hash=1f9ac5a3e532cbba977e983fd48228c72f73097949f63cdc2b37412a62c4bb97)(supports-color@10.2.2)(vite@8.1.3(@types/node@22.19.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(vue@3.5.35(typescript@5.9.3))
       '@nuxt/kit': 4.4.8(magicast@0.5.2)
       '@nuxt/nitro-server': 4.4.8(@babel/plugin-syntax-typescript@7.28.6(@babel/core@7.29.7(supports-color@10.2.2)))(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(better-sqlite3@11.10.0)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(ioredis@5.10.1(supports-color@10.2.2))(magicast@0.5.2)(nuxt@4.4.8(d2911a33602af1639119d76ec4bfc13b))(oxc-parser@0.133.0)(rolldown@1.1.4)(supports-color@10.2.2)(typescript@5.9.3)
       '@nuxt/schema': 4.4.8
@@ -36293,10 +36309,12 @@ snapshots:
       simple-concat: 1.0.1
     optional: true
 
-  simple-git@3.33.0(supports-color@10.2.2):
+  simple-git@4.0.2(supports-color@10.2.2):
     dependencies:
       '@kwsites/file-exists': 1.1.1(supports-color@10.2.2)
       '@kwsites/promise-deferred': 1.1.1
+      '@simple-git/args-pathspec': 1.0.4
+      '@simple-git/argv-parser': 2.0.1
       debug: 4.4.3(supports-color@10.2.2)
     transitivePeerDependencies:
       - supports-color
