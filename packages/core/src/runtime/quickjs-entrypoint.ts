@@ -39,6 +39,7 @@ import {
 } from '@workflow/world';
 import { classifyRunError, isRetryableWorldError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
+import { getStepFunction } from '../private.js';
 import {
   deriveRunPayloadKeys,
   encrypt as encryptSerializedData,
@@ -76,6 +77,8 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
+import type { InBandWriter } from './orchestrator/in-band-writer.js';
+import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
@@ -96,7 +99,11 @@ import {
   sealSnapshot,
 } from './quickjs-snapshot-codec.js';
 import { ReplayBudget } from './replay-budget.js';
-import { executeStep, type StepExecutionResult } from './step-executor.js';
+import {
+  DEFAULT_STEP_MAX_RETRIES,
+  executeStep,
+  type StepExecutionResult,
+} from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import {
@@ -186,6 +193,8 @@ async function queueStepMessage(params: {
    * dispatchPendingOps parallelizes with the step_created write.
    */
   stepInput?: Uint8Array;
+  /** The attempt the message starts with, when above 1. */
+  stepAttempt?: number;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
   const {
@@ -211,6 +220,9 @@ async function queueStepMessage(params: {
       traceCarrier,
       requestedAt: new Date(),
       ...(stepInput !== undefined ? { stepInput: { input: stepInput } } : {}),
+      ...(params.stepAttempt !== undefined && params.stepAttempt > 1
+        ? { stepAttempt: params.stepAttempt }
+        : {}),
       // Immutable run identity so the consumer can start the step without a
       // blocking runs.get — see RunDispatchContextSchema.
       runContext: runDispatchContext(workflowRun),
@@ -225,6 +237,9 @@ async function queueStepMessage(params: {
         purpose === 'dispatch'
           ? stepDispatchIdempotencyKey(step.correlationId, step.stepId)
           : `${step.correlationId}:${purpose}`,
+      retentionSeconds: stepMessageRetentionSeconds(
+        getStepFunction(step.stepId)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
+      ),
       ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
     }
   );
@@ -358,6 +373,8 @@ async function dispatchPendingOps(params: {
    * instead of both invocations bare-starting the same step.
    */
   skipStepCreation?: Set<string>;
+  /** Queue message id of this delivery, recorded on step and wait creates. */
+  creatorMessageId?: string;
   /**
    * Step cids the caller intends to hand to the queue this turn (overflow
    * steps beyond the inline cap). Eligible ones are published here, in
@@ -412,6 +429,7 @@ async function dispatchPendingOps(params: {
     createEvent,
   } = params;
   const skipStepCreation = params.skipStepCreation;
+  const creatorMessageId = params.creatorMessageId;
   const queueStepCids = params.queueStepCids;
   const wfdiag = params.wfdiag;
   // Step cids published via resilient dispatch below (create + queue in
@@ -809,6 +827,8 @@ async function dispatchPendingOps(params: {
                 eventData: {
                   stepName: step.stepId,
                   input: encryptedInput,
+                  inline: false,
+                  ...(creatorMessageId ? { creatorMessageId } : {}),
                 },
               }),
               queueStepMessage({
@@ -877,6 +897,8 @@ async function dispatchPendingOps(params: {
               eventData: {
                 stepName: step.stepId,
                 input: encryptedInput,
+                inline: false,
+                ...(creatorMessageId ? { creatorMessageId } : {}),
               },
             });
           } catch (err) {
@@ -930,6 +952,7 @@ async function dispatchPendingOps(params: {
               correlationId: wait.correlationId,
               eventData: {
                 resumeAt: new Date(wait.resumeAt),
+                ...(creatorMessageId ? { creatorMessageId } : {}),
               },
             });
           } catch (err) {
@@ -1102,6 +1125,11 @@ export async function runWorkflowWithQuickJS(params: {
   ownerMessageId?: string;
   /** Request ID of the queue invocation, when the queue provides one. */
   requestId?: string;
+  /**
+   * The orchestrator's in-band writer. Every event this engine writes goes
+   * through it, so the writes are marked in-band and fenced.
+   */
+  writer?: InBandWriter;
   /**
    * Queue namespace resolved at route registration (runtime.ts). Must be
    * threaded into every message publish: the builders bake the namespace
@@ -1425,8 +1453,12 @@ export async function runWorkflowWithQuickJS(params: {
       ? events.length
       : (existingSnapshot?.metadata.eventCount ?? 0) + events.length;
   const logView = new QuickJSLogView(events, loadedCursor, loadedPosition);
+  const writeEvent: EventCreator = (data, eventParams) =>
+    params.writer
+      ? params.writer.create(data, eventParams)
+      : world.events.create(runId, data, eventParams);
   const createEvent: EventCreator = async (data, eventParams) => {
-    const result = await world.events.create(runId, data, {
+    const result = await writeEvent(data, {
       // Returned replay events only feed the log; read them the way replay
       // reads the log.
       resolveData: REPLAY_RESOLVE_DATA,
@@ -1481,7 +1513,7 @@ export async function runWorkflowWithQuickJS(params: {
    * engine's `deltaRequestCursor` makes the same exclusion for `sinceCursor`.
    */
   const terminalCreateEvent: EventCreator = (data, eventParams) =>
-    world.events.create(runId, data, eventParams);
+    writeEvent(data, eventParams);
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling. With a restored snapshot `events` is only
@@ -1965,6 +1997,7 @@ export async function runWorkflowWithQuickJS(params: {
           : {}),
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
+        creatorMessageId: ownerMessageId,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
         finalizeUnserializableSteps: true,
         wfdiag,
@@ -2237,37 +2270,6 @@ export async function runWorkflowWithQuickJS(params: {
       // own, matching the node:vm engine, where a long sequential
       // workflow likewise runs step-by-step until the platform reclaims
       // the invocation and a redelivery resumes from the log.
-      // Inline delta: a single inline step's terminal write asks the World
-      // for everything after the cursor this view holds, so the step's own
-      // events (and anything interleaved) arrive on the write's response and
-      // the feed below needs no listing. Same gate as the node engine's
-      // `requestInlineDelta` (runtime.ts), translated to this loop's terms:
-      //
-      // - This step is the only step outstanding: no overflow sibling queued
-      //   this iteration, no unserializable sibling, no step from an earlier
-      //   invocation handed to the queue above. Several writers each diffing
-      //   against the same cursor would produce deltas of which only the
-      //   first could be taken.
-      // - No wait is pending. A `wait_completed` is a resolution the
-      //   workflow is waiting on rather than an event it can observe one
-      //   iteration late, so a delta that predates it would settle the
-      //   sleep from a view that does not hold its completion; the listing
-      //   after the step is what reads it in order.
-      // - The log has a cursor to name (tracking on, something read).
-      const hasPendingWait = pendingOperations.some(
-        (op) =>
-          op.type === 'wait' &&
-          !completedWaitIds2.has((op as PendingWait).correlationId)
-      );
-      const inlineDeltaSinceCursor =
-        stepOps.length === 1 &&
-        freshSteps.length === 1 &&
-        inlineCandidates.length === 1 &&
-        !hasPendingWait &&
-        logView.tracking &&
-        typeof logView.logCursor === 'string'
-          ? logView.logCursor
-          : undefined;
       budget.pause();
       let outcomes: StepExecutionResult[];
       try {
@@ -2277,9 +2279,34 @@ export async function runWorkflowWithQuickJS(params: {
               runId,
               step.correlationId,
               () =>
-                (async () =>
-                  executeStep({
+                (async () => {
+                  const input = await encryptSerializedData(
+                    step.input,
+                    encryptionKey
+                  );
+                  // The step's execution mode is fixed here: inline, run by
+                  // this orchestrator. `step_created` commits before the
+                  // body starts.
+                  await createEvent({
+                    eventType: 'step_created',
+                    specVersion: SPEC_VERSION_CURRENT,
+                    correlationId: step.correlationId,
+                    eventData: {
+                      stepName: step.stepId,
+                      input,
+                      inline: true,
+                      ...(ownerMessageId
+                        ? { creatorMessageId: ownerMessageId }
+                        : {}),
+                    },
+                  });
+                  return executeStep({
                     world,
+                    createEvent: (data, eventParams) =>
+                      writeEvent(data, {
+                        ...eventParams,
+                        ...logView.snapshotParams(),
+                      }),
                     workflowRunId: runId,
                     workflowDeploymentId: workflowRun.deploymentId,
                     workflowName: workflowRun.workflowName,
@@ -2290,27 +2317,12 @@ export async function runWorkflowWithQuickJS(params: {
                     stepName: step.stepId,
                     encryptionKey,
                     runSpecVersion: workflowRun.specVersion,
-                    // Lazy inline claim: step_created is deferred (dispatch
-                    // skipped it) and this step_started carries the input,
-                    // so the world creates the step atomically:
-                    // exactly-one-owner. A concurrent claimant gets
-                    // EntityConflictError → { type: 'skipped' } and never
-                    // runs the body. Mirrors the node engine's inline path.
-                    lazyStepInput: await encryptSerializedData(
-                      step.input,
-                      encryptionKey
-                    ),
-                    // Ownership stamp: wake replays see the body as in
-                    // flight in this invocation and arm a delayed backstop
-                    // instead of immediately requeueing the step.
-                    ownerMessageId,
-                    // A lazy step is brand-new by construction: first
-                    // attempt.
-                    authoritativeAttempt: 1,
-                    ...(inlineDeltaSinceCursor !== undefined
-                      ? { inlineDeltaSinceCursor }
-                      : {}),
-                  }))(),
+                    attempt: 1,
+                    startReason: 'first',
+                    input,
+                    beforeBody: () => params.writer?.assertActive(),
+                  });
+                })(),
               'debug'
             )
           )
@@ -2324,23 +2336,6 @@ export async function runWorkflowWithQuickJS(params: {
         const step = inlineCandidates[i];
         const outcome = outcomes[i];
         executedStepIds.add(step.correlationId);
-        if (
-          outcome.type === 'completed' &&
-          outcome.inlineDelta !== undefined &&
-          inlineDeltaSinceCursor !== undefined
-        ) {
-          const advanced = logView.absorbDelta(
-            inlineDeltaSinceCursor,
-            outcome.inlineDelta
-          );
-          wfdiag('inline_delta_absorbed', {
-            iteration,
-            correlationId: step.correlationId,
-            events: outcome.inlineDelta.events.length,
-            hasMore: outcome.inlineDelta.hasMore,
-            cursorAdvanced: advanced,
-          });
-        }
         if (outcome.type === 'throttled') {
           // The lazy `step_started` (the write that would have created the
           // step from its input) was rejected, so the step does NOT exist.
@@ -2367,11 +2362,10 @@ export async function runWorkflowWithQuickJS(params: {
             delaySeconds: outcome.timeoutSeconds,
             namespace,
             nextTraceCarrier,
-            // Suffixed key: this step was inline-claimed, so no dispatch
-            // publish exists under the dispatch key, but suffixing
-            // keeps the retry enqueueable even if a world retired a
-            // historical key for this step (see the purpose docs above).
-            purpose: 'retry:1',
+            // The retry moves to the background: this is the step's first
+            // message, and it carries the next attempt.
+            purpose: 'dispatch',
+            stepAttempt: 2,
             wfdiag,
           });
         } else if (outcome.type === 'gone') {

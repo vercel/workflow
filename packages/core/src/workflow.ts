@@ -25,6 +25,7 @@ import { isDeliveryIdle } from './private.js';
 import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
+import type { EventCreator } from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
@@ -83,10 +84,10 @@ async function drainPendingQueueItems(
   workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed',
   /**
-   * In turbo mode, gates final `*_created` writes on backgrounded
-   * `run_started`. Undefined when `run_started` is awaited.
+   * Writes the drain's events. The orchestrator passes its in-band writer;
+   * without one the events go straight to the World.
    */
-  runReadyBarrier?: Promise<unknown>
+  writeEvent?: EventCreator
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -112,7 +113,7 @@ async function drainPendingQueueItems(
       suspension: synthesized,
       world,
       run: workflowRun,
-      runReadyBarrier,
+      writeEvent,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -133,7 +134,8 @@ interface WorkflowSessionOptions {
   readonly encryptionKey: PayloadKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
-  readonly runReadyBarrier?: Promise<unknown>;
+  /** Writes the end-of-run drain's events (the orchestrator's in-band writer). */
+  readonly writeEvent?: EventCreator;
   readonly worldCapabilities?: WorldCapabilities;
 }
 
@@ -353,13 +355,8 @@ export async function runWorkflow(
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
     encryptionKey
   ),
-  /**
-   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
-   * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
-   * committed at workflow completion order after the run's creation. Undefined
-   * outside turbo, where `run_started` is awaited up front.
-   */
-  runReadyBarrier?: Promise<unknown>,
+  /** Writes the end-of-run drain's events. */
+  writeEvent?: EventCreator,
   /**
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
@@ -372,7 +369,7 @@ export async function runWorkflow(
     events,
     encryptionKey,
     replayPayloadCache,
-    runReadyBarrier,
+    writeEvent,
     worldCapabilities,
   });
   if (result.type === 'suspended') throw result.suspension;
@@ -395,7 +392,7 @@ async function createWorkflowSessionInner(
     encryptionKey,
     replayPayloadCache,
     compiledWorkflowScripts,
-    runReadyBarrier,
+    writeEvent,
     worldCapabilities,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
@@ -1227,7 +1224,7 @@ async function createWorkflowSessionInner(
       vmGlobalThis,
       workflowRun,
       'failed',
-      runReadyBarrier
+      writeEvent
     );
 
     throw error;
@@ -1288,7 +1285,7 @@ async function createWorkflowSessionInner(
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier
+        writeEvent
       );
 
       return { type: 'completed', output, resultType: typeof result };

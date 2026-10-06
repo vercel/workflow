@@ -1,0 +1,317 @@
+import { SerializationError } from '@workflow/errors';
+import {
+  type BatchEventRequest,
+  type CreateEventRequest,
+  type Event,
+  type SerializedData,
+  SPEC_VERSION_CURRENT,
+  type WorkflowRun,
+} from '@workflow/world';
+import type {
+  StepInvocationQueueItem,
+  WaitInvocationQueueItem,
+  WorkflowSuspension,
+} from '../../global.js';
+import { runtimeLogger } from '../../logger.js';
+import type { PayloadKey } from '../../serialization/encryption.js';
+import {
+  GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
+  type GuestCodeStats,
+} from '../../serialization/hardened.js';
+import {
+  dehydrateStepArguments,
+  dehydrateStepError,
+} from '../../serialization.js';
+import type { SuspensionSerializationBlocker } from '../suspension-handler.js';
+import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
+import type { InBandWriter } from './in-band-writer.js';
+
+/** A step this suspension created, and how it executes. */
+export interface CreatedStep {
+  correlationId: string;
+  stepName: string;
+  inline: boolean;
+  input: SerializedData;
+  /** The committed `step_created`. */
+  event: Event;
+}
+
+export interface StepWaitCreationResult {
+  createdSteps: CreatedStep[];
+  /** Steps finalized as failed because their arguments did not serialize. */
+  failedStepCorrelationIds: Set<string>;
+  /** The committed `wait_created` events. */
+  createdWaits: Event[];
+  serializationBlockerCount: number;
+  serializationBlockers: SuspensionSerializationBlocker[];
+}
+
+/**
+ * Writes the `step_created` and `wait_created` events of one suspension
+ * through the orchestrator's in-band writer.
+ *
+ * - Each `step_created` records the step's execution mode, fixed here for
+ *   good: `inline: true` for the first `inlineSlots` new steps (the
+ *   orchestrator runs them in this process), `inline: false` for the rest
+ *   (they are enqueued once, right after this commit, and never run
+ *   inline).
+ * - Each `step_created` and `wait_created` records `creatorMessageId`, the
+ *   queue message of this delivery: only a redelivery of it re-enqueues a
+ *   background step or schedules a wait's timer.
+ * - The events go out as one `createBatch` when the World has one, else one
+ *   at a time. In-band writes are serialized, so a parallel fan-out of
+ *   single writes would be refused by the fence.
+ * - A step whose arguments fail to serialize is finalized as `step_created`
+ *   (placeholder input) plus `step_failed`, so the workflow observes the
+ *   error on the next replay.
+ */
+export async function createStepsAndWaits(params: {
+  suspension: WorkflowSuspension;
+  run: WorkflowRun;
+  writer: InBandWriter;
+  eventCount: () => number | undefined;
+  encryptionKey: PayloadKey | undefined;
+  compression: boolean;
+  creatorMessageId: string;
+  inlineSlots: number;
+  requestId?: string;
+}): Promise<StepWaitCreationResult> {
+  const { suspension, run, encryptionKey, compression } = params;
+  const runId = run.runId;
+  const stepItems = suspension.items.filter(
+    (item): item is StepInvocationQueueItem =>
+      item.type === 'step' && !item.hasCreatedEvent
+  );
+  const waitItems = suspension.items.filter(
+    (item): item is WaitInvocationQueueItem =>
+      item.type === 'wait' && !item.hasCreatedEvent
+  );
+
+  let serializationBlockerCount = 0;
+  const serializationBlockers: SuspensionSerializationBlocker[] = [];
+  const failedStepCorrelationIds = new Set<string>();
+
+  type Prepared =
+    | { item: StepInvocationQueueItem; input: SerializedData }
+    | { item: StepInvocationQueueItem; error: SerializationError };
+  const prepared: Prepared[] = await Promise.all(
+    stepItems.map(async (item): Promise<Prepared> => {
+      const stats: GuestCodeStats = { executions: [] };
+      try {
+        const input = (await dehydrateStepArguments(
+          {
+            args: item.args,
+            closureVars: item.closureVars,
+            thisVal: item.thisVal,
+          },
+          runId,
+          encryptionKey,
+          suspension.globalThis,
+          false,
+          compression,
+          stats
+        )) as SerializedData;
+        return { item, input };
+      } catch (error) {
+        if (!SerializationError.is(error)) throw error;
+        return { item, error };
+      } finally {
+        serializationBlockerCount +=
+          stats.totalExecutions ?? stats.executions.length;
+        serializationBlockers.push(
+          ...stats.executions
+            .slice(
+              0,
+              GUEST_CODE_EXECUTION_SAMPLE_LIMIT - serializationBlockers.length
+            )
+            .map((execution) => ({
+              source: 'step_input' as const,
+              correlationId: item.correlationId,
+              ...execution,
+            }))
+        );
+      }
+    })
+  );
+
+  const events: CreateEventRequest[] = [];
+  const createdSteps: Omit<CreatedStep, 'event'>[] = [];
+  let inlineLeft = params.inlineSlots;
+  for (const entry of prepared) {
+    if ('error' in entry) continue;
+    const inline = inlineLeft > 0;
+    if (inline) inlineLeft--;
+    createdSteps.push({
+      correlationId: entry.item.correlationId,
+      stepName: entry.item.stepName,
+      inline,
+      input: entry.input,
+    });
+    events.push({
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: entry.item.correlationId,
+      eventData: {
+        stepName: entry.item.stepName,
+        workflowName: run.workflowName,
+        input: entry.input,
+        inline,
+        creatorMessageId: params.creatorMessageId,
+      },
+    });
+  }
+  for (const item of waitItems) {
+    events.push({
+      eventType: 'wait_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: item.correlationId,
+      eventData: {
+        resumeAt: item.resumeAt,
+        creatorMessageId: params.creatorMessageId,
+      },
+    });
+  }
+
+  const committed = await writeAll(params, events);
+  const stepEvents = new Map<string, Event>();
+  const createdWaits: Event[] = [];
+  for (const event of committed) {
+    if (event.eventType === 'step_created' && event.correlationId) {
+      stepEvents.set(event.correlationId, event);
+    } else if (event.eventType === 'wait_created') {
+      createdWaits.push(event);
+    }
+  }
+
+  for (const entry of prepared) {
+    if (!('error' in entry)) continue;
+    await finalizeUnserializableStep(params, entry.item, entry.error);
+    failedStepCorrelationIds.add(entry.item.correlationId);
+  }
+
+  return {
+    createdSteps: createdSteps.flatMap((step) => {
+      const event = stepEvents.get(step.correlationId);
+      return event ? [{ ...step, event }] : [];
+    }),
+    failedStepCorrelationIds,
+    createdWaits,
+    serializationBlockerCount,
+    serializationBlockers,
+  };
+}
+
+async function writeAll(
+  params: {
+    writer: InBandWriter;
+    eventCount: () => number | undefined;
+    requestId?: string;
+    run: WorkflowRun;
+  },
+  events: CreateEventRequest[]
+): Promise<Event[]> {
+  if (events.length === 0) return [];
+  const { writer } = params;
+  if (events.length > 1 && writer.supportsBatch) {
+    const batch: BatchEventRequest[] = events.map((event) => ({ event }));
+    const { results } = await writer.createBatch(batch, {
+      ...(params.requestId ? { requestId: params.requestId } : {}),
+    });
+    const committed: Event[] = [];
+    results.forEach((result, index) => {
+      if (result.error === undefined) {
+        committed.push(result.event);
+        return;
+      }
+      // A batch on a spec >= 9 run is not atomic. A failed item left a
+      // hole the World seals; the next replay re-derives the event and the
+      // next suspension writes it again.
+      runtimeLogger.warn('Suspension batch item was not committed', {
+        workflowRunId: params.run.runId,
+        eventType: events[index]?.eventType,
+        correlationId: (events[index] as { correlationId?: string })
+          ?.correlationId,
+        status: result.status,
+        error: result.error,
+      });
+      if (result.status >= 500 || result.status === 429) {
+        throw new Error(
+          `Suspension batch item failed with ${result.status}: ${result.message}`
+        );
+      }
+    });
+    return committed;
+  }
+  const committed: Event[] = [];
+  for (const event of events) {
+    const eventCount = params.eventCount();
+    const result = await writer.create(event, {
+      ...(params.requestId ? { requestId: params.requestId } : {}),
+      ...(eventCount !== undefined ? { eventCount } : {}),
+    });
+    if (result.event) committed.push(result.event);
+  }
+  return committed;
+}
+
+async function finalizeUnserializableStep(
+  params: {
+    run: WorkflowRun;
+    writer: InBandWriter;
+    encryptionKey: PayloadKey | undefined;
+    compression: boolean;
+    creatorMessageId: string;
+    suspension: WorkflowSuspension;
+    requestId?: string;
+  },
+  item: StepInvocationQueueItem,
+  error: SerializationError
+): Promise<void> {
+  const { run, writer, encryptionKey, compression, suspension } = params;
+  runtimeLogger.warn(
+    'Step arguments failed to serialize; failing the step so the workflow can observe the error',
+    {
+      workflowRunId: run.runId,
+      correlationId: item.correlationId,
+      stepName: item.stepName,
+      error: error.message,
+    }
+  );
+  const placeholderInput = (await dehydrateStepArguments(
+    unserializableStepInputPlaceholder(),
+    run.runId,
+    encryptionKey,
+    suspension.globalThis,
+    false,
+    compression
+  )) as SerializedData;
+  await writer.create({
+    eventType: 'step_created',
+    specVersion: SPEC_VERSION_CURRENT,
+    correlationId: item.correlationId,
+    eventData: {
+      stepName: item.stepName,
+      workflowName: run.workflowName,
+      input: placeholderInput,
+      inline: true,
+      creatorMessageId: params.creatorMessageId,
+    },
+  });
+  await writer.create({
+    eventType: 'step_failed',
+    specVersion: SPEC_VERSION_CURRENT,
+    correlationId: item.correlationId,
+    eventData: {
+      stepName: item.stepName,
+      attempt: 1,
+      error: await dehydrateStepError(
+        error,
+        run.runId,
+        encryptionKey,
+        [],
+        suspension.globalThis,
+        compression
+      ),
+    },
+  });
+}

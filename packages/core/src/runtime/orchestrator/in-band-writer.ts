@@ -112,6 +112,11 @@ export class InBandWriter {
     return this.stopped && InBandSupersededError.is(this.stoppedBy);
   }
 
+  /** Whether the World can take a batch write. */
+  get supportsBatch(): boolean {
+    return typeof this.world.events.createBatch === 'function';
+  }
+
   /** The current expected count, for diagnostics and tests. */
   get expectedSeqInBand(): number | undefined {
     return this.expected;

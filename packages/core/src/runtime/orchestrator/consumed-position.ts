@@ -35,6 +35,10 @@ export function recordConsumedPosition(
   }
 }
 
+export function hasConsumedPosition(runId: string): boolean {
+  return positions.has(runId);
+}
+
 export function forgetConsumedPosition(runId: string): void {
   positions.delete(runId);
 }
