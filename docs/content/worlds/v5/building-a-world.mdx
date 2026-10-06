@@ -42,6 +42,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
+  inBandFence?: boolean; // required, see Single-writer guarantee
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
 }
@@ -62,7 +63,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue delivers a run's orchestrator messages one at a time (see [Queue interface](#queue-interface)); the runtime takes no fast path from it. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions.
+The `capabilities` object advertises additional behavior, and every capability **fails closed**. One member is required rather than optional: `inBandFence`, which declares the [in-band writer fence](#single-writer-guarantee-and-the-in-band-fence). The runtime refuses a World that does not declare it. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue delivers a run's orchestrator messages one at a time (see [Single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence)); the runtime takes no fast path from it. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -160,22 +161,9 @@ interface Storage {
 
 Persist the fields the runtime adds to `eventData` and return them from `events.list()`: `inline` and `creatorMessageId` on `step_created`, `creatorMessageId` on `wait_created`, `attempt` and `startReason` on `step_started`, `attempt` on `step_retrying` and `step_failed`, and `stepName` on every step event.
 
-**In-band and out-of-band writes.** Every write says whether the run's orchestrator made it (`params.inBand`). In-band writes also carry `params.expectedSeqInBand` and `params.eventCount`. A World without the in-band fence ignores `inBand` and `expectedSeqInBand` and relies on its queue delivering a run's orchestrator messages one at a time (see [`maxConcurrency`](#queue-interface)).
+**In-band and out-of-band writes.** Every write says whether the run's orchestrator made it (`params.inBand`). In-band writes also carry `params.expectedSeqInBand` and `params.eventCount`, and your World must fence them: see [Single-writer guarantee and the in-band fence](#single-writer-guarantee-and-the-in-band-fence).
 
-#### Optional: the in-band fence
-
-The fence keeps a run to one orchestrator writer even when two invocations of it overlap (an event loop stalled past its queue lease, then resumed). Keep, per run, a count of the positions allocated to in-band writes, starting at 1 for `run_created`:
-
-- On every `events.list()` page, return `snapshot: { seq, seqInBand }`, read before the listing: `seq` is the highest allocated position, `seqInBand` the in-band count. A full load (followed to `hasMore: false`) must cover every position up to the first page's `seq`, each committed or sealed.
-- Accept an in-band write only when `expectedSeqInBand` equals your count, and then add the positions it allocated to the count in the same conditional operation as the allocation. Refuse a mismatch with `InBandSupersededError` (412, `in-band-superseded`) and allocate nothing. Never use the conflict (409) path for it.
-- Decide the fence before anything else the write does. A stale writer must touch no entity row and must hear 412, never a 409 for an entity the current writer created. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (Postgres: one transaction that locks the run's counter row first).
-- Out-of-band writes allocate unconditionally and leave the count alone.
-- Return `allocated` on the result: how many positions the write took (0 for a write that converged on an event the log already held). The runtime advances its count by it.
-- For an in-band write, return the events on the positions between `eventCount` and the write's own (the skipped-slot report), complete, or `reportIncomplete: true`.
-
-The runtime takes the count from the first page's snapshot of a full load, never from counting events, and stops, without acknowledging its message, when a write is refused.
-
-**Batch writes:** `events.createBatch()` is optional, and implementing it is what declares it. The runtime writes a suspension's `step_created` and `wait_created` events as one batch only when the method exists, and otherwise writes them one at a time. The events land in request order at consecutive positions. On a spec 9 run a batch is not atomic: an item may fail while the others commit, and each item reports its own outcome. Batch params carry `inBand`, `expectedSeqInBand` and `eventCount` for the whole block; a fenced World allocates the block in one conditional allocation and returns the block's skipped-slot report and `allocated` count at the top level of the result. Reject the whole batch, with a request-level error, for anything other than step and wait events, and for a batch over your own size caps.
+**Batch writes:** `events.createBatch()` is optional, and implementing it is what declares it. The runtime writes a suspension's `step_created` and `wait_created` events as one batch only when the method exists, and otherwise writes them one at a time. The events land in request order at consecutive positions. On a spec 9 run a batch is not atomic: an item may fail while the others commit, and each item reports its own outcome. Batch params carry `inBand`, `expectedSeqInBand` and `eventCount` for the whole block; the World allocates the block in one conditional allocation and returns the block's skipped-slot report and `allocated` count at the top level of the result. Reject the whole batch, with a request-level error, for anything other than step and wait events, and for a batch over your own size caps.
 
 **Throttled step results:** `step_completed`, `step_retrying`, and a `step_failed` marked with `afterStepBody: true` in `CreateEventParams` record a step body that already ran. If your World retries throttled writes, keep these waiting longer than other writes, because losing one to queue redelivery runs the body again. `@workflow/world-vercel` waits until the invocation's deadline. The flag is advisory, and a World may ignore it.
 
@@ -252,7 +240,7 @@ Every in-band write carries `eventCount`; out-of-band writes (a background step'
 
 ### Rejecting a stale write
 
-Earlier releases let a World refuse a write made from a stale snapshot with `PreconditionFailedError`, and restarted the replay in response. The runtime no longer does that: on a spec 9 run the [in-band fence](#optional-the-in-band-fence) is the only refusal it acts on, and a stale snapshot is answered with a skipped-slot report.
+Earlier releases let a World refuse a write made from a stale snapshot with `PreconditionFailedError`, and restarted the replay in response. The runtime no longer does that: on a spec 9 run the [in-band fence](#single-writer-guarantee-and-the-in-band-fence) is the only refusal it acts on, and a stale snapshot is answered with a skipped-slot report.
 
 ## Queue interface
 
@@ -302,7 +290,7 @@ The handler's result is queue control:
 
 `meta.messageId` must be stable across redeliveries of one message, and `meta.deliveryCount` must be 1 only on a message's first delivery (leave it `undefined` if your queue cannot say; the runtime then reads the log before every step body). A step with `maxRetries: 0` runs at most once only if a redelivery never reports 1.
 
-**Deliver a run's orchestrator messages one at a time.** `orchestratorRunIdOf(payload)` from `@workflow/world` returns the run a message is an orchestrator delivery for (a start, a wake, a hook resume, a cancellation, a timer), or `undefined` for a step message or a health check. While one delivery for a run is in flight, hold the run's other orchestrator deliveries until it responds; never hold step messages back. A delivery that is waiting out a `{ timeoutSeconds }` delay is not in flight. The runtime never needs a second delivery of a run to make progress: an orchestrator blocked on an inline step reads new events from the log itself. This is the queue half of the single-writer guarantee, and the in-band fence above is the other: the queue keeps overlaps rare, and the fence makes the one it cannot rule out (a delivery that outlives its lease) safe. world-vercel uses a per-run topic consumed with `maxConcurrency: 1`, world-postgres a Graphile named queue per run, and world-local an in-process per-run gate.
+**Deliver a run's orchestrator messages one at a time.** This is the queue half of the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence), described there with the fence.
 
 `QueueOptions.idempotencyKey` is set only on step messages, with a key stable for the step. Wakes of a run's orchestrator carry no key. Step messages also carry `retentionSeconds`, which you cap at what your queue supports.
 
@@ -405,6 +393,60 @@ The SDK also sends an internal `HealthCheckPayload` through the same workflow qu
 - Implement idempotency using the `idempotencyKey` option when provided
 - Honor the `delaySeconds` option. Waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and causes every sleeping run to enter a busy loop
 - Optionally honor the `region` option, a routing hint naming the region a message should be dispatched in; Worlds without a regional dimension ignore it
+
+## Single-writer guarantee and the in-band fence
+
+<Callout type="warn">
+  This section applies to the v6 beta only. It describes spec version 9 runs (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model), which earlier releases do not create.
+</Callout>
+
+On a spec 9 run one orchestrator invocation at a time makes every decision for the run. Its writes are **in-band**: `run_started`, `run_completed`, `run_failed`, `step_created`, `wait_created`, `wait_completed`, `hook_created`, `hook_disposed`, an `attr_set` from the workflow body, a `hook_received` it writes for a resume carried on its own queue message, and every event of a step it runs inline. Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `attr_set` from `setAttributes()` outside the workflow. Classification is by writer, not by event type, and the runtime states it on every write as `params.inBand`.
+
+Two mechanisms keep a run to one in-band writer, and a World implements both:
+
+1. **Queue serialization** makes two orchestrators of one run rare.
+2. **The in-band fence** makes the overlap the queue cannot rule out safe: a delivery that outlives its queue lease (an event loop stalled past its visibility timeout, then resumed) while a redelivery of the same run is already running.
+
+### Queue: one orchestrator delivery per run
+
+`orchestratorRunIdOf(payload)` from `@workflow/world` returns the run a message is an orchestrator delivery for (a start, a wake, a hook resume, a cancellation, a timer), or `undefined` for a step message or a health check. While one delivery for a run is in flight, hold the run's other orchestrator deliveries until it responds; never hold step messages back. A delivery that is waiting out a `{ timeoutSeconds }` delay is not in flight. The runtime never needs a second delivery of a run to make progress: an orchestrator blocked on an inline step reads new events from the log itself.
+
+Declare `capabilities.maxConcurrency` when your queue does this. world-vercel uses a per-run topic consumed with `maxConcurrency: 1`, world-postgres a Graphile named queue per run, and world-local an in-process per-run gate. This half is a frequency mechanism: the runtime takes no fast path from it, and correctness rests on the fence.
+
+### Storage: the in-band fence
+
+Declare `capabilities.inBandFence: true`. The runtime checks it in `start()` and at the start of every orchestrator delivery, and throws a `WorkflowRuntimeError` naming the capability when it is missing, before anything is written. There is no unfenced mode.
+
+Keep, per run, two counters next to whatever allocates event positions: `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band, so a new run holds `seq = 1, seqInBand = 1`. Then:
+
+- **List snapshot.** On every `events.list()` page of a spec 9 run, return `snapshot: { seq, seqInBand }`, read (strongly consistently) before the listing. A full load, followed to `hasMore: false`, must cover every position up to the first page's `seq`, each one committed or sealed. The runtime takes its count from the first page of a full load, never from counting events: a count cannot tell which positions were in-band. A load of a non-empty log without a snapshot fails the run as a World contract error.
+- **Fenced in-band creates.** An in-band write (`inBand: true`) carries `expectedSeqInBand`. Accept it only when that equals `seqInBand`, and advance both counters by the positions it allocates (1 for a create, the block size for a batch) in the same atomic operation as the allocation. On a mismatch, throw `InBandSupersededError` (HTTP 412, `in-band-superseded`) and write and allocate nothing, so a refusal never leaves a hole. Never use the conflict (409) path for it.
+- **Fence first.** Decide the fence before anything else the write does. A stale writer must touch no entity row and must hear 412, never a 409 for an entity the current writer created. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (Postgres: one transaction that locks the run's counter row first).
+- **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
+- **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
+- **Allocation and report.** Return `allocated` on the result: how many positions the write took (0 for a write that converged on an event the log already held). For an in-band write, return the events on the positions between `eventCount` and the write's own (the skipped-slot report), complete, or `reportIncomplete: true`.
+
+When a write is refused, the runtime stops that orchestrator invocation: it writes nothing more, starts no further inline step bodies, does not acknowledge its message, and returns `{ timeoutSeconds }` so the queue delivers the same message again. The redelivery loads the log afresh and takes the current count. It never adopts the counts the error carries.
+
+### Conformance
+
+Run the shared suite against your events storage. It checks the capability, the snapshot of a new run, acceptance and advancement at the current count, a refused stale write that leaves the log and counts unchanged, out-of-band writes that move only `seq`, a race of concurrent in-band writers holding the same count (exactly one wins), the 400 for a missing count, and that the step bookkeeping fields survive the round trip. It imports `vitest`.
+
+{/* @skip-typecheck - depends on your World's own factories */}
+```typescript
+import { inBandFenceConformance } from '@workflow/world/test-support/in-band-fence-conformance.js';
+import { createWorld } from './index.js';
+
+inBandFenceConformance({
+  name: 'my-world',
+  events: () => createWorld().events, // fresh storage per test
+  capabilities: () => createWorld().capabilities,
+  newRunId: () => null, // or a `wrun_` id when your World needs the client to mint it
+  atRunCreation: 1, // in-band positions a new run holds
+});
+```
+
+`createTestSuite()` from `@workflow/world-testing`, which runs workflows against your configured World, also checks the declared capability, the snapshot of a finished run's log, and a stale in-band write end to end.
 
 ## Streamer interface
 
