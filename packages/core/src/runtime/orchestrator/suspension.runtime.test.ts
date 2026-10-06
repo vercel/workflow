@@ -192,51 +192,45 @@ describe.each([
       expect(eventsOf(store, 'step_completed')).toHaveLength(1);
     });
 
-    // BUG (QuickJS engine): the placeholder `step_created` QuickJS writes for
-    // an unserializable step carries neither `inline` nor
-    // `creatorMessageId`, so when its `step_failed` write fails, no later
-    // delivery runs the step inline or re-enqueues it: the redelivery acks
-    // with the step still open and the run never ends. The node:vm engine
-    // writes the placeholder with `inline: true` and recovers.
-    (engine === 'quickjs' ? it.fails : it)(
-      'finalizes the step from its placeholder input when step_failed was lost after step_created landed',
-      async () => {
-        // The two finalization writes are separate. When the second fails, the
-        // delivery fails and its redelivery finds a step_created whose input is
-        // the unserializable-input placeholder: the step is failed from it,
-        // and user code never sees placeholder arguments.
-        let failNextStepFailed = true;
-        const { store, runId } = await setup(
-          `try { await take(new Opaque()); return "no error"; }
+    // The placeholder `step_created` is inline and names its creator, so a
+    // redelivery runs the step inline and the executor fails it from the
+    // placeholder input.
+    it('finalizes the step from its placeholder input when step_failed was lost after step_created landed', async () => {
+      // The two finalization writes are separate. When the second fails, the
+      // delivery fails and its redelivery finds a step_created whose input is
+      // the unserializable-input placeholder: the step is failed from it,
+      // and user code never sees placeholder arguments.
+      let failNextStepFailed = true;
+      const { store, runId } = await setup(
+        `try { await take(new Opaque()); return "no error"; }
          catch (e) { return e.name; }`,
-          {
-            tweak: (world) => {
-              const create = world.events.create.bind(world.events);
-              world.events.create = (async (
-                id: string,
-                event: unknown,
-                params?: never
-              ) => {
-                if (
-                  failNextStepFailed &&
-                  (event as { eventType: string }).eventType === 'step_failed'
-                ) {
-                  failNextStepFailed = false;
-                  throw new Error('storage unavailable');
-                }
-                return create(id, event as never, params);
-              }) as World['events']['create'];
-            },
-          }
-        );
-        const errors = await drain(store);
-        expect(errors.length).toBeGreaterThan(0);
-        expect(await output(store, runId)).toBe('SerializationError');
-        expect(calls.ss_take).toBeUndefined();
-        expect(eventsOf(store, 'step_created')).toHaveLength(1);
-        expect(eventsOf(store, 'step_failed')).toHaveLength(1);
-      }
-    );
+        {
+          tweak: (world) => {
+            const create = world.events.create.bind(world.events);
+            world.events.create = (async (
+              id: string,
+              event: unknown,
+              params?: never
+            ) => {
+              if (
+                failNextStepFailed &&
+                (event as { eventType: string }).eventType === 'step_failed'
+              ) {
+                failNextStepFailed = false;
+                throw new Error('storage unavailable');
+              }
+              return create(id, event as never, params);
+            }) as World['events']['create'];
+          },
+        }
+      );
+      const errors = await drain(store);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(await output(store, runId)).toBe('SerializationError');
+      expect(calls.ss_take).toBeUndefined();
+      expect(eventsOf(store, 'step_created')).toHaveLength(1);
+      expect(eventsOf(store, 'step_failed')).toHaveLength(1);
+    });
   });
 
   describe('how a suspension writes its step and wait events', () => {
@@ -380,12 +374,8 @@ describe.each([
       }
     );
 
-    // BUG (node:vm engine): `writeAll` in step-wait-creation.ts throws a
-    // plain `Error` for a 5xx/429 batch item so the delivery is retried, but
-    // the replay loop's catch only rethrows `isRetryableWorldError` errors
-    // and fails the run with everything else: the run gets `run_failed`
-    // (USER_ERROR) and the delivery is acknowledged.
-    (engine === 'quickjs' ? it.skip : it.fails)(
+    // A 5xx/429 batch item fails the delivery as a retryable World error.
+    it.skipIf(engine === 'quickjs')(
       'fails the delivery on a batch item refused with a 5xx, and its redelivery finishes the run',
       async () => {
         vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
@@ -461,14 +451,9 @@ describe.each([
       expect(eventsOf(store, 'step_created')).toHaveLength(1);
     });
 
-    // BUG (both engines): a failed step-message send (queue errors are not
-    // `WorkflowWorldError`s, so `isRetryableWorldError` is false for them)
-    // reaches the orchestrator's catch-all and fails the run with
-    // `run_failed` (USER_ERROR) after `step_created` committed, and the
-    // delivery is acknowledged. Expected: the delivery rejects, the message
-    // is redelivered, and the creator redelivery re-enqueues the unstarted
-    // step.
-    it.fails('does not acknowledge a delivery whose step-message send failed, and its redelivery enqueues the step', async () => {
+    // A failed step-message send fails the delivery: the message is
+    // redelivered, and the creator redelivery re-enqueues the unstarted step.
+    it('does not acknowledge a delivery whose step-message send failed, and its redelivery enqueues the step', async () => {
       // The re-enqueue rule: a redelivery of the message that created a
       // background step, which has not started, enqueues it again.
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
@@ -619,12 +604,9 @@ describe.each([
       expect(eventsOf(store, 'run_completed')).toEqual([]);
     });
 
-    // BUG (both engines): a World contract error from the orchestrator's
-    // log load is rethrown without `recordWorkflowSetupFailure`, so every
-    // delivery fails until the delivery cap, and the delivery past the cap
-    // cannot load the log to write its in-band `run_failed` either: the
-    // message is acknowledged and the run is left with no terminal event.
-    it.fails('fails the run on an event-listing schema validation failure', async () => {
+    // A World contract error from the log load fails the run out-of-band
+    // (there is no fence snapshot to write it in-band with).
+    it('fails the run on an event-listing schema validation failure', async () => {
       const { store } = await setup(`return "done";`, {
         tweak: (world) => {
           world.events.list = (async () => {

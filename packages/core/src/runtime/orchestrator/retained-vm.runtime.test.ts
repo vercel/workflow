@@ -1,7 +1,6 @@
 import type { Event } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
-import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   dataOf,
   eventsOf,
@@ -117,18 +116,6 @@ const growingStateWorkflow = `const append = ${step('rv_append')};
     return state.items;
   }${registerWorkflow()}`;
 
-/**
- * Every message left is a wake with nothing to do: delivering it writes
- * nothing. (The QuickJS engine still wakes the run after committing a
- * `hook_conflict`, even when it consumed the conflict itself.)
- */
-async function expectNoWorkLeft(world: AppendOnlyWorld): Promise<void> {
-  expect(stepMessagesOf(world)).toEqual([]);
-  const creates = world.creates.length;
-  await world.runUntilIdle();
-  expect(world.creates.length).toBe(creates);
-}
-
 afterEach(() => {
   setWorld(undefined);
   vi.unstubAllEnvs();
@@ -242,7 +229,8 @@ describe.each([
       expect(eventsOf(world, 'hook_created')).toHaveLength(0);
       expect(await runResult(world)).toBe('conflict:10');
       expect(world.deliveries).toHaveLength(1);
-      await expectNoWorkLeft(world);
+      // The delivery consumed its own hook_conflict: no wake for it.
+      expect(world.queueCalls).toEqual([]);
     });
 
     it('rejects a payload await on a taken token and continues in the same delivery', async () => {
@@ -254,7 +242,7 @@ describe.each([
 
       expect(await runResult(world)).toBe('rejected:10');
       expect(world.deliveries).toHaveLength(1);
-      await expectNoWorkLeft(world);
+      expect(world.queueCalls).toEqual([]);
     });
 
     it('still continues when the write response carries an incomplete report', async () => {

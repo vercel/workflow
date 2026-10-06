@@ -136,157 +136,138 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('inline step writes (%s engine)', (engine) => {
-  // QuickJS bug: the deferred replay finds the step's `step_created`
-  // (inline, never started) and parks on it as if it were a background step
-  // with a message of its own (exit `awaiting_external`), so the run never
-  // completes. The node engine runs the step inline on that replay.
-  (engine === 'quickjs' ? it.fails : it)(
-    'defers the run instead of queueing a throttled inline step, and runs it inline afterwards',
-    async () => {
-      const { world, start } = await setupOrchestratorRun(
-        oneStepWorkflow,
-        [],
-        { fence: true },
-        engine
-      );
-      await throttleFirstStart(world, oneStepWorkflow, { iw_a: 5 });
+  // The deferred replay finds the step's `step_created` (inline, never
+  // started) and runs the step inline.
+  it('defers the run instead of queueing a throttled inline step, and runs it inline afterwards', async () => {
+    const { world, start } = await setupOrchestratorRun(
+      oneStepWorkflow,
+      [],
+      { fence: true },
+      engine
+    );
+    await throttleFirstStart(world, oneStepWorkflow, { iw_a: 5 });
 
-      await world.deliver(start);
-      // The start was refused: no body, no step message, and the run comes
-      // back after the backoff.
-      expect(calls.iw_a).toBeUndefined();
-      expect(stepMessagesOf(world)).toEqual([]);
-      expect(deferral(world)).toBe(5);
+    await world.deliver(start);
+    // The start was refused: no body, no step message, and the run comes
+    // back after the backoff.
+    expect(calls.iw_a).toBeUndefined();
+    expect(stepMessagesOf(world)).toEqual([]);
+    expect(deferral(world)).toBe(5);
 
-      await world.runUntilIdle();
-      expect(await runResult(world)).toBe(1);
-      expect(calls.iw_a).toBe(1);
-      expect(eventsOf(world, 'step_created')).toHaveLength(1);
-      expect(dataOf(eventsOf(world, 'step_created')[0])?.inline).toBe(true);
-      expect(
-        eventsOf(world, 'step_started').map((e) => dataOf(e)?.attempt)
-      ).toEqual([1]);
-      expect(stepMessagesOf(world)).toEqual([]);
-    }
-  );
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(1);
+    expect(calls.iw_a).toBe(1);
+    expect(eventsOf(world, 'step_created')).toHaveLength(1);
+    expect(dataOf(eventsOf(world, 'step_created')[0])?.inline).toBe(true);
+    expect(
+      eventsOf(world, 'step_started').map((e) => dataOf(e)?.attempt)
+    ).toEqual([1]);
+    expect(stepMessagesOf(world)).toEqual([]);
+  });
 
-  // Node gap: the delivery returns on the first throttled outcome it
-  // settles (here the 3s one), so it neither waits out the longest backoff
-  // (9s) nor enqueues the failed sibling's retry message; that message only
-  // goes out on the orchestrator's redelivery. QuickJS does both.
-  (engine === 'node' ? it.fails : it)(
-    'defers by the longest backoff and queues a sibling retry in the same delivery',
-    async () => {
-      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
-      failuresLeft = 1;
-      const { world, start } = await setupOrchestratorRun(
+  // Every settled sibling is acted on before the deferral: the longest
+  // backoff (9s) wins, and the failed sibling's retry message goes out now.
+  it('defers by the longest backoff and queues a sibling retry in the same delivery', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+    failuresLeft = 1;
+    const { world, start } = await setupOrchestratorRun(
+      threeStepWorkflow,
+      [],
+      { fence: true },
+      engine
+    );
+    await throttleFirstStart(world, threeStepWorkflow, { iw_a: 3, iw_b: 9 });
+
+    await world.deliver(start);
+    expect(calls.iw_a).toBeUndefined();
+    expect(calls.iw_b).toBeUndefined();
+    expect(calls.iw_flaky).toBe(1);
+    // The failed step exists and started, so its retry gets its own message.
+    expect(
+      stepMessagesOf(world).map(
+        (call) => (call.message as { stepName?: string }).stepName
+      )
+    ).toEqual(['iw_flaky']);
+    expect(deferral(world)).toBe(9);
+  });
+
+  it('finishes a run whose inline steps were throttled beside a retrying sibling', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+    failuresLeft = 1;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const { world } = await setupOrchestratorRun(
         threeStepWorkflow,
         [],
-        { fence: true },
-        engine
-      );
-      await throttleFirstStart(world, threeStepWorkflow, { iw_a: 3, iw_b: 9 });
-
-      await world.deliver(start);
-      expect(calls.iw_a).toBeUndefined();
-      expect(calls.iw_b).toBeUndefined();
-      expect(calls.iw_flaky).toBe(1);
-      // The failed step exists and started, so its retry gets its own message.
-      expect(
-        stepMessagesOf(world).map(
-          (call) => (call.message as { stepName?: string }).stepName
-        )
-      ).toEqual(['iw_flaky']);
-      expect(deferral(world)).toBe(9);
-    }
-  );
-
-  // QuickJS bug: as for the single throttled step, the deferred replay parks
-  // on the two created, never-started inline steps and the run never
-  // completes.
-  (engine === 'quickjs' ? it.fails : it)(
-    'finishes a run whose inline steps were throttled beside a retrying sibling',
-    async () => {
-      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
-      failuresLeft = 1;
-      let offsetMs = 0;
-      const realNow = Date.now.bind(Date);
-      const nowSpy = vi
-        .spyOn(Date, 'now')
-        .mockImplementation(() => realNow() + offsetMs);
-      try {
-        const { world } = await setupOrchestratorRun(
-          threeStepWorkflow,
-          [],
-          {
-            fence: true,
-            advanceClock: (seconds) => {
-              offsetMs += seconds * 1000;
-            },
+        {
+          fence: true,
+          advanceClock: (seconds) => {
+            offsetMs += seconds * 1000;
           },
-          engine
-        );
-        await throttleFirstStart(world, threeStepWorkflow, {
-          iw_a: 3,
-          iw_b: 9,
-        });
-        await world.runUntilIdle(30);
-
-        expect(await runResult(world)).toBe(6);
-        expect(calls).toEqual({ iw_a: 1, iw_b: 1, iw_flaky: 2 });
-        // The retry ran in the background, on one message.
-        expect(
-          new Set(stepMessagesOf(world).map((c) => c.opts?.idempotencyKey)).size
-        ).toBe(1);
-      } finally {
-        nowSpy.mockRestore();
-      }
-    }
-  );
-
-  // QuickJS bug: same root cause; a redelivery finds the inline step created
-  // and started with no outcome, and parks instead of running it again.
-  (engine === 'quickjs' ? it.fails : it)(
-    'runs an inline step again when the delivery that started it died before the outcome',
-    async () => {
-      const { world, start } = await setupOrchestratorRun(
-        oneStepWorkflow,
-        [],
-        { fence: true },
+        },
         engine
       );
-      // The first delivery dies inside the body: its outcome write never
-      // happens, and the queue redelivers the same message.
-      const asWorld = world.asWorld();
-      const create = asWorld.events.create.bind(asWorld.events);
-      let died = false;
-      asWorld.events.create = (async (...args: Parameters<typeof create>) => {
-        if (!died && args[1].eventType === 'step_completed') {
-          died = true;
-          throw new Error('invocation died');
-        }
-        return create(...args);
-      }) as typeof create;
-      setWorld(asWorld);
-      await workflowEntrypoint(oneStepWorkflow)(
-        new Request('https://example.test')
-      );
-      await world.deliver(start).catch(() => {});
-      expect(eventsOf(world, 'step_started')).toHaveLength(1);
-      expect(eventsOf(world, 'step_completed')).toHaveLength(0);
-      if (!world.held.some((h) => h.messageId === start.messageId)) {
-        world.held.push({ ...start, deliveryCount: 2 });
-      }
+      await throttleFirstStart(world, threeStepWorkflow, {
+        iw_a: 3,
+        iw_b: 9,
+      });
+      await world.runUntilIdle(30);
 
-      await world.runUntilIdle();
-      expect(await runResult(world)).toBe(1);
-      expect(calls.iw_a).toBe(2);
+      expect(await runResult(world)).toBe(6);
+      expect(calls).toEqual({ iw_a: 1, iw_b: 1, iw_flaky: 2 });
+      // The retry ran in the background, on one message.
       expect(
-        eventsOf(world, 'step_started').map((e) => dataOf(e)?.startReason)
-      ).toEqual(['first', 'redelivery']);
-      expect(stepMessagesOf(world)).toEqual([]);
+        new Set(stepMessagesOf(world).map((c) => c.opts?.idempotencyKey)).size
+      ).toBe(1);
+    } finally {
+      nowSpy.mockRestore();
     }
-  );
+  });
+
+  // A redelivery finds the inline step created and started with no outcome,
+  // and runs it inline again as a redelivery attempt.
+  it('runs an inline step again when the delivery that started it died before the outcome', async () => {
+    const { world, start } = await setupOrchestratorRun(
+      oneStepWorkflow,
+      [],
+      { fence: true },
+      engine
+    );
+    // The first delivery dies inside the body: its outcome write never
+    // happens, and the queue redelivers the same message.
+    const asWorld = world.asWorld();
+    const create = asWorld.events.create.bind(asWorld.events);
+    let died = false;
+    asWorld.events.create = (async (...args: Parameters<typeof create>) => {
+      if (!died && args[1].eventType === 'step_completed') {
+        died = true;
+        throw new Error('invocation died');
+      }
+      return create(...args);
+    }) as typeof create;
+    setWorld(asWorld);
+    await workflowEntrypoint(oneStepWorkflow)(
+      new Request('https://example.test')
+    );
+    await world.deliver(start).catch(() => {});
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'step_completed')).toHaveLength(0);
+    if (!world.held.some((h) => h.messageId === start.messageId)) {
+      world.held.push({ ...start, deliveryCount: 2 });
+    }
+
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(1);
+    expect(calls.iw_a).toBe(2);
+    expect(
+      eventsOf(world, 'step_started').map((e) => dataOf(e)?.startReason)
+    ).toEqual(['first', 'redelivery']);
+    expect(stepMessagesOf(world)).toEqual([]);
+  });
 
   it('feeds an out-of-band event that landed below an inline outcome before the outcome', async () => {
     const { world, runId, start } = await setupOrchestratorRun(

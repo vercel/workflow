@@ -1,4 +1,8 @@
-import { SerializationError } from '@workflow/errors';
+import {
+  SerializationError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type BatchEventRequest,
   type CreateEventRequest,
@@ -264,10 +268,12 @@ async function writeAll(
         status: result.status,
         error: result.error,
       });
-      if (result.status >= 500 || result.status === 429) {
-        throw new Error(
-          `Suspension batch item failed with ${result.status}: ${result.message}`
-        );
+      // A transient refusal fails the delivery so the queue redelivers it,
+      // the same way a single-path write of the same status would.
+      const message = `Suspension batch item failed with ${result.status}: ${result.message}`;
+      if (result.status === 429) throw new ThrottleError(message);
+      if (result.status >= 500) {
+        throw new WorkflowWorldError(message, { status: result.status });
       }
     });
     return committed;

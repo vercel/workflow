@@ -550,20 +550,15 @@ describe.each([
       }
     });
 
-    // Bug (QuickJS engine): a suspension that creates a hook and a sleep
-    // together writes the sleep's wait_created twice in one delivery, with
-    // the same correlation id. node:vm writes it once. Replay tolerates the
-    // duplicate, so the run still behaves, but every such suspension costs
-    // an extra write and an extra log entry.
-    (engine === 'quickjs' ? it.fails : it)(
-      'writes one wait_created for a hook and a sleep created by the same suspension',
-      async () => {
-        const { world } = await setup(HOOK_OR_SLEEP_WORKFLOW, [TOKEN]);
-        await world.deliver(nextHeld(world));
-        expect(eventsOf(world, 'hook_created')).toHaveLength(1);
-        expect(eventsOf(world, 'wait_created')).toHaveLength(1);
-      }
-    );
+    // The two writes commit in parallel and only the hook_created reaches
+    // the VM first (in the wait_created's skipped-slot report), so the next
+    // pass still reports the wait as uncreated. It is written once anyway.
+    it('writes one wait_created for a hook and a sleep created by the same suspension', async () => {
+      const { world } = await setup(HOOK_OR_SLEEP_WORKFLOW, [TOKEN]);
+      await world.deliver(nextHeld(world));
+      expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+      expect(eventsOf(world, 'wait_created')).toHaveLength(1);
+    });
 
     it('stops when a run_cancelled lands below its own wait_completed', async () => {
       const clock = offsetClock();

@@ -151,16 +151,18 @@ describe.each([
     // branch, and writes in-band, which moves the fence past A's count.
     // B stays in flight while A's body runs: in one process, B's attempt
     // at the unfinished s1 joins A's execution instead of running it again.
+    // (node:vm writes run_completed before that join settles, QuickJS after,
+    // so the overlap is observed at s2.)
     const deliveryB = world.deliver(wakeMessage);
-    await vi.waitFor(() =>
-      expect(eventsOf(world, 'run_completed')).toHaveLength(1)
-    );
+    await vi.waitFor(() => expect(calls.fo_s2).toBe(1));
     expect(calls.fo_s1).toBe(1);
 
     // A's body finishes; its outcome write carries a stale count.
     gate.resolve();
-    const [resultA] = await Promise.all([deliveryA, deliveryB]);
+    const [resultA, resultB] = await Promise.all([deliveryA, deliveryB]);
     expect(resultA).toEqual({ timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS });
+    // B, whose view included every in-band write, finished and acknowledged.
+    expect(resultB).toBeUndefined();
     // Not acknowledged: A's message is held again.
     expect(world.held.some((h) => h.messageId === start.messageId)).toBe(true);
     await world.runUntilIdle();

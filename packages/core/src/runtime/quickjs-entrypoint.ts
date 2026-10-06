@@ -20,6 +20,7 @@ import {
   MaxEventsExceededError,
   RunExpiredError,
   WorkflowNotRegisteredError,
+  WorkflowRuntimeError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -30,6 +31,7 @@ import {
   type EventResult,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
+  type SerializedData,
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
   SPEC_VERSION_CURRENT,
@@ -85,7 +87,11 @@ import {
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
 } from './orchestrator/live-feed.js';
-import { MAX_STEP_MESSAGE_INPUT_BYTES } from './orchestrator/log-state.js';
+import {
+  analyzeLogSteps,
+  type LogStepState,
+  MAX_STEP_MESSAGE_INPUT_BYTES,
+} from './orchestrator/log-state.js';
 import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
@@ -386,6 +392,15 @@ async function dispatchPendingOps(params: {
    * instead of both invocations bare-starting the same step.
    */
   skipStepCreation?: Set<string>;
+  /**
+   * Correlation ids of the waits and attribute writes whose event this
+   * invocation already committed. Neither has a row a World could refuse a
+   * second create with, and the VM may not have been fed the committed event
+   * yet (a write's own event is delivered off its response only for
+   * `wait_completed`; see `QuickJSLogView.absorb`), so it still reports the
+   * op as uncreated. Updated here with every create this dispatch commits.
+   */
+  writtenOpIds?: Set<string>;
   /** Queue message id of this delivery, recorded on step and wait creates. */
   creatorMessageId?: string;
   /**
@@ -421,6 +436,12 @@ async function dispatchPendingOps(params: {
 }): Promise<{
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
+  /**
+   * A hook create committed a `hook_conflict` instead of a `hook_created`.
+   * The workflow consumes it on its next pass: the caller wakes the run if
+   * the delivery could end before that.
+   */
+  createdHookConflict: boolean;
   /** Step cids already published via resilient dispatch. See above. */
   queuedStepCids: Set<string>;
   /**
@@ -441,8 +462,6 @@ async function dispatchPendingOps(params: {
     workflowRun,
     encryptionKey,
     pendingOperations,
-    namespace,
-    nextTraceCarrier,
     createEvent,
   } = params;
   const skipStepCreation = params.skipStepCreation;
@@ -472,6 +491,8 @@ async function dispatchPendingOps(params: {
   // hook_created written this invocation. The workflow must be re-invoked
   // so replay can confirm creation and resolve the awaiter.
   let createdGetConflictHook = false;
+  // Set when a hook create committed a `hook_conflict` this invocation.
+  let createdHookConflict = false;
   // Set when a new attr_set event is written this invocation. The
   // workflow must be re-invoked to consume it (resolving the pending
   // setAttributes() promise), so the entrypoint requeues immediately,
@@ -558,19 +579,12 @@ async function dispatchPendingOps(params: {
           });
         }
 
-        // If storage detected a real token conflict with another
-        // workflow's hook, re-queue so the workflow handler can
-        // process the conflict event and fail gracefully.
+        // A token conflict with another run's hook committed a
+        // `hook_conflict`, which the workflow has to consume. The inline
+        // loop feeds it to the live VM; the caller wakes the run only if
+        // the delivery ends before that (see `createdHookConflict`).
         if (result.event?.eventType === 'hook_conflict') {
-          await queueMessage(
-            world,
-            getWorkflowQueueName(workflowRun.workflowName, namespace),
-            {
-              runId,
-              traceCarrier: await nextTraceCarrier(),
-              requestedAt: new Date(),
-            }
-          );
+          createdHookConflict = true;
         }
       } catch (err) {
         // Already created by a concurrent invocation, so fall through
@@ -755,6 +769,11 @@ async function dispatchPendingOps(params: {
                 correlationId: step.correlationId,
                 eventData: {
                   stepName: step.stepId,
+                  // Inline, created by this delivery: if the step_failed
+                  // below never lands, the redelivery runs the step inline,
+                  // and the executor fails it from the placeholder input.
+                  inline: true,
+                  ...(creatorMessageId ? { creatorMessageId } : {}),
                   input: (await dehydrateStepArguments(
                     unserializableStepInputPlaceholder(),
                     runId,
@@ -850,8 +869,13 @@ async function dispatchPendingOps(params: {
           // queueStepMessage).
         })()
       );
-    } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
+    } else if (
+      op.type === 'attribute' &&
+      !op.hasCreatedEvent &&
+      !params.writtenOpIds?.has(op.correlationId)
+    ) {
       const attr = op as PendingAttribute;
+      params.writtenOpIds?.add(op.correlationId);
       opsPromises.push(
         (async () => {
           try {
@@ -879,8 +903,13 @@ async function dispatchPendingOps(params: {
           }
         })()
       );
-    } else if (op.type === 'wait' && !op.hasCreatedEvent) {
+    } else if (
+      op.type === 'wait' &&
+      !op.hasCreatedEvent &&
+      !params.writtenOpIds?.has(op.correlationId)
+    ) {
       const wait = op as PendingWait;
+      params.writtenOpIds?.add(op.correlationId);
       opsPromises.push(
         (async () => {
           try {
@@ -908,6 +937,7 @@ async function dispatchPendingOps(params: {
   return {
     createdAttributeEvent,
     createdGetConflictHook,
+    createdHookConflict,
     queuedStepCids,
     failedSerializationStepCids,
     createdStepEventIds,
@@ -1740,6 +1770,9 @@ export async function runWorkflowWithQuickJS(params: {
   let eventsProcessedSinceSnapshot = events.length;
   // Step cids already executed inline by this invocation.
   const executedStepIds = new Set<string>();
+  // Waits and attribute writes this invocation committed (see
+  // `dispatchPendingOps.writtenOpIds`).
+  const writtenOpIds = new Set<string>();
   // Step cids whose `step_created` this invocation wrote on the inline path.
   // The VM only learns of those events from a later listing, so until then
   // its pending op still reads as uncreated; dispatch must not write the
@@ -1916,8 +1949,53 @@ export async function runWorkflowWithQuickJS(params: {
     progressWaiter = undefined;
     waiter?.();
   };
+  /**
+   * Inline steps an earlier delivery created and did not finish: their start
+   * was refused for load, or the delivery that started them died before the
+   * outcome. This orchestrator runs them inline again (attempt = their
+   * `step_started` count + 1). Read from the delivery's full log, since a
+   * restored snapshot's log holds only the suffix after it.
+   */
+  const logStepStates = (): Map<string, LogStepState> => {
+    const byId = new Map<string, Event>();
+    for (const e of params.preloadedEventsComplete
+      ? (params.preloadedEvents ?? [])
+      : []) {
+      byId.set(e.eventId, e);
+    }
+    for (const e of events) byId.set(e.eventId, e);
+    const sorted = [...byId.values()].sort((a, b) =>
+      a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
+    );
+    return new Map(analyzeLogSteps(sorted).map((s) => [s.correlationId, s]));
+  };
+  let loggedSteps: Map<string, LogStepState> | undefined;
+  const stepInputFromLog = async (
+    state: LogStepState
+  ): Promise<SerializedData> => {
+    const created =
+      events.find((e) => e.eventId === state.createdEventId) ??
+      params.preloadedEvents?.find((e) => e.eventId === state.createdEventId);
+    if (
+      created?.eventType === 'step_created' &&
+      created.eventData.input !== undefined
+    ) {
+      return created.eventData.input;
+    }
+    // A World may leave step inputs out of replay loads; read it back.
+    const read = await world.events.get(runId, state.createdEventId, {
+      resolveData: 'all',
+    });
+    if (read.eventType !== 'step_created') {
+      throw new WorkflowRuntimeError(
+        `Event "${state.createdEventId}" is not a step_created`
+      );
+    }
+    return read.eventData.input;
+  };
+
   /** Starts one inline step's body; never awaited here. */
-  const launchInline = (step: PendingStep): void => {
+  const launchInline = (step: PendingStep, resume?: LogStepState): void => {
     // A step this delivery started inline never runs inline again in it.
     executedStepIds.add(step.correlationId);
     inlineStepsExecuted++;
@@ -1943,21 +2021,28 @@ export async function runWorkflowWithQuickJS(params: {
       runId,
       step.correlationId,
       async () => {
-        const input = await encryptSerializedData(step.input, encryptionKey);
-        // The step's execution mode is fixed here: inline, run by this
-        // orchestrator. `step_created` commits before the body starts.
-        inlineCreatedStepIds.add(step.correlationId);
-        await createEvent({
-          eventType: 'step_created',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: step.correlationId,
-          eventData: {
-            stepName: step.stepId,
-            input,
-            inline: true,
-            ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
-          },
-        });
+        let input: SerializedData;
+        if (resume) {
+          // Created inline by an earlier delivery: its `step_created` (and
+          // the input on it) is already in the log.
+          input = await stepInputFromLog(resume);
+        } else {
+          input = await encryptSerializedData(step.input, encryptionKey);
+          // The step's execution mode is fixed here: inline, run by this
+          // orchestrator. `step_created` commits before the body starts.
+          inlineCreatedStepIds.add(step.correlationId);
+          await createEvent({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: step.correlationId,
+            eventData: {
+              stepName: step.stepId,
+              input,
+              inline: true,
+              ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
+            },
+          });
+        }
         return executeStep({
           world,
           createEvent: (data, eventParams) =>
@@ -1975,8 +2060,11 @@ export async function runWorkflowWithQuickJS(params: {
           stepName: step.stepId,
           encryptionKey,
           runSpecVersion: workflowRun.specVersion,
-          attempt: 1,
-          startReason: 'first',
+          attempt: resume ? resume.starts + 1 : 1,
+          startReason: resume && resume.starts > 0 ? 'redelivery' : 'first',
+          ...(resume?.firstStartedAt
+            ? { firstStartedAt: resume.firstStartedAt }
+            : {}),
           input,
           beforeBody: () => params.writer?.assertActive(),
         });
@@ -2149,8 +2237,28 @@ export async function runWorkflowWithQuickJS(params: {
       const healthySteps = freshSteps.filter(
         (step) => !step.serializationError
       );
+      // Inline steps an earlier delivery created and left open run inline
+      // again here (once per delivery), ahead of fresh steps for the inline
+      // slots. A placeholder-input step (its arguments refused to serialize)
+      // is among them: the executor fails it from the placeholder.
+      loggedSteps ??= logStepStates();
+      const resumedInline = pendingOperations.flatMap(
+        (op): { step: PendingStep; state: LogStepState }[] => {
+          if (op.type !== 'step' || !op.hasCreatedEvent) return [];
+          if (executedStepIds.has(op.correlationId)) return [];
+          if (queuedStepIds.has(op.correlationId)) return [];
+          const state = loggedSteps?.get(op.correlationId);
+          if (!state?.runnableInline) return [];
+          return [{ step: op as PendingStep, state }];
+        }
+      );
       const inlineCandidates =
-        maxInlineSteps <= 0 ? [] : healthySteps.slice(0, maxInlineSteps);
+        maxInlineSteps <= 0
+          ? []
+          : healthySteps.slice(
+              0,
+              Math.max(0, maxInlineSteps - resumedInline.length)
+            );
       const inlineClaimCids = new Set(
         inlineCandidates.map((step) => step.correlationId)
       );
@@ -2203,6 +2311,7 @@ export async function runWorkflowWithQuickJS(params: {
           ...queuedStepIds,
           ...executedStepIds,
         ]),
+        writtenOpIds,
         creatorMessageId: ownerMessageId,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
         finalizeUnserializableSteps: true,
@@ -2210,7 +2319,8 @@ export async function runWorkflowWithQuickJS(params: {
       });
       if (
         dispatched.createdAttributeEvent ||
-        dispatched.createdGetConflictHook
+        dispatched.createdGetConflictHook ||
+        dispatched.createdHookConflict
       ) {
         pendingRequeueSignal = true;
       }
@@ -2360,7 +2470,11 @@ export async function runWorkflowWithQuickJS(params: {
         });
       }
 
-      if (inlineCandidates.length === 0 && inFlightInline.size === 0) {
+      if (
+        inlineCandidates.length === 0 &&
+        resumedInline.length === 0 &&
+        inFlightInline.size === 0
+      ) {
         // Outcomes of bodies that just settled are acted on first.
         if (settledInline.length > 0) continue;
         // No in-process progress possible: the run awaits an external
@@ -2399,11 +2513,12 @@ export async function runWorkflowWithQuickJS(params: {
         });
       }
 
+      for (const { step, state } of resumedInline) launchInline(step, state);
       for (const step of inlineCandidates) launchInline(step);
       wfdiag('inline_iteration', {
         iteration,
         phase: 'steps',
-        launched: inlineCandidates.length,
+        launched: inlineCandidates.length + resumedInline.length,
         inFlight: inFlightInline.size,
       });
       await waitForInlineProgress(pendingOperations);
@@ -2619,6 +2734,7 @@ export async function runWorkflowWithQuickJS(params: {
             ...queuedStepIds,
             ...executedStepIds,
           ]),
+          writtenOpIds,
           pendingOperations: result.completed.drainOperations,
           wfdiag,
         });
@@ -2885,6 +3001,7 @@ export async function runWorkflowWithQuickJS(params: {
             ...queuedStepIds,
             ...executedStepIds,
           ]),
+          writtenOpIds,
           pendingOperations: result.failed.drainOperations,
           wfdiag,
         });

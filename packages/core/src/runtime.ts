@@ -75,6 +75,7 @@ import {
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
+  isQueueSendFailure,
   isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
@@ -1519,6 +1520,15 @@ export function workflowEntrypoint(
                       // the run from `run_started`.
                       log = { events: [], cursor: null };
                     } else if (loadOutcome.status === 'rejected') {
+                      // A World contract error on the log load fails the run
+                      // (out-of-band, since there is no fence snapshot); any
+                      // other load failure redelivers.
+                      workflowRun ??= run;
+                      if (
+                        await recordWorkflowSetupFailure(loadOutcome.reason)
+                      ) {
+                        return undefined;
+                      }
                       throw loadOutcome.reason;
                     }
                     if (run && isTerminalWorkflowRunStatus(run.status)) {
@@ -1775,7 +1785,8 @@ export function workflowEntrypoint(
                       } catch (err) {
                         if (
                           OrchestratorSupersededError.is(err) ||
-                          isRetryableWorldError(err)
+                          isRetryableWorldError(err) ||
+                          isQueueSendFailure(err)
                         ) {
                           throw err;
                         }
@@ -1804,6 +1815,10 @@ export function workflowEntrypoint(
                     // unfinished inline step to run again.
                     const ranInline = new Set<string>();
                     const settledInline: InlineSettled[] = [];
+                    // The longest backoff of the inline starts this delivery
+                    // had refused for load. Once every body has settled the
+                    // delivery defers the run by it.
+                    let throttledSeconds: number | undefined;
                     const pendingAbsorbs: Array<
                       Parameters<typeof absorbWrite>[0]
                     > = [];
@@ -2133,7 +2148,10 @@ export function workflowEntrypoint(
                           ) {
                             throw err;
                           }
-                          if (isRetryableWorldError(err)) {
+                          if (
+                            isRetryableWorldError(err) ||
+                            isQueueSendFailure(err)
+                          ) {
                             runLogger.warn(
                               'Transient world error during replay; redelivering via queue instead of failing the run',
                               {
@@ -2640,10 +2658,11 @@ export function workflowEntrypoint(
                           return { type: 'return', result: undefined };
                         }
                         if (result.type === 'throttled') {
-                          return {
-                            type: 'return',
-                            result: { timeoutSeconds: result.timeoutSeconds },
-                          };
+                          throttledSeconds = Math.max(
+                            throttledSeconds ?? 0,
+                            result.timeoutSeconds
+                          );
+                          continue;
                         }
                         if (result.type === 'retry') {
                           // The retry moves to the background: this is the
@@ -2683,6 +2702,16 @@ export function workflowEntrypoint(
                         ) {
                           reload = true;
                         }
+                      }
+                      if (throttledSeconds !== undefined) {
+                        // Every sibling still running settles and is acted on
+                        // first (a retry's message goes out now), then the
+                        // run is deferred by the longest backoff.
+                        if (inFlight.size > 0) return awaitInlineProgress(run);
+                        return {
+                          type: 'return',
+                          result: { timeoutSeconds: throttledSeconds },
+                        };
                       }
                       if (pendingStreamOps && inFlight.size === 0) {
                         // Stream writes are still flushing through

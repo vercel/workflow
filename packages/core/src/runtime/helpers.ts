@@ -1336,6 +1336,36 @@ export function stepDispatchIdempotencyKey(
   return `${correlationId}:${fnv1a32Hex(stepName)}`;
 }
 
+// A registered symbol, so a mark set by one bundled copy of this module is
+// read by every other copy in the process.
+const QUEUE_SEND_FAILURE = Symbol.for('workflow.core.queueSendFailure');
+
+/**
+ * Whether `err` came from a failed queue publish ({@link queueMessage} or
+ * {@link queueMessages}). Queue errors are not `WorkflowWorldError`s, so the
+ * orchestrator would otherwise read them as a failure of the run. A failed
+ * publish fails the delivery instead: the queue redelivers it, and the
+ * redelivery publishes again.
+ */
+export function isQueueSendFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { [QUEUE_SEND_FAILURE]?: true })[QUEUE_SEND_FAILURE] === true
+  );
+}
+
+function markQueueSendFailure(err: unknown): never {
+  if (typeof err === 'object' && err !== null) {
+    try {
+      Object.defineProperty(err, QUEUE_SEND_FAILURE, { value: true });
+    } catch {
+      // A frozen error stays unmarked and fails the run as before.
+    }
+  }
+  throw err;
+}
+
 /**
  * Queues a message to the specified queue with tracing.
  */
@@ -1344,6 +1374,14 @@ export async function queueMessage(
   ...args: Parameters<typeof world.queue>
 ) {
   const queueName = args[0];
+  await queueMessageTraced(world, queueName, args).catch(markQueueSendFailure);
+}
+
+async function queueMessageTraced(
+  world: World,
+  queueName: string,
+  args: Parameters<World['queue']>
+) {
   await trace(
     'queue.publish',
     {
@@ -1389,6 +1427,16 @@ export async function queueMessages(
   }[]
 ): Promise<void> {
   if (messages.length === 0) return;
+  await queueMessagesTraced(world, queueName, messages).catch(
+    markQueueSendFailure
+  );
+}
+
+async function queueMessagesTraced(
+  world: World,
+  queueName: Parameters<World['queue']>[0],
+  messages: Parameters<typeof queueMessages>[2]
+): Promise<void> {
   const batch = world.queueBatch?.bind(world);
   if (!batch) {
     await Promise.all(
