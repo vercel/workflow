@@ -1,3 +1,4 @@
+import { RetryableError } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -34,6 +35,17 @@ registerStepFunction('so_flaky', async () => {
   if (flakyFailures > 0) {
     flakyFailures--;
     throw new Error('transient');
+  }
+  return 'ok';
+});
+let longRetryFailures = 0;
+registerStepFunction('so_long_retry', async () => {
+  count('so_long_retry');
+  if (longRetryFailures > 0) {
+    longRetryFailures--;
+    throw new RetryableError('come back in an hour', {
+      retryAfter: new Date(Date.now() + 3_600_000),
+    });
   }
   return 'ok';
 });
@@ -77,6 +89,7 @@ const data = (event: Event | undefined) =>
 beforeEach(() => {
   for (const key of Object.keys(calls)) delete calls[key];
   flakyFailures = 0;
+  longRetryFailures = 0;
 });
 
 afterEach(() => {
@@ -207,6 +220,56 @@ describe('single orchestrator against an append-only World', () => {
         attempt: 1,
         retryAfter: expect.any(Date),
       });
+    } finally {
+      nowSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('waits out a retryAfter longer than one queue hop across several redeliveries', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    longRetryFailures = 1;
+    // The queue clamps each redelivery delay, as Vercel Queues does.
+    const MAX_HOP_SECONDS = 900;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const { world } = await setup(
+        `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_long_retry");
+         async function workflow() { return await step(); }${transform('workflow')}`,
+        [],
+        {
+          fence: true,
+          advanceClock: (seconds) => {
+            offsetMs += Math.min(seconds, MAX_HOP_SECONDS) * 1000;
+          },
+        }
+      );
+      await world.runUntilIdle();
+
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const stepDeliveries = world.deliveries.filter(
+        (d) => (d.message as { stepId?: string }).stepId !== undefined
+      );
+      // First delivery fails and asks for an hour; the queue clamps that to
+      // 900s per hop, and each early hop reads the log and asks for the rest.
+      expect(stepDeliveries.length).toBeGreaterThanOrEqual(5);
+      expect(
+        stepDeliveries.slice(1, -1).every((d) => {
+          const result = d.result as { timeoutSeconds?: number } | undefined;
+          return (result?.timeoutSeconds ?? 0) > 0;
+        })
+      ).toBe(true);
+      // Only two attempts ran: the early hops ran no body.
+      expect(calls.so_long_retry).toBe(2);
+      expect(
+        eventsOf(world, 'step_started').map((e) => data(e)?.startReason)
+      ).toEqual(['first', 'retry']);
+      // One message for the whole retry span.
+      expect(new Set(stepDeliveries.map((d) => d.messageId)).size).toBe(1);
     } finally {
       nowSpy.mockRestore();
       vi.unstubAllEnvs();

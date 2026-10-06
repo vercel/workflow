@@ -97,18 +97,16 @@ describe('run.returnValue on a terminal run is not retried', () => {
     registerStepFunction(stepName, getter.bind(getRun(targetId)));
 
     const stepId = `step_return_value_${counter}`;
+    const input = await dehydrateStepArguments(
+      { args: [], closureVars: undefined, thisVal: undefined },
+      callerId,
+      undefined
+    );
     await world.events.create(callerId, {
       eventType: 'step_created',
       specVersion: SPEC_VERSION_CURRENT,
       correlationId: stepId,
-      eventData: {
-        stepName,
-        input: await dehydrateStepArguments(
-          { args: [], closureVars: undefined, thisVal: undefined },
-          callerId,
-          undefined
-        ),
-      },
+      eventData: { stepName, input },
     });
 
     const outcome = await executeStep({
@@ -118,7 +116,11 @@ describe('run.returnValue on a terminal run is not retried', () => {
       workflowStartedAt: Date.now(),
       stepId,
       stepName,
-      authoritativeAttempt: 1,
+      createEvent: (data, params) =>
+        world.events.create(callerId, data, params),
+      attempt: 1,
+      startReason: 'first',
+      input: input as Uint8Array,
     });
 
     const { data } = await world.events.list({ runId: callerId });
