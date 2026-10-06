@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import zlib from 'node:zlib';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import {
@@ -274,6 +275,26 @@ describe('mode serializers with compression', () => {
     expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
     const result = await clientModule.deserialize(data, undefined, {});
     expect(result).toEqual(value);
+  });
+
+  it('client serialize compresses off the event loop (async zstd)', async () => {
+    const asyncSpy = vi.spyOn(zlib, 'zstdCompress');
+    const syncSpy = vi.spyOn(zlib, 'zstdCompressSync');
+    try {
+      const value = makeCompressibleValue();
+      const data = await clientModule.serialize(value, undefined, {
+        compression: true,
+      });
+      expect(asyncSpy).toHaveBeenCalledTimes(1);
+      expect(syncSpy).not.toHaveBeenCalled();
+      expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+      expect(await clientModule.deserialize(data, undefined, {})).toEqual(
+        value
+      );
+    } finally {
+      asyncSpy.mockRestore();
+      syncSpy.mockRestore();
+    }
   });
 
   it('nests compression inside encryption: encr(zstd(devl))', async () => {
