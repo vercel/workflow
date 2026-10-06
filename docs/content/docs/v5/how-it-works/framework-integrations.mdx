@@ -206,7 +206,7 @@ Your integration can expose physical files, virtual modules, or framework-native
 
 ## Vercel queue configuration
 
-On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTrigger()` handles the optional queue namespace and `WORKFLOW_SEQUENTIAL_REPLAYS=1` behavior.
+On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTrigger()` handles the optional queue namespace and sets `maxConcurrency: 1`, which keeps each run to one orchestrator invocation at a time.
 
 ```typescript
 import { getWorkflowQueueTrigger } from "@workflow/builders";
@@ -227,7 +227,8 @@ The generated trigger listens to one topic family:
       "topic": "__wkf_workflow_*",
       "consumer": "default",
       "retryAfterSeconds": 5,
-      "initialDelaySeconds": 0
+      "initialDelaySeconds": 0,
+      "maxConcurrency": 1
     }
   ]
 }
@@ -235,7 +236,7 @@ The generated trigger listens to one topic family:
 
 Both orchestration messages and step messages use this topic family. A step message is distinguished by its payload, not by a second topic or function.
 
-If you construct the trigger yourself, add `maxConcurrency: 1` when `WORKFLOW_SEQUENTIAL_REPLAYS=1`. The exported `isSequentialReplaysEnabled()` helper implements that build-time check.
+If you construct the trigger yourself, add `maxConcurrency: 1` to it. The Vercel World sends each run's orchestrator messages to a per-run topic, and VQS applies the limit per topic, so without it a run's orchestrator deliveries are not serialized.
 
 ## Security
 
