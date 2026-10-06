@@ -119,6 +119,33 @@ export class AppendOnlyWorld {
     return this.append(event);
   }
 
+  /**
+   * The step-event shape a single-orchestrator World requires (world-vercel
+   * refuses it otherwise): every step event names its step, and a start,
+   * retry or failure carries the attempt.
+   */
+  private checkStepEventData(data: {
+    eventType: string;
+    eventData?: Record<string, unknown>;
+  }): void {
+    if (!data.eventType.startsWith('step_')) return;
+    if (typeof data.eventData?.stepName !== 'string') {
+      throw new Error(
+        `Event type '${data.eventType}' requires eventData.stepName`
+      );
+    }
+    if (
+      ['step_started', 'step_retrying', 'step_failed'].includes(data.eventType)
+    ) {
+      const attempt = data.eventData?.attempt;
+      if (!Number.isInteger(attempt) || (attempt as number) < 1) {
+        throw new Error(
+          `Event type '${data.eventType}' requires eventData.attempt (a positive integer)`
+        );
+      }
+    }
+  }
+
   private append(partial: Partial<Event>, slotOverride?: number): Event {
     const slot = slotOverride ?? ++this.seq;
     const event = {
@@ -292,6 +319,7 @@ export class AppendOnlyWorld {
     const events: World['events'] = {
       async create(_runId: string | null, data: any, params?: any) {
         self.checkRunAcceptsWork(data.eventType);
+        self.checkStepEventData(data);
         self.checkFence(params, 1);
         const event = self.append(data);
         self.creates.push({ event, params });

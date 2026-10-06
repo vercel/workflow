@@ -175,6 +175,30 @@ describe.each([
     expect(calls.so_add).toBe(2);
   });
 
+  it('fails a step whose arguments cannot be serialized, observably to the workflow', async () => {
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow() {
+         try {
+           await add(() => 1, 2);
+           return 'no error';
+         } catch (error) {
+           return 'caught';
+         }
+       }${transform('workflow')}`,
+      []
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(data(eventsOf(world, 'step_failed')[0])).toMatchObject({
+      stepName: 'so_add',
+      attempt: 1,
+    });
+    expect(calls.so_add ?? 0).toBe(0);
+  });
+
   it('enqueues background steps once with a stable key and retention, and wakes without a key', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
     try {

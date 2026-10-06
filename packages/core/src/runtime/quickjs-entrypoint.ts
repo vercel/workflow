@@ -779,6 +779,8 @@ async function dispatchPendingOps(params: {
                 correlationId: step.correlationId,
                 eventData: {
                   stepName: step.stepId,
+                  // Never started: this is the step's first and only attempt.
+                  attempt: 1,
                   error: await dehydrateStepError(
                     step.serializationError,
                     runId,
