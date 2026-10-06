@@ -6,7 +6,8 @@ import * as RechartsPrimitive from 'recharts';
 import { cn } from '@/lib/utils';
 
 // Format: { THEME_NAME: CSS_SELECTOR }
-const THEMES = { light: '', dark: '.dark' } as const;
+// Geistdocs 2.x sets `.dark-theme` on <html> in dark mode (1.x set `.dark`).
+const THEMES = { light: '', dark: ':is(.dark, .dark-theme)' } as const;
 
 export type ChartConfig = {
   [k in string]: {

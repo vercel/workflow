@@ -302,7 +302,10 @@
   --geist-warning: #f5a623;
 }
 
-.dark {
+/* Geistdocs 2.x marks dark mode with `.dark-theme` on <html>; `.dark` is kept
+   for anything that still sets the 1.x class. */
+.dark,
+.dark-theme {
   --ds-background-100: oklch(0 0 0);
   --ds-background-200: oklch(0.027 0 0);
   --ds-gray-100: oklch(0.218 0 0);
