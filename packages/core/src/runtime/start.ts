@@ -70,7 +70,10 @@ import {
   getWorkflowVmFromEnv,
 } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
-import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
+import {
+  assertWorldSupportsInBandFence,
+  assertWorldSupportsRuntimeProtocol,
+} from './world-compatibility.js';
 
 /**
  * Timeout for the first cross-deployment capability probe to a deployment.
@@ -627,6 +630,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      assertWorldSupportsInBandFence(world);
       // `undefined` when this process is not itself a deployment and the
       // caller named a concrete target; see below.
       let currentDeploymentId: string | undefined;

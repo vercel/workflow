@@ -734,6 +734,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // The queue hands out one orchestrator delivery per run at a time
       // (see queue.ts), and the store fences in-band writes.
       maxConcurrency: true,
+      inBandFence: true,
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()

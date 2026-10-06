@@ -54,6 +54,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { AppendOnlyWorld } from '../test-support/append-only-world.js';
+import { acceptingFenceSnapshot } from '../test-support/fence-snapshot.js';
 import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
@@ -465,6 +466,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     data: [...durableEvents],
     hasMore: false,
     cursor: durableEvents.at(-1)?.eventId ?? null,
+    snapshot: acceptingFenceSnapshot(durableEvents),
   }));
 
   const buildStepEntity = (correlationId: string | undefined) => {
@@ -585,7 +587,7 @@ async function runScenario(options: ScenarioOptions = {}) {
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: { deploymentAffinity: true },
+    capabilities: { inBandFence: true, deploymentAffinity: true },
     getDeploymentId: vi.fn(
       async () => options.ambientDeploymentId ?? deploymentId
     ),
@@ -891,7 +893,7 @@ describe('hook-resume TTR telemetry across a dispatched step', () => {
    */
   async function resumeToDispatchedStep() {
     const runId = `wrun_resume_ttr_dispatch_${Math.random().toString(36).slice(2)}`;
-    const world = new AppendOnlyWorld({ fence: true });
+    const world = new AppendOnlyWorld({});
     world.seedRun({
       runId,
       workflowName: 'workflow',

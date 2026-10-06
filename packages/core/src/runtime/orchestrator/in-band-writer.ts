@@ -1,4 +1,9 @@
-import { InBandSupersededError } from '@workflow/errors';
+import {
+  InBandSupersededError,
+  RUN_ERROR_CODES,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type {
   BatchEventRequest,
   CreateEventBatchParams,
@@ -11,6 +16,7 @@ import type {
   World,
 } from '@workflow/world';
 import { eventIdToSlot } from '@workflow/world';
+import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
 
 /**
  * Thrown by an {@link InBandWriter} once the World has refused one of its
@@ -57,6 +63,40 @@ function isDefiniteRefusal(error: unknown): boolean {
   return typeof status === 'number' && status >= 400 && status < 500;
 }
 
+/**
+ * The fence snapshot a full log load hands the {@link InBandWriter}.
+ *
+ * Every page of a single-orchestrator run's log carries one
+ * (`EventListResponse.snapshot`). The one case without it is a resilient
+ * start: `run_created` never landed, so there is no run and the load is empty.
+ * The delivery's first in-band write, `run_started` carrying the creation
+ * data, follows the creation the World performs for it, which holds the run's
+ * first in-band position, so the count is 1.
+ *
+ * A non-empty log without a snapshot means the World broke the contract, and
+ * this throws a World contract error, which fails the run instead of writing
+ * without the fence.
+ */
+export function requireLoadSnapshot(
+  runId: string,
+  loaded: { events: readonly unknown[]; snapshot?: EventLogSnapshot }
+): EventLogSnapshot {
+  if (loaded.snapshot) return loaded.snapshot;
+  if (loaded.events.length === 0) return RESILIENT_START_SNAPSHOT;
+  throw new WorkflowWorldError(
+    `The World returned no in-band fence snapshot (\`snapshot: { seq, seqInBand }\`) ` +
+      `with the event log of run "${runId}". Every World must return it on ` +
+      'single-orchestrator runs; see `WorldCapabilities.inBandFence`.',
+    { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+  );
+}
+
+/** {@link requireLoadSnapshot}'s answer for a run that does not exist yet. */
+export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
+  seq: 0,
+  seqInBand: 1,
+});
+
 /** Default delay before a superseded orchestrator delivery is redelivered. */
 export const FENCE_REDELIVERY_DELAY_SECONDS = 5;
 
@@ -102,8 +142,9 @@ export function getFenceRedeliveryDelaySeconds(
  *   A write made outside it would move the World's count without this one
  *   knowing, and the next write here would be refused.
  *
- * A World without the fence returns no snapshot. The writer then still marks
- * writes `inBand: true` but sends no expected count.
+ * Every World implements the fence (`WorldCapabilities.inBandFence`), so the
+ * writer always sends an expected count. A write before any snapshot was
+ * adopted is a runtime bug, and fails without reaching the World.
  */
 export class InBandWriter {
   private expected: number | undefined;
@@ -120,17 +161,28 @@ export class InBandWriter {
   private stopped = false;
   private tail: Promise<unknown> = Promise.resolve();
 
+  /** Throws for a World that does not declare the fence. */
   constructor(
-    private readonly world: Pick<World, 'events'>,
+    private readonly world: Pick<World, 'events' | 'capabilities'>,
     private readonly runId: string
-  ) {}
+  ) {
+    assertWorldSupportsInBandFence(world);
+  }
 
-  /** Take the snapshot of a full load. Later full loads replace it. */
-  adoptSnapshot(snapshot: EventLogSnapshot | undefined): void {
+  /**
+   * Take the snapshot of a full load (see {@link requireLoadSnapshot}). Later
+   * full loads replace it.
+   */
+  adoptSnapshot(snapshot: EventLogSnapshot): void {
     if (this.stopped) return;
-    this.expected = snapshot?.seqInBand;
-    this.loadedSlot = snapshot?.seq;
-    if (snapshot) this.knownMaxSlot = Math.max(this.knownMaxSlot, snapshot.seq);
+    this.expected = snapshot.seqInBand;
+    this.loadedSlot = snapshot.seq;
+    this.knownMaxSlot = Math.max(this.knownMaxSlot, snapshot.seq);
+  }
+
+  /** Whether a snapshot was adopted, so the writer has a count to send. */
+  get hasSnapshot(): boolean {
+    return this.expected !== undefined;
   }
 
   /** Whether a refusal or an unknown allocation stopped this writer. */
@@ -258,11 +310,14 @@ export class InBandWriter {
 
   private fenceParams(): {
     inBand: true;
-    expectedSeqInBand?: number;
+    expectedSeqInBand: number;
   } {
-    return this.expected === undefined
-      ? { inBand: true }
-      : { inBand: true, expectedSeqInBand: this.expected };
+    if (this.expected === undefined) {
+      throw new WorkflowRuntimeError(
+        `InBandWriter for run "${this.runId}" wrote before adopting a log snapshot`
+      );
+    }
+    return { inBand: true, expectedSeqInBand: this.expected };
   }
 
   private advance(positions: number): void {
@@ -308,7 +363,7 @@ export class InBandWriter {
 
   private stop(error: unknown): unknown {
     // A definite refusal (a 4xx other than the fence) allocated nothing on
-    // a fenced World, so the count stands and the caller may handle it. If
+    // the World, so the count stands and the caller may handle it. If
     // the World did allocate after all, the next in-band write is refused
     // and the delivery reloads, which is safe.
     if (!InBandSupersededError.is(error) && isDefiniteRefusal(error)) {

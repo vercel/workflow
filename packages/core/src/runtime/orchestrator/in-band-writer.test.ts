@@ -1,9 +1,14 @@
-import { WorkflowWorldError } from '@workflow/errors';
+import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { loadWorkflowRunEventsFrom } from '../../test-support/load-events.js';
-import { InBandWriter, OrchestratorSupersededError } from './in-band-writer.js';
+import {
+  InBandWriter,
+  OrchestratorSupersededError,
+  RESILIENT_START_SNAPSHOT,
+  requireLoadSnapshot,
+} from './in-band-writer.js';
 
 const RUN = 'wrun_fence';
 
@@ -31,10 +36,10 @@ const waitCreated = (cid: string) =>
 
 describe('InBandWriter', () => {
   it('starts from the load snapshot and advances by allocated positions', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
     const log = await loadWorkflowRunEventsFrom(world.asWorld(), RUN);
-    writer.adoptSnapshot(log.snapshot);
+    writer.adoptSnapshot(requireLoadSnapshot(RUN, log));
     expect(writer.expectedSeqInBand).toBe(1);
 
     await writer.create(waitCreated('wait_a'));
@@ -51,7 +56,7 @@ describe('InBandWriter', () => {
   });
 
   it('fills in a payload the World left out of the committed event', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const base = world.asWorld();
     // A World that stores the payload but does not echo it on the create.
     const stripping = {
@@ -69,7 +74,9 @@ describe('InBandWriter', () => {
       },
     } as typeof base;
     const writer = new InBandWriter(stripping, RUN);
-    writer.adoptSnapshot((await loadWorkflowRunEventsFrom(base, RUN)).snapshot);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(RUN, await loadWorkflowRunEventsFrom(base, RUN))
+    );
 
     const payload = new Uint8Array([1, 2, 3]);
     const written = await writer.create({
@@ -86,10 +93,13 @@ describe('InBandWriter', () => {
   });
 
   it('out-of-band writes move seq but not the in-band count', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
     writer.adoptSnapshot(
-      (await loadWorkflowRunEventsFrom(world.asWorld(), RUN)).snapshot
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
     );
     world.appendOutOfBand({
       eventType: 'hook_received',
@@ -101,11 +111,13 @@ describe('InBandWriter', () => {
   });
 
   it('stops for good once superseded and never adopts the error value', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const stale = new InBandWriter(world.asWorld(), RUN);
     const winner = new InBandWriter(world.asWorld(), RUN);
-    const snapshot = (await loadWorkflowRunEventsFrom(world.asWorld(), RUN))
-      .snapshot;
+    const snapshot = requireLoadSnapshot(
+      RUN,
+      await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+    );
     stale.adoptSnapshot(snapshot);
     winner.adoptSnapshot(snapshot);
 
@@ -124,10 +136,13 @@ describe('InBandWriter', () => {
   });
 
   it('serializes concurrent writes so a fan-out is not refused', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
     writer.adoptSnapshot(
-      (await loadWorkflowRunEventsFrom(world.asWorld(), RUN)).snapshot
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
     );
     await Promise.all(
       ['a', 'b', 'c'].map((id) => writer.create(waitCreated(`wait_${id}`)))
@@ -141,6 +156,7 @@ describe('InBandWriter', () => {
     const base = world.asWorld();
     let failWith: unknown;
     const flaky = {
+      capabilities: base.capabilities,
       events: {
         ...base.events,
         create: async (...args: Parameters<typeof base.events.create>) => {
@@ -154,6 +170,9 @@ describe('InBandWriter', () => {
       },
     } as typeof base;
     const writer = new InBandWriter(flaky, RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(RUN, await loadWorkflowRunEventsFrom(base, RUN))
+    );
     failWith = new WorkflowWorldError('nope', { status: 409 });
     await expect(writer.create(waitCreated('wait_a'))).rejects.toThrow('nope');
     expect(writer.isStopped).toBe(false);
@@ -165,15 +184,38 @@ describe('InBandWriter', () => {
     expect(writer.isSuperseded).toBe(false);
   });
 
-  it('marks writes in-band without a count on a World without the fence', async () => {
+  it('refuses a World that does not declare the fence', () => {
+    const base = seeded({}).asWorld();
+    expect(() => new InBandWriter({ ...base, capabilities: {} }, RUN)).toThrow(
+      /capabilities\.inBandFence/
+    );
+  });
+
+  it('refuses to write before a snapshot was adopted, without reaching the World', async () => {
     const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
-    writer.adoptSnapshot(
-      (await loadWorkflowRunEventsFrom(world.asWorld(), RUN)).snapshot
+    await expect(writer.create(waitCreated('wait_a'))).rejects.toThrow(
+      /wrote before adopting a log snapshot/
     );
-    await writer.create(waitCreated('wait_a'));
-    expect(world.creates[0]?.params).toMatchObject({ inBand: true });
-    expect(world.creates[0]?.params?.expectedSeqInBand).toBeUndefined();
+    expect(world.creates).toEqual([]);
+  });
+
+  it('requires a snapshot with a non-empty log', () => {
+    const log = { events: [{}], cursor: null };
+    expect(() => requireLoadSnapshot(RUN, log)).toThrow(WorkflowWorldError);
+    try {
+      requireLoadSnapshot(RUN, log);
+    } catch (error) {
+      expect((error as WorkflowWorldError).code).toBe(
+        RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+      );
+    }
+    // A resilient start: no run yet, so nothing listed and no snapshot.
+    expect(requireLoadSnapshot(RUN, { events: [] })).toEqual(
+      RESILIENT_START_SNAPSHOT
+    );
+    const snapshot = { seq: 3, seqInBand: 2 };
+    expect(requireLoadSnapshot(RUN, { events: [{}], snapshot })).toBe(snapshot);
   });
 
   it('does not advance for a write answered with an event it already knew (idempotent replay)', async () => {
@@ -181,6 +223,7 @@ describe('InBandWriter', () => {
     const base = world.asWorld();
     const existing = world.events[0];
     const replaying = {
+      capabilities: base.capabilities,
       events: {
         ...base.events,
         create: async () => ({ event: existing }),
@@ -193,10 +236,13 @@ describe('InBandWriter', () => {
   });
 
   it('names the load position on a write that names none', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
     writer.adoptSnapshot(
-      (await loadWorkflowRunEventsFrom(world.asWorld(), RUN)).snapshot
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
     );
     await writer.create(waitCreated('wait_a'));
     expect(world.creates[0]?.params?.eventCount).toBe(1);
@@ -208,6 +254,7 @@ describe('InBandWriter', () => {
     const world = seeded({});
     const base = world.asWorld();
     const reporting = {
+      capabilities: base.capabilities,
       events: {
         ...base.events,
         create: async (...args: Parameters<typeof base.events.create>) => ({

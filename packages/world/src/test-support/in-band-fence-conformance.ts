@@ -5,16 +5,18 @@ import type {
   CreateEventParams,
   EventResult,
 } from '../events.js';
-import type { Storage } from '../interfaces.js';
+import type { Storage, WorldCapabilities } from '../interfaces.js';
 import { eventIdToSlot } from '../slot-identity.js';
 import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
 
 /**
- * Conformance for a World that implements the in-band writer fence (see
+ * Conformance for the in-band writer fence every World implements (see
  * `Storage['events']` and `CreateEventParams.inBand`).
  *
- * What every fenced World must agree on, whatever it stores the count in:
+ * What every World must agree on, whatever it stores the count in:
  *
+ * - It declares `capabilities.inBandFence`, without which the runtime refuses
+ *   it.
  * - `list` returns `snapshot: { seq, seqInBand }`, and a new run holds one
  *   in-band position (`run_created`'s), which `atRunCreation` names.
  * - An in-band write at the current count is accepted and advances it by one.
@@ -36,6 +38,8 @@ export interface InBandFenceConformanceOptions {
   name: string;
   /** The events storage under test. Called once per test. */
   events: () => Storage['events'];
+  /** The capabilities the World under test declares (`World.capabilities`). */
+  capabilities: () => WorldCapabilities | undefined;
   /** A run id for `run_created`, or `null` when the World mints it. */
   newRunId: () => string | null;
   /** In-band positions a new run holds (the World's documented initial count). */
@@ -122,6 +126,10 @@ export function inBandFenceConformance(
     `${prefix}_${randomUUID().replaceAll('-', '')}`;
 
   describe(`in-band fence conformance (${options.name})`, () => {
+    test('declares the in-band fence capability', () => {
+      expect(options.capabilities()?.inBandFence).toBe(true);
+    });
+
     test('a new run holds run_created as its one in-band position', async () => {
       const events = options.events();
       const runId = await createRun(events);

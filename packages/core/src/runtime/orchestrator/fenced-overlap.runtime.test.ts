@@ -75,7 +75,7 @@ async function replayFromCold(
   const run = (await world.asWorld().runs.get(world.events[0]!.runId)) as
     | WorkflowRun
     | undefined;
-  const cold = new AppendOnlyWorld({ fence: true });
+  const cold = new AppendOnlyWorld({});
   cold.seedLog(
     { ...run!, status: 'running' },
     world.events.filter((e) => e.eventType !== 'run_completed')
@@ -113,7 +113,7 @@ describe.each([
     const { world, runId, start } = await setupOrchestratorRun(
       code,
       [],
-      { fence: true },
+      {},
       engine
     );
 
@@ -202,7 +202,7 @@ describe.each([
     const { world, start } = await setupOrchestratorRun(
       twoStepWorkflow,
       [],
-      { fence: true },
+      {},
       engine
     );
     // Another orchestrator of the run writes in-band right after the first
