@@ -2230,7 +2230,23 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     withRunInput?: boolean;
   }) {
     const { runId, source } = opts;
-    const durable: Event[] = [...(opts.seedEvents ?? [])];
+    // The log `start()` leaves: the run's creation at the first position.
+    const durable: Event[] = opts.seedEvents
+      ? [...opts.seedEvents]
+      : [
+          {
+            eventId: slotToEventId(1),
+            runId,
+            eventType: 'run_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            createdAt: new Date(),
+            eventData: {
+              deploymentId: 'test-deployment',
+              workflowName: 'workflow',
+              input: await dehydrateWorkflowArguments([], runId, undefined, []),
+            },
+          } as Event,
+        ];
     let seq = durable.length;
     const rec = (data: any): Event => {
       seq += 1;

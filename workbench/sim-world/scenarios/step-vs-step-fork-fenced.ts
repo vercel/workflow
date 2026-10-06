@@ -24,6 +24,10 @@ export const scenario: ScenarioSpec = {
     'order: the predecessor writes first.',
   workflow: 'stepVsStepForkWorkflow',
   input: ['doc-27'],
+  // The stall must come before the steps start (see above). Turbo's first
+  // delivery starts inline bodies before their `step_created` commits, so it
+  // keeps them waiting for their start here.
+  env: { WORKFLOW_OPTIMISTIC_INLINE_START: '0' },
   script: async (sim) => {
     const wf = sim.writer.orchestrator();
     await wf.runToEventProduced('step_created');

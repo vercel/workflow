@@ -24,6 +24,7 @@ import {
   type Event,
   type EventResult,
   eventIdToSlot,
+  FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   type HookResumeTiming,
   IN_BAND_SEQ_AT_RUN_CREATION,
@@ -35,6 +36,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  slotToEventId,
   type WorkflowInvokePayload,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
@@ -264,6 +266,41 @@ export {
  * the server's limit, and it takes effect even when the server returns none.
  * Unset ⇒ server value passes through unchanged.
  */
+/**
+ * `promise`, with a handler attached so a rejection nobody else observes (a
+ * step spec that ends up not run) does not surface as unhandled. Whoever
+ * awaits it still sees the rejection.
+ */
+function observed<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
+}
+
+/**
+ * The `run_created` a turbo delivery holds without loading the log: what
+ * `start()` wrote at the first position, rebuilt from the run input the
+ * message carries. Replay consumes `run_created` structurally, so only its
+ * identity and creation data matter.
+ */
+function turboRunCreatedEvent(runId: string, input: RunInput): Event {
+  return {
+    eventId: slotToEventId(FIRST_EVENT_SLOT),
+    runId,
+    eventType: 'run_created',
+    specVersion: input.specVersion ?? SPEC_VERSION_CURRENT,
+    createdAt: new Date(runIdCreatedAt(runId) ?? Date.now()),
+    eventData: {
+      deploymentId: input.deploymentId,
+      workflowName: input.workflowName,
+      input: input.input,
+      ...(input.executionContext
+        ? { executionContext: input.executionContext }
+        : {}),
+      ...(input.attributes ? { attributes: input.attributes } : {}),
+    },
+  } as Event;
+}
+
 /** The executor's view of a `step_started` a creation batch committed. */
 function startedFromBatch(
   started: StartedInBatch | undefined
@@ -1193,6 +1230,11 @@ export function workflowEntrypoint(
                   let runReadyBarrier: Promise<void> | undefined;
                   /** Turbo only: the backgrounded `run_started` write. */
                   let turboRunStarted: Promise<EventResult> | undefined;
+                  /**
+                   * Turbo only: the backgrounded `run_started`, once it
+                   * committed and until it joined the log.
+                   */
+                  let turboStartLanded: EventResult | undefined;
                   /** Turbo only: the backgrounded `run_started` failed. */
                   let turboStartFailure: { error: unknown } | undefined;
                   /**
@@ -1246,6 +1288,17 @@ export function workflowEntrypoint(
                     hasMore?: boolean;
                     reportIncomplete?: boolean;
                   }): void => {
+                    // Turbo: the backgrounded `run_started` precedes every
+                    // other write of the delivery, so it joins the log first.
+                    // Its report carries `run_created`; without the two, every
+                    // later write would leave a hole below it.
+                    const landed = turboStartLanded;
+                    if (landed && landed !== result) {
+                      turboStartLanded = undefined;
+                      absorbWrite(landed);
+                    } else if (landed) {
+                      turboStartLanded = undefined;
+                    }
                     if (!log || !result.event) return;
                     if (result.reportIncomplete || result.hasMore) {
                       logBehind = true;
@@ -1631,10 +1684,18 @@ export function workflowEntrypoint(
                    */
                   function startTurbo(input: RunInput): WorkflowRun {
                     writer.adoptSnapshot({
-                      seq: 0,
+                      seq: FIRST_EVENT_SLOT,
                       seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
                     });
-                    log = { events: [], cursor: null };
+                    // The log as the World holds it: the run's creation at the
+                    // first position (a resilient start's `run_started`
+                    // creates it there too). Writes of this delivery then
+                    // join it in position order from the first one, whether
+                    // or not the World reports what lies below them.
+                    log = {
+                      events: [turboRunCreatedEvent(runId, input)],
+                      cursor: null,
+                    };
                     span?.addEvent('workflow.run_started.create.start', {
                       'workflow.run_started.skip_preload': true,
                     });
@@ -1649,6 +1710,7 @@ export function workflowEntrypoint(
                     turboRunStarted = started;
                     runReadyBarrier = started.then(
                       (result) => {
+                        turboStartLanded = result;
                         const limit = clampMaxEvents(result.maxEvents);
                         if (limit !== undefined) maxEventsLimit = limit;
                       },
@@ -1699,6 +1761,9 @@ export function workflowEntrypoint(
                       try {
                         startWorkflowCompile(runInput);
                         startReplayPayloadCache(runInput);
+                        for (const event of log?.events ?? []) {
+                          prepareReplayEvent(event);
+                        }
                       } catch (err) {
                         // Recorded behind the backgrounded `run_started`.
                         if (!(await recordWorkflowSetupFailure(err))) throw err;
@@ -2056,6 +2121,15 @@ export function workflowEntrypoint(
                     const isOwnEvent = (event: Event): boolean => {
                       const slot = eventIdToSlot(event.eventId);
                       if (slot !== null && ownSlots.has(slot)) return true;
+                      // Turbo: the run's creation and this delivery's
+                      // backgrounded start, echoed before they joined the log.
+                      if (
+                        turbo &&
+                        (event.eventType === 'run_created' ||
+                          event.eventType === 'run_started')
+                      ) {
+                        return true;
+                      }
                       if (
                         event.eventType.startsWith('step_') &&
                         event.correlationId !== undefined &&
@@ -2069,6 +2143,9 @@ export function workflowEntrypoint(
                       );
                     };
                     const settledInline: InlineSettled[] = [];
+                    // Turbo: creation commits still in flight while the bodies
+                    // they create run (see `optimisticCreation`).
+                    const creationsInFlight = new Set<Promise<unknown>>();
                     // The longest backoff of the inline starts this delivery
                     // had refused for load. Once every body has settled the
                     // delivery defers the run by it.
@@ -2076,15 +2153,6 @@ export function workflowEntrypoint(
                     const pendingAbsorbs: Array<
                       Parameters<typeof absorbWrite>[0]
                     > = [];
-                    // Turbo: the backgrounded `run_started` joins the log
-                    // between passes, like an inline step's writes. Its
-                    // skipped-slot report carries `run_created`.
-                    void turboRunStarted?.then(
-                      (result) => {
-                        pendingAbsorbs.push(result);
-                      },
-                      () => {}
-                    );
                     const pendingFeedEvents: Event[] = [];
                     let liveFeed: LiveLogFeed | undefined;
                     // Timer messages this delivery already sent, by wait and
@@ -2111,6 +2179,7 @@ export function workflowEntrypoint(
                     /** Folds buffered feed events and inline writes into the log. */
                     const flushPending = (): void => {
                       if (!log) return;
+                      if (turboStartLanded) absorbWrite(turboStartLanded);
                       if (pendingFeedEvents.length > 0) {
                         const events = pendingFeedEvents.splice(0);
                         for (const event of events) prepareReplayEvent(event);
@@ -2670,6 +2739,14 @@ export function workflowEntrypoint(
                           );
                         });
                         creationGate.catch(() => {});
+                        const inFlightCreation = creationGate.then(
+                          () => {},
+                          () => {}
+                        );
+                        creationsInFlight.add(inFlightCreation);
+                        void inFlightCreation.then(() =>
+                          creationsInFlight.delete(inFlightCreation)
+                        );
                         created = {
                           createdSteps: [],
                           failedStepCorrelationIds: new Set(),
@@ -2767,15 +2844,19 @@ export function workflowEntrypoint(
                             ...(gate
                               ? {
                                   // The batch's start, or its refusal.
-                                  startAfter: gate.then((steps) => {
-                                    const committed = steps.get(
-                                      step.correlationId
-                                    );
-                                    if (committed?.startRefusal) {
-                                      throw committed.startRefusal;
-                                    }
-                                    return startedFromBatch(committed?.started);
-                                  }),
+                                  startAfter: observed(
+                                    gate.then((steps) => {
+                                      const committed = steps.get(
+                                        step.correlationId
+                                      );
+                                      if (committed?.startRefusal) {
+                                        throw committed.startRefusal;
+                                      }
+                                      return startedFromBatch(
+                                        committed?.started
+                                      );
+                                    })
+                                  ),
                                 }
                               : {}),
                           });
@@ -3028,6 +3109,13 @@ export function workflowEntrypoint(
                             break;
                           }
                           if (inFlight.size === 0) break;
+                        }
+                        // Turbo: no pass decides while a creation it would
+                        // re-derive is still in flight. Its events join the
+                        // log only once it committed, and a pass before that
+                        // would create those steps again.
+                        while (creationsInFlight.size > 0) {
+                          await Promise.allSettled([...creationsInFlight]);
                         }
                       } finally {
                         replayBudget.resume();

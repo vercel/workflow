@@ -127,6 +127,12 @@ export interface ScenarioSpec {
    */
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
+  /**
+   * Runtime environment variables set for this scenario only (for example a
+   * runtime fast path the scenario's premise rules out), restored when it
+   * ends.
+   */
+  env?: Record<string, string>;
 }
 
 export interface ScenarioExpectation {
@@ -181,6 +187,22 @@ export interface RunScenarioOptions {
   workflowIds?: Record<string, string>;
 }
 
+/** Sets `env` on `process.env`; returns what puts the previous values back. */
+function applyEnv(env: Record<string, string> | undefined): () => void {
+  if (!env) return () => {};
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(env)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
 export async function runScenario(
   spec: ScenarioSpec,
   options: RunScenarioOptions
@@ -225,6 +247,7 @@ export async function runScenario(
   let runId = '';
   let thrown: unknown;
 
+  const restoreEnv = applyEnv(spec.env);
   let uninstallClock = clock.install();
   const wallStart = performanceNow();
 
@@ -426,6 +449,7 @@ export async function runScenario(
       `scenario threw: ${err instanceof Error ? err.message : String(err)}`
     );
   } finally {
+    restoreEnv();
     // The loop is done, so nothing can satisfy a script still waiting on the
     // world. Report what it wanted before tearing its waits down.
     const stillWaiting = controller.describeWaiting();
