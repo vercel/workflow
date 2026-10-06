@@ -30,3 +30,36 @@ const world = createWorld({
   dataDir: './custom-workflow-data',
 });
 ```
+
+## Data directory layout
+
+Event and step files are stored in one directory per run:
+`events/<runId>/<runId>-<eventId>.json` and
+`steps/<runId>/<runId>-<stepId>.json`. Reading or appending to one run lists
+only that run's directory, so the cost stays proportional to the run instead
+of to every run the data directory has ever held.
+
+Data directories written by 5.0.1 and earlier keep every file directly in
+`events/` and `steps/`. They are converted on first use: before the first
+storage call in a process, each flat file is renamed into its run's
+directory. Renames never overwrite, so the conversion is safe to interrupt
+and to run from several processes at once. It takes roughly 0.35 ms per file
+on APFS (about 20 s for 60k files) and logs a notice from 1,000 files up.
+
+- **Stop older writers first.** The conversion runs once per process. Files
+  that an older version keeps writing to the flat layout afterwards are only
+  picked up on the next process start.
+- **Downgrading** requires moving the files back. Stop every process using the
+  data directory, then run
+  `node node_modules/@workflow/world-local/scripts/flatten-layout.mjs <dataDir>`
+  (or `scripts/flatten-layout.mjs` from this repository). It never
+  overwrites a file already at the flat path.
+
+To compare layouts on a copy of a real data directory:
+
+```sh
+# Copy-on-write clone where supported, padded to 50k event files.
+# The destination must be a new path outside the source.
+node scripts/benchmark-layout.mjs prepare <dataDir> <benchDir> 50000
+node scripts/benchmark-layout.mjs run <world-local>/dist/index.js <benchDir> <label>
+```

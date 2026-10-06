@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "scripts/flatten-layout.mjs"
   ],
   "publishConfig": {
     "access": "public"
@@ -26,7 +27,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src",
+    "test": "vitest run src scripts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
