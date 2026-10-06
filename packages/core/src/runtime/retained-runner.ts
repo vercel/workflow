@@ -785,17 +785,21 @@ export class RetainedRunner {
         parentSpanId,
       });
       if (this.durableCreate) {
-        // Durable creation: one barrier covers run_created and run_started.
+        // Durable creation: the barrier covers run_created alone; it starts
+        // synchronously so run_started, staged next, is not part of it.
         // Validation and the first workflow pass proceed meanwhile, but every
-        // later write queues behind the barrier, so no step body runs before
-        // the run exists.
-        await this.markStarted();
+        // write after run_started queues behind the barrier, so no step body
+        // runs before the run exists.
+        const flushing = this.eventWriter!.flush!();
+        flushing.catch(() => {});
         const durable = this.observed(
           'create_run_durable',
-          () => this.flushWriter(),
+          () => this.flushOnce(flushing),
           { parentSpanId }
         );
         durable.catch(() => {});
+        this.flushChain = durable.catch(() => {});
+        await this.markStarted();
         const tail = this.commitTail;
         this.commitTail = tail.then(() => durable).catch(() => {});
         const ack = this.startAck;
@@ -1461,12 +1465,12 @@ export class RetainedRunner {
     return flush;
   }
 
-  private async flushOnce() {
+  private async flushOnce(started?: Promise<void | readonly EventResult[]>) {
     if (!this.eventWriter?.flush) return;
     const spanId = randomUUID();
     this.observe('flush', 'begin', spanId, { eventCount: this.events.length });
     try {
-      const acknowledgements = await this.eventWriter.flush();
+      const acknowledgements = await (started ?? this.eventWriter.flush());
       if (acknowledgements) this.confirmStaged(acknowledgements);
       this.failureCommitted = this.runState?.status === 'failed';
       this.observe('flush', 'end', spanId, {
