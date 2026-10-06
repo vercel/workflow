@@ -997,7 +997,10 @@ export async function executeStep(
             globalThis,
             {},
             params.workflowDeploymentId,
-            streamStates
+            streamStates,
+            // A workflow-created writable passed into an optimistic step can
+            // emit chunks before run_started lands, just like getWritable().
+            optimisticStart ? params.runReadyBarrier : undefined
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({

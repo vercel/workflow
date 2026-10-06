@@ -10,6 +10,10 @@ the shared server stream. Source failures in flushable readable pipes propagate
 to the user-facing reader rather than leaving it waiting for more data.
 Streams that finish draining after the inline wait budget expires do not force
 an extra queued continuation unless other background operations remain pending.
+In turbo mode, same-run writable stream arguments wait for run creation before
+opening a writer session, flushing chunks, or closing; the step body can still
+start optimistically. Forwarded writables owned by another run do not wait on
+the receiving run's creation barrier.
 
 Hook registration acknowledgements and token conflicts participate in replay
 delivery ordering alongside step results, hook payloads, and sleep completions.
