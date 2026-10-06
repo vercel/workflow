@@ -1,11 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import {
-  EntityConflictError,
-  IN_BAND_SUPERSEDED_CODE,
-  InBandSupersededError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { EntityConflictError, InBandSupersededError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   eventIdToSlot,
@@ -15,6 +10,7 @@ import {
 import { Pool } from 'pg';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { inBandFenceConformance } from '../../world/src/test-support/in-band-fence-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
 import {
   createEventsStorage,
@@ -73,6 +69,15 @@ describe('in-band fence (world-postgres)', () => {
     return runId;
   }
 
+  // The fence behavior every fenced World shares.
+  inBandFenceConformance({
+    name: 'world-postgres',
+    events: () => events,
+    newRunId: () => `wrun_${ulid()}`,
+    atRunCreation: IN_BAND_SEQ_AT_RUN_CREATION,
+    concurrentWriters: 12,
+  });
+
   const runStarted = { eventType: 'run_started', specVersion: SPEC } as const;
 
   const waitCreated = (correlationId: string) =>
@@ -100,62 +105,6 @@ describe('in-band fence (world-postgres)', () => {
       slots: page.data.map((event) => eventIdToSlot(event.eventId)),
     };
   }
-
-  test('a new run holds run_created as its one in-band position', async () => {
-    const runId = await createRun();
-    expect(await load(runId)).toEqual({
-      snapshot: { seq: 1, seqInBand: IN_BAND_SEQ_AT_RUN_CREATION },
-      slots: [1],
-    });
-  });
-
-  test('accepts an in-band write at the current count and advances it by one', async () => {
-    const runId = await createRun();
-    await events.create(runId, runStarted as AnyEventRequest, {
-      inBand: true,
-      expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
-    });
-    await events.create(runId, waitCreated('wait_1'), {
-      inBand: true,
-      expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION + 1,
-    });
-    expect(await load(runId)).toEqual({
-      snapshot: { seq: 3, seqInBand: IN_BAND_SEQ_AT_RUN_CREATION + 2 },
-      slots: [1, 2, 3],
-    });
-  });
-
-  test('refuses a stale in-band write with InBandSupersededError and allocates nothing', async () => {
-    const runId = await createRun();
-    await events.create(runId, runStarted as AnyEventRequest, {
-      inBand: true,
-      expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
-    });
-    const before = await load(runId);
-
-    const error = await events
-      .create(runId, waitCreated('wait_1'), {
-        inBand: true,
-        expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
-      })
-      .catch((err: unknown) => err);
-
-    expect(InBandSupersededError.is(error)).toBe(true);
-    expect(error).toMatchObject({
-      status: 412,
-      code: IN_BAND_SUPERSEDED_CODE,
-      seqInBand: before.snapshot?.seqInBand,
-    });
-    expect(await load(runId)).toEqual(before);
-    // No hole: the next accepted write takes the very next slot.
-    const next = await events.create(runId, waitCreated('wait_1'), {
-      inBand: true,
-      expectedSeqInBand: before.snapshot?.seqInBand,
-    });
-    expect(eventIdToSlot(next.event?.eventId ?? '')).toBe(
-      (before.snapshot?.seq ?? 0) + 1
-    );
-  });
 
   test('a stale writer touches no entity row: its refused wait_created leaves the wait free', async () => {
     const runId = await createRun();
@@ -200,46 +149,6 @@ describe('in-band fence (world-postgres)', () => {
       [runId]
     );
     expect(rows[0]?.status).toBe('running');
-  });
-
-  test('out-of-band writes leave the count alone', async () => {
-    const runId = await createRun();
-    const before = await load(runId);
-    await events.create(runId, attrSet('a'), { inBand: false });
-    await events.create(runId, attrSet('b'));
-    const after = await load(runId);
-    expect(after.snapshot?.seqInBand).toBe(before.snapshot?.seqInBand);
-    expect(after.snapshot?.seq).toBe((before.snapshot?.seq ?? 0) + 2);
-    await expect(
-      events.create(runId, runStarted as AnyEventRequest, {
-        inBand: true,
-        expectedSeqInBand: before.snapshot?.seqInBand,
-      })
-    ).resolves.toBeDefined();
-  });
-
-  test('of concurrent in-band writers with the same count, exactly one wins', async () => {
-    const runId = await createRun();
-    const { snapshot } = await load(runId);
-    const writers = 12;
-    const outcomes = await Promise.allSettled(
-      Array.from({ length: writers }, (_, i) =>
-        events.create(runId, waitCreated(`wait_${i}`), {
-          inBand: true,
-          expectedSeqInBand: snapshot?.seqInBand,
-        })
-      )
-    );
-    const won = outcomes.filter((o) => o.status === 'fulfilled');
-    const superseded = outcomes.filter(
-      (o) => o.status === 'rejected' && InBandSupersededError.is(o.reason)
-    );
-    expect(won).toHaveLength(1);
-    expect(superseded).toHaveLength(writers - 1);
-    expect(await load(runId)).toEqual({
-      snapshot: { seq: 2, seqInBand: (snapshot?.seqInBand ?? 0) + 1 },
-      slots: [1, 2],
-    });
   });
 
   test('an in-band writer racing out-of-band writers for slots keeps its count exact', async () => {
@@ -333,52 +242,5 @@ describe('in-band fence (world-postgres)', () => {
       .catch((err: unknown) => err);
     expect(EntityConflictError.is(error)).toBe(true);
     expect(await load(runId)).toEqual(before);
-  });
-
-  test('requires an expected count on an in-band write', async () => {
-    const runId = await createRun();
-    const error = await events
-      .create(runId, waitCreated('wait_1'), { inBand: true })
-      .catch((err: unknown) => err);
-    expect(WorkflowWorldError.is(error)).toBe(true);
-    expect((error as WorkflowWorldError).status).toBe(400);
-    expect((await load(runId)).slots).toEqual([1]);
-  });
-
-  test('stores the single-orchestrator step bookkeeping on the events', async () => {
-    const runId = await createRun();
-    const stepId = `step_${ulid()}`;
-    await events.create(
-      runId,
-      {
-        eventType: 'step_created',
-        correlationId: stepId,
-        specVersion: SPEC,
-        eventData: {
-          stepName: 'add',
-          input: new Uint8Array([1]),
-          inline: false,
-          creatorMessageId: 'msg_creator',
-        },
-      } as AnyEventRequest,
-      { inBand: true, expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION }
-    );
-    await events.create(runId, {
-      eventType: 'step_started',
-      correlationId: stepId,
-      specVersion: SPEC,
-      eventData: { stepName: 'add', attempt: 1, startReason: 'first' },
-    } as AnyEventRequest);
-    const page = await events.list({ runId });
-    const [created, started] = page.data.slice(1);
-    expect(created?.eventData).toMatchObject({
-      inline: false,
-      creatorMessageId: 'msg_creator',
-    });
-    expect(started?.eventData).toMatchObject({
-      stepName: 'add',
-      attempt: 1,
-      startReason: 'first',
-    });
   });
 });
