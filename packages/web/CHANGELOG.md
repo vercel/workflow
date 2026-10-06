@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 5.0.2
+
+### Patch Changes
+
+- [#4291](https://github.com/vercel/workflow/pull/4291) [`d7217a8`](https://github.com/vercel/workflow/commit/d7217a8fc0fb57eed91835c7bd58d9c292551ba9) Thanks [@mitul-s](https://github.com/mitul-s)! - De-duplicate separate shadcn button implementations between `@workflow/web-shared` and `@workflow/web`
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4)]:
+  - @workflow/world-local@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

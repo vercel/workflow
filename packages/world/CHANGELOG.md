@@ -1,5 +1,15 @@
 # @workflow/world
 
+## 5.0.2
+
+### Patch Changes
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Mark `step_failed` writes that record a failed step body with `afterStepBody`, so a World can keep waiting out a throttled write instead of re-running the body.
+
+- [#4605](https://github.com/vercel/workflow/pull/4605) [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Release drained stream writer sockets without closing the shared stream, preserve handle reuse over HTTP, and dispose transports when public writable streams abort. Propagate source failures to readers of flushable stream pipes.
+
+- [#4640](https://github.com/vercel/workflow/pull/4640) [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix cross-deployment hook resumes and starts writing zstd payloads to runs on Node.js versions that cannot decode them. Required for upgrading to a newer Node.js version while existing runs on older Node.js versions are still receiving hooks.
+
 ## 5.0.1
 
 ### Patch Changes
