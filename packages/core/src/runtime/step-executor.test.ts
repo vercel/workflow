@@ -15,6 +15,7 @@ import type {
 } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
+import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { runtimeLogger } from '../logger.js';
@@ -968,5 +969,289 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     );
     const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
     expect(hydrated.message).toBe('constraint violated');
+  });
+});
+
+describe('executeStep — turbo run-ready barrier', () => {
+  afterEach(() => {
+    counter += 1;
+    setWorld(undefined);
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A run as turbo's first delivery sees it: `run_created` written,
+   * `run_started` held until `release`, and the step's `step_created`
+   * queued behind it (`startAfter`), as the delivery's in-band writer orders
+   * them.
+   */
+  async function turboStep(world: World, stepName: string) {
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'wf',
+        input: await dehydrateStepArguments([], 'run', undefined),
+      },
+    });
+    const runId = created.run!.runId;
+    const stepId = `step_${ulid()}`;
+    const input = (await dehydrateStepArguments(
+      { args: [], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    )) as Uint8Array;
+    const startGate = withResolvers<void>();
+    const runReadyBarrier = startGate.promise.then(async () => {
+      await world.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      } as never);
+    });
+    const startAfter = runReadyBarrier.then(async () => {
+      await world.events.create(runId, {
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: stepId,
+        eventData: { stepName, input, inline: true },
+      });
+      return undefined;
+    });
+    // The run's status at the moment each step_started is sent.
+    const runStatusAtStart: string[] = [];
+    const create = world.events.create.bind(world.events);
+    vi.spyOn(world.events, 'create').mockImplementation(async (...args) => {
+      const [targetRunId, event] = args;
+      if (targetRunId && event.eventType === 'step_started') {
+        runStatusAtStart.push((await world.runs.get(targetRunId)).status);
+      }
+      return create(...args);
+    });
+    const createEvent: StepEventWriter = (data, params) =>
+      world.events.create(runId, data, params);
+    return {
+      runId,
+      stepId,
+      release: () => startGate.resolve(),
+      runStatusAtStart,
+      params: {
+        world,
+        createEvent,
+        workflowRunId: runId,
+        workflowName: 'wf',
+        workflowStartedAt: Date.now(),
+        stepId,
+        stepName,
+        attempt: 1,
+        startReason: 'first' as const,
+        input,
+        runReadyBarrier,
+        startAfter,
+      },
+    };
+  }
+
+  // An explicit opt-out sends step_started on the awaited branch. It must
+  // still wait for the run to be started, or a World that requires a
+  // running run refuses the step's first start (#4685).
+  it.each([
+    { name: 'explicit opt-out under turbo', env: '0', force: true },
+    { name: 'optimistic start not forced', env: undefined, force: false },
+  ])('holds the awaited step_started until run_started lands ($name)', async ({
+    env,
+    force,
+  }) => {
+    const world = makeLocalWorld();
+    if (env !== undefined) vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', env);
+    const stepName = uniqueStepName();
+    let bodyRuns = 0;
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+    const step = await turboStep(world, stepName);
+
+    const execution = executeStep({
+      ...step.params,
+      forceOptimisticStart: force,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(step.runStatusAtStart).toEqual([]);
+    expect(bodyRuns).toBe(0);
+
+    step.release();
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(step.runStatusAtStart).toEqual(['running']);
+    expect(bodyRuns).toBe(1);
+    expect(
+      await eventsFor(world, step.runId, step.stepId, 'step_completed')
+    ).toHaveLength(1);
+  });
+
+  it('runs a forced optimistic body before run_started, and writes the start and outcome after it', async () => {
+    const world = makeLocalWorld();
+    const stepName = uniqueStepName();
+    const bodyEntered = withResolvers<void>();
+    registerStepFunction(stepName, async () => {
+      bodyEntered.resolve();
+      return 'ok';
+    });
+    const step = await turboStep(world, stepName);
+
+    const execution = executeStep({
+      ...step.params,
+      forceOptimisticStart: true,
+    });
+    await bodyEntered.promise;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(step.runStatusAtStart).toEqual([]);
+    expect(
+      await eventsFor(world, step.runId, step.stepId, 'step_completed')
+    ).toHaveLength(0);
+
+    step.release();
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(step.runStatusAtStart).toEqual(['running']);
+    const { data } = await world.events.list({ runId: step.runId });
+    expect(data.map((e) => e.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+  });
+
+  it('writes no outcome for an optimistic body whose start was refused', async () => {
+    const world = makeLocalWorld();
+    const stepName = uniqueStepName();
+    let bodyRuns = 0;
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+    const step = await turboStep(world, stepName);
+    const refusal = new Error('in-band-superseded');
+
+    const execution = executeStep({
+      ...step.params,
+      forceOptimisticStart: true,
+      startAfter: Promise.reject(refusal),
+    });
+    step.release();
+    await expect(execution).rejects.toBe(refusal);
+    expect(bodyRuns).toBe(1);
+    expect(step.runStatusAtStart).toEqual([]);
+    expect(
+      await eventsFor(world, step.runId, step.stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
+  // A writable argument passed into an optimistic body can flush before the
+  // run exists (#4667): its chunks and close wait for the barrier.
+  it.each([
+    'chunk',
+    'empty close',
+  ] as const)('orders a writable argument %s after run creation', async (operation) => {
+    const world = makeLocalWorld();
+    setWorld(world);
+    const runId = `wrun_${ulid()}`;
+    const stepId = `step_${ulid()}`;
+    const stepName = uniqueStepName();
+    const streamId = `strm_${runId.slice(5)}_user`;
+    const argument = new WritableStream<string>();
+    Object.defineProperty(argument, STREAM_NAME_SYMBOL, { value: streamId });
+    const input = (await dehydrateStepArguments(
+      { args: [argument] },
+      runId,
+      undefined
+    )) as Uint8Array;
+    const runInput = await dehydrateStepArguments([], runId, undefined);
+    const createGate = withResolvers<void>();
+    const bodyEntered = withResolvers<void>();
+    // world-local's stream store accepts orphan writes; add the run-existence
+    // precondition a World with a run table enforces.
+    const write = world.streams.write.bind(world.streams);
+    const close = world.streams.close.bind(world.streams);
+    const writeSpy = vi
+      .spyOn(world.streams, 'write')
+      .mockImplementation(async (...args) => {
+        await world.runs.get(args[0]);
+        return write(...args);
+      });
+    const closeSpy = vi
+      .spyOn(world.streams, 'close')
+      .mockImplementation(async (...args) => {
+        await world.runs.get(args[0]);
+        return close(...args);
+      });
+    // Resilient start: run_started creates the run.
+    const runReadyBarrier = createGate.promise.then(async () => {
+      await world.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'wf',
+          input: runInput,
+        },
+      });
+    });
+    const startAfter = runReadyBarrier.then(async () => {
+      await world.events.create(runId, {
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: stepId,
+        eventData: { stepName, input, inline: true },
+      });
+      return undefined;
+    });
+    registerStepFunction(stepName, async (writable: WritableStream<string>) => {
+      bodyEntered.resolve();
+      const writer = writable.getWriter();
+      if (operation === 'chunk') await writer.write('first chunk');
+      await writer.close();
+      return 'ok';
+    });
+    const execution = executeStep({
+      world,
+      createEvent: (data, params) => world.events.create(runId, data, params),
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      attempt: 1,
+      startReason: 'first',
+      input,
+      forceOptimisticStart: true,
+      runReadyBarrier,
+      startAfter,
+    });
+    try {
+      await bodyEntered.promise;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await expect(world.runs.get(runId)).rejects.toThrow();
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(closeSpy).not.toHaveBeenCalled();
+    } finally {
+      createGate.resolve();
+      await execution.catch(() => {});
+    }
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+    const reader = (await world.streams.get(runId, streamId)).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    expect(chunks).toHaveLength(operation === 'chunk' ? 1 : 0);
   });
 });

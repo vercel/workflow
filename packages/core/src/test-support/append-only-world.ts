@@ -118,6 +118,15 @@ export class AppendOnlyWorld {
        * test with fake timers can let that time pass before the redelivery.
        */
       advanceClock?: (seconds: number) => void;
+      /**
+       * Called before every `events.create`, before anything is checked or
+       * written. A test throws from it to refuse a write, or awaits in it to
+       * hold one back.
+       */
+      beforeCreate?: (
+        data: { eventType: string; eventData?: Record<string, unknown> },
+        params: CreateEventParams | undefined
+      ) => void | Promise<void>;
     } = {}
   ) {}
 
@@ -155,6 +164,39 @@ export class AppendOnlyWorld {
       0,
       ...this.events.map((e) => Number(e.eventId.slice('evnt_'.length)))
     );
+    this.seqInBand = this.seq;
+  }
+
+  /**
+   * A `run_started` for a run this World never saw (`run_created` did not
+   * land) creates the run from the creation data it carries, as a World does
+   * for resilient start. The creation counts as the run's first in-band
+   * position.
+   */
+  private createRunFromStart(
+    runId: string,
+    eventData: Record<string, unknown>
+  ): void {
+    this.run = {
+      runId,
+      workflowName: eventData.workflowName,
+      deploymentId: eventData.deploymentId,
+      executionContext: eventData.executionContext,
+      input: eventData.input,
+      status: 'pending',
+      specVersion: SPEC_VERSION_CURRENT,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as unknown as WorkflowRun;
+    this.append({
+      eventType: 'run_created',
+      runId,
+      eventData: {
+        deploymentId: eventData.deploymentId,
+        workflowName: eventData.workflowName,
+        input: eventData.input,
+      },
+    } as Partial<Event>);
     this.seqInBand = this.seq;
   }
 
@@ -411,7 +453,16 @@ export class AppendOnlyWorld {
   asWorld(): World {
     const self = this;
     const events: World['events'] = {
-      async create(_runId: string | null, data: any, params?: any) {
+      async create(runId: string | null, data: any, params?: any) {
+        await self.options.beforeCreate?.(data, params);
+        if (
+          !self.run &&
+          runId &&
+          data.eventType === 'run_started' &&
+          data.eventData?.input !== undefined
+        ) {
+          self.createRunFromStart(runId, data.eventData);
+        }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
         self.checkFence(params, 1);

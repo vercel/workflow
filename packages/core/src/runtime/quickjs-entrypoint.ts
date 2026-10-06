@@ -1125,6 +1125,22 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
+  /**
+   * Turbo mode (the run's first delivery, see `isTurboEnabled`): the caller
+   * wrote `run_started` without waiting for it and did not load the log, which
+   * holds only the run's creation. The VM starts on an empty log, no snapshot
+   * is looked up, and while `optimistic` holds, inline step bodies start
+   * before their `step_created`/`step_started` commit, until a suspension has
+   * an operation other than a step.
+   */
+  turbo?: {
+    /** The backgrounded `run_started`, folded into the log view on landing. */
+    runStarted: Promise<EventResult>;
+    /** Settles once `run_started` landed; rejects if it failed. */
+    runReadyBarrier: Promise<void>;
+    /** Whether inline bodies may start ahead of their start. */
+    optimistic: boolean;
+  };
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -1141,6 +1157,7 @@ export async function runWorkflowWithQuickJS(params: {
     requestId,
     namespace,
     waitContinuation,
+    turbo,
   } = params;
 
   /**
@@ -1330,6 +1347,7 @@ export async function runWorkflowWithQuickJS(params: {
   if (
     snapshotsStorage &&
     snapshotThreshold > 0 &&
+    !turbo &&
     !isFirstInvocation(preloadedEvents) &&
     !preloadBelowThreshold &&
     !runsBelowSnapshotThreshold.has(runId)
@@ -1432,12 +1450,14 @@ export async function runWorkflowWithQuickJS(params: {
   let loadedCursor: string | null = null;
   const usePreloaded =
     !existingSnapshot &&
-    ((preloadedEventsComplete === true &&
-      Array.isArray(preloadedEvents) &&
-      preloadedEvents.length > 0) ||
+    // Turbo: the log holds only the run's creation, and nothing was loaded.
+    (turbo !== undefined ||
+      (preloadedEventsComplete === true &&
+        Array.isArray(preloadedEvents) &&
+        preloadedEvents.length > 0) ||
       isFirstInvocation(preloadedEvents));
-  if (usePreloaded && preloadedEvents) {
-    events = preloadedEvents;
+  if (usePreloaded) {
+    events = preloadedEvents ?? [];
     loadedCursor = preloadedCursor ?? null;
   } else {
     const read = await listRunLogFrom(world, runId, snapshotCursor);
@@ -1468,6 +1488,27 @@ export async function runWorkflowWithQuickJS(params: {
       ? events.length
       : (existingSnapshot?.metadata.eventCount ?? 0) + events.length;
   const logView = new QuickJSLogView(events, loadedCursor, loadedPosition);
+  // Turbo: the backgrounded `run_started` is noted like any write of this
+  // invocation, and its skipped-slot report (`run_created`) is queued for
+  // the VM.
+  void turbo?.runStarted.then(
+    (result) => {
+      logView.absorb(result);
+    },
+    () => {}
+  );
+  /**
+   * Turbo: whether this delivery is still the run's only writer, so a turn
+   * that writes nothing has nothing to read. Ends at the first suspension
+   * with a hook or a wait, or a step handed to the queue.
+   */
+  let turboQuiet = turbo !== undefined;
+  /**
+   * Turbo: whether inline bodies still start ahead of their start. Ends for
+   * the rest of the delivery at the first suspension with a hook or a wait,
+   * as on the node engine.
+   */
+  let turboOptimistic = turbo?.optimistic === true;
   armsWaitTimer = (correlationId) =>
     ownerMessageId === undefined ||
     schedulesWaitTimer({
@@ -2006,8 +2047,15 @@ export async function runWorkflowWithQuickJS(params: {
     return read.eventData.input;
   };
 
-  /** Starts one inline step's body; never awaited here. */
-  const launchInline = (step: PendingStep, resume?: LogStepState): void => {
+  /**
+   * Starts one inline step's body; never awaited here. `optimistic` (turbo)
+   * starts it before its `step_created` and `step_started` commit.
+   */
+  const launchInline = (
+    step: PendingStep,
+    resume?: LogStepState,
+    optimistic = false
+  ): void => {
     // A step this delivery started inline never runs inline again in it.
     executedStepIds.add(step.correlationId);
     inlineStepsExecuted++;
@@ -2034,6 +2082,7 @@ export async function runWorkflowWithQuickJS(params: {
       step.correlationId,
       async () => {
         let input: SerializedData;
+        let startAfter: Promise<unknown> | undefined;
         if (resume) {
           // Created inline by an earlier delivery: its `step_created` (and
           // the input on it) is already in the log.
@@ -2041,9 +2090,11 @@ export async function runWorkflowWithQuickJS(params: {
         } else {
           input = await encryptSerializedData(step.input, encryptionKey);
           // The step's execution mode is fixed here: inline, run by this
-          // orchestrator. `step_created` commits before the body starts.
+          // orchestrator. `step_created` commits before the body starts,
+          // except under turbo's optimistic start, where the body starts
+          // now and its `step_started` follows this commit.
           inlineCreatedStepIds.add(step.correlationId);
-          await createEvent({
+          const created = createEvent({
             eventType: 'step_created',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: step.correlationId,
@@ -2054,6 +2105,12 @@ export async function runWorkflowWithQuickJS(params: {
               ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
             },
           });
+          if (optimistic) {
+            created.catch(() => {});
+            startAfter = created;
+          } else {
+            await created;
+          }
         }
         return executeStep({
           world,
@@ -2078,6 +2135,9 @@ export async function runWorkflowWithQuickJS(params: {
             ? { firstStartedAt: resume.firstStartedAt }
             : {}),
           input,
+          forceOptimisticStart: optimistic && !resume,
+          ...(turbo ? { runReadyBarrier: turbo.runReadyBarrier } : {}),
+          ...(startAfter ? { startAfter } : {}),
           beforeBody: () => params.writer?.assertActive(),
         });
       },
@@ -2223,6 +2283,15 @@ export async function runWorkflowWithQuickJS(params: {
       await processSettledInline();
       if (throttledReplaySeconds !== undefined || runGone) break;
       const pendingOperations = result.suspended.pendingOperations;
+      if (
+        turboQuiet &&
+        pendingOperations.some(
+          (op) => op.type !== 'step' && op.type !== 'attribute'
+        )
+      ) {
+        turboQuiet = false;
+        turboOptimistic = false;
+      }
 
       // Select this turn's inline candidates BEFORE dispatch: fresh steps
       // (no step_created yet) that this invocation hasn't already handled.
@@ -2421,10 +2490,25 @@ export async function runWorkflowWithQuickJS(params: {
       // span, deduped on `seenEventIds`). Only the inline delta below, which
       // does advance the cursor, saves a listing outright. Same shape as the
       // node engine.
+      // Turbo: a turn of only new inline steps wrote nothing above and has
+      // nothing to read, because no other writer of the run can exist yet.
+      // Its bodies start without a listing; what other writers commit while
+      // they run reaches the VM through the live feed and the next turn.
+      if (overflowSteps.length > 0) turboQuiet = false;
+      const turboStepTurn =
+        turboQuiet &&
+        inlineCandidates.length > 0 &&
+        overflowSteps.length === 0 &&
+        dispatched.failedSerializationStepCids.size === 0 &&
+        pendingOperations.every((op) => op.type === 'step');
       {
         const queued = takeQueuedEvents();
         const newEvents =
-          queued.length > 0 ? queued : await fetchUnseenEvents();
+          queued.length > 0
+            ? queued
+            : turboStepTurn
+              ? []
+              : await fetchUnseenEvents();
         if (newEvents.length > 0) {
           // The listing caught up with this invocation's writes, so any
           // attr_set / getConflict hook_created has been (or is being)
@@ -2526,7 +2610,9 @@ export async function runWorkflowWithQuickJS(params: {
       }
 
       for (const { step, state } of resumedInline) launchInline(step, state);
-      for (const step of inlineCandidates) launchInline(step);
+      for (const step of inlineCandidates) {
+        launchInline(step, undefined, turboOptimistic);
+      }
       wfdiag('inline_iteration', {
         iteration,
         phase: 'steps',

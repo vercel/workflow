@@ -15,7 +15,7 @@ import type {
   EventResult,
   World,
 } from '@workflow/world';
-import { eventIdToSlot } from '@workflow/world';
+import { eventIdToSlot, IN_BAND_SEQ_AT_RUN_CREATION } from '@workflow/world';
 import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
 
 /**
@@ -94,7 +94,7 @@ export function requireLoadSnapshot(
 /** {@link requireLoadSnapshot}'s answer for a run that does not exist yet. */
 export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
   seq: 0,
-  seqInBand: 1,
+  seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
 });
 
 /** Default delay before a superseded orchestrator delivery is redelivered. */
@@ -225,6 +225,29 @@ export class InBandWriter {
     data: T,
     params?: CreateEventParams
   ): Promise<EventResult<T['eventType']>> {
+    return this.write(data, params, false);
+  }
+
+  /**
+   * A write every later write of this delivery depends on: turbo mode's
+   * backgrounded `run_started`. Writes queue behind it like any other, but
+   * any failure stops the writer, a definite refusal included, so nothing
+   * this delivery writes afterwards reaches the World, and
+   * {@link assertActive} refuses to start further inline bodies. The later
+   * writes and {@link assertActive} throw this write's error.
+   */
+  createRequired<T extends CreateEventRequest>(
+    data: T,
+    params?: CreateEventParams
+  ): Promise<EventResult<T['eventType']>> {
+    return this.write(data, params, true);
+  }
+
+  private write<T extends CreateEventRequest>(
+    data: T,
+    params: CreateEventParams | undefined,
+    required: boolean
+  ): Promise<EventResult<T['eventType']>> {
     return this.serialize(async () => {
       this.assertActive();
       try {
@@ -243,7 +266,7 @@ export class InBandWriter {
             }
           : result;
       } catch (error) {
-        throw this.stop(error);
+        throw this.stop(error, required);
       }
     });
   }
@@ -361,12 +384,17 @@ export class InBandWriter {
     return { eventCount: this.loadedSlot };
   }
 
-  private stop(error: unknown): unknown {
+  private stop(error: unknown, always = false): unknown {
     // A definite refusal (a 4xx other than the fence) allocated nothing on
     // the World, so the count stands and the caller may handle it. If
     // the World did allocate after all, the next in-band write is refused
-    // and the delivery reloads, which is safe.
-    if (!InBandSupersededError.is(error) && isDefiniteRefusal(error)) {
+    // and the delivery reloads, which is safe. A required write stops the
+    // writer either way.
+    if (
+      !always &&
+      !InBandSupersededError.is(error) &&
+      isDefiniteRefusal(error)
+    ) {
       return error;
     }
     if (!this.stopped) {

@@ -291,6 +291,54 @@ export function isVmRetentionEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
+/**
+ * Whether an operator has explicitly disabled optimistic inline start with
+ * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Turbo mode starts the first
+ * delivery's inline step bodies before their `step_started` commits; this
+ * opt-out keeps turbo's other shortcuts and makes those bodies wait for the
+ * commit instead.
+ *
+ * Only the opt-out is read. On single-orchestrator runs there is no general
+ * optimistic inline start to turn on: a body that runs before its
+ * `step_started` commits can run twice if the in-band fence then refuses the
+ * start, and only turbo's first delivery is known to have no other
+ * orchestrator. `1` / `true` therefore change nothing. Reads the env var
+ * lazily.
+ */
+export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
+  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  if (raw === undefined || raw === '') return false;
+  return raw === '0' || raw.toLowerCase() === 'false';
+}
+
+/**
+ * Whether "turbo mode" is enabled. Turbo mode fast-paths the first delivery of
+ * a run's first orchestrator message (the message `start()` enqueued, which
+ * carries `runInput`, on its first delivery). That delivery:
+ *
+ * - writes `run_started` without waiting for it, and synthesizes the run
+ *   locally from `runInput`;
+ * - skips the initial event-log load: the log holds only `run_created`, which
+ *   counts as the run's first in-band position, so the in-band fence count is
+ *   known without the load's snapshot;
+ * - starts inline step bodies before their `step_created` and `step_started`
+ *   commit (optimistic inline start), unless
+ *   `WORKFLOW_OPTIMISTIC_INLINE_START=0`. It stops doing so for the rest of
+ *   the delivery once the run creates a hook or a wait or writes attributes.
+ *
+ * Every write still lands after `run_started`: in-band writes queue behind it
+ * in the delivery's in-band writer, and stream and attribute writes from step
+ * bodies wait on the run-ready barrier.
+ *
+ * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
+ * explicit `'0'` / `'false'` (case-insensitive).
+ */
+export function isTurboEnabled(): boolean {
+  const raw = process.env.WORKFLOW_TURBO;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
 /** Environment variable that opts a deployment into dynamic workflows. */
 export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
 

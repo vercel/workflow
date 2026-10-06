@@ -11,6 +11,7 @@ import {
   type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -25,6 +26,7 @@ import {
   eventIdToSlot,
   getQueueTopicPrefix,
   type HookResumeTiming,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isSealedNoopEvent,
   isTerminalWorkflowRunStatus,
   type RunInput,
@@ -58,6 +60,8 @@ import {
   getMaxQueueDeliveries,
   getReplayDivergenceMaxRetries,
   isDynamicWorkflowsEnabled,
+  isOptimisticInlineStartExplicitlyDisabled,
+  isTurboEnabled,
   isVmRetentionEnabled,
 } from './runtime/constants.js';
 import {
@@ -136,7 +140,7 @@ import {
   type StepMessageSpec,
 } from './runtime/orchestrator/log-state.js';
 import { stepMessageRetentionSeconds } from './runtime/orchestrator/step-retention.js';
-import { createStepsAndWaits } from './runtime/orchestrator/step-wait-creation.js';
+import { planStepsAndWaits } from './runtime/orchestrator/step-wait-creation.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -1137,6 +1141,58 @@ export function workflowEntrypoint(
                   // delivery for good once the World refuses it as
                   // superseded.
                   const writer = new InBandWriter(world, runId);
+                  // Turbo mode fast-paths the first delivery of the run's
+                  // first orchestrator message: the one `start()` enqueued,
+                  // the only one that carries `runInput`, on its first
+                  // delivery. On it the log holds only `run_created` (or
+                  // nothing, when `run_created` never landed), and no other
+                  // orchestrator of the run can exist yet. So it writes
+                  // `run_started` without waiting for it, replays against an
+                  // empty log without loading it (the in-band count after the
+                  // run's creation is known), and starts inline step bodies
+                  // before their `step_created`/`step_started` commit. A
+                  // redelivery (`{ timeoutSeconds }` after a fence refusal
+                  // included) has a delivery count above 1 and takes the
+                  // normal path, which loads the log.
+                  const turbo =
+                    isTurboEnabled() &&
+                    runInput !== undefined &&
+                    metadata.attempt === 1 &&
+                    (metadata.deliveryCount ?? 1) === 1 &&
+                    !incomingStepId &&
+                    !replayDivergence &&
+                    !hookInput &&
+                    !waitContinuation;
+                  span?.setAttributes(Attribute.WorkflowTurbo(turbo));
+                  /**
+                   * Turbo only: settles once the backgrounded `run_started`
+                   * landed, and rejects with its error if it failed. Every
+                   * in-band write queues behind `run_started` in `writer`,
+                   * which stops for good if it fails. Writes made outside the
+                   * writer (an optimistic step body's stream and attribute
+                   * writes, an out-of-band `run_failed`) wait on this.
+                   * `undefined` outside turbo, where `run_started` is awaited.
+                   */
+                  let runReadyBarrier: Promise<void> | undefined;
+                  /** Turbo only: the backgrounded `run_started` write. */
+                  let turboRunStarted: Promise<EventResult> | undefined;
+                  /** Turbo only: the backgrounded `run_started` failed. */
+                  let turboStartFailure: { error: unknown } | undefined;
+                  /**
+                   * Whether turbo still starts inline step bodies before
+                   * their start commits. Ends for the rest of the delivery
+                   * once a suspension has a hook or a wait; an explicit
+                   * `WORKFLOW_OPTIMISTIC_INLINE_START=0` keeps it off.
+                   */
+                  let turboOptimistic =
+                    turbo && !isOptimisticInlineStartExplicitlyDisabled();
+                  // Orders a write made outside the in-band writer after the
+                  // backgrounded `run_started`. Swallows its failure: the
+                  // callers stop the delivery on their own (a guard hand-off
+                  // or a setup failure). No-op outside turbo.
+                  const awaitRunReady = async (): Promise<void> => {
+                    await runReadyBarrier?.catch(() => {});
+                  };
                   // The loaded event log. `undefined` until the delivery's
                   // first full load.
                   let log: LoadedEventLog | undefined;
@@ -1282,6 +1338,10 @@ export function workflowEntrypoint(
                   ): Promise<boolean> => {
                     const errorCode = getWorkflowSetupErrorCode(err);
                     if (!errorCode) return false;
+                    // Turbo: the out-of-band `run_failed` follows the
+                    // backgrounded `run_started`. If that failed, this
+                    // delivery writes nothing: its error decides instead.
+                    if (runReadyBarrier) await runReadyBarrier;
                     await recordFatalRunError({
                       world,
                       workflowRun,
@@ -1464,7 +1524,13 @@ export function workflowEntrypoint(
 
                   try {
                     return await orchestrate();
-                  } catch (err) {
+                  } catch (caught) {
+                    // A failed turbo `run_started` decides the delivery, as
+                    // a failed awaited `run_started` does on the normal path,
+                    // whatever later write surfaced it.
+                    const err = turboStartFailure
+                      ? turboStartFailure.error
+                      : caught;
                     if (
                       OrchestratorSupersededError.is(err) ||
                       writer.isSuperseded
@@ -1486,136 +1552,272 @@ export function workflowEntrypoint(
                       span?.setAttributes(Attribute.WorkflowSuperseded(true));
                       return { timeoutSeconds };
                     }
+                    if (turboStartFailure) {
+                      if (
+                        EntityConflictError.is(err) ||
+                        RunExpiredError.is(err)
+                      ) {
+                        runtimeLogger.info(
+                          'Run already finished during setup, skipping',
+                          {
+                            workflowRunId: runId,
+                            message: (err as Error).message,
+                          }
+                        );
+                        return undefined;
+                      }
+                      // Nothing else of this delivery reached the World, so
+                      // a setup error can still be recorded.
+                      runReadyBarrier = undefined;
+                      if (await recordWorkflowSetupFailure(err)) {
+                        return undefined;
+                      }
+                    }
                     throw err;
+                  }
+
+                  /**
+                   * `run_started` for this delivery. On a first delivery
+                   * it carries the creation data from `runInput`, so a
+                   * World that never saw `run_created` creates the run
+                   * from it (resilient start).
+                   */
+                  function runStartedRequest() {
+                    return {
+                      eventType: 'run_started' as const,
+                      specVersion:
+                        runInput?.specVersion ?? SPEC_VERSION_CURRENT,
+                      ...(runInput
+                        ? {
+                            eventData: {
+                              input: runInput.input,
+                              deploymentId: runInput.deploymentId,
+                              workflowName: runInput.workflowName,
+                              executionContext: runInput.executionContext,
+                              attributes: runInput.attributes,
+                              allowReservedAttributes:
+                                runInput.allowReservedAttributes,
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                              dynamicWorkflowCodeRef:
+                                runInput.dynamicWorkflowCodeRef,
+                            },
+                          }
+                        : {}),
+                    };
+                  }
+
+                  /**
+                   * Turbo setup: writes `run_started` in the background and
+                   * returns the run synthesized from `runInput`. The log is
+                   * empty, and the fence count is the one right after the
+                   * run's creation, which is what a load would have found.
+                   */
+                  function startTurbo(input: RunInput): WorkflowRun {
+                    writer.adoptSnapshot({
+                      seq: 0,
+                      seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+                    });
+                    log = { events: [], cursor: null };
+                    span?.addEvent('workflow.run_started.create.start', {
+                      'workflow.run_started.skip_preload': true,
+                    });
+                    // Nothing reads this response's log page: the write is
+                    // a barrier, and its own event and skipped-slot report
+                    // are folded into the log like any in-band write's.
+                    const started = writer.createRequired(runStartedRequest(), {
+                      requestId,
+                      skipPreload: true,
+                      resolveData: REPLAY_RESOLVE_DATA,
+                    });
+                    turboRunStarted = started;
+                    runReadyBarrier = started.then(
+                      (result) => {
+                        const limit = clampMaxEvents(result.maxEvents);
+                        if (limit !== undefined) maxEventsLimit = limit;
+                      },
+                      (error: unknown) => {
+                        turboStartFailure = { error };
+                        throw error;
+                      }
+                    );
+                    // Observed by every gated write; this only keeps an
+                    // early failure from surfacing as unhandled.
+                    runReadyBarrier.catch(() => {});
+                    const now = new Date();
+                    // The run as `run_started` will have made it. Seed
+                    // attributes ride in `runInput` (they live on
+                    // `run_created`, not in `attr_set` events), so the
+                    // snapshot carries them although the log is not loaded.
+                    // This holds while attributes are write-only inside a
+                    // workflow: an in-workflow read API would have to read
+                    // this snapshot, not replay `run_created`/`attr_set`, or
+                    // it would see no seed attributes on this delivery only.
+                    // A dynamic run's code rides the message for the same
+                    // reason; without it (too large to send inline)
+                    // `resolveWorkflowCodeForRun` reads it from the run.
+                    return {
+                      runId,
+                      status: 'running',
+                      deploymentId: input.deploymentId,
+                      workflowName: input.workflowName,
+                      specVersion: input.specVersion,
+                      executionContext: input.executionContext,
+                      input: input.input,
+                      ...(input.dynamicWorkflowCode
+                        ? { dynamicWorkflowCode: input.dynamicWorkflowCode }
+                        : {}),
+                      attributes: input.attributes ?? {},
+                      startedAt: now,
+                      createdAt: now,
+                      updatedAt: now,
+                    } as WorkflowRun;
                   }
 
                   async function orchestrate(): Promise<
                     { timeoutSeconds: number } | undefined
                   > {
-                    // --- Run setup: full load (with the fence snapshot) ---
-                    const [loadOutcome, runOutcome] = await Promise.allSettled([
-                      fullLoad(),
-                      world.runs.get(runId, { resolveData: 'none' }),
-                    ]);
-                    let run: WorkflowRun | undefined =
-                      runOutcome.status === 'fulfilled'
-                        ? (runOutcome.value as WorkflowRun)
-                        : undefined;
-                    if (!run) {
-                      if (!runInput) {
-                        throw runOutcome.status === 'rejected'
-                          ? runOutcome.reason
-                          : new WorkflowRuntimeError(
-                              `Workflow run "${runId}" not found`
-                            );
-                      }
-                      // Resilient start: `run_created` never landed, and this
-                      // first delivery carries what the World needs to create
-                      // the run from `run_started`. A load that failed left no
-                      // snapshot; the run holds no in-band position yet.
-                      log = { events: [], cursor: null };
-                      if (!writer.hasSnapshot) {
-                        writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
-                      }
-                    } else if (loadOutcome.status === 'rejected') {
-                      // A World contract error on the log load fails the run
-                      // (out-of-band, since there is no fence snapshot); any
-                      // other load failure redelivers.
-                      workflowRun ??= run;
-                      if (
-                        await recordWorkflowSetupFailure(loadOutcome.reason)
-                      ) {
-                        return undefined;
-                      }
-                      throw loadOutcome.reason;
-                    }
-                    if (run && isTerminalWorkflowRunStatus(run.status)) {
-                      runtimeLogger.info(
-                        'Workflow already completed or failed, skipping',
-                        { workflowRunId: runId, status: run.status }
-                      );
-                      return undefined;
-                    }
-                    assert(log, 'The event log is loaded before setup');
-                    // AUTHORITATIVE deployment-affinity protection, before
-                    // this delivery writes anything (`run_started` included)
-                    // and before replay or inline step execution.
-                    if (
-                      run &&
-                      (await guardDeployment(
-                        run,
-                        async () => ({
-                          ...(await replayMessage()),
-                          ...(hookInput ? { hookInput } : {}),
-                          ...(hookResumeTiming ? { hookResumeTiming } : {}),
-                        }),
-                        undefined,
-                        // The log is loaded, so the orchestrator's own
-                        // DEPLOYMENT_MISMATCH failure is written in-band.
-                        writeInBand
-                      )) !== 'continue'
-                    ) {
-                      return undefined;
-                    }
-                    const hasRunStarted = log.events.some(
-                      (event) => event.eventType === 'run_started'
-                    );
-                    if (!hasRunStarted) {
+                    let run: WorkflowRun | undefined;
+                    if (turbo && runInput) {
+                      run = startTurbo(runInput);
                       try {
                         startWorkflowCompile(runInput);
                         startReplayPayloadCache(runInput);
-                        const started = await createEvent(
-                          {
-                            eventType: 'run_started' as const,
-                            specVersion:
-                              runInput?.specVersion ?? SPEC_VERSION_CURRENT,
-                            ...(runInput
-                              ? {
-                                  eventData: {
-                                    input: runInput.input,
-                                    deploymentId: runInput.deploymentId,
-                                    workflowName: runInput.workflowName,
-                                    executionContext: runInput.executionContext,
-                                    attributes: runInput.attributes,
-                                    allowReservedAttributes:
-                                      runInput.allowReservedAttributes,
-                                    dynamicWorkflowCode:
-                                      runInput.dynamicWorkflowCode,
-                                    dynamicWorkflowCodeRef:
-                                      runInput.dynamicWorkflowCodeRef,
-                                  },
-                                }
-                              : {}),
-                          },
-                          { requestId }
-                        );
-                        run = started.run ?? run;
-                        maxEventsLimit = clampMaxEvents(started.maxEvents);
-                        runStartedReceivedAtMs = Date.now();
-                        if (resumeTracking) {
-                          resumeTracking.setupSource = 'run_started';
-                        }
                       } catch (err) {
-                        if (
-                          EntityConflictError.is(err) ||
-                          RunExpiredError.is(err)
-                        ) {
-                          runtimeLogger.info(
-                            'Run already finished during setup, skipping',
-                            { workflowRunId: runId, message: err.message }
-                          );
-                          return undefined;
-                        }
-                        if (!(await recordWorkflowSetupFailure(err))) {
-                          throw err;
-                        }
+                        // Recorded behind the backgrounded `run_started`.
+                        if (!(await recordWorkflowSetupFailure(err))) throw err;
                         return undefined;
                       }
-                      // The log now holds the run's own start (and, after a
-                      // resilient start, its creation).
-                      await fullLoad();
-                    } else if (resumeTracking) {
-                      resumeTracking.setupSource = 'event_load';
+                      // Turbo synthesizes the run before the response that
+                      // would anchor RSFS, so the synthesis anchors it.
+                      runStartedReceivedAtMs = +(run.startedAt as Date);
+                      if (resumeTracking) {
+                        resumeTracking.setupSource = 'run_started';
+                      }
+                      // AUTHORITATIVE deployment-affinity protection, before
+                      // replay or inline step execution. Both of its
+                      // stopping actions hand the run off, so they wait for
+                      // the backgrounded `run_started` first.
+                      if (
+                        (await guardDeployment(
+                          run,
+                          replayMessage,
+                          awaitRunReady,
+                          writeInBand
+                        )) !== 'continue'
+                      ) {
+                        return undefined;
+                      }
+                    } else {
+                      // --- Run setup: full load (with the fence snapshot) ---
+                      const [loadOutcome, runOutcome] =
+                        await Promise.allSettled([
+                          fullLoad(),
+                          world.runs.get(runId, { resolveData: 'none' }),
+                        ]);
+                      run =
+                        runOutcome.status === 'fulfilled'
+                          ? (runOutcome.value as WorkflowRun)
+                          : undefined;
+                      if (!run) {
+                        if (!runInput) {
+                          throw runOutcome.status === 'rejected'
+                            ? runOutcome.reason
+                            : new WorkflowRuntimeError(
+                                `Workflow run "${runId}" not found`
+                              );
+                        }
+                        // Resilient start: `run_created` never landed, and this
+                        // first delivery carries what the World needs to create
+                        // the run from `run_started`. A load that failed left no
+                        // snapshot; the run holds no in-band position yet.
+                        log = { events: [], cursor: null };
+                        if (!writer.hasSnapshot) {
+                          writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
+                        }
+                      } else if (loadOutcome.status === 'rejected') {
+                        // A World contract error on the log load fails the run
+                        // (out-of-band, since there is no fence snapshot); any
+                        // other load failure redelivers.
+                        workflowRun ??= run;
+                        if (
+                          await recordWorkflowSetupFailure(loadOutcome.reason)
+                        ) {
+                          return undefined;
+                        }
+                        throw loadOutcome.reason;
+                      }
+                      if (run && isTerminalWorkflowRunStatus(run.status)) {
+                        runtimeLogger.info(
+                          'Workflow already completed or failed, skipping',
+                          { workflowRunId: runId, status: run.status }
+                        );
+                        return undefined;
+                      }
+                      assert(log, 'The event log is loaded before setup');
+                      // AUTHORITATIVE deployment-affinity protection, before
+                      // this delivery writes anything (`run_started` included)
+                      // and before replay or inline step execution.
+                      if (
+                        run &&
+                        (await guardDeployment(
+                          run,
+                          async () => ({
+                            ...(await replayMessage()),
+                            ...(hookInput ? { hookInput } : {}),
+                            ...(hookResumeTiming ? { hookResumeTiming } : {}),
+                          }),
+                          undefined,
+                          // The log is loaded, so the orchestrator's own
+                          // DEPLOYMENT_MISMATCH failure is written in-band.
+                          writeInBand
+                        )) !== 'continue'
+                      ) {
+                        return undefined;
+                      }
+                      const hasRunStarted = log.events.some(
+                        (event) => event.eventType === 'run_started'
+                      );
+                      if (!hasRunStarted) {
+                        try {
+                          startWorkflowCompile(runInput);
+                          startReplayPayloadCache(runInput);
+                          span?.addEvent('workflow.run_started.create.start', {
+                            'workflow.run_started.skip_preload': false,
+                          });
+                          const started = await createEvent(
+                            runStartedRequest(),
+                            {
+                              requestId,
+                            }
+                          );
+                          run = started.run ?? run;
+                          maxEventsLimit = clampMaxEvents(started.maxEvents);
+                          runStartedReceivedAtMs = Date.now();
+                          if (resumeTracking) {
+                            resumeTracking.setupSource = 'run_started';
+                          }
+                        } catch (err) {
+                          if (
+                            EntityConflictError.is(err) ||
+                            RunExpiredError.is(err)
+                          ) {
+                            runtimeLogger.info(
+                              'Run already finished during setup, skipping',
+                              { workflowRunId: runId, message: err.message }
+                            );
+                            return undefined;
+                          }
+                          if (!(await recordWorkflowSetupFailure(err))) {
+                            throw err;
+                          }
+                          return undefined;
+                        }
+                        // The log now holds the run's own start (and, after a
+                        // resilient start, its creation).
+                        await fullLoad();
+                      } else if (resumeTracking) {
+                        resumeTracking.setupSource = 'event_load';
+                      }
                     }
                     assert(run, 'Workflow run must be loaded before replay');
                     assert(log, 'The event log is loaded before replay');
@@ -1635,8 +1837,13 @@ export function workflowEntrypoint(
                     try {
                       runInputValue = runCreated
                         ? runCreated.eventData.input
-                        : (await world.runs.get(runId, { resolveData: 'all' }))
-                            .input;
+                        : turbo && runInput
+                          ? runInput.input
+                          : (
+                              await world.runs.get(runId, {
+                                resolveData: 'all',
+                              })
+                            ).input;
                     } catch (err) {
                       if (!(await recordWorkflowSetupFailure(err))) throw err;
                       return undefined;
@@ -1772,6 +1979,15 @@ export function workflowEntrypoint(
                           ownerMessageId: metadata.messageId,
                           requestId,
                           writer,
+                          ...(turboRunStarted && runReadyBarrier
+                            ? {
+                                turbo: {
+                                  runStarted: turboRunStarted,
+                                  runReadyBarrier,
+                                  optimistic: turboOptimistic,
+                                },
+                              }
+                            : {}),
                         });
                         if (quickjsResult?.timeoutSeconds !== undefined) {
                           await wakeSelf(
@@ -1783,6 +1999,7 @@ export function workflowEntrypoint(
                       } catch (err) {
                         if (
                           OrchestratorSupersededError.is(err) ||
+                          turboStartFailure ||
                           isRetryableWorldError(err) ||
                           isQueueSendFailure(err)
                         ) {
@@ -1842,6 +2059,15 @@ export function workflowEntrypoint(
                     const pendingAbsorbs: Array<
                       Parameters<typeof absorbWrite>[0]
                     > = [];
+                    // Turbo: the backgrounded `run_started` joins the log
+                    // between passes, like an inline step's writes. Its
+                    // skipped-slot report carries `run_created`.
+                    void turboRunStarted?.then(
+                      (result) => {
+                        pendingAbsorbs.push(result);
+                      },
+                      () => {}
+                    );
                     const pendingFeedEvents: Event[] = [];
                     let liveFeed: LiveLogFeed | undefined;
                     // Timer messages this delivery already sent, by wait and
@@ -2164,7 +2390,10 @@ export function workflowEntrypoint(
                         } catch (err) {
                           if (
                             OrchestratorSupersededError.is(err) ||
-                            writer.isSuperseded
+                            writer.isSuperseded ||
+                            // A failed turbo `run_started` stopped every
+                            // write; the delivery ends on its error.
+                            turboStartFailure
                           ) {
                             throw err;
                           }
@@ -2344,11 +2573,33 @@ export function workflowEntrypoint(
                               inFlight.size
                           )
                         : 0;
-                      const created = await createStepsAndWaits({
+                      // Turbo stops starting bodies ahead of their start
+                      // for the rest of the delivery once the run has a hook
+                      // or a wait: a hook resume, a timer or `wakeUp()`
+                      // gives the run writers other than this delivery.
+                      // Attribute writes do not: they resolve in this
+                      // process.
+                      if (
+                        turboOptimistic &&
+                        suspension.items.some(
+                          (item) =>
+                            item.type !== 'step' && item.type !== 'attribute'
+                        )
+                      ) {
+                        turboOptimistic = false;
+                      }
+                      // While set, accepted creation writes join the log
+                      // between passes rather than at once: the commit
+                      // below is then still in flight when the pass ends.
+                      let deferAbsorbs = false;
+                      const plan = await planStepsAndWaits({
                         suspension,
                         run,
                         writer,
-                        onCommitted: absorbWrite,
+                        onCommitted: (result) => {
+                          if (deferAbsorbs) pendingAbsorbs.push(result);
+                          else absorbWrite(result);
+                        },
                         eventCount: () => slotSnapshot().eventCount,
                         encryptionKey: await encryptionKey.value,
                         compression,
@@ -2356,6 +2607,54 @@ export function workflowEntrypoint(
                         inlineSlots,
                         requestId,
                       });
+                      // Turbo: a suspension of only new inline steps starts
+                      // their bodies while their `step_created` commits.
+                      // Each body's `step_started` follows that commit, and
+                      // its outcome follows the start. Anything with a
+                      // background step, a wait or a step that failed to
+                      // serialize commits first, as without turbo.
+                      const optimisticCreation =
+                        turboOptimistic &&
+                        mayInline &&
+                        plan.steps.length > 0 &&
+                        plan.failedCount === 0 &&
+                        plan.waitCount === 0 &&
+                        plan.steps.every((step) => step.inline);
+                      let created: Awaited<ReturnType<typeof plan.commit>>;
+                      let newInline: Array<
+                        Omit<(typeof created.createdSteps)[number], 'event'>
+                      >;
+                      let creationGate: Promise<void> | undefined;
+                      if (optimisticCreation) {
+                        deferAbsorbs = true;
+                        const committing = plan.commit();
+                        creationGate = committing.then((result) => {
+                          if (result.createdSteps.length < plan.steps.length) {
+                            // A batch item was refused after its body
+                            // started. Redeliver; the next delivery loads the
+                            // log and decides from it.
+                            throw new WorkflowWorldError(
+                              'A step_created of an inline step started ahead of its commit was not committed',
+                              { status: 503 }
+                            );
+                          }
+                        });
+                        creationGate.catch(() => {});
+                        created = {
+                          createdSteps: [],
+                          failedStepCorrelationIds: new Set(),
+                          createdWaits: [],
+                          serializationBlockerCount:
+                            plan.serializationBlockerCount,
+                          serializationBlockers: [],
+                        };
+                        newInline = plan.steps;
+                      } else {
+                        created = await plan.commit();
+                        newInline = created.createdSteps.filter(
+                          (step) => step.inline
+                        );
+                      }
                       if (created.failedStepCorrelationIds.size > 0) {
                         return { type: 'reload', retainSession: false };
                       }
@@ -2403,8 +2702,7 @@ export function workflowEntrypoint(
                       // the invocation that runs it.
                       const willRunInline =
                         mayInline &&
-                        (created.createdSteps.some((step) => step.inline) ||
-                          runnableInline.length > 0);
+                        (newInline.length > 0 || runnableInline.length > 0);
                       let dispatchedTiming: HookResumeTiming | undefined;
                       if (!willRunInline && toEnqueue.length > 0) {
                         dispatchedTiming =
@@ -2423,14 +2721,16 @@ export function workflowEntrypoint(
                       // finished (its retry runs them again).
                       const inlineToRun: InlineStepSpec[] = [];
                       if (mayInline) {
-                        for (const step of created.createdSteps) {
-                          if (!step.inline) continue;
+                        for (const step of newInline) {
                           inlineToRun.push({
                             correlationId: step.correlationId,
                             stepName: step.stepName,
                             input: step.input,
                             attempt: 1,
                             startReason: 'first',
+                            ...(creationGate
+                              ? { startAfter: creationGate }
+                              : {}),
                           });
                         }
                         for (const step of runnableInline) {
@@ -2465,15 +2765,18 @@ export function workflowEntrypoint(
                           events: replayedEvents,
                           invocationStartedClean:
                             invocationStartedClean === true,
+                          // Turbo's synthesized run has a local-clock
+                          // `createdAt`; only the run id's time is trusted.
                           runCreatedAtMs:
-                            runIdCreatedAt(runId) ?? +run.createdAt,
+                            runIdCreatedAt(runId) ??
+                            (turbo ? undefined : +run.createdAt),
                           runStartedReceivedAtMs,
                           replayMs: replayDurationMs,
                           preStepBlockingMs,
                           preStepBlockingBeforeAttrMs: undefined,
                           suspensionHasWaits: suspension.waitCount > 0,
                           suspensionCreatedHooks: suspension.hookCount > 0,
-                          turbo: false,
+                          turbo,
                           retained,
                         });
                         preStepBlockingMs += hookResult?.hookCreationMs ?? 0;
@@ -2538,6 +2841,9 @@ export function workflowEntrypoint(
                       >
                     ): Promise<InlineProgress> {
                       assert(log, 'The event log is loaded for inline steps');
+                      // Decided once per batch: the latch can end while
+                      // these bodies run.
+                      const optimistic = turboOptimistic;
                       if (!liveFeed) {
                         liveFeed = new LiveLogFeed(world, runId, {
                           afterSlot: maxEventSlot(log.events) ?? 0,
@@ -2594,6 +2900,14 @@ export function workflowEntrypoint(
                                   ? { firstStartedAt: step.firstStartedAt }
                                   : {}),
                                 input,
+                                // Turbo: optimistic for a step's first
+                                // attempt while turbo still allows it.
+                                forceOptimisticStart:
+                                  optimistic && step.startReason === 'first',
+                                ...(runReadyBarrier ? { runReadyBarrier } : {}),
+                                ...(step.startAfter
+                                  ? { startAfter: step.startAfter }
+                                  : {}),
                                 beforeBody: () => writer.assertActive(),
                                 ...(isFirst && tracking
                                   ? { resumeTracking: tracking }

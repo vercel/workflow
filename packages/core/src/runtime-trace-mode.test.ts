@@ -305,6 +305,9 @@ describe('getWorkflowTraceMode', () => {
 
 describe('workflowEntrypoint trace modes', () => {
   it('starts Node replay work while run_started is pending', async () => {
+    // The run's persisted workflow name differs from the message's, which
+    // only the authoritative run (not turbo's synthesized one) carries.
+    vi.stubEnv('WORKFLOW_TURBO', '0');
     const persistedWorkflowCode = `async function persistedWorkflow() {
       return 'done';
     }${getWorkflowTransformCode('persistedWorkflow')}`;
@@ -500,6 +503,14 @@ describe('workflowEntrypoint trace modes', () => {
 
     expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
     expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
+    expect(workflowSpan?.attributes['workflow.turbo']).toBe(false);
+    const runStartedCreateEvent = workflowSpan?.events.find(
+      (e) => e.name === 'workflow.run_started.create.start'
+    );
+    expect(runStartedCreateEvent).toBeDefined();
+    expect(
+      runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
+    ).toBe(false);
 
     const replayLoadSpan = exporter
       .getFinishedSpans()

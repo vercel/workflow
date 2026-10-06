@@ -1385,6 +1385,19 @@ export interface EventLogSnapshot {
 }
 
 /**
+ * A run's in-band count right after its creation, before any other write:
+ * `run_created` counts as the run's first in-band position, so the run's
+ * first orchestrator write (`run_started`) expects this value. It is the same
+ * when `run_created` never landed and `run_started` creates the run (resilient
+ * start): the creation the World performs for it counts in its place.
+ *
+ * The runtime adopts it in place of a load snapshot when it knows the log
+ * holds nothing but the run's creation: a run with no events yet, and turbo
+ * mode's first delivery, which skips the initial load.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
+
+/**
  * Result of {@link Storage.events.list}.
  *
  * `snapshot` is required on every page of a single-orchestrator run's log

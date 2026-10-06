@@ -2000,6 +2000,46 @@ describe('workflowEntrypoint turbo mode', () => {
     return { handlerPromise, order, eventsCreate };
   }
 
+  it('backgrounds run_started and forces optimistic start on the first delivery', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId: 'wrun_turbo_first',
+      attempt: 1,
+      source: oneStepWorkflow,
+      runStartedGate: gate,
+    });
+
+    // The body runs while run_started is still in flight — proving run_started
+    // was backgrounded AND optimistic start was forced (the env flag is off).
+    // The full VM replay leading up to the body can exceed vi.waitFor's default
+    // 1s timeout on slow CI runners (notably Windows), so widen it.
+    await vi.waitFor(() => expect(order).toContain('body'), {
+      timeout: 15_000,
+    });
+    expect(order).not.toContain('run_started_resolved');
+    // step_started queues behind run_started in the in-band writer, so it is
+    // not even issued until run_started lands.
+    expect(order).not.toContain('step_started_called');
+
+    release();
+    const res = await handlerPromise;
+    expect(res.status).toBe(204);
+    // After release: step_started fires, ordered strictly after run_started.
+    expect(order).toContain('step_started_called');
+    expect(order.indexOf('run_started_resolved')).toBeLessThan(
+      order.indexOf('step_started_called')
+    );
+    // run_started was created exactly once (idempotent first write).
+    const runStartedCreates = eventsCreate.mock.calls.filter(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect(runStartedCreates).toHaveLength(1);
+  });
+
   it('handles a speculative key rejection when turbo exits before replay', async () => {
     const unhandledRejection = vi.fn();
     process.on('unhandledRejection', unhandledRejection);
@@ -2048,6 +2088,36 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('run_started_resolved')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+
+  it('asks the World to skip the run_started preload only under turbo', async () => {
+    // The backgrounded run_started is used purely as a write barrier and its
+    // preloaded events are never read, so turbo passes skipPreload to drop
+    // the wasted server-side list+resolve that the first step_started waits
+    // behind.
+    const turbo = await driveTurbo({
+      runId: 'wrun_turbo_skip_preload',
+      attempt: 1,
+      source: oneStepWorkflow,
+    });
+    expect((await turbo.handlerPromise).status).toBe(204);
+    const turboRunStarted = turbo.eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect((turboRunStarted?.[2] as any)?.skipPreload).toBe(true);
+
+    // A redelivery (attempt > 1) is not turbo: it loads the log and awaits
+    // run_started, and leaves the preload to the World.
+    const redeliver = await driveTurbo({
+      runId: 'wrun_turbo_skip_preload_redeliver',
+      attempt: 2,
+      source: oneStepWorkflow,
+    });
+    expect((await redeliver.handlerPromise).status).toBe(204);
+    const redeliverRunStarted = redeliver.eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_started'
+    );
+    expect((redeliverRunStarted?.[2] as any)?.skipPreload).toBeUndefined();
   });
 
   it('never asks for an inline delta on a run-terminal write, or anywhere under turbo', async () => {
@@ -2370,7 +2440,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     // The attr detour does not end turbo: no resume invocation source
     // exists, so the forced-optimistic fast path stays engaged. The live VM
     // also resumes after the attr write instead of replaying in a fresh VM.
-    expect(optimizations).toEqual(['retained']);
+    expect(optimizations).toEqual(['turbo', 'optimisticStart', 'retained']);
   });
 
   it('reports ttfs when a redelivery lands after a committed pre-step attr_set, ending the measurement at the attr write', async () => {

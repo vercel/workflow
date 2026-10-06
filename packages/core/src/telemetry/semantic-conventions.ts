@@ -234,6 +234,8 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
 );
 
 /** Whether this workflow invocation is using the turbo first-delivery path */
+export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
+
 /** The delivery found nothing new since the last consumed position. */
 export const WorkflowNoopDelivery = SemanticConvention<boolean>(
   'workflow.noop_delivery'

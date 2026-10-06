@@ -48,6 +48,7 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { isOptimisticInlineStartExplicitlyDisabled } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import {
@@ -190,6 +191,34 @@ export interface StepExecutorParams {
    * a body.
    */
   beforeBody?: () => void;
+  /**
+   * Start the body before this attempt's `step_started` commits (optimistic
+   * inline start). Set by turbo mode for the inline steps of a run's first
+   * delivery, where no other orchestrator of the run can exist yet, so the
+   * start cannot be refused by the in-band fence after the body ran. The
+   * `step_started` write still goes out, after {@link runReadyBarrier} and
+   * {@link startAfter}, and the outcome write waits for it: if the start
+   * fails, the body's outcome is discarded and the start's error is what the
+   * caller sees. An explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` wins and
+   * takes the awaited path.
+   */
+  forceOptimisticStart?: boolean;
+  /**
+   * Turbo mode only: settles once the backgrounded `run_started` has
+   * landed (rejects if it failed). This attempt's `step_started` is sent only
+   * after it, on both the optimistic and the awaited path, and an optimistic
+   * body's stream and attribute writes wait for it too, so nothing this step
+   * writes reaches the World before the run's start. `undefined` outside
+   * turbo, where `run_started` was already awaited.
+   */
+  runReadyBarrier?: Promise<unknown>;
+  /**
+   * Settles once this step's `step_created` has committed (rejects if it
+   * failed). Set when the caller wrote `step_created` without waiting for it
+   * (turbo's optimistic inline start). `step_started` is sent only after it,
+   * and a failure is the start's failure.
+   */
+  startAfter?: Promise<unknown>;
   /**
    * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
    * by the orchestrator. See runtime/step-latency.ts.
@@ -349,6 +378,11 @@ export async function executeStep(
         stepId,
       });
       try {
+        // Turbo: the outcome of a step created in the background still
+        // follows the run's start and the step's own creation. A rejection
+        // fails this write with the earlier write's error.
+        if (params.runReadyBarrier) await params.runReadyBarrier;
+        if (params.startAfter) await params.startAfter;
         const result = await createEvent(
           {
             eventType: 'step_failed',
@@ -392,54 +426,142 @@ export async function executeStep(
     // hook-resume TTR window.
     let stepClaimCompletedAtMs = params.started?.completedAtMs;
     let stepStartedAt: Date;
+    const startEvent = {
+      eventType: 'step_started' as const,
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: {
+        stepName,
+        attempt,
+        startReason: params.startReason,
+      },
+    };
+    // A start refused for load or by a World that still keeps step rows
+    // redelivers rather than failing; a start on a finished run ends the
+    // attempt. Anything else propagates.
+    const startErrorToResult = (
+      err: unknown
+    ): StepExecutionResult | undefined => {
+      if (ThrottleError.is(err)) {
+        const retryAfter = Math.max(
+          1,
+          typeof err.retryAfter === 'number' ? err.retryAfter : 1
+        );
+        runtimeLogger.info('Throttled on step_started, deferring', {
+          retryAfterSeconds: retryAfter,
+        });
+        return { type: 'throttled', timeoutSeconds: retryAfter };
+      }
+      if (TooEarlyError.is(err)) {
+        // A World that still keeps step rows may refuse a start before its
+        // recorded `retryAfter`; redeliver and let the log check decide.
+        return {
+          type: 'throttled',
+          timeoutSeconds: Math.max(1, err.retryAfter ?? 1),
+        };
+      }
+      if (RunExpiredError.is(err)) {
+        runtimeLogger.info(
+          `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
+        );
+        return { type: 'gone' };
+      }
+      return undefined;
+    };
+    // Optimistic inline start (turbo's first delivery only, see
+    // `forceOptimisticStart`): the body runs now and `step_started` follows
+    // the run's start and the step's creation in the background.
+    const optimisticStart =
+      params.forceOptimisticStart === true &&
+      params.started === undefined &&
+      !isOptimisticInlineStartExplicitlyDisabled();
+    span?.setAttributes(
+      Attribute.StepStartStrategy(
+        params.started
+          ? 'batch_preclaimed'
+          : optimisticStart
+            ? 'optimistic'
+            : 'awaited'
+      )
+    );
+    // Settled outcome of the optimistic `step_started`. Handlers are attached
+    // at once, so a fast rejection never surfaces as an unhandled rejection
+    // while the body runs.
+    let optimisticStartSettled:
+      | Promise<{ ok: true } | { ok: false; err: unknown }>
+      | undefined;
     if (params.started) {
       stepStartedAt = params.started.startedAt;
+    } else if (optimisticStart) {
+      const startedPromise = Promise.all([
+        params.runReadyBarrier,
+        params.startAfter,
+      ]).then(() => {
+        // Taken right before the create, after the barriers: RSFS measures
+        // the run_started-to-POST stretch, and under turbo the barrier wait
+        // is part of it.
+        stepStartPostSentAtMs = Date.now();
+        return createEvent(startEvent, stepStartedEventParams);
+      });
+      optimisticStartSettled = startedPromise.then(
+        () => {
+          stepClaimCompletedAtMs = Date.now();
+          return { ok: true as const };
+        },
+        (err: unknown) => ({ ok: false as const, err })
+      );
+      stepStartedAt = new Date();
     } else {
       try {
+        // Turbo with optimistic start withheld (an explicit
+        // `WORKFLOW_OPTIMISTIC_INLINE_START=0`): the awaited start still
+        // follows the backgrounded `run_started` and the step's creation.
+        if (params.runReadyBarrier) await params.runReadyBarrier;
+        if (params.startAfter) await params.startAfter;
         stepStartPostSentAtMs = Date.now();
         const startResult = await createEvent(
-          {
-            eventType: 'step_started',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: stepId,
-            eventData: {
-              stepName,
-              attempt,
-              startReason: params.startReason,
-            },
-          },
+          startEvent,
           stepStartedEventParams
         );
         stepClaimCompletedAtMs = Date.now();
         stepStartedAt = startResult.event?.createdAt ?? new Date();
       } catch (err) {
-        if (ThrottleError.is(err)) {
-          const retryAfter = Math.max(
-            1,
-            typeof err.retryAfter === 'number' ? err.retryAfter : 1
-          );
-          runtimeLogger.info('Throttled on step_started, deferring', {
-            retryAfterSeconds: retryAfter,
-          });
-          return { type: 'throttled', timeoutSeconds: retryAfter };
-        }
-        if (TooEarlyError.is(err)) {
-          // A World that still keeps step rows may refuse a start before its
-          // recorded `retryAfter`; redeliver and let the log check decide.
-          return {
-            type: 'throttled',
-            timeoutSeconds: Math.max(1, err.retryAfter ?? 1),
-          };
-        }
-        if (RunExpiredError.is(err)) {
-          runtimeLogger.info(
-            `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
-          );
-          return { type: 'gone' };
-        }
+        const mapped = startErrorToResult(err);
+        if (mapped) return mapped;
         throw err;
       }
     }
+    /**
+     * Waits for the optimistic `step_started`. Returns the result that
+     * replaces the attempt's outcome when the start did not commit (the
+     * body's outcome is then discarded), and throws the start's error when it
+     * maps to none. Called before every outcome write, so no outcome reaches
+     * the World ahead of, or without, its start.
+     */
+    const reconcileOptimisticStart = async (): Promise<
+      StepExecutionResult | undefined
+    > => {
+      if (!optimisticStartSettled) return undefined;
+      const settled = await optimisticStartSettled;
+      if (settled.ok) {
+        // The start's POST time is known only now; RSFS was computed before
+        // the body without it.
+        const anchorMs = params.latencyTracking?.rsfsAnchorMs;
+        if (
+          latencyEventData &&
+          latencyEventData.rsfs === undefined &&
+          anchorMs !== undefined &&
+          stepStartPostSentAtMs !== undefined
+        ) {
+          latencyEventData.rsfs = Math.max(0, stepStartPostSentAtMs - anchorMs);
+          span?.setAttributes(Attribute.StepRsfsMs(latencyEventData.rsfs));
+        }
+        return undefined;
+      }
+      const mapped = startErrorToResult(settled.err);
+      if (!mapped) throw settled.err;
+      return mapped;
+    };
 
     span?.setAttributes({
       ...Attribute.StepStatus('running'),
@@ -477,7 +599,10 @@ export async function executeStep(
             globalThis,
             {},
             params.workflowDeploymentId,
-            streamStates
+            streamStates,
+            // A workflow-created writable passed into an optimistic step can
+            // emit chunks before run_started lands, just like getWritable().
+            optimisticStart ? params.runReadyBarrier : undefined
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -519,7 +644,7 @@ export async function executeStep(
         stepCodeStartedAtMs: executionStartTime,
         attempt,
         lazyStepStart: false,
-        optimisticStart: false,
+        optimisticStart,
         preclaimedStart: params.started !== undefined,
         stepStartPostSentAtMs,
       });
@@ -589,6 +714,12 @@ export async function executeStep(
               streamStates,
               closureVars: hydratedInput.closureVars,
               encryptionKey,
+              // An optimistic body runs before `run_started` is known to have
+              // landed. Its direct World writes (`setAttributes`) wait on
+              // the barrier. Undefined on the awaited path.
+              runReadyBarrier: optimisticStart
+                ? params.runReadyBarrier
+                : undefined,
             },
             () => {
               // The last instant before user code: T7 of the resume window.
@@ -642,7 +773,11 @@ export async function executeStep(
           globalThis,
           false,
           false,
-          compression
+          compression,
+          // A returned stream is piped to the World after the body, within
+          // this step's op flush: gate its first write on the run-ready
+          // barrier. Undefined on the awaited path.
+          optimisticStart ? params.runReadyBarrier : undefined
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
@@ -731,6 +866,11 @@ export async function executeStep(
         });
         return { type: 'gone' };
       }
+
+      // No outcome is written for an optimistic body whose start did not
+      // commit.
+      const lost = await reconcileOptimisticStart();
+      if (lost) return lost;
 
       const writeFailed = async (
         error: unknown,
@@ -884,6 +1024,11 @@ export async function executeStep(
 
       return { type: 'retry', timeoutSeconds, retryAt, result: retrying };
     }
+
+    // No outcome is written for an optimistic body whose start did not
+    // commit.
+    const lost = await reconcileOptimisticStart();
+    if (lost) return lost;
 
     // Create step_completed event outside the step execution failure path:
     // persistence failures are infrastructure errors and should redeliver the

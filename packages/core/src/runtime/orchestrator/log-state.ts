@@ -25,6 +25,11 @@ export interface InlineStepSpec {
   attempt: number;
   startReason: StepStartReason;
   firstStartedAt?: Date;
+  /**
+   * Settles once the step's `step_created` committed, when the body starts
+   * while that commit is in flight (turbo). Its `step_started` waits for it.
+   */
+  startAfter?: Promise<unknown>;
 }
 
 /** What the log says about one step. */

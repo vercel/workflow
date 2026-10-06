@@ -149,7 +149,7 @@ describe('setAttributes (host-side)', () => {
     expect(order).toEqual(['barrier', 'create']);
   });
 
-  it('still posts when the runReadyBarrier rejects (write surfaces the real error)', async () => {
+  it('does not post when the runReadyBarrier rejects', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {
       specVersion: SPEC_VERSION_CURRENT,
@@ -160,13 +160,14 @@ describe('setAttributes (host-side)', () => {
     // Pre-attach a catch so the rejection never surfaces as unhandled.
     runReadyBarrier.catch(() => {});
 
-    await contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
-      setAttributes({ phase: 'ready' })
-    );
-
-    // Barrier rejection is swallowed for ordering only — the write still fires
-    // and would surface a genuine run-not-found error from the World itself.
-    expect(create).toHaveBeenCalledTimes(1);
+    // A refused run_started can mean another orchestrator holds the run: the
+    // attribute would land on a run whose log never records this step.
+    await expect(
+      contextStorage.run({ ...stepContext(), runReadyBarrier }, () =>
+        setAttributes({ phase: 'ready' })
+      )
+    ).rejects.toThrow('run_started failed');
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('rejects validation errors before posting from a step', async () => {

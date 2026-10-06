@@ -69,7 +69,30 @@ export interface StepWaitCreationResult {
  *   (placeholder input) plus `step_failed`, so the workflow observes the
  *   error on the next replay.
  */
-export async function createStepsAndWaits(params: {
+export async function createStepsAndWaits(
+  params: StepWaitCreationParams
+): Promise<StepWaitCreationResult> {
+  return (await planStepsAndWaits(params)).commit();
+}
+
+/**
+ * The `step_created` and `wait_created` events of one suspension, prepared
+ * (inputs serialized, execution modes decided) and not yet written.
+ */
+export interface StepWaitCreationPlan {
+  /** The steps the commit creates, with their execution mode. */
+  steps: Omit<CreatedStep, 'event'>[];
+  /** How many waits the commit creates. */
+  waitCount: number;
+  /** How many steps failed to serialize; the commit finalizes them. */
+  failedCount: number;
+  /** Guest-code executions while serializing step inputs. */
+  serializationBlockerCount: number;
+  /** Writes the events. See {@link createStepsAndWaits}. */
+  commit(): Promise<StepWaitCreationResult>;
+}
+
+export interface StepWaitCreationParams {
   suspension: WorkflowSuspension;
   run: WorkflowRun;
   writer: InBandWriter;
@@ -86,7 +109,17 @@ export async function createStepsAndWaits(params: {
     hasMore?: boolean;
     reportIncomplete?: boolean;
   }) => void;
-}): Promise<StepWaitCreationResult> {
+}
+
+/**
+ * Prepares one suspension's `step_created` and `wait_created` events without
+ * writing them. Turbo mode starts inline step bodies from the plan while the
+ * commit is in flight; everyone else commits at once
+ * ({@link createStepsAndWaits}).
+ */
+export async function planStepsAndWaits(
+  params: StepWaitCreationParams
+): Promise<StepWaitCreationPlan> {
   const { suspension, run, encryptionKey, compression } = params;
   const runId = run.runId;
   const stepItems = suspension.items.filter(
@@ -100,7 +133,6 @@ export async function createStepsAndWaits(params: {
 
   let serializationBlockerCount = 0;
   const serializationBlockers: SuspensionSerializationBlocker[] = [];
-  const failedStepCorrelationIds = new Set<string>();
 
   type Prepared =
     | { item: StepInvocationQueueItem; input: SerializedData }
@@ -183,6 +215,33 @@ export async function createStepsAndWaits(params: {
     });
   }
 
+  return {
+    steps: createdSteps,
+    waitCount: waitItems.length,
+    failedCount: prepared.length - createdSteps.length,
+    serializationBlockerCount,
+    commit: () =>
+      commitPlan(params, prepared, events, createdSteps, {
+        serializationBlockerCount,
+        serializationBlockers,
+      }),
+  };
+}
+
+async function commitPlan(
+  params: StepWaitCreationParams,
+  prepared: (
+    | { item: StepInvocationQueueItem; input: SerializedData }
+    | { item: StepInvocationQueueItem; error: SerializationError }
+  )[],
+  events: CreateEventRequest[],
+  createdSteps: Omit<CreatedStep, 'event'>[],
+  stats: {
+    serializationBlockerCount: number;
+    serializationBlockers: SuspensionSerializationBlocker[];
+  }
+): Promise<StepWaitCreationResult> {
+  const failedStepCorrelationIds = new Set<string>();
   const committed = await writeAll(params, events);
   const stepEvents = new Map<string, Event>();
   const createdWaits: Event[] = [];
@@ -207,8 +266,8 @@ export async function createStepsAndWaits(params: {
     }),
     failedStepCorrelationIds,
     createdWaits,
-    serializationBlockerCount,
-    serializationBlockers,
+    serializationBlockerCount: stats.serializationBlockerCount,
+    serializationBlockers: stats.serializationBlockers,
   };
 }
 

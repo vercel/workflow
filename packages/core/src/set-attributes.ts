@@ -41,15 +41,10 @@ export async function setAttributes(
   // `run_started` is durable. Order this `attr_set` after the run exists so it
   // never reaches the World before the run does (which would be rejected as
   // run-not-found). A no-op outside turbo (barrier undefined) and on the await
-  // path. The rejection is swallowed for ordering only: if `run_started` truly
-  // failed the run does not exist, so the create below surfaces the real error.
-  if (store.runReadyBarrier) {
-    try {
-      await store.runReadyBarrier;
-    } catch {
-      // intentional: ordering barrier only, see above.
-    }
-  }
+  // path. A rejection fails this call instead of writing: a refused
+  // `run_started` can mean another orchestrator holds the run, and the
+  // attribute would land on a run whose log never records this step.
+  if (store.runReadyBarrier) await store.runReadyBarrier;
 
   const world = await getWorldLazy();
   // Deliberately unguarded, unlike the attr_set a suspension writes: this call
