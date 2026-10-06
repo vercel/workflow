@@ -1,4 +1,4 @@
-import { RetryableError } from '@workflow/errors';
+import { RetryableError, RUN_ERROR_CODES } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -9,6 +9,7 @@ import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import { getMaxQueueDeliveries } from '../constants.js';
 import { setWorld } from '../world.js';
 import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
 
@@ -371,6 +372,37 @@ describe('single orchestrator against an append-only World', () => {
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
     expect(calls.so_add).toBe(1);
+  });
+
+  it('fails an orchestrator past the delivery cap in-band, and never a step message', async () => {
+    const { world, start } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+      [1, 2]
+    );
+    const cap = getMaxQueueDeliveries();
+    await world.deliver({
+      ...start,
+      message: {
+        runId: world.events[0]?.runId,
+        stepId: 'step_x',
+        stepName: 'so_add',
+      },
+      deliveryCount: cap + 1,
+    });
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+
+    await world.deliver({ ...start, deliveryCount: cap + 1 });
+    const failed = world.creates.find(
+      (c) => c.event.eventType === 'run_failed'
+    );
+    expect(data(failed?.event)).toMatchObject({
+      errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+    });
+    expect(failed?.params).toMatchObject({
+      inBand: true,
+      expectedSeqInBand: expect.any(Number),
+    });
   });
 
   it('runs against a World without the fence or a live feed', async () => {

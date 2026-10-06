@@ -99,6 +99,21 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - A write that resolves a promise in the workflow (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind whatever its response reports landed below it, so the workflow sees events in log order.
 - The precondition guard of earlier releases (a 412 on a stale snapshot, with in-process restarts and re-invocations) is gone. The fence replaces it.
 
+#### Terminal events written out-of-band
+
+Classification is by writer, so a run's terminal event is not always in-band:
+
+- `run_completed` and `run_failed` from the orchestrator are in-band, including `run_failed` for an exceeded delivery cap ([`WORKFLOW_MAX_QUEUE_DELIVERIES`](#workflow_max_queue_deliveries)) and for a misrouted orchestrator delivery (`DEPLOYMENT_MISMATCH`).
+- `run_cancelled` from `cancel()` is always out-of-band: the caller is not the run's orchestrator.
+- `run_failed` is out-of-band when a background step's own invocation fails the run, for a misrouted step message or a run it cannot set up.
+
+An out-of-band terminal event has these effects, all of them benign:
+
+- It does not move the in-band count, so it does not supersede a live orchestrator. That orchestrator keeps going until it sees the event (on its live feed, tail poll or next load) or until the World refuses its next `step_created`, `step_started`, `step_retrying` or `wait_created` on the terminal run. An inline step body already running finishes, and its outcome is accepted and inert.
+- The orchestrator can still commit its own `run_completed` or `run_failed` above it. The run's status follows the first terminal event by position, and the runtime dispatches completion or failure lifecycle hooks only when the World reports that outcome as the run's.
+- Events the terminal-run check does not cover (`hook_created`, `hook_disposed`, a workflow `attr_set`, `wait_completed`) can land after it. Replay never runs past a run's terminal event, so they change nothing.
+- It gets no skipped-slot report, which nothing needs: no one replays a terminal run.
+
 ### `WORKFLOW_SLOT_GAP_CHECK`
 
 - Default: enabled

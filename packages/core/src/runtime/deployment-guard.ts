@@ -13,6 +13,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
+import type { EventCreator } from './helpers.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 
@@ -124,6 +125,7 @@ export async function guardDeploymentAffinity({
   reenqueue,
   isDeploymentUnavailableError,
   beforeStop,
+  writeEvent,
 }: {
   world: World;
   run: Pick<WorkflowRun, 'runId' | 'deploymentId' | 'specVersion'>;
@@ -150,6 +152,12 @@ export async function guardDeploymentAffinity({
    * deployment's own `run_started`), so that write must have landed first.
    */
   beforeStop?: () => Promise<void>;
+  /**
+   * Writes the terminal `run_failed`. The orchestrator passes its in-band
+   * writer; a background step's invocation passes nothing and the event is
+   * written out-of-band.
+   */
+  writeEvent?: EventCreator;
 }): Promise<DeploymentAffinityResult> {
   // Deployment affinity is only meaningful in worlds whose deployments are
   // atomic and immutable, which the World declares (world-vercel does) and
@@ -203,19 +211,21 @@ export async function guardDeploymentAffinity({
         undefined,
         (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
-      await world.events.create(
-        run.runId,
-        {
-          eventType: 'run_failed',
-          // Written by a deployment that is, by definition, not the run's own.
-          specVersion: specVersionForRunWrite(run.specVersion),
-          eventData: {
-            error: dehydratedError,
-            errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
-          },
+      const runFailed = {
+        eventType: 'run_failed',
+        // Written by a deployment that is, by definition, not the run's own.
+        specVersion: specVersionForRunWrite(run.specVersion),
+        eventData: {
+          error: dehydratedError,
+          errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
         },
-        { requestId, inBand: false }
-      );
+      } as const;
+      await (writeEvent
+        ? writeEvent(runFailed, { requestId })
+        : world.events.create(run.runId, runFailed, {
+            requestId,
+            inBand: false,
+          }));
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or
       // it was canceled/expired), so still stop. Anything else is a transient

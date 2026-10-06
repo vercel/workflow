@@ -2573,7 +2573,14 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
     });
     const queue = vi.fn(async () => ({ messageId: null }));
     const runsGet = vi.fn();
-    const eventsList = vi.fn();
+    // Past the ceiling the delivery reads the log once, for the fence count
+    // of its in-band terminal write, and nothing else.
+    const eventsList = vi.fn(async () => ({
+      data: [],
+      hasMore: false,
+      cursor: null,
+      snapshot: { seq: 2, seqInBand: 2 },
+    }));
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       getDeploymentId: vi.fn(async () => 'dpl_test'),
@@ -2613,7 +2620,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
     expect(created).toEqual(['run_failed']);
     // Nothing past the ceiling touches the replay path.
     expect(runsGet).not.toHaveBeenCalled();
-    expect(eventsList).not.toHaveBeenCalled();
+    expect(eventsList).toHaveBeenCalledOnce();
     expect(queue).not.toHaveBeenCalled();
   });
 
@@ -2645,7 +2652,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
     await expect(result).rejects.toBe(transientError);
     expect(created).toEqual(['run_failed']);
     expect(runsGet).not.toHaveBeenCalled();
-    expect(eventsList).not.toHaveBeenCalled();
+    expect(eventsList).toHaveBeenCalledOnce();
   });
 
   it('acks when the run already reached a terminal state', async () => {

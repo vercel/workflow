@@ -21,6 +21,7 @@ import {
   type CreateEventParams,
   type CreateEventRequest,
   type Event,
+  type EventResult,
   eventIdToSlot,
   getQueueTopicPrefix,
   type HookResumeTiming,
@@ -882,8 +883,13 @@ export function workflowEntrypoint(
               runId,
               encryptionKey
             );
-            await world.events.create(
-              runId,
+            // The orchestrator's own terminal write, so in-band: load the log
+            // for the fence count first. A step message never reaches here
+            // (it is exempt from the cap).
+            const loaded = await loadWorkflowRunEvents(runId);
+            const writer = new InBandWriter(world, runId);
+            writer.adoptSnapshot(loaded.snapshot);
+            await writer.create(
               {
                 eventType: 'run_failed',
                 specVersion: SPEC_VERSION_CURRENT,
@@ -892,10 +898,18 @@ export function workflowEntrypoint(
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
-              // Before any log load, so there is no fence count to carry.
-              { requestId, inBand: false }
+              { requestId, ...slotSnapshotParams(loaded.events) }
             );
           } catch (err) {
+            if (OrchestratorSupersededError.is(err)) {
+              // Another orchestrator invocation is writing this run, so it
+              // is not stuck; leave the run to it and consume this message.
+              runLogger.info(
+                'Max-deliveries failure superseded by a live orchestrator; acknowledging',
+                { attempt: metadata.attempt }
+              );
+              return;
+            }
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
               return;
@@ -1285,7 +1299,8 @@ export function workflowEntrypoint(
                       'runId' | 'deploymentId' | 'specVersion'
                     >,
                     reenqueuePayload: () => Promise<WorkflowInvokePayload>,
-                    beforeStop?: () => Promise<void>
+                    beforeStop?: () => Promise<void>,
+                    writeEvent?: EventCreator
                   ): Promise<DeploymentAffinityOutcome> => {
                     const { outcome, spanAttributes } =
                       await guardDeploymentAffinity({
@@ -1295,6 +1310,7 @@ export function workflowEntrypoint(
                         requestId,
                         retryCount: deploymentMismatchRetryCount,
                         beforeStop,
+                        writeEvent,
                         isDeploymentUnavailableError:
                           world.isDeploymentUnavailableError,
                         reenqueue: async ({
@@ -1482,11 +1498,18 @@ export function workflowEntrypoint(
                     // and before replay or inline step execution.
                     if (
                       run &&
-                      (await guardDeployment(run, async () => ({
-                        ...(await replayMessage()),
-                        ...(hookInput ? { hookInput } : {}),
-                        ...(hookResumeTiming ? { hookResumeTiming } : {}),
-                      }))) !== 'continue'
+                      (await guardDeployment(
+                        run,
+                        async () => ({
+                          ...(await replayMessage()),
+                          ...(hookInput ? { hookInput } : {}),
+                          ...(hookResumeTiming ? { hookResumeTiming } : {}),
+                        }),
+                        undefined,
+                        // The log is loaded, so the orchestrator's own
+                        // DEPLOYMENT_MISMATCH failure is written in-band.
+                        writeInBand
+                      )) !== 'continue'
                     ) {
                       return undefined;
                     }
@@ -1885,8 +1908,9 @@ export function workflowEntrypoint(
 
                         if (workflowResult.type === 'completed') {
                           replayRecoveryReporter.activate();
+                          let completed: EventResult;
                           try {
-                            await createEvent(
+                            completed = await createEvent(
                               {
                                 eventType: 'run_completed',
                                 specVersion: SPEC_VERSION_CURRENT,
@@ -1908,6 +1932,22 @@ export function workflowEntrypoint(
                             throw err;
                           }
                           forgetConsumedPosition(world, runId);
+                          // An out-of-band terminal event (a `run_cancelled`,
+                          // or a `run_failed` from a step's invocation) can
+                          // land below this one; the first terminal event by
+                          // position decides the run. Only announce a
+                          // completion the World recorded as the outcome.
+                          const recordedStatus = completed.run?.status;
+                          if (
+                            recordedStatus !== undefined &&
+                            recordedStatus !== 'completed'
+                          ) {
+                            runtimeLogger.info(
+                              'Run reached another terminal state first; not dispatching completion hooks',
+                              { workflowRunId: runId, status: recordedStatus }
+                            );
+                            return undefined;
+                          }
                           dispatchRunCompletedHooks(runId, workflowName);
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('completed'),
@@ -2715,6 +2755,7 @@ export function workflowEntrypoint(
                     }
                     let failureKey: PayloadKey | undefined;
                     let dehydratedError: Uint8Array;
+                    let failedResult: EventResult | undefined;
                     try {
                       failureKey = await encryptionKey.value;
                       dehydratedError = await dehydrateRunError(
@@ -2725,7 +2766,7 @@ export function workflowEntrypoint(
                         (workflowRun?.specVersion ?? 0) >=
                           SPEC_VERSION_SUPPORTS_COMPRESSION
                       );
-                      await createEvent(
+                      failedResult = await createEvent(
                         {
                           eventType: 'run_failed',
                           specVersion: SPEC_VERSION_CURRENT,
@@ -2772,6 +2813,15 @@ export function workflowEntrypoint(
                       throw failErr;
                     }
                     forgetConsumedPosition(world, runId);
+                    // As for completion: an out-of-band terminal event at a
+                    // lower position decided the run instead.
+                    const recordedStatus = failedResult?.run?.status;
+                    if (
+                      recordedStatus !== undefined &&
+                      recordedStatus !== 'failed'
+                    ) {
+                      return undefined;
+                    }
                     dispatchRunFailedHooks(
                       runId,
                       workflowName,
