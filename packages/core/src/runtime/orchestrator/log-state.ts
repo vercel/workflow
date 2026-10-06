@@ -26,10 +26,21 @@ export interface InlineStepSpec {
   startReason: StepStartReason;
   firstStartedAt?: Date;
   /**
-   * Settles once the step's `step_created` committed, when the body starts
-   * while that commit is in flight (turbo). Its `step_started` waits for it.
+   * The step's `step_started`, when the orchestrator wrote it together with
+   * `step_created` (one batch). The executor then writes no start.
    */
-  startAfter?: Promise<unknown>;
+  started?: { startedAt: Date; postSentAtMs?: number; completedAtMs?: number };
+  /** The World's refusal of that batched start. */
+  startRefusal?: Error;
+  /**
+   * Settles once the step's `step_created` committed, when the body starts
+   * while that commit is in flight (turbo), with the start when the same
+   * batch committed it. Otherwise its `step_started` waits for it.
+   */
+  startAfter?: Promise<
+    | { startedAt: Date; postSentAtMs?: number; completedAtMs?: number }
+    | undefined
+  >;
 }
 
 /** What the log says about one step. */

@@ -19,8 +19,10 @@ import {
   HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
+  ThrottleError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -57,6 +59,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { getMaxInlineSteps } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
@@ -114,6 +117,7 @@ import {
 } from './quickjs-snapshot-codec.js';
 import { ReplayBudget } from './replay-budget.js';
 import {
+  type CallerStart,
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   type StepExecutionResult,
@@ -1493,16 +1497,10 @@ export async function runWorkflowWithQuickJS(params: {
   // the VM.
   void turbo?.runStarted.then(
     (result) => {
-      logView.absorb(result);
+      logView.absorb(result, { deliverEvent: deliversOwnEvent('run_started') });
     },
     () => {}
   );
-  /**
-   * Turbo: whether this delivery is still the run's only writer, so a turn
-   * that writes nothing has nothing to read. Ends at the first suspension
-   * with a hook or a wait, or a step handed to the queue.
-   */
-  let turboQuiet = turbo !== undefined;
   /**
    * Turbo: whether inline bodies still start ahead of their start. Ends for
    * the rest of the delivery at the first suspension with a hook or a wait,
@@ -1525,6 +1523,19 @@ export async function runWorkflowWithQuickJS(params: {
     params.writer
       ? params.writer.create(data, eventParams)
       : world.events.create(runId, data, eventParams);
+  /**
+   * Whether a write's own event is delivered to the VM off its response:
+   * `wait_completed` (nothing in it for a VM to resolve), and the run's
+   * start and step events when they go through the in-band writer. An
+   * inline step then costs no listing: its creation, start and outcome reach
+   * the VM from the writes that made them, in position order behind whatever
+   * their reports carry, so the VM still consumes its own outcome only after
+   * it committed.
+   */
+  const deliversOwnEvent = (eventType: string): boolean =>
+    eventType === 'wait_completed' ||
+    (params.writer !== undefined &&
+      (eventType === 'run_started' || eventType.startsWith('step_')));
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await writeEvent(data, {
       // Returned replay events only feed the log; read them the way replay
@@ -1556,10 +1567,12 @@ export async function runWorkflowWithQuickJS(params: {
       return result;
     }
     // The created event is delivered off the response only when it carries
-    // no payload a VM reads; every other type waits for a page or a listing,
-    // which return it with its refs resolved. See QuickJSLogView.
+    // no payload a VM reads, or when it went through the in-band writer,
+    // which hands back a fresh write's event with the payload it sent (see
+    // `withWrittenEventData`). Every other write waits for a page or a
+    // listing, which return it with its refs resolved. See QuickJSLogView.
     const absorbed = logView.absorb(result, {
-      deliverEvent: data.eventType === 'wait_completed',
+      deliverEvent: deliversOwnEvent(data.eventType),
     });
     if (absorbed.truncated) {
       runtimeLogger.debug(
@@ -2048,6 +2061,96 @@ export async function runWorkflowWithQuickJS(params: {
   };
 
   /**
+   * Writes a new inline step's `step_created`, and with it the first
+   * attempt's `step_started` when the World takes batch writes: two plain
+   * appends in one fenced write. Resolves with the start when it committed;
+   * otherwise the executor writes it. Mirrors the node engine's creation
+   * batch (`planStepsAndWaits` with `startInlineSteps`).
+   */
+  const createInlineStep = async (
+    step: PendingStep,
+    input: SerializedData
+  ): Promise<CallerStart | undefined> => {
+    const created: CreateEventRequest = {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: step.correlationId,
+      eventData: {
+        stepName: step.stepId,
+        input,
+        inline: true,
+        ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
+      },
+    };
+    const writer = params.writer;
+    if (!writer?.supportsBatch) {
+      await createEvent(created);
+      return undefined;
+    }
+    const postSentAtMs = Date.now();
+    const batch = await writer.createBatch(
+      [
+        { event: created },
+        {
+          event: {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: step.correlationId,
+            eventData: {
+              stepName: step.stepId,
+              attempt: 1,
+              startReason: 'first',
+            },
+          },
+          computeInstanceId: COMPUTE_INSTANCE_ID,
+        },
+      ],
+      {
+        ...(requestId ? { requestId } : {}),
+        ...logView.snapshotParams(),
+      }
+    );
+    const completedAtMs = Date.now();
+    const [createdItem, startedItem] = batch.results;
+    // Positions of both writes, and the report of what landed below them.
+    let first = true;
+    for (const item of batch.results) {
+      if (item.error !== undefined) continue;
+      logView.absorb(
+        first
+          ? { event: item.event, events: batch.events }
+          : { event: item.event },
+        { deliverEvent: deliversOwnEvent(item.event.eventType) }
+      );
+      first = false;
+    }
+    if (createdItem?.error !== undefined) {
+      // The batch is not atomic on a single-orchestrator run; a refused
+      // creation fails this delivery the way a single write would.
+      const message = `Inline step creation failed with ${createdItem?.status}: ${createdItem?.message}`;
+      if (createdItem?.status === 429) throw new ThrottleError(message);
+      if (createdItem?.status === 410) throw new RunExpiredError(message);
+      throw new WorkflowWorldError(message, {
+        status: createdItem?.status ?? 500,
+      });
+    }
+    if (!startedItem) return undefined;
+    if (startedItem.error !== undefined) {
+      // Created, not started. A throttle or a finished run is the start's
+      // refusal; anything else leaves the start to the executor.
+      const message = `Inline step start failed with ${startedItem.status}: ${startedItem.message}`;
+      if (startedItem.status === 429) throw new ThrottleError(message);
+      if (startedItem.status === 410) throw new RunExpiredError(message);
+      return undefined;
+    }
+    return {
+      startedAt: new Date(startedItem.event.createdAt),
+      postSentAtMs,
+      completedAtMs,
+    };
+  };
+
+  /**
    * Starts one inline step's body; never awaited here. `optimistic` (turbo)
    * starts it before its `step_created` and `step_started` commit.
    */
@@ -2094,31 +2197,23 @@ export async function runWorkflowWithQuickJS(params: {
           // except under turbo's optimistic start, where the body starts
           // now and its `step_started` follows this commit.
           inlineCreatedStepIds.add(step.correlationId);
-          const created = createEvent({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: step.correlationId,
-            eventData: {
-              stepName: step.stepId,
-              input,
-              inline: true,
-              ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
-            },
-          });
-          if (optimistic) {
-            created.catch(() => {});
-            startAfter = created;
-          } else {
-            await created;
-          }
+          // The executor waits for it before the start (and, unless
+          // optimistic, before the body), and reads a refusal as its start's.
+          startAfter = createInlineStep(step, input);
+          startAfter.catch(() => {});
         }
         return executeStep({
           world,
-          createEvent: (data, eventParams) =>
-            writeEvent(data, {
+          createEvent: async (data, eventParams) => {
+            const written = await writeEvent(data, {
               ...eventParams,
               ...logView.snapshotParams(),
-            }),
+            });
+            logView.absorb(written, {
+              deliverEvent: deliversOwnEvent(data.eventType),
+            });
+            return written;
+          },
           workflowRunId: runId,
           workflowDeploymentId: workflowRun.deploymentId,
           workflowName: workflowRun.workflowName,
@@ -2137,7 +2232,9 @@ export async function runWorkflowWithQuickJS(params: {
           input,
           forceOptimisticStart: optimistic && !resume,
           ...(turbo ? { runReadyBarrier: turbo.runReadyBarrier } : {}),
-          ...(startAfter ? { startAfter } : {}),
+          ...(startAfter
+            ? { startAfter: startAfter as Promise<CallerStart | undefined> }
+            : {}),
           beforeBody: () => params.writer?.assertActive(),
         });
       },
@@ -2284,12 +2381,11 @@ export async function runWorkflowWithQuickJS(params: {
       if (throttledReplaySeconds !== undefined || runGone) break;
       const pendingOperations = result.suspended.pendingOperations;
       if (
-        turboQuiet &&
+        turboOptimistic &&
         pendingOperations.some(
           (op) => op.type !== 'step' && op.type !== 'attribute'
         )
       ) {
-        turboQuiet = false;
         turboOptimistic = false;
       }
 
@@ -2490,25 +2586,17 @@ export async function runWorkflowWithQuickJS(params: {
       // span, deduped on `seenEventIds`). Only the inline delta below, which
       // does advance the cursor, saves a listing outright. Same shape as the
       // node engine.
-      // Turbo: a turn of only new inline steps wrote nothing above and has
-      // nothing to read, because no other writer of the run can exist yet.
-      // Its bodies start without a listing; what other writers commit while
-      // they run reaches the VM through the live feed and the next turn.
-      if (overflowSteps.length > 0) turboQuiet = false;
-      const turboStepTurn =
-        turboQuiet &&
-        inlineCandidates.length > 0 &&
-        overflowSteps.length === 0 &&
-        dispatched.failedSerializationStepCids.size === 0 &&
-        pendingOperations.every((op) => op.type === 'step');
       {
+        // A listing only when the VM is short of a position this invocation
+        // knows of (see `QuickJSLogView.behind`): a turn that wrote nothing,
+        // or whose writes came back on their responses, has nothing to read.
         const queued = takeQueuedEvents();
         const newEvents =
           queued.length > 0
             ? queued
-            : turboStepTurn
-              ? []
-              : await fetchUnseenEvents();
+            : logView.behind
+              ? await fetchUnseenEvents()
+              : [];
         if (newEvents.length > 0) {
           // The listing caught up with this invocation's writes, so any
           // attr_set / getConflict hook_created has been (or is being)

@@ -138,11 +138,13 @@ describe.each([
 ] as const)('inline step writes (%s engine)', (engine) => {
   // The deferred replay finds the step's `step_created` (inline, never
   // started) and runs the step inline.
+  // A World without batch writes: the executor writes the start, and its
+  // throttle carries the World's backoff.
   it('defers the run instead of queueing a throttled inline step, and runs it inline afterwards', async () => {
     const { world, start } = await setupOrchestratorRun(
       oneStepWorkflow,
       [],
-      {},
+      { noBatch: true },
       engine
     );
     await throttleFirstStart(world, oneStepWorkflow, { iw_a: 5 });
@@ -173,7 +175,7 @@ describe.each([
     const { world, start } = await setupOrchestratorRun(
       threeStepWorkflow,
       [],
-      {},
+      { noBatch: true },
       engine
     );
     await throttleFirstStart(world, threeStepWorkflow, { iw_a: 3, iw_b: 9 });

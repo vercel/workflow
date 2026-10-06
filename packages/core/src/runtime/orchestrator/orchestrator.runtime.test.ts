@@ -149,8 +149,12 @@ describe.each([
     expect(calls.so_add).toBe(1);
     // Every write after run_created came from the orchestrator.
     expect(world.creates.every((c) => c.params?.inBand === true)).toBe(true);
+    // A batch's events share one expected count: the positions before it.
     const expected = world.creates.map((c) => c.params?.expectedSeqInBand);
-    expect(expected).toEqual(expected.map((_, i) => i + 1));
+    const firstOfWrite = world.creates.map((c) =>
+      world.creates.findIndex((d) => d.params === c.params)
+    );
+    expect(expected).toEqual(firstOfWrite.map((i) => i + 1));
     // No step message was needed.
     expect(world.queueCalls).toEqual([]);
   });

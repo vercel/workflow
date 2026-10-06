@@ -67,6 +67,13 @@ function view(
     await beforeCreate?.(args[1] as { eventType: string });
     return create(...args);
   }) as typeof create;
+  const createBatch = base.events.createBatch?.bind(base.events);
+  if (createBatch) {
+    base.events.createBatch = async (...args) => {
+      for (const { event } of args[1]) await beforeCreate?.(event);
+      return createBatch(...args);
+    };
+  }
   (base as { hooks: unknown }).hooks = {
     async getByToken(token: string): Promise<Hook> {
       const created = world.events.find(

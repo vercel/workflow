@@ -1,4 +1,5 @@
 import {
+  RunExpiredError,
   SerializationError,
   ThrottleError,
   WorkflowWorldError,
@@ -26,6 +27,7 @@ import {
   dehydrateStepArguments,
   dehydrateStepError,
 } from '../../serialization.js';
+import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import type { SuspensionSerializationBlocker } from '../suspension-handler.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import type { InBandWriter } from './in-band-writer.js';
@@ -38,6 +40,28 @@ export interface CreatedStep {
   input: SerializedData;
   /** The committed `step_created`. */
   event: Event;
+  /**
+   * The committed `step_started` of the step's first attempt, when it went
+   * out in the same batch as `step_created` (an inline step on a World with
+   * `createBatch`). The executor then writes no start of its own.
+   */
+  started?: StartedInBatch;
+  /**
+   * Why the World refused that batched `step_started` (a throttle, a
+   * finished run), as the error a single start write would have thrown.
+   * The executor acts on it as on its own start's refusal. Absent for a
+   * refusal it would not act on; the executor then writes the start.
+   */
+  startRefusal?: Error;
+}
+
+/** A `step_started` an inline step's creation batch committed. */
+export interface StartedInBatch {
+  event: Event;
+  /** `Date.now()` right before the batch was sent. */
+  postSentAtMs: number;
+  /** `Date.now()` once the batch returned. */
+  completedAtMs: number;
 }
 
 export interface StepWaitCreationResult {
@@ -101,6 +125,14 @@ export interface StepWaitCreationParams {
   compression: boolean;
   creatorMessageId: string;
   inlineSlots: number;
+  /**
+   * Write each inline step's first `step_started` in the same batch as its
+   * `step_created`, saving the executor's own start write. Only taken when
+   * the World has `createBatch`; otherwise the executor writes the start.
+   * The orchestrator sets it when it runs the inline steps right after the
+   * commit.
+   */
+  startInlineSteps?: boolean;
   requestId?: string;
   /** Called with each accepted write, to fold it into the loaded log. */
   onCommitted?: (result: {
@@ -179,6 +211,8 @@ export async function planStepsAndWaits(
 
   const events: CreateEventRequest[] = [];
   const createdSteps: Omit<CreatedStep, 'event'>[] = [];
+  const startInline =
+    params.startInlineSteps === true && params.writer.supportsBatch;
   let inlineLeft = params.inlineSlots;
   for (const entry of prepared) {
     if ('error' in entry) continue;
@@ -202,6 +236,20 @@ export async function planStepsAndWaits(
         creatorMessageId: params.creatorMessageId,
       },
     });
+    if (inline && startInline) {
+      // A plain append right behind the creation: the orchestrator runs the
+      // body as soon as both commit.
+      events.push({
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: entry.item.correlationId,
+        eventData: {
+          stepName: entry.item.stepName,
+          attempt: 1,
+          startReason: 'first',
+        },
+      });
+    }
   }
   for (const item of waitItems) {
     events.push({
@@ -242,12 +290,17 @@ async function commitPlan(
   }
 ): Promise<StepWaitCreationResult> {
   const failedStepCorrelationIds = new Set<string>();
-  const committed = await writeAll(params, events);
+  const postSentAtMs = Date.now();
+  const { committed, refusedStarts } = await writeAll(params, events);
+  const completedAtMs = Date.now();
   const stepEvents = new Map<string, Event>();
+  const startEvents = new Map<string, Event>();
   const createdWaits: Event[] = [];
   for (const event of committed) {
     if (event.eventType === 'step_created' && event.correlationId) {
       stepEvents.set(event.correlationId, event);
+    } else if (event.eventType === 'step_started' && event.correlationId) {
+      startEvents.set(event.correlationId, event);
     } else if (event.eventType === 'wait_created') {
       createdWaits.push(event);
     }
@@ -262,7 +315,22 @@ async function commitPlan(
   return {
     createdSteps: createdSteps.flatMap((step) => {
       const event = stepEvents.get(step.correlationId);
-      return event ? [{ ...step, event }] : [];
+      if (!event) return [];
+      // A start counts only behind its own creation: a batch item that
+      // failed leaves the step created and not started, and the executor
+      // then writes the start itself.
+      const started = startEvents.get(step.correlationId);
+      const startRefusal = refusedStarts.get(step.correlationId);
+      return [
+        {
+          ...step,
+          event,
+          ...(started
+            ? { started: { event: started, postSentAtMs, completedAtMs } }
+            : {}),
+          ...(startRefusal ? { startRefusal } : {}),
+        },
+      ];
     }),
     failedStepCorrelationIds,
     createdWaits,
@@ -285,11 +353,16 @@ async function writeAll(
     }) => void;
   },
   events: CreateEventRequest[]
-): Promise<Event[]> {
-  if (events.length === 0) return [];
+): Promise<{ committed: Event[]; refusedStarts: Map<string, Error> }> {
+  const refusedStarts = new Map<string, Error>();
+  if (events.length === 0) return { committed: [], refusedStarts };
   const { writer } = params;
   if (events.length > 1 && writer.supportsBatch) {
-    const batch: BatchEventRequest[] = events.map((event) => ({ event }));
+    const batch: BatchEventRequest[] = events.map((event) =>
+      event.eventType === 'step_started'
+        ? { event, computeInstanceId: COMPUTE_INSTANCE_ID }
+        : { event }
+    );
     const eventCount = params.eventCount();
     const batchResult = await writer.createBatch(batch, {
       ...(params.requestId ? { requestId: params.requestId } : {}),
@@ -327,15 +400,31 @@ async function writeAll(
         status: result.status,
         error: result.error,
       });
+      const message = `Suspension batch item failed with ${result.status}: ${result.message}`;
+      const event = events[index];
+      if (event?.eventType === 'step_started') {
+        // A batched inline start: the step is created and not started. Its
+        // executor treats a throttle or a finished run as its own start's
+        // refusal, and otherwise writes the start itself.
+        const refusal =
+          result.status === 429
+            ? new ThrottleError(message)
+            : result.status === 410
+              ? new RunExpiredError(message)
+              : undefined;
+        if (refusal && event.correlationId) {
+          refusedStarts.set(event.correlationId, refusal);
+        }
+        return;
+      }
       // A transient refusal fails the delivery so the queue redelivers it,
       // the same way a single-path write of the same status would.
-      const message = `Suspension batch item failed with ${result.status}: ${result.message}`;
       if (result.status === 429) throw new ThrottleError(message);
       if (result.status >= 500) {
         throw new WorkflowWorldError(message, { status: result.status });
       }
     });
-    return committed;
+    return { committed, refusedStarts };
   }
   const committed: Event[] = [];
   for (const event of events) {
@@ -347,7 +436,7 @@ async function writeAll(
     params.onCommitted?.(result);
     if (result.event) committed.push(result.event);
   }
-  return committed;
+  return { committed, refusedStarts };
 }
 
 async function finalizeUnserializableStep(

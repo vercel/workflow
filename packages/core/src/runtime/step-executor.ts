@@ -130,6 +130,15 @@ export type StepEventWriter = <T extends CreateEventRequest>(
   params?: CreateEventParams
 ) => Promise<EventResult>;
 
+/** A `step_started` the caller wrote for this attempt. */
+export interface CallerStart {
+  startedAt: Date;
+  /** `Date.now()` right before the write was sent. */
+  postSentAtMs?: number;
+  /** `Date.now()` once it returned. */
+  completedAtMs?: number;
+}
+
 export interface StepExecutorParams {
   world: World;
   /** Writes this step's events. See {@link StepEventWriter}. */
@@ -172,11 +181,13 @@ export interface StepExecutorParams {
    * inline step created and started in one batch). The executor then writes
    * no start of its own.
    */
-  started?: {
-    startedAt: Date;
-    postSentAtMs?: number;
-    completedAtMs?: number;
-  };
+  started?: CallerStart;
+  /**
+   * The World's refusal of a `step_started` the caller wrote for this
+   * attempt in a batch (a throttle, a finished run). Acted on as a refusal of
+   * the executor's own start; the executor writes no start.
+   */
+  startRefusal?: unknown;
   /** Params for the outcome write (`step_completed` / `step_failed`). */
   terminalEventParams?: CreateEventParams;
   /**
@@ -215,10 +226,12 @@ export interface StepExecutorParams {
   /**
    * Settles once this step's `step_created` has committed (rejects if it
    * failed). Set when the caller wrote `step_created` without waiting for it
-   * (turbo's optimistic inline start). `step_started` is sent only after it,
-   * and a failure is the start's failure.
+   * (turbo's optimistic inline start). Resolves with the start when the
+   * caller's write committed this attempt's `step_started` too (one batch);
+   * otherwise the executor sends `step_started` after it. A failure is the
+   * start's failure.
    */
-  startAfter?: Promise<unknown>;
+  startAfter?: Promise<CallerStart | undefined | void>;
   /**
    * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
    * by the orchestrator. See runtime/step-latency.ts.
@@ -468,6 +481,10 @@ export async function executeStep(
       }
       return undefined;
     };
+    if (params.startRefusal !== undefined) {
+      const mapped = startErrorToResult(params.startRefusal);
+      if (mapped) return mapped;
+    }
     // Optimistic inline start (turbo's first delivery only, see
     // `forceOptimisticStart`): the body runs now and `step_started` follows
     // the run's start and the step's creation in the background.
@@ -496,18 +513,21 @@ export async function executeStep(
       const startedPromise = Promise.all([
         params.runReadyBarrier,
         params.startAfter,
-      ]).then(() => {
+      ]).then(async ([, callerStart]) => {
+        if (callerStart) {
+          stepStartPostSentAtMs = callerStart.postSentAtMs;
+          stepClaimCompletedAtMs = callerStart.completedAtMs;
+          return;
+        }
         // Taken right before the create, after the barriers: RSFS measures
         // the run_started-to-POST stretch, and under turbo the barrier wait
         // is part of it.
         stepStartPostSentAtMs = Date.now();
-        return createEvent(startEvent, stepStartedEventParams);
+        await createEvent(startEvent, stepStartedEventParams);
+        stepClaimCompletedAtMs = Date.now();
       });
       optimisticStartSettled = startedPromise.then(
-        () => {
-          stepClaimCompletedAtMs = Date.now();
-          return { ok: true as const };
-        },
+        () => ({ ok: true as const }),
         (err: unknown) => ({ ok: false as const, err })
       );
       stepStartedAt = new Date();
@@ -517,14 +537,22 @@ export async function executeStep(
         // `WORKFLOW_OPTIMISTIC_INLINE_START=0`): the awaited start still
         // follows the backgrounded `run_started` and the step's creation.
         if (params.runReadyBarrier) await params.runReadyBarrier;
-        if (params.startAfter) await params.startAfter;
-        stepStartPostSentAtMs = Date.now();
-        const startResult = await createEvent(
-          startEvent,
-          stepStartedEventParams
-        );
-        stepClaimCompletedAtMs = Date.now();
-        stepStartedAt = startResult.event?.createdAt ?? new Date();
+        const callerStart = params.startAfter
+          ? await params.startAfter
+          : undefined;
+        if (callerStart) {
+          stepStartPostSentAtMs = callerStart.postSentAtMs;
+          stepClaimCompletedAtMs = callerStart.completedAtMs;
+          stepStartedAt = callerStart.startedAt;
+        } else {
+          stepStartPostSentAtMs = Date.now();
+          const startResult = await createEvent(
+            startEvent,
+            stepStartedEventParams
+          );
+          stepClaimCompletedAtMs = Date.now();
+          stepStartedAt = startResult.event?.createdAt ?? new Date();
+        }
       } catch (err) {
         const mapped = startErrorToResult(err);
         if (mapped) return mapped;

@@ -265,8 +265,10 @@ describe.each([
         await store.runUntilIdle();
 
         expect(await output(store, runId)).toBe(6);
+        // The inline step starts in the same batch as its creation.
         expect(batches).toContainEqual([
           'step_created',
+          'step_started',
           'step_created',
           'wait_created',
         ]);
@@ -481,6 +483,19 @@ describe.each([
             }
             return create(id, event as never, params);
           }) as World['events']['create'];
+          const createBatch = world.events.createBatch?.bind(world.events);
+          if (createBatch) {
+            world.events.createBatch = async (id, batch, params) => {
+              if (
+                failNext &&
+                batch.some(({ event }) => event.eventType === 'step_created')
+              ) {
+                failNext = false;
+                throw new TypeError('terminated');
+              }
+              return createBatch(id, batch, params);
+            };
+          }
         },
       });
       await expect(store.deliver(start)).rejects.toThrow('terminated');

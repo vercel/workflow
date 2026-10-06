@@ -140,7 +140,11 @@ import {
   type StepMessageSpec,
 } from './runtime/orchestrator/log-state.js';
 import { stepMessageRetentionSeconds } from './runtime/orchestrator/step-retention.js';
-import { planStepsAndWaits } from './runtime/orchestrator/step-wait-creation.js';
+import {
+  type CreatedStep,
+  planStepsAndWaits,
+  type StartedInBatch,
+} from './runtime/orchestrator/step-wait-creation.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -260,6 +264,19 @@ export {
  * the server's limit, and it takes effect even when the server returns none.
  * Unset ⇒ server value passes through unchanged.
  */
+/** The executor's view of a `step_started` a creation batch committed. */
+function startedFromBatch(
+  started: StartedInBatch | undefined
+): InlineStepSpec['started'] {
+  return started
+    ? {
+        startedAt: new Date(started.event.createdAt),
+        postSentAtMs: started.postSentAtMs,
+        completedAtMs: started.completedAtMs,
+      }
+    : undefined;
+}
+
 function clampMaxEvents(serverValue: number | undefined): number | undefined {
   const override = getMaxEventsOverride();
   if (override === undefined) return serverValue;
@@ -2605,6 +2622,9 @@ export function workflowEntrypoint(
                         compression,
                         creatorMessageId: metadata.messageId,
                         inlineSlots,
+                        // The inline steps run right after this commit, so
+                        // their first start rides the same batch.
+                        startInlineSteps: mayInline,
                         requestId,
                       });
                       // Turbo: a suspension of only new inline steps starts
@@ -2622,9 +2642,13 @@ export function workflowEntrypoint(
                         plan.steps.every((step) => step.inline);
                       let created: Awaited<ReturnType<typeof plan.commit>>;
                       let newInline: Array<
-                        Omit<(typeof created.createdSteps)[number], 'event'>
+                        Omit<CreatedStep, 'event'> & {
+                          started?: StartedInBatch;
+                        }
                       >;
-                      let creationGate: Promise<void> | undefined;
+                      let creationGate:
+                        | Promise<Map<string, CreatedStep>>
+                        | undefined;
                       if (optimisticCreation) {
                         deferAbsorbs = true;
                         const committing = plan.commit();
@@ -2638,6 +2662,12 @@ export function workflowEntrypoint(
                               { status: 503 }
                             );
                           }
+                          return new Map(
+                            result.createdSteps.map((step) => [
+                              step.correlationId,
+                              step,
+                            ])
+                          );
                         });
                         creationGate.catch(() => {});
                         created = {
@@ -2722,14 +2752,31 @@ export function workflowEntrypoint(
                       const inlineToRun: InlineStepSpec[] = [];
                       if (mayInline) {
                         for (const step of newInline) {
+                          const started = startedFromBatch(step.started);
+                          const gate = creationGate;
                           inlineToRun.push({
                             correlationId: step.correlationId,
                             stepName: step.stepName,
                             input: step.input,
                             attempt: 1,
                             startReason: 'first',
-                            ...(creationGate
-                              ? { startAfter: creationGate }
+                            ...(started ? { started } : {}),
+                            ...(step.startRefusal
+                              ? { startRefusal: step.startRefusal }
+                              : {}),
+                            ...(gate
+                              ? {
+                                  // The batch's start, or its refusal.
+                                  startAfter: gate.then((steps) => {
+                                    const committed = steps.get(
+                                      step.correlationId
+                                    );
+                                    if (committed?.startRefusal) {
+                                      throw committed.startRefusal;
+                                    }
+                                    return startedFromBatch(committed?.started);
+                                  }),
+                                }
                               : {}),
                           });
                         }
@@ -2900,6 +2947,12 @@ export function workflowEntrypoint(
                                   ? { firstStartedAt: step.firstStartedAt }
                                   : {}),
                                 input,
+                                ...(step.started
+                                  ? { started: step.started }
+                                  : {}),
+                                ...(step.startRefusal
+                                  ? { startRefusal: step.startRefusal }
+                                  : {}),
                                 // Turbo: optimistic for a step's first
                                 // attempt while turbo still allows it.
                                 forceOptimisticStart:

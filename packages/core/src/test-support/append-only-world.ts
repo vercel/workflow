@@ -74,6 +74,8 @@ export class AppendOnlyWorld {
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
+  /** How many `events.create` and `events.createBatch` calls were made. */
+  createCalls = 0;
   /** The params of every `events.list` call. */
   readonly listCalls: Array<Record<string, unknown>> = [];
   /** Replay events served without their step input (`skipStepInputs`). */
@@ -101,6 +103,8 @@ export class AppendOnlyWorld {
        */
       lazyCreatePayloads?: boolean;
       reportIncomplete?: boolean;
+      /** Leave `events.createBatch` out, as a World without batch writes. */
+      noBatch?: boolean;
       /**
        * Hook tokens another run already holds: a `hook_created` for one of
        * them commits `hook_conflict` instead, as a World with a token index
@@ -454,6 +458,7 @@ export class AppendOnlyWorld {
     const self = this;
     const events: World['events'] = {
       async create(runId: string | null, data: any, params?: any) {
+        self.createCalls++;
         await self.options.beforeCreate?.(data, params);
         if (
           !self.run &&
@@ -476,11 +481,15 @@ export class AppendOnlyWorld {
         } as EventResult;
       },
       async createBatch(_runId: string, batch: BatchEventRequest[], params) {
+        self.createCalls++;
         self.checkFence(params as CreateEventParams, batch.length);
+        const firstSlot = self.seq + 1;
         return {
+          ...self.report(params as CreateEventParams, firstSlot),
           results: batch.map(({ event: data }) => {
             try {
               self.checkRunAcceptsWork(data.eventType);
+              self.checkStepEventData(data as never);
             } catch (error) {
               // A refused item's position is sealed, as a World seals it, so
               // a later load reads a `noop` there rather than a hole.
@@ -540,6 +549,7 @@ export class AppendOnlyWorld {
           }
         : {}),
     } as World['events'];
+    if (self.options.noBatch) delete events.createBatch;
 
     return {
       specVersion: SPEC_VERSION_CURRENT,

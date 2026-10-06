@@ -102,6 +102,24 @@ export class QuickJSLogView {
   }
 
   /**
+   * Whether the VM is short of a position this invocation knows exists: a
+   * write whose event was not delivered off its response, or a queued event
+   * above a position nothing has filled. Only then does the next turn need a
+   * listing; otherwise everything this invocation knows of is fed or
+   * deliverable from the queue. Always true without position tracking.
+   *
+   * Events other writers append without this invocation hearing of them
+   * reach it through the live feed while it runs, or through their own wake
+   * once it exits.
+   */
+  get behind(): boolean {
+    if (!this.slotTracking) return true;
+    if (this.knownMaxSlot === undefined) return false;
+    const fed = this.fedMaxSlot ?? FIRST_EVENT_SLOT - 1;
+    return this.knownMaxSlot > fed;
+  }
+
+  /**
    * The `eventCount` to attach to a write made from this view. Empty while no
    * position is known (an empty log) or once tracking has been turned off.
    */
