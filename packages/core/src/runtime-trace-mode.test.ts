@@ -300,6 +300,67 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
+  it('starts Node replay work while run_started is pending', async () => {
+    const persistedWorkflowCode = `async function persistedWorkflow() {
+      return 'done';
+    }${getWorkflowTransformCode('persistedWorkflow')}`;
+
+    const { eventsCreate, workflowSpan } = await driveHandler({
+      runId: 'wrun_trace_persisted_workflow',
+      workflowCode: persistedWorkflowCode,
+      persistedWorkflowName: 'persistedWorkflow',
+      includeRunInput: true,
+      onRunStartedRequest: () => {
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+      },
+      whileRunStartedPending: async () => {
+        // The bundle compiles from the message's run input while the
+        // run_started write is still in flight; evaluation waits for it.
+        await vi.waitFor(() => {
+          expect(
+            exporter
+              .getFinishedSpans()
+              .find((span) => span.name === 'workflow.bundle.compile')
+          ).toBeDefined();
+        });
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+      },
+    });
+
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'run_completed'
+      )
+    ).toBe(true);
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'run_failed'
+      )
+    ).toBe(false);
+    const compileSpans = exporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'workflow.bundle.compile');
+    expect(compileSpans.length).toBeGreaterThan(0);
+    expect(
+      compileSpans.every(
+        (span) => span.parentSpanId === workflowSpan?.spanContext().spanId
+      )
+    ).toBe(true);
+    expect(
+      exporter
+        .getFinishedSpans()
+        .find((span) => span.name === 'workflow.bundle.evaluate')
+    ).toBeDefined();
+  });
+
   it.each([
     '0',
     '1',
@@ -374,6 +435,78 @@ describe('workflowEntrypoint trace modes', () => {
       'wrun_trace_quickjs_compile',
       undefined
     );
+  });
+
+  it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {
+    const {
+      workflowSpan,
+      routeSpan,
+      routeInitSpan,
+      getWorldHandlersSpan,
+      getWorldSpan,
+      deliverySpan,
+    } = await driveHandler({
+      runId: 'wrun_trace_linked',
+      workflowCode: simpleWorkflow,
+      traceCarrier: ORIGIN_CARRIER,
+      routeModuleBodyStartedAt: Date.now(),
+    });
+
+    expect(routeSpan).toBeDefined();
+    expect(routeSpan?.parentSpanId).toBe(deliverySpan.spanContext().spanId);
+    expect(routeSpan?.attributes['workflow.route.type']).toBe('flow');
+    expect(routeSpan?.attributes['workflow.route.handler_cached']).toBe(false);
+    expect(routeSpan?.attributes['workflow.route.invocation_count']).toBe(1);
+    expect(routeSpan?.attributes['faas.instance']).toMatch(
+      /^cinst_[0-9A-HJKMNP-TV-Z]{26}$/
+    );
+    const moduleBodyInitMs =
+      routeSpan?.attributes['workflow.route.module_body_init_ms'];
+    expect(typeof moduleBodyInitMs).toBe('number');
+    expect(moduleBodyInitMs as number).toBeGreaterThanOrEqual(0);
+    expect(routeSpan?.attributes['http.route']).toBe(
+      '/.well-known/workflow/v1/flow'
+    );
+    expect(routeSpan?.attributes['http.response.status_code']).toBe(204);
+
+    expect(routeInitSpan).toBeDefined();
+    expect(routeInitSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+    expect(getWorldHandlersSpan).toBeDefined();
+    expect(getWorldHandlersSpan?.parentSpanId).toBe(
+      routeInitSpan?.spanContext().spanId
+    );
+    expect(getWorldSpan).toBeDefined();
+    expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+    expect(workflowSpan).toBeDefined();
+    // Child of the local /flow route span — same trace, so one
+    // invocation is a single bounded trace rather than a new root.
+    expect(workflowSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+    expect(workflowSpan?.spanContext().traceId).toBe(
+      deliverySpan.spanContext().traceId
+    );
+
+    // Single link to the run-origin context (NOT a parent) — connecting this
+    // bounded invocation trace back to where the run was started.
+    expect(workflowSpan?.links).toHaveLength(1);
+    expect(linkTraceIds(workflowSpan)).toContain(ORIGIN_TRACE_ID);
+    // The delivery context is the parent now, so it is not also a link.
+    expect(linkTraceIds(workflowSpan)).not.toContain(
+      deliverySpan.spanContext().traceId
+    );
+
+    expect(workflowSpan?.attributes['workflow.trace.mode']).toBe('linked');
+    expect(workflowSpan?.attributes['workflow.trace.propagated']).toBe(true);
+
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((finished) => finished.name === 'workflow.replay.load');
+    expect(replayLoadSpan?.parentSpanId).toBe(
+      workflowSpan?.spanContext().spanId
+    );
+
+    // Queue-delivered invocation spans use the CONSUMER kind, matching
+    // queue-delivered step.execute spans.
+    expect(workflowSpan?.kind).toBe(SpanKind.CONSUMER);
   });
 
   it('linked: treats an empty trace carrier ({}) like an absent one', async () => {

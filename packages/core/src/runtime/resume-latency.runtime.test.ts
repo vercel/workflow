@@ -53,6 +53,7 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
+import { AppendOnlyWorld } from '../test-support/append-only-world.js';
 import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
@@ -849,5 +850,170 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(stepAttributes('firstStep')['workflow.resume.strategy']).toBe(
       'sequential'
     );
+  });
+});
+
+/**
+ * The hand-off path against an append-only World: a resume whose next step
+ * runs from its own queue message carries the boundaries on that message,
+ * and the step's invocation closes the measurement.
+ */
+describe('hook-resume TTR telemetry across a dispatched step', () => {
+  const QUEUE = '__wkf_workflow_workflow';
+  const TOKEN = 'resume-ttr-dispatch-token';
+
+  beforeEach(() => {
+    spanExporter.reset();
+    bodyEntryClock = undefined;
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+  });
+
+  afterEach(() => {
+    setWorld(undefined);
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    spanExporter.reset();
+  });
+
+  /**
+   * Drives a run to its hook, resumes it the way `resumeHook()` does (an
+   * out-of-band hook_received, then a wake carrying producer timing), and
+   * delivers that wake. Returns the step message the wake dispatched.
+   */
+  async function resumeToDispatchedStep() {
+    const runId = `wrun_resume_ttr_dispatch_${Math.random().toString(36).slice(2)}`;
+    const world = new AppendOnlyWorld({ fence: true });
+    world.seedRun({
+      runId,
+      workflowName: 'workflow',
+      deploymentId: 'dpl_test',
+      status: 'pending',
+      input: await dehydrateWorkflowArguments([TOKEN], runId, undefined, []),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as unknown as WorkflowRun);
+    setWorld(world.asWorld());
+    await workflowEntrypoint(SEQUENTIAL_WORKFLOW)(
+      new Request('https://example.test')
+    );
+    await world.deliver(world.enqueue(QUEUE, { runId }));
+    const hookCreated = world.events.find(
+      (e) => e.eventType === 'hook_created'
+    );
+    expect(hookCreated).toBeDefined();
+    world.held.length = 0;
+
+    const now = Date.now();
+    const timing: HookResumeTiming = {
+      resumeRequestedAtMs: now - 120,
+      queuePublishRequestedAtMs: now - 80,
+      strategy: 'sequential',
+    };
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      correlationId: hookCreated?.correlationId,
+      eventData: {
+        token: TOKEN,
+        payload: await dehydrateStepReturnValue(
+          { value: 'resumed' },
+          runId,
+          undefined
+        ),
+      },
+    } as Partial<Event>);
+    await world.deliver(
+      world.enqueue(QUEUE, { runId, hookResumeTiming: timing })
+    );
+    const stepMessage = world.held.find(
+      (h) => (h.message as WorkflowInvokePayload).stepId !== undefined
+    );
+    if (!stepMessage) throw new Error('expected a dispatched step message');
+    return { world, runId, timing, stepMessage };
+  }
+
+  it('carries the boundaries onto a dispatched step message', async () => {
+    const { timing, stepMessage, world } = await resumeToDispatchedStep();
+
+    const message = stepMessage.message as WorkflowInvokePayload;
+    expect(message.stepName).toBe('firstStep');
+    const forwarded = forwardedTiming(message);
+    // Producer boundaries survive verbatim...
+    expect(forwarded.resumeRequestedAtMs).toBe(timing.resumeRequestedAtMs);
+    expect(forwarded.queuePublishRequestedAtMs).toBe(
+      timing.queuePublishRequestedAtMs
+    );
+    expect(forwarded.strategy).toBe('sequential');
+    // ...and the resuming invocation's own boundaries ride along.
+    expect(forwarded.consumerStartedAtMs).toBeTypeOf('number');
+    expect(forwarded.replayStartedAtMs).toBeGreaterThanOrEqual(
+      Number(forwarded.consumerStartedAtMs)
+    );
+    expect(forwarded.nextStepEncounteredAtMs).toBeGreaterThanOrEqual(
+      Number(forwarded.replayStartedAtMs)
+    );
+    expect(forwarded.setupSource).toBe('event_load');
+    // The invocation that handed the step off does not also report it.
+    expect(
+      stepSpans().filter((s) => s.attributes[TOTAL_KEY] !== undefined)
+    ).toHaveLength(0);
+    // Wakes carry no timing.
+    for (const held of world.held) {
+      if ((held.message as WorkflowInvokePayload).stepId === undefined) {
+        expect(
+          (held.message as WorkflowInvokePayload).hookResumeTiming
+        ).toBeUndefined();
+      }
+    }
+  });
+
+  it('completes the measurement in the invocation that receives the step', async () => {
+    const { world, stepMessage } = await resumeToDispatchedStep();
+    const forwarded = forwardedTiming(
+      stepMessage.message as WorkflowInvokePayload
+    );
+
+    await world.deliver(stepMessage);
+
+    const attrs = stepAttributes('firstStep');
+    expect(attrs[TOTAL_KEY]).toBeTypeOf('number');
+    expect(sumPhases(attrs)).toBe(attrs[TOTAL_KEY]);
+    expect(attrs['workflow.resume.step_execution']).toBe('dispatched');
+    expect(attrs['workflow.resume.strategy']).toBe('sequential');
+    expect(attrs['workflow.resume.setup_source']).toBe('event_load');
+    expect(
+      attrs['workflow.resume.phase.step_dispatch_ms']
+    ).toBeGreaterThanOrEqual(0);
+    expect(attrs[TOTAL_KEY]).toBeGreaterThanOrEqual(
+      Number(forwarded.nextStepEncounteredAtMs) - forwarded.resumeRequestedAtMs
+    );
+    // Only the step that followed the resume reports it.
+    await world.runUntilIdle();
+    expect(stepSpan('secondStep')).toBeDefined();
+    expect(
+      stepSpans().filter((s) => s.attributes[TOTAL_KEY] !== undefined)
+    ).toHaveLength(1);
+  });
+
+  it('does not re-report on a redelivery of the same step message', async () => {
+    const { world, stepMessage } = await resumeToDispatchedStep();
+    const stepId = (stepMessage.message as WorkflowInvokePayload)
+      .stepId as string;
+    // The first delivery wrote step_started and died before the outcome.
+    world.appendOutOfBand({
+      eventType: 'step_started',
+      correlationId: stepId,
+      eventData: { stepName: 'firstStep', attempt: 1, startReason: 'first' },
+    } as Partial<Event>);
+
+    await world.deliver({ ...stepMessage, deliveryCount: 2 });
+
+    const started = world.events.filter(
+      (e) => e.eventType === 'step_started' && e.correlationId === stepId
+    );
+    expect(started).toHaveLength(2);
+    expect(stepSpan('firstStep')).toBeDefined();
+    for (const span of stepSpans()) {
+      expect(span.attributes[TOTAL_KEY]).toBeUndefined();
+    }
   });
 });
