@@ -16,8 +16,17 @@ export type StepDeliveryDecision =
   | { action: 'redeliver'; timeoutSeconds: number; reason: 'retry-after' }
   /** Write `step_failed` for exceeding the retry budget, then acknowledge. */
   | { action: 'fail'; attempt: number; reason: 'max-retries' }
-  /** Write `step_started` with this attempt and reason, then run the body. */
-  | { action: 'run'; attempt: number; startReason: StepStartReason };
+  /**
+   * Write `step_started` with this attempt and reason, then run the body.
+   * `firstStartedAt` is when the step's first attempt started, when the log
+   * shows one: the step's `stepStartedAt` stays that of its first attempt.
+   */
+  | {
+      action: 'run';
+      attempt: number;
+      startReason: StepStartReason;
+      firstStartedAt?: Date;
+    };
 
 /**
  * Whether a delivery must read the run's full log before deciding.
@@ -79,6 +88,7 @@ export function decideStepDelivery(params: {
 }): StepDeliveryDecision {
   const { events, stepId, maxRetries, nowMs } = params;
   let starts = 0;
+  let firstStartedAt: Date | undefined;
   let lastStepEvent: Event | undefined;
   let lastRetrying: Event | undefined;
   for (const event of events) {
@@ -92,6 +102,7 @@ export function decideStepDelivery(params: {
         return { action: 'ack', reason: 'step-terminal' };
       case 'step_started':
         starts++;
+        firstStartedAt ??= new Date(event.createdAt);
         lastStepEvent = event;
         break;
       case 'step_retrying':
@@ -128,5 +139,7 @@ export function decideStepDelivery(params: {
       : lastStepEvent?.eventType === 'step_retrying'
         ? 'retry'
         : 'redelivery';
-  return { action: 'run', attempt, startReason };
+  return firstStartedAt
+    ? { action: 'run', attempt, startReason, firstStartedAt }
+    : { action: 'run', attempt, startReason };
 }

@@ -24,6 +24,7 @@ export interface InlineStepSpec {
   createdEventId?: string;
   attempt: number;
   startReason: StepStartReason;
+  firstStartedAt?: Date;
 }
 
 /** What the log says about one step. */
@@ -33,6 +34,8 @@ export interface LogStepState {
   createdEventId: string;
   inline: boolean;
   starts: number;
+  /** When the step's first attempt started. */
+  firstStartedAt?: Date;
   terminal: boolean;
   /** The step's last event is a `step_retrying`. */
   lastIsRetrying: boolean;
@@ -68,6 +71,7 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
     switch (event.eventType) {
       case 'step_started':
         step.starts++;
+        step.firstStartedAt ??= new Date(event.createdAt);
         step.lastIsRetrying = false;
         break;
       case 'step_retrying':

@@ -192,6 +192,9 @@ export async function handleStepMessage(
       runSpecVersion: runIdentity.specVersion,
       attempt: decision.attempt,
       startReason: decision.startReason,
+      ...(decision.firstStartedAt
+        ? { firstStartedAt: decision.firstStartedAt }
+        : {}),
       input,
       retryOutlivesMessage: (retryAtMs) =>
         retryOutlivesMessage({

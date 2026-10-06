@@ -92,14 +92,19 @@ describe('decideStepDelivery', () => {
     ];
     expect(
       decideStepDelivery({ events, stepId: STEP, maxRetries: 3, nowMs: NOW })
-    ).toEqual({ action: 'run', attempt: 2, startReason: 'retry' });
+    ).toMatchObject({
+      action: 'run',
+      attempt: 2,
+      startReason: 'retry',
+      firstStartedAt: expect.any(Date),
+    });
   });
 
   it('marks a start after a start with no outcome as a redelivery', () => {
     const events = [ev('step_created'), ev('step_started')];
     expect(
       decideStepDelivery({ events, stepId: STEP, maxRetries: 3, nowMs: NOW })
-    ).toEqual({ action: 'run', attempt: 2, startReason: 'redelivery' });
+    ).toMatchObject({ action: 'run', attempt: 2, startReason: 'redelivery' });
   });
 
   it('runs a never-started step as its first attempt', () => {

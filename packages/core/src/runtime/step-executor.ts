@@ -159,6 +159,11 @@ export interface StepExecutorParams {
   attempt: number;
   /** Why this attempt starts; written on `step_started`. */
   startReason: StepStartReason;
+  /**
+   * When the step's first attempt started, for a retry. The step context's
+   * `stepStartedAt` is the step's first start, not this attempt's.
+   */
+  firstStartedAt?: Date;
   /** The step's serialized input, as written on its `step_created`. */
   input: SerializedData;
   /**
@@ -565,7 +570,9 @@ export async function executeStep(
               stepMetadata: {
                 stepName,
                 stepId,
-                stepStartedAt: new Date(+stepStartedAt),
+                stepStartedAt: new Date(
+                  +(params.firstStartedAt ?? stepStartedAt)
+                ),
                 attempt,
               },
               workflowMetadata: {

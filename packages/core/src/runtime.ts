@@ -2232,6 +2232,9 @@ export function workflowEntrypoint(
                             attempt: step.starts + 1,
                             startReason:
                               step.starts === 0 ? 'first' : 'redelivery',
+                            ...(step.firstStartedAt
+                              ? { firstStartedAt: step.firstStartedAt }
+                              : {}),
                           });
                         }
                       }
@@ -2342,6 +2345,9 @@ export function workflowEntrypoint(
                                   runSpecVersion: run.specVersion,
                                   attempt: step.attempt,
                                   startReason: step.startReason,
+                                  ...(step.firstStartedAt
+                                    ? { firstStartedAt: step.firstStartedAt }
+                                    : {}),
                                   input,
                                   beforeBody: () => writer.assertActive(),
                                   ...(index === 0 && tracking
