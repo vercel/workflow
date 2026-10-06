@@ -2,40 +2,50 @@ import type { ScenarioSpec } from '@workflow/world-sim';
 
 export const scenario: ScenarioSpec = {
   id: 'in-flight-before-decision-counted',
-  name: 'in-flight: same tempo, count guard ON — the write is fenced',
+  name: 'in-flight: same tempo, in-band fence only, so an out-of-band hook supersedes nothing',
   description:
-    'The count half of the fence is armed. A hook committed while the writer was ' +
-    'held can make the count at the caller watermark grow, so the write is ' +
-    'rejected and the orchestrator reloads before deciding again.',
+    'The tempo of the scenario above with no precondition guard at all, ' +
+    'which is what a single-orchestrator run has. The webhook receiver commits ' +
+    'its hook after the orchestrator has written its timeout and while its ' +
+    'branch decision (`step_started` for `settle`) is produced but not ' +
+    'committed. The old count guard refused that write because an event had ' +
+    'landed at or below the caller’s watermark, and the orchestrator reloaded ' +
+    'and decided again. The in-band fence does not: it counts only the ' +
+    'orchestrator’s own writes, and `hook_received` is out-of-band, so the ' +
+    'decision is accepted as made and the hook takes the log position after ' +
+    'the timeout. The log then says what the run did: the timer won the race, ' +
+    '`settle` ran, and the hook was consumed late, never as the race’s winner.',
   workflow: 'stepCountForkWorkflow',
   input: ['doc-30'],
-  preconditionGuard: true,
-  countGuard: true,
   script: async (sim) => {
     const wf = sim.writer.orchestrator();
     await wf.runToEventProduced('wait_completed');
     const hook = await sim.beginHookDelivery('count:doc-30', {
       approved: true,
     });
-    await wf.runToEventProduced('step_started');
-    await hook.commit();
-    await wf.release();
-
-    // Matched on the count half's own message, not on "something was
-    // rejected". The twin rejects too — its writes hit `RunExpiredError` once
-    // the corrupted branch has run — so a bare `rejections().length > 0` would
-    // hold there as well and assert nothing about the guard.
+    const decision = await wf.runToEventProduced('step_started');
     sim.check(
-      'the count guard fenced the write the watermark let through',
-      sim.world
-        .rejections()
-        .some((r) => r.message.includes('at or below the caller'))
+      'the live pass decided the fork without the hook',
+      JSON.stringify(decision.ctx.request?.eventData).includes('settle')
+    );
+    await hook.commit();
+    const done = sim.until({ eventType: 'run_completed' });
+    await wf.release();
+    await done;
+
+    sim.check(
+      'nothing the orchestrator wrote was refused',
+      sim.world.rejections().length === 0
+    );
+    const events = sim.world.events();
+    const at = (type: string) => events.findIndex((e) => e.eventType === type);
+    sim.check(
+      'the log puts the timeout ahead of the hook, the order the run decided in',
+      at('wait_completed') < at('hook_received')
     );
   },
-  // The rejection and the reload show up in the trace as `!!` lines. Whichever
-  // branch the reload lands on, it is the one the durable log implies — so
-  // there is nothing to diverge, in either world.
   expect: {
     status: 'completed',
+    output: 'reconciled(settled:doc-30)',
   },
 };

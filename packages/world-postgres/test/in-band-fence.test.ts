@@ -12,10 +12,12 @@ import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { inBandFenceConformance } from '../../world/src/test-support/in-band-fence-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
+import { RUN_STATUS_TOPIC } from '../src/run-status.js';
 import {
   createEventsStorage,
   IN_BAND_SEQ_AT_RUN_CREATION,
 } from '../src/storage.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 /**
  * The in-band writer fence for single-orchestrator runs: an in-band write is
@@ -47,6 +49,7 @@ describe('in-band fence (world-postgres)', () => {
     });
     // Enough connections for the concurrent writers to really overlap.
     pool = new Pool({ connectionString: dbUrl, max: 16 });
+    tolerateTeardown(pool);
     events = createEventsStorage(createClient(pool));
   }, 120_000);
 
@@ -242,5 +245,187 @@ describe('in-band fence (world-postgres)', () => {
       .catch((err: unknown) => err);
     expect(EntityConflictError.is(error)).toBe(true);
     expect(await load(runId)).toEqual(before);
+  });
+
+  /**
+   * Holds the run's slots row from another connection so that concurrent
+   * in-band writers pile up behind it, then lets them all go at once. An
+   * entity-row update that is not behind the fence check lands before the
+   * writers block, which is the race this pins down.
+   */
+  async function raceBehindSlotsLock<T>(
+    runId: string,
+    writers: Array<() => Promise<T>>
+  ): Promise<PromiseSettledResult<T>[]> {
+    const blocker = await pool.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query(
+        'select 1 from workflow.workflow_event_slots where run_id = $1 for update',
+        [runId]
+      );
+      const outcomes = Promise.allSettled(writers.map((write) => write()));
+      await expect
+        .poll(
+          async () => {
+            const { rows } = await pool.query(
+              `select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`
+            );
+            return rows[0]?.n;
+          },
+          { timeout: 5_000 }
+        )
+        .toBe(writers.length);
+      await blocker.query('commit');
+      return await outcomes;
+    } finally {
+      blocker.release();
+    }
+  }
+
+  test('of concurrent writers holding the same count, a refused wait_created leaves no wait row behind', async () => {
+    const runId = await createRun();
+    const { snapshot } = await load(runId);
+    const outcomes = await raceBehindSlotsLock(runId, [
+      () =>
+        events.create(runId, waitCreated('wait_a'), {
+          inBand: true,
+          expectedSeqInBand: snapshot?.seqInBand,
+        }),
+      () =>
+        events.create(runId, waitCreated('wait_b'), {
+          inBand: true,
+          expectedSeqInBand: snapshot?.seqInBand,
+        }),
+    ]);
+    const accepted = outcomes.filter((o) => o.status === 'fulfilled');
+    expect(accepted).toHaveLength(1);
+    expect(
+      outcomes.filter(
+        (o) => o.status === 'rejected' && InBandSupersededError.is(o.reason)
+      )
+    ).toHaveLength(1);
+    const winner = (accepted[0] as PromiseFulfilledResult<{ event?: unknown }>)
+      .value.event as { correlationId: string };
+    const { rows } = await pool.query(
+      'select wait_id from workflow.workflow_waits where run_id = $1',
+      [runId]
+    );
+    expect(rows.map((row) => row.wait_id)).toEqual([
+      `${runId}-${winner.correlationId}`,
+    ]);
+  });
+
+  test('of concurrent writers holding the same count, a refused attr_set leaves the run attributes alone', async () => {
+    const runId = await createRun();
+    const { snapshot } = await load(runId);
+    const attrWrite = (key: string) => () =>
+      events.create(
+        runId,
+        {
+          eventType: 'attr_set',
+          specVersion: SPEC,
+          eventData: {
+            changes: [{ key, value: 'v' }],
+            writer: { type: 'workflow' },
+          },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: snapshot?.seqInBand }
+      );
+    const outcomes = await raceBehindSlotsLock(runId, [
+      attrWrite('ka'),
+      attrWrite('kb'),
+    ]);
+    const accepted = outcomes.filter((o) => o.status === 'fulfilled');
+    expect(accepted).toHaveLength(1);
+    const winner = (
+      accepted[0] as PromiseFulfilledResult<{
+        event?: { eventData?: { changes?: { key: string }[] } };
+      }>
+    ).value.event?.eventData?.changes?.[0]?.key;
+    const { rows } = await pool.query(
+      'select attributes from workflow.workflow_runs where id = $1',
+      [runId]
+    );
+    expect(Object.keys(rows[0]?.attributes ?? {})).toEqual([winner]);
+  });
+
+  test.each([
+    ['wait_created', () => waitCreated('wait_same')],
+    [
+      'step_created',
+      () =>
+        ({
+          eventType: 'step_created',
+          correlationId: `step_${ulid()}`,
+          specVersion: SPEC,
+          eventData: { stepName: 'add', input: new Uint8Array([1]) },
+        }) as AnyEventRequest,
+    ],
+  ])('two same-count writers of one %s: one commits, the other is superseded, not in conflict', async (_type, request) => {
+    // Two overlapping orchestrator deliveries replay to the same decision.
+    // The stale one must hear 412 and redeliver, never a 409 for the entity
+    // the current writer just created.
+    const write = request();
+    for (const race of [
+      (runId: string, writers: Array<() => Promise<unknown>>) =>
+        raceBehindSlotsLock(runId, writers),
+      (_runId: string, writers: Array<() => Promise<unknown>>) =>
+        Promise.allSettled(writers.map((writer) => writer())),
+    ]) {
+      const runId = await createRun();
+      const { snapshot } = await load(runId);
+      const sameWrite = {
+        ...write,
+        ...(write.eventType === 'step_created'
+          ? { correlationId: `step_${ulid()}` }
+          : {}),
+      } as AnyEventRequest;
+      const writer = () =>
+        events.create(runId, sameWrite, {
+          inBand: true,
+          expectedSeqInBand: snapshot?.seqInBand,
+        });
+      const outcomes = await race(runId, [writer, writer]);
+      expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+      const [refusal] = outcomes.flatMap((o) =>
+        o.status === 'rejected' ? [o.reason] : []
+      );
+      expect(EntityConflictError.is(refusal)).toBe(false);
+      expect(InBandSupersededError.is(refusal)).toBe(true);
+      expect((await load(runId)).snapshot?.seqInBand).toBe(
+        (snapshot?.seqInBand ?? 0) + 1
+      );
+    }
+  });
+
+  test('a fenced run_completed announces the terminal run after its commit', async () => {
+    const runId = await createRun();
+    await events.create(runId, runStarted as AnyEventRequest, {
+      inBand: true,
+      expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+    });
+    const listener = await pool.connect();
+    try {
+      const notified = new Promise<string>((resolve) => {
+        listener.on('notification', (message) => {
+          if (message.payload === runId) resolve(message.payload);
+        });
+      });
+      await listener.query(`listen ${RUN_STATUS_TOPIC}`);
+      await events.create(
+        runId,
+        {
+          eventType: 'run_completed',
+          specVersion: SPEC,
+          eventData: { output: new Uint8Array([1]) },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION + 1 }
+      );
+      await expect(notified).resolves.toBe(runId);
+    } finally {
+      await listener.query('unlisten *');
+      listener.release();
+    }
   });
 });

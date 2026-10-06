@@ -19,6 +19,7 @@ import {
   type RunStatusListener,
 } from '../src/run-status.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 /**
  * `runs.waitForTerminalStatus` on world-postgres.
@@ -59,6 +60,7 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
     // >1 connection: the wait holds a read while the completing writer needs
     // its own, and the LISTEN client is separate from the pool entirely.
     pool = new Pool({ connectionString: dbUrl, max: 4 });
+    tolerateTeardown(pool);
     drizzle = createClient(pool);
     listener = createRunStatusListener(pool);
     runs = createRunsStorage(drizzle, listener);

@@ -730,7 +730,11 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   const world: SimWorld = {
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: {},
+    capabilities: {
+      // The queue hands out one orchestrator delivery per run at a time
+      // (see queue.ts), and the store fences in-band writes.
+      maxConcurrency: true,
+    },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
     ),

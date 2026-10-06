@@ -15,6 +15,7 @@ import {
 import { createClient } from '../src/drizzle/index.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { createStreamer } from '../src/streamer.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 type EventsStorage = ReturnType<typeof createEventsStorage>;
 
@@ -68,6 +69,7 @@ describe('Retention ($retention: 0)', () => {
     });
 
     pool = new Pool({ connectionString: dbUrl, max: 4 });
+    tolerateTeardown(pool);
     drizzle = createClient(pool);
     runs = createRunsStorage(drizzle);
     events = createEventsStorage(drizzle);
