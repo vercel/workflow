@@ -25,6 +25,17 @@ export const WORKFLOW_VMS = ['node', 'quickjs'] as const;
 export type WorkflowVmMode = (typeof WORKFLOW_VMS)[number];
 
 /**
+ * The slice of a run that decides which engine and snapshot policy it runs
+ * under: the `executionContext` stamped at `start()`.
+ *
+ * `unknown` rather than `WorkflowRun['executionContext']` so the queue's
+ * `RunInput` — which carries the same stamped context as a plain record and is
+ * all turbo has before the `run_started` response lands — satisfies it too.
+ * Every reader below already narrows the field itself.
+ */
+export type RunEnginePolicy = { executionContext?: unknown };
+
+/**
  * Read and validate the `WORKFLOW_VM` env var.
  *
  * Returns the configured engine, or `undefined` if unset/empty.
@@ -58,9 +69,7 @@ export function getWorkflowVmFromEnv(
  * Throws if `WORKFLOW_VM` or `executionContext.workflowVm` is set to an
  * unknown value.
  */
-export function useQuickJSVm(
-  workflowRun: Pick<WorkflowRun, 'executionContext'>
-): boolean {
+export function useQuickJSVm(workflowRun: RunEnginePolicy): boolean {
   const vmFromRun = (
     workflowRun.executionContext as { workflowVm?: string } | undefined
   )?.workflowVm;
@@ -117,7 +126,7 @@ export function getSnapshotThresholdFromEnv(
  * Throws on an invalid value. The workflow handler uses
  * {@link getSnapshotThresholdForHandler}, which doesn't.
  */
-export function getSnapshotThreshold(workflowRun: WorkflowRun): number {
+export function getSnapshotThreshold(workflowRun: RunEnginePolicy): number {
   const fromRun = (
     workflowRun.executionContext as { snapshotThreshold?: unknown } | undefined
   )?.snapshotThreshold;

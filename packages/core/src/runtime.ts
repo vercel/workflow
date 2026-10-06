@@ -53,7 +53,6 @@ import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
-  getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
   getPreconditionMaxInProcessRestarts,
@@ -76,6 +75,7 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import { resolveMaxEventsLimit } from './runtime/event-ceiling.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -228,20 +228,6 @@ export {
   setWorld,
   type WorldFactoryModule,
 } from './runtime/world.js';
-
-/**
- * Apply the optional client-side event-limit override.
- * `WORKFLOW_MAX_EVENTS_OVERRIDE`, when set to a positive integer, clamps the
- * server-supplied per-run event ceiling to a smaller value so enforcement can
- * be exercised without a server-side change. Clamp-down only: it never raises
- * the server's limit, and it takes effect even when the server returns none.
- * Unset ⇒ server value passes through unchanged.
- */
-function clampMaxEvents(serverValue: number | undefined): number | undefined {
-  const override = getMaxEventsOverride();
-  if (override === undefined) return serverValue;
-  return serverValue === undefined ? override : Math.min(serverValue, override);
-}
 
 /**
  * Refuse a queue delivery whose run was created in a different environment than
@@ -1347,8 +1333,11 @@ export function workflowEntrypoint(
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
                   let workflowRun: WorkflowRun | undefined;
-                  // Server-supplied per-run event ceiling from the run_started
-                  // response. Undefined ⇒ no enforcement (older servers, turbo).
+                  // Per-run event ceiling this invocation enforces, resolved
+                  // from the run_started response by resolveMaxEventsLimit.
+                  // Undefined ⇒ no enforcement (older servers, turbo before
+                  // the backgrounded response lands, or a snapshotting
+                  // QuickJS run, which is exempt — see runtime/event-ceiling).
                   let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
 
@@ -2556,7 +2545,10 @@ export function workflowEntrypoint(
                         }
                         workflowRun = result.run;
                         startWorkflowCompile(workflowRun);
-                        maxEventsLimit = clampMaxEvents(result.maxEvents);
+                        maxEventsLimit = resolveMaxEventsLimit(
+                          result.maxEvents,
+                          workflowRun
+                        );
                         // Anchors RSFS, see the declaration above. This
                         // response plays run_started's role on this path.
                         runStartedReceivedAtMs = Date.now();
@@ -2697,9 +2689,19 @@ export function workflowEntrypoint(
                       // iteration, so a value that lands shortly after start
                       // still enforces well before a runaway log approaches
                       // the ceiling.
+                      //
+                      // The policy comes off the response's run when it has
+                      // one, and otherwise off the queue message, which
+                      // carries the same executionContext `start()` stamped
+                      // into run_created. An exempt run resolves to
+                      // undefined and simply leaves the ceiling unset, which
+                      // is the no-enforcement state this path starts in.
                       void startedPromise
                         .then((r) => {
-                          const limit = clampMaxEvents(r.maxEvents);
+                          const limit = resolveMaxEventsLimit(
+                            r.maxEvents,
+                            r.run ?? runInput
+                          );
                           if (limit !== undefined) maxEventsLimit = limit;
                         })
                         // Prevent an early failure from surfacing as an
@@ -2792,7 +2794,10 @@ export function workflowEntrypoint(
                         }
                         const result = await replayLoad;
                         workflowRun = result.run;
-                        maxEventsLimit = clampMaxEvents(result.maxEvents);
+                        maxEventsLimit = resolveMaxEventsLimit(
+                          result.maxEvents,
+                          workflowRun
+                        );
                         // Anchors RSFS, see the declaration above.
                         runStartedReceivedAtMs = Date.now();
                         // Covers both the plain sequential resume and the

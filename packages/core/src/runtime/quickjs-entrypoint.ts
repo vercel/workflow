@@ -1079,12 +1079,17 @@ export async function runWorkflowWithQuickJS(params: {
    */
   parentSpan?: Span;
   /**
-   * Server-supplied per-run event ceiling from the run_started response
-   * (undefined ⇒ no enforcement). Mirrors the node:vm engine's guard:
-   * a runaway run is failed once its log reaches the ceiling. The throw
-   * propagates to the replay loop's catch in runtime.ts (the QuickJS
-   * dispatch runs inside that loop's try), which classifies it and
-   * records run_failed with MAX_EVENTS_EXCEEDED.
+   * Per-run event ceiling to enforce (undefined ⇒ no enforcement). Mirrors
+   * the node:vm engine's guard: a runaway run is failed once its log reaches
+   * the ceiling. The throw propagates to the replay loop's catch in
+   * runtime.ts (the QuickJS dispatch runs inside that loop's try), which
+   * classifies it and records run_failed with MAX_EVENTS_EXCEEDED.
+   *
+   * Already resolved by `resolveMaxEventsLimit` (runtime/event-ceiling.ts),
+   * which is where the snapshot exemption and `WORKFLOW_MAX_EVENTS_OVERRIDE`
+   * are applied — so a snapshotting run normally arrives here with no
+   * ceiling at all. This entrypoint enforces whatever it is handed and makes
+   * no policy decision of its own.
    */
   maxEventsLimit?: number;
   /**
