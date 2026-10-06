@@ -5,6 +5,7 @@ import { FatalError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
+import { ulid } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { runtimeLogger } from '../logger.js';
@@ -289,6 +290,100 @@ describe('executeStep — stream durability barrier', () => {
 
     releaseWrite();
     await expect(execution).resolves.toMatchObject({ type: 'completed' });
+  });
+
+  it.each([
+    'chunk',
+    'empty close',
+  ] as const)('orders a turbo writable argument %s after durable run creation', async (operation) => {
+    const world = makeWorld();
+    setWorld(world);
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', '1');
+    const runId = `wrun_${ulid()}`;
+    const stepId = `step_${ulid()}`;
+    const stepName = uniqueStepName();
+    const streamId = `strm_${runId.slice(5)}_user`;
+    const argument = new WritableStream<string>();
+    Object.defineProperty(argument, STREAM_NAME_SYMBOL, { value: streamId });
+    const input = await dehydrateStepArguments(
+      { args: [argument] },
+      runId,
+      undefined
+    );
+    const runInput = await dehydrateStepArguments([], runId, undefined);
+    const createGate = Promise.withResolvers<void>();
+    const bodyEntered = Promise.withResolvers<void>();
+    // Use real world-local run/event/stream persistence. Its stream store
+    // accepts orphan writes, so add the server's run-existence precondition
+    // to reproduce the HTTP PUT failure rather than silently accepting it.
+    const write = world.streams.write.bind(world.streams);
+    const close = world.streams.close.bind(world.streams);
+    const writeSpy = vi
+      .spyOn(world.streams, 'write')
+      .mockImplementation(async (...args) => {
+        await world.runs.get(args[0]);
+        return write(...args);
+      });
+    const closeSpy = vi
+      .spyOn(world.streams, 'close')
+      .mockImplementation(async (...args) => {
+        await world.runs.get(args[0]);
+        return close(...args);
+      });
+    const runReadyBarrier = createGate.promise.then(async () => {
+      await world.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'wf',
+          input: runInput,
+        },
+      });
+    });
+    registerStepFunction(stepName, async (writable: WritableStream<string>) => {
+      bodyEntered.resolve();
+      const writer = writable.getWriter();
+      if (operation === 'chunk') await writer.write('first chunk');
+      await writer.close();
+      return 'ok';
+    });
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: input,
+      forceOptimisticStart: true,
+      runReadyBarrier,
+      authoritativeAttempt: 1,
+    });
+    try {
+      await bodyEntered.promise;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await expect(world.runs.get(runId)).rejects.toThrow();
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(closeSpy).not.toHaveBeenCalled();
+    } finally {
+      createGate.resolve();
+      await execution;
+      vi.unstubAllEnvs();
+      vi.restoreAllMocks();
+    }
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+    const reader = (await world.streams.get(runId, streamId)).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    expect(chunks).toHaveLength(operation === 'chunk' ? 1 : 0);
   });
 
   it('drains a revived forwarded writable argument before completion', async () => {
