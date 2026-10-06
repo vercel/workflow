@@ -1,5 +1,11 @@
 # @workflow/errors
 
+## 4.2.2
+
+### Patch Changes
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`5e6c79c`](https://github.com/vercel/workflow/commit/5e6c79c7afc5500ff0b3cb8f995936e00df509d0) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, and make `FatalError.is()` honor the `fatal` marker, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+
 ## 4.2.1
 
 ### Patch Changes

@@ -1,5 +1,28 @@
 # @workflow/vite
 
+## 4.0.27
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.17
+
+## 4.0.26
+
+### Patch Changes
+
+- [#4370](https://github.com/vercel/workflow/pull/4370) [`986e3e7`](https://github.com/vercel/workflow/commit/986e3e7f60a6c687249c0245ec45ea9d55f66f76) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Rebuild workflows once per file change instead of once per Vite environment.
+
+- Updated dependencies [[`08b4420`](https://github.com/vercel/workflow/commit/08b44209e1eb219d1a9c87af848ad36e83f5f75d), [`6bb5224`](https://github.com/vercel/workflow/commit/6bb52248b022115f878f4857ce219d5f672191a4)]:
+  - @workflow/builders@4.1.16
+
+## 4.0.25
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.15
+
 ## 4.0.24
 
 ### Patch Changes
