@@ -206,6 +206,29 @@ it('buffers a completion using the acknowledged step state and sends flush-throu
   await barrier;
 });
 
+it("completes a barrier on its events' acknowledgements, not a trailing flush ack", async () => {
+  const calls: { resolve(value: EventResult): void }[] = [];
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    (_event, _params, sent) => {
+      sent?.();
+      return new Promise((resolve) => calls.push({ resolve }));
+    },
+    async () => {},
+    // The flush acknowledgement is queued behind a later event's commit.
+    () => new Promise<void>(() => {})
+  );
+  const created = await writer.stage(createStep, { eventCount: 1 });
+  const barrier = writer.flush();
+  await writer.stage(startStep, { eventCount: 2 });
+  calls[0].resolve(created);
+  const results = await barrier;
+  expect(results.map((result) => result.event?.eventType)).toEqual([
+    'step_created',
+  ]);
+  expect(writer.heads).toEqual({ queued: 3, committed: 2 });
+});
+
 it('flushes only what was staged before the flush, leaving later stages pending', async () => {
   const calls: { resolve(value: EventResult): void }[] = [];
   const throughs: number[] = [];

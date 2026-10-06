@@ -568,30 +568,43 @@ export class BufferedEventWriter implements EventWriteSession {
         await Promise.all(covered.map((entry) => entry.transmitted));
         if (this.failure) throw this.failure;
       }
-      for (;;) {
-        try {
-          await this.flushThrough(through, this.generation);
-          break;
-        } catch (error) {
-          if (!this.resync || !isTransportFailure(error) || this.failure)
-            throw error;
-          await this.recover();
+      // The flush frame makes the server commit what it buffers now; each
+      // event's own acknowledgement is sent only once it is committed, so the
+      // barrier completes on those. A flush acknowledgement can trail behind
+      // events staged after this barrier, which it must not wait for.
+      const prompted = (async () => {
+        for (;;) {
+          try {
+            await this.flushThrough(through, this.generation);
+            return;
+          } catch (error) {
+            if (!this.resync || !isTransportFailure(error) || this.failure)
+              throw error;
+            await this.recover();
+          }
         }
-      }
+      })();
+      prompted.catch(() => {});
       // Recoveries replace completions; settle on the final ones.
-      let results: EventResult[];
-      for (;;) {
-        const completions = this.pending
-          .slice(0, count)
-          .map((item) => item.completion);
-        results = await Promise.all(completions);
-        if (this.recovery) {
-          await this.recovery;
-          continue;
+      const settled = (async () => {
+        for (;;) {
+          const completions = this.pending
+            .slice(0, count)
+            .map((item) => item.completion);
+          const results = await Promise.all(completions);
+          if (this.recovery) {
+            await this.recovery;
+            continue;
+          }
+          if (completions.every((c, i) => c === this.pending[i].completion))
+            return results;
         }
-        if (completions.every((c, i) => c === this.pending[i].completion))
-          break;
-      }
+      })();
+      settled.catch(() => {});
+      const results = await Promise.race([
+        settled,
+        prompted.then(() => settled),
+      ]);
       if (this.failure) throw this.failure;
       this.confirmed.push(...results);
       this.committed = requireEventSlot(
