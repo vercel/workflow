@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getQueueTopicPrefix,
+  orchestratorRunIdOf,
   parseQueueName,
   QueuePayloadSchema,
   QueuePrefix,
@@ -327,5 +328,33 @@ describe('RunInputSchema environment', () => {
       runId: 'wrun_01ABC',
       runInput: { environment: 'production' },
     });
+  });
+});
+
+describe('orchestratorRunIdOf', () => {
+  it('names the run of an orchestrator delivery', () => {
+    expect(orchestratorRunIdOf({ runId: 'wrun_a' })).toBe('wrun_a');
+    expect(
+      orchestratorRunIdOf({ runId: 'wrun_a', runInput: { input: [] } })
+    ).toBe('wrun_a');
+  });
+
+  it('leaves step messages and health checks unserialized', () => {
+    expect(
+      orchestratorRunIdOf({ runId: 'wrun_a', stepId: 'step_1' })
+    ).toBeUndefined();
+    expect(
+      orchestratorRunIdOf({
+        __healthCheck: true,
+        correlationId: 'hc_1',
+        runId: 'wrun_a',
+      })
+    ).toBeUndefined();
+  });
+
+  it('is undefined for anything without a run id', () => {
+    expect(orchestratorRunIdOf(undefined)).toBeUndefined();
+    expect(orchestratorRunIdOf('wrun_a')).toBeUndefined();
+    expect(orchestratorRunIdOf({ runId: 1 })).toBeUndefined();
   });
 });

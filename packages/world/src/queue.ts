@@ -501,6 +501,31 @@ export const QueuePayloadSchema = z.compile(
 );
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
+/**
+ * The run whose orchestrator a queue message is a delivery for, or
+ * `undefined` when the message is not an orchestrator delivery.
+ *
+ * An orchestrator delivery is a {@link WorkflowInvokePayload} without a
+ * `stepId`: the start of a run, a wake after a step outcome, a hook resume,
+ * a cancellation or a timer. A step execution message (`stepId` set) and a
+ * health check (`__healthCheck`, which may carry the `runId` it prepares) are
+ * not, and keep full parallelism.
+ *
+ * Every World serializes orchestrator deliveries per run: at most one
+ * delivery for a given run id is in flight at a time, the others wait
+ * behind it, and step messages are never held back by it. That is the
+ * queue half of the single-writer guarantee on single-orchestrator runs
+ * (spec >= 9). The in-band fence is the other half: it makes an overlap that
+ * the queue still lets through (a delivery that outlives its lease) safe.
+ */
+export function orchestratorRunIdOf(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const message = payload as Record<string, unknown>;
+  if (message.__healthCheck === true) return undefined;
+  if (typeof message.stepId === 'string') return undefined;
+  return typeof message.runId === 'string' ? message.runId : undefined;
+}
+
 export interface QueueOptions {
   deploymentId?: string;
   /**

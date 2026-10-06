@@ -651,10 +651,11 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World's queue supports `maxConcurrency`-limited consumption, in
-   * particular per-run orchestrator topics consumed with `maxConcurrency: 1`
-   * so that a run's orchestrator invocations run one at a time. Worlds whose
-   * queue has no concurrency-limit concept must leave this unset.
+   * The World's queue delivers a run's orchestrator messages one at a time
+   * (see `orchestratorRunIdOf`): per-run topics consumed with
+   * `maxConcurrency: 1` on Vercel Queues, an in-process per-run gate or a
+   * per-run job queue elsewhere. Worlds whose queue cannot serialize a run's
+   * orchestrator deliveries must leave this unset.
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
    * no fast path from it: one orchestrator at a time is a frequency
