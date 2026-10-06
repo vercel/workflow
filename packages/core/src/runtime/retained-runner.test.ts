@@ -2538,6 +2538,104 @@ it('creates the run itself on an invoke-first start, before its connection or wa
   expect((await world.runs.get(runId)).runId).toBe(runId);
 });
 
+it('runs no step before a durable invoke-first creation, and acknowledges once the run exists', async () => {
+  const marks: string[] = [];
+  let releaseStep!: () => void;
+  const stepGate = new Promise<void>((resolve) => {
+    releaseStep = resolve;
+  });
+  registerStepFunction('firstStepMark', async (label) => {
+    marks.push(label as string);
+    await stepGate;
+    return label;
+  });
+  const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
+  const world = createWorld({ dataDir: directory }) as World;
+  cleanups.push(async () => {
+    await world.close?.();
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
+  });
+  const runId = `wrun_${ulid()}`;
+  const create = world.events.create.bind(world.events);
+  const staged: string[] = [];
+  const flushed: string[][] = [];
+  let releaseFlush!: () => void;
+  const firstFlush = new Promise<void>((resolve) => {
+    releaseFlush = resolve;
+  });
+  vi.spyOn(world, 'queue').mockResolvedValue({ messageId: null });
+  world.events.createWriteSession = () => ({
+    catchUp: vi.fn(),
+    startFresh: vi.fn(),
+    create: (event, params) => create(runId, event, params),
+    stage: async (event, params) => {
+      staged.push(event.eventType);
+      return create(runId, event, params);
+    },
+    flush: async () => {
+      flushed.push([...staged]);
+      if (flushed.length === 1) await firstFlush;
+    },
+    dispose() {},
+  });
+  const metadata = {
+    queueName: ValidQueueName.parse('__wkf_workflow_workflow'),
+    messageId: MessageId.parse('invoke_start'),
+    attempt: 1,
+  };
+  const owner = new RetainedRunner(
+    world,
+    runId,
+    '__wkf_workflow_',
+    firstStepCode,
+    metadata,
+    () => {},
+    40
+  );
+  const runInput = {
+    input: await dehydrateWorkflowArguments([], runId, undefined, []),
+    deploymentId: 'test',
+    workflowName: 'workflow',
+    specVersion: SPEC_VERSION_CURRENT,
+    executionContext: { retainedRunnerVersion: 1 },
+  };
+  let acknowledged = false;
+  const started = owner
+    .submit(
+      {
+        runId,
+        invoke: true,
+        requestId: `run-start:${runId}`,
+        input: { type: 'run_start', version: 2, durableCreate: true, runInput },
+      },
+      metadata
+    )
+    .then(() => {
+      acknowledged = true;
+    });
+  await vi.waitFor(() => expect(flushed).toHaveLength(1));
+  // Only run_created is behind the first barrier; nothing has run yet.
+  expect(flushed[0]).toEqual(['run_created']);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(marks).toEqual([]);
+  expect(acknowledged).toBe(false);
+  releaseFlush();
+  // The start is acknowledged once the run exists, while its first step is
+  // still running.
+  await started;
+  await vi.waitFor(() => expect(marks).toEqual(['first']));
+  expect(acknowledged).toBe(true);
+  releaseStep();
+  await vi.waitFor(async () =>
+    expect((await world.runs.get(runId)).status).toBe('completed')
+  );
+});
+
 it('creates the run from a start backup wake only when the run does not exist', async () => {
   const marks: string[] = [];
   registerStepFunction('firstStepMark', async (label) => {

@@ -205,6 +205,13 @@ export interface StartOptionsBase {
   experimental_routingKey?: string;
 
   /**
+   * With an invoke-first start, wait for `run_created` to be durable before
+   * the first step runs, and resolve `start()` as soon as the run exists.
+   * Defaults to `WORKFLOW_DURABLE_RUN_CREATED=1`.
+   */
+  experimental_durableRunCreated?: boolean;
+
+  /**
    * The ID of an existing run this run is being replayed from, if any.
    *
    * Recorded on the new run's `executionContext` as `replayedFromRunId` so
@@ -720,6 +727,10 @@ export async function start<TArgs extends unknown[], TResult>(
             {
               type: 'run_start',
               version: 2,
+              ...((opts.experimental_durableRunCreated ??
+              process.env.WORKFLOW_DURABLE_RUN_CREATED === '1')
+                ? { durableCreate: true }
+                : {}),
               runInput: {
                 input: workflowArguments,
                 deploymentId,

@@ -306,6 +306,10 @@ export class RetainedRunner {
   private startInput?: RunInput;
   /** An invoke-first start: create the run without waiting for catch-up. */
   private freshStart = false;
+  /** Invoke-first start that waits for `run_created` before any step body. */
+  private durableCreate = false;
+  /** Set once a durable creation is ready for its start to be acknowledged. */
+  private createdDurably = false;
   private eventWriter?: EventWriteSession;
   private failureCommitted = false;
   private loopIteration = 0;
@@ -544,6 +548,8 @@ export class RetainedRunner {
       if (start?.success) {
         this.startInput ??= start.data;
         this.freshStart = true;
+        this.durableCreate =
+          (parsed.input as { durableCreate?: unknown }).durableCreate === true;
       } else if (!parsed.invoke && parsed.runInput)
         this.startInput ??= parsed.runInput;
     }
@@ -605,8 +611,16 @@ export class RetainedRunner {
             throw new InputRejected('Invalid start input', { status: 400 });
           // A retained session means the run already advanced to a
           // suspension; re-advancing without new events is not a valid resume.
-          if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
-            await this.advance();
+          const advance = async () => {
+            if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
+              await this.advance();
+          };
+          // A durably created run is acknowledged once it exists (and its wake
+          // is armed); its first advance is the mailbox's next serialized item.
+          if (this.createdDurably) {
+            this.createdDurably = false;
+            this.enqueue('run_start.advance', advance).catch(() => {});
+          } else await advance();
           return { status: 'accepted' };
         }
         if (
@@ -770,9 +784,17 @@ export class RetainedRunner {
       await this.observed('create_run', () => this.createRun(startInput), {
         parentSpanId,
       });
-      await this.observed('load_run', () => this.validateRun(), {
-        parentSpanId,
-      });
+      // Durable creation: no step body runs before the run exists. Validation
+      // overlaps the flush; later transitions stay pipelined behind it.
+      await Promise.all([
+        this.durableCreate
+          ? this.observed('create_run_durable', () => this.flushWriter(), {
+              parentSpanId,
+            })
+          : undefined,
+        this.observed('load_run', () => this.validateRun(), { parentSpanId }),
+      ]);
+      this.createdDurably = this.durableCreate;
     } else if (catchUp) {
       // The owner's transport streams its whole committed history; run, Step
       // and Hook state is derived from those events alone.
