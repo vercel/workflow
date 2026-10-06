@@ -1,5 +1,14 @@
 # @workflow/next
 
+## 5.0.2
+
+### Patch Changes
+
+- [#4268](https://github.com/vercel/workflow/pull/4268) [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fail the build when the workflow bundle still contains `require()`. The workflow sandbox has no `require`, so an import esbuild left external (most often a Node.js builtin reached through a transitive dependency or a re-export) or an unresolved dynamic `require()` used to produce a bundle that threw `ReferenceError: require is not defined` on its first load. The build now reports the specifier, the module that imported it and the import chain back to user code. A `require()` inside a `try`/`catch` block, or behind a `typeof require` check, is left alone, since that is how packages probe for an optional dependency and the call either fails harmlessly or never runs. Set `WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE=1` to downgrade the failure to a warning.
+- Updated dependencies [[`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4), [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117), [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/core@5.1.0
+  - @workflow/builders@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

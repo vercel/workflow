@@ -1,5 +1,31 @@
 # @workflow/core
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4578](https://github.com/vercel/workflow/pull/4578) [`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4) Thanks [@wycats](https://github.com/wycats)! - Export the existing `Serializable` type from `@workflow/core` and `workflow`.
+
+### Patch Changes
+
+- [#4595](https://github.com/vercel/workflow/pull/4595) [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove the unused, stale `vm-serde-bundle.generated.ts` left over from the retired in-VM QuickJS serializer.
+
+- [#4667](https://github.com/vercel/workflow/pull/4667) [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Wait for run creation before writing to writable streams passed as arguments to turbo steps.
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Mark `step_failed` writes that record a failed step body with `afterStepBody`, so a World can keep waiting out a throttled write instead of re-running the body.
+
+- [#4605](https://github.com/vercel/workflow/pull/4605) [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Release drained stream writer sockets without closing the shared stream, preserve handle reuse over HTTP, and dispose transports when public writable streams abort. Propagate source failures to readers of flushable stream pipes.
+
+- [#4594](https://github.com/vercel/workflow/pull/4594) [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serialize only the viewed bytes of a `Float16Array` (no longer the whole Node `Buffer` pool behind it), and support `Float16Array` in the QuickJS engine with the same wire format as the node:vm engine.
+
+- [#4640](https://github.com/vercel/workflow/pull/4640) [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix cross-deployment hook resumes and starts writing zstd payloads to runs on Node.js versions that cannot decode them. Required for upgrading to a newer Node.js version while existing runs on older Node.js versions are still receiving hooks.
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4), [`9ca188a`](https://github.com/vercel/workflow/commit/9ca188a1e9ec229af92bf82f4ead511ca3a626f2), [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`a6c455a`](https://github.com/vercel/workflow/commit/a6c455a09c622e184f518764109fa455eb718699), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`81eac1d`](https://github.com/vercel/workflow/commit/81eac1db2c237a5135ef4d2d0b66cd95c74057f0), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/world-local@5.0.2
+  - @workflow/world-vercel@5.1.0
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

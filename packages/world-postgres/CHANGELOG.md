@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 5.0.2
+
+### Patch Changes
+
+- [#4658](https://github.com/vercel/workflow/pull/4658) [`a5c3983`](https://github.com/vercel/workflow/commit/a5c398328f1f17cb2ded7ff16988288818694939) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reconnect the stream and run-status `LISTEN` connection after the database drops it, instead of crashing the process.
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4), [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/world-local@5.0.2
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes
