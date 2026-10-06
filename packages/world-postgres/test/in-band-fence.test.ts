@@ -12,6 +12,7 @@ import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { inBandFenceConformance } from '../../world/src/test-support/in-band-fence-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
+import { createWorld } from '../src/index.js';
 import { RUN_STATUS_TOPIC } from '../src/run-status.js';
 import {
   createEventsStorage,
@@ -72,10 +73,11 @@ describe('in-band fence (world-postgres)', () => {
     return runId;
   }
 
-  // The fence behavior every fenced World shares.
+  // The fence behavior every World shares.
   inBandFenceConformance({
     name: 'world-postgres',
     events: () => events,
+    capabilities: () => createWorld({ pool }).capabilities,
     newRunId: () => `wrun_${ulid()}`,
     atRunCreation: IN_BAND_SEQ_AT_RUN_CREATION,
     concurrentWriters: 12,

@@ -28,6 +28,7 @@ import {
   dehydrateWorkflowArguments,
   hydrateRunError,
 } from './serialization.js';
+import { acceptingFenceSnapshot } from './test-support/fence-snapshot.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
@@ -116,7 +117,7 @@ async function runWorkflowHandlerWithEvents(
     specVersion: SPEC_VERSION_CURRENT,
     // Declares atomic, immutable deployments (as world-vercel does); worlds
     // that leave it unset (local/postgres) skip the deployment guard.
-    capabilities: { deploymentAffinity: true },
+    capabilities: { inBandFence: true, deploymentAffinity: true },
     getDeploymentId: vi.fn(
       async () => options.currentDeploymentId ?? workflowRun.deploymentId
     ),
@@ -158,6 +159,7 @@ async function runWorkflowHandlerWithEvents(
         data: events,
         hasMore: false,
         cursor: 'cursor_test',
+        snapshot: acceptingFenceSnapshot(events),
       })),
     },
     runs: {
@@ -447,6 +449,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
@@ -981,6 +984,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
@@ -1010,6 +1014,7 @@ describe('workflowEntrypoint replay guards', () => {
           data: [],
           hasMore: false,
           cursor: 'cursor_test',
+          snapshot: acceptingFenceSnapshot([]),
         })),
       },
       runs: {
@@ -1240,12 +1245,14 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       data: [...durableEvents],
       hasMore: false,
       cursor: 'cursor_test',
+      snapshot: acceptingFenceSnapshot(durableEvents),
     }));
     const recordStepExecution = vi.fn();
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       telemetry: { recordStepExecution },
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (
@@ -1489,6 +1496,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     });
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
@@ -1511,6 +1519,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
           data: [...durableEvents],
           hasMore: false,
           cursor: 'c',
+          snapshot: acceptingFenceSnapshot(durableEvents),
         })),
       },
       runs: { get: vi.fn(async () => workflowRun) },
@@ -1653,6 +1662,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
 
     const runsGet = vi.fn(async () => workflowRun);
     setWorld({
+      capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler: vi.fn(
         (
@@ -1697,6 +1707,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
           data: [...durableEvents],
           hasMore: false,
           cursor: 'cursor_test',
+          snapshot: acceptingFenceSnapshot(durableEvents),
         })),
       },
       runs: {
@@ -1939,9 +1950,10 @@ describe('workflowEntrypoint turbo mode', () => {
     });
 
     setWorld({
+      capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_CURRENT,
       ...(opts.currentDeploymentId
-        ? { capabilities: { deploymentAffinity: true } }
+        ? { capabilities: { inBandFence: true, deploymentAffinity: true } }
         : {}),
       getDeploymentId: vi.fn(
         async () => opts.currentDeploymentId ?? 'test-deployment'
@@ -1971,6 +1983,7 @@ describe('workflowEntrypoint turbo mode', () => {
           data: [...durable],
           hasMore: false,
           cursor: 'cursor_turbo',
+          snapshot: acceptingFenceSnapshot(durable),
         })),
       },
       runs: { get: vi.fn(async () => runEntity) },
@@ -2208,6 +2221,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
@@ -2249,6 +2263,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
           data: [...durable],
           hasMore: false,
           cursor: 'cursor_latency',
+          snapshot: acceptingFenceSnapshot(durable),
         })),
       },
       runs: { get: vi.fn(async () => runEntity) },
@@ -2583,6 +2598,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
     }));
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => 'dpl_test'),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>

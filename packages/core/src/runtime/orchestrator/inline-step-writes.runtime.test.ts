@@ -142,7 +142,7 @@ describe.each([
     const { world, start } = await setupOrchestratorRun(
       oneStepWorkflow,
       [],
-      { fence: true },
+      {},
       engine
     );
     await throttleFirstStart(world, oneStepWorkflow, { iw_a: 5 });
@@ -173,7 +173,7 @@ describe.each([
     const { world, start } = await setupOrchestratorRun(
       threeStepWorkflow,
       [],
-      { fence: true },
+      {},
       engine
     );
     await throttleFirstStart(world, threeStepWorkflow, { iw_a: 3, iw_b: 9 });
@@ -204,7 +204,6 @@ describe.each([
         threeStepWorkflow,
         [],
         {
-          fence: true,
           advanceClock: (seconds) => {
             offsetMs += seconds * 1000;
           },
@@ -234,7 +233,7 @@ describe.each([
     const { world, start } = await setupOrchestratorRun(
       oneStepWorkflow,
       [],
-      { fence: true },
+      {},
       engine
     );
     // The first delivery dies inside the body: its outcome write never
@@ -273,7 +272,7 @@ describe.each([
     const { world, runId, start } = await setupOrchestratorRun(
       hookRaceWorkflow,
       [],
-      { fence: true },
+      {},
       engine
     );
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');

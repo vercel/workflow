@@ -26,6 +26,7 @@ import {
 } from './events.js';
 import { EVENTS_API_VERSION, throwForErrorResponse } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { createWorld } from './index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -783,5 +784,11 @@ describe('fenced batch', () => {
         config(agent)
       )
     ).rejects.toSatisfy((err: unknown) => InBandSupersededError.is(err));
+  });
+});
+
+describe('capabilities', () => {
+  it('declares the in-band fence the runtime requires', () => {
+    expect(createWorld().capabilities?.inBandFence).toBe(true);
   });
 });

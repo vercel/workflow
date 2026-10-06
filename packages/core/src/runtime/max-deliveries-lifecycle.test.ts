@@ -20,6 +20,7 @@ beforeEach(() => {
   vi.stubEnv('WORKFLOW_MAX_QUEUE_DELIVERIES', '1');
   vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
     events: {
       create,

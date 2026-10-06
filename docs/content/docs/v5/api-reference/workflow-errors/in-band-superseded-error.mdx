@@ -8,7 +8,7 @@ related:
   - /docs/configuration/runtime-tuning
 ---
 
-A World that implements the in-band fence throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log.
+A World throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log.
 
 <Callout>
 The Workflow runtime handles this error. The refused invocation stops writing and starts no further inline step bodies, does not acknowledge its queue message, and asks for the same message again after a short delay ([`WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`](/docs/configuration/runtime-tuning#workflow_fence_redelivery_delay_seconds)). The next delivery loads the log afresh. It never adopts the counts the error carries. You will only encounter it when interacting with World storage APIs directly.

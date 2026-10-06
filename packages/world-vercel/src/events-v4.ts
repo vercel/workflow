@@ -591,7 +591,7 @@ const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
  * The in-band fence's sequencer snapshot on a single-orchestrator run's list
  * response: read strongly consistently before the listing began, in slot
  * units. A load that follows the cursor to the end covers every slot up to
- * `seq`. Absent for older runs, and from a backend without the fence.
+ * `seq`. Absent for runs created before spec 9.
  */
 const EventLogSnapshotWireSchema = z.compile(
   z.object({

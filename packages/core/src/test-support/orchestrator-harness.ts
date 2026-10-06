@@ -23,7 +23,7 @@ export function registerWorkflow(name = 'workflow'): string {
 export async function setupOrchestratorRun(
   code: string,
   args: unknown[],
-  options: ConstructorParameters<typeof AppendOnlyWorld>[0] = { fence: true },
+  options: ConstructorParameters<typeof AppendOnlyWorld>[0] = {},
   engine: 'node' | 'quickjs' = 'node'
 ) {
   const runId = `wrun_so_${Math.random().toString(36).slice(2)}`;

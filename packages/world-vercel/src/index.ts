@@ -66,6 +66,10 @@ export function createWorld(config?: APIConfig): World {
       // orchestrator messages go to a per-run topic consumed with
       // `maxConcurrency: 1` (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // The backend fences in-band writes on single-orchestrator runs: list
+      // pages carry `snapshot`, and a stale in-band write gets 412
+      // `in-band-superseded`, mapped to `InBandSupersededError` (events.ts).
+      inBandFence: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,

@@ -119,6 +119,8 @@ import {
   getFenceRedeliveryDelaySeconds,
   InBandWriter,
   OrchestratorSupersededError,
+  RESILIENT_START_SNAPSHOT,
+  requireLoadSnapshot,
 } from './runtime/orchestrator/in-band-writer.js';
 import {
   getOrchestratorPollIntervalMs,
@@ -889,7 +891,7 @@ export function workflowEntrypoint(
             // (it is exempt from the cap).
             const loaded = await loadWorkflowRunEvents(runId);
             const writer = new InBandWriter(world, runId);
-            writer.adoptSnapshot(loaded.snapshot);
+            writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
             await writer.create(
               {
                 eventType: 'run_failed',
@@ -1238,17 +1240,9 @@ export function workflowEntrypoint(
                       prepareReplayEvent(event);
                     }
                     logBehind = false;
-                    // A run whose `run_created` never landed (resilient start)
-                    // has no log and no snapshot yet. Its first in-band write,
-                    // `run_started` carrying the creation data, follows the
-                    // creation the World performs for it, which counts as the
-                    // run's first in-band write.
-                    writer.adoptSnapshot(
-                      loaded.snapshot ??
-                        (loaded.events.length === 0
-                          ? { seq: 0, seqInBand: 1 }
-                          : undefined)
-                    );
+                    // Throws a World contract error for a log without a
+                    // snapshot, except a resilient start's empty one.
+                    writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
                     log = { events: loaded.events, cursor: loaded.cursor };
                     return log;
                   };
@@ -1517,8 +1511,12 @@ export function workflowEntrypoint(
                       }
                       // Resilient start: `run_created` never landed, and this
                       // first delivery carries what the World needs to create
-                      // the run from `run_started`.
+                      // the run from `run_started`. A load that failed left no
+                      // snapshot; the run holds no in-band position yet.
                       log = { events: [], cursor: null };
+                      if (!writer.hasSnapshot) {
+                        writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
+                      }
                     } else if (loadOutcome.status === 'rejected') {
                       // A World contract error on the log load fails the run
                       // (out-of-band, since there is no fence snapshot); any

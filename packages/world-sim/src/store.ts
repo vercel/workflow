@@ -21,7 +21,6 @@ import {
   EntityConflictError,
   HookNotFoundError,
   InBandSupersededError,
-  PreconditionFailedError,
   RunExpiredError,
   TooEarlyError,
   WorkflowRunNotFoundError,
@@ -62,74 +61,6 @@ const MAX_EVENTS_PER_RUN = 25_000;
 const DEFAULT_PAGE_LIMIT = 20;
 
 /**
- * How many of a run's most recent event ids the count guard keeps.
- *
- * Mirrors workflow-server's `RUN_EVENT_INDEX_WINDOW`. The window is what makes
- * the guard one-sided: a hole deeper than this cannot be proven, so the
- * comparison reports `indeterminate` and the write is allowed through.
- */
-const RUN_EVENT_INDEX_WINDOW = 16;
-
-/**
- * Sim-internal `events.create` params, supplied by the world facade rather than
- * by the runtime under test.
- */
-interface SimCreateParams {
-  /**
-   * The log this write was decided against, or absent when the write did not
-   * come from a replay context at all (an out-of-band writer, or a store driven
-   * directly by a unit test).
-   *
-   * Reconstructed by the world facade from the pages the writer read, because
-   * the runtime no longer states it: `@workflow/core` describes its snapshot as
-   * a slot count, and the sim mints ULIDs, so there is nothing on the wire for
-   * the fence to read. The reconstruction is the same derivation the client
-   * used to make (the newest loaded position, and how many events sit at or
-   * below it), which is what lets the fence spot a hole *behind* the watermark
-   * that no comparison against the watermark alone can see.
-   *
-   * See `SimStoreOptions.preconditionGuard` and `SimWorldOptions.countGuard`.
-   */
-  snapshot?: LoadedSnapshot;
-}
-
-/** What a replay-context writer had loaded when it decided to write. */
-export interface LoadedSnapshot {
-  /** Slot of the newest loaded event. */
-  maxSlot: number;
-  /** How many loaded events sit at or below {@link maxSlot}. */
-  count: number;
-}
-
-/** Per run: the tail of the log, for the count guard. See `countRecordedAtOrBelow`. */
-interface RunEventIndex {
-  recentEventIds: string[];
-  total: number;
-}
-
-/**
- * How many events the log holds at or below the caller's watermark, or `null`
- * when the retained window cannot prove it.
- *
- * Ported from workflow-server's `countRecordedAtOrBelow`, including its
- * exactness argument: pruning always drops the oldest id, so `total - above` is
- * exact whenever the window still reaches back past the snapshot. The one case
- * it refuses to evaluate is a pruned window whose every retained id is above
- * the snapshot, since the dropped ids may have been above it too.
- */
-function countRecordedAtOrBelow(
-  index: RunEventIndex,
-  maxSlot: number
-): number | null {
-  const above = index.recentEventIds.filter(
-    (id) => requireEventSlot(id) > maxSlot
-  ).length;
-  const pruned = index.total > index.recentEventIds.length;
-  if (pruned && above === index.recentEventIds.length) return null;
-  return index.total - above;
-}
-
-/**
  * In-band positions a new run holds: `run_created`'s. The in-band fence's
  * count starts here.
  */
@@ -138,31 +69,6 @@ export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
 export interface SimStoreOptions {
   now(): number;
   ids: IdFactory;
-  /**
-   * Enforce the optimistic-concurrency precondition guard described in
-   * `WorldCapabilities.preconditionGuard`: reject a replay-context write whose
-   * snapshot predates the newest externally-originated event.
-   *
-   * Off by default. Turning it on is the point of a simulation (it lets a
-   * scenario check that the runtime recovers from a 412 fence), but it also
-   * changes which runtime fast paths engage, so it is never implicit.
-   */
-  preconditionGuard?: boolean;
-  /**
-   * Also enforce workflow-server's *count* guard: reject a write whose caller
-   * loaded fewer events at or below its own watermark than the log actually
-   * holds there.
-   *
-   * This is the half of the fence the watermark cannot express. A high-water
-   * mark answers "is there anything newer than my snapshot?", which sees a log
-   * truncated at the end; the count answers "is anything missing *behind* my
-   * snapshot?", which is the hole two concurrent writers actually produce.
-   *
-   * Requires `preconditionGuard`: it counts against the same watermark. Both
-   * halves read `SimCreateParams.snapshot`, which the world facade
-   * reconstructs; see `SimWorldOptions.countGuard`.
-   */
-  countGuard?: boolean;
   /** Invoked after every successful append, before the create call returns. */
   onEvent?(event: Event): void;
   /** Invoked when a read was served an incomplete log. */
@@ -330,18 +236,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const waits = new Map<string, Wait>();
   /** hookIds that have been explicitly disposed; disposal is permanent. */
   const disposedHooks = new Set<string>();
-  /**
-   * Per run: ULID time of the newest externally-originated event. Only read
-   * when `preconditionGuard` is on. See `SimCreateParams.snapshot`.
-   */
-  const externalWriteMarker = new Map<string, number>();
-  /**
-   * Per run: the tail of the log, for the count guard. Records *every* event,
-   * replay-origin included: the corruption it guards against is one replay
-   * racing another, which the out-of-band marker cannot see by construction.
-   */
-  const runEventIndex = new Map<string, RunEventIndex>();
-
   /** Reads to withhold the next appended event from, once it is appended. */
   let armedWithhold: number | undefined;
   /** The withheld event and how many more reads must not see it. */
@@ -387,25 +281,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       );
   }
 
-  function recordInIndex(event: Event): void {
-    const index = runEventIndex.get(event.runId) ?? {
-      recentEventIds: [],
-      total: 0,
-    };
-    index.recentEventIds.push(event.eventId);
-    // Keep the window in mint order, so "oldest id" and "oldest event" stay the
-    // same thing: `countRecordedAtOrBelow`'s exactness argument depends on it.
-    index.recentEventIds.sort((a, b) => a.localeCompare(b));
-    if (index.recentEventIds.length > RUN_EVENT_INDEX_WINDOW) {
-      index.recentEventIds.shift();
-    }
-    index.total++;
-    runEventIndex.set(event.runId, index);
-  }
-
   function append(event: Event): Event {
     events.push(event);
-    recordInIndex(event);
     if (armedWithhold !== undefined) {
       withheld = { eventId: event.eventId, remaining: armedWithhold };
       armedWithhold = undefined;
@@ -759,9 +636,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   ): Promise<EventResult> {
     // Event and entity timestamps are both assigned at commit.
     const now = new Date(nowMs());
-    const internal = params as
-      | (CreateEventParams & SimCreateParams)
-      | undefined;
     const resolveData: ResolveData = entityResolveData(
       params?.resolveData ?? 'all'
     );
@@ -815,42 +689,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       !currentRun
     ) {
       throw new WorkflowRunNotFoundError(runId);
-    }
-
-    // ---- Optimistic-concurrency fence -------------------------------------
-    // Two independent predicates, both evaluated here and both atomic with the
-    // append below (there is no await between them and it), mirroring
-    // workflow-server's handler. The first is a high-water mark; the second is
-    // a count. They fail on different shapes, and only together do they cover
-    // both halves of a two-writer race.
-    const snapshot = internal?.snapshot;
-    if (options.preconditionGuard && snapshot) {
-      const marker = externalWriteMarker.get(runId);
-      if (marker !== undefined && snapshot.maxSlot < marker) {
-        throw new PreconditionFailedError(
-          `Run "${runId}" changed out of band since the caller's snapshot`
-        );
-      }
-
-      // The count guard. `recorded > snapshot.count` means the log holds an
-      // event at or below the caller's own watermark that the caller never
-      // loaded: a hole, which the marker comparison above passes by
-      // construction because the missing event is *older* than the newest one
-      // the caller did see. A `null` count is indeterminate (the window pruned
-      // past the snapshot) and is never treated as stale: the guard is
-      // deliberately one-sided.
-      if (options.countGuard) {
-        const index = runEventIndex.get(runId);
-        const recorded = index
-          ? countRecordedAtOrBelow(index, snapshot.maxSlot)
-          : null;
-        if (recorded !== null && recorded > snapshot.count) {
-          throw new PreconditionFailedError(
-            `Run "${runId}" holds ${recorded} events at or below the caller's ` +
-              `watermark, but the caller loaded ${snapshot.count}`
-          );
-        }
-      }
     }
 
     const createsChildEntity = isChildEntityCreationEvent(data);
@@ -1160,35 +998,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
 
     event = append(event);
 
-    // Track externally-originated writes for the precondition fence. A write
-    // the facade attached no snapshot to did not come from a replay context, so
-    // it is exactly the kind of out-of-band change a replaying caller needs to
-    // be fenced against.
-    //
-    // Two details are load-bearing, both copied from workflow-server's
-    // `recordOutsideEvent`:
-    //
-    // - The mark is the event's own slot, not the commit instant. It has to use
-    //   the same unit as a caller's newest loaded position or a caller holding
-    //   exactly this event would compare as older and 412 forever.
-    // - The write is forward-only. Concurrent out-of-band events can commit out
-    //   of position order (the whole subject of these scenarios), and letting a
-    //   late-committing older event drag the mark backwards would silently
-    //   disarm the guard for the newer one.
-    if (
-      options.preconditionGuard &&
-      snapshot === undefined &&
-      (data.eventType === 'hook_received' ||
-        data.eventType === 'step_completed' ||
-        data.eventType === 'step_failed')
-    ) {
-      const previous = externalWriteMarker.get(runId) ?? 0;
-      externalWriteMarker.set(
-        runId,
-        Math.max(previous, requireEventSlot(event.eventId))
-      );
-    }
-
     // ---- Optional inline event delta --------------------------------------
     // All three fields or none of them: `EventResult` is a union of a populated
     // page and an all-`undefined` one, so they travel together as one object
@@ -1410,7 +1219,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       for (const event of log) {
         const seeded = clone(event) as Event;
         events.push(seeded);
-        recordInIndex(seeded);
         // The event's own position time is the only clock a seeded row can
         // have: the live one belongs to whenever this world was built.
         applyEvent(seeded, seeded.createdAt);

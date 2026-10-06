@@ -86,6 +86,8 @@ export function createWorld(
       // queue.ts), and the events storage fences in-band writes: the two
       // halves of the single-writer guarantee.
       maxConcurrency: true,
+      // Required by the runtime; see in-band-fence.test.ts for conformance.
+      inBandFence: true,
     },
     ...storage,
     ...streamer,

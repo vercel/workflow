@@ -112,7 +112,7 @@ async function seed(world: AppendOnlyWorld, runId: string, args: unknown[]) {
 async function setup(
   code: string,
   args: unknown[],
-  options: WorldOptions = { fence: true },
+  options: WorldOptions = {},
   beforeCreate?: (data: { eventType: string }) => void | Promise<void>
 ) {
   const runId = `wrun_hw_${Math.random().toString(36).slice(2)}`;
@@ -152,7 +152,7 @@ async function output(world: AppendOnlyWorld, runId: string) {
  * World and return the result that replay reaches.
  */
 async function coldReplay(world: AppendOnlyWorld, runId: string, code: string) {
-  const cold = new AppendOnlyWorld({ fence: true });
+  const cold = new AppendOnlyWorld({});
   const run = await world.asWorld().runs.get(runId);
   cold.seedRun({ ...run, status: 'running' });
   const terminal = world.events.findIndex(
@@ -349,7 +349,7 @@ describe.each([
       const { world, runId } = await setup(
         HOOK_WORKFLOW,
         [TOKEN],
-        { fence: true },
+        {},
         (event) => {
           if (event.eventType === 'hook_received' && reject) throw reject;
         }
@@ -390,7 +390,7 @@ describe.each([
       const { world, runId } = await setup(
         HOOK_WORKFLOW,
         [TOKEN],
-        { fence: true },
+        {},
         (event) => {
           if (event.eventType === 'hook_received' && rejectOnce) {
             const error = rejectOnce;
@@ -448,7 +448,7 @@ describe.each([
       ({ world, runId } = await setup(
         HOOK_OR_STEP_WORKFLOW,
         [TOKEN],
-        { fence: true },
+        {},
         async (event) => {
           if (event.eventType !== 'step_created' || injected) return;
           injected = true;
@@ -514,7 +514,7 @@ describe.each([
         ({ world, runId } = await setup(
           HOOK_OR_SLEEP_WORKFLOW,
           [TOKEN],
-          { fence: true, reportIncomplete },
+          { reportIncomplete },
           async (event) => {
             if (event.eventType !== 'wait_completed' || !armed) return;
             armed = false;
@@ -565,18 +565,13 @@ describe.each([
       try {
         let armed = false;
         let world!: AppendOnlyWorld;
-        ({ world } = await setup(
-          SLEEP_WORKFLOW,
-          [],
-          { fence: true },
-          (event) => {
-            if (event.eventType !== 'wait_completed' || !armed) return;
-            armed = false;
-            world.appendOutOfBand({
-              eventType: 'run_cancelled',
-            } as Partial<Event>);
-          }
-        ));
+        ({ world } = await setup(SLEEP_WORKFLOW, [], {}, (event) => {
+          if (event.eventType !== 'wait_completed' || !armed) return;
+          armed = false;
+          world.appendOutOfBand({
+            eventType: 'run_cancelled',
+          } as Partial<Event>);
+        }));
         await world.deliver(nextHeld(world));
 
         armed = true;

@@ -128,7 +128,7 @@ describe.each([
   const setup = (
     code: string,
     options?: Parameters<typeof setupOrchestratorRun>[2]
-  ) => setupOrchestratorRun(code, [], options ?? { fence: true }, engine);
+  ) => setupOrchestratorRun(code, [], options ?? {}, engine);
 
   it('a sleep that lost a race costs no events.list per step boundary', async () => {
     const { world, start } = await setup(openWaitRaceWorkflow);
@@ -220,7 +220,6 @@ describe.each([
 
     it('settles a getConflict() awaiter on a taken token in the same delivery', async () => {
       const { world, start } = await setup(getConflictTakenWorkflow, {
-        fence: true,
         takenHookTokens: [TAKEN_TOKEN],
       });
       await world.deliver(start);
@@ -235,7 +234,6 @@ describe.each([
 
     it('rejects a payload await on a taken token and continues in the same delivery', async () => {
       const { world, start } = await setup(awaitTakenWorkflow, {
-        fence: true,
         takenHookTokens: [TAKEN_TOKEN],
       });
       await world.deliver(start);
@@ -247,7 +245,6 @@ describe.each([
 
     it('still continues when the write response carries an incomplete report', async () => {
       const { world, start } = await setup(awaitTakenWorkflow, {
-        fence: true,
         takenHookTokens: [TAKEN_TOKEN],
         reportIncomplete: true,
       });
@@ -276,7 +273,6 @@ describe.each([
     ] as const)('finishes %s with VM retention off', async (_label, code, taken, expected) => {
       vi.stubEnv('WORKFLOW_RETAINED_VM', '0');
       const { world } = await setup(code, {
-        fence: true,
         takenHookTokens: taken,
       });
       await world.runUntilIdle();
@@ -291,12 +287,8 @@ describe.each([
     });
 
     it.each([
-      ['skipped-slot reports', { fence: true }],
-      [
-        'reads after an incomplete report',
-        { fence: true, reportIncomplete: true },
-      ],
-      ['no fence', {}],
+      ['skipped-slot reports', {}],
+      ['reads after an incomplete report', { reportIncomplete: true }],
     ] as const)('hands every step the state rebuilt by replay (%s)', async (_label, options) => {
       const { world } = await setup(growingStateWorkflow, {
         ...options,
@@ -324,7 +316,6 @@ describe.each([
       // ones from a list page with their inputs stripped.
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
       const { world } = await setup(growingStateWorkflow, {
-        fence: true,
         skipStepInputs: true,
       });
       await world.runUntilIdle();

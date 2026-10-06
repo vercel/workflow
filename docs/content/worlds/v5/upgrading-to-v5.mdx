@@ -136,7 +136,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, and `dynamicWorkflowCode`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
+| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, `inBandFence`, and `dynamicWorkflowCode`. `inBandFence` is required on the v6 beta (see [Single-writer guarantee](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
 | `events.createBatch` | Appends an ordered list of events in one durable write, with a per-event outcome for each. Implementing the method *is* the declaration: the runtime folds a suspension's `step_created` / `wait_created` writes into batches only when it exists, and otherwise takes the single-event path unchanged. Implement it with real atomicity per attempt, so a lost race leaves nothing behind, or leave it out. See [Batched event writes](/docs/changelog/batched-event-writes). |
 | `runs.waitForTerminalStatus` | Long-polls until a run reaches a terminal status. `await run.returnValue` uses it when present, instead of polling on an interval. |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |

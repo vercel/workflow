@@ -4,17 +4,17 @@ export const scenario: ScenarioSpec = {
   id: 'in-flight-before-decision-counted',
   name: 'in-flight: same tempo, in-band fence only, so an out-of-band hook supersedes nothing',
   description:
-    'The tempo of the scenario above with no precondition guard at all, ' +
-    'which is what a single-orchestrator run has. The webhook receiver commits ' +
+    'A hook in flight around the decision, against a single delivery with no ' +
+    'overlap (the scenario above adds one). The webhook receiver commits ' +
     'its hook after the orchestrator has written its timeout and while its ' +
     'branch decision (`step_started` for `settle`) is produced but not ' +
-    'committed. The old count guard refused that write because an event had ' +
-    'landed at or below the caller’s watermark, and the orchestrator reloaded ' +
-    'and decided again. The in-band fence does not: it counts only the ' +
+    'committed. The in-band fence does not refuse that write: it counts only the ' +
     'orchestrator’s own writes, and `hook_received` is out-of-band, so the ' +
     'decision is accepted as made and the hook takes the log position after ' +
     'the timeout. The log then says what the run did: the timer won the race, ' +
-    '`settle` ran, and the hook was consumed late, never as the race’s winner.',
+    '`settle` ran, and the hook was consumed late, never as the race’s winner. ' +
+    '(An earlier out-of-band count guard refused this write and made the ' +
+    'orchestrator decide again.)',
   workflow: 'stepCountForkWorkflow',
   input: ['doc-30'],
   script: async (sim) => {

@@ -22,7 +22,7 @@ The backend used to keep step and wait rows, written in the same transaction as 
 
 ## The fence
 
-The queue delivers a run's orchestrator messages one at a time, but an invocation whose event loop stalls past its lease can be redelivered while it is still alive. The World counts the positions allocated to in-band (orchestrator) writes. A log load returns that count, the orchestrator sends it with each in-band write, and the World refuses a stale one with `InBandSupersededError`. The refused invocation stops writing and running inline steps, does not acknowledge its message, and is delivered again. A write that resolves a promise (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports below it, so the workflow sees events in log order.
+The queue delivers a run's orchestrator messages one at a time, but an invocation whose event loop stalls past its lease can be redelivered while it is still alive. The World counts the positions allocated to in-band (orchestrator) writes. A log load returns that count, the orchestrator sends it with each in-band write, and the World refuses a stale one with `InBandSupersededError`. Every World must implement the fence and declare `capabilities.inBandFence`; the runtime refuses one that does not ([Building a World](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). The refused invocation stops writing and running inline steps, does not acknowledge its message, and is delivered again. A write that resolves a promise (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports below it, so the workflow sees events in log order.
 
 ## What is removed
 

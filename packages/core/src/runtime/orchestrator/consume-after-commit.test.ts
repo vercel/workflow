@@ -8,7 +8,7 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { loadWorkflowRunEventsFrom } from '../../test-support/load-events.js';
 import { slotSnapshotParams } from '../helpers.js';
 import { consumeOwnResolvingWrite } from './consume-after-commit.js';
-import { InBandWriter } from './in-band-writer.js';
+import { InBandWriter, requireLoadSnapshot } from './in-band-writer.js';
 
 const RUN = 'wrun_cac';
 
@@ -32,10 +32,10 @@ const waitCompleted = {
 
 describe('consumeOwnResolvingWrite', () => {
   it('feeds an unseen out-of-band event before the own resolving event', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
     const log = await loadWorkflowRunEventsFrom(world.asWorld(), RUN);
-    writer.adoptSnapshot(log.snapshot);
+    writer.adoptSnapshot(requireLoadSnapshot(RUN, log));
 
     // A background step's outcome commits after the load, below the
     // orchestrator's own wait_completed.
@@ -60,10 +60,10 @@ describe('consumeOwnResolvingWrite', () => {
   });
 
   it('consumes immediately when the report is empty', async () => {
-    const world = seeded({ fence: true });
+    const world = seeded({});
     const writer = new InBandWriter(world.asWorld(), RUN);
     const log = await loadWorkflowRunEventsFrom(world.asWorld(), RUN);
-    writer.adoptSnapshot(log.snapshot);
+    writer.adoptSnapshot(requireLoadSnapshot(RUN, log));
     const result = await writer.create(
       waitCompleted,
       slotSnapshotParams(log.events)
@@ -76,10 +76,10 @@ describe('consumeOwnResolvingWrite', () => {
   });
 
   it('asks for a reload when the report is incomplete', async () => {
-    const world = seeded({ fence: true, reportIncomplete: true });
+    const world = seeded({ reportIncomplete: true });
     const writer = new InBandWriter(world.asWorld(), RUN);
     const log = await loadWorkflowRunEventsFrom(world.asWorld(), RUN);
-    writer.adoptSnapshot(log.snapshot);
+    writer.adoptSnapshot(requireLoadSnapshot(RUN, log));
     const before = log.events.length;
     const result = await writer.create(
       waitCompleted,

@@ -46,7 +46,7 @@ let currentEngine: 'node' | 'quickjs' = 'node';
 
 async function setup() {
   const runId = `wrun_sx_${Math.random().toString(36).slice(2)}`;
-  const world = new AppendOnlyWorld({ fence: true });
+  const world = new AppendOnlyWorld({});
   world.seedRun({
     runId,
     workflowName: 'workflow',

@@ -18,6 +18,7 @@ import {
   vi,
 } from 'vitest';
 import { runtimeLogger } from './logger.js';
+import { acceptingFenceSnapshot } from './test-support/fence-snapshot.js';
 
 // Spy on VM-context construction while preserving the real implementation, so
 // we can prove the retained path builds ONE VM for a whole run instead of one
@@ -680,11 +681,13 @@ async function drive(
       data: served(visible, params),
       hasMore: false,
       cursor: nextCursor(visible.length),
+      snapshot: acceptingFenceSnapshot(visible),
     };
   });
   const queueSend = vi.fn(async () => ({ messageId: null }));
 
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>

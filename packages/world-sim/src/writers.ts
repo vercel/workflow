@@ -6,18 +6,13 @@
  * them**. The orchestrator loads the log, replays the workflow against it, and
  * commits what that decides; each step body writes its own result; a webhook
  * receiver writes a `hook_received` whenever it likes. Nothing sequences those
- * against each other, and the World API exposes no primitive that could; at
- * most an optimistic fence, which is two checks and not isolation:
- *
- * - a watermark is a high-water mark on one class of write ("is there an
- *   out-of-band event newer than my snapshot?"). It sees a log truncated at the
- *   end; it cannot see a hole in the middle.
- * - a count of the events the caller loaded at or below that mark closes the
- *   hole, but only for events already committed when the write is checked, and
- *   only within a bounded window of the log's tail.
- *
- * So a hole in the middle is what the step-vs-step scenarios exploit, and a hole
- * that opens *after* the write it should have fenced is beyond either check.
+ * against each other. On a single-orchestrator run (spec >= 9) exactly one
+ * class of writer is serialized: the orchestrator. The queue hands out one
+ * orchestrator delivery per run at a time, and the in-band fence refuses an
+ * orchestrator write whose count of in-band positions is stale, so of two
+ * overlapping orchestrators (`sim.expireLease()`) only one keeps writing.
+ * Out-of-band writers (step bodies, webhooks, cancellation) are never fenced:
+ * the orchestrator decides from the log, whatever order they land in.
  *
  * A real deployment resolves that by racing. This module resolves it by
  * *naming* the writers and letting a scenario advance them one at a time, so
@@ -351,10 +346,11 @@ export function createWriters(deps: {
           {
             phase: 'after',
             // "Committed" means committed. Without this a rejected create
-            // matches too, and under the fence a `PreconditionFailedError` is
-            // routine: the script would resume believing a write is durable
-            // when it 412'd, and the watermark would consume the point, so the
-            // retry's real commit would read as the *next* one.
+            // matches too, and under the in-band fence an
+            // `InBandSupersededError` is routine: the script would resume
+            // believing a write is durable when it 412'd, and the watermark
+            // would consume the point, so a later real commit would read as
+            // the *next* one.
             failed: false,
             eventTypes: toArray(eventType),
             ...(opts.stepName ? { stepName: opts.stepName } : {}),

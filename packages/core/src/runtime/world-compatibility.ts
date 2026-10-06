@@ -2,10 +2,9 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import {
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
-
-type WorldSpecVersionMetadata = Pick<World, 'specVersion'>;
 
 /**
  * Rejects a World this runtime cannot speak to.
@@ -35,7 +34,7 @@ type WorldSpecVersionMetadata = Pick<World, 'specVersion'>;
  * goes away, exactly as slot identity's own floor did.
  */
 export function assertWorldSupportsRuntimeProtocol(
-  world: WorldSpecVersionMetadata
+  world: Pick<World, 'specVersion'>
 ): void {
   const declared = world.specVersion;
   if (
@@ -53,5 +52,38 @@ export function assertWorldSupportsRuntimeProtocol(
       `through ${SPEC_VERSION_MAX_SUPPORTED}, ` +
       `but the configured World declares spec version ${supportedVersion}. ` +
       'Install a World package version compatible with the current Workflow runtime.'
+  );
+}
+
+/**
+ * Rejects a World that does not declare the in-band writer fence
+ * (`WorldCapabilities.inBandFence`).
+ *
+ * Every run this runtime creates and drives is a single-orchestrator run
+ * (spec >= 9), and on those the fence is what keeps a run to one writer when
+ * two orchestrator deliveries overlap: the runtime takes its in-band count
+ * from the `snapshot` of a log load and sends it on every in-band write, and
+ * it has no unfenced mode. Against a World without the fence two overlapping
+ * deliveries could both write decisions into the log, so the runtime refuses
+ * the World instead of running unprotected.
+ *
+ * Checked where a run is created (`start()`) and where an orchestrator
+ * delivery begins writing (the `InBandWriter`), so a misconfigured World
+ * fails the first `start()` and never writes an unfenced decision. Reads
+ * (streams, run and hook lookups) do not need the fence and are not
+ * checked.
+ */
+export function assertWorldSupportsInBandFence(
+  world: Pick<World, 'capabilities'>
+): void {
+  if (world.capabilities?.inBandFence === true) return;
+  throw new WorkflowRuntimeError(
+    'The configured World does not declare the in-band writer fence ' +
+      '(`capabilities.inBandFence`), which this Workflow runtime requires ' +
+      `for spec version ${SPEC_VERSION_SINGLE_ORCHESTRATOR} runs. ` +
+      'A World must return `snapshot: { seq, seqInBand }` from `events.list` ' +
+      'and refuse a stale in-band write with `InBandSupersededError` (412). ' +
+      'Install a World package version that implements it; see "Building a World" ' +
+      'in the Workflow docs.'
   );
 }

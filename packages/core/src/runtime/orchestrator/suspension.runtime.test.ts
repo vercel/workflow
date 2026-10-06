@@ -65,7 +65,7 @@ type WorldTweak = (world: World, store: AppendOnlyWorld) => void;
 async function setup(
   body: string,
   {
-    options = { fence: true },
+    options = {},
     tweak,
   }: {
     options?: ConstructorParameters<typeof AppendOnlyWorld>[0];

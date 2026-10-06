@@ -95,17 +95,18 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
  * Runs at this spec version or later follow the single-orchestrator model:
  * one orchestrator invocation per run makes every decision, step and wait
  * events are plain appends to the log (a World keeps no step or wait state it
- * checks writes against), and the orchestrator's own writes may be fenced.
+ * checks writes against), and the orchestrator's own writes are fenced.
  *
  * What changes for a reader and a writer:
  *
  * - Every write request says whether the run's orchestrator made it
  *   (`CreateEventParams.inBand`). An in-band write carries the orchestrator's
  *   count of in-band positions (`expectedSeqInBand`), taken from the
- *   `snapshot` its log load returned. A World that implements the fence
- *   refuses an in-band write whose count is stale with
+ *   `snapshot` its log load returned. The World refuses an in-band write
+ *   whose count is stale with
  *   `InBandSupersededError`, which makes at most one orchestrator a writer
- *   even when two invocations of it run at once.
+ *   even when two invocations of it run at once. Every World implements
+ *   this fence (`WorldCapabilities.inBandFence`).
  * - `step_created` records how the step executes (`eventData.inline`) and
  *   which queue message's invocation created it (`creatorMessageId`). Step
  *   events carry `stepName`, and `step_started` carries `attempt` and

@@ -408,13 +408,15 @@ export interface Storage {
    *   `step_failed` and `wait_completed` must stay accepted after the run
    *   ended.
    * - Each write says whether the orchestrator made it
-   *   ({@link CreateEventParams.inBand}). The **in-band fence** is optional:
-   *   a World that implements it returns a `snapshot` from `list` and
-   *   refuses a stale in-band write with `InBandSupersededError`, which keeps
-   *   the run to one writer even when two orchestrator invocations overlap. A
-   *   World without it ignores `inBand`/`expectedSeqInBand`, returns no
-   *   `snapshot`, and the runtime relies on its queue delivering a run's
-   *   orchestrator messages one at a time.
+   *   ({@link CreateEventParams.inBand}). The **in-band fence** is required:
+   *   `list` returns a `snapshot`, and a stale in-band write is refused with
+   *   `InBandSupersededError` before anything is written, which keeps the
+   *   run to one writer even when two orchestrator invocations overlap. The
+   *   queue delivering a run's orchestrator messages one at a time
+   *   (`WorldCapabilities.maxConcurrency`) makes such an overlap rare; the
+   *   fence is what makes it safe. A World declares the fence with
+   *   `WorldCapabilities.inBandFence`, and the runtime refuses a World that
+   *   does not.
    * - A `createBatch` on such a run is not atomic: an event of the batch may
    *   commit while another fails, and the runtime treats per-item results
    *   independently.
@@ -623,12 +625,15 @@ export interface Storage {
 }
 
 /**
- * Optional feature capabilities a World implementation declares so the core
- * runtime can enable optimizations that depend on backend behavior, instead
- * of inferring support from environment variables alone. Every capability
- * defaults to "unsupported" when absent: runtime fast paths that rely on
- * one must fail closed (keep their conservative behavior) unless the World
- * explicitly declares it.
+ * Feature capabilities a World implementation declares so the core runtime
+ * can enable behavior that depends on the backend, instead of inferring
+ * support from environment variables alone. Every capability defaults to
+ * "unsupported" when absent: runtime fast paths that rely on one must fail
+ * closed (keep their conservative behavior) unless the World explicitly
+ * declares it.
+ *
+ * One member is required rather than optional: {@link inBandFence}. The
+ * runtime refuses a World that does not declare it.
  */
 export interface WorldCapabilities {
   /**
@@ -659,10 +664,45 @@ export interface WorldCapabilities {
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
    * no fast path from it: one orchestrator at a time is a frequency
-   * mechanism, and the in-band fence (see `Storage['events']`) is what makes
-   * an overlap safe.
+   * mechanism, and the in-band fence ({@link inBandFence}) is what makes an
+   * overlap safe.
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World implements the in-band writer fence on single-orchestrator runs
+   * (spec >= 9). **Required**: this is the one member of
+   * {@link WorldCapabilities} the runtime does not treat as optional:
+   * `@workflow/core` refuses a World that does not declare it in `start()`
+   * and at the start of every orchestrator delivery, before it writes
+   * anything.
+   *
+   * Declaring it commits the World to all of:
+   *
+   * - **A per-run in-band count.** Next to the position counter its sequencer
+   *   allocates from (`seq`), the World counts the positions allocated to
+   *   in-band writes (`seqInBand`, see {@link CreateEventParams.inBand}). A
+   *   new run's `run_created` counts as in-band, so a fresh run holds
+   *   `seq = 1, seqInBand = 1`.
+   * - **A list snapshot.** `events.list` on such a run returns
+   *   `snapshot: { seq, seqInBand }` on every page
+   *   ({@link EventListResponse.snapshot}), read before the listing. A full
+   *   load from the first page covers every position up to that `seq`, each
+   *   one committed or sealed.
+   * - **Fenced in-band creates.** A create or batch with `inBand: true`
+   *   carries {@link CreateEventParams.expectedSeqInBand}. The World checks it
+   *   against `seqInBand` and advances both counters by the positions it
+   *   allocates in one atomic step. On a mismatch it throws
+   *   `InBandSupersededError` (HTTP 412, `in-band-superseded`) and writes and
+   *   allocates nothing. An in-band write without an expected count is a 400.
+   * - **Unfenced out-of-band creates.** Writes with `inBand: false` (or
+   *   absent) move `seq` and never `seqInBand`, and are never refused by the
+   *   fence.
+   *
+   * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
+   * each of these against a World's `events` storage.
+   */
+  inBandFence?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes

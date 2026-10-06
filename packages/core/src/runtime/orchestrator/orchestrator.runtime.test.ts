@@ -81,7 +81,7 @@ registerStepFunction('so_until_wait_completed', async () => {
 async function setup(
   code: string,
   args: unknown[],
-  options: ConstructorParameters<typeof AppendOnlyWorld>[0] = { fence: true }
+  options: ConstructorParameters<typeof AppendOnlyWorld>[0] = {}
 ) {
   const runId = `wrun_so_${Math.random().toString(36).slice(2)}`;
   const world = new AppendOnlyWorld(options);
@@ -164,7 +164,6 @@ describe.each([
        }${transform('workflow')}`,
       [1, 2],
       {
-        fence: true,
         encryptionKey: new Uint8Array(32).fill(7),
         lazyCreatePayloads: true,
       }
@@ -294,7 +293,6 @@ describe.each([
          async function workflow() { return await flaky(); }${transform('workflow')}`,
         [],
         {
-          fence: true,
           advanceClock: (seconds) => {
             offsetMs += seconds * 1000;
           },
@@ -347,7 +345,6 @@ describe.each([
          async function workflow() { return await step(); }${transform('workflow')}`,
         [],
         {
-          fence: true,
           advanceClock: (seconds) => {
             offsetMs += Math.min(seconds, MAX_HOP_SECONDS) * 1000;
           },
@@ -536,7 +533,7 @@ describe.each([
     expect(calls.so_until_wait_completed).toBe(1);
   });
 
-  it('runs against a World without the fence or a live feed', async () => {
+  it('fences every in-band write without a live feed', async () => {
     const { world } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
@@ -545,8 +542,10 @@ describe.each([
     );
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const inBand = world.creates.filter((c) => c.params?.inBand === true);
+    expect(inBand.length).toBeGreaterThan(0);
     expect(
-      world.creates.every((c) => c.params?.expectedSeqInBand === undefined)
+      inBand.every((c) => typeof c.params?.expectedSeqInBand === 'number')
     ).toBe(true);
   });
 

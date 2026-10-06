@@ -33,6 +33,7 @@ import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import { dehydrateWorkflowArguments } from './serialization.js';
 import { getNextTraceCarrier, getWorkflowTraceMode } from './telemetry.js';
+import { acceptingFenceSnapshot } from './test-support/fence-snapshot.js';
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
@@ -166,6 +167,7 @@ async function driveHandler(opts: {
   });
 
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
     createQueueHandler: vi.fn(
       (
@@ -207,6 +209,7 @@ async function driveHandler(opts: {
         data: [] as Event[],
         hasMore: false,
         cursor: 'cursor_test',
+        snapshot: acceptingFenceSnapshot([]),
       })),
     },
     runs: {
@@ -543,6 +546,7 @@ describe('workflowEntrypoint trace modes', () => {
     const workflowRun = await makeRunningRun('wrun_trace_route_cache');
 
     setWorld({
+      capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler: vi.fn(
         (
@@ -584,6 +588,7 @@ describe('workflowEntrypoint trace modes', () => {
           data: [] as Event[],
           hasMore: false,
           cursor: 'cursor_test',
+          snapshot: acceptingFenceSnapshot([]),
         })),
       },
       runs: {

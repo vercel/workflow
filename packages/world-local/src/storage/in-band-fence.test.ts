@@ -18,6 +18,7 @@ import {
 } from '@workflow/world';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { inBandFenceConformance } from '../../../world/src/test-support/in-band-fence-conformance.js';
+import { createWorld } from '../index.js';
 import { createStorage } from '../storage.js';
 import { IN_BAND_SEQ_AT_RUN_CREATION } from './events-storage.js';
 
@@ -70,7 +71,7 @@ function attrSet(value: string): AnyEventRequest {
   } as AnyEventRequest;
 }
 
-// The fence behavior every fenced World shares, each test on a fresh data dir.
+// The fence behavior every World shares, each test on a fresh data dir.
 const conformanceDirs: string[] = [];
 afterAll(() => {
   for (const dir of conformanceDirs)
@@ -82,6 +83,11 @@ inBandFenceConformance({
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wl-fence-conf-'));
     conformanceDirs.push(dir);
     return createStorage(dir).events;
+  },
+  capabilities: () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wl-fence-caps-'));
+    conformanceDirs.push(dir);
+    return createWorld({ dataDir: dir }).capabilities;
   },
   // world-local mints the run id.
   newRunId: () => null,

@@ -1,4 +1,8 @@
-import { InBandSupersededError, RunExpiredError } from '@workflow/errors';
+import {
+  InBandSupersededError,
+  RunExpiredError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type BatchEventRequest,
   type CreateEventParams,
@@ -48,11 +52,14 @@ export interface RecordedCreate {
  * `stepName` checks. Run state is checked the way the World contract still
  * asks (writes that start work on a terminal run are refused).
  *
+ * It implements the in-band writer fence every World must: it counts in-band
+ * positions, returns `snapshot` from `list`, refuses a stale in-band write
+ * with `InBandSupersededError`, and refuses an in-band write without an
+ * expected count with a 400.
+ *
  * It implements the optional parts of the single-orchestrator contract so
  * tests can switch them on and off:
  *
- * - `fence`: count in-band positions, return `snapshot` from `list`, and
- *   refuse a stale in-band write with `InBandSupersededError`.
  * - `subscribe`: the live feed.
  * - `reportIncomplete`: answer in-band writes with an incomplete skipped-slot
  *   report.
@@ -84,7 +91,6 @@ export class AppendOnlyWorld {
 
   constructor(
     readonly options: {
-      fence?: boolean;
       subscribe?: boolean;
       /** Raw AES-256 key returned for every run, so payloads are encrypted. */
       encryptionKey?: Uint8Array;
@@ -223,7 +229,13 @@ export class AppendOnlyWorld {
   }
 
   private checkFence(params: CreateEventParams | undefined, n: number): void {
-    if (!this.options.fence || params?.inBand !== true) return;
+    if (params?.inBand !== true) return;
+    if (params.expectedSeqInBand === undefined) {
+      throw new WorkflowWorldError(
+        'An in-band write must carry expectedSeqInBand',
+        { status: 400 }
+      );
+    }
     if (params.expectedSeqInBand !== this.seqInBand) {
       throw new InBandSupersededError('in-band-superseded', {
         seq: this.seq,
@@ -456,9 +468,7 @@ export class AppendOnlyWorld {
           ),
           cursor: page.at(-1)?.eventId ?? cursor ?? null,
           hasMore: page.length < data.length,
-          ...(self.options.fence
-            ? { snapshot: { seq: self.seq, seqInBand: self.seqInBand } }
-            : {}),
+          snapshot: { seq: self.seq, seqInBand: self.seqInBand },
         };
       },
       async listByCorrelationId(params) {
@@ -524,7 +534,7 @@ export class AppendOnlyWorld {
       async getEncryptionKeyForRun() {
         return self.options.encryptionKey;
       },
-      capabilities: {},
+      capabilities: { inBandFence: true },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';
       },

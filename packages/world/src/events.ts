@@ -889,24 +889,23 @@ export interface CreateEventParams {
    * `setAttributes()` outside the workflow body. Classification is by writer,
    * not by event type.
    *
-   * A World that implements the in-band fence counts the positions it
-   * allocates to in-band writes, and accepts an in-band write only when
-   * {@link expectedSeqInBand} equals that count. A World without the fence
-   * ignores this field; the runtime then relies on its queue delivering a
-   * run's orchestrator messages one at a time.
+   * Every World implements the in-band fence (`WorldCapabilities.inBandFence`):
+   * it counts the positions it allocates to in-band writes, and accepts an
+   * in-band write only when {@link expectedSeqInBand} equals that count.
    */
   inBand?: boolean;
   /**
    * The orchestrator's count of in-band positions, required with
-   * `inBand: true` on a World that implements the fence. The runtime starts
+   * `inBand: true` (a World answers an in-band write without it with a 400).
+   * The runtime starts
    * it from {@link EventListResponse.snapshot}`.seqInBand` of the first page
    * of the delivery's full log load, and advances it by the number of
    * positions each accepted in-band write allocated (1 for a single create,
    * the event count for a batch).
    *
-   * A fenced World refuses a write whose value differs from its count with
-   * `InBandSupersededError`, and allocates nothing for it, so a refusal never
-   * leaves a hole in the log.
+   * The World refuses a write whose value differs from its count with
+   * `InBandSupersededError`, and writes and allocates nothing for it, so a
+   * refusal never leaves a hole in the log.
    */
   expectedSeqInBand?: number;
   /**
@@ -1182,7 +1181,7 @@ export type EventResult<T extends EventType = EventType> = {
    */
   reportIncomplete?: boolean;
   /**
-   * How many positions this write allocated on a fenced World (spec >= 9):
+   * How many positions this write allocated (spec >= 9):
    * 1 for a create that appended its event, 0 for one that converged on an
    * event the log already held (an idempotent replay). The orchestrator
    * advances its in-band count by this number. Absent from a World that
@@ -1276,14 +1275,14 @@ export interface CreateEventBatchParams {
   inBand?: boolean;
   /**
    * The orchestrator's in-band count for the whole block, as
-   * {@link CreateEventParams.expectedSeqInBand}. A fenced World allocates the
+   * {@link CreateEventParams.expectedSeqInBand}. The World allocates the
    * block's positions in one conditional allocation.
    */
   expectedSeqInBand?: number;
   /**
    * The position the batch was decided from, as
-   * {@link CreateEventParams.eventCount}; required with `inBand: true` on a
-   * fenced World, whose response then carries the skipped-slot report for
+   * {@link CreateEventParams.eventCount}; required with `inBand: true`. The
+   * response then carries the skipped-slot report for
    * the block at the top level (`events` / `reportIncomplete` on
    * {@link EventBatchResult}).
    */
@@ -1375,8 +1374,8 @@ export interface GetEventParams {
 }
 
 /**
- * The sequencer state a fenced World read, strongly consistently, before it
- * listed a run's log (spec >= 9). Positions are slots.
+ * The sequencer state a World read, strongly consistently, before it listed
+ * a run's log (spec >= 9). Positions are slots.
  */
 export interface EventLogSnapshot {
   /** Highest position allocated to any write when the list began. */
@@ -1388,14 +1387,17 @@ export interface EventLogSnapshot {
 /**
  * Result of {@link Storage.events.list}.
  *
- * `snapshot` is returned by a World that implements the in-band fence, on
- * every page. A full load (following `cursor` until `hasMore` is false) then
+ * `snapshot` is required on every page of a single-orchestrator run's log
+ * (spec >= 9; see `WorldCapabilities.inBandFence`). A full load (following `cursor` until `hasMore` is false) then
  * covers every position up to `snapshot.seq` of its FIRST page, each one
  * committed or sealed as a `noop`. The runtime takes its
  * {@link CreateEventParams.expectedSeqInBand} from the first page's
  * `snapshot.seqInBand` and never from counting events in the log: a count
- * cannot tell which positions were in-band. A World without the fence omits
- * it.
+ * cannot tell which positions were in-band. The runtime refuses to write
+ * in-band from a full load whose first page has none.
+ *
+ * Optional in the type only because `list` also serves runs created before
+ * spec 9, which have no in-band count.
  */
 export type EventListResponse = PaginatedResponse<Event> & {
   snapshot?: EventLogSnapshot;

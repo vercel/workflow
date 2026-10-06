@@ -127,6 +127,7 @@ async function deliver(options: {
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: { inBandFence: true },
     getDeploymentId: vi.fn(async () => 'dpl_current'),
     createQueueHandler: vi.fn(
       (
