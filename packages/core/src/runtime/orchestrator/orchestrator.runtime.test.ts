@@ -137,6 +137,27 @@ describe.each([
     expect(world.queueCalls).toEqual([]);
   });
 
+  it('replays an inline step result when the create response carries no payload bytes', async () => {
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) {
+         const first = await add(a, b);
+         return await add(first, 10);
+       }${transform('workflow')}`,
+      [1, 2],
+      {
+        fence: true,
+        encryptionKey: new Uint8Array(32).fill(7),
+        lazyCreatePayloads: true,
+      }
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(calls.so_add).toBe(2);
+  });
+
   it('enqueues background steps once with a stable key and retention, and wakes without a key', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
     try {

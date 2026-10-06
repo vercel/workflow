@@ -1192,7 +1192,22 @@ export function workflowEntrypoint(
                       return;
                     }
                     if (ownSlot !== null) ownSlots.add(ownSlot);
+                    // Merged events take the same payload preparation as
+                    // loaded ones (decryption, decompression); replay reads
+                    // their payloads through the same cache.
+                    for (const event of report) prepareReplayEvent(event);
+                    prepareReplayEvent(own);
                     mergeReportedEvents(log.events, [...report, own]);
+                  };
+                  /** A write's events, with their payloads prepared for replay. */
+                  const preparedResult = <R extends EventResult>(
+                    result: R
+                  ): R => {
+                    for (const event of result.events ?? []) {
+                      prepareReplayEvent(event);
+                    }
+                    if (result.event) prepareReplayEvent(result.event);
+                    return result;
                   };
                   /** The in-band writer, folding each accepted write into the log. */
                   const writeInBand: EventCreator = async (data, params) => {
@@ -1222,7 +1237,17 @@ export function workflowEntrypoint(
                       prepareReplayEvent(event);
                     }
                     logBehind = false;
-                    writer.adoptSnapshot(loaded.snapshot);
+                    // A run whose `run_created` never landed (resilient start)
+                    // has no log and no snapshot yet. Its first in-band write,
+                    // `run_started` carrying the creation data, follows the
+                    // creation the World performs for it, which counts as the
+                    // run's first in-band write.
+                    writer.adoptSnapshot(
+                      loaded.snapshot ??
+                        (loaded.events.length === 0
+                          ? { seq: 0, seqInBand: 1 }
+                          : undefined)
+                    );
                     log = { events: loaded.events, cursor: loaded.cursor };
                     return log;
                   };
@@ -1916,8 +1941,10 @@ export function workflowEntrypoint(
                               { requestId }
                             );
                             if (
-                              consumeOwnResolvingWrite(log.events, completed)
-                                .type === 'reload'
+                              consumeOwnResolvingWrite(
+                                log.events,
+                                preparedResult(completed)
+                              ).type === 'reload'
                             ) {
                               session = null;
                               await fullLoad();
@@ -2649,8 +2676,10 @@ export function workflowEntrypoint(
                           'The event log is loaded after inline steps'
                         );
                         if (
-                          consumeOwnResolvingWrite(log.events, result.result)
-                            .type === 'reload'
+                          consumeOwnResolvingWrite(
+                            log.events,
+                            preparedResult(result.result)
+                          ).type === 'reload'
                         ) {
                           reload = true;
                         }

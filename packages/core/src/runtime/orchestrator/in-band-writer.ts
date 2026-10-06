@@ -182,9 +182,13 @@ export class InBandWriter {
           ...this.fenceParams(),
         });
         const inferred = this.allocatedBy([result.event]);
-        this.advance(result.allocated ?? inferred);
+        const allocated = result.allocated ?? inferred;
+        this.advance(allocated);
         return result.event
-          ? { ...result, event: withWrittenEventData(result.event, data) }
+          ? {
+              ...result,
+              event: withWrittenEventData(result.event, data, allocated > 0),
+            }
           : result;
       } catch (error) {
         throw this.stop(error);
@@ -219,9 +223,12 @@ export class InBandWriter {
         // per-item failure leaves a hole the World seals, and that position
         // still counts), except items answered with an event at a slot this
         // writer already knew, which allocated nothing.
-        const replayed = result.results.filter(
+        const fresh = result.results.map(
           (item) =>
-            item.error === undefined && !this.isNewSlot(item.event.eventId)
+            item.error === undefined && this.isNewSlot(item.event.eventId)
+        );
+        const replayed = result.results.filter(
+          (item, index) => item.error === undefined && !fresh[index]
         ).length;
         for (const item of result.results) {
           if (item.error === undefined) this.noteSlot(item.event.eventId);
@@ -232,7 +239,14 @@ export class InBandWriter {
           results: result.results.map((item, index) => {
             const request = events[index]?.event;
             return item.error === undefined && request
-              ? { ...item, event: withWrittenEventData(item.event, request) }
+              ? {
+                  ...item,
+                  event: withWrittenEventData(
+                    item.event,
+                    request,
+                    fresh[index] === true
+                  ),
+                }
               : item;
           }),
         };
@@ -317,23 +331,28 @@ export class InBandWriter {
 }
 
 /**
- * The committed event with the `eventData` this writer sent filled in where
- * the World left it out.
+ * The committed event, with the payload this writer sent.
  *
- * A World may answer a create without echoing the payload it stored (the
- * event comes back without its `input`, `result` or `error`), while the
+ * A World may answer a create without the payload it stored, or with a lazy
+ * reference to it instead of the bytes (world-vercel does both), while the
  * orchestrator folds its own writes into the log it replays from, and replay
- * needs those payloads. Only keys the response omits are taken from the
- * request: when a write converged on an event that already existed, the
- * World's copy is the canonical one.
+ * needs the bytes. For a fresh write (it allocated a position) the event is
+ * exactly what this writer sent, so the sent `eventData` wins. For a write
+ * that converged on an event that already existed, the World's copy is the
+ * canonical one, and only keys it left out are taken from the request.
  */
 export function withWrittenEventData<E extends Event>(
   event: E,
-  request: CreateEventRequest
+  request: CreateEventRequest,
+  fresh: boolean
 ): E {
   if (event.eventType !== request.eventType) return event;
   const sent = (request as { eventData?: Record<string, unknown> }).eventData;
   if (!sent) return event;
-  const stored = (event as { eventData?: Record<string, unknown> }).eventData;
-  return { ...event, eventData: { ...sent, ...(stored ?? {}) } };
+  const stored =
+    (event as { eventData?: Record<string, unknown> }).eventData ?? {};
+  return {
+    ...event,
+    eventData: fresh ? { ...stored, ...sent } : { ...sent, ...stored },
+  };
 }

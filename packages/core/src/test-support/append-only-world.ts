@@ -82,6 +82,14 @@ export class AppendOnlyWorld {
     readonly options: {
       fence?: boolean;
       subscribe?: boolean;
+      /** Raw AES-256 key returned for every run, so payloads are encrypted. */
+      encryptionKey?: Uint8Array;
+      /**
+       * Answer creates with a placeholder in place of the payload bytes, as a
+       * World that returns payloads as lazy references does. The log keeps
+       * the bytes.
+       */
+      lazyCreatePayloads?: boolean;
       reportIncomplete?: boolean;
       /**
        * Called with the delay of every `{ timeoutSeconds }` result, so a
@@ -266,6 +274,19 @@ export class AppendOnlyWorld {
     );
   }
 
+  /** The created event as a create response carries it. */
+  private responseEvent(event: Event): Event {
+    if (!this.options.lazyCreatePayloads) return event;
+    const eventData = (event as { eventData?: Record<string, unknown> })
+      .eventData;
+    if (!eventData) return event;
+    const lazy: Record<string, unknown> = { ...eventData };
+    for (const field of ['input', 'result', 'error', 'payload']) {
+      if (field in lazy) lazy[field] = { lazyRef: `${event.eventId}:${field}` };
+    }
+    return { ...event, eventData: lazy } as Event;
+  }
+
   asWorld(): World {
     const self = this;
     const events: World['events'] = {
@@ -276,7 +297,7 @@ export class AppendOnlyWorld {
         self.creates.push({ event, params });
         const slot = self.seq;
         return {
-          event,
+          event: self.responseEvent(event),
           run: self.run,
           ...self.report(params, slot),
         } as EventResult;
@@ -297,7 +318,7 @@ export class AppendOnlyWorld {
             }
             const event = self.append(data as Partial<Event>);
             self.creates.push({ event, params: params as CreateEventParams });
-            return { status: 200 as const, event };
+            return { status: 200 as const, event: self.responseEvent(event) };
           }),
         };
       },
@@ -383,7 +404,7 @@ export class AppendOnlyWorld {
         return async () => new Response(null, { status: 204 });
       },
       async getEncryptionKeyForRun() {
-        return undefined;
+        return self.options.encryptionKey;
       },
       capabilities: {},
       async getDeploymentId() {
