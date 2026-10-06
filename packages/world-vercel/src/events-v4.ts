@@ -645,7 +645,9 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   }
 }
 
-function decodeEventFrame({ meta, body }: DecodedFrame): Event {
+/** Decode one event frame (meta plus payload body). Shared with the live
+ *  feed, whose pushed events use the list frame's encoding. */
+export function decodeEventFrame({ meta, body }: DecodedFrame): Event {
   const eventType = EventTypeSchema.parse(meta.eventType);
   if (body.byteLength === 0) return VercelEventWireSchema.parse(meta);
 
