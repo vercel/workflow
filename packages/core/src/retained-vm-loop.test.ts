@@ -181,28 +181,9 @@ const openWaitRaceWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEE
 // this invocation's window); the replay then reaches the sleep and parks. The
 // shape `run.wakeUp()` meets: a completion that lands after the step's write
 // is above the delta, and only a read before parking can see it.
-const sleepAfterStepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  async function workflow() {
-    const nap = sleep("1h");
-    const a = await s1();
-    await nap;
-    return a + 7;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // The common polling shape: the sleep is created only after the step, so it
 // did not exist when the step's delta was taken and nothing can sit above that
 // delta for it. Parking on it must not pay a read.
-const stepThenSleepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  async function workflow() {
-    const a = await s1();
-    await sleep("5s");
-    return a + 7;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // The payload arrives while the workflow is waiting on s1, before any hook
 // consumer exists. The next pass buffers it, advances through s1, and suspends
 // on s2; delivery idle retires the payload's unarmed barrier at that boundary.
@@ -229,30 +210,9 @@ const bufferedHookAcrossStepWorkflow = `const createHook = globalThis[Symbol.for
 // The first invocation owns r_concurrent_s1 while a hook wake starts a cold
 // peer. The peer takes the hook branch and owns r_concurrent_s2 before the
 // retained invocation resumes, exercising the real two-replay ownership race.
-const concurrentHookWakeWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s1");
-  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s2");
-  async function workflow() {
-    const hook = createHook({ token: "retained-concurrent-hook" });
-    const a = await Promise.race([hook.then(() => 999), s1()]);
-    const b = await s2();
-    return a + b;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // The first invocation owns r_concurrent_s1 while a wait wake starts a cold
 // peer. The peer takes the wait branch and owns r_concurrent_s2 before the
 // retained invocation resumes, exercising the real two-replay ownership race.
-const concurrentWaitWakeWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s1");
-  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s2");
-  async function workflow() {
-    const a = await Promise.race([sleep("1h").then(() => 999), s1()]);
-    const b = await s2();
-    return a + b;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 const attributeThenStepWorkflow = `const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   async function workflow() {
@@ -294,22 +254,6 @@ const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP"
 
 // Produces more serialization blockers than the diagnostic sample retains,
 // with one deliberately long detail. The exact count still demotes retention.
-const manySerializationBlockersWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  async function workflow() {
-    const longKey = "x".repeat(300);
-    await s1({
-      get [longKey]() { return 0; },
-      get a() { return 1; },
-      get b() { return 2; },
-      get c() { return 3; },
-      get d() { return 4; },
-      get e() { return 5; },
-      get f() { return 6; },
-    });
-    return 0;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 /**
  * A two-step workflow source: optional prelude, then `s1(argA)` and
  * `s2(argB)` in sequence. The interesting part of each fixture is exactly
@@ -411,21 +355,6 @@ const CONFLICTING_TOKEN = 'retained-taken-token';
 // (or rejects, when no `Run` can be constructed for it). The step after it
 // proves the VM kept running past the branch rather than the run going
 // dormant on the conflict.
-const conflictingGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-  async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
-    let observed;
-    try {
-      observed = (await hook.getConflict()) === null ? "clean" : "conflict";
-    } catch {
-      observed = "conflict";
-    }
-    const a = await s1();
-    return observed + ":" + a;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // A plain payload await against a taken token — the conflict shape with NO
 // `getConflict()` awaiter, so the suspension reports only `hasHookConflict`.
 // The `hook_conflict` rejects the await, and the run continues into the step.
@@ -796,230 +725,6 @@ async function drive(
     /** What the log actually holds, which a conflicting create diverges from. */
     committedTypes: events.map((e) => e.eventType),
     output,
-    result:
-      output === undefined
-        ? undefined
-        : await hydrateWorkflowReturnValue(output, runId, undefined, []),
-  };
-}
-
-/**
- * Runs two workflow handlers over one atomic in-memory World. Invocation A is
- * parked inside its first owned step, then a hook or wait event wakes invocation
- * B. B cold-replays the longer prefix and owns the second step while A resumes.
- */
-async function driveConcurrentWakeRace(
-  runId: string,
-  wakeType: 'hook' | 'wait'
-) {
-  const firstStepEntered = withResolvers<void>();
-  const releaseFirstStep = withResolvers<void>();
-  const secondStepEntered = withResolvers<void>();
-  const releaseSecondStep = withResolvers<void>();
-  const overlapObserved = withResolvers<void>();
-  let firstStepExecutions = 0;
-  let secondStepExecutions = 0;
-
-  registerStepFunction('r_concurrent_s1', async () => {
-    firstStepExecutions++;
-    firstStepEntered.resolve();
-    await releaseFirstStep.promise;
-    return 10;
-  });
-  registerStepFunction('r_concurrent_s2', async () => {
-    secondStepExecutions++;
-    secondStepEntered.resolve();
-    await releaseSecondStep.promise;
-    return 20;
-  });
-
-  const run: WorkflowRun = {
-    runId,
-    workflowName: 'workflow',
-    status: 'running',
-    input: await dehydrateWorkflowArguments([], runId, undefined, []),
-    createdAt: new Date('2024-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2024-01-01T00:00:00.000Z'),
-    startedAt: new Date('2024-01-01T00:00:00.000Z'),
-    deploymentId: 'test-deployment',
-  };
-  const events: Event[] = [];
-  const startedSteps = new Set<string>();
-  const terminalSteps = new Set<string>();
-  let seq = 0;
-  let invocation = 0;
-  let firstStepCompleted = false;
-  let secondStepStarted = false;
-  let secondStepCompleted = false;
-  let runCompleted = false;
-
-  const appendEvent = (data: CreateEventRequest): Event => {
-    const event = {
-      eventId: slotToEventId(++seq),
-      runId,
-      createdAt: new Date(),
-      ...data,
-    } as Event;
-    events.push(event);
-    return event;
-  };
-
-  const claimAtomicEvent = (data: CreateEventRequest): void => {
-    switch (data.eventType) {
-      case 'step_started':
-        if (startedSteps.has(data.correlationId)) {
-          throw new EntityConflictError('step already has an owner');
-        }
-        startedSteps.add(data.correlationId);
-        break;
-      case 'step_completed':
-      case 'step_failed':
-        if (terminalSteps.has(data.correlationId)) {
-          throw new EntityConflictError(
-            'step already reached a terminal state'
-          );
-        }
-        terminalSteps.add(data.correlationId);
-        break;
-      case 'run_completed':
-        if (runCompleted) {
-          throw new EntityConflictError('run already completed');
-        }
-        runCompleted = true;
-        break;
-    }
-  };
-
-  const stepStartedResult = (data: CreateEventRequest, event: Event) => {
-    if (
-      data.eventType === 'step_started' &&
-      data.eventData.stepName === 'r_concurrent_s2'
-    ) {
-      secondStepStarted = true;
-    }
-    return startedStepResult(runId, data, event);
-  };
-
-  const observeStepCompletion = (data: CreateEventRequest): void => {
-    if (data.eventType !== 'step_completed') return;
-    if (data.eventData?.stepName === 'r_concurrent_s1') {
-      firstStepCompleted = true;
-    }
-    if (data.eventData?.stepName === 'r_concurrent_s2') {
-      secondStepCompleted = true;
-    }
-  };
-
-  const eventsCreate = vi.fn(
-    async (_runId: string, data: CreateEventRequest) => {
-      if (data.eventType === 'run_started') {
-        return { run, events: [...events] };
-      }
-      claimAtomicEvent(data);
-      const event = appendEvent(data);
-      const startedResult = stepStartedResult(data, event);
-      if (startedResult) return startedResult;
-      observeStepCompletion(data);
-      return { event };
-    }
-  );
-
-  setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
-    createQueueHandler: vi.fn(
-      (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
-        async () => {
-          const invocationId = ++invocation;
-          await handler(
-            { runId, requestedAt: new Date('2024-01-01T00:00:00.000Z') },
-            {
-              requestId: `req_concurrent_${invocationId}`,
-              attempt: 2,
-              queueName: '__wkf_workflow_workflow',
-              messageId: `msg_concurrent_${invocationId}`,
-            }
-          );
-          return new Response(null, { status: 204 });
-        }
-    ),
-    events: {
-      create: eventsCreate,
-      list: vi.fn(async () => {
-        if (firstStepCompleted && secondStepStarted && !secondStepCompleted) {
-          overlapObserved.resolve();
-        }
-        return {
-          data: [...events],
-          hasMore: false,
-          cursor: 'cursor_concurrent',
-        };
-      }),
-    },
-    runs: { get: vi.fn(async () => run) },
-    queue: vi.fn(async () => ({ messageId: null })),
-    getEncryptionKeyForRun: vi.fn(async () => undefined),
-  } as any);
-
-  const entrypoint = workflowEntrypoint(
-    wakeType === 'hook'
-      ? concurrentHookWakeWorkflow
-      : concurrentWaitWakeWorkflow
-  );
-  const retainedInvocation = entrypoint(
-    new Request('https://example.test/invocation-a')
-  );
-  await firstStepEntered.promise;
-
-  if (wakeType === 'hook') {
-    const hookCreated = events.find(
-      (event) => event.eventType === 'hook_created'
-    );
-    assert(hookCreated, 'expected invocation A to create the hook');
-    appendEvent({
-      eventType: 'hook_received',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: hookCreated.correlationId,
-      eventData: {
-        token: hookCreated.eventData.token,
-        payload: await dehydrateStepReturnValue(
-          { source: 'external-hook' },
-          runId,
-          undefined
-        ),
-      },
-    });
-  } else {
-    const waitCreated = events.find(
-      (event) => event.eventType === 'wait_created'
-    );
-    assert(waitCreated, 'expected invocation A to create the wait');
-    appendEvent({
-      eventType: 'wait_completed',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: waitCreated.correlationId,
-      eventData: { resumeAt: waitCreated.eventData.resumeAt },
-    });
-  }
-
-  const coldInvocation = entrypoint(
-    new Request('https://example.test/invocation-b')
-  );
-  await secondStepEntered.promise;
-  releaseFirstStep.resolve();
-  await overlapObserved.promise;
-  releaseSecondStep.resolve();
-  await Promise.all([retainedInvocation, coldInvocation]);
-
-  const completed = events.find((event) => event.eventType === 'run_completed');
-  const output = completed?.eventData?.output as Uint8Array | undefined;
-  return {
-    vmBuilds: createContextSpy.mock.calls.length,
-    durableLog: normalizeDurableLog(events),
-    firstStepExecutions,
-    secondStepExecutions,
-    runCompletedCount: events.filter(
-      (event) => event.eventType === 'run_completed'
-    ).length,
     result:
       output === undefined
         ? undefined

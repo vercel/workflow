@@ -45,16 +45,6 @@ vi.mock('@vercel/functions', () => ({
   }),
 }));
 
-/**
- * Resolves true if any promise handed to `waitUntil` rejects. Reports whether
- * any registered promise rejected (each already carries a no-op handler from
- * the mock, so inspecting them here cannot itself leave a rejection unhandled).
- */
-async function anyWaitUntilPromiseRejected(): Promise<boolean> {
-  const results = await Promise.allSettled(waitUntilPromises);
-  return results.some((r) => r.status === 'rejected');
-}
-
 /** One recorded `world.queue` call from the harness's queue mock. */
 type QueueCall = {
   queueName: string;
