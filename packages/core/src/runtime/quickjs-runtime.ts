@@ -2987,6 +2987,8 @@ async function processEvents(
   return resolved;
 }
 
+// per-copy-ok: keyed by a VM instance this copy of the module created, so no
+// other copy ever looks it up.
 const closedCorrelationIdsByVm = new WeakMap<QuickJS, Set<string>>();
 
 /** Correlation ids whose terminal event this VM has processed. */

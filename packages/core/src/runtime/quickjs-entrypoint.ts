@@ -33,11 +33,10 @@ import {
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
-import { classifyRunError, isRetryableWorldError } from '../classify-error.js';
+import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
@@ -55,12 +54,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
-import {
-  getInlineOwnershipLeaseSeconds,
-  getMaxInlineSteps,
-  isResilientStepDispatchEnabled,
-  MAX_RESILIENT_STEP_INPUT_BYTES,
-} from './constants.js';
+import { getMaxInlineSteps } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
@@ -77,6 +71,7 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
+import { stepsToReenqueue } from './orchestrator/creator-rules.js';
 import type { InBandWriter } from './orchestrator/in-band-writer.js';
 import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
@@ -430,7 +425,6 @@ async function dispatchPendingOps(params: {
   } = params;
   const skipStepCreation = params.skipStepCreation;
   const creatorMessageId = params.creatorMessageId;
-  const queueStepCids = params.queueStepCids;
   const wfdiag = params.wfdiag;
   // Step cids published via resilient dispatch below (create + queue in
   // parallel, message carrying `stepInput`). Reported to the caller so it
@@ -450,12 +444,6 @@ async function dispatchPendingOps(params: {
   // the consumer's re-ensure therefore cannot materialize a step the guard
   // rejected. If this engine ever adopts guarded suspension writes, the
   // capability gate from the node:vm handler must be added here too.
-  const resilientDispatchEligible =
-    queueStepCids !== undefined &&
-    queueStepCids.size > 0 &&
-    isResilientStepDispatchEnabled() &&
-    (workflowRun.specVersion ?? 0) >=
-      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
   // so replay can confirm creation and resolve the awaiter.
@@ -803,90 +791,6 @@ async function dispatchPendingOps(params: {
             step.input,
             encryptionKey
           );
-
-          // Resilient step dispatch: fire the step_created write and the
-          // step's queue publish in parallel: the message carries the
-          // same serialized input (`stepInput`) so the consumer can
-          // idempotently re-ensure the event if the direct write failed
-          // transiently. Mirrors the node:vm suspension handler and the
-          // resilient start / resilient hook resume patterns. Only for
-          // caller-designated overflow steps with inputs the queue
-          // message can safely carry (binary, under the VQS size cap).
-          if (
-            resilientDispatchEligible &&
-            queueStepCids?.has(step.correlationId) &&
-            encryptedInput instanceof Uint8Array &&
-            encryptedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
-          ) {
-            const [createResult, queueResult] = await Promise.allSettled([
-              createEvent({
-                eventType: 'step_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: step.correlationId,
-                eventData: {
-                  stepName: step.stepId,
-                  input: encryptedInput,
-                  inline: false,
-                  ...(creatorMessageId ? { creatorMessageId } : {}),
-                },
-              }),
-              queueStepMessage({
-                world,
-                runId,
-                workflowRun,
-                step,
-                namespace,
-                nextTraceCarrier,
-                purpose: 'dispatch',
-                stepInput: encryptedInput,
-                wfdiag,
-              }),
-            ]);
-            // Queue failure is always fatal for this dispatch pass:
-            // without the message the step would rely on the create
-            // alone, and if the create ALSO failed there would be no
-            // durable record at all. Propagating redelivers the
-            // orchestrator message, which re-creates the (idempotent)
-            // step_created and re-dispatches.
-            if (queueResult.status === 'rejected') {
-              throw queueResult.reason;
-            }
-            queuedStepCids.add(step.correlationId);
-            if (createResult.status === 'rejected') {
-              const err = createResult.reason;
-              if (EntityConflictError.is(err)) {
-                // Concurrent invocation wrote it first: the message is
-                // already out; its duplicate publish dedupes on the
-                // shared step-identity-scoped idempotency key.
-                return;
-              }
-              if (isRetryableWorldError(err)) {
-                // Resilient: the write failed transiently (429 / 5xx /
-                // transport) but the step message (carrying the same
-                // serialized input) was published, so the consumer
-                // idempotently re-ensures the step_created before
-                // executing.
-                runtimeLogger.warn(
-                  'Step creation event write failed, but the step was ' +
-                    'dispatched via the queue. The step_created event ' +
-                    'will be ensured by the queue consumer.',
-                  {
-                    workflowRunId: runId,
-                    correlationId: step.correlationId,
-                    stepName: step.stepId,
-                    error: err instanceof Error ? err.message : String(err),
-                  }
-                );
-                wfdiag('step_resilient_dispatch_recovered', {
-                  stepId: step.stepId,
-                  correlationId: step.correlationId,
-                });
-                return;
-              }
-              throw err;
-            }
-            return;
-          }
 
           try {
             await createEvent({
@@ -2110,81 +2014,35 @@ export async function runWorkflowWithQuickJS(params: {
       const stepOps = pendingOperations.filter(
         (op): op is PendingStep => op.type === 'step'
       );
-      // Steps created by an EARLIER invocation (or an earlier turn) that
-      // are still pending, with no work owned by THIS invocation. Mirror
-      // the node engine's ownership decision table (step-ownership.ts),
-      // NOT a deliveryAttempt gate: worlds advance the attempt counter on
-      // routine redeliveries (world-local counts every handled response),
-      // so attempt > 1 is the common case and would fire backstops at
-      // steps actively executing inline in a live invocation.
-      //
-      //   - Ownership lease ACTIVE, held by ANOTHER message → the step is
-      //     (presumably) executing inline in a live invocation. Arm a
-      //     DELAYED backstop for the lease remainder, keyed to the
-      //     ownership epoch (a refreshed lease re-arms a fresh backstop
-      //     instead of deduping against the in-flight one). If the owner
-      //     completes normally, the backstop delivery resolves the step
-      //     as 'skipped'.
-      //   - Ownership lease ACTIVE, held by THIS message → this delivery
-      //     is the owner's redelivery; the claimant crashed
-      //     mid-execution. Dispatch immediately for background recovery.
-      //   - No stamp / lease EXPIRED / step_retrying observed → the step
-      //     is queue-owned or orphaned. Dispatch immediately; the
-      //     step-identity-scoped idempotency key dedupes against the
-      //     original handoff.
-      const nowMs = Date.now();
+      // Steps created by an earlier invocation that are still pending are
+      // enqueued again only by a redelivery of the message that created
+      // them, and only while they have no `step_started` (see
+      // `stepsToReenqueue`). Any broader rule would send a second message
+      // for a step whose first one is still retrying, which is a second
+      // owner of its body.
+      const reenqueue = new Set(
+        stepsToReenqueue({
+          events,
+          messageId: ownerMessageId ?? '',
+          deliveryCount: deliveryAttempt,
+        })
+      );
       for (const step of stepOps) {
         if (!step.hasCreatedEvent) continue;
         if (executedStepIds.has(step.correlationId)) continue;
         if (queuedStepIds.has(step.correlationId)) continue;
-        const ownership = stepOwnership.get(step.correlationId);
-        const ownershipActive =
-          ownership !== undefined &&
-          ownership.owner !== undefined &&
-          !ownership.sawRetrying;
-        let leaseRemainingSeconds = 0;
-        if (ownershipActive && ownership.startedAtMs !== undefined) {
-          const leaseSeconds = getInlineOwnershipLeaseSeconds();
-          leaseRemainingSeconds = Math.min(
-            leaseSeconds,
-            Math.max(
-              0,
-              Math.ceil(
-                (ownership.startedAtMs + leaseSeconds * 1000 - nowMs) / 1000
-              )
-            )
-          );
-        }
-        if (
-          ownershipActive &&
-          ownership.owner !== ownerMessageId &&
-          leaseRemainingSeconds > 0
-        ) {
-          queuedStepIds.add(step.correlationId);
-          await queueStepMessage({
-            world,
-            runId,
-            workflowRun,
-            step,
-            delaySeconds: leaseRemainingSeconds,
-            namespace,
-            nextTraceCarrier,
-            purpose: `backstop:${ownership.startedAtMs}`,
-            wfdiag,
-          });
-        } else {
-          queuedStepIds.add(step.correlationId);
-          await queueStepMessage({
-            world,
-            runId,
-            workflowRun,
-            step,
-            namespace,
-            nextTraceCarrier,
-            purpose: 'dispatch',
-            wfdiag,
-          });
-        }
+        if (!reenqueue.has(step.correlationId)) continue;
+        queuedStepIds.add(step.correlationId);
+        await queueStepMessage({
+          world,
+          runId,
+          workflowRun,
+          step,
+          namespace,
+          nextTraceCarrier,
+          purpose: 'dispatch',
+          wfdiag,
+        });
       }
 
       if (inlineCandidates.length === 0) {

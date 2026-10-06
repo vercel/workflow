@@ -1,3 +1,5 @@
+import { globalSingleton } from '@workflow/utils';
+
 /**
  * The last position each run's orchestrator consumed in this process, so a
  * wake that finds nothing new can be acknowledged without a replay.
@@ -21,7 +23,14 @@ export interface ConsumedPosition {
 }
 
 const MAX_ENTRIES = 10_000;
-const positions = new Map<string, ConsumedPosition>();
+// On `globalThis` (see `globalSingleton`): two copies of this module in one
+// process must share the record, or a delivery handled by one copy would
+// miss the position the other recorded.
+const positions = globalSingleton(
+  '@workflow/core//consumedPositions',
+  1,
+  () => new Map<string, ConsumedPosition>()
+);
 
 export function recordConsumedPosition(
   runId: string,
