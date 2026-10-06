@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invocationAffinity } from './invocation.js';
 import {
   affinityCellSize,
+  affinityForRoutingKey,
   forgetRunAffinity,
   freshRunAffinity,
   noteOwnerAffinity,
@@ -46,5 +47,21 @@ describe('run affinity', () => {
       vi.stubEnv('WORKFLOW_AFFINITY_CELL_SIZE', value);
       expect(affinityCellSize()).toBeUndefined();
     }
+  });
+});
+
+describe('routing keys', () => {
+  it('scopes a shared key by the run deployment', () => {
+    expect(affinityForRoutingKey('wrun_1', 'cell-0', 'dpl_a')).toBe(
+      'cell-0.dpl_a'
+    );
+    expect(affinityForRoutingKey('wrun_2', 'cell-0', 'dpl_b')).toBe(
+      'cell-0.dpl_b'
+    );
+  });
+
+  it('routes a run by itself without a key, or with its own ID', () => {
+    expect(affinityForRoutingKey('wrun_1', undefined, 'dpl_a')).toBe('wrun_1');
+    expect(affinityForRoutingKey('wrun_1', 'wrun_1', 'dpl_a')).toBe('wrun_1');
   });
 });

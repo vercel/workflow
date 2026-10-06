@@ -58,6 +58,10 @@ export interface EventWriteSession {
     head: number;
     expiredAt?: Date;
   }>;
+  /** Optional: begin a session for a run this owner is about to create,
+   * instead of `catchUp()`. The log is empty, so the first transition is
+   * `run_created`; a run that turns out to exist fails the session. */
+  startFresh?(): void;
   /** Optional tentative transition, paired with flush(). The owning loop must
    * flush before input acknowledgement or externally visible step execution. */
   stage?(

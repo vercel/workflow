@@ -64,6 +64,21 @@ export function recordRunAffinity(runId: string, affinityId?: unknown): void {
   });
 }
 
+/**
+ * The affinity ID for a caller-chosen routing key (`InvokeOptions.routingKey`).
+ * The key is scoped by the run's deployment, so the same key from two
+ * deployments never selects the same executor. The run itself (or no key)
+ * means per-run affinity.
+ */
+export function affinityForRoutingKey(
+  runId: string,
+  routingKey: string | undefined,
+  deploymentId: string | undefined
+): string {
+  if (!routingKey || routingKey === runId) return runId;
+  return deploymentId ? `${routingKey}.${deploymentId}` : routingKey;
+}
+
 /** A recently server-reported affinity, if any. */
 export function freshRunAffinity(runId: string): string | undefined {
   const entry = routing.get(runId);

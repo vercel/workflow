@@ -529,6 +529,8 @@ const RunCreatedEventSchema = z.compile(
        * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
        */
       encryptionPublicKey: z.string().optional(),
+      /** See {@link InvokeOptions.routingKey}; recorded with the run. */
+      routingKey: z.string().optional(),
     }),
   })
 );

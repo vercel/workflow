@@ -283,6 +283,8 @@ interface CreateEventV4InputBase {
   encryptionPublicKey?: string;
   /** run_created's opt-in shared affinity cell size (experimental). */
   affinityCellSize?: number;
+  /** run_created's creator-chosen affinity ID (experimental). */
+  affinityId?: string;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -663,6 +665,7 @@ function buildPostFrameMeta(
   if (input.affinityCellSize !== undefined) {
     meta.affinityCellSize = input.affinityCellSize;
   }
+  if (input.affinityId !== undefined) meta.affinityId = input.affinityId;
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;

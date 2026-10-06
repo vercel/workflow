@@ -198,6 +198,13 @@ export interface StartOptionsBase {
   };
 
   /**
+   * Opaque co-location key for a retained run's owner (see the World's
+   * `InvokeOptions.routingKey`): runs started with the same key share an
+   * executor where the World supports it. Defaults to the run itself.
+   */
+  experimental_routingKey?: string;
+
+  /**
    * The ID of an existing run this run is being replayed from, if any.
    *
    * Recorded on the new run's `executionContext` as `replayedFromRunId` so
@@ -694,6 +701,70 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       };
 
+      // Invoke-first start (experimental): the run's owner creates the run.
+      // The start invocation carries everything `run_created` needs; the owner
+      // commits it as the first event of its own session, enqueues a delayed
+      // wake carrying the same input as a backup, and resolves once the run
+      // and its first transitions are durable. An unconfirmed invocation
+      // falls back to the create-first path below, where an existing run is a
+      // benign conflict.
+      if (
+        executionContext.retainedRunnerVersion === 1 &&
+        process.env.WORKFLOW_INVOKE_FIRST_START === '1' &&
+        world.invoke
+      ) {
+        const routingKey = opts.experimental_routingKey ?? runId;
+        try {
+          await world.invoke(
+            runId,
+            {
+              type: 'run_start',
+              version: 2,
+              runInput: {
+                input: workflowArguments,
+                deploymentId,
+                workflowName,
+                specVersion,
+                executionContext,
+                ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                ...(creatorEnvironment !== undefined
+                  ? { environment: creatorEnvironment }
+                  : {}),
+                ...attributeSeed,
+                routingKey,
+              },
+            },
+            {
+              idempotencyKey: `run-start:${runId}`,
+              target: { deploymentId, workflowName },
+              routingKey,
+            }
+          );
+          safeWaitUntil(Promise.all(ops), (err) => {
+            runtimeLogger.warn(
+              'Background flush of workflow argument streams failed',
+              {
+                workflowRunId: runId,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          });
+          span?.setAttributes({
+            ...Attribute.WorkflowRunId(runId),
+            ...Attribute.DeploymentId(deploymentId),
+          });
+          return new Run<TResult>(runId, { resilientStart: false });
+        } catch (error) {
+          runtimeLogger.warn(
+            'Invoke-first start did not confirm; creating the run first.',
+            {
+              workflowRunId: runId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        }
+      }
+
       // Retained execution requires run creation to commit before delivery.
       // The legacy path calls events.create and queue in parallel.
       // If events.create fails with 429/5xx, the run was still accepted
@@ -710,6 +781,10 @@ export async function start<TArgs extends unknown[], TResult>(
             executionContext,
             ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
             ...attributeSeed,
+            ...(opts.experimental_routingKey &&
+            opts.experimental_routingKey !== runId
+              ? { routingKey: opts.experimental_routingKey }
+              : {}),
           },
         },
         { v1Compat }

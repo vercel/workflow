@@ -137,6 +137,14 @@ export const RunInputSchema = z.compile(
      * when it is missing.
      */
     environment: z.string().optional(),
+    /** The run's X25519 public key (base64), mirrored from `run_created`. */
+    encryptionPublicKey: z.string().optional(),
+    /**
+     * Opaque co-location key the creator chose for the run (see
+     * {@link InvokeOptions.routingKey}), so a delivery of this input routes
+     * the same way as the creator's own invocation.
+     */
+    routingKey: z.string().optional(),
   })
 );
 export type RunInput = z.infer<typeof RunInputSchema>;
@@ -518,6 +526,12 @@ export interface InvokeOptions {
   /** Immutable routing context already resolved from this run's hook. The
    * executor still authenticates and validates the invocation normally. */
   target?: { deploymentId: string; workflowName: string };
+  /**
+   * Opaque key the World may use to co-locate this run's executor with other
+   * runs that share it. Given with `target`, it lets a run be invoked before
+   * it exists (its creation then records the same key). Defaults to the run.
+   */
+  routingKey?: string;
 }
 
 export interface Queue {

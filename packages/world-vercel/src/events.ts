@@ -68,7 +68,11 @@ import {
   type ListEventsV4Params,
   VercelEventWireSchema,
 } from './events-v4.js';
-import { affinityCellSize, recordRunAffinity } from './run-affinity.js';
+import {
+  affinityCellSize,
+  affinityForRoutingKey,
+  recordRunAffinity,
+} from './run-affinity.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
@@ -155,6 +159,8 @@ interface SplitEventData {
     /** run_created's opt-in shared affinity cell size (experimental). Not a
      *  World field: world-vercel adds it from its own configuration. */
     affinityCellSize?: number;
+    /** run_created's creator-chosen affinity ID, from `routingKey`. */
+    affinityId?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -208,7 +214,8 @@ type MetaSourceField =
   | 'eventCount'
   | 'rsfs'
   | 'finalSchedulingReplay'
-  | 'optimizations';
+  | 'optimizations'
+  | 'routingKey';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -368,8 +375,21 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
   }
   if (data.eventType === 'run_created') {
-    const cellSize = affinityCellSize();
-    if (cellSize !== undefined) meta.affinityCellSize = cellSize;
+    // A creator-chosen shared routing key fixes the run's affinity (a run
+    // routed by itself carries none); otherwise the server may assign a
+    // shared cell.
+    if (typeof eventData.routingKey === 'string' && eventData.routingKey)
+      meta.affinityId = affinityForRoutingKey(
+        '',
+        eventData.routingKey,
+        typeof eventData.deploymentId === 'string'
+          ? eventData.deploymentId
+          : undefined
+      );
+    else {
+      const cellSize = affinityCellSize();
+      if (cellSize !== undefined) meta.affinityCellSize = cellSize;
+    }
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.

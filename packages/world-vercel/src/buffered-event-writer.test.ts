@@ -205,3 +205,80 @@ it('buffers a completion using the acknowledged step state and sends flush-throu
   calls[2].resolve(completed);
   await barrier;
 });
+
+it('stages a fresh run’s run_created and later events before its connection is confirmed', async () => {
+  let synced!: (catchUp: {
+    after: number;
+    head: number;
+    events: unknown[];
+    generation: number;
+  }) => void;
+  const resync = vi.fn(
+    () =>
+      new Promise<{
+        after: number;
+        head: number;
+        events: unknown[];
+        generation: number;
+      }>((resolve) => {
+        synced = resolve;
+      })
+  );
+  const sent: string[] = [];
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    // Transmission waits for the connection, which has not synced yet.
+    (event) => {
+      sent.push(event.eventType);
+      return new Promise<EventResult>(() => {});
+    },
+    vi.fn(async () => {}),
+    async () => {},
+    resync as never
+  );
+  writer.startFresh();
+  const created = await writer.stage(
+    {
+      eventType: 'run_created',
+      specVersion: 6,
+      eventData: {
+        deploymentId: 'dpl',
+        workflowName: 'wf',
+        input: Uint8Array.of(1),
+      },
+    } as unknown as CreateEventRequest,
+    { eventCount: 0 }
+  );
+  expect(created.event?.eventId).toBe('evnt_00000000000000000000000001');
+  await writer.stage(
+    { eventType: 'run_started', specVersion: 6 } as CreateEventRequest,
+    { eventCount: 1 }
+  );
+  expect(writer.heads).toEqual({ queued: 2, committed: 0 });
+  expect(sent).toEqual(['run_created', 'run_started']);
+  synced({ after: 0, head: 0, events: [], generation: 1 });
+});
+
+it('fails a fresh session whose run already exists, as superseded', async () => {
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    () => new Promise<EventResult>(() => {}),
+    vi.fn(async () => {}),
+    async () => {},
+    (async () => ({
+      after: 0,
+      head: 3,
+      events: [{}, {}, {}],
+      generation: 1,
+    })) as never
+  );
+  writer.startFresh();
+  await vi.waitFor(async () =>
+    expect(
+      writer.stage(
+        { eventType: 'run_started', specVersion: 6 } as CreateEventRequest,
+        { eventCount: 0 }
+      )
+    ).rejects.toMatchObject({ code: 'OWNER_SUPERSEDED' })
+  );
+});

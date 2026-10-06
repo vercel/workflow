@@ -2422,3 +2422,182 @@ it('uses the queued wake when local timers are disabled', async () => {
     )
   );
 });
+
+const firstStepCode = `
+  const mark = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('firstStepMark');
+  async function workflow() {
+    return mark('first');
+  }
+  globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+it('creates the run itself on an invoke-first start, before its connection or wake', async () => {
+  const marks: string[] = [];
+  registerStepFunction('firstStepMark', async (label) => {
+    marks.push(label as string);
+    return label;
+  });
+  const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
+  const world = createWorld({ dataDir: directory }) as World;
+  cleanups.push(async () => {
+    await world.close?.();
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
+  });
+  const runId = `wrun_${ulid()}`;
+  const create = world.events.create.bind(world.events);
+  const staged: { eventType: string; eventData?: unknown }[] = [];
+  const startFresh = vi.fn();
+  const catchUp = vi.fn();
+  let releaseWake!: () => void;
+  const wakeArmed = new Promise<void>((resolve) => {
+    releaseWake = resolve;
+  });
+  const wakes: { message: unknown; options: unknown }[] = [];
+  vi.spyOn(world, 'queue').mockImplementation(
+    async (_name, message, options) => {
+      wakes.push({ message, options });
+      await wakeArmed;
+      return { messageId: null };
+    }
+  );
+  world.events.createWriteSession = () => ({
+    catchUp,
+    startFresh,
+    create: (event, params) => create(runId, event, params),
+    stage: async (event, params) => {
+      staged.push({
+        eventType: event.eventType,
+        eventData: (event as { eventData?: unknown }).eventData,
+      });
+      return create(runId, event, params);
+    },
+    flush: async () => {},
+    dispose() {},
+  });
+  const metadata = {
+    queueName: ValidQueueName.parse('__wkf_workflow_workflow'),
+    messageId: MessageId.parse('invoke_start'),
+    attempt: 1,
+  };
+  const owner = new RetainedRunner(
+    world,
+    runId,
+    '__wkf_workflow_',
+    firstStepCode,
+    metadata,
+    () => {},
+    40
+  );
+  const runInput = {
+    input: await dehydrateWorkflowArguments([], runId, undefined, []),
+    deploymentId: 'test',
+    workflowName: 'workflow',
+    specVersion: SPEC_VERSION_CURRENT,
+    executionContext: { retainedRunnerVersion: 1 },
+    routingKey: 'cell-0',
+  };
+  let acknowledged = false;
+  const started = owner
+    .submit(
+      {
+        runId,
+        invoke: true,
+        requestId: `run-start:${runId}`,
+        input: { type: 'run_start', version: 2, runInput },
+      },
+      metadata
+    )
+    .then(() => {
+      acknowledged = true;
+    });
+  // The step body runs while the backup wake is still being armed: the run
+  // was created and started without waiting for the wake or a catch-up.
+  await vi.waitFor(() => expect(marks).toEqual(['first']));
+  expect(acknowledged).toBe(false);
+  expect(startFresh).toHaveBeenCalledTimes(1);
+  expect(catchUp).not.toHaveBeenCalled();
+  expect(staged[0]).toMatchObject({
+    eventType: 'run_created',
+    eventData: { workflowName: 'workflow', routingKey: 'cell-0' },
+  });
+  expect(staged.map((event) => event.eventType).slice(0, 2)).toEqual([
+    'run_created',
+    'run_started',
+  ]);
+  // The wake is the start's backup: it carries the creation input.
+  expect(wakes[0].message).toMatchObject({ runId, runInput });
+  expect(wakes[0].options).toMatchObject({ deploymentId: 'test' });
+  releaseWake();
+  await started;
+  expect(acknowledged).toBe(true);
+  expect((await world.runs.get(runId)).runId).toBe(runId);
+});
+
+it('creates the run from a start backup wake only when the run does not exist', async () => {
+  const marks: string[] = [];
+  registerStepFunction('firstStepMark', async (label) => {
+    marks.push(label as string);
+    return label;
+  });
+  const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
+  const world = createWorld({ dataDir: directory }) as World;
+  cleanups.push(async () => {
+    await world.close?.();
+    await rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
+  });
+  const runId = `wrun_${ulid()}`;
+  const create = world.events.create.bind(world.events);
+  const staged: string[] = [];
+  vi.spyOn(world, 'queue').mockResolvedValue({ messageId: null });
+  world.events.createWriteSession = () => ({
+    // The owner died before creating the run: its log is empty.
+    catchUp: async () => ({ events: [], head: 0 }),
+    create: (event, params) => create(runId, event, params),
+    stage: async (event, params) => {
+      staged.push(event.eventType);
+      return create(runId, event, params);
+    },
+    flush: async () => {},
+    dispose() {},
+  });
+  const metadata = {
+    queueName: ValidQueueName.parse('__wkf_workflow_workflow'),
+    messageId: MessageId.parse('backup-wake'),
+    attempt: 1,
+  };
+  const owner = new RetainedRunner(
+    world,
+    runId,
+    '__wkf_workflow_',
+    firstStepCode,
+    metadata,
+    () => {},
+    40
+  );
+  await owner.submit(
+    {
+      runId,
+      runInput: {
+        input: await dehydrateWorkflowArguments([], runId, undefined, []),
+        deploymentId: 'test',
+        workflowName: 'workflow',
+        specVersion: SPEC_VERSION_CURRENT,
+        executionContext: { retainedRunnerVersion: 1 },
+      },
+    },
+    metadata
+  );
+  await vi.waitFor(() => expect(marks).toEqual(['first']));
+  expect(staged.slice(0, 2)).toEqual(['run_created', 'run_started']);
+  expect((await world.runs.get(runId)).runId).toBe(runId);
+});

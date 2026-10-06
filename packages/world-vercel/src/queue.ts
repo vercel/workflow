@@ -832,8 +832,30 @@ export function createQueue(config?: APIConfig): Queue {
         try {
           const wakeRunId = orchestrationRunId(payload);
           if (forwardWake && wakeRunId && !('__healthCheck' in payload)) {
+            // A start's own input routes as its creator chose, which also
+            // reaches the owner when the run was never created.
+            const runInput = (
+              payload as {
+                runInput?: {
+                  deploymentId?: string;
+                  workflowName?: string;
+                  routingKey?: string;
+                };
+              }
+            ).runInput;
             await forwardWake(wakeRunId, payload, {
               idempotencyKey: metadata.messageId,
+              ...(runInput?.routingKey &&
+              runInput.deploymentId &&
+              runInput.workflowName
+                ? {
+                    routingKey: runInput.routingKey,
+                    target: {
+                      deploymentId: runInput.deploymentId,
+                      workflowName: runInput.workflowName,
+                    },
+                  }
+                : {}),
             });
           } else if (direct && executorRunId)
             await direct.execute(executorRunId, invokeHandler);

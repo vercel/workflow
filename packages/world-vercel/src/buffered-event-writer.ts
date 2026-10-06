@@ -113,6 +113,8 @@ export class BufferedEventWriter implements EventWriteSession {
   private disposed = false;
   private generation?: number;
   private recovery?: Promise<void>;
+  /** Set while a fresh session's initial sync is unconfirmed (`startFresh`). */
+  private connecting?: Promise<void>;
 
   constructor(
     private runId: string,
@@ -150,6 +152,37 @@ export class BufferedEventWriter implements EventWriteSession {
       head: catchUp.head,
       ...(catchUp.expiredAt ? { expiredAt: catchUp.expiredAt } : {}),
     };
+  }
+
+  /**
+   * Begin a session for a run this owner is about to create, without waiting
+   * for the connection: the log is known to be empty, so the first event is
+   * `run_created` at slot 1 and later events pipeline behind it. The initial
+   * sync is confirmed in the background; a run that already exists means
+   * another writer got there first, and fails the writer as superseded.
+   */
+  startFresh() {
+    if (!this.resync) throw new Error('Event writer has no catch-up stream');
+    if (this.queued !== undefined)
+      throw new Error('A fresh session must precede the first write');
+    this.queued = this.committed = 0;
+    const connecting = this.resync().then((catchUp) => {
+      if (catchUp.after !== 0 || catchUp.head !== 0 || catchUp.events.length)
+        throw new WorkflowWorldError('Run already exists', {
+          status: 409,
+          code: 'OWNER_SUPERSEDED',
+        });
+      this.generation = catchUp.generation;
+    });
+    this.connecting = connecting;
+    void connecting.then(
+      () => {
+        if (this.connecting === connecting) this.connecting = undefined;
+      },
+      (error: unknown) => {
+        this.fail(error);
+      }
+    );
   }
 
   private rememberStep(step: Step) {
@@ -414,6 +447,8 @@ export class BufferedEventWriter implements EventWriteSession {
       (event.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
       size <= 8 * 1024 * 1024 &&
       (event.eventType === 'hook_received' ||
+        // A run this owner creates, as the first event of a fresh session.
+        ((event.eventType as string) === 'run_created' && this.queued === 0) ||
         event.eventType === 'run_started' ||
         event.eventType === 'step_created' ||
         (event.eventType === 'step_started' &&
@@ -494,7 +529,10 @@ export class BufferedEventWriter implements EventWriteSession {
     // Observe errors immediately; flush still receives the original rejection.
     void entry.completion.catch(() => {});
     this.pending.push(entry);
-    await transmitted;
+    // A fresh session runs ahead of its connection; transmission (and any
+    // failure) is observed at the next durability barrier instead.
+    if (this.connecting) void transmitted.catch(() => {});
+    else await transmitted;
     if (this.failure) throw this.failure;
     return expected;
   }

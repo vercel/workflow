@@ -24,10 +24,12 @@ import { logInvocationRouting } from './invocation-diagnostics.js';
 import { createInvocationMailbox } from './invocation-mailbox.js';
 import { observeInvocation } from './invocation-observer.js';
 import {
+  affinityForRoutingKey,
   forgetRunAffinity,
   freshRunAffinity,
   noteOwnerAffinity,
   ownerAffinity,
+  recordRunAffinity,
 } from './run-affinity.js';
 import { getWorkflowRun } from './runs.js';
 import {
@@ -209,6 +211,17 @@ export function createInvoker(
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
       const identity = { runId, requestId, invocationId };
+      // A caller-chosen routing key decides the affinity itself, which also
+      // lets a run be invoked before it exists (with its routing target).
+      if (options?.routingKey !== undefined && options.target)
+        recordRunAffinity(
+          runId,
+          affinityForRoutingKey(
+            runId,
+            options.routingKey,
+            options.target.deploymentId
+          )
+        );
       // Routing needs the server's current affinity for the run. A hook
       // resume or a fresh start has just received it; otherwise read the run.
       const cached = freshRunAffinity(runId);

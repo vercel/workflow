@@ -643,6 +643,24 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.workflowName).toBe('wf');
   });
 
+  it('turns a run_created routing key into its affinity ID, instead of a cell', () => {
+    vi.stubEnv('WORKFLOW_AFFINITY_CELL_SIZE', '10');
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_created',
+      specVersion: 4,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new Uint8Array(1),
+        routingKey: 'cell-0',
+      },
+    } as AnyEventRequest);
+    expect(meta.affinityId).toBe('cell-0.dpl_1');
+    expect(meta.affinityCellSize).toBeUndefined();
+    expect('routingKey' in meta).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
   it('splits resilient-start run_started input into the payload body', () => {
     const { payload, meta } = splitEventDataForV4({
       eventType: 'run_started',

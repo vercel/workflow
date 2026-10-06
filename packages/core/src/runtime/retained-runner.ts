@@ -21,6 +21,8 @@ import {
   type Queue,
   type QueuePrefix,
   type RunCreatedEventRequest,
+  type RunInput,
+  RunInputSchema,
   requireEventSlot,
   SPEC_VERSION_CURRENT,
   type Step,
@@ -269,6 +271,11 @@ export class RetainedRunner {
   private key?: PayloadKey;
   private payloadCache?: ReplayPayloadCache;
   private initialized = false;
+  /** The run's creation input, when this owner may have to create the run:
+   * an invoke-first start, or a delivery of that start's backup wake. */
+  private startInput?: RunInput;
+  /** An invoke-first start: create the run without waiting for catch-up. */
+  private freshStart = false;
   private eventWriter?: EventWriteSession;
   private failureCommitted = false;
   private loopIteration = 0;
@@ -485,6 +492,31 @@ export class RetainedRunner {
 
   submit(message: unknown, metadata: Metadata) {
     const parsed = WorkflowInvokePayloadSchema.parse(message);
+    // Invoke-first start (`run_start` version 2) carries the run's creation
+    // input; so does the start's backup wake (`runInput`), which creates the
+    // run only if it still does not exist.
+    const start =
+      parsed.invoke &&
+      parsed.input &&
+      typeof parsed.input === 'object' &&
+      'type' in parsed.input &&
+      parsed.input.type === 'run_start' &&
+      (parsed.input as { version?: unknown }).version === 2
+        ? RunInputSchema.safeParse(
+            (parsed.input as { runInput?: unknown }).runInput
+          )
+        : undefined;
+    if (start && !start.success)
+      return Promise.reject(
+        new InputRejected('Invalid start input', { status: 400 })
+      );
+    if (!this.initialized) {
+      if (start?.success) {
+        this.startInput ??= start.data;
+        this.freshStart = true;
+      } else if (!parsed.invoke && parsed.runInput)
+        this.startInput ??= parsed.runInput;
+    }
     // Activation inputs (start, hook, step result) arm the monitor before they
     // are acknowledged; it is overlapped with the input's processing.
     const activates =
@@ -498,7 +530,10 @@ export class RetainedRunner {
     const operation = async (deferAdvance = false) => {
       const armed = activates ? this.ensureMonitor() : undefined;
       armed?.catch(() => {});
-      this.activationArm = armed;
+      // A fresh start runs ahead of its wake: the wake is the run's backup and
+      // is awaited before the start is acknowledged, not before its writes.
+      this.activationArm =
+        this.freshStart && !this.initialized ? undefined : armed;
       try {
         const result = await handle(deferAdvance);
         await armed;
@@ -531,9 +566,12 @@ export class RetainedRunner {
           'type' in parsed.input &&
           parsed.input.type === 'run_start'
         ) {
-          // Start delivered to this owner rather than through the queue. The
-          // run is already durably created; a repeated start only re-advances.
-          if ((parsed.input as { version?: unknown }).version !== 1)
+          // Start delivered to this owner rather than through the queue.
+          // Version 1: the run is already durably created. Version 2: this
+          // owner created it during initialization. A repeated start only
+          // re-advances.
+          const version = (parsed.input as { version?: unknown }).version;
+          if (version !== 1 && version !== 2)
             throw new InputRejected('Invalid start input', { status: 400 });
           // A retained session means the run already advanced to a
           // suspension; re-advancing without new events is not a valid resume.
@@ -688,7 +726,24 @@ export class RetainedRunner {
         new Error('Buffered writer requires both stage and flush')
       );
     const catchUp = this.eventWriter?.catchUp?.bind(this.eventWriter);
-    if (catchUp) {
+    if (
+      catchUp &&
+      this.freshStart &&
+      this.startInput &&
+      this.eventWriter?.startFresh
+    ) {
+      // Invoke-first start: the log is known to be empty, so create the run
+      // as the session's first event without waiting for the connection. A
+      // run that already exists supersedes this owner (see `startFresh`).
+      this.eventWriter.startFresh();
+      const startInput = this.startInput;
+      await this.observed('create_run', () => this.createRun(startInput), {
+        parentSpanId,
+      });
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
+    } else if (catchUp) {
       // The owner's transport streams its whole committed history; run, Step
       // and Hook state is derived from those events alone.
       const loaded = await this.observed('catch_up', async () => catchUp(), {
@@ -708,6 +763,10 @@ export class RetainedRunner {
             this.apply(event);
             reduceStep(this.steps, event);
           }
+          // A start's backup wake found no run: its owner died before
+          // creating it, so create it here.
+          if (!this.runState && loaded.head === 0 && this.startInput)
+            await this.createRun(this.startInput);
           if (!this.runState)
             throw new InputRejected('Run not found', { status: 404 });
           if (loaded.expiredAt) this.runState.expiredAt = loaded.expiredAt;
@@ -806,6 +865,36 @@ export class RetainedRunner {
         eventType: 'run_started',
         specVersion: SPEC_VERSION_CURRENT,
       });
+  }
+
+  /** Commit `run_created` as the session's first event and adopt its run. */
+  private async createRun(input: RunInput) {
+    const result = await this.commit({
+      eventType: 'run_created',
+      specVersion: input.specVersion,
+      eventData: {
+        deploymentId: input.deploymentId,
+        workflowName: input.workflowName,
+        input: input.input,
+        ...(input.executionContext
+          ? { executionContext: input.executionContext }
+          : {}),
+        ...(input.encryptionPublicKey
+          ? { encryptionPublicKey: input.encryptionPublicKey }
+          : {}),
+        ...(input.attributes ? { attributes: input.attributes } : {}),
+        ...(input.allowReservedAttributes
+          ? { allowReservedAttributes: true as const }
+          : {}),
+        // A run routed by itself carries no key.
+        ...(input.routingKey && input.routingKey !== this.runId
+          ? { routingKey: input.routingKey }
+          : {}),
+      },
+    } as unknown as CreateEventRequest);
+    if (!result.event)
+      throw new RunnerFault('persistence', new Error('Missing run_created'));
+    this.runState = runFromCreation(result.event);
   }
 
   private async validateRun() {
@@ -1452,11 +1541,21 @@ export class RetainedRunner {
       () =>
         this.backend.queue(
           this.metadata.queueName,
-          { runId: this.runId },
+          {
+            runId: this.runId,
+            // Until the run is known to exist, the wake doubles as the start's
+            // backup: it carries the creation input, so a delivery recreates a
+            // run whose owner died before creating it.
+            ...(this.startInput && !this.runState
+              ? { runInput: this.startInput }
+              : {}),
+          },
           {
             ...(this.runState
               ? { deploymentId: this.runState.deploymentId }
-              : {}),
+              : this.startInput
+                ? { deploymentId: this.startInput.deploymentId }
+                : {}),
             delaySeconds,
             idempotencyKey: `retained-monitor:${this.runId}:${Math.floor(dueAt / delayMs)}`,
           }
