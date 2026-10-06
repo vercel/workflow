@@ -851,7 +851,13 @@ export async function start<TArgs extends unknown[], TResult>(
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         creation,
         executionContext.retainedRunnerVersion === 1
-          ? creation.then(startOwner)
+          ? creation.then(startOwner, (error: unknown) =>
+              // The run already exists (an earlier start created it): its
+              // owner still has to be started.
+              EntityConflictError.is(error)
+                ? startOwner()
+                : Promise.reject(error)
+            )
           : enqueue(),
       ]);
 

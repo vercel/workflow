@@ -104,6 +104,36 @@ function yieldToEventLoop() {
   );
 }
 
+/**
+ * An event's data as the owner compares it with its acknowledgement. A run's
+ * routing (`run_created`'s `routingKey`, which the backend records in its own
+ * form) is not run data, so it is left out.
+ */
+function comparableEventData(event: {
+  eventType: string;
+  eventData?: unknown;
+}) {
+  if (event.eventType !== 'run_created' || !event.eventData)
+    return event.eventData;
+  const {
+    routingKey: _routingKey,
+    affinityId: _affinityId,
+    affinityCellSize: _affinityCellSize,
+    ...data
+  } = event.eventData as Record<string, unknown>;
+  return data;
+}
+
+/** The top-level keys two event data objects disagree on (diagnostics). */
+function differingKeys(a: unknown, b: unknown): string {
+  const left = (a ?? {}) as Record<string, unknown>;
+  const right = (b ?? {}) as Record<string, unknown>;
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])]
+    .filter((key) => !equivalent(left[key], right[key]))
+    .slice(0, 8)
+    .join(',');
+}
+
 /** Persistence proved that another writer advanced the log past this owner. */
 function isOwnerSuperseded(cause: unknown): boolean {
   for (let error = cause, depth = 0; error && depth < 5; depth++) {
@@ -1122,7 +1152,12 @@ export class RetainedRunner {
         )
           conflict('reported_events');
         const committed = materializeEventPayload(acknowledged, submitted);
-        if (!equivalent(committed.eventData, submitted.eventData)) {
+        if (
+          !equivalent(
+            comparableEventData(committed),
+            comparableEventData(submitted)
+          )
+        ) {
           throw new RunnerFault(
             'conflict',
             new Error('Persistence returned conflicting event data'),
@@ -1443,8 +1478,18 @@ export class RetainedRunner {
       const committed = materializeEventPayload(event, tentative);
       if (+committed.createdAt !== +tentative.createdAt)
         conflict('event_clock');
-      if (!equivalent(committed.eventData, tentative.eventData))
-        conflict('event_data');
+      if (
+        !equivalent(
+          comparableEventData(committed),
+          comparableEventData(tentative)
+        )
+      )
+        conflict(
+          `event_data:${differingKeys(
+            comparableEventData(committed),
+            comparableEventData(tentative)
+          )}`
+        );
       if (
         result.events?.some(
           (extra) =>
