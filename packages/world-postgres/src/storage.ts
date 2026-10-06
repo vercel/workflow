@@ -85,7 +85,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
-import { type Drizzle, Schema } from './drizzle/index.js';
+import { type Drizzle, type DrizzleHandle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import {
   invocationDataExpired,
@@ -303,10 +303,16 @@ async function forceClaimRefusal(
  * otherwise. A NULL id violates the primary key's NOT NULL, so a refused
  * write fails as a whole and allocates nothing, and an accepted one commits
  * its event and its count together: a reader never sees the count include an
- * event it cannot list. Concurrent in-band writers holding the same count
- * serialize on the UPDATE's row lock, and every one after the first finds the
- * count moved. No transaction is added: the fence runs on whichever handle
- * the insert already uses.
+ * event it cannot list.
+ *
+ * Several event types also update an entity row (the run's status or
+ * attributes, a wait, an inline step) ahead of that insert. So every fenced
+ * create runs in one transaction that first locks the run's slots row
+ * (`SELECT ... FOR UPDATE`) and compares the count: a stale writer is refused
+ * before it touches any row, and of concurrent writers holding the same count
+ * only the first through the lock writes anything, its entity updates and
+ * its event committing together. The CTE still guards the insert itself.
+ * Only in-band writers take that lock; out-of-band writes never wait on it.
  *
  * A primary-key conflict (another writer took the slot first) is absorbed by
  * `ON CONFLICT DO NOTHING` after the CTE has already advanced the count, so
@@ -526,7 +532,7 @@ async function openEventSlots(db: DrizzleLike, runId: string): Promise<string> {
  * way: the caller's ordinary incremental read still runs.
  */
 async function reportSkippedSlots(
-  db: Drizzle,
+  db: DrizzleHandle,
   runId: string,
   committedEventId: string,
   askedFor: number,
@@ -576,7 +582,7 @@ function getHookRetentionLimitMs(): number {
 
 /** Persist a hook event and deduplicate retries using its resumeId. */
 async function createHookResume(
-  drizzle: Drizzle,
+  drizzle: DrizzleHandle,
   runId: string,
   data: Extract<AnyEventRequest, { eventType: 'hook_received' }>,
   params: CreateEventParams & { resumeId: string }
@@ -986,7 +992,7 @@ function map<T, R>(obj: T | null | undefined, fn: (v: T) => R): undefined | R {
  * - Other events: Throw error (not supported for legacy runs)
  */
 async function handleLegacyEventPostgres(
-  drizzle: Drizzle,
+  drizzle: DrizzleHandle,
   runId: string,
   eventId: string,
   data: any,
@@ -1150,20 +1156,46 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           { status: 400 }
         );
       }
-      // Refuse a stale writer before anything else: several event types
-      // update their entity row (run status, attributes, a step or wait)
-      // outside a transaction, ahead of the event insert, and that update
-      // must not land for a write the fence then refuses. The insert below
-      // re-checks atomically; this read only keeps a writer that is already
-      // behind from touching entity rows. Two writers holding the same count
-      // at the same instant can both pass it, and then only one event lands.
-      const current = await readSeqInBand(drizzle, runId);
-      if (current !== undefined && current !== expected) {
-        throw await supersededError(drizzle, runId, expected);
+      // Several event types update their entity row (run status,
+      // attributes, a step or wait) ahead of the event insert, so the fence
+      // check, those updates and the insert that advances the count run in
+      // one transaction that holds the run's slots row lock from the start.
+      // A stale writer is refused before it touches any row, and of writers
+      // holding the same count only the first through the lock writes
+      // anything: the others find the count moved. Only in-band writers take
+      // this lock, so out-of-band writes never wait on it.
+      const terminalRuns: string[] = [];
+      const result = await drizzle.transaction(async (tx) => {
+        const [row] = await tx
+          .select({ seqInBand: Schema.eventSlots.seqInBand })
+          .from(Schema.eventSlots)
+          .where(eq(Schema.eventSlots.runId, runId))
+          .for('update')
+          .limit(1);
+        // No slots row: a run that predates slot-numbered ids, which the
+        // fence does not cover (its inserts allocate no slot).
+        if (row && row.seqInBand !== expected) {
+          throw new InBandSupersededError(
+            `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+            { seqInBand: row.seqInBand }
+          );
+        }
+        const inTransaction = createUnfencedEventsStorage(tx, {
+          deferTerminalNotify: (terminalRunId) =>
+            terminalRuns.push(terminalRunId),
+        }).create as (
+          runId: string | null,
+          data: AnyEventRequest,
+          params?: CreateEventParams
+        ) => Promise<EventResult>;
+        return pendingFence.run({ runId, expected, consumed: false }, () =>
+          inTransaction(runId, data, params)
+        );
+      }, SLOT_INSERT_TRANSACTION);
+      for (const terminalRunId of terminalRuns) {
+        await notifyRunTerminal(drizzle, terminalRunId);
       }
-      return pendingFence.run({ runId, expected, consumed: false }, () =>
-        unfencedCreate(runId, data, params)
-      );
+      return result;
     },
     async list(params: ListEventsParams): Promise<EventListResponse> {
       // Read before listing, in one statement: the count, then the highest
@@ -1199,7 +1231,22 @@ async function readEventLogSnapshot(
   return { seq, seqInBand: row.seqInBand };
 }
 
-function createUnfencedEventsStorage(drizzle: Drizzle): Storage['events'] {
+/**
+ * The events storage without the fence, on the pool or, for a fenced
+ * in-band create, on that create's transaction (nested transactions inside
+ * become savepoints).
+ */
+function createUnfencedEventsStorage(
+  drizzle: DrizzleHandle,
+  options: {
+    /**
+     * Takes the run-terminal `NOTIFY` off this handle. A fenced create runs
+     * in a transaction, where a failed `NOTIFY` (or one that fails at commit)
+     * would fail the write itself; it announces after the commit instead.
+     */
+    deferTerminalNotify?: (runId: string) => void;
+  } = {}
+): Storage['events'] {
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -3257,7 +3304,11 @@ function createUnfencedEventsStorage(drizzle: Drizzle): Storage['events'] {
           run.attributes,
           now
         );
-        await notifyRunTerminal(drizzle, effectiveRunId);
+        if (options.deferTerminalNotify) {
+          options.deferTerminalNotify(effectiveRunId);
+        } else {
+          await notifyRunTerminal(drizzle, effectiveRunId);
+        }
       }
 
       const eventResult: EventResult = {

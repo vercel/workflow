@@ -1,6 +1,6 @@
 import { readRunRetention } from '@workflow/world';
 import { eq, sql } from 'drizzle-orm';
-import { type Drizzle, Schema } from './drizzle/index.js';
+import { type DrizzleHandle, Schema } from './drizzle/index.js';
 
 /**
  * SQL `NULL`, not a CBOR-encoded `null`.
@@ -55,7 +55,7 @@ const NULL = sql`NULL`;
  * the Vercel World.
  */
 export async function purgeRunUserData(
-  drizzle: Drizzle,
+  drizzle: DrizzleHandle,
   runId: string,
   purgedAt: Date
 ): Promise<void> {
@@ -143,7 +143,7 @@ export async function purgeRunUserData(
  * enough to notice and safe enough to leave.
  */
 export async function purgeRunUserDataIfZeroRetention(
-  drizzle: Drizzle,
+  drizzle: DrizzleHandle,
   runId: string,
   attributes: Record<string, string> | undefined,
   purgedAt: Date = new Date()

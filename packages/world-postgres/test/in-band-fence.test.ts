@@ -12,6 +12,7 @@ import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { inBandFenceConformance } from '../../world/src/test-support/in-band-fence-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
+import { RUN_STATUS_TOPIC } from '../src/run-status.js';
 import {
   createEventsStorage,
   IN_BAND_SEQ_AT_RUN_CREATION,
@@ -242,5 +243,138 @@ describe('in-band fence (world-postgres)', () => {
       .catch((err: unknown) => err);
     expect(EntityConflictError.is(error)).toBe(true);
     expect(await load(runId)).toEqual(before);
+  });
+
+  /**
+   * Holds the run's slots row from another connection so that concurrent
+   * in-band writers pile up behind it, then lets them all go at once. An
+   * entity-row update that is not behind the fence check lands before the
+   * writers block, which is the race this pins down.
+   */
+  async function raceBehindSlotsLock<T>(
+    runId: string,
+    writers: Array<() => Promise<T>>
+  ): Promise<PromiseSettledResult<T>[]> {
+    const blocker = await pool.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query(
+        'select 1 from workflow.workflow_event_slots where run_id = $1 for update',
+        [runId]
+      );
+      const outcomes = Promise.allSettled(writers.map((write) => write()));
+      await expect
+        .poll(
+          async () => {
+            const { rows } = await pool.query(
+              `select count(*)::int as n from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`
+            );
+            return rows[0]?.n;
+          },
+          { timeout: 5_000 }
+        )
+        .toBe(writers.length);
+      await blocker.query('commit');
+      return await outcomes;
+    } finally {
+      blocker.release();
+    }
+  }
+
+  test('of concurrent writers holding the same count, a refused wait_created leaves no wait row behind', async () => {
+    const runId = await createRun();
+    const { snapshot } = await load(runId);
+    const outcomes = await raceBehindSlotsLock(runId, [
+      () =>
+        events.create(runId, waitCreated('wait_a'), {
+          inBand: true,
+          expectedSeqInBand: snapshot?.seqInBand,
+        }),
+      () =>
+        events.create(runId, waitCreated('wait_b'), {
+          inBand: true,
+          expectedSeqInBand: snapshot?.seqInBand,
+        }),
+    ]);
+    const accepted = outcomes.filter((o) => o.status === 'fulfilled');
+    expect(accepted).toHaveLength(1);
+    expect(
+      outcomes.filter(
+        (o) => o.status === 'rejected' && InBandSupersededError.is(o.reason)
+      )
+    ).toHaveLength(1);
+    const winner = (accepted[0] as PromiseFulfilledResult<{ event?: unknown }>)
+      .value.event as { correlationId: string };
+    const { rows } = await pool.query(
+      'select wait_id from workflow.workflow_waits where run_id = $1',
+      [runId]
+    );
+    expect(rows.map((row) => row.wait_id)).toEqual([
+      `${runId}-${winner.correlationId}`,
+    ]);
+  });
+
+  test('of concurrent writers holding the same count, a refused attr_set leaves the run attributes alone', async () => {
+    const runId = await createRun();
+    const { snapshot } = await load(runId);
+    const attrWrite = (key: string) => () =>
+      events.create(
+        runId,
+        {
+          eventType: 'attr_set',
+          specVersion: SPEC,
+          eventData: {
+            changes: [{ key, value: 'v' }],
+            writer: { type: 'workflow' },
+          },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: snapshot?.seqInBand }
+      );
+    const outcomes = await raceBehindSlotsLock(runId, [
+      attrWrite('ka'),
+      attrWrite('kb'),
+    ]);
+    const accepted = outcomes.filter((o) => o.status === 'fulfilled');
+    expect(accepted).toHaveLength(1);
+    const winner = (
+      accepted[0] as PromiseFulfilledResult<{
+        event?: { eventData?: { changes?: { key: string }[] } };
+      }>
+    ).value.event?.eventData?.changes?.[0]?.key;
+    const { rows } = await pool.query(
+      'select attributes from workflow.workflow_runs where id = $1',
+      [runId]
+    );
+    expect(Object.keys(rows[0]?.attributes ?? {})).toEqual([winner]);
+  });
+
+  test('a fenced run_completed announces the terminal run after its commit', async () => {
+    const runId = await createRun();
+    await events.create(runId, runStarted as AnyEventRequest, {
+      inBand: true,
+      expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+    });
+    const listener = await pool.connect();
+    try {
+      const notified = new Promise<string>((resolve) => {
+        listener.on('notification', (message) => {
+          if (message.payload === runId) resolve(message.payload);
+        });
+      });
+      await listener.query(`listen ${RUN_STATUS_TOPIC}`);
+      await events.create(
+        runId,
+        {
+          eventType: 'run_completed',
+          specVersion: SPEC,
+          eventData: { output: new Uint8Array([1]) },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION + 1 }
+      );
+      await expect(notified).resolves.toBe(runId);
+    } finally {
+      await listener.query('unlisten *');
+      listener.release();
+    }
   });
 });
