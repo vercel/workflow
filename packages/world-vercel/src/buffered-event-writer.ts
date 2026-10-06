@@ -44,6 +44,8 @@ type Pending = {
   transmitted?: Promise<unknown>;
   /** Set when `transmitted` has settled. */
   sent?: boolean;
+  /** Bytes this entry adds to the outbox. */
+  size?: number;
   /** Identifies the current completion; a recovery replaces it. */
   token?: object;
 };
@@ -514,6 +516,7 @@ export class BufferedEventWriter implements EventWriteSession {
       sendFailed = reject;
     });
     const entry: Pending = {
+      size,
       slot: params.eventCount! + 1,
       request,
       params: { ...params, occurredAt },
@@ -552,17 +555,22 @@ export class BufferedEventWriter implements EventWriteSession {
   private async drain() {
     if (this.failure) throw this.failure;
     if (!this.pending.length) return;
+    // A flush covers exactly what was staged when it was called; events staged
+    // while it is in flight stay pending for the next one.
+    const through = this.queued!;
+    const count = this.pending.length;
     try {
       // A flush must follow every event it covers onto the socket: the server
       // refuses a flush ahead of what it has received. A fresh session's
       // stage() returns before transmission, so wait for it here.
-      if (this.pending.some((entry) => entry.transmitted && !entry.sent)) {
-        await Promise.all(this.pending.map((entry) => entry.transmitted));
+      const covered = this.pending.slice(0, count);
+      if (covered.some((entry) => entry.transmitted && !entry.sent)) {
+        await Promise.all(covered.map((entry) => entry.transmitted));
         if (this.failure) throw this.failure;
       }
       for (;;) {
         try {
-          await this.flushThrough(this.queued!, this.generation);
+          await this.flushThrough(through, this.generation);
           break;
         } catch (error) {
           if (!this.resync || !isTransportFailure(error) || this.failure)
@@ -573,7 +581,9 @@ export class BufferedEventWriter implements EventWriteSession {
       // Recoveries replace completions; settle on the final ones.
       let results: EventResult[];
       for (;;) {
-        const completions = this.pending.map((item) => item.completion);
+        const completions = this.pending
+          .slice(0, count)
+          .map((item) => item.completion);
         results = await Promise.all(completions);
         if (this.recovery) {
           await this.recovery;
@@ -587,10 +597,11 @@ export class BufferedEventWriter implements EventWriteSession {
       this.committed = requireEventSlot(
         results[results.length - 1].event!.eventId
       );
-      this.pending = [];
+      const done = this.pending.splice(0, count);
       for (const result of results)
         if (result.step) this.rememberStep(result.step);
-      this.bytes = 0;
+      for (const entry of done) this.bytes -= entry.size ?? 0;
+      if (!this.pending.length) this.bytes = 0;
     } catch (error) {
       throw this.fail(error);
     }

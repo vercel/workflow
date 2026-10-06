@@ -206,6 +206,40 @@ it('buffers a completion using the acknowledged step state and sends flush-throu
   await barrier;
 });
 
+it('flushes only what was staged before the flush, leaving later stages pending', async () => {
+  const calls: { resolve(value: EventResult): void }[] = [];
+  const throughs: number[] = [];
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    (_event, _params, sent) => {
+      sent?.();
+      return new Promise((resolve) => calls.push({ resolve }));
+    },
+    async () => {},
+    async (through) => {
+      throughs.push(through);
+    }
+  );
+  const created = await writer.stage(createStep, { eventCount: 1 });
+  const first = writer.flush();
+  const started = await writer.stage(startStep, { eventCount: 2 });
+  calls[0].resolve(created);
+  const firstResults = await first;
+  expect(throughs).toEqual([2]);
+  expect(firstResults.map((result) => result.event?.eventType)).toEqual([
+    'step_created',
+  ]);
+  expect(writer.heads).toEqual({ queued: 3, committed: 2 });
+  const second = writer.flush();
+  calls[1].resolve(started);
+  const secondResults = await second;
+  expect(throughs).toEqual([2, 3]);
+  expect(secondResults.map((result) => result.event?.eventType)).toEqual([
+    'step_started',
+  ]);
+  expect(writer.heads).toEqual({ queued: 3, committed: 3 });
+});
+
 it('stages a fresh run’s run_created and later events before its connection is confirmed', async () => {
   let synced!: (catchUp: {
     after: number;
