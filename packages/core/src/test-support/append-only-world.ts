@@ -67,6 +67,10 @@ export class AppendOnlyWorld {
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
+  /** The params of every `events.list` call. */
+  readonly listCalls: Array<Record<string, unknown>> = [];
+  /** Replay events served without their step input (`skipStepInputs`). */
+  strippedStepInputs = 0;
   private handler:
     | ((message: unknown, meta: Record<string, unknown>) => Promise<unknown>)
     | undefined;
@@ -92,6 +96,18 @@ export class AppendOnlyWorld {
       lazyCreatePayloads?: boolean;
       reportIncomplete?: boolean;
       /**
+       * Hook tokens another run already holds: a `hook_created` for one of
+       * them commits `hook_conflict` instead, as a World with a token index
+       * does.
+       */
+      takenHookTokens?: readonly string[];
+      /**
+       * Honor `resolveData: 'skip-step-inputs'` on replay pages (list pages
+       * and skipped-slot reports): `step_created` and `step_started` are
+       * served without `input`. The log and the created event keep it.
+       */
+      skipStepInputs?: boolean;
+      /**
        * Called with the delay of every `{ timeoutSeconds }` result, so a
        * test with fake timers can let that time pass before the redelivery.
        */
@@ -111,6 +127,28 @@ export class AppendOnlyWorld {
         input: run.input,
       },
     } as Partial<Event>);
+    this.seqInBand = this.seq;
+  }
+
+  /**
+   * Seed a run with an existing log, as a fresh process would find it: the
+   * events keep their ids, and every position counts as in-band, so the next
+   * orchestrator delivery adopts it all from the snapshot.
+   */
+  seedLog(
+    run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number },
+    events: readonly Event[]
+  ) {
+    this.run = { specVersion: SPEC_VERSION_CURRENT, ...run } as WorkflowRun;
+    for (const event of events) {
+      this.events.push(structuredClone(event));
+      this.applyToRun(event);
+    }
+    this.events.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
+    this.seq = Math.max(
+      0,
+      ...this.events.map((e) => Number(e.eventId.slice('evnt_'.length)))
+    );
     this.seqInBand = this.seq;
   }
 
@@ -221,7 +259,51 @@ export class AppendOnlyWorld {
       const slot = Number(event.eventId.slice('evnt_'.length));
       return slot > (params.eventCount ?? 0) && slot < ownSlot;
     });
-    return { events: skipped, cursor: null, hasMore: false };
+    return {
+      events: this.served(skipped, params?.resolveData),
+      cursor: null,
+      hasMore: false,
+    };
+  }
+
+  /** Replay events as a page with `resolveData` serves them. */
+  private served(events: Event[], resolveData: unknown): Event[] {
+    if (!this.options.skipStepInputs || resolveData !== 'skip-step-inputs') {
+      return events;
+    }
+    return events.map((event) => {
+      const eventData = (event as { eventData?: Record<string, unknown> })
+        .eventData;
+      if (
+        (event.eventType !== 'step_created' &&
+          event.eventType !== 'step_started') ||
+        !eventData ||
+        !('input' in eventData)
+      ) {
+        return event;
+      }
+      this.strippedStepInputs++;
+      const { input: _input, ...rest } = eventData;
+      return { ...event, eventData: rest } as Event;
+    });
+  }
+
+  /** The event a `hook_created` create commits. */
+  private committedHook(data: Partial<Event>): Partial<Event> {
+    const token = (data as { eventData?: { token?: string } }).eventData?.token;
+    if (
+      data.eventType !== 'hook_created' ||
+      token === undefined ||
+      !this.options.takenHookTokens?.includes(token)
+    ) {
+      return data;
+    }
+    return {
+      eventType: 'hook_conflict',
+      specVersion: data.specVersion,
+      correlationId: data.correlationId,
+      eventData: { token, conflictingRunId: 'wrun_token_owner' },
+    } as Partial<Event>;
   }
 
   /**
@@ -321,7 +403,7 @@ export class AppendOnlyWorld {
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
         self.checkFence(params, 1);
-        const event = self.append(data);
+        const event = self.append(self.committedHook(data));
         self.creates.push({ event, params });
         const slot = self.seq;
         return {
@@ -344,7 +426,9 @@ export class AppendOnlyWorld {
                 message: (error as Error).message,
               };
             }
-            const event = self.append(data as Partial<Event>);
+            const event = self.append(
+              self.committedHook(data as Partial<Event>)
+            );
             self.creates.push({ event, params: params as CreateEventParams });
             return { status: 200 as const, event: self.responseEvent(event) };
           }),
@@ -356,6 +440,7 @@ export class AppendOnlyWorld {
         return event;
       },
       async list(params): Promise<EventListResponse> {
+        self.listCalls.push({ ...(params as object) });
         const cursor = params.pagination?.cursor;
         const desc = params.pagination?.sortOrder === 'desc';
         let data = self.events.filter((e) => !cursor || e.eventId > cursor);
@@ -363,7 +448,10 @@ export class AppendOnlyWorld {
         const limit = params.pagination?.limit;
         const page = limit ? data.slice(0, limit) : data;
         return {
-          data: page,
+          data: self.served(
+            page,
+            (params as { resolveData?: unknown }).resolveData
+          ),
           cursor: page.at(-1)?.eventId ?? cursor ?? null,
           hasMore: page.length < data.length,
           ...(self.options.fence
