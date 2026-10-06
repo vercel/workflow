@@ -483,6 +483,8 @@ class WsEventsTransport {
     return new Promise<Connection>((resolve, reject) => {
       void (async () => {
         let conn: Connection;
+        let pooled: WebSocket | undefined;
+        let attach: Uint8Array | undefined;
         let syncChain: Promise<void> = Promise.resolve();
         let syncing:
           | {
@@ -509,10 +511,33 @@ class WsEventsTransport {
             });
         };
         try {
-          const headers = await this.resolveUpgradeHeaders();
+          const after = this.catchUpOptions?.position();
+          // A pre-opened unassigned eventsync socket skips the upgrade: it is
+          // assigned to this run by its first frame (see `attachFrame`).
+          const unassigned =
+            after !== undefined
+              ? unassignedEventsyncUrl(this.wsUrl)
+              : undefined;
+          pooled = unassigned ? takePooledSocket(unassigned.url) : undefined;
+          if (unassigned) fillPool(unassigned.url, this.getHeaders);
+          if (pooled && unassigned)
+            attach = encodeFrame(
+              {
+                reqId: 0,
+                type: 'attach',
+                runId: unassigned.runId,
+                after,
+                ...(this.catchUpOptions?.affinity?.()
+                  ? { affinity: this.catchUpOptions.affinity() }
+                  : {}),
+              },
+              new Uint8Array()
+            );
+          const headers = pooled
+            ? undefined
+            : await this.resolveUpgradeHeaders();
           mark('headersMs');
           let url = this.wsUrl;
-          const after = this.catchUpOptions?.position();
           if (after !== undefined) {
             const parsed = new URL(url);
             parsed.searchParams.set('after', String(after));
@@ -520,7 +545,7 @@ class WsEventsTransport {
             if (affinity) parsed.searchParams.set('affinity', affinity);
             url = parsed.toString();
           }
-          const ws = new WebSocket(url, { headers });
+          const ws = pooled ?? new WebSocket(url, { headers });
           ws.binaryType = 'nodebuffer';
           conn = {
             ws,
@@ -604,7 +629,7 @@ class WsEventsTransport {
           this.reconnectAttempts = 0;
           resolve(conn);
         };
-        ws.on('open', () => {
+        const onOpen = () => {
           mark('openMs');
           opened = true;
           if (this.closed) {
@@ -622,7 +647,8 @@ class WsEventsTransport {
           }
           // An eventsync connection is usable only after its catch-up stream.
           if (!syncing) adopt();
-        });
+        };
+        if (!pooled) ws.on('open', onOpen);
 
         ws.on('message', (raw: Buffer) => {
           if (!syncing) {
@@ -733,6 +759,12 @@ class WsEventsTransport {
             this.scheduleReconnect(code);
           }
         });
+        if (pooled) {
+          timing.pooled = 1;
+          mark('upgradeMs');
+          onOpen();
+          if (attach && !this.closed) ws.send(attach);
+        }
       })();
     });
   }
@@ -924,6 +956,8 @@ const wsState = globalSingleton(
   1,
   () => ({
     transports: new Map<string, WsEventsTransport>(),
+    pool: new Map<string, PooledSocket[]>(),
+    poolOpening: new Map<string, number>(),
     loggedWsProxyFallback: false,
     loggedWsInUse: false,
   })
@@ -974,6 +1008,112 @@ export function resetWsEventsTransportsForTest(): void {
  * Scoped to one run because one client instance only ever drives one run, so
  * `runId` belongs on the connection rather than on every frame.
  */
+/**
+ * Pre-opened unassigned eventsync sockets, per process and server
+ * (`WORKFLOW_EVENTSYNC_POOL` sockets; off when unset). A run's connection takes
+ * one and assigns it with an `attach` frame instead of upgrading; each socket
+ * serves one run and is closed on release, and taking one opens a replacement.
+ */
+function eventsyncPoolSize(): number {
+  if (process.env.WORKFLOW_EVENTS_TRANSPORT !== 'eventsync') return 0;
+  const size = Number(process.env.WORKFLOW_EVENTSYNC_POOL ?? 0);
+  return Number.isSafeInteger(size) && size > 0 ? Math.min(size, 32) : 0;
+}
+
+function unassignedEventsyncUrl(
+  wsUrl: string
+): { url: string; runId: string } | undefined {
+  if (!eventsyncPoolSize()) return undefined;
+  const url = new URL(wsUrl);
+  const match = url.pathname.match(
+    /^(.*)\/runs\/([^/]+)\/experimental_eventsync$/
+  );
+  if (!match) return undefined;
+  url.pathname = `${match[1]}/experimental_eventsync`;
+  url.search = '';
+  return { url: url.toString(), runId: decodeURIComponent(match[2]) };
+}
+
+type PooledSocket = { ws: WebSocket; drop(): void };
+
+function takePooledSocket(url: string): WebSocket | undefined {
+  const pool = wsState.pool.get(url);
+  while (pool?.length) {
+    const entry = pool.shift()!;
+    entry.drop();
+    if (entry.ws.readyState === WebSocket.OPEN) return entry.ws;
+    entry.ws.terminate();
+  }
+  return undefined;
+}
+
+function fillPool(
+  url: string,
+  getHeaders: (opts: {
+    forceRefresh: boolean;
+  }) => Promise<Record<string, string>>
+) {
+  const size = eventsyncPoolSize();
+  if (!wsState.pool.has(url)) wsState.pool.set(url, []);
+  const pool = wsState.pool.get(url)!;
+  while (pool.length + (wsState.poolOpening.get(url) ?? 0) < size) {
+    wsState.poolOpening.set(url, (wsState.poolOpening.get(url) ?? 0) + 1);
+    void openPooledSocket(url, pool, getHeaders);
+  }
+}
+
+async function openPooledSocket(
+  url: string,
+  pool: PooledSocket[],
+  getHeaders: (opts: {
+    forceRefresh: boolean;
+  }) => Promise<Record<string, string>>
+) {
+  let settled = false;
+  const opened = () => {
+    if (settled) return;
+    settled = true;
+    wsState.poolOpening.set(
+      url,
+      Math.max(0, (wsState.poolOpening.get(url) ?? 1) - 1)
+    );
+  };
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url, {
+      headers: await getHeaders({ forceRefresh: false }),
+    });
+  } catch {
+    opened();
+    return;
+  }
+  ws.binaryType = 'nodebuffer';
+  const entry: PooledSocket = { ws, drop() {} };
+  const remove = () => {
+    opened();
+    const index = pool.indexOf(entry);
+    if (index >= 0) pool.splice(index, 1);
+  };
+  // Nothing is sent to an unassigned socket before `attach`; anything else
+  // retires it.
+  const retire = () => {
+    remove();
+    ws.terminate();
+  };
+  ws.on('close', remove);
+  ws.on('error', retire);
+  ws.on('message', retire);
+  ws.once('open', () => {
+    opened();
+    pool.push(entry);
+  });
+  entry.drop = () => {
+    ws.off('close', remove);
+    ws.off('error', retire);
+    ws.off('message', retire);
+  };
+}
+
 export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

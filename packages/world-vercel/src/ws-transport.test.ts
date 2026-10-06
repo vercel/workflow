@@ -96,6 +96,26 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
       return this;
     }
 
+    once(event: string, cb: Listener): this {
+      const wrapped: Listener = (...args) => {
+        this.off(event, wrapped);
+        cb(...args);
+      };
+      return this.on(event, wrapped);
+    }
+
+    off(event: string, cb: Listener): this {
+      this.listeners.set(
+        event,
+        (this.listeners.get(event) ?? []).filter((listener) => listener !== cb)
+      );
+      return this;
+    }
+
+    terminate(): void {
+      this.close(1006);
+    }
+
     emit(event: string, ...args: unknown[]): void {
       for (const cb of [...(this.listeners.get(event) ?? [])]) cb(...args);
     }
@@ -705,6 +725,66 @@ describe('owner event writer', () => {
     } finally {
       channel('workflow.eventsync').unsubscribe(observe);
       await writer.dispose();
+      if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    }
+  });
+
+  it('assigns a pre-opened unassigned socket to a run with an attach frame', async () => {
+    const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
+    process.env.WORKFLOW_EVENTSYNC_POOL = '2';
+    const storage = createStorage({ token: 'test-token' });
+    const first = storage.events.createWriteSession!('wrun_first');
+    let second: ReturnType<
+      NonNullable<typeof storage.events.createWriteSession>
+    >;
+    try {
+      // The first run connects directly; its connect fills the pool.
+      const unassigned = (socket: { url: string }) =>
+        new URL(socket.url).pathname ===
+        '/api/websockets/v1/experimental_eventsync';
+      for (let i = 0; i < 20 && sockets.length < 3; i++) await tick();
+      const direct = sockets.find((socket) => !unassigned(socket))!;
+      expect(direct.url).toContain('/runs/wrun_first/experimental_eventsync');
+      const pooled = sockets.filter(unassigned);
+      expect(pooled).toHaveLength(2);
+      for (const socket of pooled) socket.open();
+      direct.open();
+      const loaded = first.catchUp!();
+      await tick();
+      catchUp(direct, 0, 0);
+      await loaded;
+      // The next run takes a pooled socket: no upgrade, an attach frame.
+      const before = sockets.length;
+      second = storage.events.createWriteSession!('wrun_second');
+      const synced = second.catchUp!();
+      for (let i = 0; i < 20 && !pooled.some((s) => s.sent.length); i++)
+        await tick();
+      const assigned = pooled.find((socket) => socket.sent.length)!;
+      expect(assigned).toBeDefined();
+      const raw = assigned.sent[0];
+      const metaLen = new DataView(
+        raw.buffer,
+        raw.byteOffset,
+        raw.byteLength
+      ).getUint32(0, false);
+      expect(decode(raw.subarray(4, 4 + metaLen))).toMatchObject({
+        type: 'attach',
+        runId: 'wrun_second',
+        after: 0,
+      });
+      catchUp(assigned, 0, 0);
+      expect(await synced).toMatchObject({ head: 0, events: [] });
+      // Taking a socket opens a replacement; no per-run upgrade was made.
+      for (let i = 0; i < 20 && sockets.length === before; i++) await tick();
+      expect(
+        sockets.slice(before).map((socket) => new URL(socket.url).pathname)
+      ).toEqual(['/api/websockets/v1/experimental_eventsync']);
+    } finally {
+      await first.dispose();
+      await second?.dispose();
+      delete process.env.WORKFLOW_EVENTSYNC_POOL;
       if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
       else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
     }
