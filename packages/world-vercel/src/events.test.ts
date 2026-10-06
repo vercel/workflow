@@ -661,6 +661,26 @@ describe('splitEventDataForV4 attribute fields', () => {
     vi.unstubAllEnvs();
   });
 
+  it('records a run routed by itself without requesting a cell', () => {
+    vi.stubEnv('WORKFLOW_AFFINITY_CELL_SIZE', '10');
+    const { meta } = splitEventDataForV4(
+      {
+        eventType: 'run_created',
+        specVersion: 4,
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'wf',
+          input: new Uint8Array(1),
+          routingKey: 'wrun_self',
+        },
+      } as AnyEventRequest,
+      'wrun_self'
+    );
+    expect(meta.affinityId).toBeUndefined();
+    expect(meta.affinityCellSize).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+
   it('splits resilient-start run_started input into the payload body', () => {
     const { payload, meta } = splitEventDataForV4({
       eventType: 'run_started',

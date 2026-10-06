@@ -916,10 +916,9 @@ export class RetainedRunner {
         ...(input.allowReservedAttributes
           ? { allowReservedAttributes: true as const }
           : {}),
-        // A run routed by itself carries no key.
-        ...(input.routingKey && input.routingKey !== this.runId
-          ? { routingKey: input.routingKey }
-          : {}),
+        // Recorded even when the run is routed by itself, so the backend
+        // keeps the routing this start used instead of choosing its own.
+        ...(input.routingKey ? { routingKey: input.routingKey } : {}),
       },
     } as unknown as CreateEventRequest);
     if (!result.event)

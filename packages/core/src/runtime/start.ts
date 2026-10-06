@@ -781,9 +781,11 @@ export async function start<TArgs extends unknown[], TResult>(
             executionContext,
             ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
             ...attributeSeed,
-            ...(opts.experimental_routingKey &&
-            opts.experimental_routingKey !== runId
-              ? { routingKey: opts.experimental_routingKey }
+            // An invoke-first start routes the run by its key (or by itself);
+            // a fallback creation records the same routing.
+            ...(opts.experimental_routingKey ||
+            process.env.WORKFLOW_INVOKE_FIRST_START === '1'
+              ? { routingKey: opts.experimental_routingKey ?? runId }
               : {}),
           },
         },

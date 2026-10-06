@@ -251,7 +251,10 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * Exported for unit tests because the metadata allowlist is the eventData wire
  * contract and must remain exhaustive with the @workflow/world event schemas.
  */
-export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
+export function splitEventDataForV4(
+  data: AnyEventRequest,
+  runId?: string
+): SplitEventData {
   if (data.eventType === 'attr_set') {
     try {
       validateAttributeEventDataSize(data.eventData);
@@ -375,18 +378,19 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
   }
   if (data.eventType === 'run_created') {
-    // A creator-chosen shared routing key fixes the run's affinity (a run
-    // routed by itself carries none); otherwise the server may assign a
-    // shared cell.
-    if (typeof eventData.routingKey === 'string' && eventData.routingKey)
-      meta.affinityId = affinityForRoutingKey(
-        '',
-        eventData.routingKey,
-        typeof eventData.deploymentId === 'string'
-          ? eventData.deploymentId
-          : undefined
-      );
-    else {
+    // A creator-chosen routing key fixes the run's affinity: a shared key
+    // becomes its affinity ID, and a run routed by itself records no cell.
+    // Without a key the server may assign a shared cell.
+    if (typeof eventData.routingKey === 'string' && eventData.routingKey) {
+      if (eventData.routingKey !== runId)
+        meta.affinityId = affinityForRoutingKey(
+          runId ?? '',
+          eventData.routingKey,
+          typeof eventData.deploymentId === 'string'
+            ? eventData.deploymentId
+            : undefined
+        );
+    } else {
       const cellSize = affinityCellSize();
       if (cellSize !== undefined) meta.affinityCellSize = cellSize;
     }
@@ -769,7 +773,7 @@ async function createWorkflowRunEventInner(
     ? 'resolve'
     : 'lazy';
 
-  const { payload, meta } = splitEventDataForV4(data);
+  const { payload, meta } = splitEventDataForV4(data, id ?? undefined);
 
   const input = {
     runId: id,
