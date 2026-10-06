@@ -265,10 +265,18 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const waitKey = (runId: string, correlationId: string) =>
     `${runId}:${correlationId}`;
 
-  function eventPosition(runId: string): Pick<Event, 'eventId' | 'createdAt'> {
+  /**
+   * The next event's slot and time. `at` is an in-band write's `occurredAt`:
+   * its time is the one its orchestrator chose, as world-vercel and
+   * world-local record it (`WorldCapabilities.inBandEventTime`).
+   */
+  function eventPosition(
+    runId: string,
+    at?: Date
+  ): Pick<Event, 'eventId' | 'createdAt'> {
     return {
       eventId: slotToEventId(committedSlot(runId) + 1),
-      createdAt: new Date(nowMs()),
+      createdAt: at ?? new Date(nowMs()),
     };
   }
 
@@ -649,7 +657,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     } else {
       runId = runIdArg;
     }
-    let position = eventPosition(runId);
+    const inBandAt =
+      params?.inBand === true && params.occurredAt
+        ? new Date(params.occurredAt)
+        : undefined;
+    let position = eventPosition(runId, inBandAt);
 
     let currentRun = runs.get(runId);
 
@@ -680,7 +692,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         append(synthetic);
         // The synthetic is committed first, so the requested row takes the next
         // position and sorts after it.
-        position = eventPosition(runId);
+        position = eventPosition(runId, inBandAt);
       }
     }
 
@@ -989,7 +1001,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       // metadata on the `step_started` row. The synthetic is committed first,
       // so `step_started` takes the next position.
       const { input: _dropped, ...rest } = data.eventData;
-      position = eventPosition(runId);
+      position = eventPosition(runId, inBandAt);
       event = { ...event, ...position, eventData: rest } as Event;
     }
 

@@ -582,6 +582,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // (see queue.ts), and the store fences in-band writes.
       maxConcurrency: true,
       inBandFence: true,
+      // In-band writes are stored at their `occurredAt` (store.ts).
+      inBandEventTime: true,
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()

@@ -45,6 +45,7 @@ import { scenario as peekHookBeforeBranch } from './peek-hook-before-branch.ts';
 import { scenario as raceDuplicateDelivery } from './race-duplicate-delivery.ts';
 import { scenario as raceHookAfterProbe } from './race-hook-after-probe.ts';
 import { scenario as raceHookBeforeProbe } from './race-hook-before-probe.ts';
+import { scenario as runAheadFencedOverlap } from './run-ahead-fenced-overlap.ts';
 import { scenario as smokeNoSteps } from './smoke-no-steps.ts';
 import { scenario as smokeOneStep } from './smoke-one-step.ts';
 import { scenario as staleReadEqualStepCounts } from './stale-read-equal-step-counts.ts';
@@ -132,6 +133,7 @@ export const scenarios: ScenarioSpec[] = [
   stepVsStepFork,
   stepVsStepForkFenced,
   fenceCatchesBenignDirection,
+  runAheadFencedOverlap,
 
   // -------------------------------------------------------------------------
   // The same fork as the doc-23 pair, with the hook's write still IN FLIGHT
