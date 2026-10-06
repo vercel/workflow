@@ -285,6 +285,71 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
     return capturedMeta;
   }
 
+  it('writes a single-orchestrator run_started without asking for a preload stream', async () => {
+    const agent = mockAgent();
+    let accept: string | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v5/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { headers?: unknown }) => {
+          accept =
+            new Headers(opts.headers as Record<string, string> | undefined).get(
+              'accept'
+            ) ?? undefined;
+          return encode({
+            event: {
+              eventId: 'evnt_2',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              correlationId: 'wrun_1',
+              createdAt: new Date('2026-06-10T00:00:01.000Z'),
+              specVersion: 9,
+            },
+            run: {
+              runId: 'wrun_1',
+              status: 'running',
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              specVersion: 9,
+              startedAt: new Date('2026-06-10T00:00:01.000Z'),
+              createdAt: new Date('2026-06-10T00:00:00.000Z'),
+              updatedAt: new Date('2026-06-10T00:00:01.000Z'),
+            },
+            allocated: 1,
+          });
+        },
+        {
+          headers: {
+            'content-type': 'application/cbor',
+            'x-wf-event-id': 'evnt_2',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:01.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      } as AnyEventRequest,
+      { inBand: true, expectedSeqInBand: 1, eventCount: 1 },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(accept).not.toBe(V4_FRAME_CONTENT_TYPE);
+    expect(result.event?.eventType).toBe('run_started');
+    expect(result.events).toBeUndefined();
+    expect(result.allocated).toBe(1);
+    agent.assertNoPendingInterceptors();
+  });
+
   it("sends the version this SDK mints next to the caller's stamp", async () => {
     const meta = await postRunStartedAndCaptureMeta();
     expect(meta?.specVersion).toBe(SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT);

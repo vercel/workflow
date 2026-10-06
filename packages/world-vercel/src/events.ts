@@ -908,7 +908,14 @@ async function createWorkflowRunEventInner(
     ...meta,
   };
 
-  if (data.eventType === 'run_started' && !params?.skipPreload) {
+  // A single-orchestrator (spec >= 9) write, which always declares `inBand`,
+  // is answered with a plain CBOR body: the runtime loads the log, and its
+  // fence snapshot, before writing `run_started`, so there is no preload.
+  if (
+    data.eventType === 'run_started' &&
+    !params?.skipPreload &&
+    params?.inBand === undefined
+  ) {
     const result = await createWorkflowRunStartedEventV4(
       input,
       config,
