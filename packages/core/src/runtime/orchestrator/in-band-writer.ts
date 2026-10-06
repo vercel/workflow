@@ -34,11 +34,26 @@ export class OrchestratorSupersededError extends Error {
   }
 }
 
+/**
+ * Refusals a World makes before it writes anything, recognized by name as
+ * well as by status: a World that keeps step or hook state (world-local,
+ * world-postgres) throws these without an HTTP status.
+ */
+const REFUSAL_ERROR_NAMES = new Set([
+  'EntityConflictError',
+  'RunExpiredError',
+  'HookNotFoundError',
+  'TooEarlyError',
+  'ThrottleError',
+  'WorkflowRunNotFoundError',
+  'AttributeValidationError',
+]);
+
 function isDefiniteRefusal(error: unknown): boolean {
-  const status =
-    typeof error === 'object' && error !== null && 'status' in error
-      ? (error as { status?: unknown }).status
-      : undefined;
+  if (typeof error !== 'object' || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  if (typeof name === 'string' && REFUSAL_ERROR_NAMES.has(name)) return true;
+  const status = (error as { status?: unknown }).status;
   return typeof status === 'number' && status >= 400 && status < 500;
 }
 
@@ -138,11 +153,20 @@ export class InBandWriter {
     return this.expected;
   }
 
-  /** Throws when the writer has stopped; call before starting an inline body. */
+  /**
+   * Throws when the writer has stopped; call before starting an inline body.
+   * See the comment inside for which error.
+   */
   assertActive(): void {
-    if (this.stopped) {
+    if (!this.stopped) return;
+    // A fence refusal stops the delivery as superseded. Any other stop was
+    // a write whose outcome is unknown (a transport error, a 5xx); every
+    // later write fails with that same error, so the delivery is retried
+    // the way that error is, and never reported as superseded.
+    if (InBandSupersededError.is(this.stoppedBy)) {
       throw new OrchestratorSupersededError(this.stoppedBy);
     }
+    throw this.stoppedBy;
   }
 
   create<T extends CreateEventRequest>(

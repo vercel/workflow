@@ -33,6 +33,7 @@ import {
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
@@ -58,6 +59,7 @@ import { getMaxInlineSteps } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
+  maxEventSlot,
   queueMessage,
   REPLAY_RESOLVE_DATA,
   runDispatchContext,
@@ -71,8 +73,16 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
-import { stepsToReenqueue } from './orchestrator/creator-rules.js';
+import {
+  schedulesWaitTimer,
+  stepsToReenqueue,
+} from './orchestrator/creator-rules.js';
 import type { InBandWriter } from './orchestrator/in-band-writer.js';
+import {
+  getOrchestratorPollIntervalMs,
+  LiveLogFeed,
+} from './orchestrator/live-feed.js';
+import { MAX_STEP_MESSAGE_INPUT_BYTES } from './orchestrator/log-state.js';
 import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
@@ -190,6 +200,8 @@ async function queueStepMessage(params: {
   stepInput?: Uint8Array;
   /** The attempt the message starts with, when above 1. */
   stepAttempt?: number;
+  /** Event id of the step's `step_created`, for reading its input back. */
+  stepCreatedEventId?: string;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
   const {
@@ -217,6 +229,9 @@ async function queueStepMessage(params: {
       ...(stepInput !== undefined ? { stepInput: { input: stepInput } } : {}),
       ...(params.stepAttempt !== undefined && params.stepAttempt > 1
         ? { stepAttempt: params.stepAttempt }
+        : {}),
+      ...(params.stepCreatedEventId
+        ? { stepCreatedEventId: params.stepCreatedEventId }
         : {}),
       // Immutable run identity so the consumer can start the step without a
       // blocking runs.get — see RunDispatchContextSchema.
@@ -412,6 +427,10 @@ async function dispatchPendingOps(params: {
    * terminal event (the inline loop's feed, or the requeue signal).
    */
   failedSerializationStepCids: Set<string>;
+  /** Event ids of the `step_created` events this dispatch wrote. */
+  createdStepEventIds: Map<string, string>;
+  /** Serialized inputs of the steps this dispatch created. */
+  createdStepInputs: Map<string, Uint8Array>;
 }> {
   const {
     world,
@@ -424,6 +443,8 @@ async function dispatchPendingOps(params: {
     createEvent,
   } = params;
   const skipStepCreation = params.skipStepCreation;
+  const createdStepEventIds = new Map<string, string>();
+  const createdStepInputs = new Map<string, Uint8Array>();
   const creatorMessageId = params.creatorMessageId;
   const wfdiag = params.wfdiag;
   // Step cids published via resilient dispatch below (create + queue in
@@ -793,7 +814,7 @@ async function dispatchPendingOps(params: {
           );
 
           try {
-            await createEvent({
+            const created = await createEvent({
               eventType: 'step_created',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: step.correlationId,
@@ -804,6 +825,15 @@ async function dispatchPendingOps(params: {
                 ...(creatorMessageId ? { creatorMessageId } : {}),
               },
             });
+            if (created.event) {
+              createdStepEventIds.set(
+                step.correlationId,
+                created.event.eventId
+              );
+            }
+            if (encryptedInput instanceof Uint8Array) {
+              createdStepInputs.set(step.correlationId, encryptedInput);
+            }
           } catch (err) {
             if (EntityConflictError.is(err)) return;
             throw err;
@@ -875,6 +905,8 @@ async function dispatchPendingOps(params: {
     createdGetConflictHook,
     queuedStepCids,
     failedSerializationStepCids,
+    createdStepEventIds,
+    createdStepInputs,
   };
 }
 
@@ -1087,6 +1119,39 @@ export async function runWorkflowWithQuickJS(params: {
     waitContinuation?.correlationId === correlationId
       ? waitContinuation.attempt + 1
       : 0;
+  /**
+   * Whether this delivery arms the timer of the wait `correlationId`: only
+   * the delivery whose message wrote its `wait_created`, a redelivery of
+   * that message, or the wait's own timer delivery (see
+   * `schedulesWaitTimer`). Other deliveries leave the timer to them, so
+   * timer messages do not pile up across suspensions. Assigned once the
+   * log is loaded.
+   */
+  let armsWaitTimer: (correlationId: string) => boolean = () => true;
+  /** A timer wake: delayed, and carrying no idempotency key. */
+  const queueWaitTimer = async (
+    correlationId: string,
+    seconds: number
+  ): Promise<void> => {
+    const attempt = nextWaitContinuationAttempt(correlationId);
+    const { delaySeconds } = getWaitContinuationDispatch(
+      seconds,
+      correlationId,
+      Date.now(),
+      attempt
+    );
+    await queueMessage(
+      world,
+      getWorkflowQueueName(workflowRun.workflowName, namespace),
+      {
+        runId,
+        traceCarrier: await nextTraceCarrier(),
+        requestedAt: new Date(),
+        waitContinuation: { correlationId, attempt },
+      },
+      { delaySeconds }
+    );
+  };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
   const nextTraceCarrier =
@@ -1356,6 +1421,18 @@ export async function runWorkflowWithQuickJS(params: {
       ? events.length
       : (existingSnapshot?.metadata.eventCount ?? 0) + events.length;
   const logView = new QuickJSLogView(events, loadedCursor, loadedPosition);
+  armsWaitTimer = (correlationId) =>
+    ownerMessageId === undefined ||
+    schedulesWaitTimer({
+      wait: events.find(
+        (event) =>
+          event.eventType === 'wait_created' &&
+          event.correlationId === correlationId
+      ),
+      correlationId,
+      messageId: ownerMessageId,
+      timerFor: waitContinuation?.correlationId,
+    });
   const writeEvent: EventCreator = (data, eventParams) =>
     params.writer
       ? params.writer.create(data, eventParams)
@@ -1658,6 +1735,11 @@ export async function runWorkflowWithQuickJS(params: {
   let eventsProcessedSinceSnapshot = events.length;
   // Step cids already executed inline by this invocation.
   const executedStepIds = new Set<string>();
+  // Step cids whose `step_created` this invocation wrote on the inline path.
+  // The VM only learns of those events from a later listing, so until then
+  // its pending op still reads as uncreated; dispatch must not write the
+  // event a second time.
+  const inlineCreatedStepIds = new Set<string>();
   // Steps for which THIS invocation already sent a queue message.
   const queuedStepIds = new Set<string>();
   // Aborts THIS invocation already recorded (hook_received written).
@@ -1900,7 +1982,15 @@ export async function runWorkflowWithQuickJS(params: {
           ? { deltaCursor: logView.logCursor }
           : {}),
         pendingOperations: opsToDispatch,
-        skipStepCreation: inlineClaimCids,
+        // Every step whose `step_created` this invocation already wrote,
+        // whether or not the VM has been fed it yet: a World that keeps no
+        // step rows would append a second one.
+        skipStepCreation: new Set([
+          ...inlineClaimCids,
+          ...inlineCreatedStepIds,
+          ...queuedStepIds,
+          ...executedStepIds,
+        ]),
         creatorMessageId: ownerMessageId,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
         finalizeUnserializableSteps: true,
@@ -1934,6 +2024,10 @@ export async function runWorkflowWithQuickJS(params: {
           .filter((step) => !dispatched.queuedStepCids.has(step.correlationId))
           .map((step) => {
             queuedStepIds.add(step.correlationId);
+            const createdEventId = dispatched.createdStepEventIds.get(
+              step.correlationId
+            );
+            const input = dispatched.createdStepInputs.get(step.correlationId);
             return queueStepMessage({
               world,
               runId,
@@ -1942,6 +2036,13 @@ export async function runWorkflowWithQuickJS(params: {
               namespace,
               nextTraceCarrier,
               purpose: 'dispatch',
+              ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
+              ...(input &&
+              input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
+              (workflowRun.specVersion ?? 0) >=
+                SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+                ? { stepInput: input }
+                : {}),
               wfdiag,
             });
           })
@@ -2063,6 +2164,7 @@ export async function runWorkflowWithQuickJS(params: {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+        if (!armsWaitTimer(wait.correlationId)) continue;
         // Waits whose wait_completed THIS invocation already wrote (the
         // elapsed-wait pass above) are done: the event just hasn't fed
         // back into the VM yet. No continuation needed.
@@ -2093,30 +2195,10 @@ export async function runWorkflowWithQuickJS(params: {
       }
       if (soonestWait) {
         scheduledWaitContinuations.add(soonestWait.correlationId);
-        const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
-        await queueMessage(
-          world,
-          getWorkflowQueueName(workflowRun.workflowName, namespace),
-          {
-            runId,
-            traceCarrier: await nextTraceCarrier(),
-            requestedAt: new Date(),
-            waitContinuation: {
-              correlationId: soonestWait.correlationId,
-              attempt,
-            },
-          },
-          getWaitContinuationDispatch(
-            soonestWait.seconds,
-            soonestWait.correlationId,
-            Date.now(),
-            attempt
-          )
-        );
+        await queueWaitTimer(soonestWait.correlationId, soonestWait.seconds);
         wfdiag('wait_continuation_scheduled', {
           correlationId: soonestWait.correlationId,
           delaySeconds: soonestWait.seconds,
-          attempt,
         });
       }
 
@@ -2130,6 +2212,21 @@ export async function runWorkflowWithQuickJS(params: {
       // workflow likewise runs step-by-step until the platform reclaims
       // the invocation and a redelivery resumes from the log.
       budget.pause();
+      // While the inline bodies run, events other writers commit (a
+      // background step's outcome, a hook payload, a cancellation) are
+      // pushed or polled into the view, so the next feed delivers them
+      // without a listing. The view only ever delivers contiguous positions.
+      const feed = logView.tracking
+        ? new LiveLogFeed(world, runId, {
+            afterSlot: maxEventSlot(events) ?? 0,
+            cursor: logView.logCursor,
+            pollIntervalMs: getOrchestratorPollIntervalMs(),
+            onEvents: (fed) => {
+              logView.absorb({ events: fed });
+            },
+          })
+        : undefined;
+      feed?.start();
       let outcomes: StepExecutionResult[];
       try {
         outcomes = await Promise.all(
@@ -2146,6 +2243,7 @@ export async function runWorkflowWithQuickJS(params: {
                   // The step's execution mode is fixed here: inline, run by
                   // this orchestrator. `step_created` commits before the
                   // body starts.
+                  inlineCreatedStepIds.add(step.correlationId);
                   await createEvent({
                     eventType: 'step_created',
                     specVersion: SPEC_VERSION_CURRENT,
@@ -2187,6 +2285,7 @@ export async function runWorkflowWithQuickJS(params: {
           )
         );
       } finally {
+        feed?.stop();
         budget.resume();
       }
       inlineStepsExecuted += inlineCandidates.length;
@@ -2480,6 +2579,11 @@ export async function runWorkflowWithQuickJS(params: {
           // Plain create: the run is ending, nothing replays its log, so a
           // page handed back here would be read by no one.
           createEvent: terminalCreateEvent,
+          skipStepCreation: new Set([
+            ...inlineCreatedStepIds,
+            ...queuedStepIds,
+            ...executedStepIds,
+          ]),
           pendingOperations: result.completed.drainOperations,
           wfdiag,
         });
@@ -2626,7 +2730,10 @@ export async function runWorkflowWithQuickJS(params: {
       const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
       if (resumeMs <= 0) {
         hasElapsedWait = true;
-      } else if (!scheduledWaitContinuations.has(wait.correlationId)) {
+      } else if (
+        !scheduledWaitContinuations.has(wait.correlationId) &&
+        armsWaitTimer(wait.correlationId)
+      ) {
         const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
           soonestWait = {
@@ -2670,26 +2777,7 @@ export async function runWorkflowWithQuickJS(params: {
         waitCorrelationId: soonestWait.correlationId,
       });
       scheduledWaitContinuations.add(soonestWait.correlationId);
-      const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
-      await queueMessage(
-        world,
-        getWorkflowQueueName(workflowRun.workflowName, namespace),
-        {
-          runId,
-          traceCarrier: await nextTraceCarrier(),
-          requestedAt: new Date(),
-          waitContinuation: {
-            correlationId: soonestWait.correlationId,
-            attempt,
-          },
-        },
-        getWaitContinuationDispatch(
-          soonestWait.seconds,
-          soonestWait.correlationId,
-          Date.now(),
-          attempt
-        )
-      );
+      await queueWaitTimer(soonestWait.correlationId, soonestWait.seconds);
       return;
     }
 
@@ -2757,6 +2845,11 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           createEvent: terminalCreateEvent,
+          skipStepCreation: new Set([
+            ...inlineCreatedStepIds,
+            ...queuedStepIds,
+            ...executedStepIds,
+          ]),
           pendingOperations: result.failed.drainOperations,
           wfdiag,
         });
