@@ -4,11 +4,13 @@ import type {
   CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
+  Event,
   EventBatchResult,
   EventLogSnapshot,
   EventResult,
   World,
 } from '@workflow/world';
+import { eventIdToSlot } from '@workflow/world';
 
 /**
  * Thrown by an {@link InBandWriter} once the World has refused one of its
@@ -87,6 +89,15 @@ export function getFenceRedeliveryDelaySeconds(
  */
 export class InBandWriter {
   private expected: number | undefined;
+  /**
+   * Highest slot this writer knows is allocated: the load snapshot's `seq`,
+   * raised by the slots of its own accepted writes. Used to tell a write
+   * that allocated nothing (an idempotent replay answered with the existing
+   * event) from one that allocated, and as the fallback `eventCount`.
+   */
+  private knownMaxSlot = 0;
+  /** `snapshot.seq` of the last full load: an understated position. */
+  private loadedSlot: number | undefined;
   private stoppedBy: unknown;
   private stopped = false;
   private tail: Promise<unknown> = Promise.resolve();
@@ -100,6 +111,8 @@ export class InBandWriter {
   adoptSnapshot(snapshot: EventLogSnapshot | undefined): void {
     if (this.stopped) return;
     this.expected = snapshot?.seqInBand;
+    this.loadedSlot = snapshot?.seq;
+    if (snapshot) this.knownMaxSlot = Math.max(this.knownMaxSlot, snapshot.seq);
   }
 
   /** Whether a refusal or an unknown allocation stopped this writer. */
@@ -137,10 +150,11 @@ export class InBandWriter {
       this.assertActive();
       try {
         const result = await this.world.events.create(this.runId, data, {
+          ...this.positionFallback(params?.eventCount),
           ...params,
           ...this.fenceParams(),
         });
-        this.advance(1);
+        this.advance(this.allocatedBy([result.event]));
         return result;
       } catch (error) {
         throw this.stop(error);
@@ -150,7 +164,7 @@ export class InBandWriter {
 
   createBatch(
     events: BatchEventRequest[],
-    params?: CreateEventBatchParams & { expectedSeqInBand?: never }
+    params?: Omit<CreateEventBatchParams, 'inBand' | 'expectedSeqInBand'>
   ): Promise<EventBatchResult> {
     const createBatch = this.world.events.createBatch;
     if (!createBatch) {
@@ -168,7 +182,7 @@ export class InBandWriter {
           {
             ...params,
             ...this.fenceParams(),
-          } as CreateEventBatchParams
+          }
         );
         // The block was allocated whole; a per-item failure leaves a hole
         // the World seals, and that position still counts.
@@ -180,10 +194,10 @@ export class InBandWriter {
     });
   }
 
-  private fenceParams(): Pick<
-    CreateEventParams,
-    'inBand' | 'expectedSeqInBand'
-  > {
+  private fenceParams(): {
+    inBand: true;
+    expectedSeqInBand?: number;
+  } {
     return this.expected === undefined
       ? { inBand: true }
       : { inBand: true, expectedSeqInBand: this.expected };
@@ -191,6 +205,43 @@ export class InBandWriter {
 
   private advance(positions: number): void {
     if (this.expected !== undefined) this.expected += positions;
+  }
+
+  /**
+   * Positions a single accepted write allocated. The World's response does
+   * not state it, so it is inferred: an event at a slot this writer already
+   * knew to be allocated is an idempotent replay of an earlier write (for
+   * example a deduplicated `hook_received`), which allocated nothing.
+   */
+  private allocatedBy(events: (Event | undefined)[]): number {
+    let allocated = 0;
+    for (const event of events) {
+      if (!event || this.isNewSlot(event.eventId)) allocated++;
+      if (event) this.noteSlot(event.eventId);
+    }
+    return allocated;
+  }
+
+  private isNewSlot(eventId: string): boolean {
+    const slot = eventIdToSlot(eventId);
+    return slot === null || slot > this.knownMaxSlot;
+  }
+
+  private noteSlot(eventId: string): void {
+    const slot = eventIdToSlot(eventId);
+    if (slot !== null && slot > this.knownMaxSlot) this.knownMaxSlot = slot;
+  }
+
+  /**
+   * An in-band write names the position it was decided from. A caller that
+   * names none gets the last full load's `snapshot.seq`: an understatement,
+   * which only widens the World's skipped-slot report.
+   */
+  private positionFallback(
+    eventCount: number | undefined
+  ): Pick<CreateEventParams, 'eventCount'> {
+    if (eventCount !== undefined || this.loadedSlot === undefined) return {};
+    return { eventCount: this.loadedSlot };
   }
 
   private stop(error: unknown): unknown {

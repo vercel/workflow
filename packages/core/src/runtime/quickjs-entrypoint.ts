@@ -1482,6 +1482,7 @@ export async function runWorkflowWithQuickJS(params: {
             eventType: 'wait_completed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: event.correlationId,
+            eventData: { resumeAt: new Date(resumeAt as string) },
           });
           if (!logView.tracking && result.event) {
             // No positions to order by (see QuickJSLogView), so the event
@@ -1962,6 +1963,7 @@ export async function runWorkflowWithQuickJS(params: {
                 eventType: 'wait_completed',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: wait.correlationId,
+                eventData: { resumeAt: new Date(wait.resumeAt) },
               });
             } catch (err) {
               if (EntityConflictError.is(err)) return;

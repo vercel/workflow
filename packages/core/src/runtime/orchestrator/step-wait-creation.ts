@@ -214,8 +214,10 @@ async function writeAll(
   const { writer } = params;
   if (events.length > 1 && writer.supportsBatch) {
     const batch: BatchEventRequest[] = events.map((event) => ({ event }));
+    const eventCount = params.eventCount();
     const { results } = await writer.createBatch(batch, {
       ...(params.requestId ? { requestId: params.requestId } : {}),
+      ...(eventCount !== undefined ? { eventCount } : {}),
     });
     const committed: Event[] = [];
     results.forEach((result, index) => {

@@ -140,4 +140,32 @@ describe('InBandWriter', () => {
     expect(world.creates[0]?.params).toMatchObject({ inBand: true });
     expect(world.creates[0]?.params?.expectedSeqInBand).toBeUndefined();
   });
+
+  it('does not advance for a write answered with an event it already knew (idempotent replay)', async () => {
+    const world = seeded({});
+    const base = world.asWorld();
+    const existing = world.events[0];
+    const replaying = {
+      events: {
+        ...base.events,
+        create: async () => ({ event: existing }),
+      },
+    } as unknown as typeof base;
+    const writer = new InBandWriter(replaying, RUN);
+    writer.adoptSnapshot({ seq: 1, seqInBand: 1 });
+    await writer.create(waitCreated('wait_a'));
+    expect(writer.expectedSeqInBand).toBe(1);
+  });
+
+  it('names the load position on a write that names none', async () => {
+    const world = seeded({ fence: true });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      (await loadWorkflowRunEventsFrom(world.asWorld(), RUN)).snapshot
+    );
+    await writer.create(waitCreated('wait_a'));
+    expect(world.creates[0]?.params?.eventCount).toBe(1);
+    await writer.create(waitCreated('wait_b'), { eventCount: 2 });
+    expect(world.creates[1]?.params?.eventCount).toBe(2);
+  });
 });

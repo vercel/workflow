@@ -138,11 +138,13 @@ import {
 } from './runtime/replay-budget.js';
 import { ReplayRecoveryReporter } from './runtime/replay-recovery-reporter.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
+import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
 } from './runtime/step-executor.js';
 import { handleStepMessage } from './runtime/step-handler.js';
+import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
@@ -1164,6 +1166,13 @@ export function workflowEntrypoint(
                   let maxEventsLimit: number | undefined =
                     clampMaxEvents(undefined);
                   let workflowStartedAt = -1;
+                  // Latency telemetry (TTFS / STSO / RSFS), see
+                  // runtime/step-latency.ts: whether this invocation's first
+                  // load held nothing beyond the run's own creation and start,
+                  // and when the `run_started` this delivery wrote returned.
+                  let invocationStartedClean: boolean | undefined;
+                  let runStartedReceivedAtMs: number | undefined;
+                  let preStepBlockingMs = 0;
 
                   const recordWorkflowSetupFailure = async (
                     err: unknown
@@ -1398,6 +1407,19 @@ export function workflowEntrypoint(
                       return undefined;
                     }
                     assert(log, 'The event log is loaded before setup');
+                    // AUTHORITATIVE deployment-affinity protection, before
+                    // this delivery writes anything (`run_started` included)
+                    // and before replay or inline step execution.
+                    if (
+                      run &&
+                      (await guardDeployment(run, async () => ({
+                        ...(await replayMessage()),
+                        ...(hookInput ? { hookInput } : {}),
+                        ...(hookResumeTiming ? { hookResumeTiming } : {}),
+                      }))) !== 'continue'
+                    ) {
+                      return undefined;
+                    }
                     const hasRunStarted = log.events.some(
                       (event) => event.eventType === 'run_started'
                     );
@@ -1432,6 +1454,7 @@ export function workflowEntrypoint(
                         );
                         run = started.run ?? run;
                         maxEventsLimit = clampMaxEvents(started.maxEvents);
+                        runStartedReceivedAtMs = Date.now();
                         if (resumeTracking) {
                           resumeTracking.setupSource = 'run_started';
                         }
@@ -1459,20 +1482,28 @@ export function workflowEntrypoint(
                     }
                     assert(run, 'Workflow run must be loaded before replay');
                     assert(log, 'The event log is loaded before replay');
+                    invocationStartedClean = log.events.every(
+                      (e) =>
+                        e.eventType === 'run_created' ||
+                        e.eventType === 'run_started' ||
+                        e.eventType === 'attr_set' ||
+                        isSealedNoopEvent(e)
+                    );
                     const runCreated = log.events.find(
                       (event) => event.eventType === 'run_created'
                     );
-                    if (!runCreated) {
-                      throw new WorkflowRuntimeError(
-                        `Workflow run "${runId}" has no "run_created" event`
-                      );
-                    }
+                    // A log without `run_created` (a legacy run, or a World
+                    // whose log starts later) takes the input from the run.
+                    const runInputValue = runCreated
+                      ? runCreated.eventData.input
+                      : (await world.runs.get(runId, { resolveData: 'all' }))
+                          .input;
                     const runStarted = log.events.find(
                       (event) => event.eventType === 'run_started'
                     );
                     workflowRun = {
                       ...run,
-                      input: runCreated.eventData.input,
+                      input: runInputValue,
                       status: 'running',
                       output: undefined,
                       error: undefined,
@@ -1486,18 +1517,6 @@ export function workflowEntrypoint(
                       ...Attribute.WorkflowRunStatus('running'),
                       ...Attribute.WorkflowStartedAt(workflowStartedAt),
                     });
-
-                    // AUTHORITATIVE deployment-affinity protection before
-                    // replay and inline step execution.
-                    if (
-                      (await guardDeployment(workflowRun, async () => ({
-                        ...(await replayMessage()),
-                        ...(hookInput ? { hookInput } : {}),
-                        ...(hookResumeTiming ? { hookResumeTiming } : {}),
-                      }))) !== 'continue'
-                    ) {
-                      return undefined;
-                    }
 
                     // Legacy lazy hook resume: an older producer sent the
                     // payload on this message only. The orchestrator writes
@@ -1752,6 +1771,8 @@ export function workflowEntrypoint(
                         let workflowResult: WorkflowResumeResult = session
                           ? await resumeWorkflow(session, log.events)
                           : { type: 'replay' };
+                        const servedByRetained =
+                          session !== null && workflowResult.type !== 'replay';
                         if (workflowResult.type === 'replay') {
                           session = null;
                           const compiled = startWorkflowCompile(workflowRun);
@@ -1829,7 +1850,9 @@ export function workflowEntrypoint(
                         const outcome = await handleOrchestratorSuspension(
                           suspension,
                           workflowRun,
-                          log
+                          log,
+                          Date.now() - replayStart,
+                          servedByRetained
                         );
                         if (outcome.type === 'return') {
                           return outcome.result;
@@ -1890,7 +1913,9 @@ export function workflowEntrypoint(
                     async function handleOrchestratorSuspension(
                       suspension: WorkflowSuspension,
                       run: WorkflowRun,
-                      loaded: LoadedEventLog
+                      loaded: LoadedEventLog,
+                      replayDurationMs: number,
+                      retained: boolean
                     ): Promise<
                       | {
                           type: 'return';
@@ -2093,7 +2118,27 @@ export function workflowEntrypoint(
                       }
 
                       if (inlineToRun.length > 0) {
-                        const ran = await runInlineSteps(run, inlineToRun);
+                        const latencyTracking = computeStepLatencyTracking({
+                          events: loaded.events,
+                          invocationStartedClean:
+                            invocationStartedClean === true,
+                          runCreatedAtMs:
+                            runIdCreatedAt(runId) ?? +run.createdAt,
+                          runStartedReceivedAtMs,
+                          replayMs: replayDurationMs,
+                          preStepBlockingMs,
+                          preStepBlockingBeforeAttrMs: undefined,
+                          suspensionHasWaits: suspension.waitCount > 0,
+                          suspensionCreatedHooks: suspension.hookCount > 0,
+                          turbo: false,
+                          retained,
+                        });
+                        preStepBlockingMs += hookResult?.hookCreationMs ?? 0;
+                        const ran = await runInlineSteps(
+                          run,
+                          inlineToRun,
+                          latencyTracking
+                        );
                         return ran.type === 'continue'
                           ? { type: 'continue', retainSession: retain }
                           : ran;
@@ -2118,7 +2163,10 @@ export function workflowEntrypoint(
                     /** Runs a batch of inline steps in this process. */
                     async function runInlineSteps(
                       run: WorkflowRun,
-                      steps: InlineStepSpec[]
+                      steps: InlineStepSpec[],
+                      latencyTracking?: ReturnType<
+                        typeof computeStepLatencyTracking
+                      >
                     ): Promise<
                       | {
                           type: 'return';
@@ -2157,9 +2205,7 @@ export function workflowEntrypoint(
                                   createEvent: (data, params) =>
                                     writer.create(data, {
                                       ...params,
-                                      ...(data.eventType === 'step_started'
-                                        ? {}
-                                        : slotSnapshot()),
+                                      ...slotSnapshot(),
                                       resolveData: REPLAY_RESOLVE_DATA,
                                     }),
                                   workflowRunId: runId,
@@ -2181,6 +2227,9 @@ export function workflowEntrypoint(
                                   beforeBody: () => writer.assertActive(),
                                   ...(index === 0 && tracking
                                     ? { resumeTracking: tracking }
+                                    : {}),
+                                  ...(index === 0 && latencyTracking
+                                    ? { latencyTracking }
                                     : {}),
                                 }),
                               'debug'
@@ -2422,6 +2471,12 @@ export function workflowEntrypoint(
                             divergenceCount,
                             maxRecoveryReplays,
                             loopIteration,
+                            deliveryAttempt: metadata.attempt,
+                            eventLogLength: log?.events.length,
+                            eventLogLastEventId: log?.events.at(-1)?.eventId,
+                            isRecoveryReplay: replayDivergence !== undefined,
+                            hasHookInput: hookInput !== undefined,
+                            hasWaitContinuation: waitContinuation !== undefined,
                             errorMessage: err.message,
                           }
                         );

@@ -1261,6 +1261,25 @@ export interface CreateEventBatchParams {
    * attribution its single-path twin would.
    */
   requestId?: string;
+  /**
+   * Whether the run's orchestrator makes this batch (spec >= 9), as
+   * {@link CreateEventParams.inBand}. Every event of a batch shares it.
+   */
+  inBand?: boolean;
+  /**
+   * The orchestrator's in-band count for the whole block, as
+   * {@link CreateEventParams.expectedSeqInBand}. A fenced World allocates the
+   * block's positions in one conditional allocation.
+   */
+  expectedSeqInBand?: number;
+  /**
+   * The position the batch was decided from, as
+   * {@link CreateEventParams.eventCount}; required with `inBand: true` on a
+   * fenced World, whose response then carries the skipped-slot report for
+   * the block at the top level (`events` / `reportIncomplete` on
+   * {@link EventBatchResult}).
+   */
+  eventCount?: number;
 }
 
 /**
@@ -1328,6 +1347,13 @@ export type BatchEventItemResult =
 export interface EventBatchResult {
   /** One entry per submitted event, in request order. */
   results: BatchEventItemResult[];
+  /**
+   * The skipped-slot report of an in-band batch (spec >= 9): the events in
+   * positions `eventCount + 1` up to the block's first position.
+   */
+  events?: Event[];
+  /** As {@link EventResult.reportIncomplete}, for an in-band batch. */
+  reportIncomplete?: boolean;
 }
 
 export interface GetEventParams {
