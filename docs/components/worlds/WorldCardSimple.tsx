@@ -48,7 +48,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
           </div>
         </CardHeader>
         <CardContent className="flex-1 px-4 pb-2">
-          <p className="text-sm text-muted-foreground line-clamp-2">
+          <p className="text-sm text-gray-900 line-clamp-2">
             {world.description}
           </p>
         </CardContent>

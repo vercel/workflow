@@ -18,7 +18,7 @@ export function WorldInstructions({ id, world }: WorldInstructionsProps) {
         <h2 className="text-heading-24 sm:text-heading-32">
           Installation & Usage
         </h2>
-        <p className="text-muted-foreground">
+        <p className="text-gray-900">
           This is a community-maintained World implementation. For installation
           instructions and usage documentation, please refer to the project's
           README on GitHub.

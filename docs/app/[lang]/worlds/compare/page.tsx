@@ -40,7 +40,7 @@ export default async function CompareBenchmarksPage() {
             <h1 className="text-heading-40 sm:text-heading-48">
               Benchmark Comparison
             </h1>
-            <p className="text-lg text-muted-foreground max-w-2xl mx-auto text-balance">
+            <p className="text-lg text-gray-900 max-w-2xl mx-auto text-balance">
               Compare workflow execution performance across all World
               implementations. Lower times are better.
             </p>
@@ -62,7 +62,7 @@ export default async function CompareBenchmarksPage() {
             <h2 className="text-heading-20 sm:text-heading-24">
               Performance Overview
             </h2>
-            <p className="text-muted-foreground">
+            <p className="text-gray-900">
               Average workflow execution time across different benchmark
               scenarios. Times shown are mean values in milliseconds.
             </p>
@@ -86,7 +86,7 @@ export default async function CompareBenchmarksPage() {
               </div>
             ))}
             {sortedBenchmarks.length === 0 && (
-              <p className="text-muted-foreground">
+              <p className="text-gray-900">
                 No benchmark data is currently available.
               </p>
             )}
@@ -94,7 +94,7 @@ export default async function CompareBenchmarksPage() {
         </section>
 
         {/* Last Updated Footer */}
-        <div className="border-t px-4 py-6 text-center text-xs text-muted-foreground">
+        <div className="border-t px-4 py-6 text-center text-xs text-gray-900">
           Last updated: {new Date(data.lastUpdated).toLocaleString()}
           {data.commit && (
             <>

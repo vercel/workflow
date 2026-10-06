@@ -10,7 +10,7 @@ export function VercelSection(): JSX.Element {
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Workflow SDK on Vercel
         </h2>
-        <p className="text-lg text-muted-foreground text-balance">
+        <p className="text-lg text-gray-900 text-balance">
           Zero infrastructure management, atomic versioning, and out of the box
           observability. Vercel makes Workflows easy.
         </p>

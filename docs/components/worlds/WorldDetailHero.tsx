@@ -107,17 +107,13 @@ export function WorldDetailHero({
               </Tooltip>
             )}
           </h1>
-          <p className="font-mono text-sm text-muted-foreground">
-            {world.package}
-          </p>
-          <p className="text-lg text-muted-foreground max-w-2xl">
-            {world.description}
-          </p>
+          <p className="font-mono text-sm text-gray-900">{world.package}</p>
+          <p className="text-lg text-gray-900 max-w-2xl">{world.description}</p>
 
           {/* Actions - Community worlds only */}
           {world.type === 'community' && (
             <div className="flex items-center gap-3 flex-wrap pt-2">
-              <div className="relative bg-background border rounded-md overflow-hidden py-3 pl-4 pr-12 inline-flex">
+              <div className="relative bg-background-100 border rounded-md overflow-hidden py-3 pl-4 pr-12 inline-flex">
                 <pre className="text-sm">
                   <code>{installCommand}</code>
                 </pre>
@@ -129,7 +125,7 @@ export function WorldDetailHero({
                   svgOnly
                   className="absolute right-1 top-1/2 -translate-y-1/2"
                 >
-                  <CopyButtonIcon className="size-4 text-muted-foreground" />
+                  <CopyButtonIcon className="size-4 text-gray-900" />
                 </Button>
               </div>
               {world.repository && (
@@ -160,7 +156,7 @@ export function WorldDetailHero({
             href={`https://www.npmjs.com/package/${world.package}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+            className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
           >
             <Package className="h-4 w-4 shrink-0" />
             <span>npm</span>
@@ -172,7 +168,7 @@ export function WorldDetailHero({
               href={githubUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
             >
               <Github className="h-4 w-4 shrink-0" />
               <span>Source</span>
@@ -185,7 +181,7 @@ export function WorldDetailHero({
               href={world.example}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
             >
               <Code className="h-4 w-4 shrink-0" />
               <span>Example</span>
@@ -201,7 +197,7 @@ export function WorldDetailHero({
             >
               <Link
                 href="/docs/how-it-works/encryption"
-                className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
               >
                 <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />
                 <span>E2E Encrypted</span>

@@ -107,7 +107,7 @@ export async function WorldsGuidePage({
               <h1 className="text-heading-40 sm:text-heading-48">
                 {page.data.title}
               </h1>
-              <p className="mt-4 max-w-2xl text-muted-foreground sm:text-lg">
+              <p className="mt-4 max-w-2xl text-gray-900 sm:text-lg">
                 {page.data.description}
               </p>
             </div>

@@ -184,7 +184,7 @@ export function BenchmarkHistoryChart({
           <DialogTitle className="text-lg font-semibold">
             {metricName}
           </DialogTitle>
-          <DialogDescription className="text-sm text-muted-foreground">
+          <DialogDescription className="text-sm text-gray-900">
             Performance history over the last {data.length} {modeLabel}
           </DialogDescription>
         </DialogHeader>
@@ -215,13 +215,13 @@ export function BenchmarkHistoryChart({
           )}
 
           {error && (
-            <div className="flex items-center justify-center text-destructive">
+            <div className="flex items-center justify-center text-red-900">
               {error}
             </div>
           )}
 
           {!error && data.length === 0 && hasLoadedOnce && (
-            <div className="flex items-center justify-center text-muted-foreground">
+            <div className="flex items-center justify-center text-gray-900">
               No historical data available
             </div>
           )}
@@ -259,7 +259,7 @@ export function BenchmarkHistoryChart({
                       ? 'text-green-900 dark:text-green-600'
                       : stats.trendPercent > 1
                         ? 'text-red-900 dark:text-red-800'
-                        : 'text-muted-foreground',
+                        : 'text-gray-900',
                   icon:
                     stats.trendPercent < -1
                       ? 'down'
@@ -296,7 +296,7 @@ export function BenchmarkHistoryChart({
                             <Minus className="h-5 w-5" />
                           )}
                         </div>
-                        <div className="text-xs text-muted-foreground">
+                        <div className="text-xs text-gray-900">
                           {stat.label}
                         </div>
                       </div>
@@ -375,7 +375,7 @@ export function BenchmarkHistoryChart({
                             point.workflowMin !== undefined &&
                             point.workflowMax !== undefined;
                           return (
-                            <div className="bg-popover rounded-lg shadow-[var(--ds-shadow-tooltip)] p-3 text-sm">
+                            <div className="bg-background-100 rounded-lg shadow-[var(--ds-shadow-tooltip)] p-3 text-sm">
                               <div className="font-mono text-xs mb-2">
                                 {label}
                               </div>
@@ -388,7 +388,7 @@ export function BenchmarkHistoryChart({
                                         'var(--color-workflowTime)',
                                     }}
                                   />
-                                  <span className="text-xs text-muted-foreground">
+                                  <span className="text-xs text-gray-900">
                                     Time:
                                   </span>
                                   <span className="font-mono font-medium text-xs">
@@ -405,7 +405,7 @@ export function BenchmarkHistoryChart({
                                         backgroundColor: 'var(--color-ttfb)',
                                       }}
                                     />
-                                    <span className="text-xs text-muted-foreground">
+                                    <span className="text-xs text-gray-900">
                                       TTFB:
                                     </span>
                                     <span className="font-mono font-medium text-xs">
@@ -421,7 +421,7 @@ export function BenchmarkHistoryChart({
                                         backgroundColor: 'var(--color-slurp)',
                                       }}
                                     />
-                                    <span className="text-xs text-muted-foreground">
+                                    <span className="text-xs text-gray-900">
                                       Slurp:
                                     </span>
                                     <span className="font-mono font-medium text-xs">
@@ -430,22 +430,22 @@ export function BenchmarkHistoryChart({
                                   </div>
                                 )}
                                 {hasRange && (
-                                  <div className="text-xs text-muted-foreground">
+                                  <div className="text-xs text-gray-900">
                                     Range: {formatTime(point.workflowMin!)} –{' '}
                                     {formatTime(point.workflowMax!)}
                                   </div>
                                 )}
                                 {point.samples && (
-                                  <div className="text-xs text-muted-foreground">
+                                  <div className="text-xs text-gray-900">
                                     Samples: {point.samples}
                                   </div>
                                 )}
-                                <div className="text-xs text-muted-foreground">
+                                <div className="text-xs text-gray-900">
                                   {new Date(
                                     point.timestamp
                                   ).toLocaleDateString()}
                                 </div>
-                                <div className="text-xs text-muted-foreground mt-1">
+                                <div className="text-xs text-gray-900 mt-1">
                                   Click point to open on GitHub
                                 </div>
                               </div>
@@ -566,7 +566,7 @@ export function BenchmarkHistoryChart({
                     </ComposedChart>
                   </ChartContainer>
 
-                  <p className="text-xs text-muted-foreground text-center mt-4">
+                  <p className="text-xs text-gray-900 text-center mt-4">
                     Lower is better. Results may vary due to CI environment,
                     network conditions, and other factors.
                   </p>

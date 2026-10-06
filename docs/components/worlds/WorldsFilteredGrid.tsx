@@ -102,7 +102,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
       </div>
 
       {filtered.length === 0 ? (
-        <p className="text-center text-muted-foreground py-12">
+        <p className="text-center text-gray-900 py-12">
           No worlds match this filter.
         </p>
       ) : (
@@ -114,9 +114,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
             <section key={key} className="px-4 py-8">
               <div className="mb-4">
                 <h2 className="text-heading-20 sm:text-heading-24">{title}</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {description}
-                </p>
+                <p className="text-sm text-gray-900 mt-1">{description}</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {sectionWorlds.map(([id, world]) => (

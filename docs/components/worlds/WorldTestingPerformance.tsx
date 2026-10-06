@@ -29,10 +29,7 @@ const TimeColumnHeader = () => (
       text="Time from workflow created to workflow completed"
       position="top"
     >
-      <Info
-        aria-hidden
-        className="h-3.5 w-3.5 text-muted-foreground cursor-help"
-      />
+      <Info aria-hidden className="h-3.5 w-3.5 text-gray-900 cursor-help" />
       <span className="sr-only">Explain workflow completion time</span>
     </Tooltip>
   </div>
@@ -42,10 +39,7 @@ const TTFBColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
     <span>TTFB</span>
     <Tooltip text="Time to first byte" position="top">
-      <Info
-        aria-hidden
-        className="h-3.5 w-3.5 text-muted-foreground cursor-help"
-      />
+      <Info aria-hidden className="h-3.5 w-3.5 text-gray-900 cursor-help" />
       <span className="sr-only">Explain time to first byte</span>
     </Tooltip>
   </div>
@@ -55,10 +49,7 @@ const SlurpColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
     <span>Slurp</span>
     <Tooltip text="Time from first byte to stream completion" position="top">
-      <Info
-        aria-hidden
-        className="h-3.5 w-3.5 text-muted-foreground cursor-help"
-      />
+      <Info aria-hidden className="h-3.5 w-3.5 text-gray-900 cursor-help" />
       <span className="sr-only">Explain stream completion time</span>
     </Tooltip>
   </div>
@@ -175,7 +166,7 @@ export function WorldTestingPerformance({
               </div>
 
               {/* Disclaimer about scoring methodology */}
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-gray-900">
                 {hasFrameworkData
                   ? 'Spec compliance is tested against Next.js (Turbopack) built in production mode and started with `next start`.'
                   : 'E2E test pass rate across all tests run for this world.'}
@@ -186,7 +177,7 @@ export function WorldTestingPerformance({
                       href={`https://github.com/vercel/workflow/commit/${meta.commit}/checks`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-foreground hover:underline"
+                      className="text-gray-1000 hover:underline"
                     >
                       View CI run →
                     </a>
@@ -196,76 +187,70 @@ export function WorldTestingPerformance({
 
               {/* Details - show pass/fail/skipped counts */}
               <div className="grid gap-4 sm:grid-cols-4 text-sm">
-                <div className="p-4 rounded-lg border bg-card">
+                <div className="p-4 rounded-lg border bg-background-100">
                   <div className="text-2xl font-semibold text-green-900 dark:text-green-600 font-mono">
                     {scoringPassed}
                   </div>
-                  <div className="text-muted-foreground">Passed</div>
+                  <div className="text-gray-900">Passed</div>
                 </div>
-                <div className="p-4 rounded-lg border bg-card">
+                <div className="p-4 rounded-lg border bg-background-100">
                   <div className="text-2xl font-semibold text-red-900 dark:text-red-800 font-mono">
                     {scoringFailed}
                   </div>
-                  <div className="text-muted-foreground">Failed</div>
+                  <div className="text-gray-900">Failed</div>
                 </div>
-                <div className="p-4 rounded-lg border bg-card">
+                <div className="p-4 rounded-lg border bg-background-100">
                   <div className="text-2xl font-semibold font-mono">
                     {scoringSkipped}
                   </div>
-                  <div className="text-muted-foreground">Skipped</div>
+                  <div className="text-gray-900">Skipped</div>
                 </div>
-                <div className="p-4 rounded-lg border bg-card">
+                <div className="p-4 rounded-lg border bg-background-100">
                   <div className="text-2xl font-semibold font-mono">
                     {scoringTotal}
                   </div>
-                  <div className="text-muted-foreground">Total</div>
+                  <div className="text-gray-900">Total</div>
                 </div>
               </div>
 
               {/* Show full test breakdown if available */}
               {e2e.total !== scoringTotal && (
                 <details className="text-sm">
-                  <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                  <summary className="cursor-pointer text-gray-900 hover:text-gray-1000">
                     View comprehensive E2E test results against all
                     frameworks/configurations
                   </summary>
                   <div className="mt-3 grid gap-4 sm:grid-cols-4">
-                    <div className="p-3 rounded-lg border bg-card">
+                    <div className="p-3 rounded-lg border bg-background-100">
                       <div className="text-xl font-semibold text-green-900 dark:text-green-600 font-mono">
                         {e2e.passed}
                       </div>
-                      <div className="text-muted-foreground text-xs">
-                        Passed
-                      </div>
+                      <div className="text-gray-900 text-xs">Passed</div>
                     </div>
-                    <div className="p-3 rounded-lg border bg-card">
+                    <div className="p-3 rounded-lg border bg-background-100">
                       <div className="text-xl font-semibold text-red-900 dark:text-red-800 font-mono">
                         {e2e.failed}
                       </div>
-                      <div className="text-muted-foreground text-xs">
-                        Failed
-                      </div>
+                      <div className="text-gray-900 text-xs">Failed</div>
                     </div>
-                    <div className="p-3 rounded-lg border bg-card">
+                    <div className="p-3 rounded-lg border bg-background-100">
                       <div className="text-xl font-semibold font-mono">
                         {e2e.skipped}
                       </div>
-                      <div className="text-muted-foreground text-xs">
-                        Skipped
-                      </div>
+                      <div className="text-gray-900 text-xs">Skipped</div>
                     </div>
-                    <div className="p-3 rounded-lg border bg-card">
+                    <div className="p-3 rounded-lg border bg-background-100">
                       <div className="text-xl font-semibold font-mono">
                         {e2e.total}
                       </div>
-                      <div className="text-muted-foreground text-xs">Total</div>
+                      <div className="text-gray-900 text-xs">Total</div>
                     </div>
                   </div>
                 </details>
               )}
             </>
           ) : (
-            <p className="text-muted-foreground">
+            <p className="text-gray-900">
               No E2E test data is currently available for this world.
             </p>
           )}
@@ -277,7 +262,7 @@ export function WorldTestingPerformance({
             <h3 className="text-heading-20">Benchmarks</h3>
             {hasBenchmarks ? (
               <>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm text-gray-900">
                   Click on a benchmark to view performance history over the last
                   30 commits.
                 </p>
@@ -305,7 +290,7 @@ export function WorldTestingPerformance({
                       {standardMetrics.map(([name, metric]) => (
                         <TableRow
                           key={name}
-                          className="cursor-pointer hover:bg-muted/50 transition-colors"
+                          className="cursor-pointer hover:bg-gray-100/50 transition-colors"
                           onClick={() => setSelectedMetric(name)}
                         >
                           <TableCell className="font-medium">{name}</TableCell>
@@ -316,23 +301,23 @@ export function WorldTestingPerformance({
                           </TableCell>
                           {hasWorkflowRange && (
                             <>
-                              <TableCell className="text-right font-mono text-muted-foreground">
+                              <TableCell className="text-right font-mono text-gray-900">
                                 {metric.workflowMin !== undefined
                                   ? formatTime(metric.workflowMin)
                                   : '—'}
                               </TableCell>
-                              <TableCell className="text-right font-mono text-muted-foreground">
+                              <TableCell className="text-right font-mono text-gray-900">
                                 {metric.workflowMax !== undefined
                                   ? formatTime(metric.workflowMax)
                                   : '—'}
                               </TableCell>
                             </>
                           )}
-                          <TableCell className="text-right text-muted-foreground">
+                          <TableCell className="text-right text-gray-900">
                             {metric.samples || '—'}
                           </TableCell>
                           <TableCell>
-                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                            <TrendingUp className="h-4 w-4 text-gray-900" />
                           </TableCell>
                         </TableRow>
                       ))}
@@ -373,7 +358,7 @@ export function WorldTestingPerformance({
                         {streamMetrics.map(([name, metric]) => (
                           <TableRow
                             key={name}
-                            className="cursor-pointer hover:bg-muted/50 transition-colors"
+                            className="cursor-pointer hover:bg-gray-100/50 transition-colors"
                             onClick={() => setSelectedMetric(name)}
                           >
                             <TableCell className="font-medium">
@@ -392,23 +377,23 @@ export function WorldTestingPerformance({
                             </TableCell>
                             {hasWorkflowRange && (
                               <>
-                                <TableCell className="text-right font-mono text-muted-foreground">
+                                <TableCell className="text-right font-mono text-gray-900">
                                   {metric.workflowMin !== undefined
                                     ? formatTime(metric.workflowMin)
                                     : '—'}
                                 </TableCell>
-                                <TableCell className="text-right font-mono text-muted-foreground">
+                                <TableCell className="text-right font-mono text-gray-900">
                                   {metric.workflowMax !== undefined
                                     ? formatTime(metric.workflowMax)
                                     : '—'}
                                 </TableCell>
                               </>
                             )}
-                            <TableCell className="text-right text-muted-foreground">
+                            <TableCell className="text-right text-gray-900">
                               {metric.samples || '—'}
                             </TableCell>
                             <TableCell>
-                              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                              <TrendingUp className="h-4 w-4 text-gray-900" />
                             </TableCell>
                           </TableRow>
                         ))}
@@ -425,7 +410,7 @@ export function WorldTestingPerformance({
                 />
               </>
             ) : (
-              <p className="text-muted-foreground">
+              <p className="text-gray-900">
                 No benchmark data is currently available for this world.
               </p>
             )}
@@ -433,7 +418,7 @@ export function WorldTestingPerformance({
         )}
 
         {/* Metadata */}
-        <div className="text-sm text-muted-foreground border-t pt-4">
+        <div className="text-sm text-gray-900 border-t pt-4">
           <p>
             Last updated: {new Date(meta.lastUpdated).toLocaleString()}
             {meta.commit && (

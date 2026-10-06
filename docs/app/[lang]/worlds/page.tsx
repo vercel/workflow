@@ -42,7 +42,7 @@ export default async function WorldsPage() {
             <h1 className="text-center text-balance text-heading-40 sm:text-heading-48 xl:text-heading-64">
               Worlds
             </h1>
-            <p className="text-balance text-muted-foreground sm:text-xl leading-relaxed">
+            <p className="text-balance text-gray-900 sm:text-xl leading-relaxed">
               The World abstraction allows workflows to run anywhere — locally,
               on Vercel, or on any cloud. The runtime, queues, and persistence
               are modular and entirely swappable.
@@ -54,7 +54,7 @@ export default async function WorldsPage() {
         <WorldsFilteredGrid worlds={sortedWorlds} />
 
         {/* Last Updated */}
-        <div className="px-4 pb-8 text-center text-xs text-muted-foreground">
+        <div className="px-4 pb-8 text-center text-xs text-gray-900">
           Last updated: {new Date(data.lastUpdated).toLocaleString()}
           {data.commit && (
             <>
@@ -83,7 +83,7 @@ export default async function WorldsPage() {
                 </h2>
                 <Badge variant="pill">Coming soon</Badge>
               </div>
-              <p className="text-muted-foreground max-w-md">
+              <p className="text-gray-900 max-w-md">
                 See how workflows compare across the different worlds deployed
                 on different providers. Lower execution time means faster
                 workflows.
@@ -96,7 +96,7 @@ export default async function WorldsPage() {
             {/* Right: Benchmark preview visualization */}
             <div className="w-full lg:max-w-lg min-w-0 space-y-3">
               {/* Header row */}
-              <div className="flex items-center gap-3 text-xs text-muted-foreground uppercase tracking-wider">
+              <div className="flex items-center gap-3 text-xs text-gray-900 uppercase tracking-wider">
                 <div className="w-16" />
                 <div className="flex-1" />
               </div>
@@ -120,7 +120,7 @@ export default async function WorldsPage() {
                     key={provider.name}
                     className="flex items-center gap-4 w-full"
                   >
-                    <div className="w-14 text-sm truncate text-right text-muted-foreground">
+                    <div className="w-14 text-sm truncate text-right text-gray-900">
                       {provider.name}
                     </div>
                     <div className="w-full h-8 bg-gray-100 rounded-md overflow-hidden">
@@ -148,7 +148,7 @@ export default async function WorldsPage() {
             <h2 className="text-heading-32 sm:text-heading-40">
               Learn more about worlds
             </h2>
-            <p className="text-muted-foreground">
+            <p className="text-gray-900">
               To learn more about how worlds work or to create your own, check
               the docs. You can also build a custom world to connect workflows
               to any storage or queuing backend.
