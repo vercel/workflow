@@ -82,6 +82,7 @@ const T0 = Date.parse('2024-01-01T00:00:00.000Z');
 const PRELUDE = `
   const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   const a = useStep("a");
   const b = useStep("b");
 `;
@@ -149,7 +150,9 @@ function event(
 
 /**
  * Drives `code` as the only writer: every replay's new hooks and steps are
- * created, every step completes with a result naming its arguments, and each
+ * created, every step completes with a result naming its arguments, every
+ * wait completes ahead of the steps created alongside it (so a `sleep` wins
+ * any race against them), and each
  * suspension that asks for nothing new is answered with the next of
  * `payloads` for the run's one hook. Returns the log and the hook's id.
  */
@@ -178,8 +181,23 @@ async function singleWriterLog(code: string, payloads: unknown[]) {
       );
       continue;
     }
-    for (const item of fresh) {
-      if (item.type === 'hook') {
+    // Steps last, so their completions land after any wait's.
+    const ordered = [
+      ...fresh.filter((item) => item.type !== 'step'),
+      ...fresh.filter((item) => item.type === 'step'),
+    ];
+    for (const item of ordered) {
+      if (item.type === 'wait') {
+        events.push(
+          event(
+            'wait_created',
+            item.correlationId,
+            { resumeAt: item.resumeAt },
+            tick()
+          ),
+          event('wait_completed', item.correlationId, {}, tick())
+        );
+      } else if (item.type === 'hook') {
         hookId = item.correlationId;
         events.push(
           event(
@@ -325,6 +343,32 @@ describe('WorkflowSuspension.observedHookIds', () => {
     const positions = await sweepHookInsertion(code, []);
     expect(positions.every((p) => p.observed)).toBe(true);
     expect(positions.some((p) => p.changed)).toBe(true);
+  });
+
+  it('keeps an unawaited hook inert across a sleep that wins a race', async () => {
+    // The `wait_completed` here is delivered behind any unarmed barrier a
+    // buffered payload registered below it, the interleaving run-ahead relies
+    // on being inert.
+    const code = `async function workflow() {
+      const hook = createHook({ token: "t" });
+      const winner = await Promise.race([
+        sleep("1h").then(() => "wait"),
+        a(0, Date.now()),
+      ]);
+      await b(winner, Date.now());
+      await a(1, Date.now());
+      await b(await hook, Date.now());
+    }`;
+    // The shape only exercises the wait delivery if the sleep wins.
+    const { events } = await singleWriterLog(code, []);
+    const decisions = [...(await stepDecisions(code, events)).values()];
+    expect(decisions.some((d) => d.startsWith('b(["wait"'))).toBe(true);
+    const positions = await sweepHookInsertion(code, []);
+    expect(positions.map((p) => p.observed)).toEqual([
+      ...Array(positions.length - 1).fill(false),
+      true,
+    ]);
+    expect(positions.every((p) => !p.changed)).toBe(true);
   });
 
   it('reports a hook raced against a step while the race is pending', async () => {

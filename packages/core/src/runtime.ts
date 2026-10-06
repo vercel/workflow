@@ -1119,6 +1119,7 @@ export function workflowEntrypoint(
                   const outOfBandBoundaries = {
                     inert: 0,
                     observedHook: 0,
+                    unknownHook: 0,
                     abortSignal: 0,
                     externalStep: 0,
                     waitDue: 0,
@@ -4875,25 +4876,37 @@ export function workflowEntrypoint(
                         // continuing past this boundary without the batch's
                         // terminal writes, and the module documents the de-opt
                         // and pipeline-depth rules that gate implies.
-                        const outOfBandObservation: OutOfBandObservation =
-                          observeOutOfBandWriters({
-                            items: err.items,
-                            observedHookIds: err.observedHookIds,
-                            selfExecutedStepIds: new Set([
-                              ...inlineCorrelationIds,
-                              ...ownedRecoverySteps.map((s) => s.correlationId),
-                            ]),
-                            waitDue: waitDueThisInvocation,
-                          });
-                        if (lazyInlineSteps.length > 0) {
+                        // `undefined` when the batch runs no step inline:
+                        // only those boundaries can be pipelined.
+                        const outOfBandObservation:
+                          | OutOfBandObservation
+                          | undefined =
+                          lazyInlineSteps.length > 0
+                            ? observeOutOfBandWriters({
+                                items: err.items,
+                                observedHookIds: err.observedHookIds,
+                                selfExecutedStepIds: new Set([
+                                  ...inlineCorrelationIds,
+                                  ...ownedRecoverySteps.map(
+                                    (s) => s.correlationId
+                                  ),
+                                ]),
+                                waitDue: waitDueThisInvocation,
+                              })
+                            : undefined;
+                        if (outOfBandObservation) {
                           if (outOfBandObservation.inert) {
                             outOfBandBoundaries.inert++;
                           } else {
-                            if (
-                              outOfBandObservation.observedHookCount > 0 ||
-                              outOfBandObservation.unknownHookCount > 0
-                            ) {
+                            if (outOfBandObservation.observedHookCount > 0) {
                               outOfBandBoundaries.observedHook++;
+                            }
+                            // Kept apart from observed hooks: a suspension
+                            // without awaiter tracking (QuickJS) blocks every
+                            // boundary with an open hook, which would
+                            // otherwise read as workflow code awaiting it.
+                            if (outOfBandObservation.unknownHookCount > 0) {
+                              outOfBandBoundaries.unknownHook++;
                             }
                             if (outOfBandObservation.abortSignalHookCount > 0) {
                               outOfBandBoundaries.abortSignal++;
@@ -4910,6 +4923,8 @@ export function workflowEntrypoint(
                               outOfBandBoundaries.inert,
                             'workflow.out_of_band.observed_hook_boundaries':
                               outOfBandBoundaries.observedHook,
+                            'workflow.out_of_band.unknown_hook_boundaries':
+                              outOfBandBoundaries.unknownHook,
                             'workflow.out_of_band.abort_signal_boundaries':
                               outOfBandBoundaries.abortSignal,
                             'workflow.out_of_band.external_step_boundaries':

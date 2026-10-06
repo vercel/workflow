@@ -680,6 +680,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return; // Already disposed, nothing to do
       }
       isDisposed = true;
+      // Disposed hooks are closed by their own write, so no payload can reach
+      // workflow code through them any more.
+      ctx.hookPayloadAwaiters?.delete(correlationId);
 
       // If the event log already contains hook_disposed, this is a replay: no-op
       if (hasDisposedEvent) {
