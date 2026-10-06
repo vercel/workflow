@@ -1,28 +1,22 @@
 import { runInNewContext } from 'node:vm';
 import {
-  EntityConflictError,
   FatalError,
   PreconditionFailedError,
-  RunExpiredError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
   slotToEventId,
-  type ValidQueueName,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type QueueItem, WorkflowSuspension } from '../global.js';
-import { hydrateStepArguments, hydrateStepError } from '../serialization.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
-import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
+import { maxEventSlot } from './helpers.js';
 import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from './hook-wake.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
-import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
@@ -328,6 +322,60 @@ describe('handleSuspension', () => {
         ...extra,
       });
 
+    it('republishes the victim wake for a recent forced creation, with no idempotency key', async () => {
+      // The invocation that created the hook may have died before waking the
+      // victim, so its replay republishes. Wakes carry no idempotency key: a
+      // duplicate wake only costs the victim a cheap delivery.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await suspendOver(queue, [forcedCreation(3)]);
+      expect(queue).toHaveBeenCalledTimes(1);
+      const [queueName, message, options] = queue.mock.calls[0];
+      expect(queueName).toContain('victim-workflow');
+      expect(message).toEqual({ runId: 'wrun_victim' });
+      expect(options).toMatchObject({ deploymentId: 'dpl_victim' });
+      expect(options.idempotencyKey).toBeUndefined();
+    });
+
+    it("repays the wake even when the run's own step and wait rows landed after the forced creation", async () => {
+      // vercel/workflow#4393: a step or wait terminal from another invocation,
+      // or a row written alongside the creation, can land before the wake
+      // goes out. None of them says the wake was published.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await suspendOver(queue, [
+        forcedCreation(3),
+        ownRow(4, 'step_created', 'step_after', {
+          stepName: 'after',
+          input: [],
+        }),
+        ownRow(5, 'step_completed', 'step_after', { result: [] }),
+        ownRow(6, 'wait_completed', 'wait_1'),
+      ]);
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+    });
+
+    it('republishes every recent forced creation in the log, each to its own victim', async () => {
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await suspendOver(queue, [
+        forcedCreation(3, {
+          hookId: 'hook_old',
+          from: { ...claimedFrom, runId: 'wrun_victim_old' },
+          createdAt: new Date(
+            Date.now() - FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS - 1_000
+          ),
+        }),
+        forcedCreation(4, { hookId: 'hook_a' }),
+        forcedCreation(5, {
+          hookId: 'hook_b',
+          from: { ...claimedFrom, runId: 'wrun_victim_b' },
+        }),
+      ]);
+      expect(
+        queue.mock.calls.map((call) => (call[1] as { runId: string }).runId)
+      ).toEqual(expect.arrayContaining(['wrun_victim', 'wrun_victim_b']));
+      expect(queue).toHaveBeenCalledTimes(2);
+    });
+
     it("republishes past a delivery's hook_received", async () => {
       // The trace TLC found for the tail rule: the claimer dies after
       // journaling and a delivery lands before it comes back. The window rule
@@ -519,6 +567,174 @@ describe('handleSuspension', () => {
           ...extra,
         },
       ] as const;
+
+    it('writes step and wait events without waiting for a hook create', async () => {
+      // The end-of-run drain hands every pending item to this handler. The
+      // hook create is held until both other writes have been issued, so a
+      // hook-first barrier would deadlock here.
+      let releaseHook!: () => void;
+      const hookHeld = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      const seen: string[] = [];
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        seen.push(event.eventType);
+        if (event.eventType === 'hook_created') {
+          await hookHeld;
+        } else if (
+          seen.includes('step_created') &&
+          seen.includes('wait_created')
+        ) {
+          releaseHook();
+        }
+        return { event };
+      });
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            hook('hook_1'),
+            step('s_1'),
+            [
+              'w1',
+              {
+                type: 'wait' as const,
+                correlationId: 'w1',
+                resumeAt: new Date(Date.now() + 60_000),
+              },
+            ],
+          ]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+      });
+
+      expect(seen[0]).toBe('hook_created');
+      expect([...seen].sort()).toEqual([
+        'hook_created',
+        'step_created',
+        'wait_created',
+      ]);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s_1']);
+      expect(result.hasHookEvents).toBe(true);
+    });
+
+    it("does not hold other writes for a forced creation's victim wake", async () => {
+      // The wake still goes out, once, but the sibling hook and the wait are
+      // written while it is in flight rather than after it. A crash before
+      // it goes out is repaid by the next replay from the forced creation.
+      const order: string[] = [];
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        order.push(`${event.eventType}:${event.correlationId}`);
+        if (event.correlationId === 'hook_forced') {
+          return {
+            event,
+            hook: {
+              hookId: 'hook_forced',
+              claimedFrom: {
+                runId: 'wrun_victim',
+                hookId: 'hook_victim',
+                workflowName: 'victim-workflow',
+              },
+            },
+          };
+        }
+        return { event };
+      });
+      const queue = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push('wake:wrun_victim');
+        return { messageId: 'msg_wake' };
+      });
+      const world = {
+        events: { create: eventsCreate },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue,
+      } as unknown as World;
+
+      await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            [
+              'w1',
+              {
+                type: 'wait' as const,
+                correlationId: 'w1',
+                resumeAt: new Date(Date.now() + 60_000),
+              },
+            ],
+            hook('hook_plain'),
+            hook('hook_forced', { force: true }),
+          ]),
+          globalThis
+        ),
+        world,
+        run,
+      });
+
+      const wakeAt = order.indexOf('wake:wrun_victim');
+      expect(wakeAt).toBeGreaterThan(order.indexOf('hook_created:hook_forced'));
+      expect(order.indexOf('hook_created:hook_plain')).toBeLessThan(wakeAt);
+      expect(order.indexOf('wait_created:w1')).toBeLessThan(wakeAt);
+      expect(queue).toHaveBeenCalledTimes(1);
+    });
+
+    it('creates forced hooks on different tokens concurrently', async () => {
+      // The first forced create is held until the second has been issued, so
+      // creating one token at a time (each waiting on its victim wake before
+      // the next starts) would deadlock here.
+      let releaseFirst!: () => void;
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const eventsCreate = vi.fn(async (_runId, event) => {
+        if (event.correlationId === 'hook_forced_a') {
+          await firstHeld;
+        } else if (event.correlationId === 'hook_forced_b') {
+          releaseFirst();
+        }
+        const letter = event.correlationId.slice(-1);
+        return {
+          event,
+          hook: {
+            hookId: event.correlationId,
+            claimedFrom: {
+              runId: `wrun_victim_${letter}`,
+              hookId: `hook_victim_${letter}`,
+              workflowName: 'victim-workflow',
+            },
+          },
+        };
+      });
+      const queue = vi.fn(async (_name: string, _message: unknown) => ({
+        messageId: 'msg_wake',
+      }));
+      const world = {
+        events: { create: eventsCreate },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue,
+      } as unknown as World;
+
+      await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            hook('hook_forced_a', { force: true }),
+            hook('hook_forced_b', { force: true }),
+          ]),
+          globalThis
+        ),
+        world,
+        run,
+      });
+
+      // Each victim is woken once.
+      expect(
+        queue.mock.calls
+          .map(([, message]) => (message as { runId: string }).runId)
+          .sort()
+      ).toEqual(['wrun_victim_a', 'wrun_victim_b']);
+    });
 
     it('creates a hook before delivering its abort within one suspension', async () => {
       const order: string[] = [];
@@ -1360,5 +1576,48 @@ describe('serializationBlockers', () => {
         detail: 'lazy',
       })
     );
+  });
+  it('still writes the step with a getter-bearing input (bytes are unaffected)', async () => {
+    const value = vmGetterObject();
+    const result = await runStep([value]);
+    expect(result.serializationBlockers).not.toEqual([]);
+    expect([...result.createdStepCorrelationIds]).toEqual(['step_1']);
+  });
+});
+
+describe('step-argument serialization failure in the end-of-run drain', () => {
+  class Unserializable {
+    secret = 'not-a-pojo';
+  }
+
+  it('rethrows and writes no rows: nothing would replay to observe a finalized step', async () => {
+    // The drain (a run that is already completing) swallows this rejection,
+    // so a step whose input does not serialize gains no step_created +
+    // step_failed pair. The live orchestrator path finalizes such a step
+    // instead (see orchestrator/suspension.runtime.test.ts).
+    const eventsCreate = vi
+      .fn()
+      .mockImplementation(async (_runId, event) => ({ event }));
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map<string, QueueItem>([
+            [
+              's_bad',
+              {
+                type: 'step',
+                correlationId: 's_bad',
+                stepName: 's_bad',
+                args: [new Unserializable()],
+              },
+            ],
+          ]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+      })
+    ).rejects.toMatchObject({ name: 'SerializationError' });
+    expect(eventsCreate).not.toHaveBeenCalled();
   });
 });
