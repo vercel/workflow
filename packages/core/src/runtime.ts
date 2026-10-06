@@ -1754,6 +1754,12 @@ export function workflowEntrypoint(
                           }
                         }
 
+                        runtimeLogger.debug('Starting workflow execution', {
+                          workflowRunId: runId,
+                          loopIteration,
+                          eventCount: log.events.length,
+                          executionMode: session ? 'retained' : 'replay',
+                        });
                         replayStart = Date.now();
                         if (resumeTracking) {
                           resumeTracking.replayStartedAtMs ??= replayStart;
@@ -1896,7 +1902,8 @@ export function workflowEntrypoint(
                           return await failRun(
                             recovery.error,
                             effectiveWorkflowCode,
-                            recovery.divergenceCount
+                            recovery.divergenceCount,
+                            recovery.logFields
                           );
                         }
                         if (replayStart > 0) {
@@ -2450,7 +2457,12 @@ export function workflowEntrypoint(
                       err: ReplayDivergenceError
                     ): Promise<
                       | { type: 'queued' }
-                      | { type: 'fail'; error: Error; divergenceCount: number }
+                      | {
+                          type: 'fail';
+                          error: Error;
+                          divergenceCount: number;
+                          logFields: Record<string, unknown>;
+                        }
                     > {
                       const divergenceCount =
                         (replayDivergence?.count ?? 0) + 1;
@@ -2461,6 +2473,21 @@ export function workflowEntrypoint(
                           (replayDivergence ? [replayDivergence.eventId] : [])),
                         err.eventId,
                       ].slice(-(maxRecoveryReplays + 1));
+                      const logFields = {
+                        errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
+                        divergenceEventId: err.eventId,
+                        priorDivergenceEventId: replayDivergence?.eventId,
+                        divergenceEventIds,
+                        divergenceCount,
+                        maxRecoveryReplays,
+                        loopIteration,
+                        deliveryAttempt: metadata.attempt,
+                        eventLogLength: log?.events.length,
+                        eventLogLastEventId: log?.events.at(-1)?.eventId,
+                        isRecoveryReplay: replayDivergence !== undefined,
+                        hasHookInput: hookInput !== undefined,
+                        hasWaitContinuation: waitContinuation !== undefined,
+                      };
                       if (divergenceCount <= maxRecoveryReplays) {
                         runLogger.warn(
                           'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
@@ -2492,6 +2519,7 @@ export function workflowEntrypoint(
                       return {
                         type: 'fail',
                         divergenceCount,
+                        logFields,
                         error: new CorruptedEventLogError(
                           `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}; divergent event ids: ${divergenceEventIds.join(', ')}. Last divergence: ${err.message}`,
                           { cause: err }
@@ -2504,7 +2532,8 @@ export function workflowEntrypoint(
                   async function failRun(
                     terminalError: unknown,
                     effectiveWorkflowCode: string,
-                    replayDivergenceCount?: number
+                    replayDivergenceCount?: number,
+                    extraLogFields: Record<string, unknown> = {}
                   ): Promise<undefined> {
                     if (terminalError instanceof Error) {
                       span?.recordException?.(terminalError);
@@ -2528,6 +2557,7 @@ export function workflowEntrypoint(
                     }
                     const errorCode = classifyRunError(terminalError);
                     runtimeLogger.error('Error while running workflow', {
+                      ...extraLogFields,
                       workflowRunId: runId,
                       errorCode,
                       errorName,
