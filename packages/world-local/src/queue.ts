@@ -4,6 +4,7 @@ import { createWorkflowUrl, debugLog } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
   MessageId,
+  orchestratorRunIdOf,
   parseQueueName,
   type Queue,
   type QueuePrefix,
@@ -145,6 +146,40 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Per-run mutual exclusion for orchestrator deliveries, in FIFO order.
+ *
+ * `acquire(runId)` resolves once every earlier holder for that run has
+ * released, with the release function. Keys are dropped when the last holder
+ * releases, so the map holds only runs with a delivery in flight or waiting.
+ */
+export function createRunGate() {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    async acquire(runId: string): Promise<() => void> {
+      const previous = tails.get(runId) ?? Promise.resolve();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => held);
+      tails.set(runId, tail);
+      await previous;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        release();
+        if (tails.get(runId) === tail) tails.delete(runId);
+      };
+    },
+    /** Runs with a delivery in flight or waiting. For tests. */
+    size(): number {
+      return tails.size;
+    },
+  };
+}
+
 export function createQueue(config: Partial<Config>): LocalQueue {
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
@@ -160,6 +195,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+  // A run's orchestrator deliveries go one at a time, like a per-run topic
+  // consumed with `maxConcurrency: 1` on Vercel Queues: the single-writer
+  // guarantee's queue half (the in-band fence is the other). Step messages
+  // and health checks are not gated, so a run's steps keep running in
+  // parallel with each other and with its orchestrator.
+  const runGate = createRunGate();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -199,6 +240,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const msg = message as Record<string, unknown>;
     const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
+    const orchestratorRunId = orchestratorRunIdOf(message);
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -220,16 +262,34 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await setTimeout(delayMs, undefined, { signal: closeSignal });
       }
 
-      const token = semaphore.tryAcquire();
-      if (!token) {
-        // Debug-gated: this is the semaphore doing its job. A fan-out wider
-        // than the limit queues behind it and every message still runs, so a
-        // per-message warning turns a healthy wide run into a wall of output.
-        debugLog(
-          `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
-        );
-        await semaphore.acquire();
-      }
+      /**
+       * Takes this message's delivery slots: its run's orchestrator gate
+       * first (when it is an orchestrator delivery), then a worker slot. The
+       * gate is taken first so a delivery waiting for its run holds no worker
+       * slot. Both are held for one delivery attempt only and released before
+       * any sleep (a `{ timeoutSeconds }` redelivery delay, a retry backoff),
+       * because a message that is not being delivered occupies neither, as on
+       * Vercel Queues.
+       */
+      const acquireDelivery = async (): Promise<() => void> => {
+        const releaseRun = orchestratorRunId
+          ? await runGate.acquire(orchestratorRunId)
+          : undefined;
+        if (!semaphore.tryAcquire()) {
+          // Debug-gated: this is the semaphore doing its job. A fan-out wider
+          // than the limit queues behind it and every message still runs, so
+          // a per-message warning turns a healthy wide run into a wall of
+          // output.
+          debugLog(
+            `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
+          );
+          await semaphore.acquire();
+        }
+        return () => {
+          semaphore.release();
+          releaseRun?.();
+        };
+      };
       // Safety limit to prevent infinite loops in the local queue.
       // The actual max delivery enforcement happens in the workflow handler
       // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
@@ -241,8 +301,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
       let delivery = 0;
+      let releaseDelivery: (() => void) | undefined;
+      const endDelivery = () => {
+        releaseDelivery?.();
+        releaseDelivery = undefined;
+      };
       try {
         for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+          releaseDelivery = await acquireDelivery();
+          if (closeSignal.aborted) return;
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
@@ -290,6 +357,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             delivery++;
             text = await response.text();
           } catch (err) {
+            endDelivery();
             // A transport can fail before response headers or while consuming
             // the body. Both are transient: back off and retry the same
             // durable message rather than leaving its run stalled. Two
@@ -321,6 +389,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             continue;
           }
 
+          endDelivery();
           if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
@@ -371,7 +440,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
-        semaphore.release();
+        endDelivery();
       }
     })()
       .catch((err) => {
