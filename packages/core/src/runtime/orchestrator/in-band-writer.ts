@@ -238,36 +238,87 @@ export class InBandWriter {
    */
   createRequired<T extends CreateEventRequest>(
     data: T,
-    params?: CreateEventParams
+    params?: CreateEventParams,
+    /**
+     * Checks the accepted write before any later write is sent. A throw
+     * stops the writer with the thrown error, as a failed write would. Used
+     * by run-ahead to confirm that a speculative write landed where the
+     * workflow already consumed it.
+     */
+    verify?: (result: EventResult<T['eventType']>) => void
   ): Promise<EventResult<T['eventType']>> {
-    return this.write(data, params, true);
+    return this.write(data, params, true, verify);
+  }
+
+  /**
+   * The slot the next write would take if no other writer appends first:
+   * one past every position this writer knows is allocated, including the
+   * writes still queued in it. Run-ahead places a speculative event there.
+   */
+  predictNextSlot(): number {
+    return this.knownMaxSlot + this.pendingPositions + 1;
+  }
+
+  /** A position another writer took, seen in a load, a report or the feed. */
+  observeSlot(slot: number): void {
+    if (slot > this.knownMaxSlot) this.knownMaxSlot = slot;
+  }
+
+  /**
+   * Stops the writer for good with `error`, as a failed write would: every
+   * later write and {@link assertActive} throw it.
+   */
+  halt(error: unknown): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.stoppedBy = error;
+  }
+
+  /** The error that stopped the writer, if it stopped. */
+  get stopCause(): unknown {
+    return this.stoppedBy;
+  }
+
+  /** Resolves once every write queued so far has settled. */
+  idle(): Promise<void> {
+    return this.tail.then(() => {});
   }
 
   private write<T extends CreateEventRequest>(
     data: T,
     params: CreateEventParams | undefined,
-    required: boolean
+    required: boolean,
+    verify?: (result: EventResult<T['eventType']>) => void
   ): Promise<EventResult<T['eventType']>> {
-    return this.serialize(async () => {
+    return this.serialize(1, async () => {
       this.assertActive();
+      let result: EventResult<T['eventType']>;
       try {
-        const result = await this.world.events.create(this.runId, data, {
+        const written = await this.world.events.create(this.runId, data, {
           ...this.positionFallback(params?.eventCount),
           ...params,
           ...this.fenceParams(),
         });
-        const inferred = this.allocatedBy([result.event]);
-        const allocated = result.allocated ?? inferred;
+        const inferred = this.allocatedBy([written.event]);
+        const allocated = written.allocated ?? inferred;
         this.advance(allocated);
-        return result.event
+        result = written.event
           ? {
-              ...result,
-              event: withWrittenEventData(result.event, data, allocated > 0),
+              ...written,
+              event: withWrittenEventData(written.event, data, allocated > 0),
             }
-          : result;
+          : written;
       } catch (error) {
         throw this.stop(error, required);
       }
+      if (verify) {
+        try {
+          verify(result);
+        } catch (error) {
+          throw this.stop(error, true);
+        }
+      }
+      return result;
     });
   }
 
@@ -275,13 +326,37 @@ export class InBandWriter {
     events: BatchEventRequest[],
     params?: Omit<CreateEventBatchParams, 'inBand' | 'expectedSeqInBand'>
   ): Promise<EventBatchResult> {
+    return this.writeBatch(events, params, false);
+  }
+
+  /**
+   * {@link createBatch} as a required write (see {@link createRequired}):
+   * any failure stops the writer, and `verify` checks the result before any
+   * later write is sent.
+   */
+  createBatchRequired(
+    events: BatchEventRequest[],
+    params: Omit<CreateEventBatchParams, 'inBand' | 'expectedSeqInBand'>,
+    verify: (result: EventBatchResult) => void
+  ): Promise<EventBatchResult> {
+    return this.writeBatch(events, params, true, verify);
+  }
+
+  private writeBatch(
+    events: BatchEventRequest[],
+    params:
+      | Omit<CreateEventBatchParams, 'inBand' | 'expectedSeqInBand'>
+      | undefined,
+    required: boolean,
+    verify?: (result: EventBatchResult) => void
+  ): Promise<EventBatchResult> {
     const createBatch = this.world.events.createBatch;
     if (!createBatch) {
       return Promise.reject(
         new Error('InBandWriter.createBatch: the World has no createBatch')
       );
     }
-    return this.serialize(async () => {
+    return this.serialize(events.length, async () => {
       this.assertActive();
       try {
         const result = await createBatch.call(
@@ -309,7 +384,7 @@ export class InBandWriter {
           if (item.error === undefined) this.noteSlot(item.event.eventId);
         }
         this.advance(result.allocated ?? events.length - replayed);
-        return {
+        const answered: EventBatchResult = {
           ...result,
           results: result.results.map((item, index) => {
             const request = events[index]?.event;
@@ -325,8 +400,16 @@ export class InBandWriter {
               : item;
           }),
         };
+        if (verify) {
+          try {
+            verify(answered);
+          } catch (error) {
+            throw this.stop(error, true);
+          }
+        }
+        return answered;
       } catch (error) {
-        throw this.stop(error);
+        throw this.stop(error, required);
       }
     });
   }
@@ -406,8 +489,22 @@ export class InBandWriter {
       : error;
   }
 
-  private serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.tail.then(fn, fn);
+  /** Positions of the writes queued in this writer and not yet settled. */
+  private pendingPositions = 0;
+
+  private serialize<T>(positions: number, fn: () => Promise<T>): Promise<T> {
+    this.pendingPositions += positions;
+    const settle = () => {
+      this.pendingPositions -= positions;
+    };
+    const guarded = async (): Promise<T> => {
+      try {
+        return await fn();
+      } finally {
+        settle();
+      }
+    };
+    const run = this.tail.then(guarded, guarded);
     this.tail = run.catch(() => {});
     return run;
   }

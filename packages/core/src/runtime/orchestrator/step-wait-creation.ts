@@ -112,6 +112,13 @@ export interface StepWaitCreationPlan {
   failedCount: number;
   /** Guest-code executions while serializing step inputs. */
   serializationBlockerCount: number;
+  /**
+   * The events the commit writes, in order: each step's `step_created`
+   * (and, under `startInlineSteps`, its first `step_started` right behind
+   * it), then the waits' `wait_created`. Steps whose input failed to
+   * serialize are not among them.
+   */
+  events: readonly CreateEventRequest[];
   /** Writes the events. See {@link createStepsAndWaits}. */
   commit(): Promise<StepWaitCreationResult>;
 }
@@ -268,6 +275,7 @@ export async function planStepsAndWaits(
     waitCount: waitItems.length,
     failedCount: prepared.length - createdSteps.length,
     serializationBlockerCount,
+    events,
     commit: () =>
       commitPlan(params, prepared, events, createdSteps, {
         serializationBlockerCount,

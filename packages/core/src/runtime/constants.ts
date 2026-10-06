@@ -393,3 +393,59 @@ export function getDeploymentMismatchMaxRetries(): number {
     { integer: true, min: 0 }
   );
 }
+
+/** Default {@link getRunAheadDepth}. */
+export const RUN_AHEAD_DEPTH = 2;
+/** Upper bound of {@link getRunAheadDepth}. */
+export const MAX_RUN_AHEAD_DEPTH = 16;
+
+/**
+ * How many inline step outcomes the orchestrator runs ahead of
+ * (`WORKFLOW_RUN_AHEAD_DEPTH`, default {@link RUN_AHEAD_DEPTH}, clamped to
+ * `0`..{@link MAX_RUN_AHEAD_DEPTH}): at most this many steps whose
+ * `step_completed`/`step_failed` has not committed yet, past the last write
+ * the orchestrator has seen confirmed. `0` disables run-ahead. See
+ * `runtime/out-of-band-observation.ts` for when run-ahead applies.
+ */
+export function getRunAheadDepth(): number {
+  return Math.min(
+    MAX_RUN_AHEAD_DEPTH,
+    envNumber('WORKFLOW_RUN_AHEAD_DEPTH', RUN_AHEAD_DEPTH, {
+      integer: true,
+      min: 0,
+    })
+  );
+}
+
+/**
+ * Allowance added to the invocation's inline window when deciding whether
+ * an open wait can come due while the orchestrator is still deciding. A wait
+ * due within the window plus this allowance makes a run-ahead boundary drain
+ * instead.
+ *
+ * It covers clocks that are not this process's (the host that delivers a
+ * timer, and an early timer delivery) and the last boundary of a window
+ * starting one replay pass after the window nominally closes: seconds at
+ * most, so 30s has an order of magnitude to spare.
+ *
+ * `run.wakeUp()` completes waits regardless of `resumeAt`, but on a
+ * single-orchestrator run it does so by naming them on an orchestrator
+ * message, and the orchestrator writes `wait_completed` in-band. An open wait
+ * is therefore only path-changing through its own timer.
+ */
+export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
+
+/**
+ * Effective {@link OPEN_WAIT_CLOCK_SKEW_MS}
+ * (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`). A finite integer: a large value such
+ * as `31536000000` (one year) makes every open wait de-opt run-ahead.
+ */
+export function getOpenWaitClockSkewMs(): number {
+  return envNumber(
+    'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
+    OPEN_WAIT_CLOCK_SKEW_MS,
+    {
+      integer: true,
+    }
+  );
+}

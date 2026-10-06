@@ -93,6 +93,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       maxConcurrency: true,
       // Required by the runtime; see in-band-fence.test.ts for conformance.
       inBandFence: true,
+      // An in-band write is stored at its `occurredAt` (events-storage.ts).
+      inBandEventTime: true,
     },
     ...queue,
     ...storage,

@@ -141,6 +141,9 @@ describe.each([
   // A World without batch writes: the executor writes the start, and its
   // throttle carries the World's backoff.
   it('defers the run instead of queueing a throttled inline step, and runs it inline afterwards', async () => {
+    // Run-ahead starts a body before its separate start write commits, so a
+    // refused start would no longer keep the body from running.
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
     const { world, start } = await setupOrchestratorRun(
       oneStepWorkflow,
       [],
@@ -171,6 +174,7 @@ describe.each([
   // backoff (9s) wins, and the failed sibling's retry message goes out now.
   it('defers by the longest backoff and queues a sibling retry in the same delivery', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
     failuresLeft = 1;
     const { world, start } = await setupOrchestratorRun(
       threeStepWorkflow,

@@ -1098,7 +1098,14 @@ export function createEventsStorage(
         // free to land somewhere else, and the claim is the fast path other
         // writers read first, so it is corrected once the append commits.
         let resumeClaimRecordedId: string | null = null;
-        const now = new Date();
+        // An in-band write's time is the one its orchestrator chose
+        // (`occurredAt`), as on world-vercel's slot-identity runs: an
+        // orchestrator that runs ahead of its writes has already handed the
+        // event to the workflow with that time, and replay must read the same.
+        const now =
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
         let effectiveRunId: string;

@@ -703,6 +703,19 @@ export interface WorldCapabilities {
    * each of these against a World's `events` storage.
    */
   inBandFence?: boolean;
+  /**
+   * The World records an in-band write (`inBand: true`) with the
+   * `occurredAt` it was sent with as its `createdAt`, on creates and on
+   * batch items alike.
+   *
+   * The runtime's run-ahead hands an inline step's outcome to the workflow
+   * before the write commits, and the workflow clock (`Date.now()`) moves to
+   * that event's `createdAt`. Replay reads the stored one, so the two must be
+   * the same, and only a World declaring this gets run-ahead. The runtime
+   * still checks every speculative write's stored time, and stops the
+   * delivery on a mismatch before anything else is written.
+   */
+  inBandEventTime?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes

@@ -106,6 +106,11 @@ export class AppendOnlyWorld {
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
       /**
+       * Answer every `events.create` and `events.createBatch` this many
+       * milliseconds late, after committing, as a remote World's round trip.
+       */
+      createDelayMs?: number;
+      /**
        * Hook tokens another run already holds: a `hook_created` for one of
        * them commits `hook_conflict` instead, as a World with a token index
        * does.
@@ -236,13 +241,18 @@ export class AppendOnlyWorld {
     }
   }
 
-  private append(partial: Partial<Event>, slotOverride?: number): Event {
+  private append(
+    partial: Partial<Event>,
+    slotOverride?: number,
+    /** An in-band write's `occurredAt`: its time is the one its writer chose. */
+    createdAt?: Date
+  ): Event {
     const slot = slotOverride ?? ++this.seq;
     const event = {
       ...partial,
       runId: this.run?.runId ?? partial.runId,
       eventId: slotToEventId(slot),
-      createdAt: new Date(),
+      createdAt: createdAt ?? new Date(),
       specVersion: SPEC_VERSION_CURRENT,
     } as Event;
     this.events.push(event);
@@ -454,6 +464,45 @@ export class AppendOnlyWorld {
     return { ...event, eventData: lazy } as Event;
   }
 
+  /** Commits a batch write; see `createBatch` in {@link asWorld}. */
+  private commitBatch(
+    batch: BatchEventRequest[],
+    params: unknown,
+    firstSlot: number
+  ) {
+    const occurredAt = (index: number) => {
+      const at = batch[index]?.occurredAt;
+      return (params as CreateEventParams | undefined)?.inBand === true && at
+        ? new Date(at)
+        : undefined;
+    };
+    return {
+      ...this.report(params as CreateEventParams, firstSlot),
+      results: batch.map(({ event: data }, index) => {
+        try {
+          this.checkRunAcceptsWork(data.eventType);
+          this.checkStepEventData(data as never);
+        } catch (error) {
+          // A refused item's position is sealed, as a World seals it, so
+          // a later load reads a `noop` there rather than a hole.
+          this.append({ eventType: 'noop' } as Partial<Event>);
+          return {
+            status: 410,
+            error: 'gone',
+            message: (error as Error).message,
+          };
+        }
+        const event = this.append(
+          this.committedHook(data as Partial<Event>),
+          undefined,
+          occurredAt(index)
+        );
+        this.creates.push({ event, params: params as CreateEventParams });
+        return { status: 200 as const, event: this.responseEvent(event) };
+      }),
+    };
+  }
+
   asWorld(): World {
     const self = this;
     const events: World['events'] = {
@@ -471,9 +520,18 @@ export class AppendOnlyWorld {
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
         self.checkFence(params, 1);
-        const event = self.append(self.committedHook(data));
+        const event = self.append(
+          self.committedHook(data),
+          undefined,
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : undefined
+        );
         self.creates.push({ event, params });
         const slot = self.seq;
+        if (self.options.createDelayMs) {
+          await new Promise((r) => setTimeout(r, self.options.createDelayMs));
+        }
         return {
           event: self.responseEvent(event),
           run: self.run,
@@ -484,29 +542,12 @@ export class AppendOnlyWorld {
         self.createCalls++;
         self.checkFence(params as CreateEventParams, batch.length);
         const firstSlot = self.seq + 1;
-        return {
-          ...self.report(params as CreateEventParams, firstSlot),
-          results: batch.map(({ event: data }) => {
-            try {
-              self.checkRunAcceptsWork(data.eventType);
-              self.checkStepEventData(data as never);
-            } catch (error) {
-              // A refused item's position is sealed, as a World seals it, so
-              // a later load reads a `noop` there rather than a hole.
-              self.append({ eventType: 'noop' } as Partial<Event>);
-              return {
-                status: 410,
-                error: 'gone',
-                message: (error as Error).message,
-              };
-            }
-            const event = self.append(
-              self.committedHook(data as Partial<Event>)
-            );
-            self.creates.push({ event, params: params as CreateEventParams });
-            return { status: 200 as const, event: self.responseEvent(event) };
-          }),
-        };
+        if (self.options.createDelayMs) {
+          const committed = self.commitBatch(batch, params, firstSlot);
+          await new Promise((r) => setTimeout(r, self.options.createDelayMs));
+          return committed;
+        }
+        return self.commitBatch(batch, params, firstSlot);
       },
       async get(_runId: string, eventId: string) {
         const event = self.events.find((e) => e.eventId === eventId);
@@ -595,7 +636,7 @@ export class AppendOnlyWorld {
       async getEncryptionKeyForRun() {
         return self.options.encryptionKey;
       },
-      capabilities: { inBandFence: true },
+      capabilities: { inBandFence: true, inBandEventTime: true },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';
       },
