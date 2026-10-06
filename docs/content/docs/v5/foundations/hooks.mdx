@@ -229,9 +229,9 @@ export async function reminderWorkflow() {
 }
 ```
 
-Racing a fresh `hook.then()` on each attempt also receives an event that arrives while that race is running. An event that arrives between races, for example while `sendReminder()` runs, is delivered to the earlier race's `hook.then()`, which already timed out, so the workflow never sees it.
+Racing a fresh `hook.then()` on each attempt also receives an event that arrives while that race is running. An event that arrives between races, for example while `sendReminder()` runs, is delivered to the awaiter left behind by the earlier race, so the workflow never sees it. Don't race `iterator.next()` from `hook[Symbol.asyncIterator]()` either. The `next()` call that lost a race keeps waiting and takes the next event, even one that arrives while a later race is running. Race the promise you created once instead.
 
-Every `await` on a hook that happens while no event is available waits for the same next event, so `Promise.all([hook, hook])` resolves both with one payload. To receive separate events, await them one after another or iterate with `for await...of`.
+Don't await one hook from several places at the same time, for example `Promise.all([hook, hook])`. Which event each await receives depends on how far the workflow had replayed when it awaited, so it can differ between code that looks equivalent. To receive successive events, await them one after another or iterate with `for await...of`.
 
 ### Disposing hooks early
 

@@ -596,10 +596,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Helper function to create a new promise that waits for the next hook payload
     function createHookPromise(): Promise<T> {
-      const resolvers = withResolvers<T>();
-
       // A consumed conflict may still be waiting on earlier deliveries.
       if (hasConflict && conflictErrorRef) {
+        const resolvers = withResolvers<T>();
         afterRegistration(() => {
           resolvers.reject(conflictErrorRef);
         });
@@ -609,6 +608,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // A payload already consumed from the log but not yet settled is the
       // next one in log order, ahead of anything buffered after it.
       if (inFlight) {
+        webhookLogger.debug('Hook await joined an in-flight payload', {
+          correlationId,
+          token,
+        });
         return inFlight.promise;
       }
 
@@ -629,6 +632,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // takeover. With none left, nothing can ever arrive for this hook again.
       if (forceClaimedErrorRef) {
         const error = forceClaimedErrorRef;
+        const resolvers = withResolvers<T>();
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           resolvers.reject(error);
         });
@@ -647,9 +651,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // above covers the same case once the payload has been consumed.
       const pending = promises[0];
       if (pending) {
+        webhookLogger.debug('Hook await joined the pending awaiter', {
+          correlationId,
+          token,
+        });
         return pending.promise;
       }
 
+      const resolvers = withResolvers<T>();
       promises.push(resolvers);
 
       return resolvers.promise;

@@ -131,6 +131,81 @@ describe('createCreateHook', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
+  it('should reject every await sharing a pending payload that fails to hydrate', async () => {
+    const serialization = await import('../serialization.js');
+    const hydrateError = new Error('hydrate failed');
+    const hydrateSpy = vi
+      .spyOn(serialization, 'hydrateStepReturnValue')
+      .mockRejectedValueOnce(hydrateError);
+    try {
+      const ops: Promise<any>[] = [];
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_123',
+          eventType: 'hook_received',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          eventData: {
+            token: 'test-token',
+            payload: await dehydrateStepReturnValue(
+              { message: 'hello' },
+              'wrun_test',
+              undefined,
+              ops
+            ),
+          },
+          createdAt: new Date(),
+        },
+      ]);
+      const createHook = createCreateHook(ctx);
+      const hook = createHook({ token: 'test-token' });
+      const results = await Promise.allSettled([hook.then((v) => v), hook]);
+      expect(results).toEqual([
+        { status: 'rejected', reason: hydrateError },
+        { status: 'rejected', reason: hydrateError },
+      ]);
+      expect(hydrateSpy).toHaveBeenCalledTimes(1);
+      expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    } finally {
+      hydrateSpy.mockRestore();
+    }
+  });
+
+  // Which payload a concurrent await receives depends on whether the replay
+  // consumed it before the await was made, so concurrent awaits of one hook
+  // are unspecified in the docs. This pins the buffered side: each await
+  // claims its own buffered payload.
+  it('should give concurrent awaits successive payloads that were already buffered', async () => {
+    const ops: Promise<any>[] = [];
+    const received = async (eventId: string, message: string) => ({
+      eventId,
+      runId: 'wrun_123',
+      eventType: 'hook_received' as const,
+      correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+      eventData: {
+        token: 'test-token',
+        payload: await dehydrateStepReturnValue(
+          { message },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+      },
+      createdAt: new Date(),
+    });
+    const ctx = setupWorkflowContext([
+      await received('evnt_0', 'first'),
+      await received('evnt_1', 'second'),
+    ]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'test-token' });
+    // Let the replay walk buffer both payloads before anything awaits.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const results = await Promise.all([hook.then((v) => v), hook]);
+    expect(results).toEqual([{ message: 'first' }, { message: 'second' }]);
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
   it('should invoke workflow error handler when hook_created token mismatches the hook', async () => {
     const ctx = setupWorkflowContext([
       {
