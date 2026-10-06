@@ -5875,7 +5875,7 @@ async function workflow() {
     }
   }, 30_000);
 
-  describe('turbo: end-of-run drain gates writes on runReadyBarrier', () => {
+  describe('end-of-run drain', () => {
     // A workflow that creates a fire-and-forget hook and then returns
     // synchronously never suspends, so its `hook_created` event is committed by
     // the end-of-run drain inside runWorkflow — *before* the runtime's terminal
@@ -5941,149 +5941,41 @@ async function workflow() {
       );
     });
 
-    it('does not write hook_created until the runReadyBarrier resolves', async () => {
-      let releaseBarrier: () => void = () => {};
-      const runReadyBarrier = new Promise<void>((resolve) => {
-        releaseBarrier = resolve;
-      });
-
-      const create = vi.fn(async () => ({
-        event: { eventType: 'hook_created' as const },
-      }));
+    it('writes the drain through the writer it is given', async () => {
+      const create = vi.fn();
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         events: { create },
         streams: { write: vi.fn(), close: vi.fn() },
       } as any);
+      const writeEvent = vi.fn(async (data: { eventType: string }) => ({
+        event: { eventType: data.eventType },
+      }));
 
-      const runPromise = runWorkflow(
+      await runWorkflow(
         `${FIRE_AND_FORGET_HOOK}${getWorkflowTransformCode('workflow')}`,
         await makeRun(),
         [],
         noEncryptionKey,
         undefined,
-        runReadyBarrier
-      ).then(() => 'completed' as const);
-
-      // The body returns synchronously, but the drain's hook_created write — and
-      // therefore runWorkflow's own completion — must stay blocked behind the
-      // still-pending backgrounded run_started. A fixed-time race (not a fixed
-      // wait-then-assert) makes this robust to VM setup latency: the window only
-      // has to exceed the drain's own work, never a calibrated guess at it.
-      const winner = await Promise.race([
-        runPromise,
-        new Promise<'pending'>((resolve) =>
-          setTimeout(() => resolve('pending'), 250)
-        ),
-      ]);
-      expect(winner).toBe('pending');
-      expect(create).not.toHaveBeenCalled();
-
-      // Once run_started lands, the drain proceeds and runWorkflow resolves.
-      releaseBarrier();
-      expect(await runPromise).toBe('completed');
-
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(create.mock.calls[0][1]).toMatchObject({
-        eventType: 'hook_created',
-      });
-    });
-
-    it('does not write wait_created until the runReadyBarrier resolves', async () => {
-      let releaseBarrier: () => void = () => {};
-      const runReadyBarrier = new Promise<void>((resolve) => {
-        releaseBarrier = resolve;
-      });
-
-      const create = vi.fn(async () => ({
-        event: { eventType: 'wait_created' as const },
-      }));
-      setWorld({
-        specVersion: SPEC_VERSION_CURRENT,
-        events: { create },
-        streams: { write: vi.fn(), close: vi.fn() },
-      } as any);
-
-      const runPromise = runWorkflow(
+        writeEvent as never
+      );
+      await runWorkflow(
         `${FIRE_AND_FORGET_WAIT}${getWorkflowTransformCode('workflow')}`,
         await makeRun(),
         [],
         noEncryptionKey,
         undefined,
-        runReadyBarrier
-      ).then(() => 'completed' as const);
+        writeEvent as never
+      );
 
-      // Same gating as the hook case: a fire-and-forget wait drained at
-      // completion must not write wait_created before the backgrounded
-      // run_started lands.
-      const winner = await Promise.race([
-        runPromise,
-        new Promise<'pending'>((resolve) =>
-          setTimeout(() => resolve('pending'), 250)
-        ),
-      ]);
-      expect(winner).toBe('pending');
+      // The orchestrator's in-band writer marks and fences these writes, so
+      // none may bypass it.
       expect(create).not.toHaveBeenCalled();
-
-      releaseBarrier();
-      expect(await runPromise).toBe('completed');
-
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(create.mock.calls[0][1]).toMatchObject({
-        eventType: 'wait_created',
-      });
-    });
-
-    it('still writes hook_created when the runReadyBarrier rejects (ordering only)', async () => {
-      const create = vi.fn(async () => ({
-        event: { eventType: 'hook_created' as const },
-      }));
-      setWorld({
-        specVersion: SPEC_VERSION_CURRENT,
-        events: { create },
-        streams: { write: vi.fn(), close: vi.fn() },
-      } as any);
-
-      // A rejected barrier is swallowed for ordering: if run_started truly
-      // failed, the run does not exist and the write itself surfaces the error.
-      const rejected = Promise.reject(new Error('run_started failed'));
-      rejected.catch(() => {});
-
-      await runWorkflow(
-        `${FIRE_AND_FORGET_HOOK}${getWorkflowTransformCode('workflow')}`,
-        await makeRun(),
-        [],
-        noEncryptionKey,
-        undefined,
-        rejected
-      );
-
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(create.mock.calls[0][1]).toMatchObject({
-        eventType: 'hook_created',
-      });
-    });
-
-    it('writes hook_created without blocking when no barrier (non-turbo)', async () => {
-      const create = vi.fn(async () => ({
-        event: { eventType: 'hook_created' as const },
-      }));
-      setWorld({
-        specVersion: SPEC_VERSION_CURRENT,
-        events: { create },
-        streams: { write: vi.fn(), close: vi.fn() },
-      } as any);
-
-      // No barrier (the await path already awaited run_started up front): the
-      // drain writes immediately.
-      await runWorkflow(
-        `${FIRE_AND_FORGET_HOOK}${getWorkflowTransformCode('workflow')}`,
-        await makeRun(),
-        [],
-        noEncryptionKey
-      );
-
-      expect(create).toHaveBeenCalledTimes(1);
+      expect(writeEvent.mock.calls.map((call) => call[0].eventType)).toEqual([
+        'hook_created',
+        'wait_created',
+      ]);
     });
   });
 });

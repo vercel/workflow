@@ -82,7 +82,8 @@ describe('setAttributes (host-side)', () => {
           ],
           writer: { type: 'step', stepId: 'step', attempt: 1 },
         },
-      })
+      }),
+      { inBand: false }
     );
   });
 
@@ -109,7 +110,8 @@ describe('setAttributes (host-side)', () => {
           writer: { type: 'step', stepId: 'step', attempt: 1 },
           allowReservedAttributes: true,
         },
-      })
+      }),
+      { inBand: false }
     );
   });
 
@@ -216,7 +218,8 @@ describe('setAttributes (host-side)', () => {
     );
     expect(create).toHaveBeenCalledWith(
       'run_123',
-      expect.objectContaining({ eventData })
+      expect.objectContaining({ eventData }),
+      { inBand: false }
     );
     create.mockClear();
 
