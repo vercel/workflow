@@ -259,7 +259,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Run Initial Build
@@ -1275,7 +1275,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Run Initial Build

@@ -5,6 +5,13 @@ import { trackMdRequest } from '@/lib/md-tracking';
 const proxy = createProxy({
   config: geistdocsConfig,
   trackMarkdownRequest: trackMdRequest,
+  additionalMarkdownRoutes: [
+    {
+      from: '/changelog/page/*path',
+      to: '/[lang]/changelog-pages.mdx/*path',
+    },
+    { from: '/changelog', to: '/[lang]/changelog.md' },
+  ],
   markdownRoutes: [
     { from: '/docs/*path', to: '/[lang]/llms.mdx/docs/*path' },
     { from: '/cookbook/*path', to: '/[lang]/llms.mdx/cookbook/*path' },

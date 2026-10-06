@@ -8,9 +8,12 @@ import {
 } from './flushable-stream.js';
 import { setWorld } from './runtime/world.js';
 import {
+  dehydrateStepArguments,
   dehydrateStepReturnValue,
+  hydrateStepArguments,
   WorkflowServerWritableStream,
 } from './serialization.js';
+import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from './symbols.js';
 
 /**
  * Poll until the expectation passes — replaces fixed sleeps for
@@ -508,15 +511,24 @@ describe('WorkflowServerWritableStream', () => {
       await expect(piped).rejects.toThrow('producer failed');
       await new Promise((r) => setTimeout(r, 25));
 
-      // Every accepted chunk was delivered; the stream was not closed.
+      // Every accepted chunk was delivered, in order; the stream was not
+      // closed. How chunks split between write() and writeMulti() depends on
+      // how fast pipeTo hands them over (Node 24.21 batches the first two), so
+      // reconstruct the order the World actually received them in.
       const delivered = [
-        ...mockStreams.write.mock.calls.map(
-          (call: unknown[]) => (call[2] as Uint8Array)[0]
+        ...mockStreams.write.mock.calls.map((call: unknown[], i: number) => ({
+          order: mockStreams.write.mock.invocationCallOrder[i],
+          chunks: [(call[2] as Uint8Array)[0]],
+        })),
+        ...mockStreams.writeMulti.mock.calls.map(
+          (call: unknown[], i: number) => ({
+            order: mockStreams.writeMulti.mock.invocationCallOrder[i],
+            chunks: (call[2] as Uint8Array[]).map((c) => c[0]),
+          })
         ),
-        ...mockStreams.writeMulti.mock.calls.flatMap((call: unknown[]) =>
-          (call[2] as Uint8Array[]).map((c) => c[0])
-        ),
-      ];
+      ]
+        .sort((a, b) => a.order - b.order)
+        .flatMap((call) => call.chunks);
       expect(delivered).toEqual([1, 2, 3]);
       expect(mockStreams.close).not.toHaveBeenCalled();
     });
@@ -866,6 +878,109 @@ describe('WorkflowServerWritableStream', () => {
   });
 
   describe('runReadyBarrier (turbo optimistic start)', () => {
+    it.each([
+      'implicit',
+      'explicit',
+      'foreign',
+    ] as const)('gates hydrated writable arguments only for the current run (%s owner)', async (owner) => {
+      const ready = Promise.withResolvers<void>();
+      const argument = new WritableStream<string>();
+      Object.defineProperty(argument, STREAM_NAME_SYMBOL, {
+        value: 'strm_argument',
+      });
+      if (owner !== 'implicit') {
+        Object.defineProperty(argument, STREAM_SERVER_RUN_ID_SYMBOL, {
+          value: owner === 'explicit' ? 'run-123' : 'run-parent',
+        });
+      }
+      const input = await dehydrateStepArguments(
+        [argument],
+        'run-123',
+        undefined
+      );
+      const ops: Promise<void>[] = [];
+      const [writable] = await hydrateStepArguments(
+        input,
+        'run-123',
+        undefined,
+        ops,
+        globalThis,
+        {},
+        undefined,
+        undefined,
+        ready.promise
+      );
+      const writer = writable.getWriter();
+      await writer.write('first chunk');
+      const closed = writer.close();
+      try {
+        if (owner === 'foreign') {
+          await closed;
+          expect(mockStreams.write).toHaveBeenCalledWith(
+            'run-parent',
+            'strm_argument',
+            expect.any(Uint8Array)
+          );
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          expect(mockStreams.write).not.toHaveBeenCalled();
+          expect(mockStreams.close).not.toHaveBeenCalled();
+        }
+      } finally {
+        ready.resolve();
+        await closed;
+        await Promise.all(ops);
+      }
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      false,
+      true,
+    ])('gates hydrated empty close and session creation (rejected barrier: %s)', async (reject) => {
+      const ready = Promise.withResolvers<void>();
+      // Observe it even if a regression drops the barrier during hydration.
+      ready.promise.catch(() => {});
+      const argument = new WritableStream();
+      Object.defineProperty(argument, STREAM_NAME_SYMBOL, {
+        value: 'strm_empty_argument',
+      });
+      const input = await dehydrateStepArguments(
+        [argument],
+        'run-123',
+        undefined
+      );
+      mockStreams.createWriteSession = vi.fn().mockReturnValue(undefined);
+      const ops: Promise<void>[] = [];
+      const [writable] = await hydrateStepArguments(
+        input,
+        'run-123',
+        undefined,
+        ops,
+        globalThis,
+        {},
+        undefined,
+        undefined,
+        ready.promise
+      );
+      const closed = writable.close();
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(mockStreams.createWriteSession).not.toHaveBeenCalled();
+        expect(mockStreams.close).not.toHaveBeenCalled();
+      } finally {
+        if (reject) ready.reject(new Error('run_started failed'));
+        else ready.resolve();
+        await closed;
+        await Promise.all(ops);
+      }
+      expect(mockStreams.createWriteSession).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).toHaveBeenCalledWith(
+        'run-123',
+        'strm_empty_argument'
+      );
+    });
+
     it('holds the first server write until the run-ready barrier resolves', async () => {
       const order: string[] = [];
       mockStreams.write.mockImplementation(async () => {

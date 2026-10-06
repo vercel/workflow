@@ -267,9 +267,9 @@ Use the multi-turn pattern when:
 
 The multi-turn pattern also supports messages from system events, external services, and multiple users. Every source resumes the same Hook; the workflow queues those messages and processes them between model turns.
 
-<Tabs items={['System event', 'External service', 'Multiple users']}>
+<TabsWithChildren tabs={["System event","External service","Multiple users"]}>
 
-<Tab value="System event">
+<TabContent order={1}>
 
 Scheduled tasks, background jobs, or database triggers can inject updates into an active conversation:
 
@@ -287,9 +287,9 @@ export async function POST(request: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="External service">
+<TabContent order={2}>
 
 A third-party webhook can notify the conversation about an external event:
 
@@ -309,9 +309,9 @@ export async function POST(request: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Multiple users">
+<TabContent order={3}>
 
 Multiple authenticated users can participate in the same workflow-owned session. Include attribution when resuming the Hook:
 
@@ -337,9 +337,9 @@ export async function POST(
 
 To preserve structured attribution across refreshes, persist the corresponding `UIMessage` using the application-history approach described above.
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 ## Related documentation
 
