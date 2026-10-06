@@ -469,11 +469,13 @@ describe.skipIf(process.platform === 'win32')(
       ]);
       expect(maximum.get(runId)).toBe(1);
       const events = await world.events.list({ runId });
-      const stepStart = events.data.find(
-        (event) => event.eventType === 'step_started'
+      // The step ran inline in the delivery that created it.
+      const stepCreated = events.data.find(
+        (event) => event.eventType === 'step_created'
       );
-      expect(stepStart?.eventData).toMatchObject({
-        ownerMessageId: expect.any(String),
+      expect(stepCreated?.eventData).toMatchObject({
+        inline: true,
+        creatorMessageId: expect.any(String),
       });
     });
 
