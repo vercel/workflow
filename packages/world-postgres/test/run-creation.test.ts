@@ -8,6 +8,7 @@ import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createEventsStorage } from '../src/storage.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 /**
  * A run row, its slot marker and its run_created event have to become visible
@@ -49,10 +50,12 @@ describe('atomic run creation', () => {
       application_name: applicationName,
       max: 1,
     });
+    tolerateTeardown(pool);
     // The observer's connections are separate from the storage's so that a
     // lock the observer holds does not starve the creation of a connection,
     // and its reads see exactly what another writer would.
     observer = new Pool({ connectionString: dbUrl, max: 2 });
+    tolerateTeardown(observer);
     events = createEventsStorage(createClient(pool));
   }, 120_000);
 
