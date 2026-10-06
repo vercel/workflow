@@ -317,11 +317,20 @@ but before replaying them.
 Reuse an `idempotencyKey` with the same payload when retrying an invocation.
 Without a key, each call creates a new input.
 
-With invocation disabled (the default), deliveries for the same run may execute
-concurrently. A workflow request can execute a step inline and wait for a hook
-wake to abort that step, so the queue cannot hold a per-run lock for the entire
-request. Each queue instance coalesces in-flight and recently completed deliveries
-with the same idempotency key. Handlers must still tolerate at-least-once delivery
+A run's orchestrator deliveries (starts, wakes after a step outcome, hook
+resumes, cancellations and timers) execute one at a time, with or without
+invocation. Each one is a Graphile job in the run's named queue,
+`workflow_flows:<runId>:executor`, and Graphile permits one active job per named
+queue across worker processes. Step jobs and health checks carry no named queue,
+so a run's steps execute concurrently with each other and with its orchestrator.
+An orchestrator blocked on an inline step reads new events, such as a hook
+payload, from the log while it waits, so it never needs a second delivery of its
+own run to make progress. A delayed job does not hold its queue. This is the
+queue half of the single-writer guarantee; the other half is the in-band fence
+on event writes, which refuses a stale orchestrator that outlived its job's lock.
+
+Each queue instance coalesces in-flight and recently completed deliveries with
+the same idempotency key. Handlers must still tolerate at-least-once delivery
 across worker processes, restarts, or completed-message cache eviction.
 
 With invocation enabled, each Graphile worker pool registers two task
@@ -332,6 +341,9 @@ jobs can execute concurrently. The default job prefix produces these names:
 | --- | --- | --- |
 | `workflow_flows_executor` | Start or resume workflow execution | `workflow_flows:<runId>:executor`, one queue per run |
 | `workflow_flows` | Step execution and health checks | No run-scoped named queue |
+
+With invocation disabled, workflow execution jobs use the `workflow_flows` task
+identifier in the same per-run named queue.
 
 Graphile permits one active job per run's named queue across worker processes.
 Different runs, step jobs, and health checks can execute concurrently.

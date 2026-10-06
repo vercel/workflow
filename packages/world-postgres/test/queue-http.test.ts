@@ -29,7 +29,8 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   let pool: Pool;
   let connectionString: string;
   let server: Server;
-  let phase: 'headers' | 'body' | 'abort' | 'hook';
+  let phase: 'headers' | 'body' | 'abort' | 'serial';
+  let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
   let disconnected = Promise.withResolvers<void>();
@@ -40,14 +41,19 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     connectionString = container.getConnectionUri();
     pool = new Pool({ connectionString, max: 4 });
     server = createServer(async (request, response) => {
-      await request.toArray();
+      const body = (await request.toArray()) as Buffer[];
       attempts.push(String(request.headers['x-vqs-message-attempt']));
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
-      if (phase === 'hook') {
-        if (attempts.length === 1) await releaseInlineStep.promise;
-        else releaseInlineStep.resolve();
+      if (phase === 'serial') {
+        const { stepId } = JSON.parse(Buffer.concat(body).toString()) as {
+          stepId?: string;
+        };
+        serialStarts.push(stepId ?? 'orchestrator');
+        // The first orchestrator delivery holds until the test releases it,
+        // as one running an inline step would.
+        if (serialStarts.length === 1) await releaseInlineStep.promise;
         response.end('{}');
         return;
       }
@@ -126,27 +132,41 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     }
   });
 
-  test('a same-run wake can release an inline step before its delivery finishes', async () => {
-    phase = 'hook';
+  test('a same-run wake waits for the in-flight orchestrator delivery while its steps run', async () => {
+    phase = 'serial';
     attempts = [];
+    serialStarts = [];
     accepted = Promise.withResolvers<void>();
     releaseInlineStep = Promise.withResolvers<void>();
     const queue = createQueue(
       {
         connectionString,
-        queueConcurrency: 2,
+        queueConcurrency: 4,
+        pollInterval: 50,
         applicationManagedShutdown: true,
       },
       pool
     );
-    const payload = { runId: `run_${randomUUID()}` };
+    const runId = `run_${randomUUID()}`;
+    const topic = `${getQueueTopicPrefix('workflow')}test` as const;
     try {
-      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, payload);
+      await queue.queue(topic, { runId });
       await accepted.promise;
-      // Legacy hook producers send a wake without an idempotency key.
-      // The handler holding the first delivery needs this wake to finish.
-      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, payload);
-      await expect.poll(() => attempts.length, { timeout: 2_500 }).toBe(2);
+      // A wake (no idempotency key) and a step message for the same run,
+      // while the first delivery is still running.
+      await queue.queue(topic, { runId });
+      await queue.queue(topic, { runId, stepId: 'step_1', stepName: 'add' });
+      // The step message runs; the wake does not, with free worker slots.
+      await expect
+        .poll(() => serialStarts, { timeout: 2_500 })
+        .toEqual(['orchestrator', 'step_1']);
+      await sleep(500);
+      expect(serialStarts).toEqual(['orchestrator', 'step_1']);
+
+      releaseInlineStep.resolve();
+      await expect
+        .poll(() => serialStarts, { timeout: 2_500 })
+        .toEqual(['orchestrator', 'step_1', 'orchestrator']);
       await expect
         .poll(
           async () => {
@@ -158,7 +178,6 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
           { timeout: 2_500 }
         )
         .toBe(0);
-      expect(attempts).toEqual(['1', '1']);
     } finally {
       releaseInlineStep.resolve();
       await queue.close();
