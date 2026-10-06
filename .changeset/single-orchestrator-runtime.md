@@ -11,4 +11,4 @@
 "workflow": minor
 ---
 
-Runs use a single orchestrator: steps retry in place on one queue message and `maxRetries: 0` steps run at most once. Turbo, optimistic inline start, inline ownership, resilient dispatch and precondition settings are removed.
+Runs use a single orchestrator: steps retry in place on one queue message and `maxRetries: 0` steps run at most once. Inline ownership, resilient dispatch and precondition settings are removed; `WORKFLOW_OPTIMISTIC_INLINE_START` only opts out of turbo mode's early step start.

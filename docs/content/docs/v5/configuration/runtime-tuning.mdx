@@ -165,6 +165,19 @@ An out-of-band terminal event has these effects, all of them benign:
 - Default: `60000`
 - The orchestrator stops starting inline steps this long before its inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms)) ends. Steps created inside the margin are enqueued instead, so the platform does not cut a body off at the function's deadline.
 
+### `WORKFLOW_TURBO`
+
+- Default: enabled
+- Fast path for the first delivery of a run's first message: writes `run_started` without waiting for it, skips the initial event-log load, and starts inline step bodies before their `step_created` and `step_started` commit. Every write still lands after `run_started`. See [Turbo mode](/docs/changelog/turbo-mode).
+- Stops starting bodies ahead of their start once the run creates a hook or wait.
+- Set `0` or `false` to disable.
+
+### `WORKFLOW_OPTIMISTIC_INLINE_START`
+
+- Default: unset
+- Set `0` or `false` to keep the first delivery's inline step bodies waiting for their start to commit, while `WORKFLOW_TURBO` still backgrounds `run_started` and skips the initial load. Use it when first-step side effects are not idempotent.
+- No other value has an effect: outside turbo's first delivery, inline step bodies always wait for their start to commit.
+
 ### `WORKFLOW_RETAINED_VM`
 
 - Default: enabled
@@ -177,7 +190,6 @@ An out-of-band terminal event has these effects, all of them benign:
 
 These no longer exist. Remove them if you set them.
 
-- `WORKFLOW_TURBO`, `WORKFLOW_OPTIMISTIC_INLINE_START`: steps no longer start before their `step_created` is written, and step invocations no longer continue the run.
 - `WORKFLOW_INLINE_OWNERSHIP`, `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`: there are no ownership leases or backstop wakes. A step's execution mode, fixed on `step_created`, decides who runs it.
 - `WORKFLOW_RESILIENT_STEP_DISPATCH`, `WORKFLOW_BATCH_TRANSITIONS`: a background step's message is enqueued once, after its `step_created` commits.
 - `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`, `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS`, `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS`: the precondition guard is replaced by the [in-band fence](#one-orchestrator-per-run-and-the-in-band-fence).

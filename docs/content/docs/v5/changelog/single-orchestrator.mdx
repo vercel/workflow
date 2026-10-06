@@ -1,6 +1,6 @@
 ---
 title: Single orchestrator
-description: One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces turbo mode, lazy inline start, batched claims, inline step ownership and resilient step dispatch.
+description: One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces lazy inline start, batched claims, inline step ownership and resilient step dispatch.
 ---
 
 # Single orchestrator
@@ -24,12 +24,16 @@ The backend used to keep step and wait rows, written in the same transaction as 
 
 The queue delivers a run's orchestrator messages one at a time, but an invocation whose event loop stalls past its lease can be redelivered while it is still alive. The World counts the positions allocated to in-band (orchestrator) writes. A log load returns that count, the orchestrator sends it with each in-band write, and the World refuses a stale one with `InBandSupersededError`. Every World must implement the fence and declare `capabilities.inBandFence`; the runtime refuses one that does not ([Building a World](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). The refused invocation stops writing and running inline steps, does not acknowledge its message, and is delivered again. A write that resolves a promise (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports below it, so the workflow sees events in log order.
 
+## Turbo mode
+
+[Turbo mode](/docs/changelog/turbo-mode) still fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from the count after the run's creation instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery and redelivers it like any fence refusal.
+
 ## What is removed
 
-Turbo mode, lazy inline step start, batched step claims, optimistic inline start, inline step ownership and its backstop wakes, resilient step dispatch, and the precondition guard. Their settings are listed under [Removed settings](/docs/configuration/runtime-tuning#removed-settings).
+Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, resilient step dispatch, and the precondition guard. Their settings are listed under [Removed settings](/docs/configuration/runtime-tuning#removed-settings).
 
 ## Costs
 
 - A background step's outcome reaches the workflow through the orchestrator: over the World's live event feed or the tail poll when the orchestrator is running, otherwise one queue hop.
-- An inline step costs one more write than lazy start did (`step_created` before `step_started`).
+- An inline step's `step_created` and `step_started` go out in one batch write when the World has `createBatch`, so it costs two writes (that batch and its outcome), as with lazy start. A World without `createBatch` takes three.
 - Hooks, aborts and cancellations that arrive while the orchestrator runs a long inline step reach it through the live feed or the tail poll ([`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`](/docs/configuration/runtime-tuning#workflow_orchestrator_poll_interval_ms)).
