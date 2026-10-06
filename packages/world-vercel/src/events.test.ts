@@ -6,7 +6,6 @@ import {
   type CreateEventParams,
   EventSchema,
   mintedSpecVersion,
-  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
@@ -254,7 +253,7 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -296,24 +295,11 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
     // `createWorld` records what it declared; flipping the kill switch
     // in-process afterwards must not make run_started claim more than the
     // runtime validated.
-    vi.stubEnv(SEALED_LOG_ENV_VAR, '1');
+    vi.stubEnv('WORKFLOW_SEALED_LOG', '1');
     try {
       const meta = await postRunStartedAndCaptureMeta({
         mintedSpecVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
       });
-      expect(meta?.executorSpecVersion).toBe(
-        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-      );
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it('follows the sealed-log kill switch', async () => {
-    vi.stubEnv(SEALED_LOG_ENV_VAR, '0');
-    try {
-      const meta = await postRunStartedAndCaptureMeta();
-      expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
       expect(meta?.executorSpecVersion).toBe(
         SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
       );
@@ -338,7 +324,7 @@ describe('createWorkflowRunEvent slot snapshot wire fields', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -380,7 +366,7 @@ describe('createWorkflowRunEvent slot snapshot wire fields', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -463,17 +449,6 @@ describe('createWorkflowRunEvent slot snapshot wire fields', () => {
 describe('createWorkflowRunEvent result contract', () => {
   it.each([
     {
-      case: 'step_started without its step',
-      eventType: 'step_started',
-      data: {
-        eventType: 'step_started',
-        correlationId: 'step_1',
-        specVersion: 2,
-      },
-      response: {},
-      error: { name: 'WorkflowWorldError', code: 'SCHEMA_VALIDATION' },
-    },
-    {
       case: 'step_started without startedAt',
       eventType: 'step_started',
       data: {
@@ -499,7 +474,7 @@ describe('createWorkflowRunEvent result contract', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/wrun_1/events/${eventType}`,
+        path: `/api/v5/runs/wrun_1/events/${eventType}`,
         method: 'POST',
       })
       .reply(200, createEventBody(data as AnyEventRequest, response), {
@@ -530,7 +505,7 @@ async function postStepStartedMeta(
   agent
     .get(ORIGIN)
     .intercept({
-      path: '/api/v4/runs/wrun_1/events/step_started',
+      path: '/api/v5/runs/wrun_1/events/step_started',
       method: 'POST',
     })
     .reply(
@@ -614,7 +589,7 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_completed',
+        path: '/api/v5/runs/wrun_1/events/run_completed',
         method: 'POST',
       })
       .reply(
@@ -1044,7 +1019,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(200, runStartedResponse(), {
@@ -1078,7 +1053,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${taggedRunId}/events/run_created`,
+        path: `/api/v5/runs/${taggedRunId}/events/run_created`,
         method: 'POST',
       })
       .reply(
@@ -1141,7 +1116,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -1186,7 +1161,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -1250,7 +1225,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1391,7 +1366,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1449,7 +1424,7 @@ describe('createWorkflowRunEvent resolveData', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(
@@ -1536,7 +1511,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'lazy' },
       })
@@ -1570,7 +1545,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1596,7 +1571,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1631,7 +1606,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1687,7 +1662,7 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1756,7 +1731,7 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         // These tests omit the limit and use the default resolveData
         // ('all' → resolve); match both translated query params.
@@ -1975,7 +1950,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
       .intercept({
         // The headers matcher proves the frame Accept was sent — an
         // unmatched request would leave the interceptor pending.
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -2049,7 +2024,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -2111,7 +2086,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -2119,7 +2094,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -2150,7 +2125,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -2197,7 +2172,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -2211,7 +2186,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: /\/api\/v4\/runs\/wrun_1\/events\?.*cursor=eid%3Aevnt_2/,
+        path: /\/api\/v5\/runs\/wrun_1\/events\?.*cursor=eid%3Aevnt_2/,
         method: 'GET',
       })
       .reply(200, concatFrames(hookReplayFrames().slice(2)), {
@@ -2239,7 +2214,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
       })
       .reply(
@@ -2324,7 +2299,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
       })
@@ -2356,7 +2331,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     const pool = agent.get(ORIGIN);
     pool
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
       })
@@ -2379,7 +2354,7 @@ describe("resolveData 'skip-step-inputs'", () => {
       );
     pool
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -2411,7 +2386,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     let upgraded = false;
     pool
       .intercept({
-        path: (path) => path.startsWith('/api/v4/runs/wrun_1/events?'),
+        path: (path) => path.startsWith('/api/v5/runs/wrun_1/events?'),
         method: 'GET',
       })
       .reply((opts) => {
@@ -2481,7 +2456,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     for (const remoteRefBehavior of ['skip-step-inputs', 'resolve']) {
       pool
         .intercept({
-          path: '/api/v4/runs/wrun_1/events',
+          path: '/api/v5/runs/wrun_1/events',
           method: 'GET',
           query: { returnAll: 'true', remoteRefBehavior },
         })
@@ -2492,7 +2467,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     // Not remembered: the next read still asks for skip-step-inputs.
     pool
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
       })
@@ -2522,7 +2497,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     const pool = agent.get(ORIGIN);
     pool
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -2537,7 +2512,7 @@ describe("resolveData 'skip-step-inputs'", () => {
       );
     pool
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: {
           returnAll: 'true',
@@ -2573,7 +2548,7 @@ describe("resolveData 'skip-step-inputs'", () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
