@@ -13,6 +13,7 @@ import {
 import { createWorkflowUrl } from '@workflow/utils';
 import {
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   type World,
 } from '@workflow/world';
@@ -2986,6 +2987,14 @@ describe.concurrent('e2e', () => {
       { timeout: 90_000 },
       async (ctx) => {
         await skipUnlessForceClaimSupported(ctx);
+        // The victim has to be a run below the force-claim spec version,
+        // executed by this deployment. A single-orchestrator runtime executes
+        // no such run (`start()` refuses to create one), so this lane cannot
+        // produce the victim; the refusal is covered by the backend's tests.
+        if (SPEC_VERSION_CURRENT >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+          ctx.skip();
+          return;
+        }
         const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
         // A run stamped one spec version below the one that understands
         // `hook_disposed{forceClaimedBy}`. Its runtime here is the current
