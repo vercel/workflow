@@ -371,11 +371,13 @@ describe('lifecycle hooks', () => {
   it('records isolated failures in the lifecycle span even if the log sink throws', async () => {
     const addEvent = vi.fn();
     const span = { addEvent } as unknown as Span;
-    vi.spyOn(telemetry, 'trace').mockImplementationOnce(async (_name, ...args) => {
-      const fn = typeof args[0] === 'function' ? args[0] : args[1];
-      if (!fn) throw new Error('Expected a trace callback');
-      return fn(span);
-    });
+    vi.spyOn(telemetry, 'trace').mockImplementationOnce(
+      async (_name, ...args) => {
+        const fn = typeof args[0] === 'function' ? args[0] : args[1];
+        if (!fn) throw new Error('Expected a trace callback');
+        return fn(span);
+      }
+    );
     vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {
       throw new Error('log sink failed');
     });
@@ -398,7 +400,13 @@ describe('lifecycle hooks', () => {
     });
     const later = vi.fn();
     register({ onRunFailed: later });
-    dispatchRunFailedHooks('wrun_span_sink', workflowName, undefined, undefined, 'USER_ERROR');
+    dispatchRunFailedHooks(
+      'wrun_span_sink',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
     await flushDispatches();
     for (const [phase, error] of [
       ['error hydration failed', hydrationError],
