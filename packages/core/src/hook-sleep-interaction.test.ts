@@ -946,118 +946,140 @@ function defineTests(mode: 'sync' | 'async') {
     // The pattern the hooks docs recommend for re-waiting after a timeout:
     // one hook promise, raced again on every attempt. A payload recorded
     // while a step runs between the races must still reach the second race.
-    it('should deliver a payload recorded between races to a hook promise raced again', async () => {
-      await setupHydrateMock();
-      const ops: Promise<any>[] = [];
-      const payload = await dehydrateStepReturnValue(
-        { value: 'delivered' },
-        'wrun_test',
-        undefined,
-        ops
+    //
+    // A fresh `hook.then()` per race does not receive it: the payload settles
+    // the first race's abandoned awaiter, which cannot be told apart from a
+    // promise created once and raced again. The hooks docs describe this gap
+    // ("Waiting with a timeout"); `it.fails` pins it so closing it forces the
+    // docs to be updated too.
+    for (const createOnce of [true, false]) {
+      (createOnce ? it : it.fails)(
+        createOnce
+          ? 'should deliver a payload recorded between races to a hook promise raced again'
+          : 'should deliver a payload recorded between races to a fresh hook.then() per race',
+        async () => {
+          await setupHydrateMock();
+          const ops: Promise<any>[] = [];
+          const payload = await dehydrateStepReturnValue(
+            { value: 'delivered' },
+            'wrun_test',
+            undefined,
+            ops
+          );
+          const stepResult = await dehydrateStepReturnValue(
+            undefined,
+            'wrun_test',
+            undefined,
+            ops
+          );
+          const firstResumeAt = new Date('2026-05-20T22:16:57.197Z');
+          const secondResumeAt = new Date('2099-01-01');
+
+          const ctx = setupWorkflowContext([
+            {
+              eventId: 'evnt_0',
+              runId: 'wrun_test',
+              eventType: 'hook_created',
+              correlationId: `hook_${CORR_IDS[0]}`,
+              eventData: { token: 'test-token', isWebhook: false },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_test',
+              eventType: 'wait_created',
+              correlationId: `wait_${CORR_IDS[1]}`,
+              eventData: { resumeAt: firstResumeAt },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_2',
+              runId: 'wrun_test',
+              eventType: 'wait_completed',
+              correlationId: `wait_${CORR_IDS[1]}`,
+              eventData: { resumeAt: firstResumeAt },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_3',
+              runId: 'wrun_test',
+              eventType: 'step_created',
+              correlationId: `step_${CORR_IDS[2]}`,
+              eventData: { stepName: 'remindStep' },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_4',
+              runId: 'wrun_test',
+              eventType: 'step_started',
+              correlationId: `step_${CORR_IDS[2]}`,
+              eventData: { stepName: 'remindStep' },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_5',
+              runId: 'wrun_test',
+              eventType: 'hook_received',
+              correlationId: `hook_${CORR_IDS[0]}`,
+              eventData: { token: 'test-token', payload },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_6',
+              runId: 'wrun_test',
+              eventType: 'step_completed',
+              correlationId: `step_${CORR_IDS[2]}`,
+              eventData: { stepName: 'remindStep', result: stepResult },
+              createdAt: new Date(),
+            },
+            {
+              eventId: 'evnt_7',
+              runId: 'wrun_test',
+              eventType: 'wait_created',
+              correlationId: `wait_${CORR_IDS[3]}`,
+              eventData: { resumeAt: secondResumeAt },
+              createdAt: new Date(),
+            },
+          ]);
+
+          const createHook = createCreateHook(ctx);
+          const sleep = createSleep(ctx);
+          const useStep = createUseStep(ctx);
+
+          const { result, error } = await runWithDiscontinuation(
+            ctx,
+            async () => {
+              const hook = createHook<{ value: string }>({
+                token: 'test-token',
+              });
+              const remindStep = useStep('remindStep');
+              const received = createOnce
+                ? hook.then((value) => value.value)
+                : undefined;
+
+              const first = await Promise.race([
+                (received ?? hook.then((value) => value.value)).then(
+                  () => 'hook' as const
+                ),
+                sleep(firstResumeAt).then(() => 'sleep' as const),
+              ]);
+
+              await remindStep();
+
+              const second = await Promise.race([
+                received ?? hook.then((value) => value.value),
+                sleep(secondResumeAt).then(() => 'timeout' as const),
+              ]);
+
+              return { first, second };
+            }
+          );
+
+          expect(error).toBeUndefined();
+          expect(result).toEqual({ first: 'sleep', second: 'delivered' });
+        }
       );
-      const stepResult = await dehydrateStepReturnValue(
-        undefined,
-        'wrun_test',
-        undefined,
-        ops
-      );
-      const firstResumeAt = new Date('2026-05-20T22:16:57.197Z');
-      const secondResumeAt = new Date('2099-01-01');
-
-      const ctx = setupWorkflowContext([
-        {
-          eventId: 'evnt_0',
-          runId: 'wrun_test',
-          eventType: 'hook_created',
-          correlationId: `hook_${CORR_IDS[0]}`,
-          eventData: { token: 'test-token', isWebhook: false },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_1',
-          runId: 'wrun_test',
-          eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[1]}`,
-          eventData: { resumeAt: firstResumeAt },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_2',
-          runId: 'wrun_test',
-          eventType: 'wait_completed',
-          correlationId: `wait_${CORR_IDS[1]}`,
-          eventData: { resumeAt: firstResumeAt },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_3',
-          runId: 'wrun_test',
-          eventType: 'step_created',
-          correlationId: `step_${CORR_IDS[2]}`,
-          eventData: { stepName: 'remindStep' },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_4',
-          runId: 'wrun_test',
-          eventType: 'step_started',
-          correlationId: `step_${CORR_IDS[2]}`,
-          eventData: { stepName: 'remindStep' },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_5',
-          runId: 'wrun_test',
-          eventType: 'hook_received',
-          correlationId: `hook_${CORR_IDS[0]}`,
-          eventData: { token: 'test-token', payload },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_6',
-          runId: 'wrun_test',
-          eventType: 'step_completed',
-          correlationId: `step_${CORR_IDS[2]}`,
-          eventData: { stepName: 'remindStep', result: stepResult },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_7',
-          runId: 'wrun_test',
-          eventType: 'wait_created',
-          correlationId: `wait_${CORR_IDS[3]}`,
-          eventData: { resumeAt: secondResumeAt },
-          createdAt: new Date(),
-        },
-      ]);
-
-      const createHook = createCreateHook(ctx);
-      const sleep = createSleep(ctx);
-      const useStep = createUseStep(ctx);
-
-      const { result, error } = await runWithDiscontinuation(ctx, async () => {
-        const hook = createHook<{ value: string }>({ token: 'test-token' });
-        const remindStep = useStep('remindStep');
-        const received = hook.then((value) => value.value);
-
-        const first = await Promise.race([
-          received.then(() => 'hook' as const),
-          sleep(firstResumeAt).then(() => 'sleep' as const),
-        ]);
-
-        await remindStep();
-
-        const second = await Promise.race([
-          received,
-          sleep(secondResumeAt).then(() => 'timeout' as const),
-        ]);
-
-        return { first, second };
-      });
-
-      expect(error).toBeUndefined();
-      expect(result).toEqual({ first: 'sleep', second: 'delivered' });
-    });
+    }
   });
 
   describe(`hook + incomplete step ${label}`, () => {
