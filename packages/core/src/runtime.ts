@@ -174,6 +174,7 @@ import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
+  mayRunBeforeItsStart,
 } from './runtime/step-executor.js';
 import { handleStepMessage } from './runtime/step-handler.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
@@ -3571,9 +3572,16 @@ export function workflowEntrypoint(
                       // its outcome follows the start. Anything with a
                       // background step, a wait or a step that failed to
                       // serialize commits first, as without turbo.
+                      // A step that allows no retries starts only on a
+                      // durable `step_started` (see `mayRunBeforeItsStart`),
+                      // so a boundary that creates one commits first.
+                      const startsAhead = plan.steps.every((step) =>
+                        mayRunBeforeItsStart(step.stepName)
+                      );
                       const optimisticCreation =
                         turboOptimistic &&
                         mayInline &&
+                        startsAhead &&
                         plan.steps.length > 0 &&
                         plan.failedCount === 0 &&
                         plan.waitCount === 0 &&
@@ -3593,6 +3601,7 @@ export function workflowEntrypoint(
                       const speculativeCreation =
                         boundaryRunAhead !== undefined &&
                         mayInline &&
+                        startsAhead &&
                         writer.supportsBatch &&
                         plan.steps.length > 0 &&
                         plan.failedCount === 0 &&

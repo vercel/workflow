@@ -176,11 +176,12 @@ An out-of-band terminal event has these effects, all of them benign:
 
 - Default: unset
 - Set `0` or `false` to keep inline step bodies waiting for their start to commit, on turbo's first delivery and under run-ahead alike. `WORKFLOW_TURBO` still backgrounds `run_started` and skips the initial load. Use it when step side effects are not idempotent.
+- A step declared with `maxRetries: 0` always waits for its start to commit before its body runs, whatever this is set to: a step that allows no retries is taken not to be idempotent. Steps that allow retries (the default) are taken to survive running again after a lost write.
 - No other value has an effect.
 
 ### `WORKFLOW_RUN_AHEAD_DEPTH`
 
-- Default: `2`
+- Default: `10`
 - Clamp: `0` to `16`
 - Node.js VM engine only, on Worlds that record an in-band write at the time the orchestrator sent with it (world-local does). When no other writer could change what the workflow does next (no hook the workflow waits on, no `AbortController`, no step running elsewhere, no wait due within the invocation), an inline step's outcome reaches the workflow as soon as its body returns, and the next step's creation and body start before that outcome's write commits. Every write still lands in the order the workflow made it.
 - At most this many step outcomes are unconfirmed at once. When a boundary is not eligible, the orchestrator waits for its writes to commit and reads what landed below them before it continues, and runs ahead again at the next eligible boundary.

@@ -137,7 +137,9 @@ export class AppendOnlyWorld {
        */
       beforeCreate?: (
         data: { eventType: string; eventData?: Record<string, unknown> },
-        params: CreateEventParams | undefined
+        params: CreateEventParams | undefined,
+        /** Whether the event is an item of a `createBatch` call. */
+        source?: { batch: boolean }
       ) => void | Promise<void>;
     } = {}
   ) {}
@@ -565,10 +567,14 @@ export class AppendOnlyWorld {
         // The same per-event hook a single create runs, so a test that slows
         // one event type slows it however the runtime sends it.
         for (const item of batch) {
-          await self.options.beforeCreate?.(item.event, {
-            ...params,
-            ...(item.occurredAt ? { occurredAt: item.occurredAt } : {}),
-          });
+          await self.options.beforeCreate?.(
+            item.event,
+            {
+              ...params,
+              ...(item.occurredAt ? { occurredAt: item.occurredAt } : {}),
+            },
+            { batch: true }
+          );
         }
         // A World refuses an oversized batch whole (world-vercel caps it by
         // event count); this one caps it at what the runtime may send.

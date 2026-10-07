@@ -395,7 +395,7 @@ export function getDeploymentMismatchMaxRetries(): number {
 }
 
 /** Default {@link getRunAheadDepth}. */
-export const RUN_AHEAD_DEPTH = 2;
+export const RUN_AHEAD_DEPTH = 10;
 /** Upper bound of {@link getRunAheadDepth}. */
 export const MAX_RUN_AHEAD_DEPTH = 16;
 

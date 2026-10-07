@@ -57,6 +57,29 @@ registerStepFunction('turbo_attributes', async (n: number) => {
   return n * 4;
 });
 
+registerStepFunction(
+  'turbo_once',
+  Object.assign(
+    async (n: number) => {
+      bodies.push({
+        listCalls: currentWorld?.listCalls.length ?? -1,
+        eventTypes: currentWorld?.events.map((e) => e.eventType) ?? [],
+      });
+      const hook = onBody;
+      onBody = undefined;
+      hook?.();
+      return n + 1;
+    },
+    // Allows no retries: not idempotent.
+    { maxRetries: 0 }
+  )
+);
+
+const onceStep = `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_once");
+  async function workflow(n) {
+    return await once(n);
+  }${transform('workflow')}`;
+
 const attributesStep = `const attrs = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_attributes");
   async function workflow(n) {
     return await attrs(n);
@@ -375,6 +398,38 @@ describe.each([
     expect(world.events.filter((e) => e.eventType === 'attr_set')).toHaveLength(
       2
     );
+    expect(world.events.at(-1)?.eventType).toBe('run_completed');
+  });
+
+  // Turbo runs a first step's body before its start commits, unless the
+  // step allows no retries: then the body waits for a durable step_started.
+  it.each([
+    { name: 'with batch writes', noBatch: false },
+    { name: 'on a World without createBatch', noBatch: true },
+  ])('starts a step that allows no retries only after its step_started commits ($name)', async ({
+    noBatch,
+  }) => {
+    // Hold `run_started` until a body runs, or for a second (longer than the
+    // first compile of the workflow): a body that may run ahead of its start
+    // runs while it is held, and this one may not.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+      setTimeout(resolve, 1000);
+    });
+    onBody = () => release();
+    const { world, start } = await setup(onceStep, [1], {
+      fence: true,
+      noBatch,
+      async beforeCreate(data: { eventType: string }) {
+        if (data.eventType === 'run_started') await held;
+      },
+    });
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.eventTypes).toContain('step_started');
     expect(world.events.at(-1)?.eventType).toBe('run_completed');
   });
 });

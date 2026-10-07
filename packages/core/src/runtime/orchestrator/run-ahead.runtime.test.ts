@@ -48,6 +48,33 @@ registerStepFunction('ra_inc', async (n: number) => {
 
 const step = `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc")`;
 
+/** Per `ra_once` body start: whether its own `step_started` had committed. */
+let onceStartDurable: boolean[] = [];
+let onceBodies = 0;
+// A step that allows no retries: not idempotent, so it must not run ahead of
+// its start.
+const once = Object.assign(
+  async (n: number) => {
+    onceBodies++;
+    const world = currentWorld;
+    if (world) {
+      onceStartDurable.push(
+        eventsOf(world, 'step_started').length >= onceBodies
+      );
+    }
+    return n + 1;
+  },
+  { maxRetries: 0 }
+);
+registerStepFunction('ra_once', once);
+
+const onceSequential = `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_once");
+  async function workflow(steps) {
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await once(n);
+    return n;
+  }${registerWorkflow()}`;
+
 const sequential = `const inc = ${step};
   async function workflow(steps) {
     let n = 0;
@@ -161,6 +188,8 @@ async function coldReplay(world: AppendOnlyWorld, code: string) {
 beforeEach(() => {
   unconfirmedAtStart = [];
   bodiesStarted = 0;
+  onceStartDurable = [];
+  onceBodies = 0;
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
   // A step body's base URL comes from here instead of probing the local
   // port, which takes long enough to hide what these tests time.
@@ -250,6 +279,23 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(cold.result).toBe(STEPS);
   });
 
+  it('starts a step that allows no retries only once its step_started committed', async () => {
+    const { world } = await run(onceSequential, [STEPS], {
+      async beforeCreate(data) {
+        await slowOutcomes.beforeCreate(data);
+        if (data.eventType === 'step_started') {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      },
+    });
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(STEPS);
+    expect(onceStartDurable).toHaveLength(STEPS);
+    expect(onceStartDurable.every(Boolean)).toBe(true);
+    expect(eventsOf(world, 'step_started')).toHaveLength(STEPS);
+  });
+
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '1');
     const one = await run(sequential, [STEPS]);
@@ -279,17 +325,17 @@ describe('run-ahead against an append-only World (node engine)', () => {
   // writes' own responses, without reading it, and the retained session takes
   // the corrected log without a replay.
   it('repairs a displaced speculative write without a log read, and keeps the session', async () => {
+    // Shallow enough that the workflow is still running when the displaced
+    // write's commit comes back, so a later pass carries out the repair.
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
     const debug = vi.spyOn(runtimeLogger, 'debug');
     let injected = false;
     const { world, runId } = await run(unobservedHook, [STEPS], {
-      async beforeCreate(data, params) {
+      async beforeCreate(data, _params, source) {
         await slowOutcomes.beforeCreate(data);
-        // A speculative write names its occurredAt; inject below the first.
-        if (
-          !injected &&
-          data.eventType === 'step_completed' &&
-          (params as { occurredAt?: unknown } | undefined)?.occurredAt
-        ) {
+        // An outcome that rides in a batch is a coalesced run-ahead write:
+        // inject below the first.
+        if (!injected && data.eventType === 'step_completed' && source?.batch) {
           injected = true;
           world.appendOutOfBand({
             eventType: 'hook_received',
@@ -335,13 +381,9 @@ describe('run-ahead against an append-only World (node engine)', () => {
     const debug = vi.spyOn(runtimeLogger, 'debug');
     let injected = false;
     const { world, runId } = await run(sequential, [STEPS], {
-      async beforeCreate(data, params) {
+      async beforeCreate(data, _params, source) {
         await slowOutcomes.beforeCreate(data);
-        if (
-          !injected &&
-          data.eventType === 'step_completed' &&
-          (params as { occurredAt?: unknown } | undefined)?.occurredAt
-        ) {
+        if (!injected && data.eventType === 'step_completed' && source?.batch) {
           injected = true;
           world.appendOutOfBand({
             eventType: 'run_cancelled',

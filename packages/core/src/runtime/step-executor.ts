@@ -64,6 +64,20 @@ import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 import { safeWaitUntil } from './wait-until.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
+
+/**
+ * Whether a step's body may start before its `step_started` is durable: on
+ * turbo's optimistic start, and under run-ahead's speculative creation. A
+ * step that allows retries (`maxRetries > 0`, the default) is taken to be
+ * idempotent and to survive running again after a lost write. One declared
+ * with `maxRetries: 0` is not: its body starts only once its start has
+ * committed.
+ */
+export function mayRunBeforeItsStart(stepName: string): boolean {
+  return (
+    (getStepFunction(stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES) > 0
+  );
+}
 export const STEP_STREAM_DRAIN_TIMEOUT_MS = 30_000;
 
 export function getStepStreamDrainTimeoutMs(): number {
@@ -491,7 +505,8 @@ export async function executeStep(
     const optimisticStart =
       params.forceOptimisticStart === true &&
       params.started === undefined &&
-      !isOptimisticInlineStartExplicitlyDisabled();
+      !isOptimisticInlineStartExplicitlyDisabled() &&
+      mayRunBeforeItsStart(stepName);
     span?.setAttributes(
       Attribute.StepStartStrategy(
         params.started
