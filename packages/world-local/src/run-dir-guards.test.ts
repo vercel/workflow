@@ -2,7 +2,11 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearCreatedFilesCache } from './fs.js';
+import {
+  clearCreatedFilesCache,
+  SymlinkedRunDirError,
+  writeJSON,
+} from './fs.js';
 import { createWorld } from './index.js';
 import { createStorage } from './storage.js';
 import { createRun, createStep } from './test-helpers.js';
@@ -128,6 +132,26 @@ describe('run directories', () => {
     await expect(storage.steps.list({ runId })).rejects.toThrow(
       /symlinked run directory/
     );
+    expect((await fs.readdir(outside)).sort()).toEqual(before);
+  });
+
+  it('refuses a symlinked run dir when mkdir fails on a cold cache', async () => {
+    const runId = await seedRun();
+    const outside = await symlinkRunDir('steps', runId);
+    const before = (await fs.readdir(outside)).sort();
+    clearCreatedFilesCache();
+    const runDir = path.join(dataDir, 'steps', runId);
+    const mkdir = fs.mkdir.bind(fs);
+    vi.spyOn(fs, 'mkdir').mockImplementation(async (p, options) => {
+      if (p === runDir) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return mkdir(p, options);
+    });
+
+    await expect(
+      writeJSON(path.join(runDir, `${runId}-step_9.json`), {})
+    ).rejects.toThrow(SymlinkedRunDirError);
     expect((await fs.readdir(outside)).sort()).toEqual(before);
   });
 

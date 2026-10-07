@@ -357,10 +357,28 @@ export async function ensureDir(dirPath: string): Promise<void> {
     }
     // Ignore if already exists
   }
-  if (mkdirError !== undefined) return;
-  // Outside the try, so a refused run directory is not "ignored".
+  if (mkdirError !== undefined) {
+    // The fallback above accepts an existing directory via `stat`, which
+    // follows symlinks, so a symlinked run directory still has to be refused
+    // here. Any other `lstat` failure keeps the historical "ignore" behavior.
+    await assertNotSymlinkedRunDir(resolvedPath).catch((error) => {
+      if (error instanceof SymlinkedRunDirError) throw error;
+    });
+    return;
+  }
   await assertNotSymlinkedRunDir(resolvedPath);
   fsState.createdDirectoriesCache.add(resolvedPath);
+}
+
+/** Thrown by {@link assertNotSymlinkedRunDir}. */
+export class SymlinkedRunDirError extends WorkflowWorldError {
+  constructor(dirPath: string) {
+    super(
+      `Refusing to use symlinked run directory ${dirPath}: ` +
+        `replace it with a real directory.`
+    );
+    this.name = 'SymlinkedRunDirError';
+  }
 }
 
 /**
@@ -381,10 +399,7 @@ export async function assertNotSymlinkedRunDir(dirPath: string): Promise<void> {
     throw error;
   }
   if (stats.isSymbolicLink()) {
-    throw new WorkflowWorldError(
-      `Refusing to write through symlinked run directory ${dirPath}: ` +
-        `replace it with a real directory.`
-    );
+    throw new SymlinkedRunDirError(dirPath);
   }
 }
 
