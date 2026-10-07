@@ -66,8 +66,7 @@ export async function reenqueueActiveRuns(
 /**
  * The `DEBUG` gate, inlined. This is `isWorkflowDebugEnabled()` from
  * `@workflow/utils`, hand-rolled for the same reason `env-config.ts` hand-rolls
- * `globalSingleton()`: this package deliberately carries no workspace
- * dependencies, and the two are equivalent.
+ * `globalSingleton()`: the two are equivalent.
  */
 function isDebugEnabled(): boolean {
   const debug = typeof process !== 'undefined' ? process.env.DEBUG : undefined;

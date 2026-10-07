@@ -40,6 +40,7 @@
     "test": "vitest run src"
   },
   "dependencies": {
+    "@workflow/utils": "workspace:*",
     "ulid": "catalog:",
     "zod": "catalog:"
   },

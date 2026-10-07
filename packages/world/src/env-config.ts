@@ -32,8 +32,7 @@ export interface EnvNumberOptions {
 // bundling: this package is compiled into the host application's server build,
 // which gives one copy of this module per bundler layer, and a per-copy Set
 // would warn once per layer. Hand-rolled rather than `globalSingleton()` from
-// `@workflow/utils` because this package deliberately carries no dependencies;
-// the two are equivalent and the rule accepts both.
+// `@workflow/utils`; the two are equivalent and the rule accepts both.
 const WarnedEnvValuesKey = Symbol.for('@workflow/world//warnedEnvValues/v1');
 const globalStore = globalThis as typeof globalThis &
   Record<symbol, Set<string> | undefined>;

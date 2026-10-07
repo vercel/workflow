@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import { z } from 'zod';
 
 export const zodJsonSchema: z.ZodType<unknown> = z.lazy(() => {
@@ -37,11 +38,20 @@ export const PageInfoSchema = z.compile(
 
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 
-// Shared schema for paginated responses
-export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
-  dataSchema: T
-) =>
-  z.compile(
+// Process-wide schema cache for Workflow SDK paginated responses. List
+// endpoints pass the same module-level data schema on every page; a per-copy
+// WeakMap would compile that object again in each bundler layer that holds
+// it. Reuse is by object identity only. A separate schema object with the
+// same shape, which is what another bundle layer constructs, stays uncached.
+// The map stores schemas only, never page bodies.
+const paginatedResponseSchemas = globalSingleton(
+  '@workflow/world//paginatedResponseSchemas',
+  1,
+  () => new WeakMap<z.ZodTypeAny, z.ZodTypeAny>()
+);
+
+function compilePaginatedResponse<T extends z.ZodTypeAny>(dataSchema: T) {
+  return z.compile(
     z.object({
       data: z.array(dataSchema),
       cursor: z.string().nullable(),
@@ -49,6 +59,20 @@ export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
       pageInfo: PageInfoSchema.optional(),
     })
   );
+}
+
+// Shared schema for paginated responses
+export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
+  dataSchema: T
+) => {
+  const cached = paginatedResponseSchemas.get(dataSchema) as
+    | ReturnType<typeof compilePaginatedResponse<T>>
+    | undefined;
+  if (cached) return cached;
+  const schema = compilePaginatedResponse(dataSchema);
+  paginatedResponseSchemas.set(dataSchema, schema);
+  return schema;
+};
 
 // Inferred type from schema
 export type PaginatedResponse<T> = z.infer<

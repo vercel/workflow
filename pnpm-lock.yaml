@@ -1418,6 +1418,9 @@ importers:
 
   packages/world:
     dependencies:
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       ulid:
         specifier: 'catalog:'
         version: 3.0.1
