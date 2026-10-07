@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS run_streams (
   stream_name TEXT NOT NULL,
   tag TEXT NOT NULL,
   position INTEGER NOT NULL,
-  PRIMARY KEY (run_id, stream_name)
+  PRIMARY KEY (run_id, stream_name, tag)
 );
 
 CREATE TABLE IF NOT EXISTS snapshots (

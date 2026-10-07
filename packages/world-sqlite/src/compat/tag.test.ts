@@ -367,6 +367,71 @@ describe('File tagging', () => {
     await other.close?.();
   });
 
+  it.each([
+    ['vitest-0', 'vitest-1'],
+    ['vitest-1', 'vitest-0'],
+  ])('keeps a run stream registered by two tags listed after clearing %s', async (cleared, kept) => {
+    const { createWorld } = await import('./index.js');
+    const worlds = {
+      'vitest-0': createWorld({ dataDir: testDir, tag: 'vitest-0' }),
+      'vitest-1': createWorld({ dataDir: testDir, tag: 'vitest-1' }),
+    };
+    await worlds['vitest-0'].streams.write('wrun_same', 'strm_same', 'zero');
+    await worlds['vitest-1'].streams.write('wrun_same', 'strm_same', 'one');
+    await worlds['vitest-1'].streams.write('wrun_same', 'strm_two', 'two');
+    expect(await worlds['vitest-0'].streams.list('wrun_same')).toEqual([
+      'strm_same',
+    ]);
+    expect(await worlds['vitest-1'].streams.list('wrun_same')).toEqual([
+      'strm_same',
+      'strm_two',
+    ]);
+
+    await worlds[cleared].clear();
+    expect(await worlds[cleared].streams.list('wrun_same')).toEqual([]);
+    expect(await worlds[kept].streams.list('wrun_same')).toEqual(
+      kept === 'vitest-1' ? ['strm_same', 'strm_two'] : ['strm_same']
+    );
+    const { data } = await worlds[kept].streams.getChunks(
+      'wrun_same',
+      'strm_same'
+    );
+    expect(data.map((chunk) => Buffer.from(chunk.data).toString())).toEqual([
+      kept === 'vitest-1' ? 'one' : 'zero',
+    ]);
+    await worlds['vitest-0'].close?.();
+    await worlds['vitest-1'].close?.();
+  });
+
+  it('copies the untagged stream list on a tagged registration, leaving it unchanged', async () => {
+    const { createWorld } = await import('./index.js');
+    const untagged = createWorld({ dataDir: testDir });
+    const tagged = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+    await untagged.streams.write('wrun_mix', 'strm_a', 'a');
+    await untagged.streams.write('wrun_mix', 'strm_b', 'b');
+    // Already in the untagged list it falls back to: nothing to write.
+    await tagged.streams.write('wrun_mix', 'strm_b', 'b2');
+    expect(await tagged.streams.list('wrun_mix')).toEqual(['strm_a', 'strm_b']);
+    await tagged.streams.write('wrun_mix', 'strm_c', 'c');
+    expect(await tagged.streams.list('wrun_mix')).toEqual([
+      'strm_a',
+      'strm_b',
+      'strm_c',
+    ]);
+    expect(await untagged.streams.list('wrun_mix')).toEqual([
+      'strm_a',
+      'strm_b',
+    ]);
+    await tagged.clear();
+    expect(await tagged.streams.list('wrun_mix')).toEqual(['strm_a', 'strm_b']);
+    expect(await untagged.streams.list('wrun_mix')).toEqual([
+      'strm_a',
+      'strm_b',
+    ]);
+    await untagged.close?.();
+    await tagged.close?.();
+  });
+
   describe('untagged clear()', () => {
     it('can write new entities after clearing cached directories', async () => {
       const { createWorld } = await import('./index.js');

@@ -47,19 +47,33 @@ interface ChunkRow {
 }
 
 /**
+ * A run's stream names, in registration order, as a world with `tag` sees
+ * them: its own list when it has one, otherwise the untagged list (never a
+ * union), like world-local's tagged `streams/runs/<runId>.<tag>.json` with
+ * its untagged fallback.
+ */
+function runStreamNames(db: Db, runId: string, tag: string): string[] {
+  return db
+    .all<{ stream_name: string }>(
+      `SELECT stream_name FROM run_streams
+       WHERE run_id = ? AND tag = (
+         SELECT tag FROM run_streams WHERE run_id = ? AND tag IN (?, '')
+         ORDER BY tag = '' LIMIT 1
+       )
+       ORDER BY position, stream_name`,
+      runId,
+      runId,
+      tag
+    )
+    .map((row) => row.stream_name);
+}
+
+/**
  * Tombstones a run's streams and drops their chunks (zero-retention purge).
  * Runs inside the caller's transaction.
  */
 export function purgeRunStreamData(db: Db, runId: string, tag: string): void {
-  const names = db
-    .all<{ stream_name: string }>(
-      'SELECT stream_name FROM run_streams WHERE run_id = ? AND tag IN (?, ?)',
-      runId,
-      tag,
-      ''
-    )
-    .map((row) => row.stream_name);
-  for (const name of names) {
+  for (const name of runStreamNames(db, runId, tag)) {
     db.run(
       'DELETE FROM stream_chunks WHERE stream_name = ? AND chunk_id != ?',
       name,
@@ -87,15 +101,39 @@ export function createStreamer(db: Db, tag?: string): Streamer {
     assertSafeEntityId('streamName', streamName);
     const key = `${runId}:${streamName}`;
     if (registeredStreams.has(key)) return;
-    db.run(
-      `INSERT INTO run_streams (run_id, stream_name, tag, position)
-       VALUES (?, ?, ?, (SELECT count(*) FROM run_streams WHERE run_id = ?))
-       ON CONFLICT (run_id, stream_name) DO NOTHING`,
-      runId,
-      streamName,
-      tagValue,
-      runId
-    );
+    // Copy-on-write, as world-local writes its tagged list: a tagged world's
+    // first registration copies the untagged list it was reading, then
+    // appends. The untagged list is never modified by a tagged world.
+    db.transaction(() => {
+      if (runStreamNames(db, runId, tagValue).includes(streamName)) return;
+      const ownRows = db.get<{ n: number }>(
+        'SELECT count(*) AS n FROM run_streams WHERE run_id = ? AND tag = ?',
+        runId,
+        tagValue
+      )!.n;
+      if (tagValue !== '' && Number(ownRows) === 0) {
+        db.run(
+          `INSERT INTO run_streams (run_id, stream_name, tag, position)
+           SELECT run_id, stream_name, ?, position FROM run_streams
+           WHERE run_id = ? AND tag = ''`,
+          tagValue,
+          runId
+        );
+      }
+      db.run(
+        `INSERT INTO run_streams (run_id, stream_name, tag, position)
+         VALUES (?, ?, ?, (
+           SELECT coalesce(max(position) + 1, 0) FROM run_streams
+           WHERE run_id = ? AND tag = ?
+         ))
+         ON CONFLICT (run_id, stream_name, tag) DO NOTHING`,
+        runId,
+        streamName,
+        tagValue,
+        runId,
+        tagValue
+      );
+    });
     registeredStreams.add(key);
   }
 
@@ -189,14 +227,7 @@ export function createStreamer(db: Db, tag?: string): Streamer {
 
       async list(runId: string) {
         assertSafeEntityId('runId', runId);
-        return db
-          .all<{ stream_name: string }>(
-            'SELECT stream_name FROM run_streams WHERE run_id = ? AND tag IN (?, ?) ORDER BY position, stream_name',
-            runId,
-            tagValue,
-            ''
-          )
-          .map((row) => row.stream_name);
+        return runStreamNames(db, runId, tagValue);
       },
 
       async getChunks(
