@@ -887,10 +887,15 @@ export async function executeStep(
       });
 
       if (RunExpiredError.is(err)) {
-        stepLogger.info('Workflow run already completed, skipping step', {
+        // The World answered that the run is gone. The delivery acknowledges
+        // without an outcome, so a wrong answer here strands the run: logged
+        // at warn so it shows without DEBUG.
+        stepLogger.warn('Workflow run gone, skipping step', {
           workflowRunId,
           stepId,
+          during: 'body',
           message: err.message,
+          status: err.status,
         });
         return { type: 'gone' };
       }
@@ -1079,10 +1084,15 @@ export async function executeStep(
       );
     } catch (err) {
       if (RunExpiredError.is(err)) {
-        stepLogger.info('Workflow run already completed, skipping step', {
+        // The World answered that the run is gone. The delivery acknowledges
+        // without an outcome, so a wrong answer here strands the run: logged
+        // at warn so it shows without DEBUG.
+        stepLogger.warn('Workflow run gone, skipping step', {
           workflowRunId,
           stepId,
+          during: 'outcome',
           message: err.message,
+          status: err.status,
         });
         return { type: 'gone' };
       }
