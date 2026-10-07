@@ -70,6 +70,12 @@ export function createWorld(config?: APIConfig): World {
       // pages carry `snapshot`, and a stale in-band write gets 412
       // `in-band-superseded`, mapped to `InBandSupersededError` (events.ts).
       inBandFence: true,
+      // The backend stores a single-orchestrator event's `occurredAt` as its
+      // `createdAt` (clamped only for clock skew beyond an hour ahead or a
+      // week behind), on creates and batch items alike, so run-ahead may
+      // hand an outcome to the workflow before its write commits. The
+      // runtime checks every speculative write's stored time anyway.
+      inBandEventTime: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
