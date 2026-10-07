@@ -24,6 +24,7 @@
     "@nestjs/platform-express": "^11.1.27",
     "@workflow/nest": "workspace:*",
     "@workflow/world-postgres": "workspace:*",
+    "@workflow/world-sqlite": "workspace:*",
     "ai": "catalog:ai-sdk-v7",
     "express": "^5.2.1",
     "lodash.chunk": "^4.2.0",

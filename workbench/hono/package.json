@@ -15,6 +15,7 @@
   "devDependencies": {
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@workflow/world-postgres": "workspace:*",
+    "@workflow/world-sqlite": "workspace:*",
     "ai": "catalog:ai-sdk-v7",
     "hono": "^4.12.27",
     "lodash.chunk": "^4.2.0",

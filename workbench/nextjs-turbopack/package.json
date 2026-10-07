@@ -54,6 +54,7 @@
     "@types/react-dom": "^19",
     "@vercel/blob": "2.0.0",
     "@workflow/world-postgres": "workspace:*",
+    "@workflow/world-sqlite": "workspace:*",
     "tailwindcss": "^4",
     "typescript": "catalog:"
   }

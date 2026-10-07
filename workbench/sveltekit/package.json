@@ -19,6 +19,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@types/lodash.chunk": "^4.2.9",
     "@workflow/world-postgres": "workspace:*",
+    "@workflow/world-sqlite": "workspace:*",
     "svelte": "^5.56.4",
     "svelte-check": "^4.7.1",
     "typescript": "^6.0.3",

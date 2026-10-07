@@ -34,7 +34,15 @@ export {
   parseVersion,
 } from './init.js';
 
-export type { DirectHandler } from './queue.js';
+export type { DirectHandler, LocalQueue } from './queue.js';
+/**
+ * The local queue and instrumentation helpers, for worlds that keep
+ * world-local's in-process HTTP queue but store their data elsewhere
+ * (e.g. `@workflow/world-sqlite`).
+ */
+export { createQueue } from './queue.js';
+export { instrumentObject } from './instrumentObject.js';
+export type { Config as LocalWorldConfig } from './config.js';
 
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */

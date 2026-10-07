@@ -826,10 +826,16 @@ export function setupWorld(deploymentUrl: string): void {
     // We must set this explicitly (not discover it) because the data dir
     // may not exist yet when the test starts — the app creates it on first use.
     // Next.js uses .next/workflow-data, all other frameworks use .workflow-data.
+    // withWorkflow() only picks .next/workflow-data when it defaults the target
+    // world itself, so an app built for another local world (e.g.
+    // WORKFLOW_TARGET_WORLD=@workflow/world-sqlite) keeps .workflow-data.
     const appPath = getWorkbenchAppPath();
     const appName = process.env.APP_NAME!;
     const isNextJs = appName.includes('nextjs') || appName.includes('next-');
-    const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
+    const dataDirName =
+      isNextJs && !process.env.WORKFLOW_TARGET_WORLD
+        ? '.next/workflow-data'
+        : '.workflow-data';
     process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
   } else if (process.env.WORKFLOW_VERCEL_ENV) {
     // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
