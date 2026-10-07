@@ -59,6 +59,21 @@ These types have special handling and are explained in detail in the sections be
 - `AbortController`
 - `AbortSignal`
 
+### Typing serializable values
+
+Import the `Serializable` type from `workflow` to type values that cross a workflow or step boundary:
+
+```typescript title="workflows/record-event.ts" lineNumbers
+import type { Serializable } from "workflow";
+
+async function recordEvent(payload: Serializable) {
+  "use step";
+  // ...
+}
+```
+
+`Serializable` is a union of the JSON and built-in types listed above. It doesn't include `Request`, `Float16Array`, or classes with [custom serialization](#custom-class-serialization), so type those values directly.
+
 ## Pass-by-value semantics
 
 **Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.
