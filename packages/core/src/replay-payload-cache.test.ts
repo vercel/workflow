@@ -55,6 +55,208 @@ function makeEvents(payloads: unknown[]): Event[] {
 }
 
 describe('ReplayPayloadCache', () => {
+  it('bounds speculative preparation concurrency while draining the event log', async () => {
+    const gates: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    const preparer: ReplayPayloadPreparer = (value) =>
+      new Promise((resolve) => {
+        active++;
+        peak = Math.max(peak, active);
+        gates.push(() => {
+          active--;
+          resolve({ data: value });
+        });
+      });
+    const cache = new ReplayPayloadCache(undefined, preparer, {
+      concurrency: 2,
+    });
+    const events = Array.from({ length: 9 }, (_, index) => ({
+      ...makeEvents([new Uint8Array(index + 1)])[0],
+      eventId: `evnt_${index}`,
+    }));
+    const warming = cache.prewarm(makeRun(undefined), events);
+    await Promise.resolve();
+    expect(active).toBe(2);
+    for (let index = 0; index < events.length; index++) {
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThan(0));
+      gates.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(active).toBeLessThanOrEqual(2);
+    }
+    await warming;
+    expect(peak).toBe(2);
+  });
+
+  it('starts queued and new demands immediately without starving speculation', async () => {
+    const gates = new Map<number, () => void>();
+    const starts: number[] = [];
+    const preparer: ReplayPayloadPreparer = (value) =>
+      new Promise((resolve) => {
+        const id = (value as Uint8Array)[0];
+        starts.push(id);
+        gates.set(id, () => resolve({ data: value }));
+      });
+    const cache = new ReplayPayloadCache(undefined, preparer, {
+      concurrency: 1,
+    });
+    const first = { ...makeEvents([new Uint8Array([1])])[0], eventId: 'first' };
+    const queued = {
+      ...makeEvents([new Uint8Array([2])])[0],
+      eventId: 'queued',
+    };
+    cache.prepareEvent(first);
+    cache.prepareEvent(queued);
+    await Promise.resolve();
+    expect(starts).toEqual([1]);
+
+    const second = cache.prepareEventPayload(
+      'queued',
+      'result',
+      queued.eventData?.result
+    );
+    expect(
+      cache.prepareEventPayload('queued', 'result', queued.eventData?.result)
+    ).toBe(second);
+    const third = cache.prepareEventPayload(
+      'demand',
+      'result',
+      new Uint8Array([3])
+    );
+    await Promise.resolve();
+    expect(starts).toEqual([1, 2, 3]);
+
+    const later = { ...makeEvents([new Uint8Array([4])])[0], eventId: 'later' };
+    cache.prepareEvent(later);
+    gates.get(1)?.();
+    await vi.waitFor(() => expect(starts).toEqual([1, 2, 3, 4]));
+    for (const id of [2, 3, 4]) gates.get(id)?.();
+    await Promise.all([
+      second,
+      third,
+      cache.prepareEventPayload('later', 'result', later.eventData?.result),
+    ]);
+  });
+
+  it('retains a speculative failure until its ordered consumer observes it', async () => {
+    const failure = new Error('original speculative failure');
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => {
+      if ((value as Uint8Array)[0] === 7 && preparer.mock.calls.length === 1)
+        throw failure;
+      return { data: value };
+    });
+    const cache = new ReplayPayloadCache(undefined, preparer);
+    const [event] = makeEvents([new Uint8Array([7])]);
+    cache.prepareEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let index = 0; index < 4; index++) {
+      await cache.prepareEventPayload(
+        `other_${index}`,
+        'result',
+        new Uint8Array([index])
+      );
+    }
+    await expect(
+      cache.prepareEventPayload(
+        event.eventId,
+        'result',
+        event.eventData?.result
+      )
+    ).rejects.toBe(failure);
+    await expect(
+      cache.prepareEventPayload(
+        event.eventId,
+        'result',
+        event.eventData?.result
+      )
+    ).resolves.toEqual({
+      data: new Uint8Array([7]),
+    });
+    expect(preparer).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([
+    0,
+    -1,
+    1.5,
+    Infinity,
+    NaN,
+  ])('rejects invalid speculative concurrency %s', (concurrency) => {
+    expect(
+      () =>
+        new ReplayPayloadCache(undefined, prepareReplayPayload, { concurrency })
+    ).toThrow(RangeError);
+  });
+
+  it('decrypts a 2000-event log once across three replays above 32 MiB', async () => {
+    const key = await importKey(new Uint8Array(32).fill(7));
+    const payloads = await Promise.all(
+      Array.from({ length: 2000 }, (_, index) =>
+        dehydrateStepReturnValue(
+          { index, text: 'x'.repeat(20 * 1024) },
+          'wrun_cache_test',
+          key
+        )
+      )
+    );
+    const events = payloads.map((payload, index) => ({
+      ...makeEvents([payload])[0],
+      eventId: `evnt_${index}`,
+    }));
+    const preparer = vi.fn<ReplayPayloadPreparer>(prepareReplayPayload);
+    const cache = new ReplayPayloadCache(key, preparer);
+    const decrypt = vi.spyOn(globalThis.crypto.subtle, 'decrypt');
+    try {
+      for (let replay = 0; replay < 3; replay++) {
+        await cache.prewarm(makeRun(undefined), events);
+        for (let index = 0; index < events.length; index++) {
+          const prepared = await cache.prepareEventPayload(
+            events[index].eventId,
+            'result',
+            payloads[index]
+          );
+          const value = deserializePreparedReplayPayload(prepared) as {
+            index: number;
+            text: string;
+          };
+          expect(value.index).toBe(index);
+          expect(value.text.length).toBe(20 * 1024);
+          value.index = -1;
+        }
+      }
+      expect(preparer).toHaveBeenCalledTimes(2000);
+      expect(decrypt).toHaveBeenCalledTimes(2000);
+    } finally {
+      decrypt.mockRestore();
+    }
+  });
+
+  it('retains a single encrypted payload larger than 32 MiB', async () => {
+    const key = await importKey(new Uint8Array(32).fill(7));
+    const serialized = await dehydrateStepReturnValue(
+      'x'.repeat(34 * 1024 * 1024),
+      'wrun_cache_test',
+      key
+    );
+    const preparer = vi.fn<ReplayPayloadPreparer>(prepareReplayPayload);
+    const cache = new ReplayPayloadCache(key, preparer);
+    const first = await cache.prepareEventPayload(
+      'oversize',
+      'result',
+      serialized
+    );
+    const second = await cache.prepareEventPayload(
+      'oversize',
+      'result',
+      serialized
+    );
+    expect(second === first).toBe(true);
+    expect((deserializePreparedReplayPayload(second) as string).length).toBe(
+      34 * 1024 * 1024
+    );
+    expect(preparer).toHaveBeenCalledOnce();
+  });
+
   it('prepares a streamed event as soon as its deferred key resolves', async () => {
     const payload = new Uint8Array([1]);
     let resolveKey!: (key: undefined) => void;
