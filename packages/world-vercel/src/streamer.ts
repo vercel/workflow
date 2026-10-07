@@ -39,6 +39,7 @@ import {
 import {
   type APIConfig,
   getHttpConfig,
+  getHttpUrl,
   type HttpConfig,
   makeRequest,
 } from './utils.js';
@@ -272,11 +273,17 @@ export async function closeStreamSessionOverHttp(
   await response.text();
 }
 
-/** Creates the HTTP-backed streamer that talks to workflow-server. */
+/**
+ * Creates the streamer that talks to workflow-server. Stream writes upgrade to
+ * a WebSocket session unless `WORKFLOW_STREAMS_TRANSPORT=http`, or the World
+ * routes through the `projectConfig` proxy (`api.vercel.com`), an HTTP-only
+ * gateway that does not forward the upgrade. Without `createWriteSession`,
+ * core writes every chunk over HTTP.
+ */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     streams: {
-      ...(isWsStreamsTransportEnabled()
+      ...(isWsStreamsTransportEnabled() && !getHttpUrl(config).usingProxy
         ? {
             createWriteSession(runId, name, { writerId }) {
               return createStreamWriteSession(

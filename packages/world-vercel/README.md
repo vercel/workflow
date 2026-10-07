@@ -40,10 +40,14 @@ CLI uses).
 
 ## Stream writer sockets
 
-With `WORKFLOW_STREAMS_TRANSPORT=ws`, releasing a writer after its writes drain
-retires its socket without closing the shared stream. Reacquiring that handle
-continues over HTTP; a new step's writer can upgrade independently. Released
-writers do not keep idle WebSockets or reconnect them in the background.
+Stream writes upgrade to a WebSocket by default; set
+`WORKFLOW_STREAMS_TRANSPORT=http` to keep them on HTTP. A writer's first two
+write groups go over HTTP while the socket opens in the background, and a writer
+whose upgrade the server declines stays on HTTP.
+
+Releasing a writer after its writes drain retires its socket without closing
+the shared stream. Reacquiring that handle continues over HTTP; a new step's
+writer can upgrade independently. Released writers do not keep idle WebSockets or reconnect them in the background.
 
 Step-local `getWritable()` handles release their transport at step completion,
 not between acquire/write/release cycles within the step. External
