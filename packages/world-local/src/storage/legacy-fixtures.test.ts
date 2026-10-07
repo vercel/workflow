@@ -147,6 +147,8 @@ describe.each(versions)('published %s flat-store compatibility', (version) => {
       (await readdir(path.join(dir, 'steps'))).filter((f) =>
         f.endsWith('.json')
       ).length;
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect(await convertLayout(dir, 'run-scoped')).toMatchObject({
       completed: true,
       conflicts: [],
@@ -171,6 +173,8 @@ describe.each(versions)('published %s flat-store compatibility', (version) => {
         })
       )
     ).toEqual(paginated.eventsListPages[2]);
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect(await convertLayout(dir, 'flat')).toMatchObject({
       completed: true,
       conflicts: [],
@@ -203,6 +207,8 @@ describe.each(versions)('published %s flat-store compatibility', (version) => {
     await expect(
       createStorage(dir).events.list({ runId: golden.runs[0].runId })
     ).rejects.toMatchObject({ code: 'CONVERSION_IN_PROGRESS' });
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect(await convertLayout(dir, 'run-scoped')).toMatchObject({
       completed: true,
       conflicts: [],
@@ -215,6 +221,8 @@ describe.each(versions)('published %s flat-store compatibility', (version) => {
     const { dir, golden } = await fixture(version);
     const run = golden.runs.find((r) => r.scenario === 'in-flight');
     if (!run) throw new Error('Missing in-flight fixture');
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect((await convertLayout(dir, 'run-scoped')).completed).toBe(true);
     await resetStoreLayoutState();
     const storage = createStorage(dir);

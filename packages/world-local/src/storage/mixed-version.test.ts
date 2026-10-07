@@ -97,6 +97,8 @@ describe('published 5.0.2 writer with current reader', () => {
       'run_completed',
     ]);
     expect(await history(current, runId)).toEqual(complete);
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect(await convertLayout(dir, 'run-scoped')).toMatchObject({
       completed: true,
       conflicts: [],
@@ -104,6 +106,8 @@ describe('published 5.0.2 writer with current reader', () => {
     });
     await resetStoreLayoutState();
     expect(await history(createStorage(dir), runId)).toEqual(complete);
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect(await convertLayout(dir, 'flat')).toMatchObject({
       completed: true,
       conflicts: [],
@@ -115,11 +119,15 @@ describe('published 5.0.2 writer with current reader', () => {
   it('detects and explicitly absorbs flat writes from an old writer after migration', async () => {
     const { dir, old } = await setup();
     await begin(old);
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect((await convertLayout(dir, 'run-scoped')).completed).toBe(true);
     const runId = await begin(old);
     const strays = await findStrayFlatFiles(dir);
     expect(strays).toHaveLength(5);
     expect(strays.every((file) => file.includes(runId))).toBe(true);
+    // Stop using the store, as the conversion requires.
+    await resetStoreLayoutState();
     expect(await convertLayout(dir, 'run-scoped')).toMatchObject({
       completed: true,
       conflicts: [],

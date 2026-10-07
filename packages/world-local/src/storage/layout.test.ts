@@ -17,12 +17,15 @@ import {
 } from '../test-helpers.js';
 import {
   convertLayout,
+  convertLayoutInProcess,
   DataDirLayoutError,
   findStrayFlatFiles,
+  gateOnStoreLayout,
   initializeLayoutMarker,
   LAYOUT_MARKER_FILE,
   resetStoreLayoutState,
   resolveStoreLayout,
+  storeLayoutOf,
 } from './layout.js';
 
 /** Relative path -> sha256 of every file under `dir`, skipping `.layout/`. */
@@ -540,6 +543,286 @@ describe('migrate', () => {
     expect(report).toMatchObject({ completed: true, moved: 1 });
     expect(await findStrayFlatFiles(dataDir)).toEqual([]);
     expect(await exists(path.join(dataDir, 'events', runId, stray))).toBe(true);
+  });
+});
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+describe('exclusion', () => {
+  it('the offline convertLayout refuses while this process has the store open', async () => {
+    await makeFlatStore(dataDir);
+    const runId = await seedRun(dataDir);
+    // No reset: this process is still registered as a holder.
+    const before = await hashTree(dataDir);
+    const report = await convertLayout(dataDir, 'run-scoped');
+    expect(report.completed).toBe(false);
+    expect(report.moved).toBe(0);
+    expect(report.liveHolders).toEqual([
+      expect.objectContaining({ pid: process.pid, self: true }),
+    ]);
+    expect(await readMarkerState(dataDir)).toBeNull();
+    expect(await hashTree(dataDir)).toEqual(before);
+    // The pinned flat view still sees the whole history.
+    expect((await snapshot(dataDir, runId)).events).toHaveLength(5);
+  });
+
+  it('the offline convertLayout refuses while an operation of this process is in flight', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const entered = deferred();
+    const leave = deferred();
+    const gated = gateOnStoreLayout(dataDir, {
+      async op() {
+        entered.resolve();
+        await leave.promise;
+      },
+    });
+    const op = gated.op();
+    await entered.promise;
+    await expect(convertLayout(dataDir, 'run-scoped')).rejects.toMatchObject({
+      code: 'STORE_IN_USE',
+    });
+    leave.resolve();
+    await op;
+  });
+
+  it('an operation called before an in-process conversion finishes before any file moves; one called after sees the new layout', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    // Store not opened in this process yet: the first operation is still
+    // resolving the layout when the conversion is requested.
+    await resetStoreLayoutState();
+    const order: string[] = [];
+    const leave = deferred();
+    const drainWait = deferred();
+    const moving = deferred();
+    const gated = gateOnStoreLayout(dataDir, {
+      async early() {
+        order.push(`early:${storeLayoutOf(dataDir)}`);
+        await leave.promise;
+        order.push('early-done');
+      },
+      async late() {
+        order.push(`late:${storeLayoutOf(dataDir)}`);
+      },
+    });
+    const early = gated.early();
+    const conversion = convertLayoutInProcess(dataDir, 'run-scoped', {
+      onDrainWait: () => drainWait.resolve(),
+      onBeforeMove: () => {
+        order.push('move');
+        moving.resolve();
+      },
+    });
+    const late = gated.late();
+    // `early` is blocked until released, so whichever boundary the
+    // conversion reaches first decides: it must wait for `early`, not move.
+    const first = await Promise.race([
+      drainWait.promise.then(() => 'drain-wait'),
+      moving.promise.then(() => 'move'),
+    ]);
+    expect(first).toBe('drain-wait');
+    leave.resolve();
+    await Promise.all([early, conversion, late]);
+    expect(order).toEqual([
+      'early:flat',
+      'early-done',
+      'move',
+      'late:run-scoped',
+    ]);
+  });
+
+  it('a storage object drops caches built for the old layout after an in-process conversion', async () => {
+    await makeFlatStore(dataDir);
+    const runId = await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const storage = createStorage(dataDir);
+    const list = () =>
+      storage.events.list({
+        runId,
+        pagination: { limit: 1000, sortOrder: 'asc' },
+        resolveData: 'all',
+      });
+    const before = (await list()).data;
+    expect(
+      (await convertLayoutInProcess(dataDir, 'run-scoped')).completed
+    ).toBe(true);
+    expect((await list()).data).toEqual(before);
+    await updateRun(storage, runId, 'run_completed', {
+      output: new Uint8Array([9]),
+    });
+    expect((await list()).data).toHaveLength(before.length + 1);
+  });
+
+  it('in-process conversions of one process run one at a time', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const [a, b] = await Promise.all([
+      convertLayoutInProcess(dataDir, 'run-scoped'),
+      convertLayoutInProcess(dataDir, 'run-scoped'),
+    ]);
+    expect(a.completed).toBe(true);
+    expect(b).toMatchObject({ completed: true, moved: 0 });
+  });
+
+  it('clear() called before an in-process conversion finishes before any file moves', async () => {
+    await makeFlatStore(dataDir);
+    const kept = await seedRun(dataDir);
+    await seedRun(dataDir, 'vitest-0');
+    const world = createWorld({
+      dataDir,
+      tag: 'vitest-0',
+      recoverActiveRuns: false,
+    });
+    const order: string[] = [];
+    const drainWait = deferred();
+    const moving = deferred();
+    const clear = world.clear().then(() => order.push('cleared'));
+    const conversion = convertLayoutInProcess(dataDir, 'run-scoped', {
+      onDrainWait: () => drainWait.resolve(),
+      onBeforeMove: () => moving.resolve(),
+    }).then((report) => {
+      order.push('converted');
+      return report;
+    });
+    const first = await Promise.race([
+      drainWait.promise.then(() => 'drain-wait'),
+      moving.promise.then(() => 'move'),
+    ]);
+    expect(first).toBe('drain-wait');
+    expect((await conversion).completed).toBe(true);
+    await clear;
+    expect(order).toEqual(['cleared', 'converted']);
+    expect(
+      Object.keys(await hashTree(path.join(dataDir, 'events'))).filter((p) =>
+        p.includes('vitest-0')
+      )
+    ).toEqual([]);
+    expect((await snapshot(dataDir, kept)).events).toHaveLength(5);
+  });
+
+  it('clear() waits for an in-process conversion and runs against the new layout', async () => {
+    await makeFlatStore(dataDir);
+    const kept = await seedRun(dataDir);
+    const cleared = await seedRun(dataDir, 'vitest-0');
+    const world = createWorld({
+      dataDir,
+      tag: 'vitest-0',
+      recoverActiveRuns: false,
+    });
+    const order: string[] = [];
+    const moving = deferred();
+    const resume = deferred();
+    const conversion = convertLayoutInProcess(dataDir, 'run-scoped', {
+      onBeforeMove: async () => {
+        moving.resolve();
+        await resume.promise;
+      },
+    }).then((report) => {
+      order.push('converted');
+      return report;
+    });
+    await moving.promise;
+    const clear = world.clear().then(() => order.push('cleared'));
+    resume.resolve();
+    expect((await conversion).completed).toBe(true);
+    await clear;
+    expect(order).toEqual(['converted', 'cleared']);
+    expect(await exists(path.join(dataDir, 'events', cleared))).toBe(false);
+    expect((await snapshot(dataDir, kept)).events).toHaveLength(5);
+  });
+});
+
+describe('conversion lock', () => {
+  async function staleLock() {
+    const lock = path.join(dataDir, '.layout', 'convert.lock');
+    await fs.mkdir(lock, { recursive: true });
+    await fs.writeFile(
+      path.join(lock, 'owner.json'),
+      JSON.stringify({ pid: deadPid(), hostname: os.hostname(), token: 'dead' })
+    );
+    return lock;
+  }
+
+  it('two processes recovering the same stale lock never both enter', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const lock = await staleLock();
+    const observed = deferred();
+    const resume = deferred();
+    // B sees the dead owner, then pauses before acting on it.
+    const b = convertLayout(dataDir, 'run-scoped', {
+      onStaleLockObserved: async () => {
+        observed.resolve();
+        await resume.promise;
+      },
+      onBeforeMove: () => {
+        throw new Error('B entered the critical section');
+      },
+    }).catch((e) => e);
+    await observed.promise;
+    let bResult: unknown;
+    let ownerDuringA: unknown;
+    // A recovers the lock and, while holding it, lets B continue.
+    const a = await convertLayout(dataDir, 'run-scoped', {
+      onBeforeMove: async () => {
+        resume.resolve();
+        bResult = await b;
+        ownerDuringA = JSON.parse(
+          await fs.readFile(path.join(lock, 'owner.json'), 'utf8')
+        ).pid;
+      },
+    });
+    expect(a.completed).toBe(true);
+    expect(bResult).toMatchObject({ code: 'CONVERSION_BUSY' });
+    expect(ownerDuringA).toBe(process.pid);
+    expect(await exists(lock)).toBe(false);
+    expect(await exists(`${lock}.break`)).toBe(false);
+  });
+
+  it('release never removes a lock that another owner holds', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const lock = path.join(dataDir, '.layout', 'convert.lock');
+    const other = JSON.stringify({
+      pid: process.ppid,
+      hostname: os.hostname(),
+      token: 'other',
+    });
+    await convertLayout(dataDir, 'run-scoped', {
+      onBeforeMove: async () => {
+        // As if this lock had been broken and taken over by another owner.
+        await fs.writeFile(path.join(lock, 'owner.json'), other);
+      },
+    });
+    expect(await fs.readFile(path.join(lock, 'owner.json'), 'utf8')).toBe(
+      other
+    );
+  });
+
+  it('a recovery left behind by a dead process is reported, not guessed at', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const lock = await staleLock();
+    await fs.mkdir(`${lock}.break`);
+    const before = await hashTree(dataDir);
+    await expect(convertLayout(dataDir, 'run-scoped')).rejects.toMatchObject({
+      code: 'CONVERSION_BUSY',
+      message: expect.stringContaining('convert.lock.break'),
+    });
+    expect(await hashTree(dataDir)).toEqual(before);
+    expect(await exists(lock)).toBe(true);
   });
 });
 

@@ -199,8 +199,12 @@ interface BasedirState {
   opening?: Promise<StoreLayout>;
   /** A conversion started by this process (`start()` with migrateLayout). */
   converting?: Promise<unknown>;
+  /** Storage operations admitted and not yet finished. */
   inFlight: number;
-  drained?: () => void;
+  /** Resolved when `inFlight` drops to zero. */
+  drainWaiters: (() => void)[];
+  /** Bumped by every in-process conversion; storage caches keyed to the old layout are dropped when it changes. */
+  epoch: number;
 }
 
 const layoutState = globalSingleton(
@@ -217,7 +221,7 @@ function stateFor(basedir: string): BasedirState {
   const key = path.resolve(basedir);
   let state = layoutState.dirs.get(key);
   if (!state) {
-    state = { pinned: false, inFlight: 0 };
+    state = { pinned: false, inFlight: 0, drainWaiters: [], epoch: 0 };
     layoutState.dirs.set(key, state);
   }
   return state;
@@ -336,7 +340,12 @@ export async function resolveStoreLayout(
   while (state.converting) {
     await state.converting.catch(() => {});
   }
-  if (state.pinned && state.layout) return state.layout;
+  return openOnce(basedir);
+}
+
+function openOnce(basedir: string): Promise<StoreLayout> {
+  const state = stateFor(basedir);
+  if (state.pinned && state.layout) return Promise.resolve(state.layout);
   if (!state.opening) {
     state.opening = openStore(basedir).finally(() => {
       state.opening = undefined;
@@ -377,36 +386,67 @@ export async function resetStoreLayoutState(): Promise<void> {
 }
 
 /**
- * Wrap every async method of a storage object so it first awaits
- * {@link resolveStoreLayout}, and is counted in flight so a conversion
- * started by this process waits for it. Methods listed in `syncMethods` are
- * passed through untouched.
+ * Run one storage operation against `basedir`, excluded from in-process
+ * conversions: it is admitted only while no conversion of this process is
+ * pending, and a conversion starts moving files only after every admitted
+ * operation finished.
+ *
+ * Admission is atomic with respect to the conversion gate: the check of
+ * `state.converting` and the `inFlight` increment run in the same
+ * synchronous step, and {@link convertLayoutInProcess} reads `inFlight` and
+ * closes the gate in one synchronous step too. So an operation is either
+ * counted before the conversion looks, or sees the gate closed and waits.
+ * Opening the store happens after admission, so an operation never runs
+ * against a layout resolved before a conversion that it was not counted in.
+ */
+export async function withStoreOperation<T>(
+  basedir: string,
+  fn: (layout: StoreLayout) => Promise<T>
+): Promise<T> {
+  const state = stateFor(basedir);
+  while (state.converting) {
+    await state.converting.catch(() => {});
+  }
+  state.inFlight++;
+  try {
+    return await fn(await openOnce(basedir));
+  } finally {
+    state.inFlight--;
+    if (state.inFlight === 0) {
+      for (const resolve of state.drainWaiters.splice(0)) resolve();
+    }
+  }
+}
+
+/**
+ * Wrap every async method of a storage object in {@link withStoreOperation}.
+ * Methods listed in `syncMethods` are passed through untouched. When a
+ * conversion of this process changed the layout since the object last ran,
+ * its `clearCache()` (if any) runs first, so no path cached for the old
+ * layout is reused.
  */
 export function gateOnStoreLayout<T extends object>(
   basedir: string,
   target: T,
   syncMethods: readonly string[] = []
 ): T {
+  const state = stateFor(basedir);
+  let seenEpoch = state.epoch;
+  const clearCache = (target as { clearCache?: unknown }).clearCache;
   const gated: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(target)) {
     if (typeof value !== 'function' || syncMethods.includes(name)) {
       gated[name] = value;
       continue;
     }
-    gated[name] = async (...args: unknown[]) => {
-      const state = stateFor(basedir);
-      await resolveStoreLayout(basedir);
-      state.inFlight++;
-      try {
-        return await (value as (...a: unknown[]) => unknown).apply(
-          target,
-          args
-        );
-      } finally {
-        state.inFlight--;
-        if (state.inFlight === 0) state.drained?.();
-      }
-    };
+    gated[name] = (...args: unknown[]) =>
+      withStoreOperation(basedir, async () => {
+        if (seenEpoch !== state.epoch) {
+          seenEpoch = state.epoch;
+          if (typeof clearCache === 'function') clearCache.call(target);
+        }
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      });
   }
   return gated as T;
 }
@@ -467,47 +507,125 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+interface LockOwner {
+  pid?: unknown;
+  hostname?: unknown;
+  token?: unknown;
+}
+
+async function readLockOwner(lockDir: string): Promise<LockOwner | null> {
+  try {
+    return JSON.parse(
+      await fs.readFile(path.join(lockDir, 'owner.json'), 'utf8')
+    );
+  } catch {
+    // Not written yet, unreadable, or the lock is gone.
+    return null;
+  }
+}
+
+function isDeadLocalOwner(owner: LockOwner | null): boolean {
+  return (
+    owner !== null &&
+    owner.hostname === os.hostname() &&
+    typeof owner.pid === 'number' &&
+    owner.pid > 0 &&
+    !isProcessAlive(owner.pid)
+  );
+}
+
+function sameOwner(a: LockOwner | null, b: LockOwner | null): boolean {
+  return (
+    a !== null &&
+    b !== null &&
+    a.pid === b.pid &&
+    a.hostname === b.hostname &&
+    a.token === b.token
+  );
+}
+
+interface LockHooks {
+  /** Test hook: a stale lock was observed, before anything is done about it. */
+  onStaleLockObserved?: () => Promise<void> | void;
+}
+
 /**
  * Exclusive conversion lock: a directory created with `mkdir` (atomic),
- * holding its owner's pid. A lock whose owner is gone (same host, `ESRCH`)
- * is broken; one held by a live or unknown owner refuses.
+ * holding its owner's pid, hostname and a random token.
+ *
+ * Release removes the lock only while `owner.json` still carries this
+ * acquisition's token.
+ *
+ * A lock whose owner is gone (same host, `ESRCH`) is broken, but never on
+ * the strength of an earlier read: the breaker first takes a second
+ * exclusive directory, `convert.lock.break`, then re-reads `owner.json`, and
+ * removes the lock only if it is still the very owner (same pid, hostname
+ * and token) it saw dead. Two processes that both saw the same dead owner
+ * are serialized by `convert.lock.break`; the second one re-reads, finds the
+ * first one's live lock, and refuses. A breaker that dies while holding
+ * `convert.lock.break` leaves it behind; that is not recovered
+ * automatically (its window is a read and an `rm`), and the error names the
+ * directory to remove.
  */
 async function acquireConversionLock(
-  basedir: string
+  basedir: string,
+  hooks: LockHooks = {}
 ): Promise<() => Promise<void>> {
   const lockDir = path.join(basedir, LAYOUT_META_DIR, 'convert.lock');
+  const breakDir = `${lockDir}.break`;
   await fs.mkdir(path.dirname(lockDir), { recursive: true });
+  const mine: LockOwner = {
+    pid: process.pid,
+    hostname: os.hostname(),
+    token: randomBytes(8).toString('hex'),
+  };
+  const busy = (detail: string) =>
+    new DataDirLayoutError(
+      'CONVERSION_BUSY',
+      `Another layout conversion holds ${lockDir}${detail}. Wait for it to ` +
+        `finish; if no conversion is running, remove that directory.`
+    );
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       await fs.mkdir(lockDir);
       await fs.writeFile(
         path.join(lockDir, 'owner.json'),
-        JSON.stringify({ pid: process.pid, hostname: os.hostname() })
+        JSON.stringify(mine)
       );
-      return () => fs.rm(lockDir, { recursive: true, force: true });
+      return async () => {
+        if (sameOwner(await readLockOwner(lockDir), mine)) {
+          await fs.rm(lockDir, { recursive: true, force: true });
+        }
+      };
     } catch (error) {
       if (!isErrno(error, 'EEXIST')) throw error;
     }
-    let owner: { pid?: unknown; hostname?: unknown } = {};
+    const observed = await readLockOwner(lockDir);
+    if (!isDeadLocalOwner(observed)) throw busy('');
+    await hooks.onStaleLockObserved?.();
     try {
-      owner = JSON.parse(
-        await fs.readFile(path.join(lockDir, 'owner.json'), 'utf8')
+      await fs.mkdir(breakDir);
+    } catch (error) {
+      if (!isErrno(error, 'EEXIST')) throw error;
+      throw new DataDirLayoutError(
+        'CONVERSION_BUSY',
+        `Another process is recovering the stale conversion lock ${lockDir} ` +
+          `(${breakDir} exists). Retry; if no conversion is running, remove ` +
+          `both directories.`
       );
-    } catch {
-      // Owner file not written yet or unreadable: treat as held.
     }
-    const stale =
-      owner.hostname === os.hostname() &&
-      typeof owner.pid === 'number' &&
-      !isProcessAlive(owner.pid);
-    if (!stale) break;
-    await fs.rm(lockDir, { recursive: true, force: true });
+    try {
+      const current = await readLockOwner(lockDir);
+      if (!sameOwner(current, observed) || !isDeadLocalOwner(current)) {
+        // Someone else recovered it first, and may hold it now.
+        throw busy('');
+      }
+      await fs.rm(lockDir, { recursive: true, force: true });
+    } finally {
+      await fs.rm(breakDir, { recursive: true, force: true });
+    }
   }
-  throw new DataDirLayoutError(
-    'CONVERSION_BUSY',
-    `Another layout conversion holds ${lockDir}. Wait for it to finish; if ` +
-      `no conversion is running, remove that directory.`
-  );
+  throw busy('');
 }
 
 export interface LayoutIssue {
@@ -528,8 +646,8 @@ export interface LayoutConversionReport {
   quarantined: number;
   /** Source files modified within the last minute: a hint that an older writer may still be running. */
   recentlyModified: number;
-  /** Other processes of this package that have the store open. Non-empty means nothing was done. */
-  liveHolders: { pid: number; hostname: string; file: string }[];
+  /** Processes of this package that have the store open, this one included when it does. Non-empty means nothing was done. */
+  liveHolders: { pid: number; hostname: string; file: string; self?: true }[];
   /** The marker now records `target`. */
   completed: boolean;
 }
@@ -764,11 +882,13 @@ async function flattenFiles(
   }
 }
 
-export interface ConvertLayoutOptions {
+export interface ConvertLayoutOptions extends LockHooks {
   /** Move files that cannot be placed into `.layout/quarantine/` so the conversion can complete. */
   quarantine?: boolean;
   /** Test hook: runs after the transitional marker is published and holders were checked, before any file moves. */
   onBeforeMove?: () => Promise<void> | void;
+  /** Test hook: an in-process conversion found admitted operations and is waiting for them to finish. */
+  onDrainWait?: () => void;
 }
 
 /**
@@ -788,8 +908,29 @@ export async function convertLayout(
   target: StoreLayout,
   options: ConvertLayoutOptions = {}
 ): Promise<LayoutConversionReport> {
+  // Offline API: this process's own registration counts like any other, so
+  // converting a store this process has open is refused, not done under its
+  // pinned layout. Owner-side conversion goes through
+  // {@link convertLayoutInProcess}, which drains and re-opens.
+  const state = stateFor(basedir);
+  if (state.converting || state.inFlight > 0) {
+    throw new DataDirLayoutError(
+      'STORE_IN_USE',
+      `${path.resolve(basedir)} is in use by this process; ` +
+        `convert it with migrateLayout in start(), or from a process that ` +
+        `has not opened it.`
+    );
+  }
+  return convertLayoutImpl(basedir, target, options, null);
+}
+
+async function convertLayoutImpl(
+  basedir: string,
+  target: StoreLayout,
+  options: ConvertLayoutOptions,
+  ownHolder: string | null
+): Promise<LayoutConversionReport> {
   const resolved = path.resolve(basedir);
-  const state = stateFor(resolved);
   const report: LayoutConversionReport = {
     target,
     moved: 0,
@@ -800,7 +941,7 @@ export async function convertLayout(
     liveHolders: [],
     completed: false,
   };
-  const release = await acquireConversionLock(resolved);
+  const release = await acquireConversionLock(resolved, options);
   try {
     const previous = await readMarker(resolved);
     const transitional: MarkerState =
@@ -820,11 +961,15 @@ export async function convertLayout(
     await publishMarker(resolved, transitional);
     // After publishing: any process that registered before this point is
     // listed here, and any that registers after it sees the marker.
-    report.liveHolders = (await liveHolders(resolved, state.holder)).map(
+    const selfHolder = stateFor(resolved).holder;
+    report.liveHolders = (await liveHolders(resolved, ownHolder)).map(
       ({ pid, hostname, file }) => ({
         pid,
         hostname,
         file: path.relative(resolved, file),
+        ...(selfHolder && path.resolve(file) === path.resolve(selfHolder)
+          ? { self: true as const }
+          : {}),
       })
     );
     if (report.liveHolders.length > 0) {
@@ -854,9 +999,11 @@ export async function convertLayout(
 
 /**
  * Convert from inside a process that has the store open (`start()` with
- * `migrateLayout`). Storage calls of this process wait for it and those in
- * flight finish first; afterwards the process re-opens the store in the new
- * layout.
+ * `migrateLayout`). Conversions of this process run one at a time. Each one
+ * closes this process's storage gate, waits for every admitted operation to
+ * finish ({@link withStoreOperation}), converts, then drops the pinned
+ * layout and bumps the epoch so storage objects drop caches built for the
+ * old layout; operations that waited re-open the store in the new layout.
  */
 export async function convertLayoutInProcess(
   basedir: string,
@@ -864,25 +1011,37 @@ export async function convertLayoutInProcess(
   options: ConvertLayoutOptions = {}
 ): Promise<LayoutConversionReport> {
   const state = stateFor(basedir);
+  while (state.converting) {
+    await state.converting.catch(() => {});
+  }
+  // From here to `state.converting = run` is one synchronous step: the
+  // async body runs up to its first await, which is after reading inFlight.
   const run = (async () => {
     if (state.inFlight > 0) {
-      await new Promise<void>((resolve) => {
-        state.drained = resolve;
-      });
-      state.drained = undefined;
+      const drained = new Promise<void>((resolve) =>
+        state.drainWaiters.push(resolve)
+      );
+      options.onDrainWait?.();
+      await drained;
     }
     try {
-      return await convertLayout(basedir, target, options);
+      return await convertLayoutImpl(
+        basedir,
+        target,
+        options,
+        state.holder ?? null
+      );
     } finally {
       state.pinned = false;
       state.layout = undefined;
+      state.epoch++;
     }
   })();
   state.converting = run;
   try {
     return await run;
   } finally {
-    state.converting = undefined;
+    if (state.converting === run) state.converting = undefined;
   }
 }
 
@@ -895,11 +1054,13 @@ export function describeConversion(
   const where = path.resolve(basedir);
   if (report.liveHolders.length > 0) {
     lines.push(
-      `Refused to convert ${where}: ${report.liveHolders.length} other ` +
+      `Refused to convert ${where}: ${report.liveHolders.length} ` +
         `process(es) have it open. Stop them and retry:`
     );
     for (const h of report.liveHolders) {
-      lines.push(`  pid ${h.pid} on ${h.hostname} (${h.file})`);
+      lines.push(
+        `  pid ${h.pid} on ${h.hostname} (${h.file})${h.self ? ' (this process)' : ''}`
+      );
     }
     return lines.join('\n');
   }

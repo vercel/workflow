@@ -57,9 +57,14 @@ npx -p @workflow/world-local workflow-local-layout migrate <dataDir>
 
 or start the owning process with `migrateLayout: true` (or
 `WORKFLOW_LOCAL_MIGRATE_LAYOUT=1`). Conversion takes an exclusive lock and
-refuses, without changing anything, while another process of this package
-has the data directory open; processes of older releases cannot be detected,
-so they must be stopped first. Files are renamed, never overwritten. While
+refuses, without changing anything, while any process of this package has
+the data directory open (the calling one included, for the programmatic
+`convertLayout()`; `migrateLayout` instead drains the owner's own storage
+calls first and reopens in the new layout). Processes of older releases
+cannot be detected, so they must be stopped first. A lock left by a
+conversion whose process is gone is recovered automatically; if
+`.layout/convert.lock.break` is left behind by a process that died while
+recovering it, the command names it and it must be removed by hand. Files are renamed, never overwritten. While
 it runs, and after an interruption, `layout.json` records `migrating` and
 processes refuse to open the data directory until the same command is run
 again. A file that cannot be placed (a different file already at the
