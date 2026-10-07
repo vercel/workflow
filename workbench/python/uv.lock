@@ -601,32 +601,44 @@ wheels = [
 [[package]]
 name = "vercel-headers"
 version = "0.7.2"
-source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-headers&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/0c/241e47d351413c108f0b411df087feeb15cf32f422000414ce24d3791537/vercel_headers-0.7.2.tar.gz", hash = "sha256:f5255da014032b357a3f18769bd19ff675b0ee3e4fc355c6bbd574dfc674222d", size = 6148, upload-time = "2026-09-08T17:09:14.589Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/64/12d53f70253dfd00f1a394bc930b5d55bad84ac17c9fc77b5ca0525ccd18/vercel_headers-0.7.2-py3-none-any.whl", hash = "sha256:26dcb0016b5c553e638385e532cb8557f071e247b46f2575d5737e48718dc8c6", size = 3922, upload-time = "2026-09-08T17:09:13.585Z" },
+]
 
 [[package]]
 name = "vercel-internal-core"
 version = "0.1.3"
-source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-internal-core&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/05/44/e853147e40a6da9beb28a01d6145c061929f87155d8c74f22d57907f90d3/vercel_internal_core-0.1.3.tar.gz", hash = "sha256:5268fbd42da6fd999d4e001016ef89a8a48172d2a763bc2878880fc909917c0a", size = 18800, upload-time = "2026-09-08T17:09:37.332Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/42/461ab3d2e4ae14356857c74e9c00b2f395275cf67f207ffb9c2dd086346a/vercel_internal_core-0.1.3-py3-none-any.whl", hash = "sha256:726c2ed71f47f7fef2fe6b489f31b51f452521f368b37a5596808a82f74cc523", size = 22687, upload-time = "2026-09-08T17:09:36.271Z" },
+]
 
 [[package]]
 name = "vercel-oidc"
 version = "0.8.1"
-source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-oidc&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
     { name = "vercel-headers" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/96/e8ca9616c4fd0d140dcfe6d23722d9402ad33b13a123281037470d44ad3e/vercel_oidc-0.8.1.tar.gz", hash = "sha256:2cbcaf7d94b87c25e9772bc4aa3a7e25d2b11d639a6818b0905abe95728946c9", size = 16119, upload-time = "2026-09-08T17:09:54.267Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/bd/884e9715b434e620bd5f78b99ef55261b658b98bd62e436d6e510acfc6a2/vercel_oidc-0.8.1-py3-none-any.whl", hash = "sha256:292752426d2f59e254299df46c45122d77d2935bad7bca63df47f7d744c29296", size = 15997, upload-time = "2026-09-08T17:09:53.21Z" },
+]
 
 [[package]]
 name = "vercel-queue"
 version = "0.8.1"
-source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-queue&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx", extra = ["http2"] },
@@ -635,6 +647,10 @@ dependencies = [
     { name = "vercel-headers" },
     { name = "vercel-internal-core" },
     { name = "vercel-oidc" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5b/c0/114fac6e1156d522831523c1490ba76a03f41b1897c143abab09093f47e4/vercel_queue-0.8.1.tar.gz", hash = "sha256:0d62a140b8aff61e46844c3ce9b0859c7f4ce456d75f8bc1b588b1b56728c3b8", size = 82330, upload-time = "2026-09-08T17:10:53.055Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/3f/dce609372b6761e0554abdd626917ad0a34236c241c5d17b3db1bc180591/vercel_queue-0.8.1-py3-none-any.whl", hash = "sha256:9c7a74dfe19dc96be2c52579946cb9895b9e5c9e1ef1205d93a186e868896577", size = 97632, upload-time = "2026-09-08T17:10:51.936Z" },
 ]
 
 [[package]]
