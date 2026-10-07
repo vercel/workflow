@@ -1350,7 +1350,9 @@ async function createWorkflowSessionInner(
     rebase: WorkflowSessionRebase | undefined
   ): Event[] | undefined => {
     const indexById = new Map<string, number>();
-    nextEvents.forEach((event, index) => indexById.set(event.eventId, index));
+    for (const [index, event] of nextEvents.entries()) {
+      indexById.set(event.eventId, index);
+    }
     const consumedIds = new Set<string>();
     let last = -1;
     for (const event of eventsConsumer.events) {
