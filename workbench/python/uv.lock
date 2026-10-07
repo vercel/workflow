@@ -601,12 +601,12 @@ wheels = [
 [[package]]
 name = "vercel-headers"
 version = "0.7.2"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-headers&branch=main#cc65153ae8417f27ca9569470ef1cb0904ad0735" }
+source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-headers&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
 
 [[package]]
 name = "vercel-internal-core"
 version = "0.1.3"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-internal-core&branch=main#cc65153ae8417f27ca9569470ef1cb0904ad0735" }
+source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-internal-core&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -616,7 +616,7 @@ dependencies = [
 [[package]]
 name = "vercel-oidc"
 version = "0.8.1"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-oidc&branch=main#cc65153ae8417f27ca9569470ef1cb0904ad0735" }
+source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-oidc&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx" },
@@ -626,7 +626,7 @@ dependencies = [
 [[package]]
 name = "vercel-queue"
 version = "0.8.1"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-queue&branch=main#cc65153ae8417f27ca9569470ef1cb0904ad0735" }
+source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-queue&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx", extra = ["http2"] },
@@ -640,7 +640,7 @@ dependencies = [
 [[package]]
 name = "vercel-workflow"
 version = "0.10.0"
-source = { git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-workflow&branch=main#cc65153ae8417f27ca9569470ef1cb0904ad0735" }
+source = { git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-workflow&branch=rui%2Flocal-world-per-run-dirs-on-cc65153#c570e74b251e8e1e04cad821575c3b44354b9348" }
 dependencies = [
     { name = "anyio" },
     { name = "cbor2" },
@@ -666,5 +666,5 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "uvicorn", specifier = ">=0.30" },
-    { name = "vercel-workflow", git = "https://github.com/vercel/vercel-py?subdirectory=src%2Fvercel-workflow&branch=main" },
+    { name = "vercel-workflow", git = "https://github.com/ruiconti/vercel-py?subdirectory=src%2Fvercel-workflow&branch=rui%2Flocal-world-per-run-dirs-on-cc65153" },
 ]
