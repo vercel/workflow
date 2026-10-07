@@ -167,10 +167,17 @@ export class BufferedEventWriter implements EventWriteSession {
    * sync is confirmed in the background; a run that already exists means
    * another writer got there first, and fails the writer as superseded.
    */
+  /** Creating its run, before anything committed: the log is known empty. */
+  get fresh() {
+    return this.freshSession && this.committed === 0;
+  }
+  private freshSession = false;
+
   startFresh() {
     if (!this.resync) throw new Error('Event writer has no catch-up stream');
     if (this.queued !== undefined)
       throw new Error('A fresh session must precede the first write');
+    this.freshSession = true;
     this.queued = this.committed = 0;
     const connecting = this.resync().then((catchUp) => {
       if (catchUp.after !== 0 || catchUp.head !== 0 || catchUp.events.length)

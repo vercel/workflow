@@ -53,6 +53,7 @@ export function createEventWriteSession(
             body: Uint8Array
           ) => Promise<unknown[]>,
           affinity: () => ownerAffinity(runId),
+          fresh: () => writer?.fresh ?? false,
         }
       : undefined;
   // Handle rejection immediately even when snapshot loading fails before a write.

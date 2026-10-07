@@ -26,6 +26,7 @@ import { channel } from 'node:diagnostics_channel';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowWorldError } from '@workflow/errors';
 import { debugLog, globalSingleton } from '@workflow/utils';
+import { decode as decodeCbor } from 'cbor-x';
 import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
 import {
@@ -91,6 +92,9 @@ export interface EventsyncCatchUpOptions<E> {
   decode(body: Uint8Array): Promise<E[]>;
   /** The affinity this owner was invoked under, verified by the server. */
   affinity?(): string | undefined;
+  /** The owner is creating this run: its log is known to be empty, so a
+   * pre-opened socket is assigned by the `run_created` frame itself. */
+  fresh?(): boolean;
 }
 
 interface PendingRequest {
@@ -111,6 +115,8 @@ interface Connection {
   generation: number;
   /** Set once `synced` arrives on an eventsync connection; taken at most once. */
   catchUp?: EventsyncCatchUp & { taken?: boolean };
+  /** Added to the first request's meta: an implicit attach (`run_created`). */
+  attach?: Record<string, unknown>;
 }
 
 /** Reserved reqId the server replies under when a frame was too malformed to
@@ -222,7 +228,11 @@ class WsEventsTransport {
       );
 
     const reqId = conn.nextReqId++;
-    const frame = buildFrame(reqId);
+    let frame = buildFrame(reqId);
+    if (conn.attach) {
+      frame = withMeta(frame, { attach: conn.attach });
+      conn.attach = undefined;
+    }
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -485,6 +495,7 @@ class WsEventsTransport {
         let conn: Connection;
         let pooled: WebSocket | undefined;
         let attach: Uint8Array | undefined;
+        let implicit: Record<string, unknown> | undefined;
         let syncChain: Promise<void> = Promise.resolve();
         let syncing:
           | {
@@ -520,7 +531,16 @@ class WsEventsTransport {
               : undefined;
           pooled = unassigned ? takePooledSocket(unassigned.url) : undefined;
           if (unassigned) fillPool(unassigned.url, this.getHeaders);
-          if (pooled && unassigned)
+          // A run this owner is creating is assigned by its run_created frame;
+          // anything else attaches explicitly and waits for its catch-up.
+          implicit =
+            pooled &&
+            unassigned &&
+            after === 0 &&
+            this.catchUpOptions?.fresh?.()
+              ? { runId: unassigned.runId }
+              : undefined;
+          if (pooled && unassigned && !implicit)
             attach = encodeFrame(
               {
                 reqId: 0,
@@ -571,12 +591,15 @@ class WsEventsTransport {
                   if (
                     typeof head !== 'number' ||
                     head < after ||
-                    events.length !== head - after
+                    events.length !== head - after ||
+                    (implicit && head !== 0)
                   )
                     throw new WsTransportError(
                       'Invalid eventsync catch-up stream',
                       { permanent: true }
                     );
+                  // An implicit attach already holds its (empty) catch-up.
+                  if (implicit) return;
                   conn.catchUp = {
                     after,
                     head,
@@ -622,7 +645,10 @@ class WsEventsTransport {
           }
         );
 
+        let adopted = false;
         const adopt = () => {
+          if (adopted) return;
+          adopted = true;
           mark('readyMs');
           publishTiming('completed');
           this.connection = conn;
@@ -764,6 +790,19 @@ class WsEventsTransport {
           mark('upgradeMs');
           onOpen();
           if (attach && !this.closed) ws.send(attach);
+          if (implicit && !this.closed) {
+            // Usable at once: the log is empty, the server holds frames until
+            // its session is ready, and its `synced head 0` is checked when
+            // it arrives (see `syncing`).
+            conn.attach = implicit;
+            conn.catchUp = {
+              after: 0,
+              head: 0,
+              events: [],
+              generation: conn.generation,
+            };
+            adopt();
+          }
         }
       })();
     });
@@ -997,6 +1036,13 @@ export function resetWsEventsTransportsForTest(): void {
     transport.close('test reset');
   }
   wsState.transports.clear();
+  for (const pool of wsState.pool.values())
+    for (const entry of pool.splice(0)) {
+      entry.drop();
+      entry.ws.terminate();
+    }
+  wsState.pool.clear();
+  wsState.poolOpening.clear();
   wsState.loggedWsProxyFallback = false;
   wsState.loggedWsInUse = false;
 }
@@ -1035,6 +1081,20 @@ function unassignedEventsyncUrl(
 }
 
 type PooledSocket = { ws: WebSocket; drop(): void };
+
+/** Re-encode a frame with extra meta fields. */
+function withMeta(frame: Uint8Array, extra: Record<string, unknown>) {
+  const length = new DataView(
+    frame.buffer,
+    frame.byteOffset,
+    frame.byteLength
+  ).getUint32(0, false);
+  const meta = decodeCbor(frame.subarray(4, 4 + length)) as Record<
+    string,
+    unknown
+  >;
+  return encodeFrame({ ...meta, ...extra }, frame.subarray(4 + length));
+}
 
 function takePooledSocket(url: string): WebSocket | undefined {
   const pool = wsState.pool.get(url);

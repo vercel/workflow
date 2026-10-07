@@ -16,6 +16,7 @@
 import { channel } from 'node:diagnostics_channel';
 import type { CreateEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
+import { ulid } from 'ulid';
 import {
   afterEach,
   beforeAll,
@@ -781,6 +782,82 @@ describe('owner event writer', () => {
       expect(
         sockets.slice(before).map((socket) => new URL(socket.url).pathname)
       ).toEqual(['/api/websockets/v1/experimental_eventsync']);
+    } finally {
+      await first.dispose();
+      await second?.dispose();
+      delete process.env.WORKFLOW_EVENTSYNC_POOL;
+      if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    }
+  });
+
+  it('assigns a pre-opened socket to a run being created with run_created itself, pipelining later events', async () => {
+    const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
+    process.env.WORKFLOW_EVENTSYNC_POOL = '1';
+    const storage = createStorage({ token: 'test-token' });
+    const created = `wrun_${ulid()}`;
+    const first = storage.events.createWriteSession!('wrun_first');
+    let second: ReturnType<
+      NonNullable<typeof storage.events.createWriteSession>
+    >;
+    const metaOf = (raw: Uint8Array) => {
+      const length = new DataView(
+        raw.buffer,
+        raw.byteOffset,
+        raw.byteLength
+      ).getUint32(0, false);
+      return decode(raw.subarray(4, 4 + length)) as Record<string, unknown>;
+    };
+    try {
+      const unassigned = (socket: { url: string }) =>
+        new URL(socket.url).pathname ===
+        '/api/websockets/v1/experimental_eventsync';
+      for (let i = 0; i < 20 && sockets.length < 2; i++) await tick();
+      const direct = sockets.find((socket) => !unassigned(socket))!;
+      const [pooled] = sockets.filter(unassigned);
+      pooled.open();
+      direct.open();
+      const loaded = first.catchUp!();
+      await tick();
+      catchUp(direct, 0, 0);
+      await loaded;
+      second = storage.events.createWriteSession!(created);
+      second.startFresh!();
+      await second.stage!(
+        {
+          eventType: 'run_created',
+          specVersion: 6,
+          eventData: {
+            deploymentId: 'dpl',
+            workflowName: 'wf',
+            input: Uint8Array.of(1),
+          },
+        } as unknown as CreateEventRequest,
+        { eventCount: 0, resolveData: 'none' }
+      );
+      await second.stage!(
+        { eventType: 'run_started', specVersion: 6 } as CreateEventRequest,
+        { eventCount: 1, resolveData: 'none' }
+      );
+      for (let i = 0; i < 20 && pooled.sent.length < 2; i++) await tick();
+      // No attach frame and no wait for synced: run_created assigns the
+      // socket and run_started follows it at once.
+      const metas = pooled.sent.map(metaOf);
+      expect(metas).toHaveLength(2);
+      expect(metas[0]).toMatchObject({
+        type: 'event',
+        attach: { runId: created },
+        event: expect.objectContaining({ eventType: 'run_created' }),
+      });
+      expect(metas[1]).not.toHaveProperty('attach');
+      expect(metas[1]).toMatchObject({
+        event: expect.objectContaining({ eventType: 'run_started' }),
+      });
+      // The server's empty catch-up is accepted when it arrives.
+      catchUp(pooled, 0, 0);
+      await tick();
+      expect(pooled.readyState).toBe(1);
     } finally {
       await first.dispose();
       await second?.dispose();
