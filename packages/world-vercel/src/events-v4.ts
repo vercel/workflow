@@ -500,73 +500,63 @@ export const VercelEventWireSchema = z.compile(
     })
 );
 
-const CreateEventV4BodyBaseSchema = z.compile(
+const CreateEventV4BodyBaseSchema = z.object({
+  event: VercelEventWireSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.transform(deserializeStep).optional(),
+  hook: HookSchema.optional(),
+  wait: WaitSchema.optional(),
+  stepCreated: z.literal(true).optional(),
+  maxEvents: z.number().int().positive().optional(),
+  // Single-orchestrator in-band writes: the skipped-slot report in
+  // `events` could not be completed within the backend's request budget.
+  reportIncomplete: z.boolean().optional(),
+  // Positions the backend allocated for this write (single-orchestrator
+  // runs). Not declared on `EventResult`; passed through under this name.
+  allocated: z.number().int().nonnegative().optional(),
+});
+
+const CreateEventV4PageSchema = z.union([
   z.object({
-    event: VercelEventWireSchema,
-    run: WorkflowRunSchema.optional(),
-    step: StepWireSchema.transform(deserializeStep).optional(),
-    hook: HookSchema.optional(),
-    wait: WaitSchema.optional(),
-    stepCreated: z.literal(true).optional(),
-    maxEvents: z.number().int().positive().optional(),
-    // Single-orchestrator in-band writes: the skipped-slot report in
-    // `events` could not be completed within the backend's request budget.
-    reportIncomplete: z.boolean().optional(),
-    // Positions the backend allocated for this write (single-orchestrator
-    // runs). Not declared on `EventResult`; passed through under this name.
-    allocated: z.number().int().nonnegative().optional(),
-  })
-);
+    events: z.array(VercelEventWireSchema),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+  }),
+  // This schema is always intersected with CreateEventV4BodyBaseSchema.
+  // Keep it non-strict so the base response fields remain valid here.
+  z.object({
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
+  }),
+]);
 
-const CreateEventV4PageSchema = z.compile(
-  z.union([
-    z.object({
-      events: z.array(VercelEventWireSchema),
-      cursor: z.string().nullable(),
-      hasMore: z.boolean(),
-    }),
-    // This schema is always intersected with CreateEventV4BodyBaseSchema.
-    // Keep it non-strict so the base response fields remain valid here.
-    z.object({
-      events: z.undefined().optional(),
-      cursor: z.undefined().optional(),
-      hasMore: z.undefined().optional(),
-    }),
-  ])
-);
-
-const CreateEventV4BodySchema = z.compile(
-  CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema)
+const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
+  CreateEventV4PageSchema
 );
 
 const CreateEventV4BodySchemas: {
   [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
 } = {
-  run_created: z.compile(
-    CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema,
-    }).and(CreateEventV4PageSchema)
-  ),
-  run_started: z.compile(
-    CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
-    }).and(CreateEventV4PageSchema)
-  ),
+  run_created: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema,
+  }).and(CreateEventV4PageSchema),
+  run_started: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+  }).and(CreateEventV4PageSchema),
   // A single-orchestrator run keeps no step entity, so its `step_started`
   // response carries none. When one is present (an older run), it is a
   // started step and must say when it started.
-  step_started: z.compile(
-    CreateEventV4BodyBaseSchema.extend({
-      step: StepWireSchema.extend({
-        startedAt: z.coerce.date(),
-      })
-        .transform((step) => ({
-          ...deserializeStep(step),
-          startedAt: step.startedAt,
-        }))
-        .optional(),
-    }).and(CreateEventV4PageSchema)
-  ),
+  step_started: CreateEventV4BodyBaseSchema.extend({
+    step: StepWireSchema.extend({
+      startedAt: z.coerce.date(),
+    })
+      .transform((step) => ({
+        ...deserializeStep(step),
+        startedAt: step.startedAt,
+      }))
+      .optional(),
+  }).and(CreateEventV4PageSchema),
   run_completed: CreateEventV4BodySchema,
   run_failed: CreateEventV4BodySchema,
   run_cancelled: CreateEventV4BodySchema,
@@ -1160,6 +1150,46 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   return decodeCreateEventResponse(response, input.eventType);
 }
 
+// Workflow SDK schema cache for v4 create-event responses. Every consumer of
+// @workflow/world-vercel uses it.
+//
+// One compiled schema per event type, per module copy. Several event types
+// share a base schema, and the refinement still differs, so the cache key is
+// the event type. A compiled schema closes over this copy's Zod objects.
+// The map stores schemas only, never response bodies or request data.
+// per-copy-ok: each bundler layer compiles an event type once, on first decode.
+const createEventResponseSchemas = new Map<
+  EventType,
+  z.ZodType<EventResult & { event: Event }>
+>();
+
+/** Uncompiled response schema. The cached schema is `z.compile` of this. */
+export function createEventResponseSchema<T extends EventType>(
+  eventType: T
+): z.ZodType<EventResult<T> & { event: Event }> {
+  return CreateEventV4BodySchemas[eventType].refine(
+    ({ event }) =>
+      event.eventType === eventType ||
+      (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+    { path: ['event', 'eventType'] }
+  );
+}
+
+export function getCreateEventResponseSchema<T extends EventType>(
+  eventType: T
+): z.ZodType<EventResult<T> & { event: Event }> {
+  const cached = createEventResponseSchemas.get(eventType) as
+    | z.ZodType<EventResult<T> & { event: Event }>
+    | undefined;
+  if (cached) return cached;
+
+  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
+    createEventResponseSchema(eventType)
+  );
+  createEventResponseSchemas.set(eventType, schema);
+  return schema;
+}
+
 /** Takes `FrameResponseLike` rather than `Response` because the WS branch has
  *  none to hand over; it synthesizes one. A real `Response` satisfies the
  *  interface, so the HTTP callers are unaffected. */
@@ -1182,14 +1212,7 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
-    CreateEventV4BodySchemas[eventType].refine(
-      ({ event }) =>
-        event.eventType === eventType ||
-        (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
-      { path: ['event', 'eventType'] }
-    )
-  );
+  const schema = getCreateEventResponseSchema(eventType);
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);

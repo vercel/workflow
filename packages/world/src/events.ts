@@ -48,15 +48,13 @@ export const EventTypeSchema = z.compile(
 );
 export type EventType = z.infer<typeof EventTypeSchema>;
 
-const RunEventTypeSchema = z.compile(
-  EventTypeSchema.extract([
-    'run_created',
-    'run_started',
-    'run_completed',
-    'run_failed',
-    'run_cancelled',
-  ] as const)
-);
+const RunEventTypeSchema = EventTypeSchema.extract([
+  'run_created',
+  'run_started',
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+] as const);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 export const RUN_EVENT_TYPES = RunEventTypeSchema.options;
 
@@ -80,15 +78,13 @@ export function isTerminalRunEventType(
   return TERMINAL_RUN_EVENT_TYPES.includes(eventType as TerminalRunEventType);
 }
 
-const StepEventTypeSchema = z.compile(
-  EventTypeSchema.extract([
-    'step_created',
-    'step_completed',
-    'step_failed',
-    'step_retrying',
-    'step_started',
-  ] as const)
-);
+const StepEventTypeSchema = EventTypeSchema.extract([
+  'step_created',
+  'step_completed',
+  'step_failed',
+  'step_retrying',
+  'step_started',
+] as const);
 export type StepEventType = z.infer<typeof StepEventTypeSchema>;
 export const STEP_EVENT_TYPES = StepEventTypeSchema.options;
 
@@ -96,9 +92,10 @@ export function isStepEventType(eventType: string): eventType is StepEventType {
   return STEP_EVENT_TYPES.includes(eventType as StepEventType);
 }
 
-const TerminalStepEventTypeSchema = z.compile(
-  EventTypeSchema.extract(['step_completed', 'step_failed'] as const)
-);
+const TerminalStepEventTypeSchema = EventTypeSchema.extract([
+  'step_completed',
+  'step_failed',
+] as const);
 export type TerminalStepEventType = z.infer<typeof TerminalStepEventTypeSchema>;
 export const TERMINAL_STEP_EVENT_TYPES = TerminalStepEventTypeSchema.options;
 
@@ -108,13 +105,11 @@ export function isTerminalStepEventType(
   return TERMINAL_STEP_EVENT_TYPES.includes(eventType as TerminalStepEventType);
 }
 
-const HookLifecycleEventTypeSchema = z.compile(
-  EventTypeSchema.extract([
-    'hook_created',
-    'hook_received',
-    'hook_disposed',
-  ] as const)
-);
+const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
+  'hook_created',
+  'hook_received',
+  'hook_disposed',
+] as const);
 export type HookLifecycleEventType = z.infer<
   typeof HookLifecycleEventTypeSchema
 >;
@@ -128,9 +123,10 @@ export function isHookLifecycleEventType(
   );
 }
 
-const HookEventRequiringExistenceTypeSchema = z.compile(
-  EventTypeSchema.extract(['hook_disposed', 'hook_received'] as const)
-);
+const HookEventRequiringExistenceTypeSchema = EventTypeSchema.extract([
+  'hook_disposed',
+  'hook_received',
+] as const);
 export type HookEventRequiringExistenceType = z.infer<
   typeof HookEventRequiringExistenceTypeSchema
 >;
@@ -145,9 +141,10 @@ export function isHookEventRequiringExistence(
   );
 }
 
-const WaitEventTypeSchema = z.compile(
-  EventTypeSchema.extract(['wait_created', 'wait_completed'] as const)
-);
+const WaitEventTypeSchema = EventTypeSchema.extract([
+  'wait_created',
+  'wait_completed',
+] as const);
 export type WaitEventType = z.infer<typeof WaitEventTypeSchema>;
 export const WAIT_EVENT_TYPES = WaitEventTypeSchema.options;
 
@@ -155,13 +152,11 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
 }
 
-const ChildEntityCreationEventTypeSchema = z.compile(
-  EventTypeSchema.extract([
-    'step_created',
-    'hook_created',
-    'wait_created',
-  ] as const)
-);
+const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
+  'step_created',
+  'hook_created',
+  'wait_created',
+] as const);
 export type ChildEntityCreationEventType = z.infer<
   typeof ChildEntityCreationEventTypeSchema
 >;
@@ -266,63 +261,55 @@ const stepLatencyTelemetryFields = {
 };
 
 /** Why a step attempt started; see `step_started.eventData.startReason`. */
-export const StepStartReasonSchema = z.compile(
-  z.enum(['first', 'retry', 'redelivery'])
-);
+export const StepStartReasonSchema = z.enum(['first', 'retry', 'redelivery']);
 export type StepStartReason = z.infer<typeof StepStartReasonSchema>;
 
-const StepCompletedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('step_completed'),
-    correlationId: z.string(),
-    eventData: z.object({
-      stepName: z.string().optional(),
-      // Carried so a backend that keys payload refs by workflow name can build
-      // the key without an extra run lookup on this hot per-step write.
-      // Optional: older runtimes omit it and the backend falls back to a read.
-      workflowName: z.string().optional(),
-      result: SerializedDataSchema,
-      ...stepLatencyTelemetryFields,
-    }),
-  })
-);
+const StepCompletedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_completed'),
+  correlationId: z.string(),
+  eventData: z.object({
+    stepName: z.string().optional(),
+    // Carried so a backend that keys payload refs by workflow name can build
+    // the key without an extra run lookup on this hot per-step write.
+    // Optional: older runtimes omit it and the backend falls back to a read.
+    workflowName: z.string().optional(),
+    result: SerializedDataSchema,
+    ...stepLatencyTelemetryFields,
+  }),
+});
 
-const StepFailedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('step_failed'),
-    correlationId: z.string(),
-    eventData: z.object({
-      stepName: z.string().optional(),
-      // The thrown value, serialized via the workflow serialization pipeline.
-      // Can be any JavaScript value (string, number, object, Error, etc.)
-      error: SerializedDataSchema,
-      /** The attempt that failed (spec >= 9). */
-      attempt: z.number().int().positive().optional(),
-      ...stepLatencyTelemetryFields,
-    }),
-  })
-);
+const StepFailedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_failed'),
+  correlationId: z.string(),
+  eventData: z.object({
+    stepName: z.string().optional(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
+    /** The attempt that failed (spec >= 9). */
+    attempt: z.number().int().positive().optional(),
+    ...stepLatencyTelemetryFields,
+  }),
+});
 
 /**
  * Event created when a step fails and will be retried.
  * Sets the step status back to 'pending' and records the error.
  * The error is stored in step.error for debugging.
  */
-const StepRetryingEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('step_retrying'),
-    correlationId: z.string(),
-    eventData: z.object({
-      stepName: z.string().optional(),
-      // The thrown value, serialized via the workflow serialization pipeline.
-      // Can be any JavaScript value (string, number, object, Error, etc.)
-      error: SerializedDataSchema,
-      retryAfter: z.coerce.date().optional(),
-      /** The attempt that failed (spec >= 9). */
-      attempt: z.number().int().positive().optional(),
-    }),
-  })
-);
+const StepRetryingEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_retrying'),
+  correlationId: z.string(),
+  eventData: z.object({
+    stepName: z.string().optional(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
+    retryAfter: z.coerce.date().optional(),
+    /** The attempt that failed (spec >= 9). */
+    attempt: z.number().int().positive().optional(),
+  }),
+});
 
 /**
  * Event created when a step begins executing.
@@ -337,77 +324,73 @@ const StepRetryingEventSchema = z.compile(
  * it. This mirrors the resilient `run_started` start path above. When `input`
  * is absent the World requires a prior `step_created` (the legacy contract).
  */
-const StepStartedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('step_started'),
-    correlationId: z.string(),
-    eventData: z
-      .object({
-        stepName: z.string().optional(),
-        attempt: z.number().optional(),
-        /**
-         * Why this attempt started (spec >= 9): `first` for the step's first
-         * attempt, `retry` for an attempt after a `step_retrying`, and
-         * `redelivery` for an attempt started because an earlier one ended
-         * without an outcome (its invocation died or stalled past its queue
-         * lease). The share of `redelivery` starts is the platform-caused
-         * re-execution rate.
-         */
-        startReason: StepStartReasonSchema.optional(),
-        // Carried on the lazy-start path (where `input` is present) so the
-        // backend can build the payload ref key without re-reading the run.
-        workflowName: z.string().optional(),
-        // Lazy-start: the dehydrated step input, present only when this
-        // step_started is also responsible for creating the step.
-        input: SerializedDataSchema.optional(),
-        // Inline step ownership: the queue message ID of the invocation whose
-        // handler is executing this step's body inline. Stamped on the lazy
-        // step_started (and re-stamped on an owner-recovery bare start) so
-        // that a wake replay can tell "this attempt is in flight in a live
-        // invocation" apart from "this attempt died with its process": the
-        // owner's queue message doubles as the liveness lease (a crash means
-        // the queue redelivers that same messageId, which is allowed to
-        // re-execute). Ownership derives from the step's LATEST step_started:
-        // an unstamped bare start (a retry attempt driven by a queued step
-        // message) clears it. Absent on eager steps and from older runtimes.
-        // Requires the queue's messageId to be stable across redeliveries of
-        // one message (see the Queue.createQueueHandler meta contract).
-        ownerMessageId: z.string().optional(),
-      })
-      .optional(),
-  })
-);
+const StepStartedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_started'),
+  correlationId: z.string(),
+  eventData: z
+    .object({
+      stepName: z.string().optional(),
+      attempt: z.number().optional(),
+      /**
+       * Why this attempt started (spec >= 9): `first` for the step's first
+       * attempt, `retry` for an attempt after a `step_retrying`, and
+       * `redelivery` for an attempt started because an earlier one ended
+       * without an outcome (its invocation died or stalled past its queue
+       * lease). The share of `redelivery` starts is the platform-caused
+       * re-execution rate.
+       */
+      startReason: StepStartReasonSchema.optional(),
+      // Carried on the lazy-start path (where `input` is present) so the
+      // backend can build the payload ref key without re-reading the run.
+      workflowName: z.string().optional(),
+      // Lazy-start: the dehydrated step input, present only when this
+      // step_started is also responsible for creating the step.
+      input: SerializedDataSchema.optional(),
+      // Inline step ownership: the queue message ID of the invocation whose
+      // handler is executing this step's body inline. Stamped on the lazy
+      // step_started (and re-stamped on an owner-recovery bare start) so
+      // that a wake replay can tell "this attempt is in flight in a live
+      // invocation" apart from "this attempt died with its process": the
+      // owner's queue message doubles as the liveness lease (a crash means
+      // the queue redelivers that same messageId, which is allowed to
+      // re-execute). Ownership derives from the step's LATEST step_started:
+      // an unstamped bare start (a retry attempt driven by a queued step
+      // message) clears it. Absent on eager steps and from older runtimes.
+      // Requires the queue's messageId to be stable across redeliveries of
+      // one message (see the Queue.createQueueHandler meta contract).
+      ownerMessageId: z.string().optional(),
+    })
+    .optional(),
+});
 
 /**
  * Event created when a step is first invoked. The World implementation
  * atomically creates both the event and the step entity.
  */
-const StepCreatedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('step_created'),
-    correlationId: z.string(),
-    eventData: z.object({
-      stepName: z.string(),
-      workflowName: z.string().optional(),
-      input: SerializedDataSchema,
-      /**
-       * The step's execution mode, fixed at creation (spec >= 9). `true`: the
-       * orchestrator invocation that wrote this event may run the body in its
-       * own process, and a retry of that invocation may run it again. `false`
-       * (or absent): the step was handed to the queue, and only its queue
-       * message's invocation ever runs the body.
-       */
-      inline: z.boolean().optional(),
-      /**
-       * Queue message id of the orchestrator delivery that wrote this event
-       * (spec >= 9). A background step is enqueued again only by a
-       * redelivery of this same message, and only while the step has no
-       * `step_started`.
-       */
-      creatorMessageId: z.string().optional(),
-    }),
-  })
-);
+const StepCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_created'),
+  correlationId: z.string(),
+  eventData: z.object({
+    stepName: z.string(),
+    workflowName: z.string().optional(),
+    input: SerializedDataSchema,
+    /**
+     * The step's execution mode, fixed at creation (spec >= 9). `true`: the
+     * orchestrator invocation that wrote this event may run the body in its
+     * own process, and a retry of that invocation may run it again. `false`
+     * (or absent): the step was handed to the queue, and only its queue
+     * message's invocation ever runs the body.
+     */
+    inline: z.boolean().optional(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event
+     * (spec >= 9). A background step is enqueued again only by a
+     * redelivery of this same message, and only while the step has no
+     * `step_started`.
+     */
+    creatorMessageId: z.string().optional(),
+  }),
+});
 
 /**
  * Event created when a hook is first invoked. The World implementation
@@ -452,37 +435,33 @@ export const HookCreatedEventSchema = z.compile(
   })
 );
 
-const HookReceivedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('hook_received'),
-    correlationId: z.string(),
-    eventData: z.object({
-      token: z.string().optional(),
-      payload: SerializedDataSchema,
-    }),
-  })
-);
+const HookReceivedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('hook_received'),
+  correlationId: z.string(),
+  eventData: z.object({
+    token: z.string().optional(),
+    payload: SerializedDataSchema,
+  }),
+});
 
-const HookDisposedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('hook_disposed'),
-    correlationId: z.string(),
-    eventData: z
-      .object({
-        token: z.string().optional(),
-        /**
-         * World-written: this disposal was not the run's own. Another run
-         * took the hook's token with `experimental_force`, and this names
-         * it. The hook consumer rejects the hook's awaiters with
-         * `HookForceClaimedError` when it reads this row.
-         */
-        forceClaimedBy: z
-          .object({ runId: z.string(), hookId: z.string() })
-          .optional(),
-      })
-      .optional(),
-  })
-);
+const HookDisposedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('hook_disposed'),
+  correlationId: z.string(),
+  eventData: z
+    .object({
+      token: z.string().optional(),
+      /**
+       * World-written: this disposal was not the run's own. Another run
+       * took the hook's token with `experimental_force`, and this names
+       * it. The hook consumer rejects the hook's awaiters with
+       * `HookForceClaimedError` when it reads this row.
+       */
+      forceClaimedBy: z
+        .object({ runId: z.string(), hookId: z.string() })
+        .optional(),
+    })
+    .optional(),
+});
 
 /**
  * Event created by World implementations when a hook_created request
@@ -492,29 +471,27 @@ const HookDisposedEventSchema = z.compile(
  * When the hook consumer sees this event, it should reject any awaited
  * promises with a HookTokenConflictError.
  */
-const HookConflictEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('hook_conflict'),
-    correlationId: z.string(),
-    eventData: z.object({
-      token: z.string(),
-      // TODO: Make this required once all persisted hook_conflict events and
-      // remote World implementations always include the active hook owner's run ID.
-      conflictingRunId: z.string().optional(),
-      /**
-       * Set when the creation asked for `force` and the World declined to take
-       * the token over. `victim-spec-version`: the run holding the token was
-       * started at a spec version below
-       * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
-       * understand the involuntary disposal — the forced hook gets the
-       * ordinary `HookConflictError` it opted out of instead of stranding
-       * that run. Absent on a conflict answered by a World that does not
-       * implement forcing at all.
-       */
-      forceRefusedReason: z.literal('victim-spec-version').optional(),
-    }),
-  })
-);
+const HookConflictEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('hook_conflict'),
+  correlationId: z.string(),
+  eventData: z.object({
+    token: z.string(),
+    // TODO: Make this required once all persisted hook_conflict events and
+    // remote World implementations always include the active hook owner's run ID.
+    conflictingRunId: z.string().optional(),
+    /**
+     * Set when the creation asked for `force` and the World declined to take
+     * the token over. `victim-spec-version`: the run holding the token was
+     * started at a spec version below
+     * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
+     * understand the involuntary disposal — the forced hook gets the
+     * ordinary `HookConflictError` it opted out of instead of stranding
+     * that run. Absent on a conflict answered by a World that does not
+     * implement forcing at all.
+     */
+    forceRefusedReason: z.literal('victim-spec-version').optional(),
+  }),
+});
 
 /**
  * Sealed-log filler event (specVersion >= 7). Written ONLY by the World's
@@ -525,74 +502,64 @@ const HookConflictEventSchema = z.compile(
  * without advancing the deterministic clock. NOT user-creatable, and absent
  * from `CreateEventSchema` for that reason.
  */
-const NoopEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('noop'),
-    eventData: z
-      .object({
-        sealed: z.boolean().optional(),
-      })
-      .passthrough()
-      .optional(),
-  })
-);
+const NoopEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('noop'),
+  eventData: z
+    .object({
+      sealed: z.boolean().optional(),
+    })
+    .passthrough()
+    .optional(),
+});
 
-const WaitCreatedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('wait_created'),
-    correlationId: z.string(),
-    eventData: z.object({
-      resumeAt: z.coerce.date(),
-      /**
-       * Queue message id of the orchestrator delivery that wrote this event
-       * (spec >= 9). Only that delivery, or a redelivery of the same message,
-       * schedules the wait's timer.
-       */
-      creatorMessageId: z.string().optional(),
-    }),
-  })
-);
+const WaitCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('wait_created'),
+  correlationId: z.string(),
+  eventData: z.object({
+    resumeAt: z.coerce.date(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event
+     * (spec >= 9). Only that delivery, or a redelivery of the same message,
+     * schedules the wait's timer.
+     */
+    creatorMessageId: z.string().optional(),
+  }),
+});
 
-const WaitCompletedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('wait_completed'),
-    correlationId: z.string(),
-    eventData: z
-      .object({
-        resumeAt: z.coerce.date().optional(),
-      })
-      .optional(),
-  })
-);
+const WaitCompletedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('wait_completed'),
+  correlationId: z.string(),
+  eventData: z
+    .object({
+      resumeAt: z.coerce.date().optional(),
+    })
+    .optional(),
+});
 
-const AttributeWriterSchema = z.compile(
-  z.discriminatedUnion('type', [
-    z.object({
-      type: z.literal('workflow'),
-    }),
-    z.object({
-      type: z.literal('step'),
-      stepId: z.string(),
-      attempt: z.number(),
-    }),
-  ])
-);
+const AttributeWriterSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('workflow'),
+  }),
+  z.object({
+    type: z.literal('step'),
+    stepId: z.string(),
+    attempt: z.number(),
+  }),
+]);
 
 /**
  * Event created when workflow or step code changes the run's plaintext
  * attributes. The World materializes changes into `run.attributes`.
  */
-const AttrSetEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('attr_set'),
-    correlationId: z.string().optional(),
-    eventData: z.object({
-      changes: AttributeChangesSchema,
-      writer: AttributeWriterSchema,
-      allowReservedAttributes: z.literal(true).optional(),
-    }),
-  })
-);
+const AttrSetEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('attr_set'),
+  correlationId: z.string().optional(),
+  eventData: z.object({
+    changes: AttributeChangesSchema,
+    writer: AttributeWriterSchema,
+    allowReservedAttributes: z.literal(true).optional(),
+  }),
+});
 
 // =============================================================================
 // Run lifecycle events
@@ -602,48 +569,46 @@ const AttrSetEventSchema = z.compile(
  * Event created when a workflow run is first created. The World implementation
  * atomically creates both the event and the run entity with status 'pending'.
  */
-const RunCreatedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('run_created'),
-    eventData: z
-      .object({
-        deploymentId: z.string(),
-        workflowName: z.string(),
-        input: SerializedDataSchema,
-        executionContext: z.record(z.string(), z.any()).optional(),
-        attributes: z.record(z.string(), z.string()).optional(),
-        allowReservedAttributes: z.literal(true).optional(),
-        /**
-         * A dynamic run's serialized workflow VM code. The World materializes it
-         * onto the run record and does not keep a second copy on the event.
-         * Mutually exclusive with `dynamicWorkflowCodeRef`.
-         */
-        dynamicWorkflowCode: SerializedDataSchema.optional(),
-        /**
-         * Ref for dynamic workflow code uploaded before this write. Worlds must
-         * validate it against the caller and run before attaching it.
-         */
-        dynamicWorkflowCodeRef: z.string().optional(),
-        /**
-         * The run's X25519 public key (base64), stamped by SDKs that support
-         * sealed (`encp`) envelopes. Persisted onto the run entity so that
-         * cross-run writers can seal payloads to this run without holding its
-         * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
-         */
-        encryptionPublicKey: z.string().optional(),
-      })
-      .refine(
-        (value) =>
-          value.dynamicWorkflowCode === undefined ||
-          value.dynamicWorkflowCodeRef === undefined,
-        {
-          path: ['dynamicWorkflowCodeRef'],
-          message:
-            'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
-        }
-      ),
-  })
-);
+const RunCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_created'),
+  eventData: z
+    .object({
+      deploymentId: z.string(),
+      workflowName: z.string(),
+      input: SerializedDataSchema,
+      executionContext: z.record(z.string(), z.any()).optional(),
+      attributes: z.record(z.string(), z.string()).optional(),
+      allowReservedAttributes: z.literal(true).optional(),
+      /**
+       * A dynamic run's serialized workflow VM code. The World materializes it
+       * onto the run record and does not keep a second copy on the event.
+       * Mutually exclusive with `dynamicWorkflowCodeRef`.
+       */
+      dynamicWorkflowCode: SerializedDataSchema.optional(),
+      /**
+       * Ref for dynamic workflow code uploaded before this write. Worlds must
+       * validate it against the caller and run before attaching it.
+       */
+      dynamicWorkflowCodeRef: z.string().optional(),
+      /**
+       * The run's X25519 public key (base64), stamped by SDKs that support
+       * sealed (`encp`) envelopes. Persisted onto the run entity so that
+       * cross-run writers can seal payloads to this run without holding its
+       * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
+       */
+      encryptionPublicKey: z.string().optional(),
+    })
+    .refine(
+      (value) =>
+        value.dynamicWorkflowCode === undefined ||
+        value.dynamicWorkflowCodeRef === undefined,
+      {
+        path: ['dynamicWorkflowCodeRef'],
+        message:
+          'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+      }
+    ),
+});
 
 /**
  * Event created when a workflow run starts executing.
@@ -654,92 +619,84 @@ const RunCreatedEventSchema = z.compile(
  * runtime passes the run input through the queue so the server can create the run
  * on the run_started call if it doesn't exist yet.
  */
-const RunStartedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('run_started'),
-    eventData: z
-      .object({
-        input: SerializedDataSchema.optional(),
-        deploymentId: z.string().optional(),
-        workflowName: z.string().optional(),
-        executionContext: z.record(z.string(), z.any()).optional(),
-        attributes: z.record(z.string(), z.string()).optional(),
-        allowReservedAttributes: z.literal(true).optional(),
-        /**
-         * Mirrors `run_created.eventData.encryptionPublicKey`. Carried here for
-         * the resilient-start path: when the `run_created` write failed, the
-         * server creates the run from this event instead, and without the key
-         * the run would silently lose its ability to receive sealed writes.
-         */
-        encryptionPublicKey: z.string().optional(),
-        /** Dynamic code carried for resilient run creation. */
-        dynamicWorkflowCode: SerializedDataSchema.optional(),
-        dynamicWorkflowCodeRef: z.string().optional(),
-      })
-      .refine(
-        (value) =>
-          value.dynamicWorkflowCode === undefined ||
-          value.dynamicWorkflowCodeRef === undefined,
-        {
-          path: ['dynamicWorkflowCodeRef'],
-          message:
-            'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
-        }
-      )
-      .optional(),
-  })
-);
+const RunStartedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_started'),
+  eventData: z
+    .object({
+      input: SerializedDataSchema.optional(),
+      deploymentId: z.string().optional(),
+      workflowName: z.string().optional(),
+      executionContext: z.record(z.string(), z.any()).optional(),
+      attributes: z.record(z.string(), z.string()).optional(),
+      allowReservedAttributes: z.literal(true).optional(),
+      /**
+       * Mirrors `run_created.eventData.encryptionPublicKey`. Carried here for
+       * the resilient-start path: when the `run_created` write failed, the
+       * server creates the run from this event instead, and without the key
+       * the run would silently lose its ability to receive sealed writes.
+       */
+      encryptionPublicKey: z.string().optional(),
+      /** Dynamic code carried for resilient run creation. */
+      dynamicWorkflowCode: SerializedDataSchema.optional(),
+      dynamicWorkflowCodeRef: z.string().optional(),
+    })
+    .refine(
+      (value) =>
+        value.dynamicWorkflowCode === undefined ||
+        value.dynamicWorkflowCodeRef === undefined,
+      {
+        path: ['dynamicWorkflowCodeRef'],
+        message:
+          'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+      }
+    )
+    .optional(),
+});
 
 /**
  * Event created when a workflow run completes successfully.
  * Updates the run entity to status 'completed' with output.
  */
-const RunCompletedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('run_completed'),
-    eventData: z.object({
-      output: SerializedDataSchema.optional(),
-    }),
-  })
-);
+const RunCompletedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_completed'),
+  eventData: z.object({
+    output: SerializedDataSchema.optional(),
+  }),
+});
 
 /**
  * Event created when a workflow run fails.
  * Updates the run entity to status 'failed' with error.
  */
-const RunFailedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('run_failed'),
-    eventData: z.object({
-      // The thrown value, serialized via the workflow serialization pipeline.
-      // Can be any JavaScript value (string, number, object, Error, etc.)
-      error: SerializedDataSchema,
-      // The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) used
-      // for routing and classification. Kept as plaintext metadata so
-      // observability tools can filter/categorize without needing to decrypt
-      // the full error payload.
-      errorCode: z.string().optional(),
-    }),
-  })
-);
+const RunFailedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_failed'),
+  eventData: z.object({
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
+    // The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) used
+    // for routing and classification. Kept as plaintext metadata so
+    // observability tools can filter/categorize without needing to decrypt
+    // the full error payload.
+    errorCode: z.string().optional(),
+  }),
+});
 
 /**
  * Event created when a workflow run is cancelled.
  * Updates the run entity to status 'cancelled'.
  */
-const RunCancelledEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('run_cancelled'),
-    eventData: z
-      .object({
-        // Optional free-text reason for the cancellation. Kept as small
-        // plaintext metadata (like run_failed's errorCode) so it survives
-        // resolveData: 'none' and can be displayed without decryption.
-        cancelReason: z.string().max(512).optional(),
-      })
-      .optional(),
-  })
-);
+const RunCancelledEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_cancelled'),
+  eventData: z
+    .object({
+      // Optional free-text reason for the cancellation. Kept as small
+      // plaintext metadata (like run_failed's errorCode) so it survives
+      // resolveData: 'none' and can be displayed without decryption.
+      cancelReason: z.string().max(512).optional(),
+    })
+    .optional(),
+});
 
 // Discriminated union for user-creatable events (requests to world.events.create)
 // Note: hook_conflict is NOT included here - it can only be created by World implementations
@@ -770,32 +727,30 @@ export const CreateEventSchema = z.compile(
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
 // This is used for reading events from the event log
-const AllEventsSchema = z.compile(
-  z.discriminatedUnion('eventType', [
-    // Run lifecycle events
-    RunCreatedEventSchema,
-    RunStartedEventSchema,
-    RunCompletedEventSchema,
-    RunFailedEventSchema,
-    RunCancelledEventSchema,
-    AttrSetEventSchema,
-    // Step lifecycle events
-    StepCreatedEventSchema,
-    StepCompletedEventSchema,
-    StepFailedEventSchema,
-    StepRetryingEventSchema,
-    StepStartedEventSchema,
-    // Hook lifecycle events
-    HookCreatedEventSchema,
-    HookReceivedEventSchema,
-    HookDisposedEventSchema,
-    HookConflictEventSchema, // World-only: created when hook token conflicts
-    // Wait lifecycle events
-    WaitCreatedEventSchema,
-    WaitCompletedEventSchema,
-    NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
-  ])
-);
+const AllEventsSchema = z.discriminatedUnion('eventType', [
+  // Run lifecycle events
+  RunCreatedEventSchema,
+  RunStartedEventSchema,
+  RunCompletedEventSchema,
+  RunFailedEventSchema,
+  RunCancelledEventSchema,
+  AttrSetEventSchema,
+  // Step lifecycle events
+  StepCreatedEventSchema,
+  StepCompletedEventSchema,
+  StepFailedEventSchema,
+  StepRetryingEventSchema,
+  StepStartedEventSchema,
+  // Hook lifecycle events
+  HookCreatedEventSchema,
+  HookReceivedEventSchema,
+  HookDisposedEventSchema,
+  HookConflictEventSchema, // World-only: created when hook token conflicts
+  // Wait lifecycle events
+  WaitCreatedEventSchema,
+  WaitCompletedEventSchema,
+  NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
+]);
 
 // Server response includes runId, eventId, and createdAt
 // specVersion is optional in database for backward compatibility
