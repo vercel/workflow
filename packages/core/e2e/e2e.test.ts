@@ -4323,6 +4323,89 @@ describe.concurrent('e2e', () => {
   );
 
   test(
+    'hookRaceLoopAfterLostRacesWorkflow - payload reaches the pending await after several lost races, and the next await gets the next payload',
+    { timeout: 120_000 },
+    async () => {
+      // https://github.com/vercel/workflow/issues/4264
+      const token = Math.random().toString(36).slice(2);
+      const run = await start(await e2e('hookRaceLoopAfterLostRacesWorkflow'), [
+        token,
+      ]);
+
+      const hook = await waitForHook(token, { runId: run.runId });
+      // Both 1s races have been decided by their sleeps, so two awaiters
+      // have been abandoned before the payload is sent.
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'wait_completed',
+        { minCount: 2, description: 'wait_completed events for the lost races' }
+      );
+      await resumeHook(hook, { value: 'p1' });
+
+      // The fourth race's sleep is registered only after p1 was delivered,
+      // so p2 is sent to a fresh pending await, not the one p1 settled.
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'wait_created',
+        { minCount: 4, description: 'wait_created event for the fourth race' }
+      );
+      await resumeHook(hook, { value: 'p2' });
+
+      expect(await run.returnValue).toEqual({
+        lost: ['sleep', 'sleep'],
+        delivered: 'p1',
+        next: 'p2',
+      });
+    }
+  );
+
+  test(
+    'hookRaceOncePromiseWorkflow - a hook promise raced again receives a payload recorded during a step between the races',
+    { timeout: 90_000 },
+    async () => {
+      // The pattern the hooks docs recommend for waiting with a timeout.
+      const token = Math.random().toString(36).slice(2);
+      const run = await start(await e2e('hookRaceOncePromiseWorkflow'), [
+        token,
+      ]);
+
+      const hook = await waitForHook(token, { runId: run.runId });
+      await waitForRunEvents(
+        run.runId,
+        (event) => event.eventType === 'step_started',
+        { description: 'step_started event for the step between races' }
+      );
+      await resumeHook(hook, { value: 'delivered' });
+
+      expect(await run.returnValue).toEqual({
+        first: 'timeout',
+        second: 'delivered',
+      });
+
+      // The payload must have been recorded while the step ran, i.e. while
+      // no race was awaiting the hook; otherwise this run did not exercise
+      // the between-races case.
+      const world = await getWorld();
+      const events: WorkflowEvent[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await world.events.list({
+          runId: run.runId,
+          resolveData: 'none',
+          pagination: { limit: 100, cursor, sortOrder: 'asc' },
+        });
+        events.push(...(page.data as WorkflowEvent[]));
+        if (!page.cursor || page.cursor === cursor) break;
+        cursor = page.cursor;
+      }
+      const types = events.map((event) => event.eventType);
+      const received = types.indexOf('hook_received');
+      expect(types.indexOf('step_started')).toBeLessThan(received);
+      expect(received).toBeLessThan(types.indexOf('step_completed'));
+    }
+  );
+
+  test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
     { timeout: 90_000 },
     async () => {

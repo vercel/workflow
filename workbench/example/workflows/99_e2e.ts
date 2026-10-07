@@ -3337,6 +3337,72 @@ export async function hookRaceAfterLostRaceWorkflow(token: string) {
   return { first, second };
 }
 
+/**
+ * https://github.com/vercel/workflow/issues/4264 Several races lost in a row,
+ * each abandoning its own `hook.then()`, then a race the hook wins, then a
+ * sequential await. The delivery must reach the pending await, and the next
+ * await must receive the next payload, not the one just delivered.
+ */
+export async function hookRaceLoopAfterLostRacesWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const lost: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    lost.push(
+      await Promise.race([
+        hook.then((payload) => payload.value),
+        sleep('1s').then(() => 'sleep' as const),
+      ])
+    );
+  }
+
+  const delivered = await Promise.race([
+    hook.then((payload) => payload.value),
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  const next = await Promise.race([
+    hook.then((payload) => payload.value),
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  return { lost, delivered, next };
+}
+
+async function hookRaceReminderStep() {
+  'use step';
+  // Long enough for the test to resume the hook while this step runs.
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+}
+
+/**
+ * The pattern the hooks docs recommend for waiting again after a timeout:
+ * create the hook promise once and race it on every attempt. A payload
+ * recorded while a step runs between the races must reach the second race.
+ */
+export async function hookRaceOncePromiseWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+  const approval = hook.then((payload) => payload.value);
+
+  const first = await Promise.race([
+    approval,
+    sleep('1s').then(() => 'timeout' as const),
+  ]);
+
+  await hookRaceReminderStep();
+
+  const second = await Promise.race([
+    approval,
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  return { first, second };
+}
+
 //////////////////////////////////////////////////////////
 
 async function addNumbers(a: number, b: number) {
