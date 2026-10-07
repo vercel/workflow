@@ -229,6 +229,16 @@ export class AppendOnlyWorld {
         `Event type '${data.eventType}' requires eventData.stepName`
       );
     }
+    // World-vercel keys a `step_created` input's payload ref by workflow
+    // name, and its batch route reads the name from the event alone.
+    if (
+      data.eventType === 'step_created' &&
+      typeof data.eventData?.workflowName !== 'string'
+    ) {
+      throw new Error(
+        `Event type 'step_created' requires eventData.workflowName`
+      );
+    }
     if (
       ['step_started', 'step_retrying', 'step_failed'].includes(data.eventType)
     ) {

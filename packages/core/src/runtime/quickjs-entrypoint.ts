@@ -774,6 +774,7 @@ async function dispatchPendingOps(params: {
                 correlationId: step.correlationId,
                 eventData: {
                   stepName: step.stepId,
+                  workflowName: workflowRun.workflowName,
                   // Inline, created by this delivery: if the step_failed
                   // below never lands, the redelivery runs the step inline,
                   // and the executor fails it from the placeholder input.
@@ -849,6 +850,7 @@ async function dispatchPendingOps(params: {
               correlationId: step.correlationId,
               eventData: {
                 stepName: step.stepId,
+                workflowName: workflowRun.workflowName,
                 input: encryptedInput,
                 inline: false,
                 ...(creatorMessageId ? { creatorMessageId } : {}),
@@ -1531,16 +1533,21 @@ export async function runWorkflowWithQuickJS(params: {
   /**
    * Whether a write's own event is delivered to the VM off its response:
    * `wait_completed` (nothing in it for a VM to resolve), and the run's
-   * start and step events when they go through the in-band writer. An
+   * start, step and hook events when they go through the in-band writer. An
    * inline step then costs no listing: its creation, start and outcome reach
    * the VM from the writes that made them, in position order behind whatever
    * their reports carry, so the VM still consumes its own outcome only after
-   * it committed.
+   * it committed. A hook's creation reaches the VM the same way, so a pass
+   * the live feed wakes before any listing sees the hook as created and does
+   * not write its `hook_created` a second time (which a World with the token
+   * already taken answers with a `hook_conflict`).
    */
   const deliversOwnEvent = (eventType: string): boolean =>
     eventType === 'wait_completed' ||
     (params.writer !== undefined &&
-      (eventType === 'run_started' || eventType.startsWith('step_')));
+      (eventType === 'run_started' ||
+        eventType.startsWith('step_') ||
+        eventType.startsWith('hook_')));
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await writeEvent(data, {
       // Returned replay events only feed the log; read them the way replay
@@ -2086,6 +2093,7 @@ export async function runWorkflowWithQuickJS(params: {
       correlationId: step.correlationId,
       eventData: {
         stepName: step.stepId,
+        workflowName: workflowRun.workflowName,
         input,
         inline: true,
         ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),

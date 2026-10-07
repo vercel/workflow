@@ -15,6 +15,7 @@ import {
   setupOrchestratorRun,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
+import { setAttributes } from '../../set-attributes.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -50,6 +51,13 @@ registerStepFunction('iw_gated', async () => {
   return 'step';
 });
 
+registerStepFunction('iw_attributes', async (n: number) => {
+  count('iw_attributes');
+  await setAttributes({ phase: 'step-started' });
+  await setAttributes({ phase: 'step-done' });
+  return n * 4;
+});
+
 const step = (name: string) =>
   `globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(name)})`;
 
@@ -62,6 +70,9 @@ const threeStepWorkflow = `const a = ${step('iw_a')}; const b = ${step('iw_b')};
     const [x, y, z] = await Promise.all([a(), b(), flaky()]);
     return x + y + z;
   }${registerWorkflow()}`;
+
+const attributesStepWorkflow = `const s = ${step('iw_attributes')};
+  async function workflow(n) { return await s(n); }${registerWorkflow()}`;
 
 // A hook payload races an inline step body; whichever the log holds first
 // wins.
@@ -311,5 +322,26 @@ describe.each([
     });
     expect(await runResult(world)).toBe('hook');
     expect(calls.iw_gated).toBe(1);
+  });
+
+  // The live feed delivers the batch's own events, and the body's
+  // out-of-band `attr_set`s after them, before the batch's response. A World
+  // that reports no allocated count leaves the writer to infer it, and the
+  // slots the feed showed it in the meantime are no evidence of a replay.
+  it('keeps the fence count when the feed shows a batch and later events before its response', async () => {
+    const { world } = await setupOrchestratorRun(
+      attributesStepWorkflow,
+      [9],
+      { subscribe: true, createDelayMs: 20 },
+      engine
+    );
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(36);
+    expect(world.deliveries).toHaveLength(1);
+    expect(calls.iw_attributes).toBe(1);
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'attr_set')).toHaveLength(2);
   });
 });

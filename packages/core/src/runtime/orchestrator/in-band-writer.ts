@@ -292,6 +292,7 @@ export class InBandWriter {
   ): Promise<EventResult<T['eventType']>> {
     return this.serialize(1, async () => {
       this.assertActive();
+      const knownAtSend = this.knownMaxSlot;
       let result: EventResult<T['eventType']>;
       try {
         const written = await this.world.events.create(this.runId, data, {
@@ -299,7 +300,7 @@ export class InBandWriter {
           ...params,
           ...this.fenceParams(),
         });
-        const inferred = this.allocatedBy([written.event]);
+        const inferred = this.allocatedBy([written.event], knownAtSend);
         const allocated = written.allocated ?? inferred;
         this.advance(allocated);
         result = written.event
@@ -358,6 +359,7 @@ export class InBandWriter {
     }
     return this.serialize(events.length, async () => {
       this.assertActive();
+      const knownAtSend = this.knownMaxSlot;
       try {
         const result = await createBatch.call(
           this.world.events,
@@ -372,10 +374,11 @@ export class InBandWriter {
         // Without a reported count: the block was allocated whole (a
         // per-item failure leaves a hole the World seals, and that position
         // still counts), except items answered with an event at a slot this
-        // writer already knew, which allocated nothing.
+        // writer knew before sending, which allocated nothing.
         const fresh = result.results.map(
           (item) =>
-            item.error === undefined && this.isNewSlot(item.event.eventId)
+            item.error === undefined &&
+            isNewSlot(item.event.eventId, knownAtSend)
         );
         const replayed = result.results.filter(
           (item, index) => item.error === undefined && !fresh[index]
@@ -433,21 +436,22 @@ export class InBandWriter {
   /**
    * Positions a single accepted write allocated. The World's response does
    * not state it, so it is inferred: an event at a slot this writer already
-   * knew to be allocated is an idempotent replay of an earlier write (for
-   * example a deduplicated `hook_received`), which allocated nothing.
+   * knew to be allocated when it sent the write is an idempotent replay of
+   * an earlier write (for example a deduplicated `hook_received`), which
+   * allocated nothing. Slots learned while the write was in flight do not
+   * count: the live feed can deliver the write's own events, and later
+   * ones, before its response.
    */
-  private allocatedBy(events: (Event | undefined)[]): number {
+  private allocatedBy(
+    events: (Event | undefined)[],
+    knownAtSend: number
+  ): number {
     let allocated = 0;
     for (const event of events) {
-      if (!event || this.isNewSlot(event.eventId)) allocated++;
+      if (!event || isNewSlot(event.eventId, knownAtSend)) allocated++;
       if (event) this.noteSlot(event.eventId);
     }
     return allocated;
-  }
-
-  private isNewSlot(eventId: string): boolean {
-    const slot = eventIdToSlot(eventId);
-    return slot === null || slot > this.knownMaxSlot;
   }
 
   private noteSlot(eventId: string): void {
@@ -521,6 +525,11 @@ export class InBandWriter {
  * that converged on an event that already existed, the World's copy is the
  * canonical one, and only keys it left out are taken from the request.
  */
+function isNewSlot(eventId: string, knownMaxSlot: number): boolean {
+  const slot = eventIdToSlot(eventId);
+  return slot === null || slot > knownMaxSlot;
+}
+
 export function withWrittenEventData<E extends Event>(
   event: E,
   request: CreateEventRequest,
