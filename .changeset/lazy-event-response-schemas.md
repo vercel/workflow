@@ -1,5 +1,6 @@
 ---
 "@workflow/world-vercel": patch
+"@workflow/world": patch
 ---
 
-Compile each Workflow SDK v4 create-event response schema once per event type per module copy, on first decode.
+Reduce redundant schema compilation by compiling final event schemas only and reusing compiled v4 event-response and paginated response schemas.
