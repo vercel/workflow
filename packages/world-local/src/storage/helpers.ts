@@ -348,9 +348,7 @@ export async function scanRunEventIds(
 ): Promise<RunEventIdScan> {
   let files: string[] = [];
   try {
-    files = await fs.readdir(
-      path.join(basedir, runEntityDir(basedir, 'events', runId))
-    );
+    files = await fs.readdir(path.join(basedir, runEntityDir('events', runId)));
   } catch (error) {
     // Only ENOENT ("no events directory yet") means there is provably
     // nothing visible. Any other failure would silently report an empty run,

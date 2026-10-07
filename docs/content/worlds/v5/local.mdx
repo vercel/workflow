@@ -86,10 +86,6 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 
 Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
 
-### `WORKFLOW_LOCAL_MIGRATE_LAYOUT`
-
-Set to `1` or `true` to convert a data directory that still uses the flat layout to one directory per run when the World starts. Default: `false`. Stop every other process using the data directory first. See [Data directory layout](#data-directory-layout).
-
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during local development.
@@ -111,7 +107,6 @@ export default createWorld({
   // baseUrl overrides port if set
   baseUrl: "https://local.example.com:3000",
   recoverActiveRuns: true, // overrides WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS
-  migrateLayout: false, // overrides WORKFLOW_LOCAL_MIGRATE_LAYOUT
   streamFlushIntervalMs: 10, // WORKFLOW_STREAM_FLUSH_INTERVAL_MS, if set, overrides this
 });
 ```
@@ -124,15 +119,7 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 ## Data directory layout
 
-New data directories store each run's event and step files in their own directory (`events/<runId>/`, `steps/<runId>/`), so reading or appending to a run costs time proportional to that run. Data directories created by earlier releases keep every file directly in `events/` and `steps/`. They keep working unchanged, but each read lists every file, so they slow down as runs accumulate.
-
-To convert one, stop every process using it (development server, CLI, web UI, test runners) and run:
-
-```bash
-npx -p @workflow/world-local workflow-local-layout migrate .workflow-data
-```
-
-The command refuses to run while another process of the current release has the directory open, and the directory stays closed until an interrupted conversion is finished by running the same command again. Releases before run-scoped storage cannot read a converted directory: before downgrading, run `workflow-local-layout flatten .workflow-data` with the current release installed.
+Each run's event and step files are stored in their own directory (`events/<runId>/`, `steps/<runId>/`), so reading or appending to a run costs time proportional to that run. Data directories written by earlier releases kept every file directly in `events/` and `steps/`. They are not migrated: when the World starts on one, it deletes the local run data and starts with an empty data directory.
 
 ## Limitations
 

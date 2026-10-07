@@ -9,7 +9,6 @@ import {
   isUnwritableDirCode,
   UnwritableDataDirError,
 } from './build-target-mismatch.js';
-import { storeLayoutOf } from './storage/layout.js';
 
 /**
  * Temp-file suffixes for atomic writes, and the write-path caches below.
@@ -227,28 +226,25 @@ export function taggedPath(
  * time, so they live under `<entityDir>/<runId>/`. That keeps every per-run
  * read and listing proportional to that run's own files rather than to every
  * file the data directory has accumulated. File names keep their
- * `${runId}-` prefix, so a file moved from the old flat layout keeps its name.
+ * `${runId}-` prefix.
+ *
+ * Releases before this one kept these files directly in `events/` and
+ * `steps/`; `initDataDir` wipes such a data directory rather than reading it.
  */
 export const RUN_SCOPED_ENTITY_DIRS = ['events', 'steps'] as const;
 export type RunScopedEntityDir = (typeof RUN_SCOPED_ENTITY_DIRS)[number];
 
 /**
  * The entity-relative directory holding one run's files for a run-scoped
- * entity, in the layout this process resolved for `basedir`:
- * `runEntityDir(basedir, 'events', 'wrun_ABC')` → `events/wrun_ABC` in the
- * run-scoped layout, `events` in the flat one (where file names alone tell
- * runs apart). Only valid inside a storage call gated on the store layout.
+ * entity: `runEntityDir('events', 'wrun_ABC')` → `events/wrun_ABC`.
  * Pass the result as the `entityDir` of {@link taggedPath} and friends.
  */
 export function runEntityDir(
-  basedir: string,
   entityDir: RunScopedEntityDir,
   runId: string
 ): string {
   assertSafeEntityId('runId', runId);
-  return storeLayoutOf(basedir) === 'run-scoped'
-    ? path.join(entityDir, runId)
-    : entityDir;
+  return path.join(entityDir, runId);
 }
 
 /**

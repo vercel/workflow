@@ -96,7 +96,7 @@ export async function purgeRunEntityData(
 ): Promise<void> {
   await Promise.all([
     scrubEntityFiles(
-      path.join(basedir, runEntityDir(basedir, 'steps', runId)),
+      path.join(basedir, runEntityDir('steps', runId)),
       runId,
       (step) => {
         step.input = undefined;
@@ -105,7 +105,7 @@ export async function purgeRunEntityData(
       }
     ),
     scrubEntityFiles(
-      path.join(basedir, runEntityDir(basedir, 'events', runId)),
+      path.join(basedir, runEntityDir('events', runId)),
       runId,
       (event) => {
         const eventData = event.eventData;

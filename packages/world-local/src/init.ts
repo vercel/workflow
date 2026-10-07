@@ -2,15 +2,17 @@ import {
   access,
   constants,
   mkdir,
-  readdir,
+  opendir,
   readFile,
+  rm,
   unlink,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { globalSingleton } from '@workflow/utils';
-import { initializeLayoutMarker } from './storage/layout.js';
+import { clearCreatedFilesCache, RUN_SCOPED_ENTITY_DIRS } from './fs.js';
+import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -204,8 +206,7 @@ export function upgradeVersion(
   oldVersion: ParsedVersion,
   newVersion: ParsedVersion
 ): void {
-  // stderr: CLI commands print JSON on stdout.
-  console.warn(
+  console.log(
     `[world-local] Upgrading from version ${formatVersion(oldVersion)} to ${formatVersion(newVersion)}`
   );
 }
@@ -309,14 +310,24 @@ async function writeVersionFile(
   await writeFile(versionFilePath, content);
 }
 
-async function holdsEntityData(dataDir: string): Promise<boolean> {
-  for (const dir of ['runs', 'events', 'steps', 'hooks']) {
+/**
+ * Whether the data directory was written by a release that kept every event
+ * and step file directly in `events/` and `steps/`, rather than one
+ * subdirectory per run. Stops at the first such file, so a large legacy
+ * directory costs one partial listing.
+ */
+async function hasFlatLayout(dataDir: string): Promise<boolean> {
+  for (const entityDir of RUN_SCOPED_ENTITY_DIRS) {
+    let dir: import('node:fs').Dir;
     try {
-      if ((await readdir(path.join(path.resolve(dataDir), dir))).length > 0) {
-        return true;
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      dir = await opendir(path.join(dataDir, entityDir));
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    // Leaving the loop early closes `dir`.
+    for await (const entry of dir) {
+      if (entry.isFile() && entry.name.endsWith('.json')) return true;
     }
   }
   return false;
@@ -347,15 +358,24 @@ function getSuggestedDowngradeVersion(
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
  */
-export async function initDataDir(
-  dataDir: string,
-  options: {
-    /** Keep the data directory's current layout even if it looks new (`clear()`). */
-    keepLayout?: boolean;
-  } = {}
-): Promise<void> {
+export async function initDataDir(dataDir: string): Promise<void> {
   // First ensure the directory exists and is accessible
   await ensureDataDir(dataDir);
+
+  // Local run data from the old flat layout is not migrated: wipe it and
+  // start over as a new data directory.
+  if (await hasFlatLayout(dataDir)) {
+    console.warn(
+      `[world-local] Deleting local workflow data in "${path.resolve(dataDir)}": ` +
+        `it was written by an older version of ${PACKAGE_NAME} with an ` +
+        `incompatible storage layout.`
+    );
+    clearCreatedFilesCache();
+    resetHookIndexEnsureCache();
+    // Retries ENOTEMPTY from another process writing into it meanwhile.
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 3 });
+    await ensureDataDir(dataDir);
+  }
 
   const packageInfo = await getPackageInfo();
   const currentVersion = parseVersion(packageInfo.version);
@@ -364,12 +384,6 @@ export async function initDataDir(
   const existingVersionInfo = await readVersionFile(dataDir);
 
   if (existingVersionInfo === null) {
-    // New data directory: select the run-scoped layout, unless it already
-    // holds entity data from a release that wrote no version file. The
-    // marker goes first, since readers check version.txt before it.
-    if (!options.keepLayout && !(await holdsEntityData(dataDir))) {
-      await initializeLayoutMarker(path.resolve(dataDir));
-    }
     // New data directory - write the current version
     await writeVersionFile(dataDir, currentVersion);
     return;

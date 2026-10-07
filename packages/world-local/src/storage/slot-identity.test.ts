@@ -11,7 +11,6 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SORT_KEY_CURSOR_PREFIX } from '../fs.js';
 import { createStorage } from '../storage.js';
-import { initTestDataDir, runDir } from '../test-helpers.js';
 import { monotonicUlid } from './helpers.js';
 
 let testDir: string;
@@ -19,7 +18,6 @@ let storage: ReturnType<typeof createStorage>;
 
 beforeEach(async () => {
   testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wl-slot-'));
-  await initTestDataDir(testDir);
   storage = createStorage(testDir);
 });
 
@@ -289,7 +287,7 @@ describe('slot event ids', () => {
     // Rewrite the run's log the way it would look had it been created before
     // slot ids existed. The scheme is pinned by what is on disk, not by a
     // stored flag, so this is the whole of the upgrade path.
-    const eventsDir = runDir(testDir, 'events', runId);
+    const eventsDir = path.join(testDir, 'events', runId);
     const files = (await fs.readdir(eventsDir)).filter((file) =>
       file.startsWith(`${runId}-`)
     );
