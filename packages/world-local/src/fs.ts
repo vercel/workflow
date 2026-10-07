@@ -148,6 +148,22 @@ export async function withWindowsRetry<T>(
 }
 
 /**
+ * `Promise.all` that waits for every promise to settle before rejecting with
+ * the first rejection (in input order). Use it where the caller finishing
+ * must mean none of its filesystem work is still running, e.g. `clear()`.
+ */
+export async function settleAll<T>(
+  promises: Iterable<Promise<T>>
+): Promise<T[]> {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find(
+    (r): r is PromiseRejectedResult => r.status === 'rejected'
+  );
+  if (failed) throw failed.reason;
+  return results.map((r) => (r as PromiseFulfilledResult<T>).value);
+}
+
+/**
  * Clear write-path caches. Useful for testing or when files are deleted externally.
  */
 export function clearCreatedFilesCache(): void {
@@ -316,10 +332,11 @@ export async function ensureDir(dirPath: string): Promise<void> {
   if (fsState.createdDirectoriesCache.has(resolvedPath)) {
     return;
   }
+  let mkdirError: unknown;
   try {
     await fs.mkdir(resolvedPath, { recursive: true });
-    fsState.createdDirectoriesCache.add(resolvedPath);
   } catch (error) {
+    mkdirError = error;
     // A filesystem that refuses the directory outright will refuse every write
     // into it too, and the caller's write would surface as a confusing ENOENT
     // on the file rather than a missing directory. Report it here instead,
@@ -334,6 +351,26 @@ export async function ensureDir(dirPath: string): Promise<void> {
       throw new UnwritableDataDirError(resolvedPath, code as string);
     }
     // Ignore if already exists
+  }
+  if (mkdirError !== undefined) return;
+  // Outside the try, so a refused run directory is not "ignored".
+  await assertNotSymlinkedRunDir(resolvedPath);
+  fsState.createdDirectoriesCache.add(resolvedPath);
+}
+
+/**
+ * A run's `events/<runId>` or `steps/<runId>` directory must be a real
+ * directory: `mkdir` accepts a symlink to one, and writing through it would
+ * put the run's files outside the data directory.
+ */
+async function assertNotSymlinkedRunDir(dirPath: string): Promise<void> {
+  const parent = path.basename(path.dirname(dirPath));
+  if (!(RUN_SCOPED_ENTITY_DIRS as readonly string[]).includes(parent)) return;
+  if ((await fs.lstat(dirPath)).isSymbolicLink()) {
+    throw new WorkflowWorldError(
+      `Refusing to write through symlinked run directory ${dirPath}: ` +
+        `replace it with a real directory.`
+    );
   }
 }
 

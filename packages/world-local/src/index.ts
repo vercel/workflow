@@ -14,6 +14,7 @@ import {
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
+  settleAll,
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -27,6 +28,7 @@ export { UnwritableDataDirError } from './build-target-mismatch.js';
 // Re-export init types and utilities for consumers
 export {
   DataDirAccessError,
+  DataDirLayoutError,
   DataDirVersionError,
   ensureDataDir,
   initDataDir,
@@ -140,7 +142,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         const hooksDir = path.join(basedir, 'hooks');
         const taggedHookFiles = await listTaggedFiles(hooksDir, tag);
         const { HookSchema } = await import('@workflow/world');
-        await Promise.all(
+        await settleAll(
           taggedHookFiles.map(async (hookFile) => {
             const hook = await readJSON(
               path.join(hooksDir, hookFile),
@@ -180,18 +182,18 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           'waits',
           'streams/runs',
         ];
-        await Promise.all(
+        await settleAll(
           entityDirs.map(async (dir) => {
             const fullDir = path.join(basedir, dir);
             const files = await listTaggedFiles(fullDir, tag);
-            await Promise.all(
+            await settleAll(
               files.map((f) => deleteJSON(path.join(fullDir, f)))
             );
           })
         );
         // Drop the run directories that clearing left empty. `rmdir` refuses
         // a non-empty one, so another tag's (or untagged) files keep theirs.
-        await Promise.all(
+        await settleAll(
           runScopedDirs.map((dir) =>
             fs.rmdir(path.join(basedir, dir)).catch(() => {})
           )
@@ -207,13 +209,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           } catch {
             keyDirEntries = [];
           }
-          await Promise.all(
+          await settleAll(
             keyDirEntries
               .filter((entry) => entry.isDirectory())
               .map(async (entry) => {
                 const keyDir = path.join(fullIndexDir, entry.name);
                 const taggedEntryFiles = await listTaggedFiles(keyDir, tag);
-                await Promise.all(
+                await settleAll(
                   taggedEntryFiles.map((f) => deleteJSON(path.join(keyDir, f)))
                 );
               })
@@ -237,7 +239,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         } catch {
           streamDirEntries = [];
         }
-        await Promise.all(
+        await settleAll(
           streamDirEntries
             .filter((entry) => entry.isDirectory())
             .map(async (entry) => {
@@ -247,7 +249,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
                 tag,
                 '.bin'
               );
-              await Promise.all(
+              await settleAll(
                 taggedBinFiles.map((f) =>
                   fs.unlink(path.join(streamChunkDir, f)).catch(() => {})
                 )
