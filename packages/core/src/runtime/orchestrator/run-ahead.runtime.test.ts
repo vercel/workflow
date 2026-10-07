@@ -413,6 +413,50 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(modes[0]).toBe('replay');
   });
 
+  // A hazard (an event that could change the workflow's path) below
+  // speculative writes stops what the delivery decided from then on, but the
+  // outcomes of steps it already ran, whose creation committed, are facts and
+  // still get written: the redelivery runs none of them again.
+  it('writes the outcomes of steps it already ran when a hazard stops run-ahead', async () => {
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
+    let injected = false;
+    const code = withSleep('1h');
+    const { world, runId } = await run(code, [STEPS], {
+      async beforeCreate(data, _params, source) {
+        await slowOutcomes.beforeCreate(data);
+        if (!injected && data.eventType === 'step_completed' && source?.batch) {
+          injected = true;
+          // The far-future sleep completed by another writer: run-ahead
+          // treats a foreign wait_completed as a hazard.
+          const wait = eventsOf(world, 'wait_created')[0];
+          world.appendOutOfBand({
+            eventType: 'wait_completed',
+            runId,
+            correlationId: wait?.correlationId,
+            eventData: {},
+          } as unknown as Partial<Event>);
+        }
+      },
+    });
+    await world.runUntilIdle();
+
+    expect(injected).toBe(true);
+    // The hazard stopped the first delivery and the redelivery finished.
+    expect(world.deliveries.length).toBeGreaterThan(1);
+    expect(await runResult(world)).toBe(STEPS);
+    // No step ran twice: every body that ran had its outcome written.
+    expect(bodiesStarted).toBe(STEPS);
+    const starts = eventsOf(world, 'step_started');
+    expect(starts).toHaveLength(STEPS);
+    for (const start of starts) {
+      expect(
+        eventsOf(world, 'step_completed').filter(
+          (e) => e.correlationId === start.correlationId
+        )
+      ).toHaveLength(1);
+    }
+  });
+
   it('drains while the workflow waits on a hook, and runs ahead again once it resolved', async () => {
     const { world, runId } = await run(observedHook, [STEPS], {
       async beforeCreate(data) {

@@ -174,6 +174,16 @@ export class InBandWriter {
   private stoppedBy: unknown;
   private stopped = false;
   /**
+   * Set by {@link stopDecisions}: the error every write it does not allow
+   * fails with, and the test of what it still allows.
+   */
+  private decisionsStop:
+    | {
+        error: unknown;
+        mayStillWrite: (events: readonly CreateEventRequest[]) => boolean;
+      }
+    | undefined;
+  /**
    * Run-ahead writes waiting for their turn, sent together as one batch when
    * it comes. Closed (unset) once the turn starts or another write queues.
    */
@@ -209,6 +219,31 @@ export class InBandWriter {
     return this.stopped;
   }
 
+  /**
+   * Stops the writer for every write `mayStillWrite` does not allow, and keeps
+   * sending the ones it does, in order. Used when the run's path may have
+   * changed under decisions this delivery made ahead of their writes: those
+   * decisions must not reach the World, while the outcome of a step whose
+   * body already ran is a fact about that body and still can. Every refused
+   * write, and {@link assertActive}, throws `error`. A later {@link halt} or
+   * failed write still stops the writer for good.
+   */
+  stopDecisions(
+    error: unknown,
+    mayStillWrite: (events: readonly CreateEventRequest[]) => boolean
+  ): void {
+    if (this.stopped || this.decisionsStop) return;
+    this.decisionsStop = { error, mayStillWrite };
+  }
+
+  /** Throws when the writer may not send these events. */
+  private assertMayWrite(events: readonly CreateEventRequest[]): void {
+    if (this.stopped) this.assertActive();
+    if (this.decisionsStop && !this.decisionsStop.mayStillWrite(events)) {
+      throw this.decisionsStop.error;
+    }
+  }
+
   /** Whether the stop came from a fence refusal. */
   get isSuperseded(): boolean {
     return this.stopped && InBandSupersededError.is(this.stoppedBy);
@@ -229,7 +264,10 @@ export class InBandWriter {
    * See the comment inside for which error.
    */
   assertActive(): void {
-    if (!this.stopped) return;
+    if (!this.stopped) {
+      if (this.decisionsStop) throw this.decisionsStop.error;
+      return;
+    }
     // A fence refusal stops the delivery as superseded. Any other stop was
     // a write whose outcome is unknown (a transport error, a 5xx); every
     // later write fails with that same error, so the delivery is retried
@@ -321,7 +359,7 @@ export class InBandWriter {
     verify?: (result: EventResult<T['eventType']>) => void
   ): Promise<EventResult<T['eventType']>> {
     {
-      this.assertActive();
+      this.assertMayWrite([data]);
       const knownAtSend = this.knownMaxSlot;
       let result: EventResult<T['eventType']>;
       try {
@@ -443,16 +481,21 @@ export class InBandWriter {
   }
 
   /** Sends a group of run-ahead writes as one batch and splits the result. */
-  private async sendGroup(group: AheadWrite[]): Promise<void> {
-    if (this.openGroup === group) this.openGroup = undefined;
-    const total = group.reduce((sum, write) => sum + write.events.length, 0);
+  private async sendGroup(all: AheadWrite[]): Promise<void> {
+    if (this.openGroup === all) this.openGroup = undefined;
+    const total = all.reduce((sum, write) => sum + write.events.length, 0);
     try {
-      try {
-        this.assertActive();
-      } catch (error) {
-        for (const write of group) write.reject(error);
-        return;
+      // Members the writer may no longer send fail; the rest still go out.
+      const group: AheadWrite[] = [];
+      for (const write of all) {
+        try {
+          this.assertMayWrite(write.events.map(({ event }) => event));
+          group.push(write);
+        } catch (error) {
+          write.reject(error);
+        }
       }
+      if (group.length === 0) return;
       const first = group[0]!;
       // A lone write goes out as itself, never as a batch of one.
       if (group.length === 1 && first.kind === 'single') {
@@ -600,7 +643,7 @@ export class InBandWriter {
       );
     }
     return this.serialize(events.length, async () => {
-      this.assertActive();
+      this.assertMayWrite(events.map(({ event }) => event));
       const knownAtSend = this.knownMaxSlot;
       try {
         const result = await createBatch.call(

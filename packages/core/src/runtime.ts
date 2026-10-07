@@ -1705,6 +1705,10 @@ export function workflowEntrypoint(
                       RunAheadStopError.is(writer.stopCause)
                     ) {
                       forgetConsumedPosition(world, runId);
+                      // The outcomes a hazard stop still lets through are
+                      // queued behind the refused writes: send them before
+                      // the delivery ends.
+                      await writer.idle();
                       const timeoutSeconds = getFenceRedeliveryDelaySeconds();
                       runtimeLogger.info(
                         'Run-ahead stopped before writing from a speculative state; redelivering this message',
@@ -2576,10 +2580,51 @@ export function workflowEntrypoint(
                           speculativeSlots: [...speculativeSlots],
                         }
                       );
+                      // What the delivery decided from here on stops; the
+                      // outcomes of steps it already ran, and whose start
+                      // committed, still get written, so the redelivery
+                      // that decides from the log runs none of them again.
+                      // Not thrown: this runs inside write checks, and the
+                      // loop acts on `runAheadFailure`.
                       const stop = new RunAheadStopError(reason);
-                      writer.halt(stop);
+                      writer.stopDecisions(stop, mayStillWriteAfterHazard);
                       runAheadFailure ??= stop;
-                      throw stop;
+                      notifyProgress();
+                    }
+                    /**
+                     * Steps whose `step_started` committed in a speculative
+                     * creation batch (the others are in the log).
+                     */
+                    const committedStarts = new Set<string>();
+                    /**
+                     * What a delivery stopped by a hazard may still write:
+                     * the outcome of a step whose start committed. Anything
+                     * else is a decision made from the speculative view.
+                     */
+                    function mayStillWriteAfterHazard(
+                      events: readonly CreateEventRequest[]
+                    ): boolean {
+                      return events.every((event) => {
+                        if (
+                          event.eventType !== 'step_completed' &&
+                          event.eventType !== 'step_failed' &&
+                          event.eventType !== 'step_retrying'
+                        ) {
+                          return false;
+                        }
+                        const id = event.correlationId;
+                        if (id === undefined) return false;
+                        if (committedStarts.has(id)) return true;
+                        const committedStart = (e: Event | undefined) =>
+                          e?.eventType === 'step_started' &&
+                          e.correlationId === id &&
+                          !speculativeEvents.has(e);
+                        return (
+                          (log?.events.some(committedStart) ?? false) ||
+                          pendingAbsorbs.some((r) => committedStart(r.event)) ||
+                          repairWrites.some((r) => committedStart(r.event))
+                        );
+                      });
                     }
                     /**
                      * Whether `event` is this delivery's own write, or one the
@@ -2832,6 +2877,13 @@ export function workflowEntrypoint(
                             checkRunAheadHazard(below, 'skipped-slot report');
                           }
                           result.results.forEach((item, index) => {
+                            if (
+                              item.error === undefined &&
+                              item.event.eventType === 'step_started' &&
+                              item.event.correlationId
+                            ) {
+                              committedStarts.add(item.event.correlationId);
+                            }
                             if (item.error !== undefined) {
                               throw new RunAheadStopError(
                                 `a speculative ${events[index]?.eventType} was refused (${item.status}: ${item.message})`

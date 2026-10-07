@@ -270,6 +270,41 @@ describe('InBandWriter', () => {
     expect(writer.expectedSeqInBand).toBe(1);
   });
 
+  it('keeps sending the writes stopDecisions allows, in order, and refuses the rest', async () => {
+    const world = seeded({});
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    const stop = new Error('path may have changed');
+    writer.stopDecisions(stop, (events) =>
+      events.every((event) => event.correlationId?.startsWith('keep'))
+    );
+    const results = await Promise.allSettled([
+      writer.create(waitCreated('drop_1')),
+      writer.create(waitCreated('keep_1')),
+      writer.createAhead(waitCreated('drop_2'), {}, () => {}),
+      writer.createAhead(waitCreated('keep_2'), {}, () => {}),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual([
+      'rejected',
+      'fulfilled',
+      'rejected',
+      'fulfilled',
+    ]);
+    expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+      'keep_1',
+      'keep_2',
+    ]);
+    expect(writer.isStopped).toBe(false);
+    // No new step body starts.
+    expect(() => writer.assertActive()).toThrow(stop);
+  });
+
   describe('run-ahead writes', () => {
     async function ready() {
       // Every write is held until released, as a write in flight is.
