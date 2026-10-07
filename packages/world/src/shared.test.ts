@@ -146,15 +146,19 @@ describe('PaginatedResponseSchema', () => {
     });
   });
 
-  it('reuses one schema object across module copies and not a lookalike', async () => {
+  it('caches independently in each module copy', async () => {
     const dataSchema = z.object({ id: z.string() });
     const first = PaginatedResponseSchema(dataSchema);
 
     vi.resetModules();
     const fresh = await import('./shared.js');
-    expect(fresh.PaginatedResponseSchema(dataSchema)).toBe(first);
+    const second = fresh.PaginatedResponseSchema(dataSchema);
+    expect(second).not.toBe(first);
+    expect(fresh.PaginatedResponseSchema(dataSchema)).toBe(second);
+    expect(PaginatedResponseSchema(dataSchema)).toBe(first);
+    expect(second.parse(page)).toEqual(first.parse(page));
     expect(
       fresh.PaginatedResponseSchema(z.object({ id: z.string() }))
-    ).not.toBe(first);
+    ).not.toBe(second);
   });
 });

@@ -1,4 +1,3 @@
-import { globalSingleton } from '@workflow/utils';
 import { z } from 'zod';
 
 export const zodJsonSchema: z.ZodType<unknown> = z.lazy(() => {
@@ -38,17 +37,10 @@ export const PageInfoSchema = z.compile(
 
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 
-// Process-wide schema cache for Workflow SDK paginated responses. List
-// endpoints pass the same module-level data schema on every page; a per-copy
-// WeakMap would compile that object again in each bundler layer that holds
-// it. Reuse is by object identity only. A separate schema object with the
-// same shape, which is what another bundle layer constructs, stays uncached.
-// The map stores schemas only, never page bodies.
-const paginatedResponseSchemas = globalSingleton(
-  '@workflow/world//paginatedResponseSchemas',
-  1,
-  () => new WeakMap<z.ZodTypeAny, z.ZodTypeAny>()
-);
+// per-copy-ok: callers reuse module-level data schemas across requests. Separate
+// bundler layers construct distinct schema objects, so an identity cache cannot
+// deduplicate those across copies. Stores schemas only, never page bodies.
+const paginatedResponseSchemas = new WeakMap<z.ZodTypeAny, z.ZodTypeAny>();
 
 function compilePaginatedResponse<T extends z.ZodTypeAny>(dataSchema: T) {
   return z.compile(
