@@ -340,6 +340,16 @@ A `dispatcher` passed to `createVercelWorld()` still wins over this variable. Th
 - Clamped to `[1, 1024]`.
 - Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.
 
+## Hook resumption
+
+### `WORKFLOW_HOOK_LOOKUP_CACHE_TTL_MS`
+
+- Default: `60000`
+- Minimum: `0` (disables the cache). Maximum: `600000`
+- How long [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) reuses a by-token hook lookup for the same token in the same process, saving one round trip on every repeated resume of a long-lived hook, such as an agent session's inbox.
+- A stale entry can only name a hook that has since been disposed, ended with its run, or been taken over. The write to it is refused and commits nothing, the entry is evicted, and the resume retries once with a fresh lookup.
+- Read by the process calling `resumeHook()`. `resumeWebhook()` always looks the token up fresh.
+
 ## Queue namespace
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
