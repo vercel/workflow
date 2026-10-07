@@ -144,17 +144,26 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // (see `ctx.pendingDeliveryBarriers`).
     const payloadsQueue: { claim: () => Promise<T> }[] = [];
 
-    // The pending awaiter for the next hook payload. Holds at most one entry:
-    // concurrent awaits share it (see `createHookPromise`).
-    const promises: PromiseWithResolvers<T>[] = [];
+    // The pending awaiter for the next hook payload. Concurrent awaits share
+    // it (see `createHookPromise`).
+    let pending: PromiseWithResolvers<T> | undefined;
     // Whether workflow code is waiting on the next payload right now. A
-    // payload is only ever handed to an entry of `promises` (or buffered
-    // when it is empty), so an empty `promises` means a `hook_received`
-    // landing now cannot change the workflow's path until something awaits.
-    ctx.hookPayloadAwaiters?.set(correlationId, () => promises.length > 0);
+    // payload is only ever handed to `pending` (or buffered when there is
+    // none), so no `pending` means a `hook_received` landing now cannot change
+    // the workflow's path until something awaits.
+    //
+    // The probe can over-report but must never under-report. An awaiter
+    // abandoned by a lost `Promise.race` stays `pending`, so the probe reports
+    // `true` while nothing live waits, which only costs run-ahead. An await
+    // that joins `inFlight` does not set `pending`, and `false` is right
+    // there: a payload landing then is buffered and cannot change the path
+    // until something awaits it. Don't narrow this to "a live await is
+    // waiting": a false `false` lets the replay commit to a path a payload
+    // would have changed.
+    ctx.hookPayloadAwaiters?.set(correlationId, () => pending !== undefined);
 
     // The awaiter a consumed `hook_received` payload is on its way to. It
-    // leaves `promises` when the event is consumed but only settles after
+    // stops being `pending` when the event is consumed but only settles after
     // earlier deliveries, so awaits made in between must share it too.
     let inFlight: PromiseWithResolvers<T> | undefined;
 
@@ -242,14 +251,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
-      // If there are no events and there are promises waiting,
+      // If there are no events and an await is pending,
       // it means the hook has been awaited, but an incoming payload has not yet been received.
       // In this case, the workflow should be suspended until the hook is resumed.
       if (!event) {
         eventLogEmpty = true;
 
         if (
-          (promises.length > 0 && payloadsQueue.length === 0) ||
+          (pending !== undefined && payloadsQueue.length === 0) ||
           (getConflictPromises.length > 0 && !hasCreated && !hasConflict)
         ) {
           scheduleWorkflowSuspension(ctx);
@@ -342,15 +351,13 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // real `Run` can be constructed (see `createConflictingRun`),
         // `getConflict` awaiters reject with the HookConflictError instead
         // of resolving with a value that doesn't honor the `Run` contract.
-        const pendingPromises = promises.slice();
-        promises.length = 0;
+        const pendingPayload = pending;
+        pending = undefined;
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
 
         deliverRegistration(+event.createdAt, () => {
-          for (const resolver of pendingPromises) {
-            resolver.reject(conflictError);
-          }
+          pendingPayload?.reject(conflictError);
           for (const resolver of pendingGetConflictPromises) {
             if (conflictRunRef) {
               resolver.resolve(conflictRunRef);
@@ -397,7 +404,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // a consumer takes it, a later step result must not be ordered behind
         // it (see `awaitEarlierDeliveries`).
         const eventIndex = ctx.eventsConsumer.eventIndex;
-        const hasWaitingConsumer = promises.length > 0;
+        const hasWaitingConsumer = pending !== undefined;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
           armed: hasWaitingConsumer,
           deliveredAt: +event.createdAt,
@@ -423,7 +430,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             eventIndex,
             'hook'
           );
-          const next = promises.shift();
+          const next = pending;
+          pending = undefined;
           if (next) {
             inFlight = next;
             // Hydrate through a promiseQueue slot (so async deserialization
@@ -564,14 +572,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             claimedBy.hookId
           );
           forceClaimedErrorRef = error;
-          const pendingPromises = promises.slice();
-          promises.length = 0;
+          const pendingPayload = pending;
+          pending = undefined;
           const pendingGetConflictPromises = getConflictPromises.slice();
           getConflictPromises.length = 0;
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
-            for (const resolver of pendingPromises) {
-              resolver.reject(error);
-            }
+            pendingPayload?.reject(error);
             for (const resolver of pendingGetConflictPromises) {
               resolver.resolve(null);
             }
@@ -656,7 +662,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // enrolling a fresh awaiter per `then()` would hand the next payload to
       // that abandoned await instead of the one still waiting. `inFlight`
       // above covers the same case once the payload has been consumed.
-      const pending = promises[0];
       if (pending) {
         webhookLogger.debug('Hook await joined the pending awaiter', {
           correlationId,
@@ -665,10 +670,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return pending.promise;
       }
 
-      const resolvers = withResolvers<T>();
-      promises.push(resolvers);
-
-      return resolvers.promise;
+      pending = withResolvers<T>();
+      return pending.promise;
     }
 
     // Helper function to create a promise that resolves with the hook's
@@ -731,12 +734,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         queueItem.disposed = true;
       }
 
-      // Drain any pending promises that are waiting for payloads.
-      // Without this, promises created by `await hook` or the async iterator's
+      // Drop the pending awaiter waiting for a payload. Without this,
+      // promises created by `await hook` or the async iterator's
       // `yield await this` would hang forever since the event consumer will
       // never deliver another hook_received after disposal.
-      if (promises.length > 0) {
-        promises.length = 0;
+      if (pending) {
+        pending = undefined;
         scheduleWorkflowSuspension(ctx);
       }
 
