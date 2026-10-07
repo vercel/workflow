@@ -300,6 +300,7 @@ export async function listTaggedFiles(
 ): Promise<string[]> {
   const suffix = `.${tag}.json`;
   try {
+    await assertNotSymlinkedRunDir(dirPath);
     const files = await fs.readdir(dirPath);
     return files.filter((f) => f.endsWith(suffix));
   } catch (error) {
@@ -319,6 +320,7 @@ export async function listTaggedFilesByExtension(
 ): Promise<string[]> {
   const suffix = `.${tag}${extension}`;
   try {
+    await assertNotSymlinkedRunDir(dirPath);
     const files = await fs.readdir(dirPath);
     return files.filter((f) => f.endsWith(suffix));
   } catch (error) {
@@ -330,6 +332,9 @@ export async function listTaggedFilesByExtension(
 export async function ensureDir(dirPath: string): Promise<void> {
   const resolvedPath = path.resolve(dirPath);
   if (fsState.createdDirectoriesCache.has(resolvedPath)) {
+    // Checked on every use, not once: the directory can be replaced after
+    // it was cached.
+    await assertNotSymlinkedRunDir(resolvedPath);
     return;
   }
   let mkdirError: unknown;
@@ -360,13 +365,22 @@ export async function ensureDir(dirPath: string): Promise<void> {
 
 /**
  * A run's `events/<runId>` or `steps/<runId>` directory must be a real
- * directory: `mkdir` accepts a symlink to one, and writing through it would
- * put the run's files outside the data directory.
+ * directory: `mkdir` accepts a symlink to one, and reading, writing or
+ * deleting through it would reach files outside the data directory. Every
+ * primitive below that touches a file in, or lists, such a directory calls
+ * this first (one `lstat`); a missing directory passes.
  */
-async function assertNotSymlinkedRunDir(dirPath: string): Promise<void> {
+export async function assertNotSymlinkedRunDir(dirPath: string): Promise<void> {
   const parent = path.basename(path.dirname(dirPath));
   if (!(RUN_SCOPED_ENTITY_DIRS as readonly string[]).includes(parent)) return;
-  if ((await fs.lstat(dirPath)).isSymbolicLink()) {
+  let stats: import('node:fs').Stats;
+  try {
+    stats = await fs.lstat(dirPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (stats.isSymbolicLink()) {
     throw new WorkflowWorldError(
       `Refusing to write through symlinked run directory ${dirPath}: ` +
         `replace it with a real directory.`
@@ -505,6 +519,7 @@ export async function readJSON<T>(
   filePath: string,
   decoder: z.ZodType<T>
 ): Promise<T | null> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   try {
     const content = await withWindowsRetry(() =>
       fs.readFile(filePath, 'utf-8')
@@ -517,6 +532,7 @@ export async function readJSON<T>(
 }
 
 export async function readBuffer(filePath: string): Promise<Buffer> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   const content = await fs.readFile(filePath);
   return content;
 }
@@ -524,6 +540,7 @@ export async function readBuffer(filePath: string): Promise<Buffer> {
 export async function readFirstByte(
   filePath: string
 ): Promise<number | undefined> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   const file = await fs.open(filePath, 'r');
   try {
     const byte = Buffer.allocUnsafe(1);
@@ -535,6 +552,7 @@ export async function readFirstByte(
 }
 
 export async function deleteJSON(filePath: string): Promise<void> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   try {
     // On Windows, a concurrent reader briefly holding the file open makes
     // unlink fail with EPERM (share violation), so retry like the other
@@ -630,6 +648,7 @@ export async function listFilesByExtension(
   extension: string
 ): Promise<string[]> {
   try {
+    await assertNotSymlinkedRunDir(dirPath);
     const files = await fs.readdir(dirPath);
     return files
       .filter((f) => f.endsWith(extension))

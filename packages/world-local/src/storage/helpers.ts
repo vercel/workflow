@@ -8,6 +8,7 @@ import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
+  assertNotSymlinkedRunDir,
   deleteJSON,
   hasTag,
   isUntagged,
@@ -348,7 +349,9 @@ export async function scanRunEventIds(
 ): Promise<RunEventIdScan> {
   let files: string[] = [];
   try {
-    files = await fs.readdir(path.join(basedir, runEntityDir('events', runId)));
+    const eventsDir = path.join(basedir, runEntityDir('events', runId));
+    await assertNotSymlinkedRunDir(eventsDir);
+    files = await fs.readdir(eventsDir);
   } catch (error) {
     // Only ENOENT ("no events directory yet") means there is provably
     // nothing visible. Any other failure would silently report an empty run,

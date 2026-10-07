@@ -99,22 +99,45 @@ describe('clear()', () => {
 });
 
 describe('run directories', () => {
-  it('refuses to write through a symlinked run directory', async () => {
+  async function symlinkRunDir(entityDir: 'events' | 'steps', runId: string) {
+    const outside = path.join(root, `outside-${entityDir}`);
+    const runDir = path.join(dataDir, entityDir, runId);
+    await fs.rename(runDir, outside);
+    await fs.symlink(outside, runDir, 'dir');
+    return outside;
+  }
+
+  // No cache reset between creating the run and swapping its directory: the
+  // write-path caches already hold it, as in a long-running dev server.
+  it('refuses writes, reads and listings through a symlinked steps dir', async () => {
     const runId = await seedRun();
-    const outside = path.join(root, 'outside');
-    await fs.mkdir(outside);
-    const stepsDir = path.join(dataDir, 'steps', runId);
-    await fs.rm(stepsDir, { recursive: true });
-    await fs.symlink(outside, stepsDir, 'dir');
-    clearCreatedFilesCache();
+    const storage = createStorage(dataDir);
+    const outside = await symlinkRunDir('steps', runId);
+    const before = (await fs.readdir(outside)).sort();
 
     await expect(
-      createStep(createStorage(dataDir), runId, {
+      createStep(storage, runId, {
         stepId: 'step_4',
         stepName: 'step',
         input: new Uint8Array(),
       })
     ).rejects.toThrow(/symlinked run directory/);
-    expect(await fs.readdir(outside)).toEqual([]);
+    await expect(storage.steps.get(runId, 'step_1')).rejects.toThrow(
+      /symlinked run directory/
+    );
+    await expect(storage.steps.list({ runId })).rejects.toThrow(
+      /symlinked run directory/
+    );
+    expect((await fs.readdir(outside)).sort()).toEqual(before);
+  });
+
+  it('refuses reading the event log through a symlinked events dir', async () => {
+    const runId = await seedRun();
+    const storage = createStorage(dataDir);
+    await symlinkRunDir('events', runId);
+
+    await expect(storage.events.list({ runId })).rejects.toThrow(
+      /symlinked run directory/
+    );
   });
 });
