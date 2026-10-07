@@ -787,6 +787,38 @@ describe('Storage', () => {
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
 
+      it('stores step output once, on the step_completed event', async () => {
+        await createStep(storage, testRunId, {
+          stepId: 'step_123',
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        });
+        await updateStep(storage, testRunId, 'step_123', 'step_started', {});
+        const output = new Uint8Array([7, 8, 9]);
+        await updateStep(storage, testRunId, 'step_123', 'step_completed', {
+          result: output,
+        });
+
+        const row = dbFor(testDir).get<{
+          data: Uint8Array;
+          output_seq: number | null;
+        }>(
+          'SELECT data, output_seq FROM steps WHERE run_id = ? AND step_id = ?',
+          testRunId,
+          'step_123'
+        )!;
+        expect(decode(row.data)).not.toHaveProperty('output');
+        expect(row.output_seq).not.toBeNull();
+
+        const fetched = await storage.steps.get(testRunId, 'step_123');
+        expect(fetched.output).toEqual(output);
+        const listed = await storage.steps.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(listed.data[0].output).toEqual(output);
+      });
+
       it('should update step status to failed via step_failed event', async () => {
         await createStep(storage, testRunId, {
           stepId: 'step_123',

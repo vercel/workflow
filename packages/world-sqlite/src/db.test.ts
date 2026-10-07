@@ -38,6 +38,32 @@ describe('db', () => {
     db.close();
   });
 
+  it('creates stores with incremental auto_vacuum and reclaims freed pages', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wsqlite-db-'));
+    const db = new Db(path.join(dir, 'workflow.sqlite'));
+    expect(
+      db.get<{ auto_vacuum: number }>('PRAGMA auto_vacuum')!.auto_vacuum
+    ).toBe(2);
+    const blob = new Uint8Array(16 * 1024);
+    db.transaction(() => {
+      for (let i = 0; i < 1000; i++) {
+        db.run('INSERT INTO meta (key, value) VALUES (?, ?)', `k${i}`, blob);
+      }
+    });
+    const pages = () =>
+      db.get<{ page_count: number }>('PRAGMA page_count')!.page_count;
+    const filled = pages();
+    db.transaction(() => {
+      db.run("DELETE FROM meta WHERE key LIKE 'k%'");
+    });
+    const free = db.get<{ freelist_count: number }>(
+      'PRAGMA freelist_count'
+    )!.freelist_count;
+    expect(free).toBeLessThanOrEqual(256);
+    expect(pages()).toBeLessThan(filled / 2);
+    db.close();
+  });
+
   it('round-trips bytes natively and dates as JSON would', () => {
     const value = decode(
       encode({

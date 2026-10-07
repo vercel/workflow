@@ -70,6 +70,7 @@ import {
   readWait,
   releaseHookTokenClaimIfOwnedBy,
   SORT_KEY_CURSOR_PREFIX,
+  setStepOutputSeq,
   signalRunTerminal,
   taggedLockName,
   writeHook,
@@ -1493,6 +1494,9 @@ export function createEventsStorage(
 
     if (step && stepNeedsInputSeq) {
       writeStep(ctx, step, eventIdSeq(event));
+    }
+    if (step && data.eventType === 'step_completed') {
+      setStepOutputSeq(ctx, step.runId, step.stepId, eventIdSeq(event));
     }
 
     if (hook && data.eventType === 'hook_created') {

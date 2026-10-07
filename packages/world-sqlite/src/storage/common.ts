@@ -179,26 +179,43 @@ export function insertRun(ctx: Ctx, run: WorkflowRun): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * A step row joined with its input. The input is stored once, on the
- * step_created event the row points at (`input_seq`).
+ * A step row joined with its payloads. Each is stored once, on the event
+ * the row points at: the input on step_created (`input_seq`), the output on
+ * step_completed (`output_seq`).
  */
 function hydrateStep(row: {
   data: Uint8Array;
-  event_data: Uint8Array | null;
+  input_event: Uint8Array | null;
+  output_event: Uint8Array | null;
 }): Step {
   const step = decode<Record<string, unknown>>(row.data);
-  if (row.event_data) {
-    const event = decode<{ eventData?: { input?: unknown } }>(row.event_data);
+  if (row.input_event) {
+    const event = decode<{ eventData?: { input?: unknown } }>(row.input_event);
     step.input = event.eventData?.input;
+  }
+  if (row.output_event) {
+    const event = decode<{ eventData?: { result?: unknown } }>(
+      row.output_event
+    );
+    step.output = event.eventData?.result;
   }
   return StepSchema.parse(step) as Step;
 }
 
-const STEP_SELECT = `SELECT s.data AS data, e.data AS event_data, s.created_at AS created_at, s.step_id AS step_id
-  FROM steps s LEFT JOIN events e ON e.run_id = s.run_id AND e.seq = s.input_seq`;
+type StepRow = {
+  data: Uint8Array;
+  input_event: Uint8Array | null;
+  output_event: Uint8Array | null;
+};
+
+const STEP_SELECT = `SELECT s.data AS data, ie.data AS input_event, oe.data AS output_event,
+    s.created_at AS created_at, s.step_id AS step_id
+  FROM steps s
+  LEFT JOIN events ie ON ie.run_id = s.run_id AND ie.seq = s.input_seq
+  LEFT JOIN events oe ON oe.run_id = s.run_id AND oe.seq = s.output_seq`;
 
 export function readStep(ctx: Ctx, runId: string, stepId: string): Step | null {
-  const row = ctx.db.get<{ data: Uint8Array; event_data: Uint8Array | null }>(
+  const row = ctx.db.get<StepRow>(
     `${STEP_SELECT} WHERE s.run_id = ? AND s.step_id = ? AND s.tag IN (?, ?)`,
     runId,
     stepId,
@@ -213,12 +230,10 @@ export function listStepRows(
   runId: string
 ): { step: Step; createdAt: number; id: string }[] {
   return ctx.db
-    .all<{
-      data: Uint8Array;
-      event_data: Uint8Array | null;
-      created_at: number;
-      step_id: string;
-    }>(`${STEP_SELECT} WHERE s.run_id = ?`, runId)
+    .all<StepRow & { created_at: number; step_id: string }>(
+      `${STEP_SELECT} WHERE s.run_id = ?`,
+      runId
+    )
     .map((row) => ({
       step: hydrateStep(row),
       createdAt: Number(row.created_at),
@@ -227,11 +242,17 @@ export function listStepRows(
 }
 
 /**
- * Writes a step. `inputSeq` names the step_created event holding the input;
- * omit it to keep the row's current pointer.
+ * Writes a step, without its input and output: those live on the events the
+ * row points at. `inputSeq` names the step_created event holding the input;
+ * omit it to keep the row's current pointer. The output pointer is set by
+ * {@link setStepOutputSeq} once the step_completed event is stored.
  */
 export function writeStep(ctx: Ctx, step: Step, inputSeq?: number): void {
-  const { input: _input, ...rest } = step as Step & { input?: unknown };
+  const {
+    input: _input,
+    output: _output,
+    ...rest
+  } = step as Step & { input?: unknown; output?: unknown };
   ctx.db.run(
     `INSERT INTO steps (run_id, step_id, tag, created_at, input_seq, data)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -244,6 +265,21 @@ export function writeStep(ctx: Ctx, step: Step, inputSeq?: number): void {
     toMillis(step.createdAt),
     inputSeq ?? null,
     encode(rest)
+  );
+}
+
+/** Points a step at the step_completed event holding its output. */
+export function setStepOutputSeq(
+  ctx: Ctx,
+  runId: string,
+  stepId: string,
+  outputSeq: number
+): void {
+  ctx.db.run(
+    'UPDATE steps SET output_seq = ? WHERE run_id = ? AND step_id = ?',
+    outputSeq,
+    runId,
+    stepId
   );
 }
 

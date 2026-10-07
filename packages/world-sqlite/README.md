@@ -72,8 +72,12 @@ directory on the guest's own filesystem.
 
 ## Storage notes
 
-- A step's input is stored once, on its `step_created` event, and joined into
-  the step on read.
+- A step's input and output are each stored once, on its `step_created` and
+  `step_completed` events, and joined into the step on read.
 - Binary payloads are stored as bytes, not base64.
-- Deleting runs frees pages inside the file but does not shrink it; an
-  untagged `clear()` runs `VACUUM`.
+- New databases use `auto_vacuum = INCREMENTAL`. After a commit leaves more
+  than 4 MiB of free pages (deleted or purged rows), the file is truncated,
+  keeping 1 MiB of slack. Databases created without it keep their free pages
+  until a `VACUUM`; an untagged `clear()` runs one.
+- `bench/disk-usage.mjs` measures disk usage against world-local; see
+  [`bench/README.md`](./bench/README.md).

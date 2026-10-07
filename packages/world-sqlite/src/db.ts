@@ -15,6 +15,11 @@ export const MIN_SQLITE_VERSION = '3.51.3';
 /** Schema version stored in `meta.schema_version`. */
 export const SCHEMA_VERSION = 1;
 
+/** Free pages (4 KiB each) that trigger an incremental vacuum: 4 MiB. */
+const FREE_PAGES_RECLAIM_THRESHOLD = 1024;
+/** Free pages an incremental vacuum leaves in place for upcoming writes. */
+const FREE_PAGES_SLACK = 256;
+
 const BUSY_TIMEOUT_MS = 5_000;
 
 export class SqliteVersionError extends WorkflowWorldError {
@@ -109,6 +114,7 @@ CREATE TABLE IF NOT EXISTS steps (
   tag TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   input_seq INTEGER,
+  output_seq INTEGER,
   data BLOB NOT NULL,
   PRIMARY KEY (run_id, step_id)
 );
@@ -215,6 +221,10 @@ export class Db {
       db.close();
       throw new SqliteVersionError(version);
     }
+    // Must precede the first CREATE TABLE; a no-op on an existing store
+    // created without it. Deleted rows are then returned to the filesystem
+    // by `reclaimFreePages` instead of staying in the file as free pages.
+    db.exec('PRAGMA auto_vacuum = INCREMENTAL');
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA foreign_keys = OFF');
@@ -280,12 +290,33 @@ export class Db {
         throw new Error('Db.transaction callbacks must be synchronous');
       }
       this.raw.exec('COMMIT');
+      this.reclaimFreePages();
       return result;
     } catch (error) {
       if (this.raw.isTransaction) {
         this.raw.exec('ROLLBACK');
       }
       throw error;
+    }
+  }
+
+  /**
+   * Truncates the file once deletes and shrinking rows leave more than
+   * {@link FREE_PAGES_RECLAIM_THRESHOLD} free pages, keeping
+   * {@link FREE_PAGES_SLACK} for upcoming writes. Reading the free-page count
+   * is a header read, so this is cheap on the commits that skip it. Never
+   * throws: a busy store just keeps its free pages until a later commit.
+   */
+  reclaimFreePages(): void {
+    try {
+      const free = Number(
+        (this.get('PRAGMA freelist_count') as { freelist_count: number })
+          .freelist_count
+      );
+      if (free < FREE_PAGES_RECLAIM_THRESHOLD) return;
+      this.raw.exec(`PRAGMA incremental_vacuum(${free - FREE_PAGES_SLACK})`);
+    } catch {
+      // Reclaiming is an optimization; the data is already committed.
     }
   }
 
