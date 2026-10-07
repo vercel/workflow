@@ -287,7 +287,7 @@ describe('slot event ids', () => {
     // Rewrite the run's log the way it would look had it been created before
     // slot ids existed. The scheme is pinned by what is on disk, not by a
     // stored flag, so this is the whole of the upgrade path.
-    const eventsDir = path.join(testDir, 'events');
+    const eventsDir = path.join(testDir, 'events', runId);
     const files = (await fs.readdir(eventsDir)).filter((file) =>
       file.startsWith(`${runId}-`)
     );

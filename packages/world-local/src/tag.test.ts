@@ -62,13 +62,13 @@ describe('File tagging', () => {
 
     it('should write event files with tag suffix', async () => {
       const storage = createStorage(testDir, 'vitest-0');
-      await createRun(storage, {
+      const run = await createRun(storage, {
         deploymentId: 'dep-1',
         workflowName: 'test-wf',
         input: new Uint8Array(),
       });
 
-      const eventsDir = path.join(testDir, 'events');
+      const eventsDir = path.join(testDir, 'events', run.runId);
       const files = await fs.readdir(eventsDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/\.vitest-0\.json$/);
@@ -88,7 +88,7 @@ describe('File tagging', () => {
         input: new Uint8Array(),
       });
 
-      const stepsDir = path.join(testDir, 'steps');
+      const stepsDir = path.join(testDir, 'steps', run.runId);
       const files = await fs.readdir(stepsDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/\.vitest-0\.json$/);
@@ -460,7 +460,11 @@ describe('File tagging', () => {
       const runsDir = path.join(testDir, 'runs');
       const eventsDir = path.join(testDir, 'events');
       const stepsDir = path.join(testDir, 'steps');
-      for (const dir of [runsDir, eventsDir, stepsDir]) {
+      for (const dir of [
+        runsDir,
+        path.join(eventsDir, run.runId),
+        path.join(stepsDir, run.runId),
+      ]) {
         const files = await fs.readdir(dir);
         for (const file of files) {
           expect(file).toMatch(/\.vitest-0\.json$/);
