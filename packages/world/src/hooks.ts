@@ -33,16 +33,16 @@ export const HookResumeContextSchema = z.compile(
     // sealed envelopes and on projects with encryption disabled, where the
     // resume falls back to the symmetric per-run key.
     encryptionPublicKey: z.string().optional(),
-    // Feature marker: the version of the lazy-hook-resume consumer protocol the
-    // run's creating deployment supports. Present (>= 1) means that deployment's
-    // `@workflow/core` re-ensures the `hook_received` event from a queue
-    // message's `hookInput` on replay. Current producers no longer send
-    // `hookInput` (the durable write happens before the wake is published), so
-    // they never read this marker; it remains stamped so OLDER producers, which
-    // still gate their lazy path on it, keep working against new runs. Because a
-    // run is pinned to its creating deployment, this marker is a reliable
-    // per-run attestation, unlike inferring support from a version compare
-    // against a predicted release cutoff.
+    // Feature marker: the version of the hook-resume consumer protocol the
+    // run's creating deployment supports (see HOOK_RESUME_INPUT_VERSION).
+    // `>= 1` means that deployment's `@workflow/core` re-ensures the
+    // `hook_received` event from a queue message's `hookInput` on replay (read
+    // by OLDER producers' lazy path). `>= 2` means it also honors a wake's
+    // `hookResumeFence`, which current producers require before publishing the
+    // wake in parallel with the `hook_received` write. Because a run is pinned
+    // to its creating deployment, this marker is a reliable per-run
+    // attestation, unlike inferring support from a version compare against a
+    // predicted release cutoff.
     hookResumeInputVersion: z.number().optional(),
   })
 );
@@ -50,16 +50,31 @@ export const HookResumeContextSchema = z.compile(
 export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
 
 /**
- * Current version of the lazy-hook-resume consumer protocol. A run's creating
+ * Current version of the hook-resume consumer protocol. A run's creating
  * deployment stamps this into its execution context (and the server mirrors it
- * onto `HookResumeContext.hookResumeInputVersion`) to attest that its
- * `@workflow/core` re-ensures the `hook_received` event from a queue message's
- * `hookInput`. Current producers write the event durably BEFORE publishing the
- * wake and do not read this marker; it exists for older producers whose lazy
- * path requires the target run's marker to be at least this value. Bump only
- * on a breaking change to the `hookInput` re-ensure contract.
+ * onto `HookResumeContext.hookResumeInputVersion`) to attest what its
+ * `@workflow/core` does with a hook wake. Versions are cumulative, and every
+ * reader compares with `>=`, so a bump never breaks an older producer:
+ *
+ * - `1`: re-ensures the `hook_received` event from a queue message's
+ *   `hookInput` (read by older producers' lazy path).
+ * - `2`: additionally honors `hookResumeFence` on a wake: before replaying,
+ *   it waits (bounded) for the `hook_received` that the fence names to become
+ *   readable. A producer may publish such a wake concurrently with its
+ *   `hook_received` write only to a run at
+ *   {@link HOOK_RESUME_FENCE_INPUT_VERSION} or above.
+ *
+ * Never lower this, and never change what an existing version means.
  */
-export const HOOK_RESUME_INPUT_VERSION = 1;
+export const HOOK_RESUME_INPUT_VERSION = 2;
+
+/**
+ * The minimum `hookResumeInputVersion` whose consumer honors
+ * `WorkflowInvokePayload.hookResumeFence`. `resumeHook()` publishes the wake
+ * in parallel with the `hook_received` write only for runs at or above it;
+ * every other run gets the serial write-then-wake dispatch.
+ */
+export const HOOK_RESUME_FENCE_INPUT_VERSION = 2;
 
 /**
  * Current version of the backend lazy-hook-resume dedup contract: the live

@@ -98,6 +98,15 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
 - Set `1` to enable it.
 
+### `WORKFLOW_PARALLEL_HOOK_WAKE`
+
+- Default: disabled
+- Read by the process that calls `resumeHook()` / `resumeWebhook()`. By default a resume writes the `hook_received` event first and publishes the workflow wake only after that write is acknowledged. When enabled, the wake is published concurrently with the write, which saves one round trip per resume. `resumeHook()` still resolves only after the write has committed and the wake has been accepted, and a failed write still throws.
+- The wake can reach the run before the write commits. The wake carries a fence (the resume's ID), and the consuming invocation does not replay until it has read that `hook_received` event. It re-reads the event log with short backoff for up to 1 second from when the delivery arrived, and stops early if the hook was disposed or the run ended. It never writes the event itself. If the write took 500 ms or longer, which is long enough that it could have committed after the fence gave up, the producer publishes a second wake once the write has committed.
+- Applies only when all of these hold: the World deduplicates hook resumes (the write carries a resume ID), the resume is not delivered through `invoke`, and the target run was created by a deployment whose `@workflow/core` honors the fence (its `hookResumeInputVersion` is 2 or higher). Other resumes keep the sequential dispatch, so runs pinned to older deployments are unaffected.
+- On the producer span `hook.resume`, `workflow.hook.resume_strategy` is `parallel`. `workflow.hook.resume_write_ms` records the write latency, and `workflow.hook.resume_insurance_wake` marks a second wake. On the consuming invocation, `workflow.hook.resume_fence.outcome` (`present`, `hook_disposed`, `run_terminal` or `window_elapsed`), `.reloads` and `.waited_ms` describe the fence.
+- Set `1` to enable it, and unset it or set `0` to turn it off again. The variable is read on every resume.
+
 ### `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`
 
 - Default: `30000` (30 seconds)

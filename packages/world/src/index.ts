@@ -80,6 +80,7 @@ export {
 export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,
+  HOOK_RESUME_FENCE_INPUT_VERSION,
   HOOK_RESUME_INPUT_VERSION,
   HookClaimedFromSchema,
   HookResumeCapabilitiesSchema,
@@ -102,6 +103,8 @@ export type * from './queue.js';
 export {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  HOOK_RESUME_FENCE_MAX_WINDOW_MS,
+  HookResumeFenceSchema,
   MessageId,
   parseQueueName,
   QueuePayloadSchema,

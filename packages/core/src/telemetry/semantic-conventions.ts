@@ -745,9 +745,9 @@ export const ResumeTrigger = SemanticConvention<'hook'>(
 );
 
 /**
- * Which `resumeHook()` dispatch path produced this resume. `parallel` only
- * appears for messages published by an older producer, which wrote
- * `hook_received` itself in parallel with the publish.
+ * Which `resumeHook()` dispatch path produced this resume. `parallel` is the
+ * fenced concurrent write + wake (`WORKFLOW_PARALLEL_HOOK_WAKE`), or a
+ * message from an older producer's unfenced variant.
  */
 export const ResumeStrategy = SemanticConvention<
   'lazy' | 'parallel' | 'sequential'
