@@ -2621,20 +2621,24 @@ it('runs no step before a durable invoke-first creation, and acknowledges once t
       flushedAtAck = flushed.map((barrier) => [...barrier]);
     });
   await vi.waitFor(() => expect(flushed).toHaveLength(1));
-  // The barrier covers run_created alone; run_started is staged behind it and
-  // the workflow pass may run meanwhile, but no later write (and so no step
-  // body) precedes it.
+  // The barrier covers run_created alone. The workflow pass and its writes
+  // stream behind it meanwhile, but no step body runs before the run exists.
   expect(flushed[0]).toEqual(['run_created']);
   await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(staged).toEqual([
+    'run_created',
+    'run_started',
+    'step_created',
+    'step_started',
+  ]);
   expect(marks).toEqual([]);
-  expect(staged).toEqual(['run_created', 'run_started']);
   expect(acknowledged).toBe(false);
   releaseFlush();
   // The start is acknowledged once the run exists, while its first step is
   // still running.
   await started;
   // The acknowledgement waited for no write beyond the creation barrier.
-  expect(flushedAtAck).toEqual([['run_created']]);
+  expect(flushedAtAck[0]).toEqual(['run_created']);
   await vi.waitFor(() => expect(marks).toEqual(['first']));
   expect(acknowledged).toBe(true);
   expect(staged.slice(0, 3)).toEqual([

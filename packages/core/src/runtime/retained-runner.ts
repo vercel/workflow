@@ -311,6 +311,9 @@ export class RetainedRunner {
   /** A durable creation's start: acknowledged once the run exists and its wake
    * is armed, while the first advance continues behind it. */
   private startAck?: ReturnType<typeof withResolvers<unknown>>;
+  /** A durable creation's barrier while it is in flight: no step body runs
+   * before the run exists. */
+  private creationDurable?: Promise<unknown>;
   private startArm?: Promise<unknown>;
   private eventWriter?: EventWriteSession;
   private failureCommitted = false;
@@ -787,9 +790,8 @@ export class RetainedRunner {
       if (this.durableCreate) {
         // Durable creation: the barrier covers run_created alone; it starts
         // synchronously so run_started, staged next, is not part of it.
-        // Validation and the first workflow pass proceed meanwhile, but every
-        // write after run_started queues behind the barrier, so no step body
-        // runs before the run exists.
+        // Validation, the first workflow pass and its writes proceed
+        // meanwhile; no step body runs before the run exists.
         const flushing = this.eventWriter!.flush!();
         flushing.catch(() => {});
         const durable = this.observed(
@@ -800,8 +802,16 @@ export class RetainedRunner {
         durable.catch(() => {});
         this.flushChain = durable.catch(() => {});
         await this.markStarted();
-        const tail = this.commitTail;
-        this.commitTail = tail.then(() => durable).catch(() => {});
+        // Later writes stream behind the barrier on the ordered single-writer
+        // session; only a step body waits for the run to exist.
+        this.creationDurable = durable;
+        void durable.then(
+          () => {
+            if (this.creationDurable === durable)
+              this.creationDurable = undefined;
+          },
+          () => {}
+        );
         const ack = this.startAck;
         if (ack)
           Promise.all([durable, this.startArm]).then(
@@ -2143,6 +2153,9 @@ export class RetainedRunner {
     const work = Promise.resolve().then(() =>
       this.inTurn.run(false, () =>
         withScopedWorld(this.facade, async () => {
+          // Durable creation: the step's events are already streaming behind
+          // run_created; its body waits for the run to exist.
+          if (this.creationDurable) await this.creationDurable;
           this.observe('step', 'begin', stepSpanId, {
             parentSpanId,
             stepId: step.stepId,
