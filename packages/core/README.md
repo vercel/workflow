@@ -2,7 +2,16 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
-Steps wait for released stream writers to drain before recording completion.
+The CI benchmark suite in `e2e/benchmark.test.ts` measures time to first step,
+fan-out, and sequential-step overhead. Streaming delivery performance is
+measured in durabench; stream correctness remains covered by unit and E2E tests.
+
+Steps wait for released stream writers to drain before recording completion,
+then release idle transport resources when the World supports it. Reacquiring
+the same writable remains supported. Aborting a public writable drains its
+accepted prefix and disposes the underlying writer transport without closing
+the shared server stream. Source failures in flushable readable pipes propagate
+to the user-facing reader rather than leaving it waiting for more data.
 Streams that finish draining after the inline wait budget expires do not force
 an extra queued continuation unless other background operations remain pending.
 
@@ -42,10 +51,6 @@ Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
 The callback's `waitUntil` scope also drains background operations for streams
 hydrated from the persisted failure, including when a handler throws.
-
-Replay payload preparation shares decrypt/decompress work within an invocation
-while bounding concurrent jobs, serialized input in flight, and cached plaintext.
-Demanded payloads take priority over speculative preparation without starving it.
-Each replay still deserializes fresh VM objects. See
-[replay preparation admission](src/REPLAY_PREPARATION.md) for the defaults,
-oversized-payload behavior, and memory accounting boundaries.
+Register in the workflow executor's host startup, never from workflow or step
+code. Framework-specific support, hot-reload behavior, and stream cleanup are
+documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks).

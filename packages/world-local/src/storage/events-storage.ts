@@ -3240,6 +3240,26 @@ export function createEventsStorage(
               return { event: occupant };
             }
           }
+          // The hook claim owner is unpinned too: an adopter can publish
+          // first while the owner is preparing its write. Converge on that
+          // same hook before bumping, or the owner appends a second creation
+          // and only then rejects at the deferred entity write. An unrelated
+          // occupant still needs the normal slot collision handling.
+          if (data.eventType === 'hook_created' && data.correlationId) {
+            const occupant = await readJSONWithFallback(
+              basedir,
+              'events',
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            );
+            if (
+              occupant?.eventType === 'hook_created' &&
+              occupant.correlationId === data.correlationId
+            ) {
+              break;
+            }
+          }
           if (!(await bumpEventSlot(attempt))) {
             break;
           }

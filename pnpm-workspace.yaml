@@ -12,7 +12,7 @@ catalog:
   "@types/node": 22.19.0
   "@vercel/functions": ^3.8.0
   "@vercel/oidc": 3.2.0
-  "@vercel/queue": 0.6.0
+  "@vercel/queue": 0.8.0
   "@vitest/coverage-v8": ^4.1.10
   "@vitest/runner": ^4.1.10
   ai: 6.0.116
@@ -53,6 +53,22 @@ overrides:
   # sourceMappingURL). Forces transitive pins (e.g. next.js's postcss@8.4.31)
   # onto a patched version.
   'postcss@<8.5.18': 8.5.22
+  # simple-git reaches the workspace only through `@nuxt/devtools`, which is
+  # still on the 3.x line (`^3.33.0` in 3.2.4, `^3.36.0` in the newest 3.x).
+  # Pull every copy onto 4.x; `patchedDependencies` below bridges the one 4.x
+  # incompatibility until devtools catches up.
+  simple-git: ^4.0.2
+
+patchedDependencies:
+  # simple-git 4 dropped its default export in favour of the named `simpleGit`,
+  # and `@nuxt/devtools` still does `import Git from 'simple-git'` to name
+  # build-analysis artifacts. That fails at link time rather than at the call
+  # site, so it takes down the whole devtools module — and with it `nuxt dev`
+  # and `@workflow/nuxt`'s `nuxt-module-build prepare`. The patch is a one-line
+  # rewrite to the named export, and can go once devtools depends on
+  # simple-git 4 itself; keying it to the exact version means an install fails
+  # loudly if devtools moves before that happens.
+  '@nuxt/devtools@3.2.4': patches/@nuxt__devtools@3.2.4.patch
 
 savePrefix: ""
 

@@ -184,7 +184,7 @@ const TWEETS: Tweet[] = [
 
 function InlineCode({ children }: { children: ReactNode }) {
   return (
-    <code className="border border-border bg-accent inline-block px-1 py-px rounded text-[13px] font-mono">
+    <code className="border border-gray-alpha-400 bg-gray-100 inline-block px-1 py-px rounded text-[13px] font-mono">
       {children}
     </code>
   );
@@ -213,7 +213,7 @@ function TweetCard({ url, name, username, image, tweet }: Tweet) {
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex flex-col gap-3 rounded-lg border bg-background-100 p-4 md:p-5 hover:border-foreground/20 transition-colors"
+      className="flex flex-col gap-3 rounded-lg border bg-background-100 p-4 md:p-5 hover:border-gray-1000/20 transition-colors"
     >
       <div className="flex items-center gap-2.5">
         <Avatar className="size-9">
@@ -225,10 +225,10 @@ function TweetCard({ url, name, username, image, tweet }: Tweet) {
             {name}
             <VerifiedBadge />
           </span>
-          <span className="text-sm text-muted-foreground">@{username}</span>
+          <span className="text-sm text-gray-900">@{username}</span>
         </div>
       </div>
-      <p className="text-sm text-muted-foreground leading-relaxed flex flex-col gap-2.5">
+      <p className="text-sm text-gray-900 leading-relaxed flex flex-col gap-2.5">
         {tweet}
       </p>
     </a>

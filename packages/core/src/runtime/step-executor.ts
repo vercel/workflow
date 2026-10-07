@@ -822,6 +822,19 @@ export async function executeStep(
           params.ownerMessageId !== undefined
             ? { ownerMessageId: params.ownerMessageId }
             : {};
+        // Turbo: an awaited start still must not precede the backgrounded
+        // `run_started`. Turbo forces the optimistic branch above, but an
+        // explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or a suppressed
+        // batch) lands here with the barrier still in flight, and a lazy
+        // `step_started` that reaches the world first finds the run not yet
+        // running and is rejected. Best-effort, like the unregistered-step
+        // path: a barrier rejection means the run doesn't exist, and the
+        // create below surfaces the real error. No-op outside turbo.
+        if (params.runReadyBarrier) {
+          await params.runReadyBarrier.catch(() => {});
+        }
+        // After the barrier, as on the optimistic branch: under turbo the
+        // barrier wait is part of the run_started-to-POST stretch RSFS measures.
         stepStartPostSentAtMs = Date.now();
         const startResult = await createEvent(
           {
@@ -997,7 +1010,10 @@ export async function executeStep(
             globalThis,
             {},
             params.workflowDeploymentId,
-            streamStates
+            streamStates,
+            // A workflow-created writable passed into an optimistic step can
+            // emit chunks before run_started lands, just like getWritable().
+            optimisticStart ? params.runReadyBarrier : undefined
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -1178,6 +1194,19 @@ export async function executeStep(
       // Re-raise a user-code failure now that cleanup has run; the outer
       // catch maps it to step_failed/step_retrying.
       if (userCodeFailed) {
+        // Released writers still own transports when the step body throws.
+        // Settle released writers without retaining abandoned, lock-held ops
+        // through waitUntil. Cleanup failures must not replace the user's error.
+        await settleReleasedStepStreams(streamStates).catch((error) => {
+          runtimeLogger.warn(
+            'Failed to drain released streams after step error',
+            {
+              workflowRunId,
+              stepId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
         throw userCodeError;
       }
 

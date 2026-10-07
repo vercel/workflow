@@ -1,5 +1,17 @@
 # @workflow/nest
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4604](https://github.com/vercel/workflow/pull/4604) [`482b918`](https://github.com/vercel/workflow/commit/482b9183f2ec2a6104688d4a6d1416f76133645c) Thanks [@pranaygp](https://github.com/pranaygp)! - Harden the NestJS integration against the framework features a real application uses. Fastify applications now boot correctly, queue deliveries are no longer capped at 100, `app.enableVersioning()` no longer moves the workflow routes, `setGlobalPrefix(prefix, { exclude })` is honoured, `isWorkflowRequest(context)` export added, the Vercel app function is bundled for the runtime it is deployed on, `--external <pkgs>` is honored, and the builder warns when a second copy of `@nestjs/core` is present
+
+### Patch Changes
+
+- Updated dependencies [[`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13)]:
+  - @workflow/builders@5.0.2
+  - @workflow/utils@5.0.1
+
 ## 5.0.1
 
 ### Patch Changes

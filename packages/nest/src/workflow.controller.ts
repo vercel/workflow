@@ -11,6 +11,7 @@ import {
   Post,
   Req,
   Res,
+  VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { ApplicationConfig } from '@nestjs/core';
 import { globalSingleton } from '@workflow/utils';
@@ -20,6 +21,7 @@ import {
   getWorkflowBasePath,
   normalizeBasePath,
   type ResolvedWorkflowModuleOptions,
+  servedGlobalPrefix,
   WORKFLOW_MODULE_OPTIONS,
 } from './options.js';
 import {
@@ -27,6 +29,10 @@ import {
   sendWebResponse,
   toWebRequest,
 } from './request-response.js';
+import {
+  WORKFLOW_CONTROLLER_MARKER,
+  WORKFLOW_ROUTE_PREFIX,
+} from './workflow-routes.js';
 
 /**
  * Fallback output directory for apps still calling the deprecated
@@ -79,15 +85,27 @@ type FlowHandler = (request: Request) => Promise<Response>;
  * Serves the `.well-known/workflow/v1` endpoints by delegating to the bundles
  * `workflow-nest build` (or the module's startup build) generates.
  *
- * Note that these handlers take `@Res()`, so the app's exception filters and
- * interceptors do not wrap them. That is deliberate: the queue and third-party
- * webhook senders both key off the exact status and body the workflow runtime
- * produces, and an interceptor that reshapes responses would corrupt the
- * protocol. Errors this controller raises itself are therefore turned into
- * responses here rather than thrown.
+ * Every handler writes through `@Res()` rather than returning a value, so an
+ * interceptor or exception filter that reshapes responses cannot corrupt the
+ * protocol: the queue and third-party webhook senders key off the exact status
+ * and body the workflow runtime produces. Errors this controller raises itself
+ * are turned into responses here rather than thrown, for the same reason.
+ *
+ * Guards still run, because Nest runs them before the handler. An application
+ * guard that rejects unauthenticated requests therefore rejects queue
+ * deliveries too, which stalls every run; `isWorkflowRequest()` is exported so
+ * a guard can let these routes through.
+ *
+ * `VERSION_NEUTRAL` keeps the routes at a fixed path when the application
+ * enables `app.enableVersioning()`. URI versioning would otherwise move them
+ * to `/v1/.well-known/workflow/v1/...` while the SDK keeps generating callback
+ * URLs at the unversioned path.
  */
-@Controller('.well-known/workflow/v1')
+@Controller({ path: WORKFLOW_ROUTE_PREFIX, version: VERSION_NEUTRAL })
 export class WorkflowController {
+  /** Read by `isWorkflowRequest()`; see {@link WORKFLOW_CONTROLLER_MARKER}. */
+  static readonly [WORKFLOW_CONTROLLER_MARKER] = true;
+
   #basePathChecked = false;
 
   constructor(
@@ -123,9 +141,7 @@ export class WorkflowController {
   #warnOnBasePathMismatch(): void {
     if (this.#basePathChecked) return;
     this.#basePathChecked = true;
-    const globalPrefix = normalizeBasePath(
-      this.appConfig?.getGlobalPrefix?.() ?? ''
-    );
+    const globalPrefix = servedGlobalPrefix(this.appConfig);
     const generating = normalizeBasePath(getWorkflowBasePath());
     if (basePathReachesRoutes(generating, globalPrefix)) return;
     console.error(
@@ -230,14 +246,25 @@ export class WorkflowController {
     await this.#handleFlow('POST', req, res);
   }
 
-  @Get('flow')
-  async handleFlowGet(@Req() req: unknown, @Res() res: unknown) {
-    await this.#handleFlow('GET', req, res);
-  }
-
+  /**
+   * HEAD is declared before GET on purpose, and must stay there.
+   *
+   * NestJS registers routes in declaration order, and Fastify derives a HEAD
+   * route from every GET route unless one already exists (`exposeHeadRoutes`,
+   * on by default). Declaring GET first therefore makes Fastify create the
+   * HEAD route itself and then throw `Method 'HEAD' already declared for
+   * route '/.well-known/workflow/v1/flow'` when this handler registers —
+   * which rejects `app.init()` and takes the whole application down at boot,
+   * not just the workflow routes. Covered by the Fastify boot test.
+   */
   @Head('flow')
   async handleFlowHead(@Req() req: unknown, @Res() res: unknown) {
     await this.#handleFlow('HEAD', req, res);
+  }
+
+  @Get('flow')
+  async handleFlowGet(@Req() req: unknown, @Res() res: unknown) {
+    await this.#handleFlow('GET', req, res);
   }
 
   @Options('flow')

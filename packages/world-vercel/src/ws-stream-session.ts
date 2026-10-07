@@ -426,6 +426,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
     if (this.mode === 'deferred') this.mode = 'waiting_to_connect';
   }
 
+  release(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.mode === 'closed' || this.mode === 'poisoned') return;
+      // A released handle remains usable over HTTP with the same sequence
+      // space, without retaining or reconnecting its idle socket.
+      this.fallbackToHttpBeforeSend('stream writer released');
+    });
+  }
+
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
@@ -655,6 +664,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
             // Like close, let an already-delivered reply finish decoding so
             // a reset right behind a 429 sees the throttled state.
             void this.inbound.then(() => {
+              // A released/replaced socket no longer owns this writer. Its
+              // teardown error must not poison later HTTP writes.
+              if (ws !== this.socket) return;
               if (this.isIdleThrottledSocket(ws)) {
                 this.leaveThrottledSocketForHttp();
                 return;
@@ -945,9 +957,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private fallbackToHttpBeforeSend(reason = 'HTTP fallback before send'): void {
     this.mode = 'http';
     this.drainReason = undefined;
-    this.socket?.close(1000, reason);
+    const socket = this.socket;
     this.socket = undefined;
+    // HTTP writes must not wait for a retired upgrade to finish negotiating.
+    this.transportDecision = Promise.resolve();
     this.finishDrainWait();
+    if (socket) beginNormalWsClose(socket, reason);
   }
 
   /**

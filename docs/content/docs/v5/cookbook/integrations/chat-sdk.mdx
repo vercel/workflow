@@ -66,9 +66,9 @@ Because the session *is* a workflow run, its history is recoverable from the eve
 
 This pattern uses three files. The bot definition is separate from the workflow so adapter packages stay out of the workflow sandbox.
 
-<Tabs items={['Bot Setup', 'Workflow', 'Event Handlers']}>
+<TabsWithChildren tabs={["Bot Setup","Workflow","Event Handlers"]}>
 
-<Tab value="Bot Setup">
+<TabContent order={1}>
 
 Register the `Chat` instance as a singleton so step functions can dynamically import it and resolve adapters + state:
 
@@ -95,9 +95,9 @@ export const bot = new Chat<typeof adapters, ThreadState>({
 
 `registerSingleton()` is important: Chat SDK re-hydrates `Thread` objects inside step functions, and it needs a registered singleton to resolve adapters and state for those rehydrated instances.
 
-</Tab>
+</TabContent>
 
-<Tab value="Workflow">
+<TabContent order={2}>
 
 The workflow is a plain loop over a hook. It receives the serialized thread + first message from the handler, revives them via Chat SDK's standalone `reviver`, and every platform-side effect goes inside a `"use step"` helper:
 
@@ -174,9 +174,9 @@ export type ChatTurnPayload = {
 };
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Event Handlers">
+<TabContent order={3}>
 
 Handlers live outside the workflow file so adapter dependencies don't leak in. They decide whether to start a new workflow or resume an existing one, then store the `runId` in thread state:
 
@@ -256,9 +256,9 @@ export async function POST(
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 ## How it works
 

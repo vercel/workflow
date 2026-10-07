@@ -1,11 +1,20 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createHttpFlowFunction,
   createNestVercelRoutes,
+  esbuildTargetForRuntime,
+  importMetaShim,
   resolveHealthMetadata,
 } from './vercel-builder.js';
 
@@ -20,7 +29,7 @@ describe('createNestVercelRoutes', () => {
       existingWebhookRoute,
       { handle: 'filesystem' },
       {
-        src: '/\\.well-known/workflow/v1/flow',
+        src: '^/\\.well-known/workflow/v1/flow$',
         dest: '/__workflow_nest_flow',
       },
       { src: '/(.*)', dest: '/__nest', check: true },
@@ -34,11 +43,11 @@ describe('createNestVercelRoutes', () => {
       existingWebhookRoute,
       { handle: 'filesystem' },
       {
-        src: '/api/v2/\\.well-known/workflow/v1/flow',
+        src: '^/api/v2/\\.well-known/workflow/v1/flow$',
         dest: '/__workflow_nest_flow',
       },
       {
-        src: '/api/v2/\\.well-known/workflow/v1/webhook/([^/]+)',
+        src: '^/api/v2/\\.well-known/workflow/v1/webhook/([^/]+)$',
         dest: '/.well-known/workflow/v1/webhook/[token]',
       },
       { src: '/(.*)', dest: '/app', check: true },
@@ -48,10 +57,76 @@ describe('createNestVercelRoutes', () => {
   it('escapes regex characters in the base path', () => {
     const [, flow] = createNestVercelRoutes([], '__nest', '/api.v2');
     expect(flow).toEqual({
-      src: '/api\\.v2/\\.well-known/workflow/v1/flow',
+      src: '^/api\\.v2/\\.well-known/workflow/v1/flow$',
       dest: '/__workflow_nest_flow',
     });
   });
+});
+
+describe('esbuildTargetForRuntime', () => {
+  it.each([
+    ['nodejs22.x', 'node22'],
+    ['nodejs20.x', 'node20'],
+    ['nodejs24.x', 'node24'],
+  ])('bundles for %o as %o', (runtime, target) => {
+    // The app function is bundled for the runtime it is deployed on. A newer
+    // target lets esbuild pass through syntax the deployed Node cannot parse,
+    // and the failure is a SyntaxError at cold start with no build warning.
+    expect(esbuildTargetForRuntime(runtime)).toBe(target);
+  });
+
+  it('falls back to the runtime createVcConfig defaults to', () => {
+    expect(esbuildTargetForRuntime(undefined)).toBe('node22');
+    expect(esbuildTargetForRuntime('provided.al2')).toBe('node22');
+  });
+});
+
+describe('importMetaShim', () => {
+  const temporaryDirectories: string[] = [];
+
+  afterEach(() => {
+    for (const directory of temporaryDirectories.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it(
+    'makes import.meta work in the CommonJS app bundle',
+    { timeout: 60_000 },
+    async () => {
+      // esbuild replaces `import.meta` with `{}` in a CJS bundle, so an ESM
+      // NestJS app that builds a `createRequire(import.meta.url)` gets
+      // `undefined` and throws ERR_INVALID_ARG_TYPE at cold start. The build
+      // only warns, among everything else it prints.
+      // `realpathSync`: on macOS the tmpdir is behind the `/var` ->
+      // `/private/var` symlink, and the bundle reports its resolved path.
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wf-nest-meta-')));
+      temporaryDirectories.push(dir);
+      const entry = join(dir, 'entry.mjs');
+      const outfile = join(dir, 'out.js');
+      writeFileSync(
+        entry,
+        'export const url = import.meta.url;\nexport const dir = import.meta.dirname;\n'
+      );
+
+      const esbuild = await import('esbuild');
+      await esbuild.build({
+        entryPoints: [entry],
+        bundle: true,
+        platform: 'node',
+        format: 'cjs',
+        outfile,
+        banner: { js: importMetaShim.banner },
+        define: { ...importMetaShim.define },
+        logLevel: 'silent',
+      });
+
+      const { createRequire } = await import('node:module');
+      const built = createRequire(import.meta.url)(outfile);
+      expect(built.url).toBe(pathToFileURL(outfile).href);
+      expect(built.dir).toBe(dir);
+    }
+  );
 });
 
 describe('createHttpFlowFunction', () => {

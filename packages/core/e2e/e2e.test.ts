@@ -3472,7 +3472,13 @@ describe.concurrent('e2e', () => {
       );
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
-      const { workflowCoreVersion, ...flowBody } = await flowRes.json();
+      const { workflowCoreVersion, nodeVersion, ...flowBody } =
+        await flowRes.json();
+      // Advertised by a JavaScript app on Node.js (so cross-deployment writers
+      // know whether it decodes zstd); absent on Bun, Deno, and other SDKs.
+      expect(nodeVersion === undefined || typeof nodeVersion === 'string').toBe(
+        true
+      );
       expect(flowBody).toEqual({
         healthy: true,
         endpoint: '/.well-known/workflow/v1/flow',

@@ -10,17 +10,12 @@ type ReplayPayloadField = 'result' | 'error' | 'payload';
 
 export interface ReplayPreparationLimits {
   concurrency?: number;
-  inFlightBytes?: number;
-  residentBytes?: number;
 }
 
 interface PreparationJob {
-  key: string;
   value: Uint8Array;
-  promise: Promise<PreparedReplayPayload>;
   resolve: (value: PreparedReplayPayload) => void;
   reject: (error: unknown) => void;
-  demand: boolean;
 }
 
 function isMemoizablePrimitive(value: unknown): boolean {
@@ -38,10 +33,10 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * those replays. Deserialization still runs against each VM's globals so every
  * replay receives fresh object graphs and correctly revived Workflow objects.
  *
- * Successful prepared plaintext uses a bounded invocation-local LRU. Failed
- * speculation remains until its ordered consumer observes the original error.
- * Admission weights are serialized input bytes and prepared plaintext bytes,
- * not RSS: one oversized preparation is allowed only while otherwise idle.
+ * Successful preparations remain available for the invocation. Speculative
+ * preparation has a concurrency limit; a demanded queued payload starts
+ * immediately. Failed speculation remains until its ordered consumer observes
+ * the original error.
  */
 export class ReplayPayloadCache {
   private readonly preparedPayloads = new Map<
@@ -52,18 +47,8 @@ export class ReplayPayloadCache {
   private readonly encryptionKey: Promise<PayloadKey | undefined>;
   private nextUnscannedEventIndex = 0;
   private readonly speculative = new Map<string, PreparationJob>();
-  private readonly demanded = new Map<string, PreparationJob>();
-  private readonly residents = new Map<string, number>();
   private readonly concurrency: number;
-  private readonly inFlightLimit: number;
-  private readonly residentLimit: number;
-  private active = 0;
-  private inFlightBytes = 0;
-  private residentBytes = 0;
-  private demandBurst = 0;
-  private peakActive = 0;
-  private peakInFlightBytes = 0;
-  private peakResidentBytes = 0;
+  private activeSpeculative = 0;
 
   constructor(
     encryptionKey: PayloadKey | undefined | Promise<PayloadKey | undefined>,
@@ -72,30 +57,9 @@ export class ReplayPayloadCache {
   ) {
     this.encryptionKey = Promise.resolve(encryptionKey);
     this.concurrency = limits.concurrency ?? 8;
-    this.inFlightLimit = limits.inFlightBytes ?? 16 * 1024 * 1024;
-    this.residentLimit = limits.residentBytes ?? 32 * 1024 * 1024;
-    if (
-      !Number.isSafeInteger(this.concurrency) ||
-      this.concurrency < 1 ||
-      !Number.isSafeInteger(this.inFlightLimit) ||
-      this.inFlightLimit < 1 ||
-      !Number.isSafeInteger(this.residentLimit) ||
-      this.residentLimit < 0
-    ) {
-      throw new RangeError('Invalid replay preparation limits');
+    if (!Number.isSafeInteger(this.concurrency) || this.concurrency < 1) {
+      throw new RangeError('Invalid replay preparation concurrency');
     }
-  }
-
-  getPreparationStats() {
-    return {
-      active: this.active,
-      inFlightBytes: this.inFlightBytes,
-      residentBytes: this.residentBytes,
-      queued: this.speculative.size + this.demanded.size,
-      peakActive: this.peakActive,
-      peakInFlightBytes: this.peakInFlightBytes,
-      peakResidentBytes: this.peakResidentBytes,
-    };
   }
 
   /** Start preparing an event payload as soon as its frame is decoded. */
@@ -196,7 +160,6 @@ export class ReplayPayloadCache {
     void preparation.catch(() => {
       if (this.preparedPayloads.get(cacheKey) === preparation) {
         this.preparedPayloads.delete(cacheKey);
-        this.removeResident(cacheKey);
       }
     });
     return preparation;
@@ -210,18 +173,10 @@ export class ReplayPayloadCache {
   ): Promise<PreparedReplayPayload> {
     const cached = this.preparedPayloads.get(cacheKey);
     if (cached) {
-      if (demand) {
-        const queued = this.speculative.get(cacheKey);
-        if (queued) {
-          queued.demand = true;
-          this.speculative.delete(cacheKey);
-          this.demanded.set(cacheKey, queued);
-        }
-      }
-      const weight = this.residents.get(cacheKey);
-      if (weight !== undefined) {
-        this.residents.delete(cacheKey);
-        this.residents.set(cacheKey, weight);
+      const queued = demand ? this.speculative.get(cacheKey) : undefined;
+      if (queued) {
+        this.speculative.delete(cacheKey);
+        this.runJob(queued, false);
       }
       return cached;
     }
@@ -234,94 +189,33 @@ export class ReplayPayloadCache {
     });
     // Register before starting work, including synchronous/reentrant preparers.
     this.preparedPayloads.set(cacheKey, preparation);
-    (demand ? this.demanded : this.speculative).set(cacheKey, {
-      key: cacheKey,
-      value,
-      promise: preparation,
-      resolve,
-      reject,
-      demand,
-    });
-    this.drainPreparations();
+    const job = { value, resolve, reject };
+    if (demand) {
+      this.runJob(job, false);
+    } else {
+      this.speculative.set(cacheKey, job);
+      this.drainPreparations();
+    }
     return preparation;
   }
 
-  private removeResident(key: string): void {
-    const weight = this.residents.get(key);
-    if (weight === undefined) return;
-    this.residentBytes -= weight;
-    this.residents.delete(key);
-  }
-
-  private retainPrepared(
-    job: PreparationJob,
-    prepared: PreparedReplayPayload
-  ): void {
-    const data = prepared.data;
-    const weight =
-      data instanceof Uint8Array
-        ? data.byteLength
-        : typeof data === 'string'
-          ? data.length * 2
-          : job.value.byteLength;
-    if (weight > this.residentLimit) {
-      this.preparedPayloads.delete(job.key);
-      return;
-    }
-    while (this.residentBytes + weight > this.residentLimit) {
-      const oldest = this.residents.keys().next().value;
-      if (oldest === undefined) break;
-      this.removeResident(oldest);
-      this.preparedPayloads.delete(oldest);
-    }
-    this.residents.set(job.key, weight);
-    this.residentBytes += weight;
-    this.peakResidentBytes = Math.max(
-      this.peakResidentBytes,
-      this.residentBytes
-    );
+  private runJob(job: PreparationJob, speculative: boolean): void {
+    if (speculative) this.activeSpeculative++;
+    void this.runPreparation(job.value)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        if (speculative) this.activeSpeculative--;
+        this.drainPreparations();
+      });
   }
 
   private drainPreparations(): void {
-    while (this.active < this.concurrency) {
-      const speculative = this.speculative.values().next().value;
-      const demand = this.demanded.values().next().value;
-      // At most three demanded starts may pass a waiting speculative job.
-      const job =
-        demand && (!speculative || this.demandBurst < 3) ? demand : speculative;
-      if (!job) break;
-      // Oversized payloads run exclusively. These byte weights exclude temporary
-      // decrypt/decompress buffers, parsed VM graphs and the existing event log.
-      if (
-        this.active > 0 &&
-        this.inFlightBytes + job.value.byteLength > this.inFlightLimit
-      )
-        break;
-      (job.demand ? this.demanded : this.speculative).delete(job.key);
-      this.demandBurst = job.demand && speculative ? this.demandBurst + 1 : 0;
-      this.active++;
-      this.inFlightBytes += job.value.byteLength;
-      this.peakActive = Math.max(this.peakActive, this.active);
-      this.peakInFlightBytes = Math.max(
-        this.peakInFlightBytes,
-        this.inFlightBytes
-      );
-      void this.runPreparation(job.value)
-        .then(
-          (prepared) => {
-            this.retainPrepared(job, prepared);
-            job.resolve(prepared);
-          },
-          (error: unknown) => {
-            // Keep the exact rejection in preparedPayloads until consumePreparation.
-            job.reject(error);
-          }
-        )
-        .finally(() => {
-          this.active--;
-          this.inFlightBytes -= job.value.byteLength;
-          this.drainPreparations();
-        });
+    while (this.activeSpeculative < this.concurrency) {
+      const entry = this.speculative.entries().next().value;
+      if (!entry) break;
+      const [key, job] = entry;
+      this.speculative.delete(key);
+      this.runJob(job, true);
     }
   }
 

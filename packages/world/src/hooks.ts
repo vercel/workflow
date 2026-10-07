@@ -21,6 +21,11 @@ export const HookResumeContextSchema = z.compile(
     // Named `runSpecVersion` to distinguish it from the hook's own `specVersion`.
     runSpecVersion: z.number().optional(),
     workflowCoreVersion: z.string().optional(),
+    // Node.js version of the run's creating deployment, mirrored from
+    // `executionContext.nodeVersion`. Decides whether a resume may write zstd
+    // (which needs Node.js >= 22.15) or must use gzip. Absent on runs created
+    // before the field existed and on non-Node runtimes, where writers use gzip.
+    nodeVersion: z.string().optional(),
     traceCarrier: TraceCarrierSchema.optional(),
     // The run's published X25519 public key (base64), mirrored from the run
     // entity. Lets a resume seal (`encp`) its payload to the run without reading

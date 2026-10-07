@@ -422,6 +422,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       ...(typeof ctx.workflowCoreVersion === 'string'
         ? { workflowCoreVersion: ctx.workflowCoreVersion }
         : {}),
+      ...(typeof ctx.nodeVersion === 'string'
+        ? { nodeVersion: ctx.nodeVersion }
+        : {}),
       ...(ctx.traceCarrier && typeof ctx.traceCarrier === 'object'
         ? {
             traceCarrier: ctx.traceCarrier as HookResumeContext['traceCarrier'],

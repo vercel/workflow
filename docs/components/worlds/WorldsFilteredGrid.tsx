@@ -1,7 +1,7 @@
 'use client';
 
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
 import type { World } from './types';
 import { WorldCardSimple } from './WorldCardSimple';
 
@@ -11,7 +11,7 @@ interface WorldsFilteredGridProps {
   worlds: [string, World][];
 }
 
-const managedIds = new Set(['vercel']);
+const managedIds = new Set(['vercel', 'fantasticfour-cloudflare']);
 const embeddedIds = new Set([
   'local',
   'redis',
@@ -25,7 +25,7 @@ const sections = [
     key: 'managed',
     title: 'Managed',
     description:
-      'Production grade — zero configuration, high throughput, infinitely-scalable, e2e encrypted, and integrated observability',
+      'Production grade — zero configuration, high throughput, infinitely-scalable, and integrated observability, plus end-to-end encryption on Worlds marked Encrypted',
     match: (id: string) => managedIds.has(id),
   },
   {
@@ -81,13 +81,11 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
           {filters.map(({ id, label }) => (
             <Badge
               key={id}
-              variant="outline"
-              className={`text-sm font-normal py-1 px-3 cursor-pointer select-none ${
-                filter === id
-                  ? 'bg-gray-1000 text-background-100 border-transparent'
-                  : ''
-              }`}
+              variant={filter === id ? 'inverted' : 'pill'}
+              size="lg"
+              className="cursor-pointer select-none font-normal outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
               role="button"
+              aria-pressed={filter === id}
               tabIndex={0}
               onClick={() => setFilter(id)}
               onKeyDown={(e) => {
@@ -104,7 +102,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
       </div>
 
       {filtered.length === 0 ? (
-        <p className="text-center text-muted-foreground py-12">
+        <p className="text-center text-gray-900 py-12">
           No worlds match this filter.
         </p>
       ) : (
@@ -116,9 +114,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
             <section key={key} className="px-4 py-8">
               <div className="mb-4">
                 <h2 className="text-heading-20 sm:text-heading-24">{title}</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {description}
-                </p>
+                <p className="text-sm text-gray-900 mt-1">{description}</p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {sectionWorlds.map(([id, world]) => (

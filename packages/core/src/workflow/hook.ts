@@ -146,6 +146,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
+    // Whether workflow code is waiting on the next payload right now. A
+    // payload is only ever handed to an entry of `promises` (or buffered
+    // when it is empty), so an empty `promises` means a `hook_received`
+    // landing now cannot change the workflow's path until something awaits.
+    ctx.hookPayloadAwaiters?.set(correlationId, () => promises.length > 0);
 
     // Queue of promises that resolve once hook registration is confirmed
     // (with `null`) or a token conflict is detected (with the conflicting
@@ -292,6 +297,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (event.eventType === 'hook_conflict') {
         // Remove this hook from the invocations queue
         ctx.invocationsQueue.delete(correlationId);
+        ctx.hookPayloadAwaiters?.delete(correlationId);
 
         // Store the conflict event so we can reject any awaited promises.
         const conflictEvent = event as HookConflictEvent;
@@ -527,6 +533,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (event.eventType === 'hook_disposed') {
         // Terminal state - remove from queue (like step_completed/wait_completed)
         ctx.invocationsQueue.delete(correlationId);
+        ctx.hookPayloadAwaiters?.delete(correlationId);
         // Mark that the event log confirms disposal happened
         hasDisposedEvent = true;
 
@@ -673,6 +680,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return; // Already disposed, nothing to do
       }
       isDisposed = true;
+      // Disposed hooks are closed by their own write, so no payload can reach
+      // workflow code through them any more.
+      ctx.hookPayloadAwaiters?.delete(correlationId);
 
       // If the event log already contains hook_disposed, this is a replay: no-op
       if (hasDisposedEvent) {
