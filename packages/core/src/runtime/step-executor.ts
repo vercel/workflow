@@ -742,12 +742,13 @@ export async function executeStep(
               streamStates,
               closureVars: hydratedInput.closureVars,
               encryptionKey,
-              // An optimistic body runs before `run_started` is known to have
-              // landed. Its direct World writes (`setAttributes`) wait on
-              // the barrier. Undefined on the awaited path.
-              runReadyBarrier: optimisticStart
-                ? params.runReadyBarrier
-                : undefined,
+              // A body can run before turbo's backgrounded `run_started` has
+              // landed, an optimistic one and one whose start the creation
+              // batch pre-claimed alike, and the World refuses every other
+              // event of the run until it has. The body's direct World
+              // writes (`setAttributes`) wait on the barrier, which is
+              // undefined outside turbo and already settled once it landed.
+              runReadyBarrier: params.runReadyBarrier,
             },
             () => {
               // The last instant before user code: T7 of the resume window.

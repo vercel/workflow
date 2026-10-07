@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
+import { setAttributes } from '../../set-attributes.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { setWorld } from '../world.js';
 import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
@@ -48,6 +49,17 @@ const twoSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo
   async function workflow(a, b) {
     const first = await add(a, b);
     return await add(first, 10);
+  }${transform('workflow')}`;
+
+registerStepFunction('turbo_attributes', async (n: number) => {
+  await setAttributes({ phase: 'step-started' });
+  await setAttributes({ phase: 'step-done' });
+  return n * 4;
+});
+
+const attributesStep = `const attrs = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_attributes");
+  async function workflow(n) {
+    return await attrs(n);
   }${transform('workflow')}`;
 
 const stepThenSleep = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_add");
@@ -342,5 +354,27 @@ describe.each([
       'step_created',
       'step_started',
     ]);
+  });
+
+  // A World refuses every event but the run's lifecycle until `run_started`
+  // commits, and turbo writes it in the background while the first body
+  // runs. The body's own World writes wait for it, whichever way its start
+  // was claimed: the creation batch can pre-claim it while `run_started` is
+  // still in flight.
+  it("holds a step body's out-of-band writes until the backgrounded run_started commits", async () => {
+    const { world, start } = await setup(attributesStep, [9], {
+      async beforeCreate(data: { eventType: string }) {
+        if (data.eventType === 'run_started') {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      },
+    });
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(world.events.filter((e) => e.eventType === 'attr_set')).toHaveLength(
+      2
+    );
+    expect(world.events.at(-1)?.eventType).toBe('run_completed');
   });
 });

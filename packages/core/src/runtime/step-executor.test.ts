@@ -21,6 +21,7 @@ import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
 import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
+import { setAttributes } from '../set-attributes.js';
 import { contextStorage } from '../step/context-storage.js';
 import { getWritable } from '../step/writable-stream.js';
 import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
@@ -1089,6 +1090,44 @@ describe('executeStep — turbo run-ready barrier', () => {
     expect(
       await eventsFor(world, step.runId, step.stepId, 'step_completed')
     ).toHaveLength(1);
+  });
+
+  // The creation batch can pre-claim a step's start while turbo's
+  // `run_started` is still in flight. The body then runs on the awaited
+  // branch, and its direct World writes still need the run started: the
+  // World refuses them until it is, which drops the step as gone.
+  it("holds a pre-claimed body's setAttributes until run_started lands", async () => {
+    const world = makeLocalWorld();
+    setWorld(world);
+    const stepName = uniqueStepName();
+    const bodyEntered = withResolvers<void>();
+    registerStepFunction(stepName, async () => {
+      bodyEntered.resolve();
+      await setAttributes({ phase: 'in-step' });
+      return 'ok';
+    });
+    const step = await turboStep(world, stepName);
+    const runStatusAtAttribute: string[] = [];
+    const create = world.events.create;
+    world.events.create = (async (...args: Parameters<typeof create>) => {
+      const [targetRunId, event] = args;
+      if (targetRunId && event.eventType === 'attr_set') {
+        runStatusAtAttribute.push((await world.runs.get(targetRunId)).status);
+      }
+      return create(...args);
+    }) as typeof create;
+
+    const execution = executeStep({
+      ...step.params,
+      started: { startedAt: new Date() },
+    });
+    await bodyEntered.promise;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(runStatusAtAttribute).toEqual([]);
+
+    step.release();
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(runStatusAtAttribute).toEqual(['running']);
   });
 
   it('runs a forced optimistic body before run_started, and writes the start and outcome after it', async () => {

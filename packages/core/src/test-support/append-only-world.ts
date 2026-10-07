@@ -325,6 +325,14 @@ export class AppendOnlyWorld {
     ) {
       throw new RunExpiredError(`run ${this.run.runId} is terminal`);
     }
+    // As the World's run stamp does: every event but the run's own lifecycle
+    // needs a started run, and a remote World answers a write ahead of
+    // `run_started` with a 410.
+    if (this.run?.status === 'pending' && !eventType.startsWith('run_')) {
+      throw new RunExpiredError(
+        `run ${this.run.runId} has status 'pending'; it must be running`
+      );
+    }
   }
 
   private report(
