@@ -1042,7 +1042,7 @@ export function findEventSlotGap(
  * survives all three re-reads is a position no write will ever occupy.
  */
 export const SLOT_GAP_RECHECK_ATTEMPTS = 3;
-const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
+export const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
 
 /**
  * Re-read a log that looks holey until the hole fills in or the re-reads run

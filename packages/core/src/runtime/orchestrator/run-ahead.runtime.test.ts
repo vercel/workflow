@@ -14,6 +14,10 @@ import {
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import { RUN_AHEAD_DEPTH } from '../constants.js';
+import {
+  SLOT_GAP_RECHECK_ATTEMPTS,
+  SLOT_GAP_RECHECK_BASE_DELAY_MS,
+} from '../helpers.js';
 import { wakeUpRun } from '../runs.js';
 import { setWorld } from '../world.js';
 import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
@@ -96,6 +100,14 @@ const sleepThenStep = `const inc = ${step};
   async function workflow() {
     await sleep("1h");
     return await inc(41);
+  }${registerWorkflow()}`;
+
+// Two inline steps at once: one's outcome can run ahead while the other's
+// start is still queued in the writer.
+const parallelPair = `const inc = ${step};
+  async function workflow() {
+    const [a, b] = await Promise.all([inc(1), inc(10)]);
+    return a + b;
   }${registerWorkflow()}`;
 
 const STEPS = 6;
@@ -186,6 +198,33 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(cold.result).toBe(STEPS);
     // It runs no step again: every outcome is in the log.
     expect(eventsOf(cold.world, 'step_started')).toHaveLength(STEPS);
+  });
+
+  it('does not read a queued sibling start below a speculative outcome as a hole in the log', async () => {
+    // The second step's start commits late, later than the slot-gap check's
+    // re-reads could wait for it, so the first step's outcome is placed above
+    // a position the writer has yet to fill. Separate start writes (no batch)
+    // put the two starts behind the two creations, as on world-local.
+    const reReadWindowMs = Array.from(
+      { length: SLOT_GAP_RECHECK_ATTEMPTS },
+      (_, attempt) => SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt
+    ).reduce((sum, ms) => sum + ms, 0);
+    let starts = 0;
+    const { world } = await run(parallelPair, [], {
+      noBatch: true,
+      async beforeCreate(data: { eventType: string }) {
+        if (data.eventType === 'step_started' && ++starts === 2) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 2 * reReadWindowMs)
+          );
+        }
+      },
+    });
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(13);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'step_started')).toHaveLength(2);
   });
 
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {

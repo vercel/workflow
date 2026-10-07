@@ -80,6 +80,7 @@ import {
 } from './runtime/dynamic-workflow.js';
 import {
   type EventCreator,
+  findEventSlotGap,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -2832,6 +2833,23 @@ export function workflowEntrypoint(
                           assert(log, 'The event log is loaded in the loop');
 
                           if (isSlotGapCheckEnabled()) {
+                            // Run-ahead places an outcome at the slot its write
+                            // will take, so the log can hold it above a
+                            // position this delivery's writer is still about
+                            // to fill (a sibling step's start queued ahead of
+                            // it). That is no hole: let the speculative writes
+                            // and everything queued before them commit, and
+                            // fold them in, before judging the log.
+                            if (
+                              speculationsBySlot.size > 0 &&
+                              findEventSlotGap(log.events) !== undefined
+                            ) {
+                              if ((await drainRunAhead()) === 'repair') {
+                                await repairRunAhead();
+                              }
+                              await writer.idle();
+                              flushPending();
+                            }
                             const settled = await settleEventSlotGap(runId, {
                               events: log.events,
                               cursor: log.cursor,
