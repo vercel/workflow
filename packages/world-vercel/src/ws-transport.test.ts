@@ -746,12 +746,17 @@ describe('owner event writer', () => {
       const unassigned = (socket: { url: string }) =>
         new URL(socket.url).pathname ===
         '/api/websockets/v1/experimental_eventsync';
-      for (let i = 0; i < 20 && sockets.length < 3; i++) await tick();
+      for (let i = 0; i < 20 && sockets.length < 2; i++) await tick();
       const direct = sockets.find((socket) => !unassigned(socket))!;
       expect(direct.url).toContain('/runs/wrun_first/experimental_eventsync');
+      // Pool sockets open one at a time: the next only once one is open.
+      expect(sockets.filter(unassigned)).toHaveLength(1);
+      sockets.filter(unassigned)[0].open();
+      for (let i = 0; i < 20 && sockets.filter(unassigned).length < 2; i++)
+        await tick();
       const pooled = sockets.filter(unassigned);
       expect(pooled).toHaveLength(2);
-      for (const socket of pooled) socket.open();
+      pooled[1].open();
       direct.open();
       const loaded = first.catchUp!();
       await tick();

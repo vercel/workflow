@@ -1119,10 +1119,12 @@ function fillPool(
   const size = eventsyncPoolSize();
   if (!wsState.pool.has(url)) wsState.pool.set(url, []);
   const pool = wsState.pool.get(url)!;
-  while (pool.length + (wsState.poolOpening.get(url) ?? 0) < size) {
-    wsState.poolOpening.set(url, (wsState.poolOpening.get(url) ?? 0) + 1);
-    void openPooledSocket(url, pool, getHeaders);
-  }
+  // One upgrade at a time: a burst would spread the pool across freshly
+  // started server instances, each of whose first write is cold. Each socket
+  // opens once the previous one has (see openPooledSocket).
+  if ((wsState.poolOpening.get(url) ?? 0) > 0 || pool.length >= size) return;
+  wsState.poolOpening.set(url, 1);
+  void openPooledSocket(url, pool, getHeaders);
 }
 
 async function openPooledSocket(
@@ -1169,6 +1171,8 @@ async function openPooledSocket(
   ws.once('open', () => {
     opened();
     pool.push(entry);
+    // The next socket opens only now; a failed open waits for the next take.
+    fillPool(url, getHeaders);
   });
   entry.drop = () => {
     ws.off('close', remove);
