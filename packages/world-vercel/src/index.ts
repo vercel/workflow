@@ -81,6 +81,11 @@ export function createWorld(config?: APIConfig): World {
       // for large definitions). The server refuses a dynamic `run_created`
       // for a project outside its rollout, so `start()` fails at the write.
       dynamicWorkflowCode: true,
+      // `preloadPrefix` becomes `meta.preloadClaim` on the run_started and
+      // lazy hook_received preloads (see preload-prefix.ts). Static because a
+      // backend that predates claims ignores the meta and streams the full
+      // log, which the adapter detects per response and remembers.
+      eventLogPrefixPreload: true,
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

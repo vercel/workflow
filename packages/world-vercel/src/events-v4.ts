@@ -36,9 +36,11 @@ import {
   EventSchema,
   type EventType,
   EventTypeSchema,
+  eventIdToSlot,
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
+  type PreloadPrefix,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -71,6 +73,16 @@ import {
   recordClientSpanStatus,
   withHttpClientSpan,
 } from './http-core.js';
+import {
+  classifyPreloadClaimResponse,
+  notePreloadClaimResponse,
+  type PreloadClaimWire,
+  type PreloadComposition,
+  PreloadCompositionError,
+  preloadClaimFor,
+  preloadClaimKnownUnsupported,
+  preloadComposition,
+} from './preload-prefix.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
@@ -285,6 +297,9 @@ interface CreateEventV4InputBase {
   /** run_cancelled's optional free-text cancellation reason. Small plaintext
    *  metadata, capped at 512 chars by the @workflow/world schema. */
   cancelReason?: string;
+  /** Tail-only preload claim (`./preload-prefix.ts`): run_started and lazy
+   *  hook_received preloads only. Older servers ignore it. */
+  preloadClaim?: PreloadClaimWire;
   /** step_started's inline-ownership stamp: the queue message ID of the
    *  invocation running this step's body inline. Persisted on the event row
    *  so wake replays can observe the active owner. */
@@ -694,6 +709,7 @@ function buildPostFrameMeta(
   if (input.viaStepDispatch !== undefined) {
     meta.viaStepDispatch = input.viaStepDispatch;
   }
+  if (input.preloadClaim !== undefined) meta.preloadClaim = input.preloadClaim;
   return meta;
 }
 
@@ -1081,19 +1097,41 @@ async function decodeCreateEventResponse<T extends EventType>(
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
-) {
+  replayEventObserver?: (event: Event) => void,
+  preloadPrefix?: PreloadPrefix
+): Promise<ListEventsV4Result & { maxEvents: number; preloadBase?: number }> {
+  const claim = claimToSend(preloadPrefix, config);
   const response = await postWorkflowRunEventV4(
-    { ...input, eventType: 'run_started' },
+    {
+      ...input,
+      eventType: 'run_started',
+      ...(claim ? { preloadClaim: claim.wire } : {}),
+    },
     'event-stream',
     config
   );
-  const page = await consumeReplayLogResponse(
-    response,
-    input,
-    config,
-    replayEventObserver
-  );
+  const composition = claim
+    ? answeredComposition(response, claim, config)
+    : undefined;
+  if (composition === 'reload') {
+    await response.body?.cancel().catch(() => {});
+    return createWorkflowRunStartedEventV4(input, config, replayEventObserver);
+  }
+  let page: ListEventsV4Result;
+  try {
+    page = await consumeReplayLogResponse(
+      response,
+      input,
+      config,
+      replayEventObserver,
+      composition
+    );
+  } catch (error) {
+    // A tail that does not compose with the prefix: reload in full. The
+    // run_started POST is idempotent on a running run.
+    if (!(error instanceof PreloadCompositionError)) throw error;
+    return createWorkflowRunStartedEventV4(input, config, replayEventObserver);
+  }
   if (!page.cursor) {
     throw new WorkflowWorldError(
       'v4 createEvent: event stream missing cursor',
@@ -1110,7 +1148,42 @@ export async function createWorkflowRunStartedEventV4(
     });
   }
 
-  return { ...page, maxEvents: maxEvents.data };
+  return {
+    ...page,
+    maxEvents: maxEvents.data,
+    ...(composition ? { preloadBase: composition.slot } : {}),
+  };
+}
+
+/** A claim worth sending for `prefix`, with the prefix it was built from. */
+function claimToSend(
+  prefix: PreloadPrefix | undefined,
+  config: APIConfig | undefined
+): { wire: PreloadClaimWire; prefix: PreloadPrefix } | undefined {
+  if (prefix === undefined) return undefined;
+  if (preloadClaimKnownUnsupported(getHttpUrl(config).baseUrl))
+    return undefined;
+  const wire = preloadClaimFor(prefix);
+  return wire ? { wire, prefix } : undefined;
+}
+
+/**
+ * What a claimed response's headers say to do with its body: compose it onto
+ * the prefix (honored), read it as a full log (refused, or a backend that
+ * predates claims, which is remembered), or discard it and reload in full (a
+ * base header naming another slot, which a correct backend never sends).
+ */
+function answeredComposition(
+  response: { headers: Headers },
+  claim: { wire: PreloadClaimWire; prefix: PreloadPrefix },
+  config: APIConfig | undefined
+): PreloadComposition | undefined | 'reload' {
+  const answer = classifyPreloadClaimResponse(response.headers, claim.wire);
+  notePreloadClaimResponse(getHttpUrl(config).baseUrl, answer);
+  if (answer === 'mismatch') return 'reload';
+  return answer === 'honored'
+    ? preloadComposition(claim.prefix, claim.wire)
+    : undefined;
 }
 
 /** One event of a v4 batch POST, index-aligned with the response results. */
@@ -1553,6 +1626,8 @@ export type HookReceivedPreloadV4Result =
   /** The server streamed the replay log back as v4 frames. */
   | (ListEventsV4Result & {
       kind: 'stream';
+      /** Set when the log was composed onto an honored preload prefix. */
+      preloadBase?: number;
       /**
        * The canonical event this write created or converged on (the resume
        * claim winner's (ours or the producer's), named by the
@@ -1588,10 +1663,16 @@ export type HookReceivedPreloadV4Result =
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void,
+  preloadPrefix?: PreloadPrefix
 ): Promise<HookReceivedPreloadV4Result> {
+  const claim = claimToSend(preloadPrefix, config);
   const response = await postWorkflowRunEventV4(
-    { ...input, eventType: 'hook_received' },
+    {
+      ...input,
+      eventType: 'hook_received',
+      ...(claim ? { preloadClaim: claim.wire } : {}),
+    },
     'event-stream',
     config
   );
@@ -1604,18 +1685,34 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const page = await consumeReplayLogResponse(
-    response,
-    input,
-    config,
-    replayEventObserver
-  );
+  const composition = claim
+    ? answeredComposition(response, claim, config)
+    : undefined;
+  // Both reloads re-send a write the server dedupes on (runId, resumeId).
+  if (composition === 'reload') {
+    await response.body?.cancel().catch(() => {});
+    return createHookReceivedPreloadEventV4(input, config, replayEventObserver);
+  }
+  let page: ListEventsV4Result;
+  try {
+    page = await consumeReplayLogResponse(
+      response,
+      input,
+      config,
+      replayEventObserver,
+      composition
+    );
+  } catch (error) {
+    if (!(error instanceof PreloadCompositionError)) throw error;
+    return createHookReceivedPreloadEventV4(input, config, replayEventObserver);
+  }
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
   return {
     kind: 'stream',
     ...page,
+    ...(composition ? { preloadBase: composition.slot } : {}),
     canonicalEventId: response.headers.get(EVENT_ID_HEADER) ?? undefined,
     maxEvents: maxEvents.success ? maxEvents.data : undefined,
   };
@@ -1784,7 +1881,14 @@ function partialEventFrameStream(
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void,
+  /**
+   * An honored tail-only preload: the frames are the log after this prefix.
+   * The prefix is observed first and leads the returned events, so the result
+   * is the full log; a tail that does not continue it throws
+   * {@link PreloadCompositionError}.
+   */
+  composition?: PreloadComposition
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1800,10 +1904,30 @@ async function consumeEventFrameStream(
   }
 
   const events: Event[] = [];
+  if (composition) {
+    for (const event of composition.events) {
+      events.push(event);
+      try {
+        replayEventObserver?.(event);
+      } catch (error) {
+        throw new ReplayEventObserverError(error);
+      }
+    }
+  }
+  const prefixLength = events.length;
   try {
     for await (const frame of decodeFrames(response.body)) {
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
+        if (
+          composition &&
+          events.length === prefixLength &&
+          end.next !== composition.cursor
+        ) {
+          throw new PreloadCompositionError(
+            `v4 ${opName}: empty preload tail ended at ${end.next ?? '(no cursor)'}, not ${composition.cursor}`
+          );
+        }
         return {
           kind: 'complete',
           events,
@@ -1818,6 +1942,15 @@ async function consumeEventFrameStream(
         throw new Error(`v4 ${opName}: unexpected control frame`);
       }
       const event = decodeEventFrame(frame);
+      if (
+        composition &&
+        events.length === prefixLength &&
+        eventIdToSlot(event.eventId) !== composition.slot + 1
+      ) {
+        throw new PreloadCompositionError(
+          `v4 ${opName}: preload tail starts at ${event.eventId}, not slot ${composition.slot + 1}`
+        );
+      }
       events.push(event);
       try {
         replayEventObserver?.(event);
@@ -1828,6 +1961,7 @@ async function consumeEventFrameStream(
   } catch (cause) {
     if (
       cause instanceof ReplayEventObserverError ||
+      cause instanceof PreloadCompositionError ||
       CorruptedEventLogError.is(cause) ||
       WorkflowWorldError.is(cause)
     ) {
@@ -1873,12 +2007,14 @@ async function consumeReplayLogResponse(
     eventsRemoteRefBehavior,
   }: Pick<CreateEventV4InputBase, 'runId' | 'eventsRemoteRefBehavior'>,
   config?: APIConfig,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void,
+  composition?: PreloadComposition
 ): Promise<ListEventsV4Result> {
   const page = await consumeEventFrameStream(
     response,
     'createEvent',
-    replayEventObserver
+    replayEventObserver,
+    composition
   );
   if (!page.hasMore) {
     return {

@@ -118,6 +118,23 @@ export const WorkflowReplayLoadSource =
   SemanticConvention<WorkflowReplayLoadSource>('workflow.replay.load.source');
 
 /**
+ * Events in the cross-invocation prefix this preload offered the World
+ * (`WORKFLOW_EVENT_LOG_PREFIX_CACHE`); absent when nothing was offered.
+ */
+export const WorkflowReplayLoadPrefixOffered = SemanticConvention<number>(
+  'workflow.replay.load.prefix_offered'
+);
+
+/**
+ * Leading events of this load the World served from the offered prefix
+ * instead of the backend (the honored claim's slot N); absent when the claim
+ * was refused or not offered.
+ */
+export const WorkflowReplayLoadPrefixBase = SemanticConvention<number>(
+  'workflow.replay.load.prefix_base'
+);
+
+/**
  * Events the replay walked past that no consumer claimed, still held when the
  * replay stopped.
  *

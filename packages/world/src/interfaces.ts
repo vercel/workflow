@@ -694,6 +694,17 @@ export interface WorldCapabilities {
    * otherwise it is always sent inline.
    */
   dynamicWorkflowCode?: boolean;
+
+  /**
+   * The World accepts {@link CreateEventParams.preloadPrefix} on its
+   * `run_started` and lazy `hook_received` preloads, and every event its
+   * replay loads return is a durable row identified by its slot
+   * (`eventIdToSlot`), so a dense run of slots from 1 is a prefix of the
+   * run's log the backend can verify. The runtime keeps a per-process prefix
+   * cache (`WORKFLOW_EVENT_LOG_PREFIX_CACHE`) only for Worlds that declare
+   * this.
+   */
+  eventLogPrefixPreload?: boolean;
 }
 
 /**

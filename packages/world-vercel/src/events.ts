@@ -851,7 +851,8 @@ async function createWorkflowRunEventInner(
     const result = await createWorkflowRunStartedEventV4(
       input,
       config,
-      params?.replayEventObserver
+      params?.replayEventObserver,
+      params?.preloadPrefix
     );
     const replayRun = reconstructRunFromReplayEvents(result.events);
     if (!replayRun) {
@@ -868,6 +869,9 @@ async function createWorkflowRunEventInner(
       cursor: result.cursor,
       hasMore: result.hasMore,
       maxEvents: result.maxEvents,
+      ...(result.preloadBase !== undefined
+        ? { preloadBase: result.preloadBase }
+        : {}),
     };
   }
 
@@ -889,7 +893,8 @@ async function createWorkflowRunEventInner(
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
       config,
-      params.replayEventObserver
+      params.replayEventObserver,
+      params.preloadPrefix
     );
     if (outcome.kind === 'materialized') {
       // Older server (or optimization declined): the write still succeeded
@@ -897,7 +902,14 @@ async function createWorkflowRunEventInner(
       // replay preload on it and falls back to the run_started setup.
       return outcome.result;
     }
-    const { canonicalEventId, maxEvents, events, cursor, hasMore } = outcome;
+    const {
+      canonicalEventId,
+      maxEvents,
+      events,
+      cursor,
+      hasMore,
+      preloadBase,
+    } = outcome;
     const canonicalEvent = events.find(
       (event) => event.eventId === canonicalEventId
     );
@@ -912,6 +924,7 @@ async function createWorkflowRunEventInner(
       cursor,
       hasMore,
       ...(maxEvents !== undefined ? { maxEvents } : {}),
+      ...(preloadBase !== undefined ? { preloadBase } : {}),
     };
   }
 

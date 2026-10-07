@@ -1056,6 +1056,32 @@ export interface CreateEventParams {
    * must surface the original error without retrying or reclassifying it.
    */
   replayEventObserver?: (event: Event) => void;
+  /**
+   * A dense prefix of this run's event log the caller already holds from an
+   * earlier invocation on this process, offered on a `run_started` or lazy
+   * `hook_received` preload ({@link preloadEvents}) so the World can fetch
+   * only what follows it (the tail-only preload; see the World's
+   * {@link WorldCapabilities.eventLogPrefixPreload}).
+   *
+   * A World that honors it returns the SAME result a full load would have:
+   * `events` is `prefix.events` followed by the tail, `cursor` / `hasMore`
+   * describe the whole log, and {@link replayEventObserver} observes the
+   * prefix events before the tail's. It reports the honored prefix length on
+   * {@link EventResult.preloadBase}. A World that cannot honor it, or whose
+   * backend refuses it, loads the full log as if it had not been passed.
+   * Ignored by every World that does not declare the capability.
+   */
+  preloadPrefix?: PreloadPrefix;
+}
+
+/**
+ * What {@link CreateEventParams.preloadPrefix} offers: the events at slots
+ * `1..events.length`, exactly and in slot order, as an earlier load of this
+ * World returned them.
+ */
+export interface PreloadPrefix {
+  /** Slots 1..N of the run's log, dense, in slot order. */
+  readonly events: readonly Event[];
 }
 
 /**
@@ -1089,6 +1115,12 @@ export type EventResult<T extends EventType = EventType> = {
   stepCreated?: true;
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
+  /**
+   * Set when the World honored {@link CreateEventParams.preloadPrefix}: the
+   * number of leading `events` that came from the offered prefix rather than
+   * the backend. Telemetry only; `events` is the complete log either way.
+   */
+  preloadBase?: number;
 } & (
   | {
       /**

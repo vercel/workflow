@@ -134,6 +134,25 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - A run created at the sealed-log version can only be replayed by a reader that knows to skip `noop` events. That includes every runtime on this release train, but a runtime that pins its own accepted spec range separately, such as the Python runtime, has to catch up before it can read these runs. Switch this off in an environment where it has not.
 - Only the Vercel World seals. The Local and Postgres Worlds allocate each position at the commit that occupies it, so they cannot leave a hole and never write a `noop`; the setting still moves the version they stamp, so the fleet stays on one spec.
 
+### `WORKFLOW_EVENT_LOG_PREFIX_CACHE`
+
+- Default: disabled
+- Experimental. Keeps, per run, the event log the last invocation on this process replayed over, and offers it on the run's next wake (a hook resume, a sleep, a re-invocation), so the World fetches only the events written since instead of the whole log. Each wake of a long-running run then transfers and decodes only what is new.
+- Only the Vercel World uses it, and only when its backend supports it. The backend checks the offered prefix against the run before using it and streams the full log whenever a check fails, so a stale or evicted entry costs a full load, never a different replay. Against a backend that predates the protocol, the adapter notices from the response and stops offering for ten minutes.
+- Only runs on the sealed log (see [`WORKFLOW_SEALED_LOG`](#workflow_sealed_log)) on the Node.js VM engine are cached. An entry is dropped when the run finishes, when a replay finds a hole in its log, when a wake that offered it fails, and after five minutes without a wake.
+- Holds event payloads as the backend stored them (encrypted when the run is), in process memory, across invocations of the same run.
+- Set `1` or `true` to enable.
+
+### `WORKFLOW_EVENT_LOG_PREFIX_CACHE_MAX_BYTES`
+
+- Default: `33554432` (32 MiB)
+- Process-wide memory budget for [`WORKFLOW_EVENT_LOG_PREFIX_CACHE`](#workflow_event_log_prefix_cache). Least recently woken runs are dropped first, and a single run's log may use at most a quarter of the budget. Sizes are estimated from the events' payload bytes.
+
+### `WORKFLOW_EVENT_LOG_PREFIX_CACHE_MIN_BYTES`
+
+- Default: `16384` (16 KiB)
+- Smallest cached log worth offering. A log estimated below this is still kept, but each wake loads it in full, since skipping it saves less than the backend's checks cost.
+
 ### `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`
 
 - Default: `3`
