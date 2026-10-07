@@ -3,6 +3,7 @@ import { SPEC_VERSION_CURRENT, type WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { loadWorkflowRunEventsFrom } from '../../test-support/load-events.js';
+import { MAX_BATCH_EVENTS } from '../constants.js';
 import {
   InBandWriter,
   OrchestratorSupersededError,
@@ -329,6 +330,22 @@ describe('InBandWriter', () => {
         'w4',
       ]);
       expect(writer.expectedSeqInBand).toBe(5);
+    });
+
+    it('starts a new batch rather than send more than MAX_BATCH_EVENTS events in one', async () => {
+      const { world, writer, releaseAll } = await ready();
+      const writes = Array.from({ length: MAX_BATCH_EVENTS + 2 }, (_, i) =>
+        writer.createAhead(waitCreated(`w${i}`), {}, () => {})
+      );
+      await releaseAll();
+      await Promise.all(writes);
+
+      expect(
+        Math.max(...world.batches.map((batch) => batch.length))
+      ).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
+      expect(world.events.slice(1).map((e) => e.correlationId)).toEqual(
+        Array.from({ length: MAX_BATCH_EVENTS + 2 }, (_, i) => `w${i}`)
+      );
     });
 
     it('does not move a run-ahead write past a plain write queued before it', async () => {

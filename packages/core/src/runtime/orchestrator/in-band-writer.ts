@@ -16,6 +16,7 @@ import type {
   World,
 } from '@workflow/world';
 import { eventIdToSlot, IN_BAND_SEQ_AT_RUN_CREATION } from '@workflow/world';
+import { MAX_BATCH_EVENTS } from '../constants.js';
 import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
 
 /**
@@ -141,7 +142,8 @@ export function getFenceRedeliveryDelaySeconds(
  *   not atomic, so a group never carries two writes for one entity (a step's
  *   creation and its outcome): the later one waits for the next turn, and a
  *   refused creation stops the writer before its outcome is sent, as it did
- *   when each write went alone.
+ *   when each write went alone. A group stays within {@link MAX_BATCH_EVENTS}
+ *   events.
  * - The first refusal stops the writer for good: every later write throws
  *   {@link OrchestratorSupersededError} without reaching the World. The value
  *   the error carries is never adopted.
@@ -426,7 +428,11 @@ export class InBandWriter {
     return new Promise((resolve, reject) => {
       const member: AheadWrite = { ...write, resolve, reject };
       this.pendingPositions += member.events.length;
-      if (this.openGroup && !sharesEntity(this.openGroup, member)) {
+      if (
+        this.openGroup &&
+        !sharesEntity(this.openGroup, member) &&
+        groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS
+      ) {
         this.openGroup.push(member);
         return;
       }
@@ -764,6 +770,11 @@ export class InBandWriter {
  * that converged on an event that already existed, the World's copy is the
  * canonical one, and only keys it left out are taken from the request.
  */
+/** How many events a group of run-ahead writes would send. */
+function groupSize(group: AheadWrite[]): number {
+  return group.reduce((sum, write) => sum + write.events.length, 0);
+}
+
 /** Whether `member` writes an entity a write already in `group` writes. */
 function sharesEntity(group: AheadWrite[], member: AheadWrite): boolean {
   const ids = new Set<string>();
