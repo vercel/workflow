@@ -797,6 +797,61 @@ export async function findStrayFlatFiles(basedir: string): Promise<string[]> {
 
 const RECENT_MS = 60_000;
 
+/**
+ * `"<code>: <message>"` for a filesystem error (one carrying an errno code),
+ * which a conversion reports against the file it hit; `null` for anything
+ * else, which is a bug and propagates.
+ */
+function fsFailure(error: unknown): string | null {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (typeof code !== 'string') return null;
+  return `${code}: ${(error as Error).message}`;
+}
+
+/** Record a file that could not be placed and quarantine it if asked to. */
+async function reportIssue(
+  basedir: string,
+  report: LayoutConversionReport,
+  options: ConvertLayoutOptions,
+  entityDir: RunScopedEntityDir,
+  from: string,
+  issue: LayoutIssue
+): Promise<void> {
+  report.conflicts.push(issue);
+  if (!options.quarantine) return;
+  try {
+    await quarantine(basedir, from, entityDir);
+    report.quarantined++;
+  } catch (error) {
+    const failure = fsFailure(error);
+    if (!failure) throw error;
+    issue.reason += `; quarantining it failed (${failure})`;
+  }
+}
+
+/**
+ * Run `fn` over `items`, `concurrency` at a time. Every started call is
+ * settled before this returns or throws: a conversion must not release its
+ * lock, or reopen the store, while one of its moves is still running. A
+ * rejection is rethrown once its batch has settled, and no further batch
+ * starts.
+ */
+async function forEachSettled<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  for (let start = 0; start < items.length; start += concurrency) {
+    const results = await Promise.allSettled(
+      items.slice(start, start + concurrency).map(fn)
+    );
+    const failed = results.find(
+      (r): r is PromiseRejectedResult => r.status === 'rejected'
+    );
+    if (failed) throw failed.reason;
+  }
+}
+
 async function migrateFiles(
   basedir: string,
   report: LayoutConversionReport,
@@ -808,38 +863,42 @@ async function migrateFiles(
     const names = (await readdirOrEmpty(root))
       .filter(isEntityFile)
       .map((e) => e.name);
-    const concurrency = 32;
-    for (let start = 0; start < names.length; start += concurrency) {
-      await Promise.all(
-        names.slice(start, start + concurrency).map(async (name) => {
-          const from = path.join(root, name);
-          const rel = path.join(entityDir, name);
-          const st = await fs.stat(from);
-          if (now - st.mtimeMs < RECENT_MS) report.recentlyModified++;
-          const runId = await runIdOfFlatFile(entityDir, from);
-          let reason: string | null = null;
-          if (!runId) {
-            reason =
-              'cannot determine its run (unparseable, or its stored runId does not match its name)';
-          } else if (!isSafeRunDirName(runId)) {
-            reason = `run id "${runId}" is not a safe directory name`;
-          } else {
-            const outcome = await placeFile(from, path.join(root, runId, name));
-            if (outcome === 'moved') report.moved++;
-            else if (outcome === 'dropped') report.dropped++;
-            else
-              reason = `a different file already exists at ${path.join(entityDir, runId, name)}`;
-          }
-          if (reason) {
-            report.conflicts.push({ path: rel, reason });
-            if (options.quarantine) {
-              await quarantine(basedir, from, entityDir);
-              report.quarantined++;
-            }
-          }
-        })
-      );
-    }
+    await forEachSettled(names, 32, async (name) => {
+      const from = path.join(root, name);
+      const rel = path.join(entityDir, name);
+      let reason: string | null = null;
+      try {
+        const st = await fs.stat(from);
+        if (now - st.mtimeMs < RECENT_MS) report.recentlyModified++;
+        const runId = await runIdOfFlatFile(entityDir, from);
+        if (!runId) {
+          reason =
+            'cannot determine its run (unparseable, or its stored runId does not match its name)';
+        } else if (!isSafeRunDirName(runId)) {
+          reason = `run id "${runId}" is not a safe directory name`;
+        } else {
+          const outcome = await placeFile(from, path.join(root, runId, name));
+          if (outcome === 'moved') report.moved++;
+          else if (outcome === 'dropped') report.dropped++;
+          else
+            reason = `a different file already exists at ${path.join(entityDir, runId, name)}`;
+        }
+      } catch (error) {
+        const failure = fsFailure(error);
+        if (!failure) throw error;
+        report.conflicts.push({
+          path: rel,
+          reason: `could not be moved (${failure}); left in place`,
+        });
+        return;
+      }
+      if (reason) {
+        await reportIssue(basedir, report, options, entityDir, from, {
+          path: rel,
+          reason,
+        });
+      }
+    });
   }
 }
 
@@ -861,20 +920,27 @@ async function flattenFiles(
           report.conflicts.push({ path: rel, reason: 'not a regular file' });
           continue;
         }
-        const st = await fs.stat(from);
-        if (now - st.mtimeMs < RECENT_MS) report.recentlyModified++;
-        const outcome = await placeFile(from, path.join(root, entry.name));
+        let outcome: Awaited<ReturnType<typeof placeFile>>;
+        try {
+          const st = await fs.stat(from);
+          if (now - st.mtimeMs < RECENT_MS) report.recentlyModified++;
+          outcome = await placeFile(from, path.join(root, entry.name));
+        } catch (error) {
+          const failure = fsFailure(error);
+          if (!failure) throw error;
+          report.conflicts.push({
+            path: rel,
+            reason: `could not be moved (${failure}); left in place`,
+          });
+          continue;
+        }
         if (outcome === 'moved') report.moved++;
         else if (outcome === 'dropped') report.dropped++;
         else {
-          report.conflicts.push({
+          await reportIssue(basedir, report, options, entityDir, from, {
             path: rel,
             reason: `a different file already exists at ${path.join(entityDir, entry.name)}`,
           });
-          if (options.quarantine) {
-            await quarantine(basedir, from, entityDir);
-            report.quarantined++;
-          }
         }
       }
       await fs.rmdir(runDir).catch(() => {});

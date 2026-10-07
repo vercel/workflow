@@ -19,10 +19,12 @@ import {
   convertLayout,
   convertLayoutInProcess,
   DataDirLayoutError,
+  describeConversion,
   findStrayFlatFiles,
   gateOnStoreLayout,
   initializeLayoutMarker,
   LAYOUT_MARKER_FILE,
+  type LayoutConversionReport,
   resetStoreLayoutState,
   resolveStoreLayout,
   storeLayoutOf,
@@ -823,6 +825,137 @@ describe('conversion lock', () => {
     });
     expect(await hashTree(dataDir)).toEqual(before);
     expect(await exists(lock)).toBe(true);
+  });
+});
+
+describe('failed moves', () => {
+  /**
+   * Make the first flat-event rename fail with `failure` and hold the second
+   * one until released. Both are in the same batch of concurrent moves.
+   */
+  function instrumentRenames(failure: Error) {
+    const original = fs.rename.bind(fs);
+    const order: string[] = [];
+    const failed = deferred();
+    const paused = deferred();
+    const resume = deferred();
+    let n = 0;
+    const flatEvent = (p: unknown) =>
+      typeof p === 'string' && path.dirname(p) === path.join(dataDir, 'events');
+    vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (flatEvent(from)) {
+        const call = ++n;
+        if (call === 1) {
+          order.push('failed');
+          failed.resolve();
+          throw failure;
+        }
+        if (call === 2) {
+          paused.resolve();
+          await resume.promise;
+          await original(from, to);
+          order.push('sibling-done');
+          return;
+        }
+      }
+      return original(from, to);
+    });
+    const originalRm = fs.rm.bind(fs);
+    vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+      if (typeof p === 'string' && p.endsWith('convert.lock')) {
+        order.push('lock-released');
+      }
+      return originalRm(p, opts);
+    });
+    return { order, failed, paused, resume };
+  }
+
+  async function exerciseFailure(failure: Error) {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir, undefined, ['step_1', 'step_2']);
+    await resetStoreLayoutState();
+    const before = await hashTree(dataDir);
+    const lock = path.join(dataDir, '.layout', 'convert.lock');
+    const { order, failed, paused, resume } = instrumentRenames(failure);
+    const settled = convertLayout(dataDir, 'run-scoped').then(
+      (report) => ({ report }),
+      (error) => ({ error })
+    );
+    await Promise.all([failed.promise, paused.promise]);
+    // One move failed while its sibling is held mid-move. Exclusion must
+    // hold until the sibling finishes: the lock is still there, and another
+    // conversion is refused. Give the failure every chance to release early
+    // (a bounded wait for a release that must not happen), then let the
+    // sibling finish.
+    for (let i = 0; i < 20 && !order.includes('lock-released'); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(order).toEqual(['failed']);
+    expect(await exists(lock)).toBe(true);
+    await expect(convertLayout(dataDir, 'run-scoped')).rejects.toMatchObject({
+      code: 'CONVERSION_BUSY',
+    });
+    resume.resolve();
+    const outcome = await settled;
+    expect(order).toEqual(['failed', 'sibling-done', 'lock-released']);
+    expect(await readMarkerState(dataDir)).toBe('migrating');
+    vi.restoreAllMocks();
+    // A retry completes, and every byte survives.
+    expect((await convertLayout(dataDir, 'run-scoped')).completed).toBe(true);
+    expect(lifted(await hashTree(dataDir))).toEqual(
+      lifted({ ...before, [LAYOUT_MARKER_FILE]: expect.any(String) })
+    );
+    return outcome;
+  }
+
+  it('a filesystem error is reported against its file only after every sibling move finished', async () => {
+    const eio = Object.assign(new Error('i/o error'), { code: 'EIO' });
+    const outcome = await exerciseFailure(eio);
+    expect(outcome).toHaveProperty('report');
+    const { report } = outcome as { report: LayoutConversionReport };
+    expect(report.completed).toBe(false);
+    expect(report.conflicts).toEqual([
+      {
+        path: expect.stringMatching(/^events[/\\\\]wrun_/),
+        reason: expect.stringContaining('EIO'),
+      },
+    ]);
+    expect(describeConversion(dataDir, report)).toContain('EIO');
+  });
+
+  it('an unexpected error propagates only after every sibling move finished', async () => {
+    const outcome = await exerciseFailure(new TypeError('bug'));
+    expect(outcome).toMatchObject({ error: expect.any(TypeError) });
+  });
+
+  it('the CLI exits nonzero and keeps the store closed after a failed move', async () => {
+    await makeFlatStore(dataDir);
+    await seedRun(dataDir);
+    await resetStoreLayoutState();
+    const original = fs.rename.bind(fs);
+    let n = 0;
+    vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (
+        typeof from === 'string' &&
+        path.dirname(from) === path.join(dataDir, 'events') &&
+        ++n === 1
+      ) {
+        throw Object.assign(new Error('i/o error'), { code: 'EIO' });
+      }
+      return original(from, to);
+    });
+    const stderr: string[] = [];
+    const code = await runLayoutCli(['migrate', dataDir], {
+      stdout: () => {},
+      stderr: (s) => stderr.push(s),
+    });
+    expect(code).toBe(1);
+    expect(stderr.join('\n')).toContain('EIO');
+    vi.restoreAllMocks();
+    await resetStoreLayoutState();
+    await expect(resolveStoreLayout(dataDir)).rejects.toMatchObject({
+      code: 'CONVERSION_IN_PROGRESS',
+    });
   });
 });
 
