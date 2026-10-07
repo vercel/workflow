@@ -359,11 +359,10 @@ export async function ensureDir(dirPath: string): Promise<void> {
   }
   if (mkdirError !== undefined) {
     // The fallback above accepts an existing directory via `stat`, which
-    // follows symlinks, so a symlinked run directory still has to be refused
-    // here. Any other `lstat` failure keeps the historical "ignore" behavior.
-    await assertNotSymlinkedRunDir(resolvedPath).catch((error) => {
-      if (error instanceof SymlinkedRunDirError) throw error;
-    });
+    // follows symlinks, so a run directory still has to be proven not to be
+    // a symlink here. Only a missing directory passes; any other `lstat`
+    // failure stops the write.
+    await assertNotSymlinkedRunDir(resolvedPath);
     return;
   }
   await assertNotSymlinkedRunDir(resolvedPath);

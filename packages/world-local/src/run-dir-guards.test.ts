@@ -155,6 +155,33 @@ describe('run directories', () => {
     expect((await fs.readdir(outside)).sort()).toEqual(before);
   });
 
+  it('stops the write when the guard cannot lstat the run dir after mkdir fails', async () => {
+    const runId = await seedRun();
+    const outside = await symlinkRunDir('steps', runId);
+    const before = (await fs.readdir(outside)).sort();
+    clearCreatedFilesCache();
+    const runDir = path.join(dataDir, 'steps', runId);
+    const mkdir = fs.mkdir.bind(fs);
+    const lstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'mkdir').mockImplementation(async (p, options) => {
+      if (p === runDir) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return mkdir(p, options);
+    });
+    vi.spyOn(fs, 'lstat').mockImplementation(async (p, options) => {
+      if (p === runDir) {
+        throw Object.assign(new Error('i/o error'), { code: 'EIO' });
+      }
+      return lstat(p, options as never);
+    });
+
+    await expect(
+      writeJSON(path.join(runDir, `${runId}-step_9.json`), {})
+    ).rejects.toMatchObject({ code: 'EIO' });
+    expect((await fs.readdir(outside)).sort()).toEqual(before);
+  });
+
   it('refuses reading the event log through a symlinked events dir', async () => {
     const runId = await seedRun();
     const storage = createStorage(dataDir);
