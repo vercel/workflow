@@ -268,4 +268,107 @@ describe('InBandWriter', () => {
     await writer.create(waitCreated('wait_a'));
     expect(writer.expectedSeqInBand).toBe(1);
   });
+
+  describe('run-ahead writes', () => {
+    async function ready() {
+      // Every write is held until released, as a write in flight is.
+      const gates: (() => void)[] = [];
+      const world = seeded({
+        async beforeCreate() {
+          await new Promise<void>((resolve) => gates.push(resolve));
+        },
+      });
+      const writer = new InBandWriter(world.asWorld(), RUN);
+      writer.adoptSnapshot(
+        requireLoadSnapshot(
+          RUN,
+          await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+        )
+      );
+      const releaseAll = async () => {
+        while (gates.length > 0 || (await settled())) {
+          gates.shift()?.();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (gates.length === 0) break;
+        }
+      };
+      const settled = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return gates.length > 0;
+      };
+      return { world, writer, releaseAll };
+    }
+
+    it('sends run-ahead writes queued before their turn as one batch, in order', async () => {
+      const { world, writer, releaseAll } = await ready();
+      const verified: string[] = [];
+      const first = writer.createAhead(waitCreated('w1'), {}, () =>
+        verified.push('w1')
+      );
+      const second = writer.createAhead(waitCreated('w2'), {}, () =>
+        verified.push('w2')
+      );
+      const third = writer.createBatchAhead(
+        [{ event: waitCreated('w3') }, { event: waitCreated('w4') }],
+        {},
+        () => verified.push('w3+w4')
+      );
+      expect(writer.predictNextSlot()).toBe(6);
+      await releaseAll();
+      await Promise.all([first, second, third]);
+
+      // All three were queued before the group's turn came: one batch.
+      expect(world.batches).toEqual([
+        ['wait_created', 'wait_created', 'wait_created', 'wait_created'],
+      ]);
+      expect(verified).toEqual(['w1', 'w2', 'w3+w4']);
+      expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+        'w1',
+        'w2',
+        'w3',
+        'w4',
+      ]);
+      expect(writer.expectedSeqInBand).toBe(5);
+    });
+
+    it('does not move a run-ahead write past a plain write queued before it', async () => {
+      const { world, writer, releaseAll } = await ready();
+      const writes = [
+        writer.createAhead(waitCreated('w1'), {}, () => {}),
+        writer.createAhead(waitCreated('w2'), {}, () => {}),
+        writer.create(waitCreated('plain')),
+        writer.createAhead(waitCreated('w3'), {}, () => {}),
+      ];
+      await releaseAll();
+      await Promise.all(writes);
+
+      expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+        'w1',
+        'w2',
+        'plain',
+        'w3',
+      ]);
+    });
+
+    it('stops the writer at a failed check, failing every run-ahead write behind it', async () => {
+      const { world, writer, releaseAll } = await ready();
+      const first = writer.createAhead(waitCreated('w1'), {}, () => {});
+      const second = writer.createAhead(waitCreated('w2'), {}, () => {
+        throw new Error('landed at the wrong slot');
+      });
+      const third = writer.createAhead(waitCreated('w3'), {}, () => {});
+      const outcomes = Promise.allSettled([first, second, third]);
+      await releaseAll();
+      const [a, b, c] = await outcomes;
+
+      expect(a.status).toBe('fulfilled');
+      expect(b).toMatchObject({ status: 'rejected' });
+      expect(c).toMatchObject({ status: 'rejected' });
+      expect(writer.isStopped).toBe(true);
+      await expect(writer.create(waitCreated('after'))).rejects.toThrow(
+        'landed at the wrong slot'
+      );
+      expect(world.events.some((e) => e.correlationId === 'after')).toBe(false);
+    });
+  });
 });

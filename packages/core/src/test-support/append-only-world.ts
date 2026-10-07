@@ -75,8 +75,8 @@ export class AppendOnlyWorld {
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
-  /** The event count of every `createBatch` call, in call order. */
-  readonly batchSizes: number[] = [];
+  /** The event types of every `createBatch` call, in call order. */
+  readonly batches: string[][] = [];
   /** How many `events.create` and `events.createBatch` calls were made. */
   createCalls = 0;
   /** The params of every `events.list` call. */
@@ -561,7 +561,15 @@ export class AppendOnlyWorld {
       },
       async createBatch(_runId: string, batch: BatchEventRequest[], params) {
         self.createCalls++;
-        self.batchSizes.push(batch.length);
+        self.batches.push(batch.map((item) => item.event.eventType));
+        // The same per-event hook a single create runs, so a test that slows
+        // one event type slows it however the runtime sends it.
+        for (const item of batch) {
+          await self.options.beforeCreate?.(item.event, {
+            ...params,
+            ...(item.occurredAt ? { occurredAt: item.occurredAt } : {}),
+          });
+        }
         // A World refuses an oversized batch whole (world-vercel caps it by
         // event count); this one caps it at what the runtime may send.
         if (batch.length > MAX_BATCH_EVENTS) {

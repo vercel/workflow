@@ -130,6 +130,18 @@ export function getFenceRedeliveryDelaySeconds(
  * - Writes are serialized. Two concurrent in-band writes would both carry the
  *   same expected count and the second would be refused, so a fan-out goes
  *   through {@link createBatch} or waits its turn.
+ * - Run-ahead writes ({@link createAhead}, {@link createBatchAhead}) that queue
+ *   up behind a write in flight coalesce: when their turn comes they go out
+ *   together as one batch, in the order they were made, with one fence check,
+ *   so a pipeline of speculative steps costs one round trip per turn rather
+ *   than one per write. Any other write closes the group, so it never
+ *   reorders writes. Each write's result is its slice of the batch, checked
+ *   in order; a refusal or a failed check stops the writer for every write
+ *   behind it, as it does for a required write. A batch on a spec >= 9 run is
+ *   not atomic, so a group never carries two writes for one entity (a step's
+ *   creation and its outcome): the later one waits for the next turn, and a
+ *   refused creation stops the writer before its outcome is sent, as it did
+ *   when each write went alone.
  * - The first refusal stops the writer for good: every later write throws
  *   {@link OrchestratorSupersededError} without reaching the World. The value
  *   the error carries is never adopted.
@@ -159,6 +171,11 @@ export class InBandWriter {
   private loadedSlot: number | undefined;
   private stoppedBy: unknown;
   private stopped = false;
+  /**
+   * Run-ahead writes waiting for their turn, sent together as one batch when
+   * it comes. Closed (unset) once the turn starts or another write queues.
+   */
+  private openGroup: AheadWrite[] | undefined;
   private tail: Promise<unknown> = Promise.resolve();
 
   /** Throws for a World that does not declare the fence. */
@@ -290,7 +307,18 @@ export class InBandWriter {
     required: boolean,
     verify?: (result: EventResult<T['eventType']>) => void
   ): Promise<EventResult<T['eventType']>> {
-    return this.serialize(1, async () => {
+    return this.serialize(1, () =>
+      this.sendSingle(data, params, required, verify)
+    );
+  }
+
+  private async sendSingle<T extends CreateEventRequest>(
+    data: T,
+    params: CreateEventParams | undefined,
+    required: boolean,
+    verify?: (result: EventResult<T['eventType']>) => void
+  ): Promise<EventResult<T['eventType']>> {
+    {
       this.assertActive();
       const knownAtSend = this.knownMaxSlot;
       let result: EventResult<T['eventType']>;
@@ -320,7 +348,7 @@ export class InBandWriter {
         }
       }
       return result;
-    });
+    }
   }
 
   createBatch(
@@ -341,6 +369,214 @@ export class InBandWriter {
     verify: (result: EventBatchResult) => void
   ): Promise<EventBatchResult> {
     return this.writeBatch(events, params, true, verify);
+  }
+
+  /**
+   * A run-ahead write: a required write (see {@link createRequired}) that may
+   * coalesce with the run-ahead writes queued next to it. `verify` checks the
+   * accepted write before any later write is sent.
+   */
+  createAhead(
+    data: CreateEventRequest,
+    params: CreateEventParams,
+    verify: (result: EventResult) => void
+  ): Promise<EventResult> {
+    if (!this.supportsBatch) return this.createRequired(data, params, verify);
+    return this.enqueueAhead({
+      kind: 'single',
+      events: [
+        {
+          event: data,
+          ...(params.occurredAt !== undefined
+            ? { occurredAt: new Date(params.occurredAt) }
+            : {}),
+          ...(params.computeInstanceId !== undefined
+            ? { computeInstanceId: params.computeInstanceId }
+            : {}),
+        },
+      ],
+      params,
+      verify: verify as (result: EventResult | EventBatchResult) => void,
+    }) as Promise<EventResult>;
+  }
+
+  /**
+   * A run-ahead batch: {@link createBatchRequired} that may coalesce with the
+   * run-ahead writes queued next to it.
+   */
+  createBatchAhead(
+    events: BatchEventRequest[],
+    params: Omit<CreateEventBatchParams, 'inBand' | 'expectedSeqInBand'>,
+    verify: (result: EventBatchResult) => void
+  ): Promise<EventBatchResult> {
+    if (!this.supportsBatch) {
+      return this.createBatchRequired(events, params, verify);
+    }
+    return this.enqueueAhead({
+      kind: 'batch',
+      events,
+      params,
+      verify: verify as (result: EventResult | EventBatchResult) => void,
+    }) as Promise<EventBatchResult>;
+  }
+
+  private enqueueAhead(
+    write: Omit<AheadWrite, 'resolve' | 'reject'>
+  ): Promise<EventResult | EventBatchResult> {
+    return new Promise((resolve, reject) => {
+      const member: AheadWrite = { ...write, resolve, reject };
+      this.pendingPositions += member.events.length;
+      if (this.openGroup && !sharesEntity(this.openGroup, member)) {
+        this.openGroup.push(member);
+        return;
+      }
+      const group = [member];
+      this.serialize(0, () => this.sendGroup(group)).catch(() => {});
+      this.openGroup = group;
+    });
+  }
+
+  /** Sends a group of run-ahead writes as one batch and splits the result. */
+  private async sendGroup(group: AheadWrite[]): Promise<void> {
+    if (this.openGroup === group) this.openGroup = undefined;
+    const total = group.reduce((sum, write) => sum + write.events.length, 0);
+    try {
+      try {
+        this.assertActive();
+      } catch (error) {
+        for (const write of group) write.reject(error);
+        return;
+      }
+      const first = group[0]!;
+      // A lone write goes out as itself, never as a batch of one.
+      if (group.length === 1 && first.kind === 'single') {
+        try {
+          first.resolve(
+            await this.sendSingle(
+              first.events[0]!.event,
+              first.params as CreateEventParams,
+              true,
+              first.verify
+            )
+          );
+        } catch (error) {
+          first.reject(error);
+        }
+        return;
+      }
+      const events = group.flatMap((write) => write.events);
+      // A batch resolves all or nothing; a write that asked for any resolved
+      // data (a replay's `skip-step-inputs`) gets all of it.
+      const resolveData = group.some(
+        (write) =>
+          write.params.resolveData !== undefined &&
+          write.params.resolveData !== 'none'
+      )
+        ? ('all' as const)
+        : undefined;
+      const knownAtSend = this.knownMaxSlot;
+      let result: EventBatchResult;
+      try {
+        result = await this.world.events.createBatch!.call(
+          this.world.events,
+          this.runId,
+          events,
+          {
+            ...this.positionFallback(first.params.eventCount),
+            ...(first.params.eventCount !== undefined
+              ? { eventCount: first.params.eventCount }
+              : {}),
+            ...(first.params.requestId !== undefined
+              ? { requestId: first.params.requestId }
+              : {}),
+            ...(resolveData !== undefined ? { resolveData } : {}),
+            ...this.fenceParams(),
+          }
+        );
+      } catch (error) {
+        const stopped = this.stop(error, true);
+        for (const write of group) write.reject(stopped);
+        return;
+      }
+      // Allocation as for any batch (see writeBatch).
+      const fresh = result.results.map(
+        (item) =>
+          item.error === undefined && isNewSlot(item.event.eventId, knownAtSend)
+      );
+      const replayed = result.results.filter(
+        (item, index) => item.error === undefined && !fresh[index]
+      ).length;
+      for (const item of result.results) {
+        if (item.error === undefined) this.noteSlot(item.event.eventId);
+      }
+      this.advance(result.allocated ?? events.length - replayed);
+
+      let offset = 0;
+      let failed: unknown;
+      for (const [index, write] of group.entries()) {
+        const count = write.events.length;
+        const slice = result.results
+          .slice(offset, offset + count)
+          .map((item, at) => {
+            const request = events[offset + at]?.event;
+            return item.error === undefined && request
+              ? {
+                  ...item,
+                  event: withWrittenEventData(
+                    item.event,
+                    request,
+                    fresh[offset + at] === true
+                  ),
+                }
+              : item;
+          });
+        offset += count;
+        if (failed !== undefined) {
+          write.reject(failed);
+          continue;
+        }
+        // The skipped-slot report covers what lies below the whole block,
+        // so it belongs to the group's first write.
+        const report =
+          index === 0
+            ? {
+                ...(result.events !== undefined
+                  ? { events: result.events }
+                  : {}),
+                ...(result.reportIncomplete
+                  ? { reportIncomplete: true as const }
+                  : {}),
+              }
+            : {};
+        try {
+          let answer: EventResult | EventBatchResult;
+          if (write.kind === 'single') {
+            const item = slice[0];
+            if (!item || item.error !== undefined) {
+              throw new WorkflowWorldError(
+                `A run-ahead ${write.events[0]?.event.eventType} was refused` +
+                  (item ? ` (${item.status}: ${item.message})` : ''),
+                { status: item?.status }
+              );
+            }
+            answer = { event: item.event, ...report } as EventResult;
+          } else {
+            answer = {
+              results: slice,
+              ...report,
+              allocated: count,
+            } as EventBatchResult;
+          }
+          write.verify(answer);
+          write.resolve(answer);
+        } catch (error) {
+          failed = this.stop(error, true);
+          write.reject(failed);
+        }
+      }
+    } finally {
+      this.pendingPositions -= total;
+    }
   }
 
   private writeBatch(
@@ -497,6 +733,9 @@ export class InBandWriter {
   private pendingPositions = 0;
 
   private serialize<T>(positions: number, fn: () => Promise<T>): Promise<T> {
+    // A write queued behind an open group of run-ahead writes closes it: a
+    // later run-ahead write must not be sent ahead of this one.
+    this.openGroup = undefined;
     this.pendingPositions += positions;
     const settle = () => {
       this.pendingPositions -= positions;
@@ -525,6 +764,30 @@ export class InBandWriter {
  * that converged on an event that already existed, the World's copy is the
  * canonical one, and only keys it left out are taken from the request.
  */
+/** Whether `member` writes an entity a write already in `group` writes. */
+function sharesEntity(group: AheadWrite[], member: AheadWrite): boolean {
+  const ids = new Set<string>();
+  for (const write of group) {
+    for (const { event } of write.events) {
+      if (event.correlationId) ids.add(event.correlationId);
+    }
+  }
+  return member.events.some(
+    ({ event }) =>
+      event.correlationId !== undefined && ids.has(event.correlationId)
+  );
+}
+
+/** A run-ahead write waiting in an open group (see {@link InBandWriter}). */
+interface AheadWrite {
+  kind: 'single' | 'batch';
+  events: BatchEventRequest[];
+  params: CreateEventParams | Omit<CreateEventBatchParams, 'inBand'>;
+  verify: (result: EventResult | EventBatchResult) => void;
+  resolve: (result: EventResult | EventBatchResult) => void;
+  reject: (error: unknown) => void;
+}
+
 function isNewSlot(eventId: string, knownMaxSlot: number): boolean {
   const slot = eventIdToSlot(eventId);
   return slot === null || slot > knownMaxSlot;

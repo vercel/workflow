@@ -68,6 +68,36 @@ export function runAheadHazard(
   }
 }
 
+/**
+ * Whether an event another writer placed below a run-ahead's speculative
+ * events may still join the retained session that consumed them, fed after
+ * them. True only where the event's position cannot move a decision on the
+ * node:vm engine (see `../out-of-band-observation.ts`): a hook event for a
+ * hook no boundary of the run-ahead was sensitive to (buffered as an unarmed
+ * delivery, it orders nothing and leaves the clock alone), an attribute
+ * write, or a sealed position. Anything else sends the session to a cold
+ * replay of the corrected log.
+ */
+export function admitBelowSpeculation(
+  event: Event,
+  sensitiveHookIds: ReadonlySet<string>
+): boolean {
+  switch (event.eventType) {
+    case 'hook_received':
+    case 'hook_disposed':
+    case 'hook_conflict':
+      return (
+        event.correlationId !== undefined &&
+        !sensitiveHookIds.has(event.correlationId)
+      );
+    case 'attr_set':
+    case 'noop':
+      return true;
+    default:
+      return false;
+  }
+}
+
 /** The context of a boundary from its suspension's queue. */
 export function runAheadContextFor(input: {
   observation: OutOfBandObservation;

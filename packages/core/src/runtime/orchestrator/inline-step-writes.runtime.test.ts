@@ -369,6 +369,8 @@ describe.each([
 
     expect(await runResult(world)).toBe(FAN_OUT);
     expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
-    expect(Math.max(...world.batchSizes)).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
+    expect(
+      Math.max(...world.batches.map((batch) => batch.length))
+    ).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
   });
 });

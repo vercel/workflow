@@ -146,6 +146,7 @@ import {
   type StepMessageSpec,
 } from './runtime/orchestrator/log-state.js';
 import {
+  admitBelowSpeculation,
   disableRunAheadFor,
   isRunAheadDisabledFor,
   type RunAheadContext,
@@ -214,6 +215,7 @@ import {
   resumeWorkflow,
   type WorkflowResumeResult,
   type WorkflowSession,
+  type WorkflowSessionRebase,
 } from './workflow.js';
 
 export type { Event, WorkflowRun };
@@ -1279,12 +1281,18 @@ export function workflowEntrypoint(
                    * (the World reports a wider span), so it is taken from
                    * whatever is loaded.
                    */
+                  // A write names only the positions the log holds for sure:
+                  // never a speculative event's predicted slot, which another
+                  // writer may have taken. The World then reports whatever
+                  // took one, which is what a run-ahead repair rebuilds from.
                   const slotSnapshot = (): SlotSnapshotParams =>
                     log
                       ? slotSnapshotParams(
-                          speculativeSlots.size === 0
+                          speculativeSlots.size === 0 &&
+                            speculativeEvents.size === 0
                             ? log.events
                             : log.events.filter((event) => {
+                                if (speculativeEvents.has(event)) return false;
                                 const slot = eventIdToSlot(event.eventId);
                                 return (
                                   slot === null || !speculativeSlots.has(slot)
@@ -1292,6 +1300,22 @@ export function workflowEntrypoint(
                               })
                         )
                       : {};
+                  /**
+                   * The events speculative writes placed in the log at
+                   * their predicted slots, until their writes confirm them
+                   * there, or a repair replaces them.
+                   */
+                  const speculativeEvents = new Set<Event>();
+                  /**
+                   * The responses of speculative writes that settled once a
+                   * repair was due, which the repair rebuilds the log from.
+                   */
+                  const repairWrites: {
+                    event?: Event;
+                    events?: Event[];
+                    hasMore?: boolean;
+                    reportIncomplete?: boolean;
+                  }[] = [];
                   /**
                    * Run-ahead: slots of the speculative step outcomes in the
                    * log, handed to the workflow before their writes commit
@@ -1346,11 +1370,13 @@ export function workflowEntrypoint(
                       turboStartLanded = undefined;
                     }
                     if (!log || !result.event) return;
-                    if (
-                      result.reportIncomplete ||
-                      result.hasMore ||
-                      runAheadRepair
-                    ) {
+                    // A repair due rebuilds the log from the writes' own
+                    // responses, this one's included.
+                    if (runAheadRepair) {
+                      repairWrites.push(result);
+                      return;
+                    }
+                    if (result.reportIncomplete || result.hasMore) {
                       logBehind = true;
                       return;
                     }
@@ -2267,7 +2293,7 @@ export function workflowEntrypoint(
                                   own.event.correlationId !==
                                     event.correlationId)
                               ) {
-                                runAheadRepair = true;
+                                markRunAheadRepair('feed');
                               }
                               return false;
                             }
@@ -2404,12 +2430,56 @@ export function workflowEntrypoint(
                      * in flight: what may and may not land below them.
                      */
                     const runAheadContexts = new Set<RunAheadContext>();
+                    /**
+                     * For each speculative event whose write committed at
+                     * another slot, the id it committed under.
+                     */
+                    const repairAliases = new Map<string, string>();
+                    /**
+                     * Hooks some boundary of the current run-ahead was
+                     * sensitive to: an event of one of them below a
+                     * speculative write is not admitted into a retained
+                     * session on repair.
+                     */
+                    const runAheadSensitiveHookIds = new Set<string>();
+                    /** Handed to the next resume of the retained session. */
+                    let pendingRebase: WorkflowSessionRebase | undefined;
+                    const noteRunAheadContext = (
+                      context: RunAheadContext
+                    ): void => {
+                      runAheadContexts.add(context);
+                      for (const id of context.sensitiveHookIds) {
+                        runAheadSensitiveHookIds.add(id);
+                      }
+                    };
                     const runAheadStats = {
                       runAhead: 0,
                       drained: 0,
                       depthCap: 0,
                       failureStops: 0,
                       hazardStops: 0,
+                      /**
+                       * Repairs: another writer took a slot a speculative
+                       * write was placed at, so its events are re-placed.
+                       * Counted once per repair, by what found it first.
+                       */
+                      repairs: 0,
+                      repairsByCause: { feed: 0, outcome: 0, creation: 0 },
+                      /** Wall time spent repairing, in milliseconds. */
+                      repairMs: 0,
+                      /** Repairs whose retained session survived them. */
+                      repairsRetained: 0,
+                      /** Repairs that had to read the log after all. */
+                      repairReads: 0,
+                    };
+                    const markRunAheadRepair = (
+                      cause: 'feed' | 'outcome' | 'creation'
+                    ): void => {
+                      if (runAheadRepair) return;
+                      runAheadRepair = true;
+                      runAheadStats.repairs++;
+                      runAheadStats.repairsByCause[cause]++;
+                      recordRunAheadSpan();
                     };
                     const outOfBandBoundaries = {
                       inert: 0,
@@ -2443,6 +2513,18 @@ export function workflowEntrypoint(
                           runAheadStats.failureStops,
                         'workflow.run_ahead.hazard_stops':
                           runAheadStats.hazardStops,
+                        'workflow.run_ahead.repairs': runAheadStats.repairs,
+                        'workflow.run_ahead.repairs.feed':
+                          runAheadStats.repairsByCause.feed,
+                        'workflow.run_ahead.repairs.outcome':
+                          runAheadStats.repairsByCause.outcome,
+                        'workflow.run_ahead.repairs.creation':
+                          runAheadStats.repairsByCause.creation,
+                        'workflow.run_ahead.repair_ms': runAheadStats.repairMs,
+                        'workflow.run_ahead.repairs_retained':
+                          runAheadStats.repairsRetained,
+                        'workflow.run_ahead.repair_reads':
+                          runAheadStats.repairReads,
                       });
                     };
                     /**
@@ -2544,12 +2626,87 @@ export function workflowEntrypoint(
                       return runAheadRepair ? 'repair' : 'clean';
                     }
                     /** Replaces a repaired run-ahead's log with the World's. */
+                    /**
+                     * Puts a repaired run-ahead's log right. Its speculative
+                     * events leave the log, and the responses of its writes
+                     * take their place: each write's committed event, and the
+                     * skipped-slot report of whatever another writer placed
+                     * below it. A write names only confirmed positions (see
+                     * `slotSnapshot`), so the reports cover every slot the
+                     * speculative events were predicted at, and the log is
+                     * rebuilt without reading it again. Only a report that
+                     * came back incomplete, or a hole left after the merge,
+                     * sends it to a read. The writer's count is unaffected: it
+                     * tracked what each write allocated.
+                     *
+                     * The retained session survives when all the other writer
+                     * placed below its speculative events is inert to it (see
+                     * `admitBelowSpeculation`): its next resume takes the
+                     * corrected log as a rebase rather than a cold replay.
+                     */
                     async function repairRunAhead(): Promise<void> {
+                      const startedAt = Date.now();
                       await writer.idle();
+                      await settleRunAhead();
                       runAheadRepair = false;
                       speculativeSlots.clear();
-                      session = null;
-                      await fullLoad();
+                      assert(
+                        log,
+                        'The event log is loaded to repair run-ahead'
+                      );
+                      if (speculativeEvents.size > 0) {
+                        for (let i = log.events.length - 1; i >= 0; i--) {
+                          if (speculativeEvents.has(log.events[i]!)) {
+                            log.events.splice(i, 1);
+                          }
+                        }
+                      }
+                      speculativeEvents.clear();
+                      const writes = [
+                        ...repairWrites.splice(0),
+                        ...pendingAbsorbs.splice(0),
+                      ];
+                      let complete = true;
+                      for (const write of writes) {
+                        if (write.reportIncomplete || write.hasMore) {
+                          complete = false;
+                          continue;
+                        }
+                        const merged = [
+                          ...(write.events ?? []),
+                          ...(write.event ? [write.event] : []),
+                        ];
+                        for (const event of merged) prepareReplayEvent(event);
+                        if (write.event) {
+                          const slot = eventIdToSlot(write.event.eventId);
+                          if (slot !== null) ownSlots.add(slot);
+                        }
+                        mergeReportedEvents(log.events, merged);
+                      }
+                      const readLog =
+                        !complete || findEventSlotGap(log.events) !== undefined;
+                      if (readLog) {
+                        runAheadStats.repairReads++;
+                        await loadAfter();
+                      }
+                      if (session) {
+                        const sensitive = new Set(runAheadSensitiveHookIds);
+                        pendingRebase = {
+                          aliases: new Map(repairAliases),
+                          admitBelow: (event) =>
+                            admitBelowSpeculation(event, sensitive),
+                        };
+                      }
+                      runtimeLogger.debug('Run-ahead repaired', {
+                        workflowRunId: runId,
+                        writes: writes.length,
+                        readLog,
+                        rebased: pendingRebase !== undefined,
+                      });
+                      repairAliases.clear();
+                      runAheadSensitiveHookIds.clear();
+                      runAheadStats.repairMs += Date.now() - startedAt;
+                      recordRunAheadSpan();
                     }
                     /**
                      * Writes an inline step's outcome ahead: returns at once
@@ -2572,8 +2729,9 @@ export function workflowEntrypoint(
                         createdAt: occurredAt,
                       } as Event;
                       speculativeSlots.add(slot);
-                      runAheadContexts.add(context);
-                      const commit = writer.createRequired(
+                      speculativeEvents.add(event);
+                      noteRunAheadContext(context);
+                      const commit = writer.createAhead(
                         data,
                         {
                           ...params,
@@ -2600,7 +2758,8 @@ export function workflowEntrypoint(
                             );
                           }
                           if (eventIdToSlot(committed.eventId) !== slot) {
-                            runAheadRepair = true;
+                            repairAliases.set(event.eventId, committed.eventId);
+                            markRunAheadRepair('outcome');
                           }
                         }
                       );
@@ -2608,7 +2767,12 @@ export function workflowEntrypoint(
                         (result) => {
                           speculativeSlots.delete(slot);
                           speculationsBySlot.delete(slot);
-                          if (!runAheadRepair) pendingAbsorbs.push(result);
+                          if (!runAheadRepair) {
+                            speculativeEvents.delete(event);
+                            pendingAbsorbs.push(result);
+                          } else {
+                            repairWrites.push(result);
+                          }
                           notifyProgress();
                         },
                         (error: unknown) => {
@@ -2648,9 +2812,9 @@ export function workflowEntrypoint(
                             createdAt: occurredAt,
                           }) as Event
                       );
-                      runAheadContexts.add(context);
+                      noteRunAheadContext(context);
                       const postSentAtMs = Date.now();
-                      const commit = writer.createBatchRequired(
+                      const commit = writer.createBatchAhead(
                         events.map((event) => ({
                           event,
                           occurredAt,
@@ -2684,7 +2848,14 @@ export function workflowEntrypoint(
                               eventIdToSlot(item.event.eventId) !==
                               first + index
                             ) {
-                              runAheadRepair = true;
+                              const predicted = speculative[index];
+                              if (predicted) {
+                                repairAliases.set(
+                                  predicted.eventId,
+                                  item.event.eventId
+                                );
+                              }
+                              markRunAheadRepair('creation');
                             }
                           });
                         }
@@ -2695,11 +2866,12 @@ export function workflowEntrypoint(
                             speculativeSlots.delete(first + index);
                             speculationsBySlot.delete(first + index);
                           });
-                          if (!runAheadRepair) {
+                          {
+                            const items: typeof repairWrites = [];
                             let firstItem = true;
                             for (const item of result.results) {
                               if (item.error !== undefined) continue;
-                              pendingAbsorbs.push({
+                              items.push({
                                 event: item.event,
                                 ...(firstItem
                                   ? {
@@ -2709,6 +2881,14 @@ export function workflowEntrypoint(
                                   : {}),
                               });
                               firstItem = false;
+                            }
+                            if (!runAheadRepair) {
+                              for (const event of speculative) {
+                                speculativeEvents.delete(event);
+                              }
+                              pendingAbsorbs.push(...items);
+                            } else {
+                              repairWrites.push(...items);
                             }
                           }
                           notifyProgress();
@@ -2728,6 +2908,7 @@ export function workflowEntrypoint(
                       const starts = new Map<string, StartedInBatch>();
                       speculative.forEach((event, index) => {
                         speculativeSlots.add(first + index);
+                        speculativeEvents.add(event);
                         speculationsBySlot.set(first + index, {
                           event,
                           settled,
@@ -2907,9 +3088,15 @@ export function workflowEntrypoint(
                             log.events
                           );
                           passConsumedSlot = maxEventSlot(log.events) ?? 0;
+                          const rebase = pendingRebase;
+                          pendingRebase = undefined;
                           let workflowResult: WorkflowResumeResult = session
-                            ? await resumeWorkflow(session, log.events)
+                            ? await resumeWorkflow(session, log.events, rebase)
                             : { type: 'replay' };
+                          if (rebase && workflowResult.type !== 'replay') {
+                            runAheadStats.repairsRetained++;
+                            recordRunAheadSpan();
+                          }
                           const servedByRetained =
                             session !== null &&
                             workflowResult.type !== 'replay';
@@ -3016,15 +3203,20 @@ export function workflowEntrypoint(
                             return outcome.result;
                           }
                           if (outcome.type === 'reload-full') {
-                            session = null;
-                            // A full load replaces the log, speculative
-                            // events included: they settle first.
+                            // Speculative writes settle first. A repair they
+                            // made due rebuilds the log itself and may keep
+                            // the retained session (see `repairRunAhead`); a
+                            // full load replaces the log and the session.
                             await settleRunAhead();
                             if (runAheadFailure !== undefined) {
                               throw runAheadFailure;
                             }
-                            if (runAheadRepair) await repairRunAhead();
-                            else await fullLoad();
+                            if (runAheadRepair) {
+                              await repairRunAhead();
+                            } else {
+                              session = null;
+                              await fullLoad();
+                            }
                           } else if (outcome.type === 'reload') {
                             if (!outcome.retainSession) session = null;
                             await loadAfter();

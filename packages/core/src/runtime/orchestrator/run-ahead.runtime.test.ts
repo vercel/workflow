@@ -1,6 +1,7 @@
 import { InBandSupersededError } from '@workflow/errors';
 import { type Event, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
@@ -227,6 +228,28 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(eventsOf(world, 'step_started')).toHaveLength(2);
   });
 
+  it('sends the run-ahead writes queued behind one in flight as one batch', async () => {
+    const { world } = await run(sequential, [STEPS]);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(STEPS);
+    // A step's outcome and the next step's creation share a round trip.
+    expect(
+      world.batches.some((batch) => {
+        const outcome = batch.indexOf('step_completed');
+        return outcome !== -1 && batch.indexOf('step_created', outcome) !== -1;
+      })
+    ).toBe(true);
+    // Fewer round trips than one per write.
+    const writes = world.events.filter(
+      (e) => e.eventType !== 'run_created' && e.eventType !== 'run_started'
+    ).length;
+    expect(world.createCalls).toBeLessThan(writes);
+    // The log a cold replay reads decides the same way.
+    const cold = await coldReplay(world, sequential);
+    expect(cold.result).toBe(STEPS);
+  });
+
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '1');
     const one = await run(sequential, [STEPS]);
@@ -249,6 +272,103 @@ describe('run-ahead against an append-only World (node engine)', () => {
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
+  // A payload for a hook the workflow never awaits takes the slot a
+  // speculative outcome was placed at. The repair rebuilds the log from the
+  // writes' own responses, without reading it, and the retained session takes
+  // the corrected log without a replay.
+  it('repairs a displaced speculative write without a log read, and keeps the session', async () => {
+    const debug = vi.spyOn(runtimeLogger, 'debug');
+    let injected = false;
+    const { world, runId } = await run(unobservedHook, [STEPS], {
+      async beforeCreate(data, params) {
+        await slowOutcomes.beforeCreate(data);
+        // A speculative write names its occurredAt; inject below the first.
+        if (
+          !injected &&
+          data.eventType === 'step_completed' &&
+          (params as { occurredAt?: unknown } | undefined)?.occurredAt
+        ) {
+          injected = true;
+          world.appendOutOfBand({
+            eventType: 'hook_received',
+            runId,
+            correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+            eventData: {
+              token: 'ra-unobserved',
+              payload: await dehydrateStepReturnValue('late', runId, undefined),
+            },
+          } as unknown as Partial<Event>);
+        }
+      },
+    });
+    const listsAtStart = () => world.listCalls.length;
+    await world.runUntilIdle();
+    const calls = (message: string) =>
+      debug.mock.calls
+        .filter(([logged]) => logged === message)
+        .map(([, fields]) => fields as Record<string, unknown>);
+    const repairs = calls('Run-ahead repaired');
+    const modes = calls('Starting workflow execution').map(
+      (fields) => fields.executionMode
+    );
+    debug.mockRestore();
+
+    expect(injected).toBe(true);
+    expect(await runResult(world)).toBe(STEPS);
+    expect(world.deliveries).toHaveLength(1);
+    expect(repairs).toEqual([
+      expect.objectContaining({ readLog: false, rebased: true }),
+    ]);
+    // No pass after the first replayed from scratch.
+    expect(modes.slice(1).every((mode) => mode === 'retained')).toBe(true);
+    void listsAtStart;
+    // The corrected log replays to the same result from cold.
+    const cold = await coldReplay(world, unobservedHook);
+    expect(cold.result).toBe(STEPS);
+  });
+
+  // An event the session cannot take below what it consumed (here the run's
+  // cancellation) sends the repaired log to a cold replay instead.
+  it('leaves no outcome without its creation when a cancellation displaces a speculative write', async () => {
+    const debug = vi.spyOn(runtimeLogger, 'debug');
+    let injected = false;
+    const { world, runId } = await run(sequential, [STEPS], {
+      async beforeCreate(data, params) {
+        await slowOutcomes.beforeCreate(data);
+        if (
+          !injected &&
+          data.eventType === 'step_completed' &&
+          (params as { occurredAt?: unknown } | undefined)?.occurredAt
+        ) {
+          injected = true;
+          world.appendOutOfBand({
+            eventType: 'run_cancelled',
+            runId,
+          } as unknown as Partial<Event>);
+        }
+      },
+    });
+    await world.runUntilIdle();
+    const modes = debug.mock.calls
+      .filter(([logged]) => logged === 'Starting workflow execution')
+      .map(([, fields]) => (fields as { executionMode: string }).executionMode);
+    debug.mockRestore();
+
+    expect(injected).toBe(true);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+    // A World that refuses a cancelled run's creations but still takes its
+    // outcomes leaves no outcome for a step it never created: a step's
+    // creation and outcome never share a batch.
+    const created = new Set(
+      eventsOf(world, 'step_created').map((e) => e.correlationId)
+    );
+    for (const completed of eventsOf(world, 'step_completed')) {
+      expect(created.has(completed.correlationId)).toBe(true);
+    }
+    expect(modes[0]).toBe('replay');
   });
 
   it('drains while the workflow waits on a hook, and runs ahead again once it resolved', async () => {
