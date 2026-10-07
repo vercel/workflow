@@ -325,6 +325,13 @@ Connection pooling, keep-alive, and the request, header, and body deadlines are 
 
 A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
 
+### `WORKFLOW_SKIP_STEP_INPUT_ECHO`
+
+- Default: enabled
+- On the Vercel World, an inline step that creates itself with its `step_started` write and carries an input of 64,000 bytes or more asks the backend not to send that input back in the response. The runtime already holds those bytes, and the backend has stored exactly them, so the step runs from its local copy. Smaller inputs are still echoed: the backend stores them inline, and its unresolved form of an inline input is larger than the bytes themselves.
+- If the response doesn't confirm that this write created the step, the World reads the step back in full instead of using its local copy.
+- Set `0` or `false` to have every `step_started` response carry the step input again.
+
 ### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
 
 - Default: `30000`
