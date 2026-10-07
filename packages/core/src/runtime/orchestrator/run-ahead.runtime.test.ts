@@ -258,7 +258,9 @@ describe('run-ahead against an append-only World (node engine)', () => {
   });
 
   it('sends the run-ahead writes queued behind one in flight as one batch', async () => {
-    const { world } = await run(sequential, [STEPS]);
+    // Every write answers late, so the workflow always runs ahead of its
+    // writes and the next ones queue behind the one in flight.
+    const { world } = await run(sequential, [STEPS], { createDelayMs: 100 });
     await world.runUntilIdle();
 
     expect(await runResult(world)).toBe(STEPS);
