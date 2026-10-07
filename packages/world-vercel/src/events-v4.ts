@@ -1029,6 +1029,41 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   return decodeCreateEventResponse(response, input.eventType);
 }
 
+/**
+ * The create-event response schema for one event type, refined to require
+ * that the server echoed that event type back, compiled once per type.
+ *
+ * `z.compile` is AOT code generation (it builds and evaluates a parser
+ * source string). Calling it per response cost about 2.5 ms of CPU on every
+ * single event write, measured on an M-series laptop and more on a function
+ * vCPU, and the freshly generated parser never gets warm enough to JIT. This
+ * sits directly on the hook-resume and step-boundary critical paths, which issue
+ * several writes each. Compiling lazily keeps module init unchanged: only the
+ * event types a process actually writes are compiled.
+ */
+// per-copy-ok: a memo of pure, immutable compiled schemas. A second module
+// copy compiles its own, which costs one extra compile per type and nothing
+// else; no copy can observe another's entries.
+const checkedCreateEventSchemas = new Map<EventType, z.ZodType>();
+
+function checkedCreateEventSchema<T extends EventType>(
+  eventType: T
+): z.ZodType<EventResult<T> & { event: Event }> {
+  let schema = checkedCreateEventSchemas.get(eventType);
+  if (!schema) {
+    schema = z.compile(
+      CreateEventV4BodySchemas[eventType].refine(
+        ({ event }) =>
+          event.eventType === eventType ||
+          (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+        { path: ['event', 'eventType'] }
+      )
+    );
+    checkedCreateEventSchemas.set(eventType, schema);
+  }
+  return schema as z.ZodType<EventResult<T> & { event: Event }>;
+}
+
 /** Takes `FrameResponseLike` rather than `Response` because the WS branch has
  *  none to hand over; it synthesizes one. A real `Response` satisfies the
  *  interface, so the HTTP callers are unaffected. */
@@ -1051,14 +1086,7 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
-    CreateEventV4BodySchemas[eventType].refine(
-      ({ event }) =>
-        event.eventType === eventType ||
-        (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
-      { path: ['event', 'eventType'] }
-    )
-  );
+  const schema = checkedCreateEventSchema(eventType);
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);

@@ -1281,6 +1281,64 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('rejects an echoed event of another type on every write, not just the first', async () => {
+    // The eventType-checked response schema is compiled once per event type
+    // and memoized; the check must survive the memo.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    const pool = agent.get(origin);
+    const reply = (eventType: 'hook_created' | 'hook_disposed') =>
+      pool
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events/hook_created',
+          method: 'POST',
+        })
+        .reply(
+          200,
+          createEventBody({
+            eventType,
+            specVersion: 5,
+            correlationId: 'hook_1',
+            ...(eventType === 'hook_created'
+              ? { eventData: { token: 'token' } }
+              : {}),
+          } as AnyEventRequest),
+          {
+            headers: {
+              'x-wf-event-id': 'evnt_1',
+              'x-wf-run-id': 'wrun_1',
+              'x-wf-created-at': CREATED_AT,
+            },
+          }
+        );
+    const write = () =>
+      createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'hook_created',
+          specVersion: 5,
+          correlationId: 'hook_1',
+        },
+        { token: 'test-token', dispatcher: agent }
+      );
+
+    reply('hook_created');
+    reply('hook_disposed');
+    reply('hook_disposed');
+    await expect(write()).resolves.toMatchObject({
+      event: { eventType: 'hook_created' },
+    });
+    for (let i = 0; i < 2; i++) {
+      await expect(write()).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'SCHEMA_VALIDATION',
+      });
+    }
+    agent.assertNoPendingInterceptors();
+  });
+
   it('requests and decodes the event stream for run_started', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
