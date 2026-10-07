@@ -435,7 +435,7 @@ export interface StartOptionsBase {
    * and only affects the arguments; a dynamic workflow's code is
    * compressed regardless.
    */
-  compression?: boolean;
+  compressArguments?: boolean;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -1051,14 +1051,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // Compress only when the run itself is marked as possibly containing
       // compressed payloads (specVersion >= 5) AND the target deployment can
       // decode them (same-deployment, or probed capability for
-      // cross-deployment starts). The caller's `compression: false` opt-out
+      // cross-deployment starts). The caller's `compressArguments: false` opt-out
       // applies to the arguments alone, not to dynamic workflow code.
       const compression: CompressionMode =
         specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
           ? targetCompression
           : false;
       const argumentCompression: CompressionMode =
-        opts.compression === false ? false : compression;
+        opts.compressArguments === false ? false : compression;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,

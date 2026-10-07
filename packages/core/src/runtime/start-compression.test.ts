@@ -12,7 +12,7 @@ vi.mock('../telemetry.js', () => ({
   trace: vi.fn((_name, fn) => fn(undefined)),
 }));
 
-describe('start() compression option', () => {
+describe('start() compressArguments option', () => {
   let eventsCreate: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -58,19 +58,19 @@ describe('start() compression option', () => {
     expect(peekFormatPrefix(eventData().input)).toBe(SerializationFormat.ZSTD);
   });
 
-  it('treats compression: true as the default', async () => {
-    await start(wf, args, { compression: true });
+  it('treats compressArguments: true as the default', async () => {
+    await start(wf, args, { compressArguments: true });
     expect(peekFormatPrefix(eventData().input)).toBe(SerializationFormat.ZSTD);
   });
 
-  it('stores arguments uncompressed with compression: false', async () => {
-    await start(wf, args, { compression: false });
+  it('stores arguments uncompressed with compressArguments: false', async () => {
+    await start(wf, args, { compressArguments: false });
     expect(peekFormatPrefix(eventData().input)).toBe(
       SerializationFormat.DEVALUE_V1
     );
   });
 
-  it('keeps compressing dynamic workflow code with compression: false', async () => {
+  it('keeps compressing dynamic workflow code with compressArguments: false', async () => {
     vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, '1');
     // Past COMPRESSION_MIN_BYTES and repetitive, so the code compresses.
     const source = `async function workflow() {
@@ -79,7 +79,7 @@ describe('start() compression option', () => {
   return 1;
 }`;
     await start(source, args, {
-      compression: false,
+      compressArguments: false,
       experimental_dynamic: {
         steps: { noop: { stepId: 'step//./test//noop' } },
       },
