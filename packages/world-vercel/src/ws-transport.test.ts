@@ -13,6 +13,7 @@
  * backoff is deterministic and a microtask flush is a single `tick()`.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { decode } from 'cbor-x';
 import {
   afterEach,
@@ -51,7 +52,18 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     binaryType = '';
     readonly url: string;
     readonly headers: Record<string, string>;
+    readonly options: Record<string, unknown>;
     readonly sent: Uint8Array[] = [];
+    /** Payloads of the pings the transport sent. */
+    readonly pings: string[] = [];
+    /**
+     * Stand-in for `ws`'s private raw socket. Absent unless a test calls
+     * `withRawSocket()`, which models a runtime whose `ws` gives the transport
+     * no way to unref the socket, so it must not linger.
+     */
+    _socket?: { refed: boolean; ref(): void; unref(): void };
+    /** Stand-in for the timer `ws.close()` arms. */
+    _closeTimer?: { unrefed: boolean; unref(): void };
     /** Queued outcomes for upcoming `send` calls: an error fails that send,
      *  `undefined` lets it through. */
     readonly sendErrors: Array<Error | undefined> = [];
@@ -60,6 +72,7 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     constructor(url: string, options?: { headers?: Record<string, string> }) {
       this.url = url;
       this.headers = options?.headers ?? {};
+      this.options = options ?? {};
       sockets.push(this);
     }
 
@@ -86,11 +99,44 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
 
     close(code = 1000): void {
       if (this.readyState === FakeSocket.CLOSED) return;
+      this._closeTimer = {
+        unrefed: false,
+        unref() {
+          this.unrefed = true;
+        },
+      };
       this.readyState = FakeSocket.CLOSED;
       this.emit('close', code);
     }
 
+    terminate(): void {
+      this.close(1006);
+    }
+
+    ping(data: Buffer, _mask?: boolean, cb?: (err?: Error) => void): void {
+      this.pings.push(data.toString());
+      cb?.();
+    }
+
     // ---- test drivers ----
+
+    withRawSocket(): this {
+      this._socket = {
+        refed: true,
+        ref() {
+          this.refed = true;
+        },
+        unref() {
+          this.refed = false;
+        },
+      };
+      return this;
+    }
+
+    /** Answer a ping, as the server's `ws` does automatically. */
+    pong(data: string): void {
+      this.emit('pong', Buffer.from(data));
+    }
 
     /** Complete the handshake. */
     open(): void {
@@ -219,6 +265,7 @@ afterEach(() => {
   vi.useRealTimers();
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
   delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
+  delete process.env.WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS;
   delete process.env.DEBUG;
 });
 
@@ -1155,6 +1202,306 @@ describe('drain reason', () => {
  * thunk are intra-module calls that an export-level mock cannot intercept), so
  * this is the only place the real selection code runs.
  */
+
+/**
+ * After the last release the socket lingers, unref'd, so the next invocation
+ * for the same run on this instance reclaims it instead of handshaking again.
+ * What matters here is that a lingering socket never holds the process, never
+ * reconnects on its own, never carries a write nobody claimed, and is proven
+ * alive before a reclaiming invocation writes over it.
+ */
+describe('linger', () => {
+  /** Open a channel and complete its handshake on a socket that can be
+   *  unref'd. */
+  async function openLive(transport: ReturnType<typeof getWsEventsTransport>) {
+    transport.open();
+    const socket = (await nextSocket()).withRawSocket();
+    socket.open();
+    await tick();
+    return socket;
+  }
+
+  it("keeps the socket open and unref'd after the last release", async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    expect(socket._socket?.refed).toBe(true);
+
+    transport.release('invocation complete');
+    await tick();
+
+    expect(socket.readyState).toBe(1);
+    expect(socket._socket?.refed).toBe(false);
+    expect(transport.lingering).toBe(true);
+    expect(transport.claimed).toBe(false);
+    // Still registered, so the next opener for this run finds it.
+    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+  });
+
+  it('closes at the end of the window without holding the process', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    transport.release('invocation complete');
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(socket.readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(socket.readyState).toBe(3);
+    expect(socket._closeTimer?.unrefed).toBe(true);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('honors WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS = '500';
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    transport.release('invocation complete');
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('closes on release when the window is 0 (the kill switch)', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS = '0';
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+
+    transport.release('invocation complete');
+    await tick();
+
+    expect(socket.readyState).toBe(3);
+    expect(transport.lingering).toBe(false);
+  });
+
+  it("closes on release when the socket cannot be unref'd", async () => {
+    // A ref'd idle socket would hold the process open for the whole window.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const socket = await nextSocket(); // no raw socket
+    socket.open();
+    await tick();
+
+    transport.release('invocation complete');
+    await tick();
+
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('does not linger a socket the server is draining', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    socket.deliver(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10_000 },
+        EMPTY
+      )
+    );
+    await tick();
+
+    transport.release('invocation complete');
+    await tick();
+
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('ends the linger, without reconnecting, when the server closes the socket', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    transport.release('invocation complete');
+
+    socket.close(1001);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(sockets).toHaveLength(1);
+    expect(transport.lingering).toBe(false);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+  });
+
+  it('reclaims the socket for the next open, then writes once it answers a ping', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    transport.release('first invocation complete');
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    transport.open();
+    await tick();
+
+    // No new handshake: the same socket, ref'd again for the new holder.
+    expect(sockets).toHaveLength(1);
+    expect(socket._socket?.refed).toBe(true);
+    expect(transport.lingering).toBe(false);
+    // Not trusted until the server answers.
+    expect(socket.pings).toHaveLength(1);
+    expect(transport.notReadyReason()).toBe('verifying');
+
+    // A pong that isn't ours proves nothing.
+    socket.pong('something-else');
+    expect(transport.notReadyReason()).toBe('verifying');
+
+    socket.pong(socket.pings[0] as string);
+    expect(transport.notReadyReason()).toBeNull();
+    expect(transport.connectionReused).toBe(true);
+
+    const promise = transport.request(eventFrame);
+    await tick();
+    socket.deliver(ackFrame(sentReqIds(socket)[0] as number));
+    await expect(promise).resolves.toMatchObject({ meta: { status: 201 } });
+
+    // The original window no longer applies.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(socket.readyState).toBe(1);
+  });
+
+  it('replaces a reclaimed socket that never answers its ping', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    transport.release('first invocation complete');
+    transport.open();
+    await tick();
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(socket.readyState).toBe(3);
+    expect(transport.notReadyReason()).toBe('connecting');
+    expect(loggedErrors()).toContain('did not answer a ping within 3000ms');
+    // Eagerly replaced, since a holder still has the channel open.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets).toHaveLength(2);
+    const replacement = latest();
+    replacement.open();
+    await tick();
+    expect(transport.notReadyReason()).toBeNull();
+  });
+
+  it('does not reuse a socket whose window passed while its timer could not fire', async () => {
+    // A frozen instance fires the expiry late. The wall clock still says the
+    // linger is over, so the socket is retired and a fresh one opened.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await openLive(transport);
+    transport.release('first invocation complete');
+    vi.setSystemTime(Date.now() + 11_000);
+
+    transport.open();
+    const fresh = await nextSocket();
+
+    expect(socket.readyState).toBe(3);
+    expect(socket.pings).toHaveLength(0);
+    expect(fresh).not.toBe(socket);
+    fresh.open();
+    await tick();
+    expect(transport.notReadyReason()).toBeNull();
+    expect(transport.connectionReused).toBe(false);
+    // The retired socket's close scheduled no reconnect of its own.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("reconnects in the reclaiming invocation's async context", async () => {
+    // Socket events run in the context the socket was created in, which is
+    // the first invocation's. A reconnect there would mint its upgrade from a
+    // finished invocation's bearer and parent its span to that trace.
+    const invocation = new AsyncLocalStorage<string>();
+    const seen: Array<string | undefined> = [];
+    const transport = getWsEventsTransport(WS_URL, async () => {
+      seen.push(invocation.getStore());
+      return { authorization: 'Bearer token-1' };
+    });
+    const socket = await invocation.run('first', () => openLive(transport));
+    transport.release('first invocation complete');
+    invocation.run('second', () => transport.open());
+    socket.pong(socket.pings[0] as string);
+
+    socket.close(1006);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(sockets).toHaveLength(2);
+    expect(seen).toEqual(['first', 'second']);
+  });
+
+  it('does not offer permessage-deflate on the upgrade', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const socket = await nextSocket();
+    expect(socket.options.perMessageDeflate).toBe(false);
+  });
+});
+
+/**
+ * A claimed channel whose socket can't take a write right now tells the write
+ * path so, and the write goes over HTTP instead of waiting on the handshake.
+ */
+describe('writes do not wait on a socket that is not ready', () => {
+  const directConfig = { token: 'test-token' };
+
+  beforeEach(() => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+  });
+  afterEach(() => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+  });
+
+  it('reports connecting during the handshake, then ready', async () => {
+    openWsChannel('wrun_1', directConfig);
+    const during = resolveWsTransport('wrun_1', directConfig);
+    expect(during?.notReady).toBe('connecting');
+
+    const socket = await nextSocket();
+    // Asking again mid-handshake starts no second connect.
+    resolveWsTransport('wrun_1', directConfig);
+    socket.open();
+    await tick();
+
+    const after = resolveWsTransport('wrun_1', directConfig);
+    expect(after?.notReady).toBeUndefined();
+    expect(after?.transport).toBe(during?.transport);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('treats a lingering channel as none', async () => {
+    const release = openWsChannel('wrun_1', directConfig);
+    const socket = (await nextSocket()).withRawSocket();
+    socket.open();
+    await tick();
+
+    release?.();
+
+    expect(socket.readyState).toBe(1);
+    expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+  });
+
+  it('restarts a connect eager reconnect gave up on', async () => {
+    // Writes used to reconnect through their own `request()`. They no longer
+    // reach it while the socket is down, so the lookup does it.
+    openWsChannel('wrun_1', directConfig);
+    const first = await nextSocket();
+    first.open();
+    await tick();
+    first.close(1006);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await vi.advanceTimersByTimeAsync(5_000);
+      const retry = latest();
+      retry.failHandshake();
+      await tick();
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    const before = sockets.length;
+
+    expect(resolveWsTransport('wrun_1', directConfig)?.notReady).toBe(
+      'connecting'
+    );
+    const revived = await nextSocket();
+
+    expect(sockets.length).toBe(before + 1);
+    revived.open();
+    await tick();
+    expect(
+      resolveWsTransport('wrun_1', directConfig)?.notReady
+    ).toBeUndefined();
+  });
+});
+
 describe('transport selection', () => {
   afterEach(() => {
     delete process.env.WORKFLOW_EVENTS_TRANSPORT;

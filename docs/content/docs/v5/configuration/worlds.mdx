@@ -330,6 +330,15 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Has no effect unless `WORKFLOW_EVENTS_TRANSPORT=http`, since every workflow already uses the WebSocket by default.
 - See [`WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`](/worlds/vercel#workflow_events_transport_ws_override_workflows) for details.
 
+### `WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS`
+
+- Factory option: none
+- CLI flag: none
+- Default: `10000`
+- Clamp: `0` to `120000`
+- How long a run's events socket stays open after the delivery that opened it finishes, so the next delivery for the same run on the same instance can reuse it instead of connecting again. Set to `0` to close it as soon as each delivery finishes.
+- See [`WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS`](/docs/configuration/runtime-tuning#workflow_events_transport_ws_linger_ms) for details.
+
 ### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
 
 - Factory option: none

@@ -325,6 +325,15 @@ Connection pooling, keep-alive, and the request, header, and body deadlines are 
 
 A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
 
+### `WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS`
+
+- Default: `10000`
+- On the Vercel World's [WebSocket events transport](/docs/configuration/worlds#workflow_events_transport), how long a run's socket stays open after the delivery that opened it finishes. If the next delivery for the same run lands on the same instance within this window, it reuses the socket instead of opening a new connection, so it skips DNS, TCP, TLS, and the upgrade.
+- Set `0` to close the socket as soon as each delivery finishes. Use this as the kill switch if reusing connections turns out to cause problems.
+- Clamped to `[0, 120000]`.
+- A lingering socket never keeps the process alive, and nothing writes over it until the next delivery for that run claims it. The reclaiming delivery first pings the server and sends its writes over HTTP until the server answers. If the server closes the socket during the window, it is not reopened.
+- Raise it when a run's deliveries are usually further apart than the default, such as an agent waiting for a person's reply. Each lingering socket holds a connection open on the server, so don't set it higher than your runs need.
+
 ### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
 
 - Default: `30000`

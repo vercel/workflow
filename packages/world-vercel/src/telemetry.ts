@@ -388,6 +388,27 @@ export const WorkflowWsReplyParts = SemanticConvention<number>(
 );
 
 /**
+ * Why an event write went over HTTP although its run had an events channel
+ * open (workflow.events.ws.fallback): `connecting` while the handshake or a
+ * reconnect is in flight, `verifying` while a socket reclaimed from linger
+ * waits for its ping. Absent on writes with no channel at all. Set on the HTTP
+ * write span, so the share of writes the socket was not ready for is
+ * queryable.
+ */
+export const WorkflowWsFallback = SemanticConvention<
+  'connecting' | 'verifying'
+>('workflow.events.ws.fallback');
+
+/**
+ * Set to true on a WS event write whose socket was reclaimed from linger
+ * (workflow.events.ws.connection_reused), i.e. this invocation paid no
+ * handshake for it. Absent otherwise.
+ */
+export const WorkflowWsConnectionReused = SemanticConvention<boolean>(
+  'workflow.events.ws.connection_reused'
+);
+
+/**
  * Which eager-reconnect attempt opened this socket
  * (workflow.events.ws.reconnect_attempt); 0 for the invocation's first connect.
  */

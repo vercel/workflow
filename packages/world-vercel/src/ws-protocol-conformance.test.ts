@@ -265,8 +265,10 @@ afterEach(() => {
 });
 
 /**
- * Kick off a real `createWorkflowRunEventV4`, attach the fixture server to
- * the socket the transport opens, then let the handshake complete.
+ * Open the channel, attach the fixture server to the socket the transport
+ * opens, let the handshake complete, then kick off a real
+ * `createWorkflowRunEventV4`. The handshake has to finish first: a write
+ * issued while it is in flight goes over HTTP rather than waiting for it.
  */
 async function callThroughFixture(
   handler: (
@@ -277,13 +279,15 @@ async function callThroughFixture(
   // Stand in for the flow route: without an open channel the write resolves
   // none and goes over HTTP, which is the whole point of the explicit pair.
   openWsChannel(input.runId, { token: 'test-token' });
-  const pending = createWorkflowRunEventV4(input, { token: 'test-token' });
-  void pending.catch(() => {});
   // Let the transport construct its socket (it awaits the header thunk).
   await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0));
   const socket = sockets[0];
   const seen = attachFixtureServer(socket, handler);
   socket.open();
+  // The `open` listener adopts the connection synchronously.
+  await Promise.resolve();
+  const pending = createWorkflowRunEventV4(input, { token: 'test-token' });
+  void pending.catch(() => {});
   return { pending, socket, seen };
 }
 

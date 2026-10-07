@@ -189,6 +189,63 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('sends a write the socket is not ready for over HTTP instead of waiting', async () => {
+    // The channel is open but its handshake is still in flight. Waiting would
+    // put that handshake on this write's critical path.
+    resolveWsTransportMock.mockReturnValueOnce({
+      transport: { request: requestMock },
+      wsUrl: WS_URL,
+      notReady: 'connecting',
+    } as ReturnType<typeof resolveWsTransportMock>);
+    const agent = httpReply('/api/v4/runs/wrun_1/events/step_completed');
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('waits for a socket that is not ready for a strict event type', async () => {
+    // Otherwise the lane's assertion would pass whenever the socket was slow.
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    resolveWsTransportMock.mockReturnValueOnce({
+      transport: { request: requestMock },
+      wsUrl: WS_URL,
+      notReady: 'verifying',
+    } as ReturnType<typeof resolveWsTransportMock>);
+    requestMock.mockResolvedValueOnce(ack());
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a non-strict type take HTTP from a not-ready socket in strict mode', async () => {
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    resolveWsTransportMock.mockReturnValueOnce({
+      transport: { request: requestMock },
+      wsUrl: WS_URL,
+      notReady: 'connecting',
+    } as ReturnType<typeof resolveWsTransportMock>);
+    const agent = httpReply('/api/v4/runs/wrun_1/events/step_started');
+
+    const error = await createWorkflowRunEventV4(
+      { ...input, eventType: 'step_started' },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(String(error)).not.toMatch(/fell back to the HTTP events transport/);
+    expect(requestMock).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
+  });
+
   it('is off unless the value is exactly 1 or true', async () => {
     // The opposite asymmetry from the transport gate, on purpose: strict mode
     // fails runs, so it must not be acquired by a typo.

@@ -22,8 +22,10 @@
  * `events-v4.ts` consumes one seam instead of assembling the transport.
  */
 
+import { AsyncResource } from 'node:async_hooks';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
+import { envNumber } from '@workflow/world';
 import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrame } from './frames.js';
 import {
@@ -95,6 +97,92 @@ interface Connection {
   /** Rebuilds replies the server sent as parts. Per connection, since a
    *  frame's parts all travel on one socket. */
   parts: WsPartAssembler;
+  /**
+   * Whether a write may go out on this socket. True from the handshake, which
+   * proves the server is there. A linger reclaim clears it until the server
+   * answers a ping: a socket that sat idle may have been drained or dropped
+   * while nobody was reading it, and a write handed to it would wait out the
+   * request deadline. Writes in that window go over HTTP instead.
+   */
+  verified: boolean;
+  /** Payload of the reclaim ping still awaiting its pong, if any. */
+  pingNonce: string | null;
+  /** Reclaimed from linger at least once, so this invocation paid no
+   *  handshake for it. Telemetry only. */
+  reused: boolean;
+  /** Dropped on purpose (a stale linger reclaim). Its close must not schedule
+   *  a reconnect: the transport already started a replacement. */
+  retired: boolean;
+}
+
+/** Why a write is not handed to a claimed channel's socket right now. */
+export type WsNotReadyReason = 'connecting' | 'verifying';
+
+/**
+ * Default idle window a released socket stays open for, unref'd, so the next
+ * invocation for the same run on this instance reuses it instead of paying
+ * DNS + TCP + TLS + upgrade + server-side OIDC verification again.
+ *
+ * Sized for the gaps it is meant to cover: back-to-back invocations of one run
+ * (a step invocation and the flow continuation after it, a queue hop, a short
+ * sleep) arrive within milliseconds to a few seconds. It stays well under the
+ * server's 60s keepalive ping, so a lingering socket carries no traffic at
+ * all, and under the edge's 300s client-idle timeout. Longer windows mostly
+ * buy idle server-side connections. Deployments whose runs pause for longer
+ * between invocations (a chat agent waiting for a human reply) can raise it.
+ */
+const DEFAULT_WS_LINGER_MS = 10_000;
+/** Ceiling for the linger window. Past this the server's keepalive pings and
+ *  its drain deadline start to matter, and an idle connection is what the
+ *  server pays for. */
+const MAX_WS_LINGER_MS = 120_000;
+/** How long a reclaimed socket may take to answer its verification ping
+ *  before it is dropped and replaced. Writes go over HTTP meanwhile, so this
+ *  bounds recovery, not latency. */
+const RECLAIM_VERIFY_TIMEOUT_MS = 3_000;
+
+/**
+ * `WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS`: how long a released events socket
+ * stays open for reuse. `0` closes it on release, the pre-linger behavior.
+ * Read on every release so it follows the invocation's environment.
+ */
+export function wsLingerMs(): number {
+  return envNumber(
+    'WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS',
+    DEFAULT_WS_LINGER_MS,
+    {
+      min: 0,
+      max: MAX_WS_LINGER_MS,
+      integer: true,
+    }
+  );
+}
+
+type RefControl = { ref?: () => unknown; unref?: () => unknown };
+
+/**
+ * Ref or unref the raw socket under a `ws` client. `ws` exposes neither, so
+ * this reaches for its private `_socket` and reports whether it could. A
+ * runtime whose `ws` has no such socket (Bun's built-in replacement, or a
+ * future `ws` that renames it) gets `false`, and the caller must then not
+ * linger: an idle socket that stays ref'd holds the process open.
+ */
+function setSocketRef(ws: WebSocket, ref: boolean): boolean {
+  const raw = (ws as unknown as { _socket?: RefControl | null })._socket;
+  const fn = ref ? raw?.ref : raw?.unref;
+  if (typeof fn !== 'function') return false;
+  fn.call(raw);
+  return true;
+}
+
+/**
+ * `ws.close()` arms a ref'd 30s timer that destroys the socket if the server
+ * never echoes the close frame. Fine inside an invocation; on a socket closed
+ * from linger it would hold an otherwise idle process open. Best effort, like
+ * {@link setSocketRef}.
+ */
+function unrefCloseTimer(ws: WebSocket): void {
+  (ws as unknown as { _closeTimer?: RefControl | null })._closeTimer?.unref?.();
 }
 
 /** Reserved reqId the server replies under when a frame was too malformed to
@@ -162,6 +250,22 @@ class WsEventsTransport {
   /** Authorization the current socket was opened with, so a forced refresh can
    *  tell whether it actually produced a new one. */
   private lastAuthorization: string | null = null;
+  /** Set while the socket lingers after its last release; fires the close. */
+  private lingerTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Wall-clock end of the current linger. Checked again on reclaim, because
+   *  a frozen instance does not fire the timer on time. */
+  private lingerUntil = 0;
+  /** Drops a reclaimed socket that never answers its verification ping. */
+  private verifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingSeq = 0;
+  /**
+   * Runs a callback in the async context of the most recent `open()`. Socket
+   * events carry the context the socket was *created* in, so without this an
+   * eager reconnect on a socket a later invocation reclaimed (or joined) would
+   * resolve the bearer and trace context of an invocation that has finished:
+   * a stale OIDC token, and a connect span parented to the wrong trace.
+   */
+  private runInOwnerScope: (fn: () => void) => void = (fn) => fn();
 
   constructor(
     private readonly wsUrl: string,
@@ -256,9 +360,13 @@ class WsEventsTransport {
    * issued as the step body already runs, its server-recorded timestamp lands
    * after the work it timestamps and the step reads as shorter than it was.
    *
-   * Fire-and-forget: the connect is unawaited, and `request` awaits the same
-   * promise, so a write issued while the handshake is still in flight joins it
-   * rather than racing it.
+   * Fire-and-forget: the connect is unawaited. A write issued while the
+   * handshake is still in flight does not wait for it: `resolveWsTransport`
+   * reports the channel as not ready and the write takes the pooled HTTP
+   * route, while the socket finishes warming for the writes after it.
+   *
+   * A channel still lingering from an earlier invocation for the same run is
+   * reclaimed instead of reconnected; see `reclaim`.
    *
    * A failed connect closes the channel rather than leaving it registered for
    * `request` to retry, which is what keeps this path from being *worse* than
@@ -273,10 +381,193 @@ class WsEventsTransport {
   open(): void {
     if (this.closed) return;
     this.openCount++;
+    this.runInOwnerScope = AsyncResource.bind((fn: () => void) => fn());
+    if (this.lingerTimer !== null) {
+      this.reclaim();
+      return;
+    }
     if (this.connection !== null || this.connecting !== null) return;
+    this.connectOrClose();
+  }
+
+  private connectOrClose(): void {
     void this.ensureConnected().catch(() => {
       // Already logged by `connect`.
       this.close('connect failed');
+    });
+  }
+
+  /**
+   * Take a lingering socket back for a new holder. The socket is ref'd again
+   * (a claimed socket keeps the process alive, as before linger existed) and
+   * pinged; writes go over HTTP until the pong proves the server still holds
+   * the other end. The pong is the cheapest proof there is: one control frame,
+   * one round trip on a connection that is already up, against a full
+   * handshake. And TCP ordering means a drain or close the server sent before
+   * reading the ping arrives first, so a verified socket was not already being
+   * torn down.
+   *
+   * A linger past its window (an instance frozen between invocations, whose
+   * timer could not fire on time) is not reused: the socket is retired and a
+   * fresh one opened, which is what an expired linger would have led to.
+   */
+  private reclaim(): void {
+    const stale = Date.now() >= this.lingerUntil;
+    this.clearLinger();
+    const conn = this.connection;
+    if (conn === null || conn.ws.readyState !== WebSocket.OPEN) {
+      // A socket that closed while lingering closes the whole transport, so
+      // this is defensive: connect as a fresh open would.
+      this.connection = null;
+      this.connectOrClose();
+      return;
+    }
+    if (stale) {
+      this.retire(conn, 'linger expired');
+      this.connectOrClose();
+      return;
+    }
+    setSocketRef(conn.ws, true);
+    conn.reused = true;
+    this.verify(conn);
+  }
+
+  private verify(conn: Connection): void {
+    conn.verified = false;
+    const nonce = `reclaim-${++this.pingSeq}`;
+    conn.pingNonce = nonce;
+    const fail = (detail: string) => {
+      if (this.connection !== conn || conn.verified) return;
+      console.error(
+        `world-vercel: ws events transport dropping a reclaimed connection ` +
+          `to ${this.wsUrl}: ${detail}`
+      );
+      this.failConnection(
+        conn,
+        `workflow-server events WS reclaimed connection to ${this.wsUrl} ` +
+          `${detail}`
+      );
+      // `close()` waits for a closing handshake a dead peer never answers.
+      conn.ws.terminate?.();
+    };
+    this.clearVerifyTimer();
+    const timer = setTimeout(() => {
+      this.verifyTimer = null;
+      fail(`did not answer a ping within ${RECLAIM_VERIFY_TIMEOUT_MS}ms`);
+    }, RECLAIM_VERIFY_TIMEOUT_MS);
+    timer.unref?.();
+    this.verifyTimer = timer;
+    try {
+      conn.ws.ping(Buffer.from(nonce), undefined, (err?: Error) => {
+        if (err) fail(`could not send a ping: ${describeError(err)}`);
+      });
+    } catch (err) {
+      fail(`could not send a ping: ${describeError(err)}`);
+    }
+  }
+
+  private handlePong(conn: Connection, data: Buffer): void {
+    if (conn.verified || conn.pingNonce === null) return;
+    if (data.toString() !== conn.pingNonce) return;
+    conn.verified = true;
+    conn.pingNonce = null;
+    if (this.connection === conn) this.clearVerifyTimer();
+  }
+
+  private clearVerifyTimer(): void {
+    if (this.verifyTimer === null) return;
+    clearTimeout(this.verifyTimer);
+    this.verifyTimer = null;
+  }
+
+  private clearLinger(): void {
+    if (this.lingerTimer !== null) clearTimeout(this.lingerTimer);
+    this.lingerTimer = null;
+    this.lingerUntil = 0;
+  }
+
+  /** Drop a socket on purpose without treating its close as a fault. */
+  private retire(conn: Connection, reason: string): void {
+    conn.retired = true;
+    if (this.connection === conn) this.connection = null;
+    conn.ws.close(1000, reason);
+    unrefCloseTimer(conn.ws);
+  }
+
+  /**
+   * Keep the socket open, unref'd, for the linger window after the last
+   * holder releases it, so the next `open()` for this run can reclaim it.
+   * Returns false, and the caller closes as before, whenever the socket is
+   * not a clean candidate: linger disabled, nothing open, a handshake or
+   * reconnect still in flight, a drain under way, or no way to unref it.
+   *
+   * Nothing writes over a lingering socket through the normal path:
+   * `resolveWsTransport` treats it as no channel, exactly as it treated a
+   * released one before.
+   */
+  private linger(): boolean {
+    const lingerMs = wsLingerMs();
+    if (lingerMs <= 0) return false;
+    const conn = this.connection;
+    // An OPEN connection is never racing a connect of its own: one only
+    // starts once there is no OPEN socket. `connecting` can still be set here
+    // because it clears in a `.finally` a few microtasks after the handshake,
+    // so it is deliberately not checked.
+    if (conn === null || conn.ws.readyState !== WebSocket.OPEN) return false;
+    if (this.reconnectTimer !== null) return false;
+    if (this.lastDrainReason !== null || this.needsFreshToken) return false;
+    if (!setSocketRef(conn.ws, false)) return false;
+    this.clearVerifyTimer();
+    this.lingerUntil = Date.now() + lingerMs;
+    // `close()` clears the timer; leaving it set until then is how `close()`
+    // knows the socket it is closing was lingering, and so unref'd.
+    const timer = setTimeout(() => this.close('linger expired'), lingerMs);
+    timer.unref?.();
+    this.lingerTimer = timer;
+    return true;
+  }
+
+  /** Whether a holder has this channel open. False while lingering. */
+  get claimed(): boolean {
+    return !this.closed && this.openCount > 0;
+  }
+
+  /** Released and kept open for reuse; see `linger`. */
+  get lingering(): boolean {
+    return this.lingerTimer !== null;
+  }
+
+  /** Whether the current socket was reclaimed from linger. */
+  get connectionReused(): boolean {
+    return this.connection?.reused ?? false;
+  }
+
+  /**
+   * Why a write should not go out on the socket right now, or `null` when it
+   * can. A write that gets a reason goes over HTTP rather than waiting on a
+   * handshake or a verification ping.
+   */
+  notReadyReason(): WsNotReadyReason | null {
+    const conn = this.connection;
+    if (conn === null || conn.ws.readyState !== WebSocket.OPEN) {
+      return 'connecting';
+    }
+    return conn.verified ? null : 'verifying';
+  }
+
+  /**
+   * Start a connect if a claimed channel has no socket and nothing is bringing
+   * one up: eager reconnect gave up, say. Before writes stopped waiting on the
+   * socket, a write's own `request()` did this. Deduplicated by
+   * `ensureConnected`, so a burst of writes starts one handshake.
+   */
+  warm(): void {
+    if (!this.claimed) return;
+    const conn = this.connection;
+    if (conn !== null && conn.ws.readyState === WebSocket.OPEN) return;
+    if (this.connecting !== null || this.reconnectTimer !== null) return;
+    void this.ensureConnected().catch(() => {
+      // Already logged by `connect`; the next write takes HTTP and retries.
     });
   }
 
@@ -290,11 +581,16 @@ class WsEventsTransport {
    * Unbalanced calls are inert: without a matching `open` there is nothing to
    * release, and the count floors at zero rather than going negative and
    * pinning the socket for the life of the process.
+   *
+   * The last release lingers rather than closes when it can (see `linger`):
+   * the socket stays open, unref'd so it never holds the process, until the
+   * window passes, the server closes it, or the next `open()` reclaims it.
    */
   release(reason: string): void {
     if (this.openCount === 0) return;
     this.openCount--;
-    if (this.openCount === 0) this.close(reason);
+    if (this.openCount > 0) return;
+    if (!this.linger()) this.close(reason);
   }
 
   /**
@@ -312,6 +608,9 @@ class WsEventsTransport {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    const wasLingering = this.lingerTimer !== null;
+    this.clearLinger();
+    this.clearVerifyTimer();
     if (wsState.transports.get(this.wsUrl) === this) {
       wsState.transports.delete(this.wsUrl);
     }
@@ -319,8 +618,16 @@ class WsEventsTransport {
     this.connection = null;
     // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
+    // The socket is unref'd while lingering, and its close must not be the
+    // thing that keeps an idle process alive.
+    if (conn && wasLingering) unrefCloseTimer(conn.ws);
   }
 
+  /**
+   * An OPEN socket, verified or not: only `request()` and the background
+   * connects reach this, and `request()` on an unverified socket is the
+   * strict-mode path, which deliberately keeps the socket over HTTP.
+   */
   private ensureConnected(): Promise<Connection> {
     const conn = this.connection;
     if (conn && conn.ws.readyState === WebSocket.OPEN) {
@@ -437,13 +744,26 @@ class WsEventsTransport {
         let conn: Connection;
         try {
           const headers = await this.resolveUpgradeHeaders();
-          const ws = new WebSocket(this.wsUrl, { headers });
+          const ws = new WebSocket(this.wsUrl, {
+            headers,
+            // The server's `ws` server never negotiates permessage-deflate
+            // (its default, which `experimental_upgradeWebSocket` keeps), so
+            // the offer is dead weight on every upgrade. Not offering it also
+            // keeps zlib off the write path if the server ever enabled it:
+            // payloads are mostly encrypted or already-compressed bytes, and
+            // `ws` runs deflate through a bounded thread-pool queue.
+            perMessageDeflate: false,
+          });
           ws.binaryType = 'nodebuffer';
           const pending = new Map<number, PendingRequest>();
           conn = {
             ws,
             nextReqId: 1,
             pending,
+            verified: true,
+            pingNonce: null,
+            reused: false,
+            retired: false,
             // A split reply for a request that already settled (its deadline
             // or a send error) is read through, not buffered.
             parts: new WsPartAssembler({
@@ -502,6 +822,10 @@ class WsEventsTransport {
           this.handleMessage(conn, new Uint8Array(raw));
         });
 
+        ws.on('pong', (data: Buffer) => {
+          this.handlePong(conn, data);
+        });
+
         ws.on('error', (err) => {
           console.error(
             `world-vercel: ws events transport socket error ` +
@@ -545,12 +869,37 @@ class WsEventsTransport {
             )
           );
 
-          if (opened || this.reconnectAttempts > 0) {
-            this.scheduleReconnect(code);
-          }
+          this.afterClose(conn, { wasActive, opened, code });
         });
       })();
     });
+  }
+
+  /** What a socket's close leads to, once its waiters have been failed. */
+  private afterClose(
+    conn: Connection,
+    {
+      wasActive,
+      opened,
+      code,
+    }: { wasActive: boolean; opened: boolean; code: number }
+  ): void {
+    // Dropped on purpose; whoever retired it already started a replacement.
+    if (conn.retired) return;
+
+    if (this.lingerTimer !== null) {
+      // Nobody holds the channel, so there is nothing to reconnect for. The
+      // lingering socket going away (a server drain, the edge, a broken pipe)
+      // ends the linger; a superseded socket's late close leaves it alone.
+      if (wasActive) {
+        this.close(`connection closed while lingering (code ${code})`);
+      }
+      return;
+    }
+
+    if (opened || this.reconnectAttempts > 0) {
+      this.scheduleReconnect(code);
+    }
   }
 
   /**
@@ -588,7 +937,9 @@ class WsEventsTransport {
 
     const timer = setTimeout(() => {
       this.reconnectTimer = null;
-      void this.ensureConnected().catch(() => {});
+      this.runInOwnerScope(() => {
+        void this.ensureConnected().catch(() => {});
+      });
     }, delayMs);
     timer.unref?.();
     this.reconnectTimer = timer;
@@ -743,7 +1094,15 @@ class WsEventsTransport {
    */
   private failConnection(conn: Connection, message: string): void {
     this.failAllPending(conn, new WsTransportError(message));
-    if (this.connection === conn) this.connection = null;
+    if (this.connection === conn && this.lingerTimer !== null) {
+      // A lingering socket has no holder to reconnect for; end the linger.
+      this.close(message);
+      return;
+    }
+    if (this.connection === conn) {
+      this.connection = null;
+      this.clearVerifyTimer();
+    }
     conn.ws.close();
   }
 }
@@ -788,10 +1147,13 @@ const wsState = globalSingleton(
  * once per socket, at connect time, with `forceRefresh: true` when the previous
  * socket drained on an expiring token, so a caching token source knows not to
  * serve the stale entry. Only the first caller's thunk for a `wsUrl` is kept,
- * which is fine, since `wsUrl` embeds the runId and one run has one client. An
- * entry exists only between `openWsChannel` and the matching `closeWsChannel`,
- * so membership *is* the answer to "does this run have a channel", which is
- * what the write path asks, via `resolveWsTransport`.
+ * which is fine, since `wsUrl` embeds the runId and one run has one client
+ * (the thunk resolves the bearer in the async context it is *called* in, and
+ * reconnects run in the latest opener's context). An entry exists between
+ * `openWsChannel` and its release, plus the linger window after the last one,
+ * so membership plus a non-lingering instance is the answer to "does this run
+ * have a channel", which is what the write path asks, via
+ * `resolveWsTransport`.
  */
 export function getWsEventsTransport(
   wsUrl: string,
@@ -864,8 +1226,10 @@ export { isWsEventsTransportEnabled };
  *
  * An open socket is not `unref`'d, so a caller that drops the release stops the
  * process exiting (and keeps a server invocation pinned, one per connection)
- * until the platform kills it. The socket drops once every concurrent holder
- * has released; see `WsEventsTransport.release`.
+ * until the platform kills it. Once every concurrent holder has released, the
+ * socket lingers unref'd for `WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS` so the
+ * next opener for the same run can reclaim it, then closes; see
+ * `WsEventsTransport.release`.
  *
  * **The release closes over the instance, never the URL.** A channel is evicted
  * from `transports` the moment it closes, and a refused upgrade does that on
@@ -1016,6 +1380,19 @@ function resolveChannelUrl(
  * A lookup, never a create. Lazily connecting here is what made the socket's
  * lifetime a property of the *last write* rather than of the caller, and left a
  * timer as the only thing able to end it.
+ *
+ * A lingering channel counts as none: it was released, and a write after the
+ * release went over HTTP before linger existed too.
+ *
+ * `notReady` is set when the channel is open but its socket can't take the
+ * write right now (handshake or reconnect in flight, or a reclaimed socket not
+ * yet verified). The caller writes over HTTP instead of waiting, and this
+ * kicks a connect if nothing else is bringing the socket up, so later writes
+ * find it ready. Mixing transports within one invocation is safe because each
+ * write is independent on the server: both transports carry the same frame
+ * meta (including the slot bookkeeping) into the same handler, and the server
+ * processes socket frames concurrently with no ordering between them, so any
+ * write that must follow another already waits for that one's reply.
  */
 export function resolveWsTransport(
   runId: string,
@@ -1023,9 +1400,14 @@ export function resolveWsTransport(
 ): {
   transport: WsEventsTransport;
   wsUrl: string;
+  notReady?: WsNotReadyReason;
 } | null {
   const wsUrl = resolveChannelUrl(runId, config);
   if (!wsUrl) return null;
   const transport = wsState.transports.get(wsUrl);
-  return transport ? { transport, wsUrl } : null;
+  if (!transport || transport.lingering) return null;
+  const notReady = transport.notReadyReason();
+  if (notReady === null) return { transport, wsUrl };
+  transport.warm();
+  return { transport, wsUrl, notReady };
 }
