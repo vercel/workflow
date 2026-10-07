@@ -18,6 +18,11 @@ import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
+/** Compiled once: `z.compile` is code generation, too costly to run per fetch. */
+const RunKeyResponseSchema = z.compile(
+  z.object({ key: z.string().nullable() })
+);
+
 class RunKeyFetchError extends Error {
   readonly status: number;
 
@@ -150,9 +155,7 @@ export async function fetchRunKey(
   });
 
   const data = await response.json();
-  const result = z
-    .compile(z.object({ key: z.string().nullable() }))
-    .safeParse(data);
+  const result = RunKeyResponseSchema.safeParse(data);
   if (!result.success) {
     throw new Error(
       `Invalid response from Vercel API: expected { key: string | null }. Zod error: ${result.error.message}`
