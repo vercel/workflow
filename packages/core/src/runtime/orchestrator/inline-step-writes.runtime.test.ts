@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
+import { setAttributes } from '../../set-attributes.js';
 import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   dataOf,
@@ -15,7 +16,6 @@ import {
   setupOrchestratorRun,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
-import { setAttributes } from '../../set-attributes.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
