@@ -50,14 +50,6 @@
   }
 }
 
-/* The homepage CodeBlock renders dual-theme Shiki output (defaultColor: false),
-   so each token carries --shiki-light and --shiki-dark. fumadocs-ui's shiki.css
-   switches to --shiki-dark only under `.dark`, but Geistdocs 2.x marks dark mode
-   with `.dark-theme` on <html>, which left the light palette on a dark page. */
-.dark-theme .shiki:not(.not-fumadocs-codeblock *) code span {
-  color: var(--shiki-dark);
-}
-
 /* Align docs content with the navbar on narrow containers. */
 @container (max-width: 960px) {
   #nd-page {
