@@ -31,6 +31,7 @@ import { getStepFunction } from './private.js';
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
+import { pendingHookCreation } from './runtime/pending-hook-creations.js';
 import {
   bytesToBase64,
   createOpenSession,
@@ -2741,6 +2742,13 @@ function reviveAbortController(
         // StepContext.preCompletionOps); a failed resume retries on next replay.
         const hookResume = (async () => {
           try {
+            // The orchestrator in this process may have started this body
+            // before the controller's `hook_created` committed (see
+            // `isDeferAbortHookCreationEnabled`). Resuming ahead of it would
+            // fail with HookNotFoundError, swallowed below, and lose the
+            // abort's durable record, so wait for that write first. Never
+            // rejects; undefined (no wait) when nothing is in flight.
+            await pendingHookCreation(value.hookToken);
             const { resumeHook } = await import('./runtime/resume-hook.js');
             await resumeHook(value.hookToken, {
               aborted: true,

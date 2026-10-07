@@ -49,6 +49,7 @@ import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import {
   getMaxInlineSteps,
   isBatchTransitionsEnabled,
+  isDeferAbortHookCreationEnabled,
   isResilientStepDispatchEnabled,
   MAX_BATCH_FANOUT_EVENTS,
   MAX_RESILIENT_STEP_INPUT_BYTES,
@@ -69,6 +70,7 @@ import {
   publishForceClaimVictimWake,
   republishOwedForceClaimVictimWakes,
 } from './hook-wake.js';
+import { trackPendingHookCreation } from './pending-hook-creations.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
@@ -150,6 +152,11 @@ export interface SuspensionHandlerParams {
    * the handler's return to that join, and nothing else re-drives a lost
    * trailing chunk. Callers that don't opt in (terminal drain, default)
    * keep the everything-durable-at-return behavior.
+   *
+   * The same opt-in lets abort-controller system-hook creations ride the
+   * deferred work instead of gating the return; see
+   * {@link SuspensionHandlerResult.deferredHookWork} for the joins it asks
+   * of the caller.
    */
   allowDeferredBatchWork?: boolean;
   /**
@@ -256,8 +263,42 @@ export interface SuspensionHandlerResult {
    * write and fails the delivery exactly as it would have at the handler's
    * return. Steps whose messages this work publishes are already in
    * {@link queuedStepCorrelationIds} at return time.
+   *
+   * Also carries {@link deferredHookWork} when that is present, so the one
+   * join before ack covers it on every path.
    */
   deferredBatchWork?: Promise<void>;
+  /**
+   * The `hook_created` writes of `AbortController` system hooks that this
+   * suspension issued but did not wait for (see
+   * `isDeferAbortHookCreationEnabled`). Present only when the caller opted in
+   * via {@link SuspensionHandlerParams.allowDeferredBatchWork}, this
+   * suspension defers at least one step for inline execution, and every one
+   * of those hooks needed nothing but its creation. Already folded into
+   * {@link deferredBatchWork}.
+   *
+   * The writes are issued alongside every other suspension write, exactly
+   * when they were before; only the join moves. Before the deferral a body
+   * started after the slower of its claim and these writes. Now it starts off
+   * its claim, and the caller joins this promise before what can depend on
+   * the hooks:
+   *
+   *  - each inline step's terminal write (`terminalWriteBarrier`), so a
+   *    `hook_created` still always precedes the terminal event of a step
+   *    started in the same suspension, and an inline delta taken by that
+   *    write includes it;
+   *  - the step-execution dispatches, so a queued step never runs before a
+   *    hook it could resume (the dispatch keeps its old ordering);
+   *  - an in-process step-initiated `abort()` of the same controller, through
+   *    `pendingHookCreation` (see `runtime/pending-hook-creations.ts`);
+   *  - the delivery's ack, through {@link deferredBatchWork}.
+   *
+   * Rejects like any other suspension write. A `hook_conflict` commits as an
+   * event and is observed by the next replay, which is how a system hook's
+   * conflict was handled before the deferral too: the `hasHookConflict`
+   * continuation re-replays over it.
+   */
+  deferredHookWork?: Promise<void>;
   /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
@@ -659,6 +700,24 @@ export async function handleSuspension({
     }
     return result;
   };
+  // Guarded like `createGuarded`, but folds nothing back into the caller's
+  // log. For writes the handler returns without waiting for (deferred
+  // abort-hook creates): by the time one settles, the caller is running code
+  // that reads the log and may already have taken an inline-delta cursor from
+  // it, so merging a report then would change the log under that code, and a
+  // later delta from the same cursor would carry the same events again.
+  // Declining is always safe: the log stays a strict prefix, and the next read
+  // (or that later delta) returns what the report held.
+  const createGuardedDetached: EventCreator = async (data, params) => {
+    eventWrites++;
+    if (!eventLog) {
+      return createEvent(data, params);
+    }
+    return createEvent(data, {
+      ...params,
+      ...slotSnapshotParams(eventLog.events),
+    });
+  };
   // Separate queue items by type
   const stepItems = suspension.items.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -808,8 +867,35 @@ export async function handleSuspension({
       ? eventLog.cursor
       : undefined;
 
+  const recordHookOutcome = (
+    queueItem: HookInvocationQueueItem,
+    result: Awaited<ReturnType<typeof createHookEvent>>,
+    deferred: boolean
+  ): void => {
+    if (result.hasAwaitedHookCreation) {
+      awaitedHookCorrelationIds.push(queueItem.correlationId);
+    }
+    if (!result.hasHookConflict) return;
+    if (!deferred) {
+      hookConflictCorrelationIds.push(queueItem.correlationId);
+      return;
+    }
+    // A deferred create's conflict stays out of `hookConflictCorrelationIds`,
+    // which is decided on at return, before a deferred create can settle. It
+    // is practically unreachable (the token is a ULID from the run's seeded
+    // sequence) and needs no handling here: the event commits ahead of the
+    // terminal write of any step this suspension started
+    // (`terminalWriteBarrier`), so the next replay observes it, which is all
+    // the `hasHookConflict` continuation did for a system hook.
+    runtimeLogger.warn('Deferred abort hook create was a conflict', {
+      workflowRunId: runId,
+      correlationId: queueItem.correlationId,
+    });
+  };
+
   const processHookGroup = async (
-    items: HookInvocationQueueItem[]
+    items: HookInvocationQueueItem[],
+    deferred = false
   ): Promise<void> => {
     for (const queueItem of items) {
       let creationConflicted = false;
@@ -840,17 +926,14 @@ export async function handleSuspension({
           hookEvent,
           queueItem,
           requestId,
-          sinceCursor: hookDeltaCursor,
-          createEvent: createGuarded,
+          // A deferred create never asks for a delta: nothing waits for it
+          // to fold one in (see `createGuardedDetached`).
+          sinceCursor: deferred ? undefined : hookDeltaCursor,
+          createEvent: deferred ? createGuardedDetached : createGuarded,
           world,
           forceClaimVictimWakes,
         });
-        if (result.hasHookConflict) {
-          hookConflictCorrelationIds.push(queueItem.correlationId);
-        }
-        if (result.hasAwaitedHookCreation) {
-          awaitedHookCorrelationIds.push(queueItem.correlationId);
-        }
+        recordHookOutcome(queueItem, result, deferred);
         creationConflicted = result.hasHookConflict;
       }
 
@@ -928,6 +1011,38 @@ export async function handleSuspension({
     }
   };
 
+  // Create step events for steps that don't have them yet.
+  // Unlike V1, we do NOT queue step messages from here: the caller
+  // decides which steps to execute inline vs. queue to background.
+  // Wait events are also created in parallel below.
+  const stepsNeedingCreation = new Set(
+    stepItems
+      .filter((queueItem) => !queueItem.hasCreatedEvent)
+      .map((queueItem) => queueItem.correlationId)
+  );
+
+  // Lazy inline start: defer the step_created write for up to
+  // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
+  // step is created on the fly by the lazy `step_started` executeStep sends
+  // (saving a round-trip per step). We never defer when a `hook.getConflict()`
+  // awaiter is present, because in that case the caller executes nothing inline
+  // (it continues the workflow to resolve the awaiter instead), so deferring
+  // would leave the steps uncreated and unqueued. That is decided from the
+  // queue rather than from the creates' outcomes, which are still in flight
+  // while the steps are written. We pick the first N uncreated steps —
+  // matching the caller's inline-candidate selection — and dehydrate their
+  // input here so executeStep can ship it as the step_started payload.
+  const hasHookConflictAwaiter = hooksNeedingCreation.some(
+    (item) => item.hasConflictAwaiter === true
+  );
+  const lazyInlineCorrelationIds = new Set<string>(
+    !hasHookConflictAwaiter
+      ? stepItems
+          .filter((item) => stepsNeedingCreation.has(item.correlationId))
+          .slice(0, getMaxInlineSteps())
+          .map((item) => item.correlationId)
+      : []
+  );
   // Hook writes go out alongside this suspension's step, wait, and attribute
   // writes rather than ahead of them: they are one more op in the set settled
   // below. Within the hook writes themselves, token groups apply in code order
@@ -940,7 +1055,39 @@ export async function handleSuspension({
   // repaid by the next replay from the forced `hook_created` itself, which
   // `forcedCreationsOwingWake` finds wherever it sits in the log, so no row
   // written after it can hide the debt.
-  const hookGroups = [...hookItemsByToken.values()];
+  //
+  // Abort-controller system hooks that need nothing but their creation are
+  // the exception when the caller can join them later
+  // (`allowDeferredBatchWork`) and a step is about to run inline: their
+  // creates go out at the same moment but stay out of `ops`, so the inline
+  // body starts off its own claim instead of the slower of the claim and the
+  // hook write. Nothing the body or this handler's return can do depends on
+  // such a hook except what `deferredHookWork` documents, and the caller
+  // joins it before each of those. A hook with any other work this pass (a
+  // dispose, an abort, an awaiter, metadata, a forced claim) or any user hook
+  // stays on the gating path unchanged.
+  const deferAbortHookCreates =
+    allowDeferredBatchWork === true &&
+    lazyInlineCorrelationIds.size > 0 &&
+    attributeItems.length === 0 &&
+    isDeferAbortHookCreationEnabled();
+  const isDeferrableHookCreate = (item: HookInvocationQueueItem): boolean =>
+    item.isSystem === true &&
+    !item.hasCreatedEvent &&
+    !item.disposed &&
+    !item.abortRequested &&
+    item.hasConflictAwaiter !== true &&
+    item.force !== true &&
+    item.metadata === undefined;
+  const hookGroups: HookInvocationQueueItem[][] = [];
+  const deferredHookGroups: HookInvocationQueueItem[][] = [];
+  for (const group of hookItemsByToken.values()) {
+    if (deferAbortHookCreates && group.every(isDeferrableHookCreate)) {
+      deferredHookGroups.push(group);
+    } else {
+      hookGroups.push(group);
+    }
+  }
   const hooksNeedingAbort = allHookItems.filter(
     (item) => item.abortRequested && !item.disposed
   );
@@ -955,7 +1102,9 @@ export async function handleSuspension({
               startMs: Date.now(),
             };
             hookGroupsWindow = window;
-            await settlePhase(hookGroups.map(processHookGroup));
+            await settlePhase(
+              hookGroups.map((group) => processHookGroup(group))
+            );
             window.endMs = Date.now();
           }
           if (hooksNeedingAbort.length > 0) {
@@ -963,16 +1112,22 @@ export async function handleSuspension({
           }
         })()
       : undefined;
-
-  // Create step events for steps that don't have them yet.
-  // Unlike V1, we do NOT queue step messages from here: the caller
-  // decides which steps to execute inline vs. queue to background.
-  // Wait events are also created in parallel below.
-  const stepsNeedingCreation = new Set(
-    stepItems
-      .filter((queueItem) => !queueItem.hasCreatedEvent)
-      .map((queueItem) => queueItem.correlationId)
-  );
+  // Deferred creates: one promise per token group, each registered by token
+  // so an in-process step-initiated abort can wait for its own hook (see
+  // `pendingHookCreation`). Every one of them has a handler attached here, so
+  // a rejection that lands before the caller's join is never unhandled.
+  const deferredHookOps = deferredHookGroups.map((group) => {
+    const op = (async () => {
+      await ensureRunReady();
+      await processHookGroup(group, true);
+    })();
+    op.catch(() => {});
+    for (const item of group) trackPendingHookCreation(item.token, op);
+    return op;
+  });
+  const deferredHookOp =
+    deferredHookOps.length > 0 ? settlePhase(deferredHookOps) : undefined;
+  deferredHookOp?.catch(() => {});
 
   // Correlation IDs for which THIS suspension call actually wrote the
   // step_created event. Populated by the ops below after a successful
@@ -1109,28 +1264,6 @@ export async function handleSuspension({
     lazyInlineCorrelationIds.delete(queueItem.correlationId);
   };
 
-  // Lazy inline start: defer the step_created write for up to
-  // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
-  // step is created on the fly by the lazy `step_started` executeStep sends
-  // (saving a round-trip per step). We never defer when a `hook.getConflict()`
-  // awaiter is present, because in that case the caller executes nothing inline
-  // (it continues the workflow to resolve the awaiter instead), so deferring
-  // would leave the steps uncreated and unqueued. That is decided from the
-  // queue rather than from the creates' outcomes, which are still in flight
-  // while the steps are written. We pick the first N uncreated steps —
-  // matching the caller's inline-candidate selection — and dehydrate their
-  // input here so executeStep can ship it as the step_started payload.
-  const hasHookConflictAwaiter = hooksNeedingCreation.some(
-    (item) => item.hasConflictAwaiter === true
-  );
-  const lazyInlineCorrelationIds = new Set<string>(
-    !hasHookConflictAwaiter
-      ? stepItems
-          .filter((item) => stepsNeedingCreation.has(item.correlationId))
-          .slice(0, getMaxInlineSteps())
-          .map((item) => item.correlationId)
-      : []
-  );
   // Collected by correlationId because the per-step ops below run concurrently
   // and settle out of order. We rebuild the array in deterministic
   // `lazyInlineCorrelationIds` order (the ordered slice above) after the ops
@@ -2073,8 +2206,23 @@ export async function handleSuspension({
   ).then(() => Date.now());
   try {
     await settlePhase(ops);
+  } catch (err) {
+    // This phase's write set must be final before the failure escapes (see
+    // `settlePhase`), and the caller never reaches `deferredBatchWork` once
+    // the handler throws, so settle the deferred hook creates here too.
+    await deferredHookOp?.catch(() => {});
+    throw err;
   } finally {
     await owedVictimWakes;
+  }
+  if (deferredHookOp) {
+    // One join before ack covers both, on every caller path that already
+    // joins the fold's trailing work. Prefers a 412 like `settlePhase`.
+    const trailing = deferredBatchWork;
+    deferredBatchWork = settlePhase(
+      trailing ? [trailing, deferredHookOp] : [deferredHookOp]
+    );
+    deferredBatchWork.catch(() => {});
   }
 
   // The hook writes' share of this suspension's wall time: only the stretch
@@ -2138,6 +2286,7 @@ export async function handleSuspension({
     lazyInlineSteps,
     inlineClaims,
     deferredBatchWork,
+    deferredHookWork: deferredHookOp,
     // On hook conflict the caller advances the workflow over the conflict
     // before scheduling anything and never reads the wait timeout, so don't
     // report one. The next pass, which sees the conflict settled, reports it.
@@ -2150,7 +2299,10 @@ export async function handleSuspension({
     // The delta accounts for the whole log only if the write that returned it
     // was this suspension's only one — any other write may have landed above
     // the delta and be missing from the caller's log.
-    eventLogCarriedForward: deltaAbsorbed && eventWrites === 1,
+    // A deferred hook create may not have been issued yet (it counts itself
+    // when it is), so its presence alone rules the carry-forward out.
+    eventLogCarriedForward:
+      deltaAbsorbed && eventWrites === 1 && deferredHookOp === undefined,
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,

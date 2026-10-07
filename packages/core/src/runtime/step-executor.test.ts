@@ -1176,6 +1176,126 @@ describe('executeStep — turbo run-ready barrier on the awaited start', () => {
   });
 });
 
+describe('executeStep — terminal write barrier', () => {
+  afterEach(() => {
+    counter += 1;
+    vi.restoreAllMocks();
+  });
+
+  // The runtime passes the suspension's deferred abort-hook creates here:
+  // the body starts off its claim, and only the terminal write waits.
+  async function startedRun(world: World) {
+    const runInput = await dehydrateStepArguments([], 'run', undefined);
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'wf',
+        input: runInput,
+      },
+    });
+    const runId = created.run!.runId;
+    await world.events.create(runId, {
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {},
+    } as never);
+    const input = await dehydrateStepArguments(
+      { args: [], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+    return { runId, input };
+  }
+
+  function recordWrites(world: World): string[] {
+    const writes: string[] = [];
+    const create = world.events.create.bind(world.events);
+    vi.spyOn(world.events, 'create').mockImplementation(async (...args) => {
+      writes.push((args[1] as { eventType: string }).eventType);
+      return create(...args);
+    });
+    return writes;
+  }
+
+  it.each([
+    'step_completed',
+    'step_failed',
+  ] as const)('runs the body and the lazy claim without it, then holds %s', async (terminal) => {
+    const world = makeWorld();
+    const { runId, input } = await startedRun(world);
+    const stepName = uniqueStepName();
+    const stepId = `step_${ulid()}`;
+    const bodyRan = Promise.withResolvers<void>();
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async () => {
+          bodyRan.resolve();
+          if (terminal === 'step_failed') throw new FatalError('nope');
+          return 'ok';
+        },
+        { maxRetries: 0 }
+      )
+    );
+    const writes = recordWrites(world);
+    const barrier = Promise.withResolvers<void>();
+
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: input,
+      suppressOptimisticStart: true,
+      terminalWriteBarrier: barrier.promise,
+      authoritativeAttempt: 1,
+    });
+
+    await bodyRan.promise;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(writes).toEqual(['step_started']);
+
+    barrier.resolve();
+    await expect(execution).resolves.toMatchObject({
+      type: terminal === 'step_completed' ? 'completed' : 'failed',
+    });
+    expect(writes).toEqual(['step_started', terminal]);
+  });
+
+  it('writes the terminal event when the barrier rejects', async () => {
+    // A failed hook create is the caller's to report (its join fails the
+    // delivery); the step's own outcome is still recorded.
+    const world = makeWorld();
+    const { runId, input } = await startedRun(world);
+    const stepName = uniqueStepName();
+    const stepId = `step_${ulid()}`;
+    registerStepFunction(stepName, async () => 'ok');
+    const barrier = Promise.reject(new Error('hook write failed'));
+    barrier.catch(() => {});
+
+    await expect(
+      executeStep({
+        world,
+        workflowRunId: runId,
+        workflowName: 'wf',
+        workflowStartedAt: Date.now(),
+        stepId,
+        stepName,
+        lazyStepInput: input,
+        terminalWriteBarrier: barrier,
+        authoritativeAttempt: 1,
+      })
+    ).resolves.toMatchObject({ type: 'completed' });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+  });
+});
+
 describe('executeStep — unserializable-argument placeholder guard', () => {
   afterEach(() => {
     counter += 1;
