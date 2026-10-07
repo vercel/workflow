@@ -293,9 +293,12 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 
 - Factory option: none
 - CLI flag: none
-- Default: `http`
-- Experimental stream-write transport capability. Set to exactly `ws` to attempt `workflow-stream-ws/v1`. The server authoritatively accepts or declines each upgrade; a decline uses HTTP directly for that writer lifetime. Stream reads remain HTTP and demand-driven.
-- This is not tenant rollout policy or a package-version check. HTTP remains the compatibility path. `/websockets/v1` is independent of REST v2/v4 and persisted workflow `specVersion` values.
+- Default: `ws`
+- Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`). Set to `http` (case-insensitive, surrounding whitespace ignored) to opt out; any other value, including unset, empty, or `ws`, uses the WebSocket. Stream reads always use HTTP.
+- A writer's first two write groups go over HTTP, and the socket opens in the background after that, so no write waits for the upgrade. The server accepts or declines each upgrade; a declined or failed upgrade leaves that writer on HTTP for its lifetime.
+- Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy, which does not forward a WebSocket upgrade, so stream writes stay on HTTP.
+- The server pings idle sockets to keep them open, and the client must answer. The `ws` library the Vercel World uses does so automatically.
+- Each WebSocket message is at most `WORKFLOW_WS_MAX_MESSAGE_BYTES`. Larger write groups are sent as several ordered requests, and a single chunk too large for one message is written over HTTP.
 - A throttled (429) socket write or close is retried after the server's `Retry-After`, as over HTTP. It moves to HTTP if the connection ends during the wait or the cumulative wait passes 30 seconds.
 
 ### `WORKFLOW_DISABLE_ANALYTICS_READS`
