@@ -195,6 +195,85 @@ replays).
 - **B4** — the wait/step delivery itself always wakes the orchestrator
   (queue-handler behavior, not modeled further).
 
+## Spec 3: hook awaiters across lost races
+
+`HookAwaiters.tla` models which awaiter a hook payload settles when
+workflow code races a hook against a timeout and awaits it again after
+losing (vercel/workflow#4264, fixed in #4324):
+
+```ts
+const first = await Promise.race([hook.then(f), sleep("1s")]);   // sleep wins
+const second = await Promise.race([hook.then(g), sleep("30s")]); // payload arrives
+```
+
+Every `hook.then()` asks the hook for an awaiter, each consumed
+`hook_received` settles one, and `Promise.race` never tells the hook that a
+branch lost. Before #4324 each `then()` enrolled its own awaiter and the
+payload settled the oldest one — the first race's, which nobody listens to
+any more — so `second` timed out with `hook_received` in the log. The
+checked property:
+
+> **No loss while racing.** A payload never settles an abandoned awaiter
+> while the workflow is waiting on a different one.
+
+### Results
+
+All configs: 6 races, 5 payloads, exhaustive.
+
+| Config | Setup | Result |
+| --- | --- | --- |
+| `HookAwaiters.cfg` | Both halves of the fix, fresh `hook.then()` per race | ✅ NoLossWhileRacing, InOrder, Conservation, SingleAwaiter hold |
+| `HookAwaitersNoFix.cfg` | Engine before #4324 (falsifiability check) | ❌ NoLossWhileRacing violated — the #4264 trace |
+| `HookAwaitersNoInFlight.cfg` | Fix part 1 only (shared pending awaiter) | ❌ violated — part 2 is necessary |
+| `HookAwaitersNoSharePending.cfg` | Fix part 2 only (`inFlight`) | ❌ violated — part 1 is necessary |
+| `HookAwaitersBetweenRaces.cfg` | Both halves, fresh `then()` per race, stronger `NoLoss` | ❌ NoLoss violated — the documented gap (below) |
+| `HookAwaitersOnce.cfg` | Both halves, promise created once and raced every time | ✅ NoLoss holds |
+| `HookAwaitersOnceNoFix.cfg` | Engine before #4324, promise created once | ✅ NoLoss holds |
+
+The minimal counterexamples are the real-world shapes:
+
+- **NoFix:** race 1 → timeout → race 2 enrols a second awaiter → payload
+  consumed into the oldest (race 1's) → settled while race 2 waits.
+- **NoInFlight:** race 1 → payload consumed into race 1's awaiter (the log
+  walk runs ahead of the workflow) → race 1's sleep delivers first →
+  race 2 finds no pending awaiter and enrols a fresh one → the payload
+  settles race 1's awaiter. This is the "`hook_received` before the second
+  `wait_created`" log shape.
+- **NoSharePending:** as NoFix — with two enrolled awaiters `inFlight` never
+  gets a chance.
+- **BetweenRaces:** race 1 → timeout → payload consumed and settled while
+  the workflow is between races (e.g. in a step) → it settled race 1's
+  abandoned awaiter. A lost race's awaiter is indistinguishable from a
+  promise created once and raced again, so the engine cannot redirect it;
+  the hooks docs recommend the create-once pattern, which the `Once`
+  configs show is lossless on engines with and without the fix.
+
+### Model ↔ code map
+
+| Model element | Code (`packages/core/src/workflow/hook.ts`) |
+| --- | --- |
+| `Then` decision order | `createHookPromise`: `inFlight` → `payloadsQueue.shift().claim()` → `promises[0]` → `promises.push` |
+| `SharePending` / `ShareInFlight` | the two `return pending.promise` / `return inFlight.promise` branches added by #4324 |
+| `Consume` | `hook_received` branch: `promises.shift()` + `inFlight = next`, or buffer into `payloadsQueue` |
+| `Settle` | `earlierDelivered.then(...)`: clear `inFlight`, `next.resolve()` |
+| `Timeout` | the race's `sleep()` branch winning |
+| `Pattern = "once"` | `const p = hook.then(...)` raced on every attempt (hooks docs, "Waiting with a timeout") |
+
+### Assumptions and simplifications
+
+- Builds on spec 1's **A4** (same-kind deliveries settle in log order:
+  `settleQ` is FIFO) and **A5** (a buffered payload claim settles
+  promptly).
+- **Over-approximated ordering.** Either branch of a race may win while
+  both are pending, even when the barrier discipline would have delivered
+  the payload first. That is a superset of real orderings, so the ✅
+  results hold for the real engine; spec 1 pins the ordering itself.
+- Each race makes one `then()` call. Concurrent awaits of one hook
+  (`Promise.all([hook, hook])`) are documented as unspecified and are not
+  modeled; neither are `iterator.next()` races (a known, documented gap
+  pinned by an `it.fails` unit test), hook conflicts, force-claim,
+  disposal, or hydration failures (unit-tested in `workflow/hook.test.ts`).
+
 ## Files
 
 - `ReplayDelivery.tla` — the delivery-ordering model (log consumption,
@@ -209,6 +288,9 @@ replays).
 - `MCSelfHealing.tla` — the one-wait-one-step entity set.
 - `SelfHealing.cfg`, `SelfHealingVolatileDedup.cfg`,
   `SelfHealingAttemptKeys.cfg` — the spec 2 experiments.
+- `HookAwaiters.tla` — the hook-awaiter model (awaiter selection, log-walk
+  consumption, deferred settlement, a racing guest).
+- `HookAwaiters*.cfg` — the spec 3 experiments.
 
 ## Running
 
@@ -225,12 +307,20 @@ for cfg in SelfHealing SelfHealingVolatileDedup SelfHealingAttemptKeys; do
   java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
     -deadlock -workers auto -config $cfg.cfg MCSelfHealing.tla
 done
+for cfg in HookAwaiters HookAwaitersNoFix HookAwaitersNoInFlight \
+    HookAwaitersNoSharePending HookAwaitersBetweenRaces \
+    HookAwaitersOnce HookAwaitersOnceNoFix; do
+  java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
+    -deadlock -workers auto -config $cfg.cfg HookAwaiters.tla
+done
 ```
 
 (`-deadlock` disables deadlock reporting — fully-delivered quiescent states
 are legitimate terminal states. The `ReplayDeliveryNoBarriers` and
-`SelfHealing` runs are EXPECTED to report an invariant violation; that is
-the point of those configs.)
+`SelfHealing` runs, and the `HookAwaitersNoFix`, `HookAwaitersNoInFlight`,
+`HookAwaitersNoSharePending` and `HookAwaitersBetweenRaces` runs, are
+EXPECTED to report an invariant violation; that is the point of those
+configs.)
 
 ## Roadmap
 
