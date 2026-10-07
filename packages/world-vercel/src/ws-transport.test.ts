@@ -38,6 +38,7 @@ import {
   resetWsEventsTransportsForTest,
   resolveWsTransport,
   toEventsWsUrl,
+  withMeta,
 } from './ws-transport.js';
 
 type Listener = (...args: unknown[]) => void;
@@ -2008,4 +2009,23 @@ describe('transport selection', () => {
       expect(sockets).toHaveLength(0);
     });
   });
+});
+
+it('adds meta to a frame without changing its body', () => {
+  const body = Uint8Array.of(9, 8, 7, 6, 5);
+  const frame = withMeta(
+    encodeFrame({ reqId: 1, type: 'event', event: { eventType: 'x' } }, body),
+    { attach: { runId: 'wrun_x' } }
+  );
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const metaLength = view.getUint32(0, false);
+  expect(decode(frame.subarray(4, 4 + metaLength))).toEqual({
+    reqId: 1,
+    type: 'event',
+    event: { eventType: 'x' },
+    attach: { runId: 'wrun_x' },
+  });
+  const bodyLength = view.getUint32(4 + metaLength, false);
+  expect(bodyLength).toBe(body.byteLength);
+  expect([...frame.subarray(8 + metaLength)]).toEqual([...body]);
 });

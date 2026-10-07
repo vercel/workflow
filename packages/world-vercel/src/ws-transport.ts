@@ -1082,18 +1082,21 @@ function unassignedEventsyncUrl(
 
 type PooledSocket = { ws: WebSocket; drop(): void };
 
-/** Re-encode a frame with extra meta fields. */
-function withMeta(frame: Uint8Array, extra: Record<string, unknown>) {
-  const length = new DataView(
-    frame.buffer,
-    frame.byteOffset,
-    frame.byteLength
-  ).getUint32(0, false);
-  const meta = decodeCbor(frame.subarray(4, 4 + length)) as Record<
+/** Re-encode a frame (`[meta length][meta][body length][body]`) with extra
+ * meta fields; the body is carried over byte for byte. */
+export function withMeta(frame: Uint8Array, extra: Record<string, unknown>) {
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const metaLength = view.getUint32(0, false);
+  const meta = decodeCbor(frame.subarray(4, 4 + metaLength)) as Record<
     string,
     unknown
   >;
-  return encodeFrame({ ...meta, ...extra }, frame.subarray(4 + length));
+  const bodyLength = view.getUint32(4 + metaLength, false);
+  const bodyStart = 8 + metaLength;
+  return encodeFrame(
+    { ...meta, ...extra },
+    frame.subarray(bodyStart, bodyStart + bodyLength)
+  );
 }
 
 function takePooledSocket(url: string): WebSocket | undefined {
