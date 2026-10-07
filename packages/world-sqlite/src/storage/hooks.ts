@@ -71,8 +71,9 @@ export function createHooksStorage(ctx: Ctx): Storage['hooks'] {
     // search.
     let disposedMatch = false;
     for (const row of db.all<{ data: Uint8Array }>(
-      'SELECT data FROM hooks WHERE token = ? ORDER BY hook_id',
-      token
+      "SELECT data FROM hooks WHERE token = ? AND tag IN (?, '') ORDER BY hook_id, tag = ''",
+      token,
+      ctx.tag
     )) {
       const hook = parseHook(row.data);
       if (isHookAvailable(hook)) {

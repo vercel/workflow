@@ -285,9 +285,11 @@ export function createStreamer(db: Db, tag?: string): Streamer {
         return new ReadableStream<Uint8Array>({
           start(controller) {
             const delivered = new Set<string>();
-            const buffered: { chunkId: string; chunkData: Uint8Array }[] = [];
-            let readingBacklog = true;
-            let pendingClose = false;
+            let draining = true;
+            let drainRequested = false;
+            // Capture before the backlog: a commit racing that read must still
+            // change the version observed by the next poll.
+            let lastVersion = db.isOpen ? db.dataVersion() : 0;
 
             const close = () => {
               streamClosed = true;
@@ -299,42 +301,58 @@ export function createStreamer(db: Db, tag?: string): Streamer {
               }
             };
 
-            const chunkListener = (event: {
-              chunkData: Uint8Array;
-              chunkId: string;
-            }) => {
-              if (event.chunkData.byteLength === 0) {
-                delivered.add(event.chunkId);
-                return;
-              }
-              if (readingBacklog) {
-                delivered.add(event.chunkId);
-                buffered.push({
-                  chunkId: event.chunkId,
-                  chunkData: Uint8Array.from(event.chunkData),
-                });
-              } else if (!delivered.has(event.chunkId)) {
-                delivered.add(event.chunkId);
-                controller.enqueue(Uint8Array.from(event.chunkData));
+            const deliver = (row: ChunkRow) => {
+              if (delivered.has(row.chunk_id)) return;
+              delivered.add(row.chunk_id);
+              if (row.eof) {
+                close();
+              } else if (row.data.byteLength) {
+                controller.enqueue(Uint8Array.from(row.data));
               }
             };
-            const closeListener = () => {
-              if (readingBacklog) {
-                pendingClose = true;
+
+            // Notifications are wakeups, never data: another connection may
+            // have committed earlier chunks that must precede this local write.
+            // Reads are synchronous; the guard also serializes reentrant wakes.
+            const drain = () => {
+              if (streamClosed || !db.isOpen) return;
+              if (draining) {
+                drainRequested = true;
                 return;
               }
-              close();
+              draining = true;
+              try {
+                do {
+                  drainRequested = false;
+                  for (const head of readChunkHeads(name)) {
+                    if (streamClosed) break;
+                    if (delivered.has(head.chunk_id)) continue;
+                    if (head.eof) {
+                      close();
+                      break;
+                    }
+                    const row = db.get<ChunkRow>(
+                      'SELECT chunk_id, eof, data FROM stream_chunks WHERE stream_name = ? AND chunk_id = ?',
+                      name,
+                      head.chunk_id
+                    );
+                    if (row) deliver(row);
+                  }
+                } while (drainRequested && !streamClosed);
+              } finally {
+                draining = false;
+              }
             };
             teardown = () => {
-              emitter.off(`chunk:${name}`, chunkListener);
-              emitter.off(`close:${name}`, closeListener);
+              emitter.off(`chunk:${name}`, drain);
+              emitter.off(`close:${name}`, drain);
               if (pollInterval) {
                 clearInterval(pollInterval);
                 pollInterval = null;
               }
             };
-            emitter.on(`chunk:${name}`, chunkListener);
-            emitter.on(`close:${name}`, closeListener);
+            emitter.on(`chunk:${name}`, drain);
+            emitter.on(`close:${name}`, drain);
 
             const rows = readChunks(name);
             let dataChunkCount = rows.length;
@@ -346,39 +364,16 @@ export function createStreamer(db: Db, tag?: string): Streamer {
                 ? Math.max(0, dataChunkCount + startIndex)
                 : startIndex;
 
-            let complete = false;
-            for (let i = resolvedStart; i < rows.length; i++) {
-              const row = rows[i];
-              if (delivered.has(row.chunk_id)) continue;
-              if (row.eof) {
-                complete = true;
-                break;
-              }
-              delivered.add(row.chunk_id);
-              if (row.data.byteLength) {
-                controller.enqueue(Uint8Array.from(row.data));
-              }
+            for (let i = 0; i < rows.length && !streamClosed; i++) {
+              if (i < resolvedStart) delivered.add(rows[i].chunk_id);
+              else deliver(rows[i]);
             }
-            readingBacklog = false;
-            buffered.sort((a, b) => a.chunkId.localeCompare(b.chunkId));
-            for (const chunk of buffered) {
-              controller.enqueue(chunk.chunkData);
-            }
-            if (complete || pendingClose) {
-              close();
-              return;
-            }
-            for (let i = 0; i < resolvedStart && i < rows.length; i++) {
-              delivered.add(rows[i].chunk_id);
-            }
-            if (streamClosed) {
-              teardown();
-              return;
-            }
+            draining = false;
+            if (drainRequested) drain();
+            if (streamClosed) return;
 
             // Another process's writes: poll, and only query when
             // `data_version` says some other connection committed.
-            let lastVersion = db.isOpen ? db.dataVersion() : 0;
             pollInterval = setInterval(() => {
               if (streamClosed || !db.isOpen) {
                 if (!db.isOpen) teardown();
@@ -388,22 +383,7 @@ export function createStreamer(db: Db, tag?: string): Streamer {
                 const version = db.dataVersion();
                 if (version === lastVersion) return;
                 lastVersion = version;
-                for (const head of readChunkHeads(name)) {
-                  if (delivered.has(head.chunk_id)) continue;
-                  delivered.add(head.chunk_id);
-                  if (head.eof) {
-                    close();
-                    return;
-                  }
-                  const row = db.get<{ data: Uint8Array }>(
-                    'SELECT data FROM stream_chunks WHERE stream_name = ? AND chunk_id = ?',
-                    name,
-                    head.chunk_id
-                  );
-                  if (row && row.data.byteLength) {
-                    controller.enqueue(Uint8Array.from(row.data));
-                  }
-                }
+                drain();
               } catch (error) {
                 console.error(
                   '[world-sqlite] Unexpected polling error:',

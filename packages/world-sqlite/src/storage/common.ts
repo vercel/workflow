@@ -135,7 +135,7 @@ export function parseWait(data: SqlValue): Wait {
 /** The run, preferring this instance's tag and falling back to untagged. */
 export function readRun(ctx: Ctx, runId: string): WorkflowRun | null {
   const row = ctx.db.get<{ data: Uint8Array }>(
-    'SELECT data FROM runs WHERE run_id = ? AND tag IN (?, ?)',
+    "SELECT data FROM runs WHERE run_id = ? AND tag IN (?, ?) ORDER BY tag = '' LIMIT 1",
     runId,
     ctx.tag,
     ''
@@ -147,8 +147,8 @@ export function writeRun(ctx: Ctx, run: WorkflowRun): void {
   ctx.db.run(
     `INSERT INTO runs (run_id, tag, status, workflow_name, created_at, data)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (run_id) DO UPDATE SET
-       tag = excluded.tag, status = excluded.status,
+     ON CONFLICT (run_id, tag) DO UPDATE SET
+       status = excluded.status,
        workflow_name = excluded.workflow_name, data = excluded.data`,
     run.runId,
     ctx.tag,
@@ -216,7 +216,7 @@ const STEP_SELECT = `SELECT s.data AS data, ie.data AS input_event, oe.data AS o
 
 export function readStep(ctx: Ctx, runId: string, stepId: string): Step | null {
   const row = ctx.db.get<StepRow>(
-    `${STEP_SELECT} WHERE s.run_id = ? AND s.step_id = ? AND s.tag IN (?, ?)`,
+    `${STEP_SELECT} WHERE s.run_id = ? AND s.step_id = ? AND s.tag IN (?, ?) ORDER BY s.tag = '' LIMIT 1`,
     runId,
     stepId,
     ctx.tag,
@@ -248,22 +248,32 @@ export function listStepRows(
  * {@link setStepOutputSeq} once the step_completed event is stored.
  */
 export function writeStep(ctx: Ctx, step: Step, inputSeq?: number): void {
+  const previous = ctx.db.get<{
+    input_seq: number | null;
+    output_seq: number | null;
+  }>(
+    "SELECT input_seq, output_seq FROM steps WHERE run_id = ? AND step_id = ? AND tag IN (?, '') ORDER BY tag = '' LIMIT 1",
+    step.runId,
+    step.stepId,
+    ctx.tag
+  );
   const {
     input: _input,
     output: _output,
     ...rest
   } = step as Step & { input?: unknown; output?: unknown };
   ctx.db.run(
-    `INSERT INTO steps (run_id, step_id, tag, created_at, input_seq, data)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (run_id, step_id) DO UPDATE SET
-       tag = excluded.tag, data = excluded.data,
+    `INSERT INTO steps (run_id, step_id, tag, created_at, input_seq, output_seq, data)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (run_id, step_id, tag) DO UPDATE SET
+       data = excluded.data,
        input_seq = coalesce(excluded.input_seq, steps.input_seq)`,
     step.runId,
     step.stepId,
     ctx.tag,
     toMillis(step.createdAt),
-    inputSeq ?? null,
+    inputSeq ?? previous?.input_seq ?? null,
+    previous?.output_seq ?? null,
     encode(rest)
   );
 }
@@ -276,10 +286,11 @@ export function setStepOutputSeq(
   outputSeq: number
 ): void {
   ctx.db.run(
-    'UPDATE steps SET output_seq = ? WHERE run_id = ? AND step_id = ?',
+    'UPDATE steps SET output_seq = ? WHERE run_id = ? AND step_id = ? AND tag = ?',
     outputSeq,
     runId,
-    stepId
+    stepId,
+    ctx.tag
   );
 }
 
@@ -289,7 +300,7 @@ export function setStepOutputSeq(
 
 export function readHook(ctx: Ctx, hookId: string): Hook | null {
   const row = ctx.db.get<{ data: Uint8Array }>(
-    'SELECT data FROM hooks WHERE hook_id = ? AND tag IN (?, ?)',
+    "SELECT data FROM hooks WHERE hook_id = ? AND tag IN (?, ?) ORDER BY tag = '' LIMIT 1",
     hookId,
     ctx.tag,
     ''
@@ -301,8 +312,8 @@ export function writeHook(ctx: Ctx, hook: Hook): void {
   ctx.db.run(
     `INSERT INTO hooks (hook_id, tag, run_id, token, created_at, data)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (hook_id) DO UPDATE SET
-       tag = excluded.tag, run_id = excluded.run_id, token = excluded.token,
+     ON CONFLICT (hook_id, tag) DO UPDATE SET
+       run_id = excluded.run_id, token = excluded.token,
        created_at = excluded.created_at, data = excluded.data`,
     hook.hookId,
     ctx.tag,
@@ -314,7 +325,11 @@ export function writeHook(ctx: Ctx, hook: Hook): void {
 }
 
 export function deleteHookRow(ctx: Ctx, hookId: string): void {
-  ctx.db.run('DELETE FROM hooks WHERE hook_id = ?', hookId);
+  ctx.db.run(
+    'DELETE FROM hooks WHERE hook_id = ? AND tag = ?',
+    hookId,
+    ctx.tag
+  );
 }
 
 export interface HookTokenClaim {
@@ -448,7 +463,7 @@ export function isHookDisposalCommitted(ctx: Ctx, hookId: string): boolean {
 
 export function readWait(ctx: Ctx, waitId: string): Wait | null {
   const row = ctx.db.get<{ data: Uint8Array }>(
-    'SELECT data FROM waits WHERE wait_id = ? AND tag IN (?, ?)',
+    "SELECT data FROM waits WHERE wait_id = ? AND tag IN (?, ?) ORDER BY tag = '' LIMIT 1",
     waitId,
     ctx.tag,
     ''
@@ -459,7 +474,7 @@ export function readWait(ctx: Ctx, waitId: string): Wait | null {
 export function writeWait(ctx: Ctx, wait: Wait): void {
   ctx.db.run(
     `INSERT INTO waits (wait_id, run_id, tag, data) VALUES (?, ?, ?, ?)
-     ON CONFLICT (wait_id) DO UPDATE SET tag = excluded.tag, data = excluded.data`,
+     ON CONFLICT (wait_id, tag) DO UPDATE SET data = excluded.data`,
     wait.waitId,
     wait.runId,
     ctx.tag,

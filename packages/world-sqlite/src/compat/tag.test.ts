@@ -62,6 +62,95 @@ describe('File tagging', () => {
     });
   });
 
+  it('copies fallback runs and steps without changing the untagged originals', async () => {
+    const { createWorld } = await import('./index.js');
+    const plain = createWorld({ dataDir: testDir });
+    const tagged = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+    try {
+      const run = await createRun(plain, {
+        deploymentId: 'dep-1',
+        workflowName: 'copy',
+        input: new Uint8Array(),
+      });
+      const step = await createStep(plain, run.runId, {
+        stepId: 'copy-step',
+        stepName: 'copy',
+        input: new Uint8Array([42]),
+      });
+      await updateRun(tagged, run.runId, 'run_started');
+      await updateStep(tagged, run.runId, step.stepId, 'step_started');
+      expect((await plain.runs.get(run.runId)).status).toBe('pending');
+      expect((await tagged.runs.get(run.runId)).status).toBe('running');
+      expect((await plain.steps.get(run.runId, step.stepId)).status).toBe(
+        'pending'
+      );
+      expect((await tagged.steps.get(run.runId, step.stepId)).status).toBe(
+        'running'
+      );
+      expect((await tagged.steps.get(run.runId, step.stepId)).input).toEqual(
+        new Uint8Array([42])
+      );
+      await tagged.clear();
+      expect((await plain.runs.get(run.runId)).status).toBe('pending');
+      expect((await plain.steps.get(run.runId, step.stepId)).status).toBe(
+        'pending'
+      );
+    } finally {
+      await plain.close?.();
+      await tagged.close?.();
+    }
+  });
+
+  it('keeps copied step payloads and event ids stable across tag writers', async () => {
+    const plain = createStorage(testDir);
+    const tagged = createStorage(testDir, 'vitest-0');
+    const run = await createRun(plain, {
+      deploymentId: 'dep-1',
+      workflowName: 'interleaved',
+      input: new Uint8Array(),
+    });
+    const step = await createStep(plain, run.runId, {
+      stepId: 'original',
+      stepName: 'original',
+      input: new Uint8Array([42]),
+    });
+    await updateStep(tagged, run.runId, step.stepId, 'step_started');
+    await updateRun(plain, run.runId, 'run_started');
+    await createStep(plain, run.runId, {
+      stepId: 'later',
+      stepName: 'later',
+      input: new Uint8Array([99]),
+    });
+    expect((await tagged.steps.get(run.runId, step.stepId)).input).toEqual(
+      new Uint8Array([42])
+    );
+    const events = (await tagged.events.list({ runId: run.runId })).data;
+    expect(events).toHaveLength(5);
+    expect(new Set(events.map((event) => event.eventId)).size).toBe(
+      events.length
+    );
+  });
+
+  it('tagged hook disposal leaves the fallback hook readable untagged', async () => {
+    const plain = createStorage(testDir);
+    const tagged = createStorage(testDir, 'vitest-0');
+    const run = await createRun(plain, {
+      deploymentId: 'dep-1',
+      workflowName: 'copy-hook',
+      input: new Uint8Array(),
+    });
+    await createHook(plain, run.runId, {
+      hookId: 'copy-hook',
+      token: 'copy-token',
+    });
+    await tagged.events.create(run.runId, {
+      eventType: 'hook_disposed',
+      correlationId: 'copy-hook',
+    });
+    expect((await plain.hooks.get('copy-hook')).hookId).toBe('copy-hook');
+    await expect(tagged.hooks.get('copy-hook')).rejects.toThrow();
+  });
+
   describe('listing returns all files regardless of tag', () => {
     it('should list runs from both tagged and untagged sources', async () => {
       const untagged = createStorage(testDir);

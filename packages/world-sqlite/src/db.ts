@@ -15,10 +15,13 @@ export const MIN_SQLITE_VERSION = '3.51.3';
 /** Schema version stored in `meta.schema_version`. */
 export const SCHEMA_VERSION = 1;
 
-/** Free pages (4 KiB each) that trigger an incremental vacuum: 4 MiB. */
+/**
+ * Free pages (4 KiB each) a store keeps for upcoming writes; above this, each
+ * write transaction returns some to the filesystem: 4 MiB.
+ */
 const FREE_PAGES_RECLAIM_THRESHOLD = 1024;
-/** Free pages an incremental vacuum leaves in place for upcoming writes. */
-const FREE_PAGES_SLACK = 256;
+/** Most free pages one transaction returns to the filesystem: 1 MiB. */
+const FREE_PAGES_PER_COMMIT = 256;
 
 const BUSY_TIMEOUT_MS = 5_000;
 
@@ -78,12 +81,13 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- One row per workflow run. "data" holds the full WorkflowRun record.
 CREATE TABLE IF NOT EXISTS runs (
-  run_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
   tag TEXT NOT NULL,
   status TEXT NOT NULL,
   workflow_name TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  data BLOB NOT NULL
+  data BLOB NOT NULL,
+  PRIMARY KEY (run_id, tag)
 );
 CREATE INDEX IF NOT EXISTS runs_by_created ON runs (created_at, run_id);
 
@@ -116,16 +120,17 @@ CREATE TABLE IF NOT EXISTS steps (
   input_seq INTEGER,
   output_seq INTEGER,
   data BLOB NOT NULL,
-  PRIMARY KEY (run_id, step_id)
+  PRIMARY KEY (run_id, step_id, tag)
 );
 
 CREATE TABLE IF NOT EXISTS hooks (
-  hook_id TEXT PRIMARY KEY,
+  hook_id TEXT NOT NULL,
   tag TEXT NOT NULL,
   run_id TEXT NOT NULL,
   token TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  data BLOB NOT NULL
+  data BLOB NOT NULL,
+  PRIMARY KEY (hook_id, tag)
 );
 CREATE INDEX IF NOT EXISTS hooks_by_run ON hooks (run_id);
 CREATE INDEX IF NOT EXISTS hooks_by_token ON hooks (token);
@@ -150,10 +155,11 @@ CREATE TABLE IF NOT EXISTS hook_resumes (
 );
 
 CREATE TABLE IF NOT EXISTS waits (
-  wait_id TEXT PRIMARY KEY,
+  wait_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   tag TEXT NOT NULL,
-  data BLOB NOT NULL
+  data BLOB NOT NULL,
+  PRIMARY KEY (wait_id, tag)
 );
 CREATE INDEX IF NOT EXISTS waits_by_run ON waits (run_id);
 
@@ -289,8 +295,8 @@ export class Db {
       if (result instanceof Promise) {
         throw new Error('Db.transaction callbacks must be synchronous');
       }
-      this.raw.exec('COMMIT');
       this.reclaimFreePages();
+      this.raw.exec('COMMIT');
       return result;
     } catch (error) {
       if (this.raw.isTransaction) {
@@ -301,22 +307,30 @@ export class Db {
   }
 
   /**
-   * Truncates the file once deletes and shrinking rows leave more than
-   * {@link FREE_PAGES_RECLAIM_THRESHOLD} free pages, keeping
-   * {@link FREE_PAGES_SLACK} for upcoming writes. Reading the free-page count
-   * is a header read, so this is cheap on the commits that skip it. Never
-   * throws: a busy store just keeps its free pages until a later commit.
+   * Returns up to {@link FREE_PAGES_PER_COMMIT} free pages to the filesystem
+   * once deletes and shrinking rows leave more than
+   * {@link FREE_PAGES_RECLAIM_THRESHOLD} of them. Runs inside the caller's
+   * write transaction, just before COMMIT: it already holds the write lock,
+   * so reclaiming never waits on another connection or hits SQLITE_BUSY, and
+   * the cap bounds how long it extends the transaction (~1 ms for 256
+   * pages). A large delete is reclaimed over the following commits. Reading
+   * the free-page count is a header read, so commits below the threshold pay
+   * almost nothing. Never throws: reclaiming is an optimization.
    */
-  reclaimFreePages(): void {
+  private reclaimFreePages(): void {
     try {
       const free = Number(
         (this.get('PRAGMA freelist_count') as { freelist_count: number })
           .freelist_count
       );
-      if (free < FREE_PAGES_RECLAIM_THRESHOLD) return;
-      this.raw.exec(`PRAGMA incremental_vacuum(${free - FREE_PAGES_SLACK})`);
+      if (free <= FREE_PAGES_RECLAIM_THRESHOLD) return;
+      const pages = Math.min(
+        FREE_PAGES_PER_COMMIT,
+        free - FREE_PAGES_RECLAIM_THRESHOLD
+      );
+      this.raw.exec(`PRAGMA incremental_vacuum(${pages})`);
     } catch {
-      // Reclaiming is an optimization; the data is already committed.
+      // The caller's writes are intact; the pages stay free for reuse.
     }
   }
 

@@ -52,8 +52,8 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
  */
 export function purgeRunEntityData(ctx: Ctx, runId: string): void {
   const { db } = ctx;
-  for (const row of db.all<{ step_id: string; data: Uint8Array }>(
-    'SELECT step_id, data FROM steps WHERE run_id = ?',
+  for (const row of db.all<{ step_id: string; tag: string; data: Uint8Array }>(
+    'SELECT step_id, tag, data FROM steps WHERE run_id = ?',
     runId
   )) {
     const step = decode<Record<string, unknown>>(row.data);
@@ -61,14 +61,15 @@ export function purgeRunEntityData(ctx: Ctx, runId: string): void {
     step.output = undefined;
     step.error = undefined;
     db.run(
-      'UPDATE steps SET data = ? WHERE run_id = ? AND step_id = ?',
+      'UPDATE steps SET data = ? WHERE run_id = ? AND step_id = ? AND tag = ?',
       encode(step),
       runId,
-      row.step_id
+      row.step_id,
+      row.tag
     );
   }
-  for (const row of db.all<{ seq: number; data: Uint8Array }>(
-    'SELECT seq, data FROM events WHERE run_id = ?',
+  for (const row of db.all<{ seq: number; tag: string; data: Uint8Array }>(
+    'SELECT seq, tag, data FROM events WHERE run_id = ?',
     runId
   )) {
     const event = decode<Record<string, any>>(row.data);
@@ -92,23 +93,25 @@ export function purgeRunEntityData(ctx: Ctx, runId: string): void {
     }
     if (changed) {
       db.run(
-        'UPDATE events SET data = ? WHERE run_id = ? AND seq = ?',
+        'UPDATE events SET data = ? WHERE run_id = ? AND seq = ? AND tag = ?',
         encode(event),
         runId,
-        row.seq
+        row.seq,
+        row.tag
       );
     }
   }
-  for (const row of db.all<{ hook_id: string; data: Uint8Array }>(
-    'SELECT hook_id, data FROM hooks WHERE run_id = ?',
+  for (const row of db.all<{ hook_id: string; tag: string; data: Uint8Array }>(
+    'SELECT hook_id, tag, data FROM hooks WHERE run_id = ?',
     runId
   )) {
     const hook = decode<Record<string, unknown>>(row.data);
     hook.metadata = undefined;
     db.run(
-      'UPDATE hooks SET data = ? WHERE hook_id = ?',
+      'UPDATE hooks SET data = ? WHERE hook_id = ? AND tag = ?',
       encode(hook),
-      row.hook_id
+      row.hook_id,
+      row.tag
     );
   }
 }
@@ -120,8 +123,8 @@ export function purgeRunEntityData(ctx: Ctx, runId: string): void {
  */
 export function deleteAllHooksForRun(ctx: Ctx, runId: string): void {
   const { db } = ctx;
-  for (const row of db.all<{ hook_id: string; data: Uint8Array }>(
-    'SELECT hook_id, data FROM hooks WHERE run_id = ?',
+  for (const row of db.all<{ hook_id: string; tag: string; data: Uint8Array }>(
+    'SELECT hook_id, tag, data FROM hooks WHERE run_id = ?',
     runId
   )) {
     let hook: ReturnType<typeof parseHook>;
@@ -138,6 +141,10 @@ export function deleteAllHooksForRun(ctx: Ctx, runId: string): void {
       continue;
     }
     releaseHookTokenClaimIfOwnedBy(ctx, hook.token, hook);
-    db.run('DELETE FROM hooks WHERE hook_id = ?', row.hook_id);
+    db.run(
+      'DELETE FROM hooks WHERE hook_id = ? AND tag = ?',
+      row.hook_id,
+      row.tag
+    );
   }
 }

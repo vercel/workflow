@@ -142,7 +142,7 @@ export function createEventsStorage(
 
   function readEventById(runId: string, eventId: string): Event | null {
     const row = db.get<{ data: Uint8Array }>(
-      'SELECT data FROM events WHERE run_id = ? AND event_id = ? AND tag IN (?, ?)',
+      "SELECT data FROM events WHERE run_id = ? AND event_id = ? AND tag IN (?, ?) ORDER BY tag = '' LIMIT 1",
       runId,
       eventId,
       ctx.tag,
@@ -165,8 +165,9 @@ export function createEventsStorage(
    */
   function isUlidNumberedRun(runId: string): boolean {
     const row = db.get<{ event_id: string }>(
-      'SELECT event_id FROM events WHERE run_id = ? ORDER BY seq LIMIT 1',
-      runId
+      "SELECT event_id FROM events WHERE run_id = ? AND tag IN (?, '') ORDER BY seq LIMIT 1",
+      runId,
+      ctx.tag
     );
     return row !== undefined && !isSlotEventId(row.event_id);
   }
@@ -222,9 +223,10 @@ export function createEventsStorage(
 
   function seqOfEvent(runId: string, eventId: string): number | null {
     const row = db.get<{ seq: number }>(
-      'SELECT seq FROM events WHERE run_id = ? AND event_id = ?',
+      "SELECT seq FROM events WHERE run_id = ? AND event_id = ? AND tag IN (?, '') ORDER BY tag = '' LIMIT 1",
       runId,
-      eventId
+      eventId,
+      ctx.tag
     );
     return row ? Number(row.seq) : null;
   }
@@ -246,6 +248,8 @@ export function createEventsStorage(
   ): PaginatedResponse<Event> {
     const sortOrder = pagination.sortOrder ?? 'asc';
     const limit = pagination.limit ?? 20;
+    // Like world-local, listing a run's events is not tag-filtered: every
+    // world sees every event of the run (world-local's run-prefix scan).
     const where: string[] = ['run_id = ?'];
     const params: (string | number)[] = [runId];
     if (correlationId !== undefined) {
@@ -357,9 +361,10 @@ export function createEventsStorage(
     const atClaimedId = readEventById(claim.runId, claim.eventId);
     if (atClaimedId && isResumeEvent(atClaimedId, claim)) return atClaimedId;
     const rows = db.all<{ data: Uint8Array }>(
-      'SELECT data FROM events WHERE run_id = ? AND resume_id = ? ORDER BY seq',
+      "SELECT data FROM events WHERE run_id = ? AND resume_id = ? AND tag IN (?, '') ORDER BY seq",
       claim.runId,
-      claim.resumeId
+      claim.resumeId,
+      ctx.tag
     );
     for (const row of rows) {
       const event = parseEvent(row.data);
@@ -376,10 +381,11 @@ export function createEventsStorage(
   ): string | null {
     const row = db.get<{ event_id: string }>(
       `SELECT event_id FROM events
-       WHERE run_id = ? AND correlation_id = ? AND event_type = 'hook_created'
+       WHERE run_id = ? AND correlation_id = ? AND event_type = 'hook_created' AND tag IN (?, '')
        ORDER BY seq LIMIT 1`,
       runId,
-      hookId
+      hookId,
+      ctx.tag
     );
     return row?.event_id ?? null;
   }
