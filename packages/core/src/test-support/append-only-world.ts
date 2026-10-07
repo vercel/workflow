@@ -14,6 +14,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { MAX_BATCH_EVENTS } from '../runtime/constants.js';
 
 /** One `world.queue` call recorded by {@link AppendOnlyWorld}. */
 export interface RecordedQueueCall {
@@ -74,6 +75,8 @@ export class AppendOnlyWorld {
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
+  /** The event count of every `createBatch` call, in call order. */
+  readonly batchSizes: number[] = [];
   /** How many `events.create` and `events.createBatch` calls were made. */
   createCalls = 0;
   /** The params of every `events.list` call. */
@@ -558,6 +561,15 @@ export class AppendOnlyWorld {
       },
       async createBatch(_runId: string, batch: BatchEventRequest[], params) {
         self.createCalls++;
+        self.batchSizes.push(batch.length);
+        // A World refuses an oversized batch whole (world-vercel caps it by
+        // event count); this one caps it at what the runtime may send.
+        if (batch.length > MAX_BATCH_EVENTS) {
+          throw new WorkflowWorldError(
+            `An event batch may carry at most ${MAX_BATCH_EVENTS} events`,
+            { status: 400 }
+          );
+        }
         self.checkFence(params as CreateEventParams, batch.length);
         const firstSlot = self.seq + 1;
         if (self.options.createDelayMs) {

@@ -449,3 +449,13 @@ export function getOpenWaitClockSkewMs(): number {
     }
   );
 }
+
+/**
+ * Ceiling on events per `createBatch` call the orchestrator makes. A World
+ * caps a batch by event count and by bytes (world-vercel: 100 events, and a
+ * byte budget over frame meta plus inline-bound payloads) and refuses an
+ * oversized one whole, so a suspension's creations go out in batches of at
+ * most this many, with a margin under both. A step's `step_created` and the
+ * `step_started` behind it stay in one batch.
+ */
+export const MAX_BATCH_EVENTS = 32;

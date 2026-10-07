@@ -67,6 +67,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
   isVmRetentionEnabled,
+  MAX_BATCH_EVENTS,
 } from './runtime/constants.js';
 import {
   type DeploymentAffinityOutcome,
@@ -3405,6 +3406,9 @@ export function workflowEntrypoint(
                         plan.failedCount === 0 &&
                         plan.waitCount === 0 &&
                         plan.steps.every((step) => step.inline) &&
+                        // One speculative batch; a larger fan-out commits
+                        // in chunks on the awaited path.
+                        plan.events.length <= MAX_BATCH_EVENTS &&
                         withinRunAheadDepth();
                       if (speculativeCreation && boundaryRunAhead) {
                         const starts = writeCreationAhead(

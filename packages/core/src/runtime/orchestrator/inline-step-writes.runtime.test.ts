@@ -16,6 +16,7 @@ import {
   setupOrchestratorRun,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
+import { MAX_BATCH_EVENTS } from '../constants.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -69,6 +70,14 @@ const threeStepWorkflow = `const a = ${step('iw_a')}; const b = ${step('iw_b')};
   async function workflow() {
     const [x, y, z] = await Promise.all([a(), b(), flaky()]);
     return x + y + z;
+  }${registerWorkflow()}`;
+
+// More steps at once than one batch may carry, as a fan-out does.
+const FAN_OUT = 100;
+const fanOutWorkflow = `const a = ${step('iw_a')};
+  async function workflow(n) {
+    const results = await Promise.all(Array.from({ length: n }, () => a()));
+    return results.reduce((sum, x) => sum + x, 0);
   }${registerWorkflow()}`;
 
 const attributesStepWorkflow = `const s = ${step('iw_attributes')};
@@ -343,5 +352,23 @@ describe.each([
     expect(calls.iw_attributes).toBe(1);
     expect(eventsOf(world, 'step_started')).toHaveLength(1);
     expect(eventsOf(world, 'attr_set')).toHaveLength(2);
+  });
+
+  // A World refuses an oversized batch whole, so a fan-out wider than one
+  // batch commits its creations in several.
+  it('commits a fan-out wider than one batch in batches the World takes', async () => {
+    const { world } = await setupOrchestratorRun(
+      fanOutWorkflow,
+      [FAN_OUT],
+      {},
+      engine
+    );
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    // Steps past the inline limit run from their own messages.
+    await world.runUntilIdle(4 * FAN_OUT);
+
+    expect(await runResult(world)).toBe(FAN_OUT);
+    expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
+    expect(Math.max(...world.batchSizes)).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
   });
 });

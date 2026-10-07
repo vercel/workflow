@@ -28,6 +28,7 @@ import {
   dehydrateStepError,
 } from '../../serialization.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { MAX_BATCH_EVENTS } from '../constants.js';
 import type { SuspensionSerializationBlocker } from '../suspension-handler.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import type { InBandWriter } from './in-band-writer.js';
@@ -366,72 +367,74 @@ async function writeAll(
   if (events.length === 0) return { committed: [], refusedStarts };
   const { writer } = params;
   if (events.length > 1 && writer.supportsBatch) {
-    const batch: BatchEventRequest[] = events.map((event) =>
-      event.eventType === 'step_started'
-        ? { event, computeInstanceId: COMPUTE_INSTANCE_ID }
-        : { event }
-    );
-    const eventCount = params.eventCount();
-    const batchResult = await writer.createBatch(batch, {
-      ...(params.requestId ? { requestId: params.requestId } : {}),
-      ...(eventCount !== undefined ? { eventCount } : {}),
-    });
-    const { results } = batchResult;
-    let first = true;
-    for (const result of results) {
-      if (result.error !== undefined) continue;
-      params.onCommitted?.({
-        event: result.event,
-        ...(first
-          ? {
-              events: batchResult.events,
-              reportIncomplete: batchResult.reportIncomplete,
-            }
-          : {}),
-      });
-      first = false;
-    }
     const committed: Event[] = [];
-    results.forEach((result, index) => {
-      if (result.error === undefined) {
-        committed.push(result.event);
-        return;
-      }
-      // A batch on a spec >= 9 run is not atomic. A failed item left a
-      // hole the World seals; the next replay re-derives the event and the
-      // next suspension writes it again.
-      runtimeLogger.warn('Suspension batch item was not committed', {
-        workflowRunId: params.run.runId,
-        eventType: events[index]?.eventType,
-        correlationId: (events[index] as { correlationId?: string })
-          ?.correlationId,
-        status: result.status,
-        error: result.error,
+    for (const chunk of batchChunks(events)) {
+      const batch: BatchEventRequest[] = chunk.map((event) =>
+        event.eventType === 'step_started'
+          ? { event, computeInstanceId: COMPUTE_INSTANCE_ID }
+          : { event }
+      );
+      const eventCount = params.eventCount();
+      const batchResult = await writer.createBatch(batch, {
+        ...(params.requestId ? { requestId: params.requestId } : {}),
+        ...(eventCount !== undefined ? { eventCount } : {}),
       });
-      const message = `Suspension batch item failed with ${result.status}: ${result.message}`;
-      const event = events[index];
-      if (event?.eventType === 'step_started') {
-        // A batched inline start: the step is created and not started. Its
-        // executor treats a throttle or a finished run as its own start's
-        // refusal, and otherwise writes the start itself.
-        const refusal =
-          result.status === 429
-            ? new ThrottleError(message)
-            : result.status === 410
-              ? new RunExpiredError(message)
-              : undefined;
-        if (refusal && event.correlationId) {
-          refusedStarts.set(event.correlationId, refusal);
+      const { results } = batchResult;
+      let first = true;
+      for (const result of results) {
+        if (result.error !== undefined) continue;
+        params.onCommitted?.({
+          event: result.event,
+          ...(first
+            ? {
+                events: batchResult.events,
+                reportIncomplete: batchResult.reportIncomplete,
+              }
+            : {}),
+        });
+        first = false;
+      }
+      results.forEach((result, index) => {
+        if (result.error === undefined) {
+          committed.push(result.event);
+          return;
         }
-        return;
-      }
-      // A transient refusal fails the delivery so the queue redelivers it,
-      // the same way a single-path write of the same status would.
-      if (result.status === 429) throw new ThrottleError(message);
-      if (result.status >= 500) {
-        throw new WorkflowWorldError(message, { status: result.status });
-      }
-    });
+        // A batch on a spec >= 9 run is not atomic. A failed item left a
+        // hole the World seals; the next replay re-derives the event and the
+        // next suspension writes it again.
+        runtimeLogger.warn('Suspension batch item was not committed', {
+          workflowRunId: params.run.runId,
+          eventType: chunk[index]?.eventType,
+          correlationId: (chunk[index] as { correlationId?: string })
+            ?.correlationId,
+          status: result.status,
+          error: result.error,
+        });
+        const message = `Suspension batch item failed with ${result.status}: ${result.message}`;
+        const event = chunk[index];
+        if (event?.eventType === 'step_started') {
+          // A batched inline start: the step is created and not started. Its
+          // executor treats a throttle or a finished run as its own start's
+          // refusal, and otherwise writes the start itself.
+          const refusal =
+            result.status === 429
+              ? new ThrottleError(message)
+              : result.status === 410
+                ? new RunExpiredError(message)
+                : undefined;
+          if (refusal && event.correlationId) {
+            refusedStarts.set(event.correlationId, refusal);
+          }
+          return;
+        }
+        // A transient refusal fails the delivery so the queue redelivers it,
+        // the same way a single-path write of the same status would.
+        if (result.status === 429) throw new ThrottleError(message);
+        if (result.status >= 500) {
+          throw new WorkflowWorldError(message, { status: result.status });
+        }
+      });
+    }
     return { committed, refusedStarts };
   }
   const committed: Event[] = [];
@@ -507,4 +510,32 @@ async function finalizeUnserializableStep(
       ),
     },
   });
+}
+
+/**
+ * Splits a suspension's creations into batches of at most
+ * {@link MAX_BATCH_EVENTS}, keeping each step's `step_created` and the
+ * `step_started` behind it in one batch.
+ */
+function batchChunks(events: CreateEventRequest[]): CreateEventRequest[][] {
+  const chunks: CreateEventRequest[][] = [];
+  let current: CreateEventRequest[] = [];
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index]!;
+    const next = events[index + 1];
+    const unit =
+      event.eventType === 'step_created' &&
+      next?.eventType === 'step_started' &&
+      next.correlationId === event.correlationId
+        ? [event, next]
+        : [event];
+    if (unit.length === 2) index++;
+    if (current.length + unit.length > MAX_BATCH_EVENTS) {
+      chunks.push(current);
+      current = [];
+    }
+    current.push(...unit);
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
