@@ -59,6 +59,26 @@ These types have special handling and are explained in detail in the sections be
 - `AbortController`
 - `AbortSignal`
 
+### Typing serializable values
+
+The `Serializable` type describes the values above. Import it from `workflow` to type data that crosses the workflow and step boundary:
+
+```typescript title="workflows/typed-payload.ts" lineNumbers
+import type { Serializable } from "workflow";
+
+export async function processPayloadWorkflow(payload: Serializable) {
+  "use workflow";
+
+  return await storePayloadStep(payload);
+}
+
+async function storePayloadStep(payload: Serializable) {
+  "use step";
+  // ...
+  return { stored: true };
+}
+```
+
 ## Pass-by-value semantics
 
 **Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.

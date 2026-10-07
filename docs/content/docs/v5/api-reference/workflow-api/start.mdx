@@ -194,10 +194,10 @@ async function workflow(input) {
 | Option | Type | Description |
 | --- | --- | --- |
 | `experimental_dynamic.steps` | `Record<string, StepFunction \| { stepId: string }>` | Required. Registered steps the source may call, keyed by the alias it calls them under. |
-| `experimental_dynamic.exportName` | `string` | Name of the async workflow function in the source. Use letters, digits, and `_`, not starting with a digit. Defaults to `"workflow"`. |
+| `experimental_dynamic.exportName` | `string` | Name of the async workflow function in the source. Use letters, digits, and `_`, not starting with a digit, up to 64 characters. Defaults to `"workflow"`. |
 
 The return type is `Run<unknown>`: the source's shape is only known to whatever generated it, so there is nothing to infer. The workflow ID is derived from the source and its step bindings — it cannot be supplied.
 
-A dynamic start throws a `WorkflowRuntimeError`, before anything is written, when the deployment has not opted in, when `deploymentId` targets another deployment (including `'latest'` resolving to one), or when the World's backend does not support dynamic-source storage.
+A dynamic start throws a `WorkflowRuntimeError`, before anything is written, when the deployment has not opted in, when the source fails validation, when `deploymentId` targets another deployment (including `'latest'` resolving to one), or when the World's backend does not support dynamic-source storage. These errors are fatal, so a step that calls `start()` fails without retrying.
 
 See [Dynamic Workflows](/docs/advanced/dynamic-workflows) for the opt-in, the source rules and limits, the predefined runtime bindings (`steps`, `sleep`, `createHook`), how the code is stored, and the security model.
