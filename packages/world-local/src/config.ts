@@ -39,6 +39,16 @@ export type Config = {
    * Default is 10ms. Set to 0 for immediate flushing.
    */
   streamFlushIntervalMs?: number;
+  /**
+   * Convert a data directory still in the flat layout (every event and step
+   * file in one directory, as releases before run-scoped storage wrote it)
+   * to one directory per run when `start()` runs. Off by default: the
+   * conversion is one-way for older releases, so only the process that owns
+   * the data directory should opt in, with every other process using it
+   * stopped. Falls back to the `WORKFLOW_LOCAL_MIGRATE_LAYOUT` environment
+   * variable (`1`/`true`). Reads never convert.
+   */
+  migrateLayout?: boolean;
 };
 
 export const config = once<Config>(() => {
@@ -67,6 +77,12 @@ export function resolveRecoverActiveRuns(config: Partial<Config>): boolean {
   if (raw === '0' || raw === 'false') return false;
   if (raw === '1' || raw === 'true') return true;
   return true;
+}
+
+export function resolveMigrateLayout(config: Partial<Config>): boolean {
+  if (config.migrateLayout !== undefined) return config.migrateLayout;
+  const raw = process.env.WORKFLOW_LOCAL_MIGRATE_LAYOUT?.toLowerCase();
+  return raw === '1' || raw === 'true';
 }
 
 export function resolveDirectBaseUrl(config: Partial<Config>): string {

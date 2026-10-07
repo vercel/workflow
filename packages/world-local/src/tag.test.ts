@@ -8,6 +8,8 @@ import {
   createHook,
   createRun,
   createStep,
+  initTestDataDir,
+  runDir,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -21,6 +23,7 @@ describe('File tagging', () => {
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tag-test-'));
+    await initTestDataDir(testDir);
   });
 
   afterEach(async () => {
@@ -68,7 +71,7 @@ describe('File tagging', () => {
         input: new Uint8Array(),
       });
 
-      const eventsDir = path.join(testDir, 'events', run.runId);
+      const eventsDir = runDir(testDir, 'events', run.runId);
       const files = await fs.readdir(eventsDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/\.vitest-0\.json$/);
@@ -88,7 +91,7 @@ describe('File tagging', () => {
         input: new Uint8Array(),
       });
 
-      const stepsDir = path.join(testDir, 'steps', run.runId);
+      const stepsDir = runDir(testDir, 'steps', run.runId);
       const files = await fs.readdir(stepsDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/\.vitest-0\.json$/);
@@ -458,14 +461,14 @@ describe('File tagging', () => {
 
       // Verify all files are tagged
       const runsDir = path.join(testDir, 'runs');
-      const eventsDir = path.join(testDir, 'events');
-      const stepsDir = path.join(testDir, 'steps');
       for (const dir of [
         runsDir,
-        path.join(eventsDir, run.runId),
-        path.join(stepsDir, run.runId),
+        runDir(testDir, 'events', run.runId),
+        runDir(testDir, 'steps', run.runId),
       ]) {
-        const files = await fs.readdir(dir);
+        const files = (await fs.readdir(dir, { withFileTypes: true }))
+          .filter((entry) => entry.isFile())
+          .map((entry) => entry.name);
         for (const file of files) {
           expect(file).toMatch(/\.vitest-0\.json$/);
         }

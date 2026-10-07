@@ -129,7 +129,7 @@ describe('formatVersionFile', () => {
 
 describe('upgradeVersion', () => {
   it('should log upgrade message', () => {
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const oldVersion = parseVersion('3.0.0');
     const newVersion = parseVersion('4.0.1-beta.20');
@@ -386,7 +386,7 @@ describe('initDataDir', () => {
     const currentVersion = `${packageInfo.name}@${packageInfo.version}`;
     writeFileSync(versionPath, currentVersion);
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
 
@@ -406,7 +406,7 @@ describe('initDataDir', () => {
     const versionPath = path.join(dataDir, 'version.txt');
     writeFileSync(versionPath, '@workflow/world-local@3.0.0');
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
 
@@ -431,7 +431,7 @@ describe('initDataDir', () => {
     const versionPath = path.join(dataDir, 'version.txt');
     writeFileSync(versionPath, `${packageInfo.name}@${newerVersion}`);
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // This will call upgradeVersion which just logs for now
     await initDataDir(dataDir);

@@ -1,0 +1,15 @@
+{
+  "eventType": "step_created",
+  "specVersion": 5,
+  "correlationId": "step_000012",
+  "eventData": {
+    "stepName": "legacy-step-12",
+    "input": {
+      "__type": "Uint8Array",
+      "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+    }
+  },
+  "runId": "wrun_01M4A54P8NC02DCK8NR3C10HNB",
+  "eventId": "evnt_01M4A54PFEDCDBZ9R3PWZ3X1X4",
+  "createdAt": "2026-10-07T03:05:03.726Z"
+}

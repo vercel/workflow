@@ -5,23 +5,36 @@ import type { QueuePrefix, World } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
-import { config, resolveRecoverActiveRuns } from './config.js';
 import {
+  config,
+  resolveMigrateLayout,
+  resolveRecoverActiveRuns,
+} from './config.js';
+import {
+  assertSafeEntityId,
   clearCreatedFilesCache,
   deleteJSON,
   hasTag,
   isUntagged,
-  listRunScopedDirs,
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
+  stripTag,
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
-import { ensureRunScopedLayout } from './storage/layout.js';
+import {
+  convertLayoutInProcess,
+  DataDirLayoutError,
+  describeConversion,
+  findStrayFlatFiles,
+  LAYOUT_MARKER_FILE,
+  LAYOUT_META_DIR,
+  resolveStoreLayout,
+} from './storage/layout.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -37,6 +50,79 @@ export {
 } from './init.js';
 
 export type { DirectHandler } from './queue.js';
+export {
+  convertLayout,
+  DataDirLayoutError,
+  type LayoutConversionReport,
+  type StoreLayout,
+} from './storage/layout.js';
+
+function isSafeRunId(runId: string): boolean {
+  try {
+    assertSafeEntityId('runId', runId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const LARGE_FLAT_STORE_HINT = 10_000;
+
+/**
+ * Owner-side layout handling in `start()`: convert to per-run directories
+ * when opted in (`migrateLayout` / `WORKFLOW_LOCAL_MIGRATE_LAYOUT`), warn
+ * about flat files an older release wrote into a run-scoped store, and hint
+ * at the conversion for a large flat store. Ordinary reads never convert.
+ */
+async function prepareStoreLayout(
+  dataDir: string,
+  config: Partial<Config>
+): Promise<void> {
+  const layout = await resolveStoreLayout(dataDir);
+  if (layout === 'run-scoped') {
+    const strays = await findStrayFlatFiles(dataDir);
+    if (strays.length === 0) return;
+    console.warn(
+      `[world-local] ${strays.length} event/step file(s) in ${path.resolve(dataDir)} ` +
+        `were written in the flat layout after it was converted to per-run ` +
+        `directories, so they are not visible: ${strays.slice(0, 5).join(', ')}` +
+        `${strays.length > 5 ? ', …' : ''}. A process running an older ` +
+        `@workflow/world-local is probably using this directory. Stop it, ` +
+        `then run \`npx -p @workflow/world-local workflow-local-layout migrate ` +
+        `${path.resolve(dataDir)}\`.`
+    );
+    return;
+  }
+  if (resolveMigrateLayout(config)) {
+    const report = await convertLayoutInProcess(dataDir, 'run-scoped');
+    const summary = describeConversion(dataDir, report);
+    if (report.liveHolders.length > 0) {
+      // Other processes have it open: keep the flat layout for now.
+      console.warn(`[world-local] ${summary}`);
+      return;
+    }
+    if (!report.completed) {
+      throw new DataDirLayoutError('CONVERSION_INCOMPLETE', summary);
+    }
+    if (report.moved + report.dropped > 0) {
+      console.warn(`[world-local] ${summary}`);
+    }
+    await resolveStoreLayout(dataDir);
+    return;
+  }
+  const entries = await fs
+    .readdir(path.join(dataDir, 'events'))
+    .catch(() => [] as string[]);
+  if (entries.length >= LARGE_FLAT_STORE_HINT) {
+    console.warn(
+      `[world-local] ${path.resolve(dataDir)} keeps ${entries.length} event ` +
+        `files in one directory, which slows every run's reads. Stop all ` +
+        `processes using it and run \`npx -p @workflow/world-local ` +
+        `workflow-local-layout migrate ${path.resolve(dataDir)}\` (or set ` +
+        `WORKFLOW_LOCAL_MIGRATE_LAYOUT=1) to store events per run.`
+    );
+  }
+}
 
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
@@ -100,6 +186,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
+      await prepareStoreLayout(mergedConfig.dataDir, mergedConfig);
       if (!recoverActiveRuns) {
         return;
       }
@@ -164,20 +251,22 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           })
         );
 
-        // Delete tagged entity files across all directories. Steps and
-        // events are stored one subdirectory per run; finish converting a
-        // flat store first, so this pass sees every one of them. The flat
-        // `events/` and `steps/` directories are cleared too, for files the
-        // conversion left in place.
-        await ensureRunScopedLayout(basedir);
-        const runScopedDirs = (
-          await Promise.all([
-            listRunScopedDirs(basedir, 'steps'),
-            listRunScopedDirs(basedir, 'events'),
-          ])
-        )
-          .flat()
-          .map((dir) => path.relative(basedir, dir));
+        // Delete tagged entity files across all directories. Clearing never
+        // converts the layout. In the run-scoped layout, a tag's event and
+        // step files live in its own runs' directories, so walk only those
+        // (found from `runs/*.<tag>.json`, one readdir) rather than every
+        // run the shared data directory holds.
+        const layout = await resolveStoreLayout(basedir);
+        const runScopedDirs =
+          layout === 'run-scoped'
+            ? (await listTaggedFiles(path.join(basedir, 'runs'), tag))
+                .map((file) => stripTag(file.replace(/\.json$/, '')))
+                .filter(isSafeRunId)
+                .flatMap((runId) => [
+                  path.join('steps', runId),
+                  path.join('events', runId),
+                ])
+            : [];
         const entityDirs = [
           'runs',
           'steps',
@@ -188,6 +277,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           'waits',
           'streams/runs',
         ];
+        const emptiedDirs = new Set<string>();
         await Promise.all(
           entityDirs.map(async (dir) => {
             const fullDir = path.join(basedir, dir);
@@ -195,14 +285,16 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             await Promise.all(
               files.map((f) => deleteJSON(path.join(fullDir, f)))
             );
+            if (files.length > 0) emptiedDirs.add(dir);
           })
         );
-        // Drop the run directories that clearing left empty. `rmdir` refuses
-        // a non-empty one, so another tag's (or untagged) files keep theirs.
+        // Drop the run directories this pass deleted from, if that left them
+        // empty. `rmdir` refuses a non-empty one, so other tags' (or
+        // untagged) files keep theirs.
         await Promise.all(
-          runScopedDirs.map((dir) =>
-            fs.rmdir(path.join(basedir, dir)).catch(() => {})
-          )
+          runScopedDirs
+            .filter((dir) => emptiedDirs.has(dir))
+            .map((dir) => fs.rmdir(path.join(basedir, dir)).catch(() => {}))
         );
         // Delete tagged hook-index entries (nested per-key directories)
         for (const indexDir of ['token-index', 'id-index']) {
@@ -268,8 +360,27 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         // `rm()` removes directories that the write path may have cached.
         clearCreatedFilesCache();
         resetHookIndexEnsureCache();
-        await rm(mergedConfig.dataDir, { recursive: true, force: true });
-        await initDataDir(mergedConfig.dataDir);
+        // Everything but the layout marker and holder registrations: other
+        // processes may have this data directory open in its current layout,
+        // so clearing must not switch it.
+        const entries = await fs
+          .readdir(mergedConfig.dataDir)
+          .catch(() => [] as string[]);
+        await Promise.all(
+          entries
+            .filter(
+              (name) => name !== LAYOUT_MARKER_FILE && name !== LAYOUT_META_DIR
+            )
+            .map((name) =>
+              rm(path.join(mergedConfig.dataDir, name), {
+                recursive: true,
+                force: true,
+              })
+            )
+        );
+        await initDataDir(mergedConfig.dataDir, {
+          keepLayout: entries.length > 0,
+        });
       }
     },
   };

@@ -1,0 +1,19 @@
+{
+  "runId": "wrun_01M4A54Q88YEG0YXHPJ7WA0T98",
+  "deploymentId": "legacy-fixture",
+  "workflowName": "legacy/tagged",
+  "specVersion": 3,
+  "input": {
+    "__type": "Uint8Array",
+    "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+  },
+  "createdAt": "2026-10-07T03:05:04.520Z",
+  "startedAt": "2026-10-07T03:05:04.527Z",
+  "status": "completed",
+  "output": {
+    "__type": "Uint8Array",
+    "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+  },
+  "completedAt": "2026-10-07T03:05:04.552Z",
+  "updatedAt": "2026-10-07T03:05:04.552Z"
+}

@@ -186,7 +186,7 @@ export async function handleLegacyEvent(
       const compositeKey = `${runId}-${eventId}`;
       const eventPath = resolveWithinBase(
         basedir,
-        runEntityDir('events', runId),
+        runEntityDir(basedir, 'events', runId),
         `${compositeKey}.json`
       );
       if (data.eventType === 'hook_received') {

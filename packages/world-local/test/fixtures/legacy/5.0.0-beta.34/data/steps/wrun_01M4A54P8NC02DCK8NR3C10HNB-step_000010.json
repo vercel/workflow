@@ -1,0 +1,20 @@
+{
+  "runId": "wrun_01M4A54P8NC02DCK8NR3C10HNB",
+  "stepId": "step_000010",
+  "stepName": "legacy-step-10",
+  "status": "completed",
+  "input": {
+    "__type": "Uint8Array",
+    "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+  },
+  "attempt": 1,
+  "startedAt": "2026-10-07T03:05:03.706Z",
+  "createdAt": "2026-10-07T03:05:03.700Z",
+  "updatedAt": "2026-10-07T03:05:03.710Z",
+  "specVersion": 5,
+  "output": {
+    "__type": "Uint8Array",
+    "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+  },
+  "completedAt": "2026-10-07T03:05:03.710Z"
+}

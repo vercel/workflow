@@ -28,6 +28,7 @@
       "!**/tests/fixture",
       "!**/tests/errors",
       "!**/.workflow-data",
+      "!packages/world-local/test/fixtures/legacy/*/data",
       "!**/.nuxt",
       "!**/.nitro",
       "!**/.output",

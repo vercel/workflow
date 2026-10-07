@@ -25,10 +25,13 @@ function eventFiles(store) {
   const dir = path.join(store, 'events');
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isFile() && entry.name.endsWith('.json')) out.push(entry.name);
+    if (entry.isFile() && entry.name.endsWith('.json'))
+      out.push({ dir, name: entry.name });
     else if (entry.isDirectory()) {
-      for (const f of fs.readdirSync(path.join(dir, entry.name))) {
-        if (f.endsWith('.json')) out.push(f);
+      const runDir = path.join(dir, entry.name);
+      for (const f of fs.readdirSync(runDir, { withFileTypes: true })) {
+        if (f.isFile() && f.name.endsWith('.json'))
+          out.push({ dir: runDir, name: f.name });
       }
     }
   }
@@ -37,7 +40,7 @@ function eventFiles(store) {
 
 function runCounts(store) {
   const counts = new Map();
-  for (const f of eventFiles(store)) {
+  for (const { name: f } of eventFiles(store)) {
     const runId = f.slice(0, f.indexOf('-evnt_'));
     counts.set(runId, (counts.get(runId) ?? 0) + 1);
   }
@@ -92,6 +95,25 @@ if (cmd === 'prepare') {
   const [src, dst, targetArg] = args;
   const target = Number(targetArg ?? 50000);
   assertSafePrepareTarget(src, dst);
+  if (!Number.isInteger(target) || target <= 0) {
+    throw new Error('targetEvents must be a positive integer');
+  }
+  const sourceEvents = path.join(src, 'events');
+  if (
+    !fs.existsSync(sourceEvents) ||
+    !fs.statSync(sourceEvents).isDirectory()
+  ) {
+    throw new Error(
+      'source must have an events/ directory with event .json files'
+    );
+  }
+  const sourceFiles = eventFiles(src);
+  if (sourceFiles.length === 0) {
+    throw new Error(
+      'source events/ must contain at least one event .json file'
+    );
+  }
+  const runScoped = !sourceFiles.some(({ dir }) => dir === sourceEvents);
   fs.cpSync(src, dst, {
     recursive: true,
     errorOnExist: true,
@@ -99,9 +121,8 @@ if (cmd === 'prepare') {
     mode: fs.constants.COPYFILE_FICLONE,
   });
   const dir = path.join(dst, 'events');
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
-  const real = files.slice();
-  let n = files.length;
+  const real = eventFiles(dst);
+  let n = real.length;
   let pad = 0;
   while (n < target) {
     // Clone real event files under fake run ids, 1000 per fake run. The
@@ -109,10 +130,12 @@ if (cmd === 'prepare') {
     const f = real[pad % real.length];
     const fakeRun = `wrun_PAD${String(Math.floor(pad / 1000)).padStart(22, '0')}`;
     const seq = String((pad % 1000) + 1).padStart(26, '0');
+    const padDir = runScoped ? path.join(dir, fakeRun) : dir;
+    fs.mkdirSync(padDir, { recursive: true });
     fs.copyFileSync(
-      path.join(dir, f),
-      path.join(dir, `${fakeRun}-evnt_${seq}.json`),
-      fs.constants.COPYFILE_FICLONE
+      path.join(f.dir, f.name),
+      path.join(padDir, `${fakeRun}-evnt_${seq}.json`),
+      fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE
     );
     pad++;
     n++;
@@ -317,21 +340,19 @@ console.log(`list new run [${n} ev]: ${(performance.now() - sx).toFixed(1)}ms`);
 
 // Bytes the new run's 50 steps put on disk.
 let bytes = 0;
-for (const f of eventFiles(store))
-  if (f.startsWith(runId)) {
-    const p = fs.existsSync(path.join(store, 'events', f))
-      ? path.join(store, 'events', f)
-      : path.join(store, 'events', runId, f);
-    bytes += fs.statSync(p).size;
-  }
-for (const f of fs.readdirSync(path.join(store, 'steps'))) {
-  if (f.startsWith(runId))
-    bytes += fs.statSync(path.join(store, 'steps', f)).size;
+for (const { dir, name } of eventFiles(store)) {
+  if (name.startsWith(runId)) bytes += fs.statSync(path.join(dir, name)).size;
+}
+for (const f of fs.readdirSync(path.join(store, 'steps'), {
+  withFileTypes: true,
+})) {
+  if (f.isFile() && f.name.startsWith(runId))
+    bytes += fs.statSync(path.join(store, 'steps', f.name)).size;
 }
 const stepDir = path.join(store, 'steps', runId);
 if (fs.existsSync(stepDir) && fs.statSync(stepDir).isDirectory()) {
-  for (const f of fs.readdirSync(stepDir))
-    bytes += fs.statSync(path.join(stepDir, f)).size;
+  for (const f of fs.readdirSync(stepDir, { withFileTypes: true }))
+    if (f.isFile()) bytes += fs.statSync(path.join(stepDir, f.name)).size;
 }
 results.newRunBytes = bytes;
 console.log(

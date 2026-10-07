@@ -19,6 +19,7 @@ import {
   writeExclusive,
 } from '../fs.js';
 import { hashToken } from './helpers.js';
+import { storeLayoutOf } from './layout.js';
 
 /**
  * Durable secondary indexes for hook lookups. Event files are keyed by
@@ -266,13 +267,7 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     // Marker absent, so backfill below.
   }
 
-  const eventFiles: string[] = [];
-  for (const runDir of await listRunScopedDirs(basedir, 'events')) {
-    for (const fileId of await listJSONFiles(runDir)) {
-      eventFiles.push(path.join(runDir, `${fileId}.json`));
-    }
-  }
-  await forEachConcurrent(eventFiles, 32, async (eventFile) => {
+  const indexEventFile = async (eventFile: string) => {
     const fileId = path.basename(eventFile, '.json');
     const event = await readEventLenient(eventFile);
     if (!event || event.eventType !== 'hook_created') return;
@@ -291,7 +286,22 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     } catch {
       // Unsafe ids cannot have been written by this storage layer; skip.
     }
-  });
+  };
+  const indexEventDir = async (dir: string) =>
+    forEachConcurrent(await listJSONFiles(dir), 32, (fileId) =>
+      indexEventFile(path.join(dir, `${fileId}.json`))
+    );
+  if (storeLayoutOf(basedir) === 'run-scoped') {
+    // One run at a time per worker, so only one run's file names are held
+    // in memory per worker rather than every event path in the store.
+    await forEachConcurrent(
+      await listRunScopedDirs(basedir, 'events'),
+      8,
+      indexEventDir
+    );
+  } else {
+    await indexEventDir(path.join(basedir, 'events'));
+  }
 
   const hooksDir = path.join(basedir, 'hooks');
   await forEachConcurrent(await listJSONFiles(hooksDir), 32, async (fileId) => {
@@ -375,7 +385,7 @@ export async function findIndexedHookCreatedEvent(
     try {
       eventPath = taggedPath(
         basedir,
-        runEntityDir('events', entry.runId),
+        runEntityDir(basedir, 'events', entry.runId),
         `${entry.runId}-${eventId}`,
         tagOf(entryId)
       );

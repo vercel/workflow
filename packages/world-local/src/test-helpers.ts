@@ -275,3 +275,30 @@ export async function completeWait(
   }
   return result.wait;
 }
+
+/**
+ * Layout the storage suites run against: run-scoped (what `start()` selects
+ * for a new data directory) unless `WORKFLOW_LOCAL_TEST_LAYOUT=flat`, which
+ * reruns them against the flat layout older releases wrote.
+ */
+export const TEST_LAYOUT: 'flat' | 'run-scoped' =
+  process.env.WORKFLOW_LOCAL_TEST_LAYOUT === 'flat' ? 'flat' : 'run-scoped';
+
+/** Select {@link TEST_LAYOUT} for a fresh test data directory. */
+export async function initTestDataDir(dataDir: string): Promise<void> {
+  if (TEST_LAYOUT === 'run-scoped') {
+    const { initializeLayoutMarker } = await import('./storage/layout.js');
+    await initializeLayoutMarker(dataDir);
+  }
+}
+
+/** The directory holding one run's `events`/`steps` files in {@link TEST_LAYOUT}. */
+export function runDir(
+  dataDir: string,
+  entityDir: 'events' | 'steps',
+  runId: string
+): string {
+  return TEST_LAYOUT === 'run-scoped'
+    ? path.join(dataDir, entityDir, runId)
+    : path.join(dataDir, entityDir);
+}

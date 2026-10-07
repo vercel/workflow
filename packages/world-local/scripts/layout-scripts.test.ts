@@ -6,13 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resetRunScopedLayoutCache } from '../src/storage/layout.js';
-import { createStorage } from '../src/storage.js';
-import { createRun, createStep, updateRun } from '../src/test-helpers.js';
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const bench = path.join(scripts, 'benchmark-layout.mjs');
-const flattenScript = path.join(scripts, 'flatten-layout.mjs');
 
 /** Relative path -> sha256 of every file under `dir`. */
 function hashTree(dir: string): Record<string, string> {
@@ -49,13 +45,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  resetRunScopedLayoutCache();
   await rm(root, { force: true, recursive: true });
 });
 
 describe('benchmark-layout prepare', () => {
-  const prepare = (src: string, dst: string) =>
-    node(bench, 'prepare', src, dst, '10');
+  const prepare = (src: string, dst: string, target = '10') =>
+    node(bench, 'prepare', src, dst, target);
 
   function expectRefused(
     result: ReturnType<typeof prepare>,
@@ -119,74 +114,68 @@ describe('benchmark-layout prepare', () => {
     expect(hashTree(store)).toEqual(before);
     expect(fs.readdirSync(path.join(dst, 'events'))).toHaveLength(10);
   });
-});
 
-describe('flatten-layout rollback', () => {
-  it('restores the flat layout byte for byte, and the store reads the same after re-migrating', async () => {
-    const dataDir = path.join(root, 'data');
-    const storage = createStorage(dataDir);
-    const run = await createRun(storage, {
-      deploymentId: 'dep-1',
-      workflowName: 'wf',
-      input: new Uint8Array([1, 2, 3]),
-    });
-    await updateRun(storage, run.runId, 'run_started');
-    await createStep(storage, run.runId, {
-      stepId: 'step_0',
-      stepName: 'my-step',
-      input: new Uint8Array([0]),
-    });
-    const list = async () =>
-      (
-        await createStorage(dataDir).events.list({
-          runId: run.runId,
-          pagination: { limit: 1000, sortOrder: 'asc' },
-          resolveData: 'all',
-        })
-      ).data;
-    const eventsBefore = await list();
-    const scoped = hashTree(dataDir);
-    expect(
-      Object.keys(scoped).some((p) =>
-        p.startsWith(path.join('events', run.runId) + path.sep)
-      )
-    ).toBe(true);
-
-    const result = node(flattenScript, dataDir);
+  it('pads run-scoped sources in fake run directories without changing the source', () => {
+    const events = path.join(store, 'events');
+    fs.rmSync(events, { recursive: true });
+    for (const runId of ['wrun_A', 'wrun_B', 'wrun_C']) {
+      const dir = path.join(events, runId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${runId}-evnt_1.tag.json`), runId);
+    }
+    const before = hashTree(store);
+    const dst = path.join(root, 'bench');
+    const result = prepare(store, dst, '25');
     expect(result.status, result.stderr).toBe(0);
-
-    // Every run-scoped file is now one level up, under the same name and bytes.
-    const flat = hashTree(dataDir);
-    const lifted = Object.fromEntries(
-      Object.entries(scoped).map(([p, h]) => {
-        const parts = p.split(path.sep);
-        return parts.length === 3 &&
-          (parts[0] === 'events' || parts[0] === 'steps')
-          ? [path.join(parts[0], parts[2]), h]
-          : [p, h];
-      })
+    expect(hashTree(store)).toEqual(before);
+    const files = Object.keys(hashTree(dst)).filter(
+      (file) => file.startsWith(`events${path.sep}`) && file.endsWith('.json')
     );
-    expect(flat).toEqual(lifted);
-    expect(fs.existsSync(path.join(dataDir, 'events', run.runId))).toBe(false);
-
-    // A new process migrates the flat files back and reads the same log.
-    resetRunScopedLayoutCache();
-    expect(await list()).toEqual(eventsBefore);
+    expect(files).toHaveLength(25);
+    const padding = files.filter((file) => file.includes('wrun_PAD'));
+    expect(padding).toHaveLength(22);
+    for (const file of padding) {
+      expect(file.split(path.sep)[1]).toMatch(/^wrun_PAD\d{22}$/);
+      expect(path.basename(file)).toMatch(/^wrun_PAD\d{22}-evnt_\d{26}\.json$/);
+    }
   });
 
-  it('never overwrites a file already at the flat path', async () => {
-    const dataDir = path.join(root, 'data');
-    const runDir = path.join(dataDir, 'events', 'wrun_X');
-    fs.mkdirSync(runDir, { recursive: true });
-    fs.writeFileSync(path.join(runDir, 'wrun_X-evnt_1.json'), 'scoped');
-    fs.writeFileSync(
-      path.join(dataDir, 'events', 'wrun_X-evnt_1.json'),
-      'flat'
-    );
-    const before = hashTree(dataDir);
-    const result = node(flattenScript, dataDir);
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toMatch(/skipped/);
-    expect(hashTree(dataDir)).toEqual(before);
+  it.each([
+    'flat',
+    'nested',
+  ])('refuses an empty %s source before copying', (layout) => {
+    const events = path.join(store, 'events');
+    fs.rmSync(events, { recursive: true });
+    const dir = layout === 'nested' ? path.join(events, 'wrun_A') : events;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'not-an-event.txt'), 'keep');
+    fs.mkdirSync(path.join(dir, 'not-a-file.json'));
+    const before = hashTree(store);
+    const dst = path.join(root, 'bench');
+    expectRefused(prepare(store, dst), /at least one event/);
+    expect(fs.existsSync(dst)).toBe(false);
+    expect(hashTree(store)).toEqual(before);
+  });
+
+  it('refuses a source without events/ before copying', () => {
+    fs.rmSync(path.join(store, 'events'), { recursive: true });
+    const before = hashTree(store);
+    const dst = path.join(root, 'bench');
+    expectRefused(prepare(store, dst), /events\/ directory/);
+    expect(fs.existsSync(dst)).toBe(false);
+    expect(hashTree(store)).toEqual(before);
+  });
+
+  it.each([
+    '0',
+    'abc',
+    '-1',
+    '1.5',
+  ])('refuses invalid target %s before copying', (target) => {
+    const before = hashTree(store);
+    const dst = path.join(root, 'bench');
+    expectRefused(prepare(store, dst, target), /positive integer/);
+    expect(fs.existsSync(dst)).toBe(false);
+    expect(hashTree(store)).toEqual(before);
   });
 });

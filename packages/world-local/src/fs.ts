@@ -9,6 +9,7 @@ import {
   isUnwritableDirCode,
   UnwritableDataDirError,
 } from './build-target-mismatch.js';
+import { storeLayoutOf } from './storage/layout.js';
 
 /**
  * Temp-file suffixes for atomic writes, and the write-path caches below.
@@ -233,15 +234,21 @@ export type RunScopedEntityDir = (typeof RUN_SCOPED_ENTITY_DIRS)[number];
 
 /**
  * The entity-relative directory holding one run's files for a run-scoped
- * entity: `runEntityDir('events', 'wrun_ABC')` → `events/wrun_ABC`.
+ * entity, in the layout this process resolved for `basedir`:
+ * `runEntityDir(basedir, 'events', 'wrun_ABC')` → `events/wrun_ABC` in the
+ * run-scoped layout, `events` in the flat one (where file names alone tell
+ * runs apart). Only valid inside a storage call gated on the store layout.
  * Pass the result as the `entityDir` of {@link taggedPath} and friends.
  */
 export function runEntityDir(
+  basedir: string,
   entityDir: RunScopedEntityDir,
   runId: string
 ): string {
   assertSafeEntityId('runId', runId);
-  return path.join(entityDir, runId);
+  return storeLayoutOf(basedir) === 'run-scoped'
+    ? path.join(entityDir, runId)
+    : entityDir;
 }
 
 /**

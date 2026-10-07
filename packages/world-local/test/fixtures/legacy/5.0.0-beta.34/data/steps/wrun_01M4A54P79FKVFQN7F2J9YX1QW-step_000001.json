@@ -1,0 +1,15 @@
+{
+  "runId": "wrun_01M4A54P79FKVFQN7F2J9YX1QW",
+  "stepId": "step_000001",
+  "stepName": "legacy-step-1",
+  "status": "running",
+  "input": {
+    "__type": "Uint8Array",
+    "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+  },
+  "attempt": 1,
+  "createdAt": "2026-10-07T03:05:03.478Z",
+  "updatedAt": "2026-10-07T03:05:03.484Z",
+  "specVersion": 5,
+  "startedAt": "2026-10-07T03:05:03.484Z"
+}

@@ -1,0 +1,11 @@
+{
+  "eventType": "step_started",
+  "specVersion": 3,
+  "correlationId": "step_000010",
+  "eventData": {
+    "attempt": 1
+  },
+  "runId": "wrun_01M4A54NSC4SQR2PBEWMGYGK4K",
+  "eventId": "evnt_01M4A54P66GNHNDGJ6JMAHA0SH",
+  "createdAt": "2026-10-07T03:05:03.430Z"
+}

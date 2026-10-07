@@ -1,0 +1,15 @@
+{
+  "eventType": "hook_created",
+  "specVersion": 3,
+  "correlationId": "hook_pending",
+  "eventData": {
+    "token": "legacy-4.1.0-pending",
+    "metadata": {
+      "__type": "Uint8Array",
+      "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+    }
+  },
+  "runId": "wrun_01M4A54NKWB52S41HZRPBYW4NG",
+  "eventId": "evnt_01M4A54NMEYN7D86WMJ81FGVG1",
+  "createdAt": "2026-10-07T03:05:02.862Z"
+}

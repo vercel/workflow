@@ -2,7 +2,7 @@ import type { Storage } from '@workflow/world';
 import { instrumentObject } from '../instrumentObject.js';
 import { createEventsStorage } from './events-storage.js';
 import { createHooksStorage } from './hooks-storage.js';
-import { gateOnRunScopedLayout } from './layout.js';
+import { gateOnStoreLayout } from './layout.js';
 import { createRunsStorage, type LocalRunsStorage } from './runs-storage.js';
 import { createSnapshotsStorage } from './snapshots-storage.js';
 import { createStepsStorage } from './steps-storage.js';
@@ -29,22 +29,14 @@ export type LocalStorage = Omit<Storage, 'runs'> & {
 export function createStorage(basedir: string, tag?: string): LocalStorage {
   // Create raw storage implementations
   const runs = createRunsStorage(basedir, tag);
-  // Steps, events and hooks (which resolve through the event log) read the
-  // per-run layout, so each call first waits for any flat files left by an
-  // older version to be moved into it.
-  const steps = gateOnRunScopedLayout(
-    basedir,
-    createStepsStorage(basedir, tag)
-  );
-  const events = gateOnRunScopedLayout(
-    basedir,
-    createEventsStorage(basedir, tag),
-    ['clearCache']
-  );
-  const hooks = gateOnRunScopedLayout(
-    basedir,
-    createHooksStorage(basedir, tag)
-  );
+  // Steps, events and hooks (which resolve through the event log) build
+  // event and step paths from the store's layout (flat or run-scoped), so
+  // each call first opens the store and resolves it.
+  const steps = gateOnStoreLayout(basedir, createStepsStorage(basedir, tag));
+  const events = gateOnStoreLayout(basedir, createEventsStorage(basedir, tag), [
+    'clearCache',
+  ]);
+  const hooks = gateOnStoreLayout(basedir, createHooksStorage(basedir, tag));
   const snapshots = createSnapshotsStorage(basedir);
 
   // Instrument all storage methods with tracing

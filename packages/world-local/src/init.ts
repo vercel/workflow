@@ -2,6 +2,7 @@ import {
   access,
   constants,
   mkdir,
+  readdir,
   readFile,
   unlink,
   writeFile,
@@ -9,6 +10,7 @@ import {
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { globalSingleton } from '@workflow/utils';
+import { initializeLayoutMarker } from './storage/layout.js';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -202,7 +204,8 @@ export function upgradeVersion(
   oldVersion: ParsedVersion,
   newVersion: ParsedVersion
 ): void {
-  console.log(
+  // stderr: CLI commands print JSON on stdout.
+  console.warn(
     `[world-local] Upgrading from version ${formatVersion(oldVersion)} to ${formatVersion(newVersion)}`
   );
 }
@@ -306,6 +309,19 @@ async function writeVersionFile(
   await writeFile(versionFilePath, content);
 }
 
+async function holdsEntityData(dataDir: string): Promise<boolean> {
+  for (const dir of ['runs', 'events', 'steps', 'hooks']) {
+    try {
+      if ((await readdir(path.join(path.resolve(dataDir), dir))).length > 0) {
+        return true;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return false;
+}
+
 /**
  * Gets the suggested downgrade version based on the old version.
  * If a specific version is suggested in the error, use that.
@@ -331,7 +347,13 @@ function getSuggestedDowngradeVersion(
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
  */
-export async function initDataDir(dataDir: string): Promise<void> {
+export async function initDataDir(
+  dataDir: string,
+  options: {
+    /** Keep the data directory's current layout even if it looks new (`clear()`). */
+    keepLayout?: boolean;
+  } = {}
+): Promise<void> {
   // First ensure the directory exists and is accessible
   await ensureDataDir(dataDir);
 
@@ -342,6 +364,12 @@ export async function initDataDir(dataDir: string): Promise<void> {
   const existingVersionInfo = await readVersionFile(dataDir);
 
   if (existingVersionInfo === null) {
+    // New data directory: select the run-scoped layout, unless it already
+    // holds entity data from a release that wrote no version file. The
+    // marker goes first, since readers check version.txt before it.
+    if (!options.keepLayout && !(await holdsEntityData(dataDir))) {
+      await initializeLayoutMarker(path.resolve(dataDir));
+    }
     // New data directory - write the current version
     await writeVersionFile(dataDir, currentVersion);
     return;

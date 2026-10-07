@@ -1,0 +1,15 @@
+{
+  "eventType": "run_created",
+  "specVersion": 5,
+  "eventData": {
+    "deploymentId": "legacy-fixture",
+    "workflowName": "legacy/tagged",
+    "input": {
+      "__type": "Uint8Array",
+      "data": "bGVnYWN5IGZpeHR1cmU6IOmbqiDwn4yNIGNhZsOpAA=="
+    }
+  },
+  "runId": "wrun_01M4A54QMCAKYSKR9V3CZA5JTC",
+  "eventId": "evnt_01M4A54QMCAKYSKR9V3CZA5JTB",
+  "createdAt": "2026-10-07T03:05:04.908Z"
+}

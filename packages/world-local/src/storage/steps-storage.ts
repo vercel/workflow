@@ -26,7 +26,7 @@ export function createStepsStorage(
       const compositeKey = `${runId}-${stepId}`;
       const step = await readJSONWithFallback(
         basedir,
-        runEntityDir('steps', runId),
+        runEntityDir(basedir, 'steps', runId),
         compositeKey,
         StepSchema,
         tag
@@ -42,7 +42,10 @@ export function createStepsStorage(
       assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
-        directory: path.join(basedir, runEntityDir('steps', params.runId)),
+        directory: path.join(
+          basedir,
+          runEntityDir(basedir, 'steps', params.runId)
+        ),
         schema: StepSchema,
         filePrefix: `${params.runId}-`,
         sortOrder: params.pagination?.sortOrder ?? 'desc',

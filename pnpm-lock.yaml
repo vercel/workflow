@@ -1479,6 +1479,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@workflow/world-local-5.0.2':
+        specifier: npm:@workflow/world-local@5.0.2
+        version: '@workflow/world-local@5.0.2(@opentelemetry/api@1.9.1)'
       ms:
         specifier: 2.1.3
         version: 2.1.3
@@ -10450,8 +10453,25 @@ packages:
     resolution: {integrity: sha512-ueFCcIPaMgtuYDS9u0qlUoEvj6GiSsKrwnOLPp9SshqjtcRaR1IEHRjoReq3sXNydsF5i0ZnmuYgXq9dV53t0g==}
     engines: {node: '>=18.0.0'}
 
+  '@workflow/errors@5.0.2':
+    resolution: {integrity: sha512-AcdiuwfOqHZ7Bwey4wsuhEKh8HWfUfAMcOCvEt4uIaC7v1qOJY2iVSi9ahX9YPaMB7vngcBEgvZsoasI2/FyIw==}
+
   '@workflow/serde@4.1.0':
     resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
+
+  '@workflow/utils@5.0.1':
+    resolution: {integrity: sha512-s/32vojtP1qYDPINp9wfE5JZRkjdhXI8lyg4l+QNrKjMwiaXv6vNRpsuGQrcdj2Nfnnvz3L4DOxdNyPW3MG+Jg==}
+
+  '@workflow/world-local@5.0.2':
+    resolution: {integrity: sha512-D/JLwNiELaFIo0xxvOIZs+JS6j20EESG965q6EDXrvDe5YeertPmsJvbr01f84ymSyjWQEfaB6Q21KSFOlDHcA==}
+    peerDependencies:
+      '@opentelemetry/api': 1.9.1
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+
+  '@workflow/world@5.0.2':
+    resolution: {integrity: sha512-XW7sGTkyL7/NtGc52yOZYKsPdtUZymqMssUEWuSbEODDzsW8mSKx/Y3RdGAwofZm1+MUQswWftwvpIXOMkTqAw==}
 
   '@xhmikosr/archive-type@7.1.0':
     resolution: {integrity: sha512-xZEpnGplg1sNPyEgFh0zbHxqlw5dtYg6viplmWSxUj12+QjU9SKu3U/2G73a15pEjLaOqTefNSZ1fOPUOT4Xgg==}
@@ -27864,7 +27884,36 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
+  '@workflow/errors@5.0.2':
+    dependencies:
+      '@workflow/utils': 5.0.1
+      '@workflow/world': 5.0.2
+      ms: 2.1.3
+
   '@workflow/serde@4.1.0': {}
+
+  '@workflow/utils@5.0.1':
+    dependencies:
+      ms: 2.1.3
+
+  '@workflow/world-local@5.0.2(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@vercel/queue': 0.8.0(@opentelemetry/api@1.9.1)
+      '@workflow/errors': 5.0.2
+      '@workflow/utils': 5.0.1
+      '@workflow/world': 5.0.2
+      async-sema: 3.1.1
+      proper-lockfile: 4.1.2
+      ulid: 3.0.1
+      undici: 7.30.0
+      zod: 4.5.4
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
+
+  '@workflow/world@5.0.2':
+    dependencies:
+      ulid: 3.0.1
+      zod: 4.5.4
 
   '@xhmikosr/archive-type@7.1.0(supports-color@10.2.2)':
     dependencies:
