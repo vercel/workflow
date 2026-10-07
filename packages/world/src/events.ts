@@ -792,6 +792,29 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   /**
+   * Whether the run's orchestrator is making this write, for the in-band
+   * writer fence. Optional World support: a World that implements the fence
+   * counts the positions it allocates to in-band writes, and accepts an
+   * in-band write only when {@link expectedSeqInBand} equals that count,
+   * refusing it otherwise with `InBandSupersededError` (HTTP 412,
+   * `in-band-superseded`) before anything is written or allocated.
+   * Out-of-band writes (`false` or absent) are never refused by the fence and
+   * never move the in-band count.
+   *
+   * `run_created` counts as the run's first in-band position, so the first
+   * in-band write after it expects 1.
+   *
+   * The runtime does not set it yet.
+   */
+  inBand?: boolean;
+  /**
+   * The writer's count of in-band positions, required with `inBand: true`
+   * and only allowed with it. Advanced by the positions each accepted
+   * in-band write allocated (1 for a single create, the event count for a
+   * batch).
+   */
+  expectedSeqInBand?: number;
+  /**
    * `'skip-step-inputs'` applies only to the event-log page this create
    * returns (the `sinceCursor` delta or a replay preload), never to the
    * created `event` or the returned `step` entity, whose `input` is what step
@@ -1128,6 +1151,17 @@ export interface CreateEventBatchParams {
    * attribution its single-path twin would.
    */
   requestId?: string;
+  /**
+   * The in-band fence for the whole batch, as {@link CreateEventParams.inBand}.
+   * Every event of a batch shares it.
+   */
+  inBand?: boolean;
+  /**
+   * The writer's in-band count for the whole block, as
+   * {@link CreateEventParams.expectedSeqInBand}. The block's positions are
+   * allocated in one fenced allocation.
+   */
+  expectedSeqInBand?: number;
 }
 
 /**

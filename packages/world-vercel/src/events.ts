@@ -597,6 +597,12 @@ export async function createWorkflowRunEventBatch(
       // `params.requestId` → `vercelId` threading, stamped per frame so
       // batched usage facts carry the same attribution.
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      // The batch is one fenced allocation: the backend requires every frame
+      // to carry the same fence.
+      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+      ...(params?.expectedSeqInBand !== undefined
+        ? { expectedSeqInBand: params.expectedSeqInBand }
+        : {}),
       payload,
       ...meta,
     };
@@ -818,6 +824,12 @@ async function createWorkflowRunEventInner(
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    // In-band writer fence. The backend refuses a stale in-band write with
+    // 412 `in-band-superseded` (InBandSupersededError).
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log

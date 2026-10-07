@@ -22,6 +22,8 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
   HookForceClaimedError,
+  IN_BAND_SUPERSEDED_CODE,
+  InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
   StreamError,
@@ -355,7 +357,10 @@ export function headersToRecord(headers: Headers): Record<string, string> {
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
- *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
+ *   - 412 with code `in-band-superseded` → InBandSupersededError (the in-band
+ *     writer fence refused an orchestrator write; carries the backend's
+ *     counters for diagnostics)
+ *   - other 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot, the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing; see #1806 for what
@@ -427,6 +432,22 @@ export function errorForResponse(
       );
     }
     return new RunExpiredError(message);
+  }
+  if (status === 412 && code === IN_BAND_SUPERSEDED_CODE) {
+    // Distinct from the generic 412 precondition below: another orchestrator
+    // invocation of the run wrote in-band since this one loaded the log, and
+    // the caller must stop writing rather than reload and retry the write.
+    const counters =
+      details && typeof details === 'object'
+        ? (details as { seq?: unknown; seqInBand?: unknown })
+        : undefined;
+    return new InBandSupersededError(message, {
+      seq: typeof counters?.seq === 'number' ? counters.seq : undefined,
+      seqInBand:
+        typeof counters?.seqInBand === 'number'
+          ? counters.seqInBand
+          : undefined,
+    });
   }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });
