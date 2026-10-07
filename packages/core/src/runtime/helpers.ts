@@ -1055,7 +1055,11 @@ const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
  *
  * The reload is full rather than incremental: the missing position is below the
  * log's maximum, so a cursor-anchored read starts past it and can never see it
- * arrive.
+ * arrive. Each re-read keeps every event the caller already held: the
+ * orchestrator's log holds its own writes from their responses, and with
+ * run-ahead an outcome the workflow consumed before its write committed. A
+ * re-read can come back without one of those, and replacing the log with it
+ * would leave a position this delivery already took in nobody's view.
  */
 export async function settleEventSlotGap(
   runId: string,
@@ -1072,6 +1076,7 @@ export async function settleEventSlotGap(
       setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
     );
     log = await loadWorkflowRunEvents(runId);
+    mergeReportedEvents(log.events, loaded.events);
     gap = findEventSlotGap(log.events);
   }
   return { log, gap };
