@@ -114,6 +114,10 @@ import {
   observeOutOfBandWriters,
 } from './runtime/out-of-band-observation.js';
 import {
+  type LoadedSnapshot,
+  prefetchQuickJSSnapshot,
+} from './runtime/quickjs-snapshot-resume.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -2355,6 +2359,21 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // QuickJS snapshot prefetch: when this process knows the
+                  // run's next QuickJS invocation will read its VM snapshot
+                  // (it saw the run suspend at or past the snapshot
+                  // threshold), start that read now so it overlaps the setup
+                  // request below (hook_received preload or run_started)
+                  // instead of following it. The read depends only on the
+                  // run id. Consumed once, by the QuickJS dispatch; a
+                  // delivery that never gets there drops it unobserved.
+                  // Turbo deliveries are first invocations, which never
+                  // have a snapshot.
+                  let snapshotPrefetch: Promise<LoadedSnapshot> | undefined =
+                    !workflowRun && !turbo
+                      ? prefetchQuickJSSnapshot(world, runId)
+                      : undefined;
+
                   // Deployment-affinity pre-check for the lazy hook fast
                   // path below. New lazy-resume messages carry the run's
                   // pinned deployment (`hookInput.deploymentId`), so a
@@ -3302,6 +3321,13 @@ export function workflowEntrypoint(
                             eventLog.type === 'ready'
                               ? eventLog.cursor
                               : undefined,
+                          // The snapshot read started at handler entry, if
+                          // any (see `snapshotPrefetch` above). One-shot.
+                          snapshotPrefetch: (() => {
+                            const prefetched = snapshotPrefetch;
+                            snapshotPrefetch = undefined;
+                            return prefetched;
+                          })(),
                           runInput,
                           parentSpan: span,
                           maxEventsLimit,
