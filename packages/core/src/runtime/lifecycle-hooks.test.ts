@@ -1,4 +1,5 @@
 import { runInNewContext } from 'node:vm';
+import type { Span } from '@opentelemetry/api';
 import { FatalError, WorkflowRunFailedError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -316,6 +317,102 @@ describe('lifecycle hooks', () => {
       'Workflow lifecycle onRunCompleted dispatch failed',
       expect.objectContaining({ errorMessage: failure.message })
     );
+  });
+
+  it.each([
+    'name',
+    'message',
+    'stack',
+    'toString',
+  ] as const)('still logs readable fields when a thrown value has a throwing %s', async (field) => {
+    const failure =
+      field === 'toString'
+        ? {
+            toString() {
+              throw new Error('cannot stringify');
+            },
+          }
+        : new Error('readable message');
+    if (field !== 'toString') {
+      Object.defineProperty(failure, 'stack', {
+        value: 'readable stack',
+        configurable: true,
+      });
+      Object.defineProperty(failure, field, {
+        get() {
+          throw new Error('cannot read field');
+        },
+      });
+    }
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    register({
+      onRunCompleted() {
+        throw failure;
+      },
+    });
+    dispatchRunCompletedHooks('wrun_unreadable', workflowName);
+    await flushDispatches();
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      {
+        workflowRunId: 'wrun_unreadable',
+        workflowName,
+        errorName: 'Error',
+        errorMessage:
+          field === 'message' || field === 'toString'
+            ? '[unavailable error message]'
+            : 'readable message',
+        errorStack:
+          field === 'stack' || field === 'toString' ? '' : 'readable stack',
+      }
+    );
+  });
+
+  it('records isolated failures in the lifecycle span even if the log sink throws', async () => {
+    const addEvent = vi.fn();
+    const span = { addEvent } as unknown as Span;
+    vi.spyOn(telemetry, 'trace').mockImplementationOnce(async (_name, ...args) => {
+      const fn = typeof args[0] === 'function' ? args[0] : args[1];
+      if (!fn) throw new Error('Expected a trace callback');
+      return fn(span);
+    });
+    vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {
+      throw new Error('log sink failed');
+    });
+    const hydrationError = new Error('unknown class');
+    const handlerError = new Error('reporter failed');
+    const pipeError = new Error('pipe failed');
+    vi.mocked(hydrateRunError).mockImplementationOnce(
+      async (_error, _runId, _key, ops) => {
+        const pipe = Promise.reject(pipeError);
+        void pipe.catch(() => {});
+        if (!ops) throw new Error('Expected hydration operations');
+        ops.push(pipe);
+        throw hydrationError;
+      }
+    );
+    register({
+      onRunFailed() {
+        throw handlerError;
+      },
+    });
+    const later = vi.fn();
+    register({ onRunFailed: later });
+    dispatchRunFailedHooks('wrun_span_sink', workflowName, undefined, undefined, 'USER_ERROR');
+    await flushDispatches();
+    for (const [phase, error] of [
+      ['error hydration failed', hydrationError],
+      ['handler threw', handlerError],
+      ['stream operation failed', pipeError],
+    ] as const) {
+      expect(addEvent).toHaveBeenCalledWith('workflow.lifecycle.failure', {
+        phase,
+        'exception.type': error.name,
+        'exception.message': error.message,
+        'exception.stacktrace': error.stack,
+      });
+    }
+    expect(later).toHaveBeenCalledOnce();
   });
 
   it('rejects registration inside a step without accumulating a handler', () => {
@@ -753,5 +850,73 @@ describe('lifecycle hooks', () => {
     last.resolve();
     await flushDispatches();
     expect(settled).toHaveBeenCalledOnce();
+  });
+
+  it('drains randomized nested operations despite hydration, handler, and pipe failures', async () => {
+    // A fixed seed makes the settlement-order coverage reproducible.
+    let seed = 4216;
+    const random = (max: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % max;
+    };
+    vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    for (let trial = 0; trial < 60; trial++) {
+      waitUntilPromises.length = 0;
+      const pending: Array<() => void> = [];
+      let ops!: Promise<void>[];
+      const prepared = withResolvers<void>();
+      const addOperation = (depth: number) => {
+        const gate = withResolvers<void>();
+        pending.push(gate.resolve);
+        const pipe = gate.promise.then(() => {
+          const children = depth < 3 ? random(3) : 0;
+          for (let i = 0; i < children; i++) addOperation(depth + 1);
+          if (random(3) === 0) throw new Error('pipe failed');
+        });
+        void pipe.catch(() => {});
+        ops.push(pipe);
+      };
+      vi.mocked(hydrateRunError).mockImplementationOnce(
+        async (_error, _id, _key, operations) => {
+          if (!operations) throw new Error('Expected hydration operations');
+          ops = operations;
+          for (let i = 0; i < 3; i++) addOperation(0);
+          prepared.resolve();
+          if (trial % 2 === 0) throw new Error('partial hydration');
+          return new Error('cause');
+        }
+      );
+      const unregister = register({
+        onRunFailed() {
+          addOperation(0);
+          if (trial % 3 === 0) throw new Error('handler failed');
+        },
+      });
+      dispatchRunFailedHooks(
+        `wrun_random_${trial}`,
+        workflowName,
+        undefined,
+        undefined,
+        'USER_ERROR'
+      );
+      await prepared.promise;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(waitUntilPromises).toHaveLength(1);
+      let settled = false;
+      let pendingAtSettlement = -1;
+      void waitUntilPromises[0].then(() => {
+        settled = true;
+        pendingAtSettlement = pending.length;
+      });
+      while (pending.length > 0) {
+        expect(settled).toBe(false);
+        pending.splice(random(pending.length), 1)[0]();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await flushDispatches();
+      expect(settled).toBe(true);
+      expect(pendingAtSettlement).toBe(0);
+      unregister();
+    }
   });
 });

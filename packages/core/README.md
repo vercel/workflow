@@ -49,8 +49,11 @@ your app. Handlers receive the workflow name without a backend read, a lazy `Run
 instance, and, for failures, an error hydrated from the persisted payload.
 Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
-The callback's `waitUntil` scope also drains background operations for streams
-hydrated from the persisted failure, including when a handler throws.
+On Vercel, the callback's `waitUntil` scope also drains background operations for
+streams hydrated from the persisted failure, including when a handler throws.
+Cancel readers and release locks when finished; a leaked reader can hold that
+scope open until the invocation's duration limit. Streams hydrated through
+`run.returnValue` are not included in that drain.
 Register in the workflow executor's host startup, never from workflow or step
 code. Framework-specific support, hot-reload behavior, and stream cleanup are
-documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks).
+documented in the [lifecycle hooks guide](https://workflow-sdk.dev/docs/observability/lifecycle-hooks).
