@@ -68,6 +68,19 @@ bunx --package @workflow/world-postgres bootstrap
 The migration is idempotent and can safely be run as a post-deployment lifecycle script.
 </Callout>
 
+<Callout type="warn">
+Migration 0026 converts every timestamp column to `timestamp with time zone`.
+On a server whose time zone is UTC (the default on most hosted providers) it
+only changes the catalog. On a server in another time zone it also rewrites
+each `created_at` value from local time to the instant it recorded, holding the
+tables' locks until it finishes. There, stop the previous version's workers,
+run `bootstrap`, then start the upgraded app: older versions read the converted
+columns shifted by the server's UTC offset. If your app's connection pool set a
+session time zone other than the server's, pass it to the migration, for example
+with `?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the
+connection string.
+</Callout>
+
 ## Starting the World
 
 ### Experimental invocation delivery
