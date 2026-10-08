@@ -8,6 +8,7 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
+import { type LockOptions, lock } from 'proper-lockfile';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
@@ -20,6 +21,7 @@ import {
   write,
   writeJSON,
 } from './fs.js';
+import { withInProcessLock } from './util.js';
 
 // Monotonic ULID source for chunk IDs: always increasing even within one
 // millisecond. On `globalThis` rather than at module scope because a bundler
@@ -38,6 +40,19 @@ const RunStreamsSchema = z.compile(
     streams: z.array(z.string()),
   })
 );
+
+/**
+ * Lock options for updating a run's stream index
+ * (`streams/runs/<runId>.json`) across processes. The critical section is
+ * one small read and one write, so a holder either finishes within
+ * milliseconds or has crashed: `stale` lets the next writer take over a lock
+ * a crashed holder left behind, and the retries outlast `stale`.
+ */
+const RUN_STREAMS_LOCK_OPTIONS: LockOptions = {
+  realpath: false,
+  stale: 10_000,
+  retries: { retries: 150, factor: 1, minTimeout: 100, maxTimeout: 100 },
+};
 
 /**
  * A chunk consists of a boolean `eof` indicating if it's the last chunk,
@@ -252,40 +267,118 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     ];
   }>();
 
-  // Track which streams have already been registered for a run (in-memory cache)
+  // Streams this instance has registered (`<runId>:<name>`), so only a
+  // stream's first write touches the run's stream index.
   const registeredStreams = new Set<string>();
+  // Serializes this instance's updates to one run's stream index. The file
+  // lock in `addToRunStreams` does the same across instances and processes.
+  const runStreamsLocks = new Map<string, Promise<unknown>>();
+  let warnedRunStreamsLockFailure = false;
 
-  // Helper to record the runId <> streamId association
-  async function registerStreamForRun(
-    runId: string,
-    streamName: string
-  ): Promise<void> {
-    assertSafeEntityId('runId', runId);
-    assertSafeEntityId('streamName', streamName);
-    const cacheKey = `${runId}:${streamName}`;
-    if (registeredStreams.has(cacheKey)) {
-      return; // Already registered in this session
-    }
-
-    const runStreamsPath = taggedPath(basedir, 'streams/runs', runId, tag);
-
-    // Read existing streams for this run (try tagged first, fall back to untagged)
-    const existing = await readJSONWithFallback(
+  async function readRunStreams(runId: string): Promise<string[]> {
+    const data = await readJSONWithFallback(
       basedir,
       'streams/runs',
       runId,
       RunStreamsSchema,
       tag
     );
-    const streams = existing?.streams ?? [];
+    return data?.streams ?? [];
+  }
 
-    // Add stream if not already present
-    if (!streams.includes(streamName)) {
-      streams.push(streamName);
-      await writeJSON(runStreamsPath, { streams }, { overwrite: true });
+  /**
+   * Record the run → stream association in the run's stream index,
+   * `streams/runs/<runId>.json`, which `list()` and the retention purge read.
+   *
+   * The index is one file per run, so adding a name is a read-modify-write:
+   * two streams of one run that first write at the same time would each read
+   * the old list, and the later rename would drop the earlier name. The
+   * update therefore runs under a per-instance mutex, like the event writes
+   * in events-storage, and a proper-lockfile lock across processes, like the
+   * hook token claim. The file format is unchanged, so older readers (the
+   * CLI, the web UI) read the index without a migration.
+   *
+   * `verify` re-reads the index even for a stream this instance already
+   * registered, and registers it again if it is missing. `close()` uses it to
+   * put back a name dropped by a writer that does not take the lock, such as
+   * an older world-local sharing the data directory.
+   */
+  async function registerStreamForRun(
+    runId: string,
+    streamName: string,
+    { verify = false }: { verify?: boolean } = {}
+  ): Promise<void> {
+    assertSafeEntityId('runId', runId);
+    assertSafeEntityId('streamName', streamName);
+    const cacheKey = `${runId}:${streamName}`;
+    if (registeredStreams.has(cacheKey)) {
+      if (!verify || (await readRunStreams(runId)).includes(streamName)) {
+        return;
+      }
+      registeredStreams.delete(cacheKey);
     }
 
-    registeredStreams.add(cacheKey);
+    const runStreamsPath = taggedPath(basedir, 'streams/runs', runId, tag);
+    await withInProcessLock(runStreamsLocks, runStreamsPath, async () => {
+      // Another call in this instance may have registered the stream while
+      // this one waited for the mutex.
+      if (registeredStreams.has(cacheKey)) return;
+      if (await addToRunStreams(runStreamsPath, runId, streamName)) {
+        registeredStreams.add(cacheKey);
+      }
+    });
+  }
+
+  /**
+   * Add `streamName` to the run's stream index while holding the index's file
+   * lock. Resolves `false` when the lock was compromised during the update
+   * (another writer judged it stale and took it over), so the caller does not
+   * cache the stream and its next write checks the index again.
+   */
+  async function addToRunStreams(
+    runStreamsPath: string,
+    runId: string,
+    streamName: string
+  ): Promise<boolean> {
+    // The lock is a directory next to the index, so its parent must exist.
+    await fs.mkdir(path.dirname(runStreamsPath), { recursive: true });
+    let compromised = false;
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await lock(runStreamsPath, {
+        ...RUN_STREAMS_LOCK_OPTIONS,
+        // The default handler throws from a timer, which would crash the
+        // process.
+        onCompromised: () => {
+          compromised = true;
+        },
+      });
+    } catch (error) {
+      // Reached only when a live writer held the lock through every retry.
+      // A stream write has never failed because of its index, so update the
+      // index without the lock rather than fail the write. `close()` checks
+      // the index again.
+      if (!warnedRunStreamsLockFailure) {
+        warnedRunStreamsLockFailure = true;
+        console.warn(
+          `[world-local] Could not lock the stream index of run ${runId}; updating it without the lock:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
+
+    try {
+      const streams = await readRunStreams(runId);
+      if (!streams.includes(streamName)) {
+        streams.push(streamName);
+        await writeJSON(runStreamsPath, { streams }, { overwrite: true });
+      }
+    } finally {
+      if (release && !compromised) {
+        await release().catch(() => {});
+      }
+    }
+    return !compromised;
   }
 
   // Helper to convert a chunk to a Buffer
@@ -405,8 +498,9 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Await runId if it's a promise to ensure proper flushing
         const runId = await _runId;
 
-        // Register this stream for the run (in case write wasn't called)
-        await registerStreamForRun(runId, name);
+        // Register this stream for the run (in case write wasn't called), and
+        // put its name back if a writer outside this instance dropped it.
+        await registerStreamForRun(runId, name, { verify: true });
         const chunkPath = path.join(
           chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
           `${chunkId}${tagSuffix}.bin`
@@ -422,14 +516,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
       async list(runId: string) {
         assertSafeEntityId('runId', runId);
-        const data = await readJSONWithFallback(
-          basedir,
-          'streams/runs',
-          runId,
-          RunStreamsSchema,
-          tag
-        );
-        return data?.streams ?? [];
+        return readRunStreams(runId);
       },
 
       async getChunks(
