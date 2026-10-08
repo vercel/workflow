@@ -228,3 +228,12 @@ describe('inspect lookups scoped to a run', () => {
     expect(state.setupCliWorld).toHaveBeenCalled();
   });
 });
+
+describe('inspect resource aliases', () => {
+  // `st` is listed as the stream alias but was read as `step`.
+  it('reads st as stream', async () => {
+    const message = await runInspect(['st', 'strm_01K4BZQ5T2J8HXFM6WD3PN']);
+    expect(message).toContain('inspect stream needs --runId');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+});
