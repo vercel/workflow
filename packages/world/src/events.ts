@@ -801,17 +801,40 @@ export interface CreateEventParams {
    * Out-of-band writes (`false` or absent) are never refused by the fence and
    * never move the in-band count.
    *
-   * `run_created` counts as the run's first in-band position, so the first
-   * in-band write after it expects 1.
+   * Only the orchestrator's own writes may set it. Writes made from outside
+   * the run's orchestrator (cancellation, hook resumption, step execution,
+   * dispatch re-ensures) stay out-of-band, since they can come from a newer
+   * SDK than the run's own and must never be refused on its behalf.
+   *
+   * A World may refuse an in-band write on a run whose stamped spec version
+   * predates the sealed log (`SPEC_VERSION_SUPPORTS_SEALED_LOG`), rather than
+   * accept it unfenced. A caller must therefore decide from the run's stamped
+   * spec version, never from its own SDK version: the same SDK still executes
+   * runs stamped below it (the `WORKFLOW_SEALED_LOG` opt-out, and
+   * cross-deployment starts, which are stamped with the lower of the caller's
+   * and the target's version).
    *
    * The runtime does not set it yet.
    */
   inBand?: boolean;
   /**
    * The writer's count of in-band positions, required with `inBand: true`
-   * and only allowed with it. Advanced by the positions each accepted
-   * in-band write allocated (1 for a single create, the event count for a
-   * batch).
+   * and only allowed with it. `run_created` counts as the run's first in-band
+   * position, so the lowest valid value is 1.
+   *
+   * The count is the World's, not the client's: a writer starts from a count
+   * the World reports (a snapshot read with the log it loaded) and advances
+   * it by the in-band positions the World reports a write allocated. It must
+   * never be derived by counting events or writes, because the two diverge:
+   *
+   * - a single create can allocate more than one position, when one of its
+   *   own positions is sealed and it allocates again;
+   * - a write the World rejects after allocating (for example a 409 on a
+   *   duplicate entity) may still have advanced the count;
+   * - a World may reset the count when it loses its counter, and only a
+   *   World-provided snapshot reflects that.
+   *
+   * A writer that holds no World-provided count must not send the fence.
    */
   expectedSeqInBand?: number;
   /**
@@ -1159,7 +1182,8 @@ export interface CreateEventBatchParams {
   /**
    * The writer's in-band count for the whole block, as
    * {@link CreateEventParams.expectedSeqInBand}. The block's positions are
-   * allocated in one fenced allocation.
+   * allocated in one fenced allocation, and the count the World reports for
+   * it covers the whole block even when some of its events are rejected.
    */
   expectedSeqInBand?: number;
 }

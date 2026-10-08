@@ -597,14 +597,15 @@ export async function createWorkflowRunEventBatch(
       // `params.requestId` → `vercelId` threading, stamped per frame so
       // batched usage facts carry the same attribution.
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      payload,
+      ...meta,
       // The batch is one fenced allocation: the backend requires every frame
-      // to carry the same fence.
+      // to carry the same fence. Spread after `meta` so nothing derived from
+      // the event data can override it.
       ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
       ...(params?.expectedSeqInBand !== undefined
         ? { expectedSeqInBand: params.expectedSeqInBand }
         : {}),
-      payload,
-      ...meta,
     };
   });
 
@@ -635,7 +636,7 @@ export async function createWorkflowRunEventBatch(
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
     events[0].event.eventType,
-    { batchIdempotent: retryConvergent }
+    { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
   return {
@@ -685,6 +686,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
         afterStepBody: params?.afterStepBody === true,
+        inBand: params?.inBand === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {

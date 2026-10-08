@@ -10,6 +10,7 @@ import {
   createWorkflowRunEventBatch,
 } from './events.js';
 import { throwForErrorResponse } from './events-v4.js';
+import { errorForResponse, recordInBandRefusal } from './http-core.js';
 
 vi.mock('./get-deadline.js', () => ({
   getDeadline: vi.fn(async () => undefined),
@@ -221,5 +222,31 @@ describe('in-band writer fence (world-vercel)', () => {
     for (const meta of metas) {
       expect(meta).toMatchObject({ inBand: true, expectedSeqInBand: 5 });
     }
+  });
+
+  it('drops malformed counters on the shared errorForResponse path too', () => {
+    const error = errorForResponse(412, 'superseded', {
+      code: IN_BAND_SUPERSEDED_CODE,
+      details: { seq: 1.5, seqInBand: -1 },
+    });
+    expect(InBandSupersededError.is(error)).toBe(true);
+    expect((error as InBandSupersededError).seq).toBeUndefined();
+    expect((error as InBandSupersededError).seqInBand).toBeUndefined();
+  });
+
+  it('tags the span with the World count on a refusal, and only then', () => {
+    const span = { setAttributes: vi.fn() };
+    recordInBandRefusal(
+      span,
+      new InBandSupersededError('superseded', { seq: 9, seqInBand: 4 })
+    );
+    expect(span.setAttributes).toHaveBeenCalledWith({
+      'workflow.event.seq_in_band': 4,
+    });
+
+    span.setAttributes.mockClear();
+    recordInBandRefusal(span, new InBandSupersededError('superseded'));
+    recordInBandRefusal(span, new PreconditionFailedError('stale'));
+    expect(span.setAttributes).not.toHaveBeenCalled();
   });
 });
