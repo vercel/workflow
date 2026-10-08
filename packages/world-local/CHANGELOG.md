@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 4.4.3
+
+### Patch Changes
+
+- [#4742](https://github.com/vercel/workflow/pull/4742) [`73312eb`](https://github.com/vercel/workflow/commit/73312eb02376ed2645fab01f363ac18ca2527fff) Thanks [@pranaygp](https://github.com/pranaygp)! - Make a tagged `clear()` delete only its own tag's lock files, so it no longer reopens another tag's disposed hooks mid-run.
+
+- Updated dependencies [[`5c25b32`](https://github.com/vercel/workflow/commit/5c25b32458825f8d48ef20464f9ad8b9868568b5)]:
+  - @workflow/world@4.5.1
+  - @workflow/errors@4.2.2
+
 ## 4.4.2
 
 ### Patch Changes

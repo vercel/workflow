@@ -1,5 +1,14 @@
 # @workflow/world-postgres
 
+## 4.3.10
+
+### Patch Changes
+
+- Updated dependencies [[`5c25b32`](https://github.com/vercel/workflow/commit/5c25b32458825f8d48ef20464f9ad8b9868568b5), [`73312eb`](https://github.com/vercel/workflow/commit/73312eb02376ed2645fab01f363ac18ca2527fff)]:
+  - @workflow/world@4.5.1
+  - @workflow/world-local@4.4.3
+  - @workflow/errors@4.2.2
+
 ## 4.3.9
 
 ### Patch Changes

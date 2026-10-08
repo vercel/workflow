@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.29
+
+### Patch Changes
+
+- [#4736](https://github.com/vercel/workflow/pull/4736) [`fc18c67`](https://github.com/vercel/workflow/commit/fc18c67252968c41b2699a8688edda81889b2fd8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Upgrade `react-router` and `@react-router/*` to 7.18.4 to address CVE-2026-34077 and GHSA-qwww-vcr4-c8h2
+
 ## 4.1.28
 
 ## 4.1.27
