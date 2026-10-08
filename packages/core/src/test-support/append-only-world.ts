@@ -77,6 +77,11 @@ export class AppendOnlyWorld {
   readonly deliveries: RecordedDelivery[] = [];
   /** The event types of every `createBatch` call, in call order. */
   readonly batches: string[][] = [];
+  /**
+   * Every in-band write's named position and first slot, in call order: how
+   * many positions its skipped-slot report covered.
+   */
+  readonly reportSpans: { eventCount: number; firstSlot: number }[] = [];
   /** How many `events.create` and `events.createBatch` calls were made. */
   createCalls = 0;
   /** The params of every `events.list` call. */
@@ -552,6 +557,12 @@ export class AppendOnlyWorld {
         );
         self.creates.push({ event, params });
         const slot = self.seq;
+        if (params?.inBand && params.eventCount !== undefined) {
+          self.reportSpans.push({
+            eventCount: params.eventCount,
+            firstSlot: slot,
+          });
+        }
         if (self.options.createDelayMs) {
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
         }
@@ -586,6 +597,9 @@ export class AppendOnlyWorld {
         }
         self.checkFence(params as CreateEventParams, batch.length);
         const firstSlot = self.seq + 1;
+        if (params?.inBand && params.eventCount !== undefined) {
+          self.reportSpans.push({ eventCount: params.eventCount, firstSlot });
+        }
         if (self.options.createDelayMs) {
           const committed = self.commitBatch(batch, params, firstSlot);
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));

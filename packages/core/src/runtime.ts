@@ -3987,6 +3987,33 @@ export function workflowEntrypoint(
                                       data.eventType === 'step_failed')
                                   ) {
                                     if (
+                                      !withinRunAheadDepth([step.correlationId])
+                                    ) {
+                                      // At the cap, wait for an earlier
+                                      // speculative write to settle, which
+                                      // frees a place, and run this outcome
+                                      // ahead too: an awaited write of its
+                                      // own would leave the next creation
+                                      // nothing to share a round trip with.
+                                      runAheadStats.depthCap++;
+                                      recordRunAheadSpan();
+                                      while (
+                                        !withinRunAheadDepth([
+                                          step.correlationId,
+                                        ]) &&
+                                        !runAheadRepair &&
+                                        runAheadFailure === undefined &&
+                                        !writer.isStopped &&
+                                        speculationsBySlot.size > 0
+                                      ) {
+                                        await Promise.race(
+                                          [...speculationsBySlot.values()].map(
+                                            (s) => s.settled
+                                          )
+                                        );
+                                      }
+                                    }
+                                    if (
                                       withinRunAheadDepth([step.correlationId])
                                     ) {
                                       return writeOutcomeAhead(
@@ -3995,8 +4022,6 @@ export function workflowEntrypoint(
                                         runAhead
                                       );
                                     }
-                                    runAheadStats.depthCap++;
-                                    recordRunAheadSpan();
                                   }
                                   const result = await writer.create(data, {
                                     ...params,

@@ -298,6 +298,39 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(eventsOf(world, 'step_started')).toHaveLength(STEPS);
   });
 
+  // A write queued behind others names the position its writer knows is
+  // complete when it is sent, so the World does not report back the events
+  // those earlier writes made.
+  it("has no write report back the delivery's own earlier writes", async () => {
+    const { world } = await run(sequential, [STEPS], { createDelayMs: 100 });
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(STEPS);
+    expect(world.reportSpans.length).toBeGreaterThan(STEPS);
+    // With no other writer, every write names the slot right below it.
+    expect(
+      world.reportSpans.filter(
+        ({ eventCount, firstSlot }) => firstSlot - 1 !== eventCount
+      )
+    ).toEqual([]);
+  });
+
+  // At the depth cap the outcome is awaited but still coalesces, so no
+  // creation after the first goes out in a round trip of its own.
+  it('sends no lone creation at the depth cap', async () => {
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
+    const { world } = await run(sequential, [STEPS], { createDelayMs: 100 });
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(STEPS);
+    const lone = world.batches.filter(
+      (batch) => !batch.includes('step_completed')
+    );
+    expect(lone).toHaveLength(1);
+    // The run's start, its completion, and its last outcome go alone.
+    expect(world.createCalls).toBeLessThanOrEqual(STEPS + 3);
+  });
+
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '1');
     const one = await run(sequential, [STEPS]);
@@ -423,7 +456,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
     let injected = false;
     const code = withSleep('1h');
-    const { world, runId } = await run(code, [STEPS], {
+    const { world, runId, start } = await run(code, [STEPS], {
       async beforeCreate(data, _params, source) {
         await slowOutcomes.beforeCreate(data);
         if (!injected && data.eventType === 'step_completed' && source?.batch) {
@@ -440,14 +473,25 @@ describe('run-ahead against an append-only World (node engine)', () => {
         }
       },
     });
+    // The first delivery stops at the hazard. Every step whose start it
+    // committed has its outcome in the log: none of them runs again.
+    await world.deliver(start);
+    expect(injected).toBe(true);
+    for (const started of eventsOf(world, 'step_started')) {
+      expect(
+        eventsOf(world, 'step_completed').filter(
+          (e) => e.correlationId === started.correlationId
+        )
+      ).toHaveLength(1);
+    }
     await world.runUntilIdle();
 
-    expect(injected).toBe(true);
     // The hazard stopped the first delivery and the redelivery finished.
     expect(world.deliveries.length).toBeGreaterThan(1);
     expect(await runResult(world)).toBe(STEPS);
-    // No step ran twice: every body that ran had its outcome written.
-    expect(bodiesStarted).toBe(STEPS);
+    // At most the one step whose speculative creation the stop refused ran
+    // twice: its first run had no committed start, so nothing recorded it.
+    expect(bodiesStarted).toBeLessThanOrEqual(STEPS + 1);
     const starts = eventsOf(world, 'step_started');
     expect(starts).toHaveLength(STEPS);
     for (const start of starts) {

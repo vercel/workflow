@@ -171,6 +171,12 @@ export class InBandWriter {
   private knownMaxSlot = 0;
   /** `snapshot.seq` of the last full load: an understated position. */
   private loadedSlot: number | undefined;
+  /**
+   * Every event at or below this slot has reached this writer: through a
+   * full load, or the complete skipped-slot report of an accepted write
+   * (see {@link sendPosition}).
+   */
+  private completeThrough = 0;
   private stoppedBy: unknown;
   private stopped = false;
   /**
@@ -206,6 +212,7 @@ export class InBandWriter {
     if (this.stopped) return;
     this.expected = snapshot.seqInBand;
     this.loadedSlot = snapshot.seq;
+    this.completeThrough = snapshot.seq;
     this.knownMaxSlot = Math.max(this.knownMaxSlot, snapshot.seq);
   }
 
@@ -363,11 +370,13 @@ export class InBandWriter {
       const knownAtSend = this.knownMaxSlot;
       let result: EventResult<T['eventType']>;
       try {
+        const position = this.sendPosition(params?.eventCount);
         const written = await this.world.events.create(this.runId, data, {
-          ...this.positionFallback(params?.eventCount),
           ...params,
+          ...position,
           ...this.fenceParams(),
         });
+        this.noteComplete(position, written, [written.event]);
         const inferred = this.allocatedBy([written.event], knownAtSend);
         const allocated = written.allocated ?? inferred;
         this.advance(allocated);
@@ -524,6 +533,7 @@ export class InBandWriter {
         ? ('all' as const)
         : undefined;
       const knownAtSend = this.knownMaxSlot;
+      const position = this.sendPosition(first.params.eventCount);
       let result: EventBatchResult;
       try {
         result = await this.world.events.createBatch!.call(
@@ -531,10 +541,7 @@ export class InBandWriter {
           this.runId,
           events,
           {
-            ...this.positionFallback(first.params.eventCount),
-            ...(first.params.eventCount !== undefined
-              ? { eventCount: first.params.eventCount }
-              : {}),
+            ...position,
             ...(first.params.requestId !== undefined
               ? { requestId: first.params.requestId }
               : {}),
@@ -547,6 +554,13 @@ export class InBandWriter {
         for (const write of group) write.reject(stopped);
         return;
       }
+      this.noteComplete(
+        position,
+        result,
+        result.results.map((item) =>
+          item.error === undefined ? item.event : undefined
+        )
+      );
       // Allocation as for any batch (see writeBatch).
       const fresh = result.results.map(
         (item) =>
@@ -645,16 +659,24 @@ export class InBandWriter {
     return this.serialize(events.length, async () => {
       this.assertMayWrite(events.map(({ event }) => event));
       const knownAtSend = this.knownMaxSlot;
+      const position = this.sendPosition(params?.eventCount);
       try {
         const result = await createBatch.call(
           this.world.events,
           this.runId,
           events,
           {
-            ...this.positionFallback(params?.eventCount),
             ...params,
+            ...position,
             ...this.fenceParams(),
           }
+        );
+        this.noteComplete(
+          position,
+          result,
+          result.results.map((item) =>
+            item.error === undefined ? item.event : undefined
+          )
         );
         // Without a reported count: the block was allocated whole (a
         // per-item failure leaves a hole the World seals, and that position
@@ -745,15 +767,41 @@ export class InBandWriter {
   }
 
   /**
-   * An in-band write names the position it was decided from. A caller that
-   * names none gets the last full load's `snapshot.seq`: an understatement,
-   * which only widens the World's skipped-slot report.
+   * The position an in-band write names when it is sent: the one it was
+   * decided from (a caller that names none gets the last full load's
+   * `snapshot.seq`), raised to {@link completeThrough}. A write queued behind
+   * others was decided from a position below theirs, and naming it would
+   * have the World report back every event those writes made, which this
+   * writer already has from their responses. Naming more than the decision
+   * saw is safe because everything up to `completeThrough` has reached this
+   * writer: a load, or a response whose report was complete.
    */
-  private positionFallback(
+  private sendPosition(
     eventCount: number | undefined
   ): Pick<CreateEventParams, 'eventCount'> {
-    if (eventCount !== undefined || this.loadedSlot === undefined) return {};
-    return { eventCount: this.loadedSlot };
+    const decided = eventCount ?? this.loadedSlot;
+    if (decided === undefined) return {};
+    return { eventCount: Math.max(decided, this.completeThrough) };
+  }
+
+  /**
+   * Raises {@link completeThrough} past an accepted write whose response
+   * reported everything below it: the write named a position, and its
+   * skipped-slot report is neither incomplete nor truncated.
+   */
+  private noteComplete(
+    position: Pick<CreateEventParams, 'eventCount'>,
+    response: { reportIncomplete?: boolean; hasMore?: boolean },
+    events: (Event | undefined)[]
+  ): void {
+    if (position.eventCount === undefined) return;
+    if (response.reportIncomplete || response.hasMore) return;
+    for (const event of events) {
+      const slot = event ? eventIdToSlot(event.eventId) : null;
+      if (slot !== null && slot > this.completeThrough) {
+        this.completeThrough = slot;
+      }
+    }
   }
 
   private stop(error: unknown, always = false): unknown {
