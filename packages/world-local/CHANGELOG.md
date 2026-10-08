@@ -1,5 +1,18 @@
 # @workflow/world-local
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4718](https://github.com/vercel/workflow/pull/4718) [`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf) Thanks [@ruiconti](https://github.com/ruiconti)! - Store event and step files in one directory per run for faster reads. Local run data written by earlier releases is deleted on upgrade.
+
+### Patch Changes
+
+- [#4742](https://github.com/vercel/workflow/pull/4742) [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2) Thanks [@pranaygp](https://github.com/pranaygp)! - Make a tagged `clear()` delete only its own tag's lock files, so it no longer reopens another tag's disposed hooks mid-run.
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431)]:
+  - @workflow/world@5.0.3
+  - @workflow/errors@5.0.3
+
 ## 5.0.2
 
 ### Patch Changes

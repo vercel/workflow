@@ -464,6 +464,16 @@ export interface EventPostRetryOptions {
    * `step_failed` needs it.
    */
   afterStepBody?: boolean;
+  /**
+   * The write carries the in-band writer fence (`CreateEventParams.inBand`).
+   * It gets no transient retry, whatever its event type: the backend checks
+   * the fence when it allocates, before any entity condition, so a re-send of
+   * an attempt that committed but lost its response is refused as
+   * `InBandSupersededError` by its own first attempt instead of converging on
+   * 409. Recovery is left to queue redelivery, which reloads the log. A 429
+   * is still waited out, since a throttled write was never processed.
+   */
+  inBand?: boolean;
 }
 
 /**
@@ -577,6 +587,7 @@ function isEligibleForTransientRetry(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): boolean {
+  if (options?.inBand === true) return false;
   // A batch call always carries an explicit verdict derived from every event
   // it contains; the per-type matrix (keyed on the batch's FIRST event) must
   // not override it in either direction.

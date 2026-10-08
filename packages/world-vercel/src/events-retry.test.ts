@@ -138,6 +138,43 @@ describe('createWorkflowRunEvent retry wiring', () => {
     expect(createV4Mock).toHaveBeenCalledTimes(2);
   });
 
+  it('runs an in-band write once on a transient 5xx: a re-send would be refused by its own committed attempt', async () => {
+    createV4Mock.mockRejectedValue(
+      new WorkflowWorldError('boom', { status: 503 })
+    );
+
+    const p = createWorkflowRunEvent(
+      RUN_ID,
+      stepCompleted(),
+      { inBand: true, expectedSeqInBand: 3 },
+      CONFIG
+    ).catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+
+    expect(WorkflowWorldError.is(await p)).toBe(true);
+    expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still waits out a 429 on an in-band write, which was never processed', async () => {
+    let calls = 0;
+    createV4Mock.mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw new ThrottleError('429', { retryAfter: 1 });
+      return v4Success();
+    });
+
+    const p = createWorkflowRunEvent(
+      RUN_ID,
+      stepCompleted(),
+      { inBand: true, expectedSeqInBand: 3 },
+      CONFIG
+    );
+    await vi.runAllTimersAsync();
+
+    expect((await p).event).toBeDefined();
+    expect(createV4Mock).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces a retry-time 409 as EntityConflictError', async () => {
     let calls = 0;
     createV4Mock.mockImplementation(async () => {
