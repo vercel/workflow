@@ -260,3 +260,33 @@ describe('inspect event <id>', () => {
     expect(state.setupCliWorld).toHaveBeenCalled();
   });
 });
+
+describe('inspect step <id>', () => {
+  // Used to look in the newest run, which is not the step's run unless it
+  // happens to be the newest.
+  it('rejects a step ID without --runId before backend setup', async () => {
+    const message = await runInspect([
+      'step',
+      'step_01K4BZQ5T2J8HXFM6WD3PNAVCE',
+    ]);
+    expect(message).toContain('inspect step needs --runId');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('lets a step ID through with --runId', async () => {
+    const message = await runInspect([
+      'step',
+      'step_01K4BZQ5T2J8HXFM6WD3PNAVCE',
+      '--runId',
+      VALID_RUN,
+    ]);
+    expect(message).not.toContain('needs --runId');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+
+  it('still lists the latest run steps without --runId', async () => {
+    const message = await runInspect(['steps']);
+    expect(message).not.toContain('needs --runId');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});

@@ -111,6 +111,9 @@ export function validateRunScope(
   if (resource === 'stream') {
     return "inspect stream needs --runId: a stream name is scoped to its run. Usage: `workflow inspect stream <stream-id> --runId=<run-id>`. List a run's streams with `workflow inspect streams --runId=<run-id>`.";
   }
+  if (resource === 'step') {
+    return "inspect step needs --runId: a step id names a step within its run. Usage: `workflow inspect step <step-id> --runId=<run-id>`. List a run's steps with `workflow inspect steps --runId=<run-id>`.";
+  }
   if (resource === 'event') {
     return "inspect event needs --runId: an event id names a slot in its run. Usage: `workflow inspect event <event-id> --runId=<run-id>`. List a run's events with `workflow inspect events --runId=<run-id>`.";
   }

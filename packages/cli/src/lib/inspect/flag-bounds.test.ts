@@ -230,6 +230,12 @@ describe('validateRunScope', () => {
     );
   });
 
+  it('rejects a step ID without --runId', () => {
+    expect(validateRunScope('step', true, false)).toContain(
+      'a step id names a step within its run'
+    );
+  });
+
   it('rejects an event ID without --runId', () => {
     expect(validateRunScope('event', true, false)).toContain(
       'an event id names a slot in its run'
@@ -240,6 +246,8 @@ describe('validateRunScope', () => {
     ['with --runId', 'stream', true, true, false],
     ['for an event ID with --runId', 'event', true, true, false],
     ['for the events listing', 'event', false, false, false],
+    ['for a step ID with --runId', 'step', true, true, false],
+    ['for the steps listing', 'step', false, false, false],
     ['for the streams listing', 'stream', false, false, false],
     ['for a web deep link', 'stream', true, false, true],
     ['for a hook ID', 'hook', true, false, false],

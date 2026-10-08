@@ -25,6 +25,7 @@ import {
   listSteps,
   listStreamsByRunId,
   showEvent,
+  showStep,
 } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
@@ -1489,5 +1490,66 @@ describe('listRuns with a short workflow name', () => {
 
     expect(list).toHaveBeenCalledTimes(1);
     expect(list.mock.calls[0][0].workflowName).toBe(FULL);
+  });
+});
+
+describe('showStep', () => {
+  const RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
+
+  it('reads the step from the run it was given', async () => {
+    const step = { runId: RUN, stepId: 'step_1', status: 'completed' };
+    const world = {
+      runs: { list: vi.fn() },
+      steps: { get: vi.fn().mockResolvedValue(step) },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await showStep(world, 'step_1', { runId: RUN, json: true });
+
+    expect(world.steps.get).toHaveBeenCalledWith(RUN, 'step_1', {
+      resolveData: 'all',
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual(step);
+  });
+
+  // It used to look the step up in the most recent run, which is another
+  // run's whenever this one is not the newest.
+  it('never guesses the latest run', async () => {
+    const world = {
+      runs: { list: vi.fn() },
+      steps: { get: vi.fn() },
+    } as unknown as World;
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await showStep(world, 'step_1', {});
+
+    expect(world.runs.list).not.toHaveBeenCalled();
+    expect(world.steps.get).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  it('is what the steps table hint suggests', async () => {
+    const world = {
+      analytics: {
+        steps: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ runId: RUN, stepId: 'step_1', status: 'completed' }],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `To view details for a step, use \`workflow inspect step <step-id> --runId=${RUN}\``
+    );
   });
 });

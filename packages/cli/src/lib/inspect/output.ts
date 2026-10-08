@@ -568,13 +568,22 @@ const eventCommand = (runId: string | undefined) =>
   `workflow inspect event <event-id> --runId=${runId ?? '<run-id>'}`;
 
 /**
+ * The command that shows one step. Step ids are unique within a run, and
+ * the lookup is `world.steps.get(runId, stepId)`.
+ */
+const stepCommand = (runId: string | undefined) =>
+  `workflow inspect step <step-id> --runId=${runId ?? '<run-id>'}`;
+
+/**
  * The command that shows one item of `resource`. Items whose ids are scoped
  * to a run need `--runId` in it.
  */
 const detailCommand = (resource: string, runId: string | undefined) =>
   resource === 'event'
     ? eventCommand(runId)
-    : `workflow inspect ${resource} <${resource}-id>`;
+    : resource === 'step'
+      ? stepCommand(runId)
+      : `workflow inspect ${resource} <${resource}-id>`;
 
 const showInspectInfoBox = (resource: string, runId?: string) => {
   const article = /^[aeiou]/.test(resource) ? 'an' : 'a';
@@ -1050,11 +1059,16 @@ export const showStep = async (
     );
   }
 
-  const runId = opts.runId ?? (await getRecentRun(world, opts))?.runId;
+  // No fallback to the latest run: a step id names a step within its own
+  // run, and looking it up in another one reported "Step ... in run <other>
+  // not found". The command rejects this before backend setup; kept for
+  // direct callers.
+  const runId = opts.runId;
   if (!runId) {
     logger.error(
-      'run-id is required for showing a step. Usage: `workflow inspect step <STEP_ID> --runId=<RUN_ID>`'
+      `run-id is required for showing a step: a step id names a step within its run. Usage: \`${stepCommand(undefined)}\``
     );
+    process.exitCode = 1;
     return;
   }
 
