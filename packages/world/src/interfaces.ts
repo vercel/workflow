@@ -716,6 +716,15 @@ export interface WorldCapabilities {
    * delivery on a mismatch before anything else is written.
    */
   inBandEventTime?: boolean;
+  /**
+   * The World orders a `createBatch` per entity: once it refuses an item,
+   * it refuses every later item of the batch with the same
+   * `correlationId` too, so a step's outcome never commits behind its
+   * refused creation. The runtime then lets one batch carry several steps'
+   * creations and outcomes. Without it, a batch never carries two writes for
+   * one step.
+   */
+  inBandBatchEntityOrder?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes

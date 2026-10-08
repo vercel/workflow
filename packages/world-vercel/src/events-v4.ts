@@ -1371,33 +1371,40 @@ export async function createWorkflowRunEventsBatchV4(
   }
 
   const url = `${baseUrl}/${EVENTS_API_VERSION}/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  // The run's socket carries the batch when it carries the run's single
+  // writes; with no socket for the run, the batch goes over HTTP.
+  const overWs = isWsEventsTransportPossible()
+    ? await postEventBatchOverWs(input.runId, body, url, config)
+    : undefined;
   // Batch identity attributes (size, per-type shape) live on the
   // world.events.createBatch span (see instrumentObject); this transport
   // span carries only wire-level facts. workflow.event.type is deliberately
   // absent, since it names a single event write, and tagging a batch with its
   // first event's type misclassifies the traffic.
-  const response = await fetchV4(
-    url,
-    { method: 'POST', headers, body },
-    config,
-    'createEventBatch',
-    {
-      ...WorkflowEventsTransport('http'),
-      'workflow.batch.bytes': body.byteLength,
-      ...(input.events.some((event) => event.eventType === 'step_started')
-        ? {
-            ...WorkflowStepStartMode(
-              input.events.some((event) => event.eventType === 'step_created')
-                ? 'batch_create_claim'
-                : 'batch_bare'
-            ),
-            ...WorkflowStepStartOwnerStamped(
-              input.events.some((event) => event.ownerMessageId !== undefined)
-            ),
-          }
-        : {}),
-    }
-  );
+  const response: FrameResponseLike =
+    overWs ??
+    (await fetchV4(
+      url,
+      { method: 'POST', headers, body },
+      config,
+      'createEventBatch',
+      {
+        ...WorkflowEventsTransport('http'),
+        'workflow.batch.bytes': body.byteLength,
+        ...(input.events.some((event) => event.eventType === 'step_started')
+          ? {
+              ...WorkflowStepStartMode(
+                input.events.some((event) => event.eventType === 'step_created')
+                  ? 'batch_create_claim'
+                  : 'batch_bare'
+              ),
+              ...WorkflowStepStartOwnerStamped(
+                input.events.some((event) => event.ownerMessageId !== undefined)
+              ),
+            }
+          : {}),
+      }
+    ));
 
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const decoded =
@@ -1553,6 +1560,93 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
     );
   }
   return status;
+}
+
+/**
+ * Sends an events batch over the run's socket as one `event_batch` frame (its
+ * body is the HTTP batch route's body) and returns the reply as a response
+ * the batch decoder reads exactly as it reads the HTTP one. `undefined` when
+ * no socket is resolvable for the run, so the caller sends it over HTTP.
+ */
+async function postEventBatchOverWs(
+  runId: string,
+  body: Uint8Array,
+  restUrl: string,
+  config: APIConfig | undefined
+): Promise<FrameResponseLike | undefined> {
+  const { resolveWsTransport } = await import('./ws-transport.js');
+  const resolved = resolveWsTransport(runId, config);
+  if (!resolved) return undefined;
+  const { transport, wsUrl } = resolved;
+  const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events/batch`;
+  return withHttpClientSpan(
+    {
+      method: 'POST',
+      url: restUrl,
+      attributes: {
+        ...WorkflowEventsTransport('ws'),
+        ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...NetworkProtocolName('websocket'),
+        ...WorkflowWsUrl(wsUrl),
+        'workflow.batch.bytes': body.byteLength,
+      },
+    },
+    async (span) => {
+      const start = Date.now();
+      let reply: WsFrameReply;
+      try {
+        reply = await transport.request(
+          (reqId) => {
+            span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
+            return encodeFrame({ reqId, type: 'event_batch' }, body);
+          },
+          {
+            onMessages: (count) => {
+              if (count > 1) {
+                span?.setAttributes({ ...WorkflowWsRequestParts(count) });
+              }
+            },
+          }
+        );
+      } catch (err) {
+        // As for a single write: a frame that was never acked is a transport
+        // failure, classified the way a failed `fetch` is.
+        const error = new WorkflowWorldError(
+          `POST ${endpoint} transport failure: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          { url: wsUrl, code: 'TRANSPORT', cause: err }
+        );
+        span?.setAttributes({ ...ErrorType('TRANSPORT') });
+        span?.recordException?.(error);
+        throw error;
+      }
+      const ms = Date.now() - start;
+      recordWsReplyParts(span, reply);
+      const status = wsReplyStatus(reply, endpoint);
+      const headerRecord = replyMetaToHeaderRecord(reply.meta);
+      const headers = {
+        get: (name: string) => headerRecord[name.toLowerCase()] ?? null,
+      };
+      httpLog('POST', 'createEventBatch', { status, headers }, ms);
+      recordClientSpanStatus(span, status);
+      if (status < 200 || status >= 300) {
+        const error = errorFromV4Response(
+          status,
+          headerRecord,
+          reply.body,
+          'createEventBatch',
+          endpoint
+        );
+        span?.recordException?.(error);
+        throw error;
+      }
+      return {
+        headers,
+        arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
+      };
+    }
+  );
 }
 
 /**

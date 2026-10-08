@@ -331,6 +331,64 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(world.createCalls).toBeLessThanOrEqual(STEPS + 3);
   });
 
+  // A World that orders a batch per entity lets one round trip carry
+  // several steps: a step's creation and its outcome share a batch.
+  it('sends several steps per batch on a World that orders a batch per entity', async () => {
+    const { world } = await run(sequential, [STEPS], {
+      createDelayMs: 100,
+      entityOrder: true,
+    });
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(STEPS);
+    expect(
+      world.batches.some(
+        (batch) => batch.filter((type) => type === 'step_completed').length > 1
+      )
+    ).toBe(true);
+    expect(world.createCalls).toBeLessThan(STEPS);
+    // The log a cold replay reads decides the same way.
+    const cold = await coldReplay(world, sequential);
+    expect(cold.result).toBe(STEPS);
+  });
+
+  // A creation the World refuses takes its outcome in the same batch with it.
+  it('leaves no outcome without its creation on a World that orders a batch per entity', async () => {
+    let injected = false;
+    let batchedCreations = 0;
+    const { world, runId } = await run(sequential, [STEPS], {
+      createDelayMs: 100,
+      entityOrder: true,
+      async beforeCreate(data, _params, source) {
+        if (
+          !injected &&
+          data.eventType === 'step_created' &&
+          source?.batch &&
+          ++batchedCreations === 2
+        ) {
+          // The run ends between this batch's earlier items and this
+          // creation: the creation is refused, and the World takes the
+          // step's outcome behind it in the same batch with it.
+          injected = true;
+          world.appendOutOfBand({
+            eventType: 'run_cancelled',
+            runId,
+          } as unknown as Partial<Event>);
+        }
+      },
+    });
+    await world.runUntilIdle();
+
+    expect(injected).toBe(true);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    const created = new Set(
+      eventsOf(world, 'step_created').map((e) => e.correlationId)
+    );
+    for (const completed of eventsOf(world, 'step_completed')) {
+      expect(created.has(completed.correlationId)).toBe(true);
+    }
+  });
+
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '1');
     const one = await run(sequential, [STEPS]);

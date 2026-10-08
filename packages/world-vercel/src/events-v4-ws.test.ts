@@ -24,8 +24,10 @@ import {
 } from './event-retry.js';
 import {
   createEventResponseSchema,
+  createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
 } from './events-v4.js';
+import { decodeFrame } from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 import { type WsFrameReply, WsTransportError } from './ws-transport.js';
 
@@ -415,6 +417,64 @@ describe('createWorkflowRunEventV4 over ws', () => {
  * itself attempts exactly once, and that what it throws is classified the way
  * the shared policy needs.
  */
+describe('createWorkflowRunEventsBatchV4 over ws', () => {
+  it('sends the batch as one event_batch frame and decodes the reply as HTTP would', async () => {
+    const [{ event }] = [decode(materializedBody()) as { event: unknown }];
+    requestMock.mockResolvedValueOnce(
+      ack(
+        { status: 200 },
+        new Uint8Array(
+          encode({ results: [{ status: 200, event }], allocated: 1 })
+        )
+      )
+    );
+
+    const result = await createWorkflowRunEventsBatchV4(
+      {
+        runId: 'wrun_1',
+        events: [
+          {
+            ...input,
+            occurredAt: new Date(CREATED_AT),
+            payload: new Uint8Array([1, 2]),
+          },
+        ],
+      },
+      { token: 'test-token' }
+    );
+
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    const build = (
+      requestMock.mock.calls[0] as unknown as [(reqId: number) => Uint8Array]
+    )[0];
+    const frame = decodeFrame(build(5));
+    expect(frame.meta).toEqual({ reqId: 5, type: 'event_batch' });
+    // The frame body is the HTTP batch route's body: the batch's own frames.
+    expect(decodeFrame(frame.body).meta).toMatchObject({
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+    });
+    expect(result.results[0]).toMatchObject({
+      status: 200,
+      event: { eventId: 'evnt_1' },
+    });
+    expect(result.allocated).toBe(1);
+  });
+
+  it('goes over HTTP when no socket is resolvable for the run', async () => {
+    resolveWsTransportMock.mockReturnValueOnce(
+      undefined as unknown as ReturnType<typeof resolveWsTransportMock>
+    );
+    await expect(
+      createWorkflowRunEventsBatchV4(
+        { runId: 'wrun_1', events: [{ ...input, payload: new Uint8Array() }] },
+        { token: 'test-token' }
+      )
+    ).rejects.toThrow();
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('retry is owned by the shared policy, not the adapter', () => {
   it.each([
     500, 502, 503, 504,

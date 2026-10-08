@@ -76,6 +76,10 @@ export function createWorld(config?: APIConfig): World {
       // hand an outcome to the workflow before its write commits. The
       // runtime checks every speculative write's stored time anyway.
       inBandEventTime: true,
+      // A spec-9 batch is ordered per entity: once the backend refuses an
+      // item, it refuses the batch's later items of the same correlation id
+      // (409 `batch-earlier-item-failed`).
+      inBandBatchEntityOrder: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,

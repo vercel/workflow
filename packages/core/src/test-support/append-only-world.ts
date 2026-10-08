@@ -114,6 +114,12 @@ export class AppendOnlyWorld {
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
       /**
+       * Order a batch per entity, and declare it
+       * (`inBandBatchEntityOrder`): once an item is refused, the batch's
+       * later items of the same correlation id are refused too.
+       */
+      entityOrder?: boolean;
+      /**
        * Answer every `events.create` and `events.createBatch` this many
        * milliseconds late, after committing, as a remote World's round trip.
        */
@@ -504,9 +510,23 @@ export class AppendOnlyWorld {
         ? new Date(at)
         : undefined;
     };
+    const refusedEntities = new Set<string>();
     return {
       ...this.report(params as CreateEventParams, firstSlot),
       results: batch.map(({ event: data }, index) => {
+        const entity = (data as { correlationId?: string }).correlationId;
+        if (
+          this.options.entityOrder &&
+          entity !== undefined &&
+          refusedEntities.has(entity)
+        ) {
+          this.append({ eventType: 'noop' } as Partial<Event>);
+          return {
+            status: 409,
+            error: 'batch-earlier-item-failed',
+            message: `An earlier event for '${entity}' in this batch was refused`,
+          };
+        }
         try {
           this.checkRunAcceptsWork(data.eventType);
           this.checkStepEventData(data as never);
@@ -514,6 +534,7 @@ export class AppendOnlyWorld {
           // A refused item's position is sealed, as a World seals it, so
           // a later load reads a `noop` there rather than a hole.
           this.append({ eventType: 'noop' } as Partial<Event>);
+          if (entity !== undefined) refusedEntities.add(entity);
           return {
             status: 410,
             error: 'gone',
@@ -694,7 +715,11 @@ export class AppendOnlyWorld {
       async getEncryptionKeyForRun() {
         return self.options.encryptionKey;
       },
-      capabilities: { inBandFence: true, inBandEventTime: true },
+      capabilities: {
+        inBandFence: true,
+        inBandEventTime: true,
+        ...(self.options.entityOrder ? { inBandBatchEntityOrder: true } : {}),
+      },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';
       },

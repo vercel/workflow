@@ -139,10 +139,13 @@ export function getFenceRedeliveryDelaySeconds(
  *   reorders writes. Each write's result is its slice of the batch, checked
  *   in order; a refusal or a failed check stops the writer for every write
  *   behind it, as it does for a required write. A batch on a spec >= 9 run is
- *   not atomic, so a group never carries two writes for one entity (a step's
- *   creation and its outcome): the later one waits for the next turn, and a
- *   refused creation stops the writer before its outcome is sent, as it did
- *   when each write went alone. A group stays within {@link MAX_BATCH_EVENTS}
+ *   not atomic, so on a World that does not order a batch per entity
+ *   (`WorldCapabilities.inBandBatchEntityOrder`) a group never carries two
+ *   writes for one entity (a step's creation and its outcome): the later one
+ *   waits for the next turn, and a refused creation stops the writer before
+ *   its outcome is sent, as it did when each write went alone. A World that
+ *   orders it refuses the outcome behind a refused creation itself, so a
+ *   group there carries several steps. A group stays within {@link MAX_BATCH_EVENTS}
  *   events.
  * - The first refusal stops the writer for good: every later write throws
  *   {@link OrchestratorSupersededError} without reaching the World. The value
@@ -477,7 +480,8 @@ export class InBandWriter {
       this.pendingPositions += member.events.length;
       if (
         this.openGroup &&
-        !sharesEntity(this.openGroup, member) &&
+        (this.world.capabilities?.inBandBatchEntityOrder === true ||
+          !sharesEntity(this.openGroup, member)) &&
         groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS
       ) {
         this.openGroup.push(member);
