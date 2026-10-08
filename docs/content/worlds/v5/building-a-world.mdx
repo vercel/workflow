@@ -294,15 +294,6 @@ interface Queue {
 - **A delivery is held by something else** (the process that runs it, a database row lock): ignore it.
 - **Your World delegates to another World's queue** that leases deliveries: pass `options` through.
 
-### Rescheduling a delivery
-
-When an ordinary (non-`invoke`) handler result is `{ timeoutSeconds }`, deliver the same payload again after that many seconds, and do not lose that wakeup if the process dies between scheduling it and acknowledging the current delivery. The bundled Worlds differ in how they redeliver:
-
-- The Local and Postgres Worlds redeliver the same message: `meta.messageId` is unchanged and `meta.attempt` is incremented.
-- The Vercel World publishes a new message before it acknowledges the current one. The new message has a new `meta.messageId`, its `meta.attempt` starts again at 1, and its delay is capped at one continuation hop of about 23 hours. A handler that asks for longer is called after the cap and returns `{ timeoutSeconds }` again for the rest.
-
-Code that correlates deliveries by `meta.messageId`, or counts `meta.attempt`, across a `{ timeoutSeconds }` hop must not rely on either behavior.
-
 ### Invocation delivery
 
 Implement the optional `invoke` method to send an input to a workflow runner and

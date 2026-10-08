@@ -641,18 +641,6 @@ export interface Queue {
    * With `invoke: true`, the return value is response data delivered by World.
    * Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
    *
-   * `{ timeoutSeconds }` asks for the same payload to be delivered again after
-   * that many seconds; how is World-specific. `@workflow/world-local` and
-   * `@workflow/world-postgres` redeliver the same message (same
-   * `meta.messageId`, `attempt` incremented), while `@workflow/world-vercel`
-   * publishes a new message before acknowledging the current one (a new
-   * `meta.messageId`, `attempt` back to 1, and a delay capped at one ~23 h
-   * continuation hop). A handler that correlates deliveries by `messageId`,
-   * or counts `attempt`, across a `{ timeoutSeconds }` hop must not rely on
-   * either behavior. A World may deliver sooner than asked when the delay
-   * exceeds its cap, so a handler that needs the full delay returns
-   * `{ timeoutSeconds }` again for the remainder, as the runtime does.
-   *
    * `options` are per handler, so one World can serve routes with different
    * leases; see {@link QueueHandlerOptions}. Implementations that take only
    * `(queueNamePrefix, handler)` still satisfy this interface. A World that
