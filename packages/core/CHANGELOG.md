@@ -1,5 +1,17 @@
 # @workflow/core
 
+## 4.8.13
+
+### Patch Changes
+
+- [#3914](https://github.com/vercel/workflow/pull/3914) [`5c25b32`](https://github.com/vercel/workflow/commit/5c25b32458825f8d48ef20464f9ad8b9868568b5) Thanks [@shalabhc](https://github.com/shalabhc)! - Accept lazy completed and failed runs whose payload is represented by a remote reference.
+
+- Updated dependencies [[`5c25b32`](https://github.com/vercel/workflow/commit/5c25b32458825f8d48ef20464f9ad8b9868568b5), [`73312eb`](https://github.com/vercel/workflow/commit/73312eb02376ed2645fab01f363ac18ca2527fff)]:
+  - @workflow/world@4.5.1
+  - @workflow/world-local@4.4.3
+  - @workflow/errors@4.2.2
+  - @workflow/world-vercel@4.7.7
+
 ## 4.8.12
 
 ### Patch Changes

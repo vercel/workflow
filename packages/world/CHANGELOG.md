@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.5.1
+
+### Patch Changes
+
+- [#3914](https://github.com/vercel/workflow/pull/3914) [`5c25b32`](https://github.com/vercel/workflow/commit/5c25b32458825f8d48ef20464f9ad8b9868568b5) Thanks [@shalabhc](https://github.com/shalabhc)! - Accept lazy completed and failed runs whose payload is represented by a remote reference.
+
 ## 4.5.0
 
 ### Minor Changes
