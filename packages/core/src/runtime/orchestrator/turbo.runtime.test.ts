@@ -11,8 +11,8 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import { expectReplaced } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
-import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -251,17 +251,16 @@ describe.each([
 
     const first = await world.deliver(start);
 
-    // (c) Superseded: not acknowledged, redelivered after the fence delay.
-    expect(first).toEqual({ timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS });
+    // (c) Superseded: acknowledged, and a fresh message replaces it.
     // The body that started ahead of run_started ran, but nothing it or the
     // orchestrator would have written reached the World.
     expect(bodies).toHaveLength(1);
     expect(types(world.events)).toEqual(['run_created']);
     expect(world.creates).toEqual([]);
+    expectReplaced(world, first, start);
     expect(world.held).toHaveLength(1);
-    expect(world.held[0]?.deliveryCount).toBe(2);
 
-    // The redelivery is not turbo: it loads the log first and completes.
+    // The replacement is not turbo: it loads the log first and completes.
     await world.runUntilIdle();
     expect(world.listCalls.length).toBeGreaterThan(0);
     expect(indexOf(world, 'run_completed')).toBeGreaterThan(0);

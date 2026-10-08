@@ -406,6 +406,24 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * "no waits named" rather than failing the parse.
      */
     completeWaits: z.array(z.string()).optional().catch(undefined),
+    /**
+     * Set on a fresh orchestrator message that stands in for an earlier one
+     * (spec >= 9): a delivery the in-band fence refused, or that stopped
+     * running ahead, acknowledges its own message and sends this one instead
+     * of asking the queue to deliver the same message again after a delay.
+     * `messageId` is the message it replaces, so this delivery keeps that
+     * message's creator identity (the background steps and timers it is the
+     * only one allowed to re-send). `count` is how many replacements the
+     * chain has had, which bounds it. `.catch(undefined)` so a malformed
+     * value degrades to a plain wake rather than failing the parse.
+     */
+    replacesMessage: z
+      .object({
+        messageId: z.string(),
+        count: z.number().int().positive(),
+      })
+      .optional()
+      .catch(undefined),
     /** Step ID for inline step execution in combined handler. If provided, the flow execution
      * will jump directly to execute the step with the given ID before doing an event replay. */
     stepId: z.string().optional(),

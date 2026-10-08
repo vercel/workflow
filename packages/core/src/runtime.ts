@@ -68,6 +68,7 @@ import {
   isTurboEnabled,
   isVmRetentionEnabled,
   MAX_BATCH_EVENTS,
+  MAX_MESSAGE_REPLACEMENTS,
 } from './runtime/constants.js';
 import {
   type DeploymentAffinityOutcome,
@@ -885,6 +886,7 @@ export function workflowEntrypoint(
           hookResumeTiming,
           waitContinuation,
           completeWaits,
+          replacesMessage,
         } = WorkflowInvokePayloadSchema.parse(message_);
         // Waits a `run.wakeUp()` asked this delivery to complete now,
         // whatever their `resumeAt`. Spent on the first pass that sees them.
@@ -925,6 +927,14 @@ export function workflowEntrypoint(
           ? incomingTraceCarrier
           : undefined;
         const { requestId } = metadata;
+        // The message whose creator identity this delivery holds: its own, or
+        // the one it replaces (see `replaceThisMessage`). A replacement acts
+        // as a redelivery of that message.
+        const creatorMessageId =
+          replacesMessage?.messageId ?? metadata.messageId;
+        const creatorDeliveryCount = replacesMessage
+          ? Math.max(2, metadata.deliveryCount ?? 1)
+          : metadata.deliveryCount;
         const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
         // --- Max delivery check ---
@@ -1237,7 +1247,8 @@ export function workflowEntrypoint(
                     !incomingStepId &&
                     !replayDivergence &&
                     !hookInput &&
-                    !waitContinuation;
+                    !waitContinuation &&
+                    !replacesMessage;
                   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
                   /**
                    * Turbo only: settles once the backgrounded `run_started`
@@ -1525,6 +1536,39 @@ export function workflowEntrypoint(
                     );
                   };
 
+                  /**
+                   * Acknowledges this delivery and sends a fresh orchestrator
+                   * message in its place, after `delaySeconds`. The queue
+                   * redelivers the same message no sooner than its minimum
+                   * retry delay (5s on Vercel Queues); a fresh message is
+                   * delivered at once. The replacement keeps this delivery's
+                   * creator identity (`replacesMessage`) and, for a timer,
+                   * the wait it continues. Past
+                   * {@link MAX_MESSAGE_REPLACEMENTS} replacements in a chain it
+                   * falls back to redelivering this message instead.
+                   */
+                  const replaceThisMessage = async (
+                    delaySeconds: number
+                  ): Promise<{ timeoutSeconds: number } | undefined> => {
+                    const count = (replacesMessage?.count ?? 0) + 1;
+                    if (count > MAX_MESSAGE_REPLACEMENTS) {
+                      return {
+                        timeoutSeconds: Math.max(
+                          delaySeconds,
+                          getFenceRedeliveryDelaySeconds()
+                        ),
+                      };
+                    }
+                    await wakeSelf(
+                      {
+                        replacesMessage: { messageId: creatorMessageId, count },
+                        ...(waitContinuation ? { waitContinuation } : {}),
+                      },
+                      delaySeconds
+                    );
+                    return undefined;
+                  };
+
                   // Deployment-affinity guard, shared by the two paths that
                   // execute a run: queued step executions and flow replays.
                   const guardDeployment = async (
@@ -1640,6 +1684,7 @@ export function workflowEntrypoint(
                     !hookInput &&
                     !replayDivergence &&
                     !waitContinuation &&
+                    !replacesMessage &&
                     wakeUpWaits.size === 0 &&
                     hasConsumedPosition(world, runId)
                   ) {
@@ -1684,21 +1729,27 @@ export function workflowEntrypoint(
                       writer.isSuperseded
                     ) {
                       forgetConsumedPosition(world, runId);
-                      const timeoutSeconds = getFenceRedeliveryDelaySeconds();
+                      // The winner holds the run: the replacement only needs
+                      // to come after it.
+                      const delaySeconds = Math.min(
+                        1,
+                        getFenceRedeliveryDelaySeconds()
+                      );
                       // Expected under overlap (a stalled invocation, or a
                       // transport retry of a write that already committed),
                       // so not an error.
                       runtimeLogger.info(
-                        'Orchestrator superseded by another invocation of the run; redelivering this message',
+                        'Orchestrator superseded by another invocation of the run; replacing this message',
                         {
                           workflowRunId: runId,
                           loopIteration,
-                          timeoutSeconds,
+                          delaySeconds,
+                          replacements: replacesMessage?.count ?? 0,
                           expectedSeqInBand: writer.expectedSeqInBand,
                         }
                       );
                       span?.setAttributes(Attribute.WorkflowSuperseded(true));
-                      return { timeoutSeconds };
+                      return await replaceThisMessage(delaySeconds);
                     }
                     if (
                       RunAheadStopError.is(err) ||
@@ -1709,18 +1760,18 @@ export function workflowEntrypoint(
                       // queued behind the refused writes: send them before
                       // the delivery ends.
                       await writer.idle();
-                      const timeoutSeconds = getFenceRedeliveryDelaySeconds();
+                      // No other writer: the replacement goes out at once.
                       runtimeLogger.info(
-                        'Run-ahead stopped before writing from a speculative state; redelivering this message',
+                        'Run-ahead stopped before writing from a speculative state; replacing this message',
                         {
                           workflowRunId: runId,
                           reason: RunAheadStopError.is(err)
                             ? err.reason
                             : (writer.stopCause as RunAheadStopError).reason,
-                          timeoutSeconds,
+                          replacements: replacesMessage?.count ?? 0,
                         }
                       );
-                      return { timeoutSeconds };
+                      return await replaceThisMessage(0);
                     }
                     if (turboStartFailure) {
                       if (
@@ -2157,8 +2208,8 @@ export function workflowEntrypoint(
                           namespace,
                           nextTraceCarrier,
                           waitContinuation,
-                          deliveryAttempt: metadata.deliveryCount,
-                          ownerMessageId: metadata.messageId,
+                          deliveryAttempt: creatorDeliveryCount,
+                          ownerMessageId: creatorMessageId,
                           requestId,
                           writer,
                           ...(wakeUpWaits.size > 0 ? { wakeUpWaits } : {}),
@@ -3622,7 +3673,7 @@ export function workflowEntrypoint(
                         eventCount: () => slotSnapshot().eventCount,
                         encryptionKey: await encryptionKey.value,
                         compression,
-                        creatorMessageId: metadata.messageId,
+                        creatorMessageId,
                         inlineSlots,
                         // The inline steps run right after this commit, so
                         // their first start rides the same batch.
@@ -3798,8 +3849,8 @@ export function workflowEntrypoint(
                       const reenqueue = new Set(
                         stepsToReenqueue({
                           events: replayedEvents,
-                          messageId: metadata.messageId,
-                          deliveryCount: metadata.deliveryCount,
+                          messageId: creatorMessageId,
+                          deliveryCount: creatorDeliveryCount,
                         })
                       );
                       const toEnqueue: StepMessageSpec[] = [];
@@ -4414,7 +4465,7 @@ export function workflowEntrypoint(
                           !schedulesWaitTimer({
                             wait: wait.event,
                             correlationId: wait.correlationId,
-                            messageId: metadata.messageId,
+                            messageId: creatorMessageId,
                             timerFor: waitContinuation?.correlationId,
                           })
                         ) {

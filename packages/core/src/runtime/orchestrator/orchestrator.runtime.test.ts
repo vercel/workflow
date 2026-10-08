@@ -9,10 +9,13 @@ import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import { expectReplaced } from '../../test-support/orchestrator-harness.js';
 import * as workflowModule from '../../workflow.js';
-import { getMaxQueueDeliveries } from '../constants.js';
+import {
+  getMaxQueueDeliveries,
+  MAX_MESSAGE_REPLACEMENTS,
+} from '../constants.js';
 import { setWorld } from '../world.js';
-import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -442,7 +445,7 @@ describe.each([
     }
   });
 
-  it('stops a superseded orchestrator without running bodies and asks for the same message again', async () => {
+  it('stops a superseded orchestrator without running bodies and replaces its message', async () => {
     const { world, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
@@ -469,11 +472,13 @@ describe.each([
     )(new Request('https://example.test'));
 
     const result = await world.deliver(start);
-    expect(result).toEqual({ timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS });
     expect(calls.so_add).toBeUndefined();
-    // Not acknowledged: the same message is held again.
-    expect(world.held.some((h) => h.messageId === start.messageId)).toBe(true);
-    // Its redelivery re-snapshots and finishes the run.
+    // Acknowledged, and a fresh message stands in for it.
+    const replacement = expectReplaced(world, result, start);
+    expect(replacement.message).toMatchObject({
+      replacesMessage: { messageId: start.messageId, count: 1 },
+    });
+    // The replacement re-snapshots and finishes the run.
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
     expect(calls.so_add).toBe(1);
@@ -580,6 +585,105 @@ describe.each([
       world.enqueue(QUEUE, { runId: world.events[0]?.runId })
     );
     expect(world.queueCalls.length).toBe(before);
+  });
+
+  // A delivery that stands down replaces its message with a fresh one, and
+  // the replacement holds the replaced message's creator identity: it alone
+  // may send again what that delivery created and never got out.
+  it('lets the replacement of a delivery re-send the background step that delivery created', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    try {
+      const { world, runId, start } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+        [1, 2]
+      );
+      await world.deliver(start);
+      expect(eventsOf(world, 'step_created')).toHaveLength(1);
+      // The step's message never got out (the crash window between the
+      // commit and the enqueue).
+      world.held.length = 0;
+      const stepMessages = () =>
+        world.queueCalls.filter(
+          (call) => (call.message as { stepId?: string }).stepId !== undefined
+        ).length;
+      const sent = stepMessages();
+
+      // A plain wake is not the creator: it leaves the step alone.
+      await world.deliver(world.enqueue(QUEUE, { runId }));
+      expect(stepMessages()).toBe(sent);
+
+      // The replacement of the creating delivery sends it again.
+      world.held.length = 0;
+      await world.deliver(
+        world.enqueue(QUEUE, {
+          runId,
+          replacesMessage: { messageId: start.messageId, count: 1 },
+        })
+      );
+      expect(stepMessages()).toBe(sent + 1);
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(calls.so_add).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('lets the replacement of a delivery arm the timer of the wait that delivery created', async () => {
+    const { world, runId, start } = await setup(
+      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+      []
+    );
+    await world.deliver(start);
+    const timers = () =>
+      world.queueCalls.filter(
+        (call) =>
+          (call.message as { waitContinuation?: unknown }).waitContinuation !==
+          undefined
+      ).length;
+    expect(timers()).toBe(1);
+    world.held.length = 0;
+    await world.deliver(
+      world.enqueue(QUEUE, {
+        runId,
+        replacesMessage: { messageId: start.messageId, count: 1 },
+      })
+    );
+    expect(timers()).toBe(2);
+  });
+
+  it('falls back to redelivering its own message past the replacement cap', async () => {
+    const code = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`;
+    const { world, runId } = await setup(code, [1, 2]);
+    const asWorld = world.asWorld();
+    const list = asWorld.events.list.bind(asWorld.events);
+    let competed = false;
+    asWorld.events.list = async (params) => {
+      const page = await list(params);
+      if (!competed) {
+        competed = true;
+        world.seqInBand++;
+        world.appendOutOfBand({ eventType: 'run_started' } as Partial<Event>);
+      }
+      return page;
+    };
+    setWorld(asWorld);
+    await workflowEntrypoint(code)(new Request('https://example.test'));
+    world.held.length = 0;
+    const capped = world.enqueue(QUEUE, {
+      runId,
+      replacesMessage: {
+        messageId: 'msg_original',
+        count: MAX_MESSAGE_REPLACEMENTS,
+      },
+    });
+
+    const result = await world.deliver(capped);
+    expect(result).toEqual({ timeoutSeconds: expect.any(Number) });
+    expect(world.held.map((h) => h.messageId)).toEqual([capped.messageId]);
   });
 
   it('acknowledges a wake with nothing new without a replay', async () => {

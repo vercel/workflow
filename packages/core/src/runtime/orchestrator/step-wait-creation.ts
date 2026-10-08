@@ -604,11 +604,17 @@ async function finalizeUnserializableStep(
 /**
  * Splits a suspension's creations into batches of at most
  * {@link MAX_BATCH_EVENTS}, keeping each step's `step_created` and the
- * `step_started` behind it in one batch.
+ * `step_started` behind it in one batch. When they need more than one batch,
+ * the inline steps' pairs (which come first) go in batches of their own: the
+ * inline bodies start once those commit, and a smaller batch commits sooner.
  */
-function batchChunks(events: CreateEventRequest[]): CreateEventRequest[][] {
+export function batchChunks(
+  events: CreateEventRequest[]
+): CreateEventRequest[][] {
   const chunks: CreateEventRequest[][] = [];
   let current: CreateEventRequest[] = [];
+  const split = events.length > MAX_BATCH_EVENTS;
+  let currentHasPairs = false;
   for (let index = 0; index < events.length; index++) {
     const event = events[index]!;
     const next = events[index + 1];
@@ -619,10 +625,18 @@ function batchChunks(events: CreateEventRequest[]): CreateEventRequest[][] {
         ? [event, next]
         : [event];
     if (unit.length === 2) index++;
+    const isPair = unit.length === 2;
+    if (split && currentHasPairs && !isPair && current.length > 0) {
+      chunks.push(current);
+      current = [];
+      currentHasPairs = false;
+    }
     if (current.length + unit.length > MAX_BATCH_EVENTS) {
       chunks.push(current);
       current = [];
+      currentHasPairs = false;
     }
+    if (isPair) currentHasPairs = true;
     current.push(...unit);
   }
   if (current.length > 0) chunks.push(current);

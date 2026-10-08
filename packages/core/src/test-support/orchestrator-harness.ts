@@ -5,7 +5,7 @@ import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
-import { AppendOnlyWorld } from './append-only-world.js';
+import { AppendOnlyWorld, type HeldMessage } from './append-only-world.js';
 
 /** The orchestrator queue of a workflow named `workflow`. */
 export const ORCHESTRATOR_QUEUE = '__wkf_workflow_workflow';
@@ -77,3 +77,34 @@ export const orchestratorMessagesOf = (world: AppendOnlyWorld) =>
   world.queueCalls.filter(
     (call) => (call.message as { stepId?: string }).stepId === undefined
   );
+
+/**
+ * Asserts that a delivery stood down by replacing its message: it returned
+ * nothing (acknowledged), and the World holds exactly one fresh orchestrator
+ * message that replaces `replaced` (see `replacesMessage`). Returns it.
+ */
+export function expectReplaced(
+  world: AppendOnlyWorld,
+  result: unknown,
+  replaced: { messageId: string }
+): HeldMessage {
+  if (result !== undefined) {
+    throw new Error(
+      `expected the delivery to acknowledge, got ${JSON.stringify(result)}`
+    );
+  }
+  if (world.held.some((h) => h.messageId === replaced.messageId)) {
+    throw new Error('expected the replaced message to be acknowledged');
+  }
+  const replacements = world.held.filter(
+    (h) =>
+      (h.message as { replacesMessage?: { messageId?: string } })
+        .replacesMessage?.messageId === replaced.messageId
+  );
+  if (replacements.length !== 1) {
+    throw new Error(
+      `expected one replacement message, found ${replacements.length}`
+    );
+  }
+  return replacements[0]!;
+}

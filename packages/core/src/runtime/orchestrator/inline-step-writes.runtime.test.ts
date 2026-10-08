@@ -16,7 +16,7 @@ import {
   setupOrchestratorRun,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
-import { MAX_BATCH_EVENTS } from '../constants.js';
+import { getMaxInlineSteps, MAX_BATCH_EVENTS } from '../constants.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -468,7 +468,11 @@ describe.each([
       );
       expect(new Set(created).size).toBe(FAN_OUT);
       expect(created).toHaveLength(FAN_OUT);
-      expect(calls.iw_a).toBe(FAN_OUT);
+      // A failed write stops the delivery's later writes, the inline steps'
+      // outcomes included, so those bodies may run again on the redelivery
+      // (a step that allows retries tolerates that). No other step does.
+      expect(calls.iw_a).toBeGreaterThanOrEqual(FAN_OUT);
+      expect(calls.iw_a).toBeLessThanOrEqual(FAN_OUT + getMaxInlineSteps());
     }
   );
 });

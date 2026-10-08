@@ -168,6 +168,15 @@ export function getReplayTimeoutMaxRetries(): number {
 }
 
 /**
+ * How many times in a row an orchestrator delivery the fence refused, or that
+ * stopped running ahead, may replace itself with a fresh message (see
+ * `replacesMessage` on the invocation payload). Past it the delivery asks the
+ * queue to redeliver its own message after the fence redelivery delay, so a
+ * run that keeps losing the fence backs off instead of spinning.
+ */
+export const MAX_MESSAGE_REPLACEMENTS = 10;
+
+/**
  * Default maximum number of steps the owned-inline path runs inline (in
  * parallel) per suspension. The rest are queued to background handlers. Each
  * inline step is created lazily (its `step_created` is folded into the

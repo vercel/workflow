@@ -8,13 +8,13 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   dataOf,
   eventsOf,
+  expectReplaced,
   ORCHESTRATOR_QUEUE,
   registerWorkflow,
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
-import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -160,19 +160,15 @@ describe.each([
     // A's body finishes; its outcome write carries a stale count.
     gate.resolve();
     const [resultA, resultB] = await Promise.all([deliveryA, deliveryB]);
-    expect(resultA).toEqual({ timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS });
+    // A stands down: it acknowledges and replaces its message with a fresh
+    // one that keeps its creator identity.
+    expectReplaced(world, resultA, start);
     // B, whose view included every in-band write, finished and acknowledged,
     // unless A's run-ahead hit the wake's event below a speculative write
     // and still wrote s1's outcome (a hazard stops decisions, not outcomes),
     // and that write took the fence first. Then B is the one fenced out, and
-    // its redelivery finishes the run.
-    if (resultB !== undefined) {
-      expect(resultB).toEqual({
-        timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS,
-      });
-    }
-    // Not acknowledged: A's message is held again.
-    expect(world.held.some((h) => h.messageId === start.messageId)).toBe(true);
+    // its replacement finishes the run.
+    if (resultB !== undefined) expectReplaced(world, resultB, wakeMessage);
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(1019);
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -233,9 +229,7 @@ describe.each([
       new Request('https://example.test')
     );
 
-    expect(await world.deliver(start)).toEqual({
-      timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS,
-    });
+    expectReplaced(world, await world.deliver(start), start);
     expect(eventsOf(world, 'run_completed')).toHaveLength(0);
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(30);

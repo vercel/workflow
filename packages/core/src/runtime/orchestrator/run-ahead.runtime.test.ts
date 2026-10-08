@@ -9,6 +9,7 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   dataOf,
   eventsOf,
+  expectReplaced,
   ORCHESTRATOR_QUEUE,
   registerWorkflow,
   runResult,
@@ -21,7 +22,6 @@ import {
 } from '../helpers.js';
 import { wakeUpRun } from '../runs.js';
 import { setWorld } from '../world.js';
-import { FENCE_REDELIVERY_DELAY_SECONDS } from './in-band-writer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -694,8 +694,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
       },
     });
 
-    const first = await world.deliver(start);
-    expect(first).toEqual({ timeoutSeconds: FENCE_REDELIVERY_DELAY_SECONDS });
+    expectReplaced(world, await world.deliver(start), start);
     // Nothing after the refused outcome reached the World: the log ends with
     // the refused step's start.
     expect(eventsOf(world, 'step_completed')).toHaveLength(2);
