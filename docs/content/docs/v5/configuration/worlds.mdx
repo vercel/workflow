@@ -152,7 +152,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: `WORKFLOW_POSTGRES_JOB_PREFIX`
 - Default: `workflow_`
 - Prefix for Graphile Worker job names.
-- Use a distinct prefix for each application that shares a database. `start()` re-enqueues only the active runs created under this prefix, plus runs created before migration `0026`. See [`WORKFLOW_POSTGRES_JOB_PREFIX`](/worlds/postgres#workflow_postgres_job_prefix).
+- Use a distinct prefix for each application that shares a database. `start()` re-enqueues only the active runs created under this prefix, plus runs created by earlier versions, which have no prefix. See [`WORKFLOW_POSTGRES_JOB_PREFIX`](/worlds/postgres#workflow_postgres_job_prefix).
 
 ### `queueConcurrency`
 

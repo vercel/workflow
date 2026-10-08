@@ -254,7 +254,7 @@ Prefix for graphile-worker queue job names. Default: `workflow_`
 
 Give each application that shares a database its own prefix. A World claims jobs only under its own prefix and stamps that prefix on every run it creates. On `start()`, it re-enqueues only the active runs stamped with its prefix, so restarting one application does not hand another application's runs to its worker. `WORKFLOW_QUEUE_NAMESPACE` does not separate applications that share a database.
 
-Runs created before migration `0026` have no prefix, and every World still recovers them on `start()`. To assign them to one application, or to keep active runs recoverable after renaming a prefix, set the prefix on them directly:
+Runs created by earlier versions of the Postgres World have no prefix, and every World still recovers them on `start()`. To assign them to one application, or to keep active runs recoverable after renaming a prefix, set the prefix on them directly:
 
 ```sql
 UPDATE workflow.workflow_runs
