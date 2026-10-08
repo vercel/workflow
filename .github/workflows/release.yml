@@ -81,10 +81,12 @@ jobs:
       # `select-mode` asks the registry only when no changesets are pending.
       # Otherwise ask it here: `publish-plan` is the diff `changeset publish`
       # acts on, so it is empty on every commit except one a stale release PR
-      # left behind.
+      # left behind. A registry error here must not turn an ordinary push red;
+      # the verify step below retries and still reports any version missing.
       - name: Find versions on this commit that are not on npm
         id: unpublished
         if: steps.mode.outputs.mode != 'publish'
+        continue-on-error: true
         run: |
           pnpm exec changeset publish-plan --output "$RUNNER_TEMP/publish-plan.json"
           missing=$(jq -r '[.plan[][] | select(.kind == "publish") | "\(.name)@\(.version)"] | join(" ")' "$RUNNER_TEMP/publish-plan.json")
