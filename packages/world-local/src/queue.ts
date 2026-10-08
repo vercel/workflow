@@ -226,6 +226,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
         );
         await semaphore.acquire();
+        // close() can't cancel a wait for a slot. A message that waited
+        // through it gives the slot back rather than deliver after close().
+        if (closeSignal.aborted) {
+          semaphore.release();
+          closeSignal.throwIfAborted();
+        }
       };
       await acquireSlot();
       let holdsSlot = true;

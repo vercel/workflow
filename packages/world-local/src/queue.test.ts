@@ -461,6 +461,49 @@ describe('a waiting delivery holds no queue slot', () => {
       }
     });
   }
+
+  it('does not deliver a woken message that waited for a slot through close()', async () => {
+    const { queue: oneSlot, wake } = await createOneSlotQueue();
+    const seen: string[] = [];
+    let finishOther!: () => void;
+    const otherFinished = new Promise<void>((resolve) => {
+      finishOther = resolve;
+    });
+    const handler = oneSlot.createQueueHandler(
+      '__wkf_workflow_',
+      async (message, meta) => {
+        const { runId } = message as { runId: string };
+        seen.push(`${runId}#${meta.attempt}`);
+        if (runId === 'run_waiting' && meta.attempt === 1) {
+          return { timeoutSeconds: 60 };
+        }
+        if (runId === 'run_other') await otherFinished;
+      }
+    );
+    oneSlot.registerHandler('__wkf_workflow_', handler);
+
+    await oneSlot.queue('__wkf_workflow_test' as any, { runId: 'run_waiting' });
+    await vi.waitFor(() => expect(seen).toEqual(['run_waiting#1']));
+    // run_other takes the only slot and keeps it.
+    await oneSlot.queue('__wkf_workflow_test' as any, { runId: 'run_other' });
+    await vi.waitFor(() =>
+      expect(seen).toEqual(['run_waiting#1', 'run_other#1'])
+    );
+
+    await oneSlot.close();
+    // The wake's delay ends (the mocked sleep ignores close()), and the woken
+    // message waits for the slot run_other holds.
+    wake();
+    for (let i = 0; i < 5; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    finishOther();
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(seen).toEqual(['run_waiting#1', 'run_other#1']);
+  });
 });
 
 describe('the local safety limit', () => {
