@@ -230,7 +230,7 @@ describe.each([
     resume.mockRestore();
   });
 
-  it('enqueues background steps once with a stable key and retention, and wakes without a key', async () => {
+  it('enqueues background steps once with a stable key and retention, and wakes the orchestrator unkeyed after the last', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
     try {
       const { world } = await setup(
@@ -267,8 +267,16 @@ describe.each([
         (call) => (call.message as { stepId?: string }).stepId === undefined
       );
       expect(wakes.length).toBeGreaterThan(0);
+      // The last completion wakes the orchestrator unkeyed. One that leaves
+      // another step pending sends its window's shared, delayed wake.
+      expect(
+        wakes.some((wake) => wake.opts?.idempotencyKey === undefined)
+      ).toBe(true);
       for (const wake of wakes) {
-        expect(wake.opts?.idempotencyKey).toBeUndefined();
+        const key = wake.opts?.idempotencyKey;
+        if (key === undefined) continue;
+        expect(key).toMatch(/^wake:/);
+        expect(wake.opts?.delaySeconds).toBeGreaterThan(0);
       }
       // Background step writes are out-of-band.
       const bgWrites = world.creates.filter(
