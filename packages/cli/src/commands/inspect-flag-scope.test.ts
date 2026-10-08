@@ -237,3 +237,26 @@ describe('inspect resource aliases', () => {
     expect(state.setupCliWorld).not.toHaveBeenCalled();
   });
 });
+
+describe('inspect event <id>', () => {
+  it('rejects an event ID without --runId before backend setup', async () => {
+    const message = await runInspect([
+      'event',
+      'evnt_00000000000000000000000003',
+    ]);
+    expect(message).toContain('inspect event needs --runId');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  // Used to fail with "Event-ID is not supported for events".
+  it('lets an event ID through with --runId', async () => {
+    const message = await runInspect([
+      'event',
+      'evnt_00000000000000000000000003',
+      '--runId',
+      VALID_RUN,
+    ]);
+    expect(message).not.toContain('not supported');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});

@@ -18,6 +18,7 @@ import {
   listSleeps,
   listSteps,
   listStreamsByRunId,
+  showEvent,
   showHook,
   showRun,
   showStep,
@@ -37,6 +38,7 @@ export default class Inspect extends BaseCommand {
     '$ workflow inspect runs --attribute tenant=acme --status failed',
     '$ workflow inspect events --step=step_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect events --runId=wrun_01K5WAJZ8W367CV2RFKDSDNWB8 --json --all',
+    '$ workflow inspect event evnt_00000000000000000000000003 --runId=wrun_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect sleeps --runId=run_01K5WAJZ8W367CV2RFKDSDNWB8',
@@ -287,13 +289,10 @@ export default class Inspect extends BaseCommand {
 
       if (resource === 'event') {
         if (id) {
-          this.logError(
-            'Event-ID is not supported for events. Filter by run-id or step-id instead. Usage: `workflow inspect events --runId=<id>`'
-          );
-          process.exitCode = 1;
-          return;
+          await showEvent(world, id, options);
+        } else {
+          await listEvents(world, options);
         }
-        await listEvents(world, options);
         return;
       }
 

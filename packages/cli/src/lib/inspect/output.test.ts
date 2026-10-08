@@ -24,6 +24,7 @@ import {
   listSleeps,
   listSteps,
   listStreamsByRunId,
+  showEvent,
 } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
@@ -1360,5 +1361,94 @@ describe('stream hints', () => {
       { runId: RUN, streamId: 'strm_a' },
     ]);
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe('showEvent', () => {
+  const RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
+  const EVENT = 'evnt_00000000000000000000000003';
+
+  it('reads the event from its run and prints it as JSON', async () => {
+    const event = {
+      runId: RUN,
+      eventId: EVENT,
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      createdAt: new Date('2026-06-30T00:00:02.000Z'),
+    };
+    const world = {
+      events: { get: vi.fn().mockResolvedValue(event) },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await showEvent(world, EVENT, { runId: RUN, json: true });
+
+    expect(world.events.get).toHaveBeenCalledWith(RUN, EVENT, {
+      resolveData: 'all',
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
+      ...event,
+      createdAt: '2026-06-30T00:00:02.000Z',
+    });
+  });
+
+  it('reports a missing event and exits non-zero', async () => {
+    const world = {
+      events: {
+        get: vi
+          .fn()
+          .mockRejectedValue(
+            Object.assign(new Error('Event not found'), { status: 404 })
+          ),
+      },
+    } as unknown as World;
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((
+      code: number
+    ) => {
+      throw new Error(`exit ${code}`);
+    }) as never);
+
+    await expect(showEvent(world, EVENT, { runId: RUN })).rejects.toThrow(
+      'exit 1'
+    );
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error.mock.calls.flat().join(' ')).toContain('Event not found');
+  });
+
+  it('needs the run', async () => {
+    const world = { events: { get: vi.fn() } } as unknown as World;
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+    await showEvent(world, EVENT, {});
+
+    expect(world.events.get).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  // The hint used to suggest `inspect event <id>`, which the command rejected.
+  it('is what the events table hint suggests', async () => {
+    const world = {
+      analytics: {
+        events: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ runId: RUN, eventId: EVENT, eventType: 'run_created' }],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listEvents(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `To view details for an event, use \`workflow inspect event <event-id> --runId=${RUN}\``
+    );
   });
 });

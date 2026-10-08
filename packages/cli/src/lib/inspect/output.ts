@@ -559,9 +559,26 @@ const truncateIdToLastChars = (id: string, chars: number = 4): string => {
 const streamCommand = (runId: string | undefined) =>
   `workflow inspect stream <stream-id> --runId=${runId ?? '<run-id>'}`;
 
+/**
+ * The command that shows one event. Event ids are slots within their run
+ * (`evnt_<position>`), so the lookup is `world.events.get(runId, eventId)`.
+ */
+const eventCommand = (runId: string | undefined) =>
+  `workflow inspect event <event-id> --runId=${runId ?? '<run-id>'}`;
+
+/**
+ * The command that shows one item of `resource`. Items whose ids are scoped
+ * to a run need `--runId` in it.
+ */
+const detailCommand = (resource: string, runId: string | undefined) =>
+  resource === 'event'
+    ? eventCommand(runId)
+    : `workflow inspect ${resource} <${resource}-id>`;
+
 const showInspectInfoBox = (resource: string, runId?: string) => {
+  const article = /^[aeiou]/.test(resource) ? 'an' : 'a';
   logger.info(
-    `To view details for a ${resource}, use \`workflow inspect ${resource}\` <id>`
+    `To view details for ${article} ${resource}, use \`${detailCommand(resource, runId)}\``
   );
   logger.info(
     `To view the content of any stream, use \`${streamCommand(runId)}\``
@@ -1104,6 +1121,55 @@ export const showStream = async (
     'Use --json to output the stream as newline-delimited JSON without info logs.\n'
   );
   await streamToConsole(stream, streamId, opts);
+};
+
+/**
+ * Show one event of a run, with its payload resolved.
+ *
+ * The command used to reject an event id ("Event-ID is not supported"),
+ * though the events table hint suggested `inspect event <id>`. Every World
+ * implements `events.get(runId, eventId)`.
+ */
+export const showEvent = async (
+  world: World,
+  eventId: string,
+  opts: InspectCLIOptions = {}
+) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
+  if (opts.withData) {
+    logger.warn('`withData` flag is ignored when showing individual resources');
+  }
+  if (opts.stepId || opts.hookId) {
+    logger.warn(
+      'Filtering by step-id or hook-id is not supported when showing an event, ignoring filter.'
+    );
+  }
+  if (!opts.runId) {
+    // The command rejects this before backend setup; kept for direct callers.
+    logger.error(
+      `run-id is required for showing an event: an event id names a slot in its run. Usage: \`${eventCommand(undefined)}\``
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const event = await world.events.get(opts.runId, eventId, {
+      resolveData: 'all',
+    });
+    const hydrated = await hydrateResourceIO(event, resolveKey);
+    if (opts.json) {
+      showJson(hydrated);
+      return;
+    }
+    logger.log(hydrated);
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
 };
 
 /**

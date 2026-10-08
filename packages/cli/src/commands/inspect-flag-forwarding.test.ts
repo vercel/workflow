@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   setupCliWorld: vi.fn(),
   listEvents: vi.fn(),
   listAttributes: vi.fn(),
+  showEvent: vi.fn(),
 }));
 
 vi.mock('../lib/inspect/setup.js', () => ({
@@ -19,6 +20,7 @@ vi.mock('../lib/inspect/output.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/inspect/output.js')>()),
   listEvents: state.listEvents,
   listAttributes: state.listAttributes,
+  showEvent: state.showEvent,
 }));
 
 const { default: Inspect } = await import('./inspect.js');
@@ -44,6 +46,7 @@ beforeEach(() => {
   state.setupCliWorld.mockReset().mockResolvedValue({});
   state.listEvents.mockReset().mockResolvedValue(undefined);
   state.listAttributes.mockReset().mockResolvedValue(undefined);
+  state.showEvent.mockReset().mockResolvedValue(undefined);
   process.exitCode = 0;
 });
 
@@ -69,6 +72,19 @@ describe('flag forwarding through the command', () => {
 
     expect(state.listEvents.mock.calls[0][1]).toMatchObject({
       all: true,
+      json: true,
+    });
+  });
+
+  it('shows one event given its ID and run', async () => {
+    const EVENT = 'evnt_00000000000000000000000003';
+    await runInspect(['event', EVENT, '--runId', VALID_RUN, '--json']);
+
+    expect(state.listEvents).not.toHaveBeenCalled();
+    expect(state.showEvent).toHaveBeenCalled();
+    expect(state.showEvent.mock.calls[0][1]).toBe(EVENT);
+    expect(state.showEvent.mock.calls[0][2]).toMatchObject({
+      runId: VALID_RUN,
       json: true,
     });
   });
