@@ -804,7 +804,11 @@ export interface CreateEventParams {
    * Only the orchestrator's own writes may set it. Writes made from outside
    * the run's orchestrator (cancellation, hook resumption, step execution,
    * dispatch re-ensures) stay out-of-band, since they can come from a newer
-   * SDK than the run's own and must never be refused on its behalf.
+   * SDK than the run's own and must never be refused on its behalf. A
+   * fenced `step_created` must not be published to the step queue in parallel
+   * with its write (resilient step dispatch): the dispatch's out-of-band
+   * re-ensure would materialize a step the fence refused. A World may revoke
+   * such a dispatch on refusal, but only as a best-effort backstop.
    *
    * A World may refuse an in-band write on a run whose stamped spec version
    * predates the sealed log (`SPEC_VERSION_SUPPORTS_SEALED_LOG`), rather than
