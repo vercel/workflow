@@ -46,6 +46,48 @@ export type LocalWorld = World & {
 };
 
 /**
+ * Delete one tag's lock files: dispose locks, terminal markers, create
+ * claims and staged hook events, all named `.locks/<kind>/<id>.<state>.<tag>`.
+ *
+ * `.locks` is shared by every tag, and a lock is the durable record that its
+ * hook or entity is closed, so a tagged `clear()` must leave other tags' locks
+ * alone. Vitest workers each clear under their own tag when a test file
+ * starts, while other workers' runs are in flight: deleting a disposed hook's
+ * lock there makes it look live to the token claim rebuild, and the run that
+ * recreates its token then conflicts with its own disposed hook.
+ */
+async function clearTaggedLocks(basedir: string, tag: string): Promise<void> {
+  const locksDir = path.join(basedir, '.locks');
+  let lockKindEntries: import('node:fs').Dirent[];
+  try {
+    lockKindEntries = await fs.readdir(locksDir, { withFileTypes: true });
+  } catch {
+    lockKindEntries = [];
+  }
+  await settleAll(
+    lockKindEntries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
+        const lockKindDir = path.join(locksDir, entry.name);
+        const lockNames = await fs
+          .readdir(lockKindDir)
+          .catch(() => [] as string[]);
+        await settleAll(
+          lockNames
+            .filter((name) => name.endsWith(`.${tag}`))
+            .map((name) =>
+              // Recursive: a run's staged hook events are a directory.
+              fs.rm(path.join(lockKindDir, name), {
+                recursive: true,
+                force: true,
+              })
+            )
+        );
+      })
+  );
+}
+
+/**
  * Creates a local world instance that combines queue, storage, and streamer functionalities.
  *
  * @param args - Optional configuration object
@@ -221,10 +263,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
               })
           );
         }
-        // Clean up lock files used for atomic terminal-state guards
-        await fs
-          .rm(path.join(basedir, '.locks'), { recursive: true, force: true })
-          .catch(() => {});
+        await clearTaggedLocks(basedir, tag);
         // Delete tagged stream chunks (.{tag}.bin files). Chunks are sharded
         // one directory per stream (streams/chunks/<streamName>/<chunkId>.{tag}.bin),
         // so iterate each per-stream directory: the top-level chunks dir now
