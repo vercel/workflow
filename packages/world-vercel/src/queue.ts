@@ -31,6 +31,17 @@ import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js
 const MAX_QUEUE_SEND_BATCH = 100;
 
 /**
+ * Messages per request, sent concurrently, for a group on the shared step
+ * topic. VQS handles the messages of one batch request in sequence, so one
+ * request for a whole fan-out finishes late: measured on Vercel (2026-10-08,
+ * a 97-step fan-out), one 97-message request took ~900 ms at p50, against
+ * ~140 ms for each of 97 concurrent one-message requests on per-step topics.
+ * Small concurrent chunks keep the request count low and the publish as
+ * short as one small batch.
+ */
+export const SHARED_STEP_TOPIC_SEND_BATCH = 8;
+
+/**
  * Mirrors `@vercel/queue`'s own kill switch. `queueBatch` injects trace
  * context itself (see below), so without this check `off` would still
  * disable it on the single send and not on the batched one.
@@ -534,6 +545,9 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
+/** The shared step topic {@link getPhysicalQueueName} gives a step message. */
+const STEP_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_step_/;
+
 /**
  * Whether a background step's execution message goes to the shared step
  * topic (`__wkf_step_<workflowName>`, consumed by the flow function's step
@@ -773,15 +787,16 @@ export function createQueue(config?: APIConfig): Queue {
     // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
     // 503). No caller on this path classifies that error today, so nothing
     // changes behaviorally; worth knowing before one starts.
+    type BatchEntry = {
+      index: number;
+      topic: string;
+      message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
+    };
     const groups = new Map<
       string,
       {
         route: { region: string; deploymentId: string; useCbor: boolean };
-        entries: {
-          index: number;
-          topic: string;
-          message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
-        }[];
+        entries: BatchEntry[];
       }
     >();
     for (const [index, entry] of messages.entries()) {
@@ -805,23 +820,45 @@ export function createQueue(config?: APIConfig): Queue {
       groups.set(key, group);
     }
 
+    const sendChunk = async (client: QueueClient, chunk: BatchEntry[]) => {
+      const sent = await client.experimental_sendBatch(
+        // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
+        chunk[0]!.topic,
+        chunk.map((entry) => entry.message)
+      );
+      for (const [position, entry] of chunk.entries()) {
+        results[entry.index] = toBatchResult(sent[position]);
+      }
+    };
     await Promise.all(
       [...groups.values()].map(async ({ route, entries }) => {
         const client = clientFor(route);
+        // The shared step topic: concurrent small chunks (see
+        // SHARED_STEP_TOPIC_SEND_BATCH). Other topics: sequential chunks of
+        // the API's maximum, in order.
+        if (entries[0] && STEP_TOPIC_PATTERN.test(entries[0].topic)) {
+          const chunks = [];
+          for (
+            let offset = 0;
+            offset < entries.length;
+            offset += SHARED_STEP_TOPIC_SEND_BATCH
+          ) {
+            chunks.push(
+              entries.slice(offset, offset + SHARED_STEP_TOPIC_SEND_BATCH)
+            );
+          }
+          await Promise.all(chunks.map((chunk) => sendChunk(client, chunk)));
+          return;
+        }
         for (
           let offset = 0;
           offset < entries.length;
           offset += MAX_QUEUE_SEND_BATCH
         ) {
-          const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
-          const sent = await client.experimental_sendBatch(
-            // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
-            chunk[0]!.topic,
-            chunk.map((entry) => entry.message)
+          await sendChunk(
+            client,
+            entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH)
           );
-          for (const [position, entry] of chunk.entries()) {
-            results[entry.index] = toBatchResult(sent[position]);
-          }
         }
       })
     );
