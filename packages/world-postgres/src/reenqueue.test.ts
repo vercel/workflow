@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { createWorld as createLocalTestWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
@@ -72,6 +73,7 @@ describe('re-enqueue active runs on start', () => {
   const runnerMock = {
     stop: vi.fn(),
     promise: Promise.resolve(),
+    events: new EventEmitter(),
   };
   const localWorldClose = vi.fn();
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
@@ -107,6 +109,7 @@ describe('re-enqueue active runs on start', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    runnerMock.events.removeAllListeners();
     runnerMock.promise = Promise.resolve();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);

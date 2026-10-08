@@ -159,6 +159,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Default: `50`
 - Number of concurrent workers polling for jobs.
 - Also bounds concurrent parent-to-child workflow return-value polls.
+- A runner replaced after losing a worker can finish its jobs on top of this.
 
 ### `pollInterval`
 
@@ -173,6 +174,13 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Whether the application coordinates shutdown instead of Graphile Worker responding automatically.
 - Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
 - Prevents Graphile Worker's default handler from terminating the process before the application's remaining cleanup finishes.
+
+### `onWorkerLost`
+
+- Environment variable: none
+- Default: a console warning
+- Called with `{ error, workerId, jobId }` for each worker Graphile Worker ends because releasing its job failed with an error it does not retry, such as a dropped connection, or with one that outlasted its 100 retries.
+- Whether or not it is set, the World starts a runner in place of one that lost a worker, unless that runner is stopping. Unless the release committed, the job stays locked until Graphile Worker resets locks older than 4 hours.
 
 ### `maxPoolSize`
 

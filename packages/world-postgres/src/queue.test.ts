@@ -1,4 +1,5 @@
 import { channel } from 'node:diagnostics_channel';
+import { EventEmitter } from 'node:events';
 import { type ClientRequest, createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { setWorkflowBasePath } from '@workflow/utils';
@@ -71,6 +72,7 @@ describe('postgres queue http execution', () => {
   const runnerMock = {
     stop: vi.fn(),
     promise: Promise.resolve(),
+    events: new EventEmitter(),
   };
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
@@ -83,6 +85,7 @@ describe('postgres queue http execution', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    runnerMock.events.removeAllListeners();
     invocationTransport.pending.mockResolvedValue([]);
     invocationTransport.close.mockResolvedValue(undefined);
     invocationTransport.respondOutcome.mockResolvedValue(undefined);
@@ -909,6 +912,750 @@ describe('postgres queue http execution', () => {
 
     const [, , options] = vi.mocked(workerUtilsMock.addJob).mock.calls[0];
     expect(options?.maxAttempts).toBeGreaterThan(49);
+  });
+});
+
+// Graphile Worker 0.16 ends a worker whose job release fails with an error it
+// does not retry (a dropped or refused connection) and never replaces it, so a
+// runner left alone loses a worker on every database failover a job finishes
+// across, until it claims nothing.
+describe('postgres queue lost workers', () => {
+  const workerUtilsMock = {
+    addJob: vi.fn(),
+    migrate: vi.fn(),
+    release: vi.fn(),
+  } as unknown as WorkerUtils;
+  const pool = {
+    query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+  } as any;
+
+  /**
+   * A Graphile Worker runner whose events the test emits. Like the real one,
+   * stopping it emits `stop` and starts its pool's graceful shutdown.
+   */
+  function fakeRunner() {
+    const events = new EventEmitter();
+    return {
+      stop: vi.fn(async () => {
+        events.emit('stop', {});
+        events.emit('pool:gracefulShutdown', {});
+      }),
+      promise: Promise.resolve() as Promise<void>,
+      events,
+    };
+  }
+
+  /** A fake runner that `fail()` stops the way Graphile Worker does on an error. */
+  function failingRunner() {
+    const failing = fakeRunner();
+    const settled = Promise.withResolvers<void>();
+    failing.promise = settled.promise;
+    return Object.assign(failing, {
+      /** As when the runner's cron fails: it stops, and its promise rejects. */
+      fail(error = new Error('Connection terminated unexpectedly')) {
+        failing.events.emit('stop', {});
+        failing.events.emit('pool:gracefulShutdown', {});
+        settled.reject(error);
+        return error;
+      },
+    });
+  }
+
+  /** What Graphile Worker emits when a worker fails to release its job. */
+  function loseWorker(lost: ReturnType<typeof fakeRunner>, jobId = '7') {
+    const error = Object.assign(
+      new Error('terminating connection due to administrator command'),
+      { code: '57P01' }
+    );
+    lost.events.emit('worker:fatalError', {
+      worker: { workerId: 'worker-1', getActiveJob: () => ({ id: jobId }) },
+      error,
+      jobError: null,
+    });
+    return error;
+  }
+
+  /** `run()` hands out these runners, in order, then rejects. */
+  function runnersInOrder(
+    ...runners: Array<
+      | ReturnType<typeof fakeRunner>
+      | Error
+      | Promise<ReturnType<typeof fakeRunner>>
+    >
+  ) {
+    for (const next of runners) {
+      if (next instanceof Error) vi.mocked(run).mockRejectedValueOnce(next);
+      else
+        vi.mocked(run).mockReturnValueOnce(
+          Promise.resolve(next) as unknown as Promise<Runner>
+        );
+    }
+  }
+
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Each test queues its own runners; a start a test cancelled must not
+    // hand its runner to the next test.
+    vi.mocked(run).mockReset();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    pool.query.mockResolvedValue({ rows: [{ exists: false }] });
+    vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
+    vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+    vi.mocked(createWorld).mockReturnValue({
+      createQueueHandler: vi.fn(() => vi.fn(async () => Response.json({}))),
+      close: vi.fn(),
+    } as any);
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await Promise.all(createdQueues.splice(0).map((queue) => queue.close()));
+    await Promise.all(
+      createdServers.splice(0).map(
+        (server) =>
+          new Promise<void>((resolve, reject) => {
+            server.close((err) => (err ? reject(err) : resolve()));
+            server.closeAllConnections();
+          })
+      )
+    );
+    delete process.env.WORKFLOW_LOCAL_BASE_URL;
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('starts a runner in place of one that lost a worker, and retires the old one once it is up', async () => {
+    const first = fakeRunner();
+    const second = fakeRunner();
+    const secondUp = Promise.withResolvers<ReturnType<typeof fakeRunner>>();
+    runnersInOrder(first, secondUp.promise);
+    const onWorkerLost = vi.fn();
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost },
+      pool
+    );
+    await queue.start();
+
+    const error = loseWorker(first);
+    expect(onWorkerLost).toHaveBeenCalledExactlyOnceWith({
+      error,
+      workerId: 'worker-1',
+      jobId: '7',
+    });
+    await flush();
+    expect(run).toHaveBeenCalledTimes(2);
+    // Until the new runner is up, the old one's other workers keep claiming.
+    expect(first.stop).not.toHaveBeenCalled();
+
+    secondUp.resolve(second);
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+    // The grace the old runner's jobs would get is the one the queue gives
+    // retired runners' deliveries.
+    expect(run).toHaveBeenLastCalledWith(
+      expect.objectContaining({ gracefulShutdownAbortTimeout: 5_000 })
+    );
+    await queue.close();
+    expect(second.stop).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the runner that lost a worker while no replacement can start, retrying after 1s, doubling to 30s', async () => {
+    // The release failed because the database is going away, and a new
+    // runner needs it to start.
+    const first = fakeRunner();
+    const second = fakeRunner();
+    const attempts: number[] = [];
+    vi.mocked(run).mockImplementation(async () => {
+      if (vi.mocked(run).mock.calls.length === 1) {
+        return first as unknown as Runner;
+      }
+      attempts.push(Date.now());
+      if (attempts.length <= 6) throw new Error('connect ECONNREFUSED');
+      return second as unknown as Runner;
+    });
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+
+    loseWorker(first);
+    await vi.advanceTimersByTimeAsync(60_999);
+    expect(first.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(first.stop).toHaveBeenCalledOnce();
+    expect(attempts.slice(1).map((at, i) => at - attempts[i])).toEqual([
+      1_000, 2_000, 4_000, 8_000, 16_000, 30_000,
+    ]);
+  });
+
+  it('waits for a replacement start that hangs, without starting another, and uses it once it is up', async () => {
+    // A runner that came up late beside another would run the jobs its
+    // workers had already claimed on top of the other's.
+    const first = fakeRunner();
+    const second = fakeRunner();
+    const slow = Promise.withResolvers<ReturnType<typeof fakeRunner>>();
+    runnersInOrder(first, slow.promise);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    loseWorker(first);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(first.stop).not.toHaveBeenCalled();
+
+    slow.resolve(second);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.stop).toHaveBeenCalledOnce();
+  });
+
+  it('replaces a runner once, however many workers it loses', async () => {
+    const first = fakeRunner();
+    runnersInOrder(first, fakeRunner());
+    const onWorkerLost = vi.fn();
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost },
+      pool
+    );
+    await queue.start();
+
+    loseWorker(first, '7');
+    loseWorker(first, '8');
+    loseWorker(first, '9');
+    expect(onWorkerLost).toHaveBeenCalledTimes(3);
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('replaces replacements that keep losing a worker soon after they start one backoff step apart', async () => {
+    // Releases that keep failing while fetches succeed would otherwise start
+    // runners, and strand a job with each, as fast as jobs are claimed.
+    const runners = [fakeRunner(), fakeRunner(), fakeRunner(), fakeRunner()];
+    runnersInOrder(...runners);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'performance'],
+    });
+
+    loseWorker(runners[0]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(2);
+
+    loseWorker(runners[1]);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(runners[1].stop).toHaveBeenCalledOnce();
+
+    loseWorker(runners[2]);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(run).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(4);
+  });
+
+  it('replaces a replacement at once when it ran for 30s before losing a worker', async () => {
+    const runners = [fakeRunner(), fakeRunner(), fakeRunner()];
+    runnersInOrder(...runners);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'performance'],
+    });
+
+    loseWorker(runners[0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    loseWorker(runners[1]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    'stop',
+    'pool:gracefulShutdown',
+    'pool:forcefulShutdown',
+  ])('reports but does not replace a runner that is stopping (%s)', async (stopEvent) => {
+    // close(), or Graphile Worker's own shutdown on a signal or a breaking
+    // migration, is taking the runner down.
+    const first = fakeRunner();
+    runnersInOrder(first);
+    const onWorkerLost = vi.fn();
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost },
+      pool
+    );
+    await queue.start();
+
+    first.events.emit(stopEvent, {});
+    loseWorker(first);
+    await flush();
+    expect(onWorkerLost).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('gives up a replacement once Graphile Worker stops the old runner itself', async () => {
+    const first = fakeRunner();
+    runnersInOrder(first, new Error('connect ECONNREFUSED'), fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    loseWorker(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(2);
+
+    first.events.emit('pool:gracefulShutdown', {});
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'throws',
+      () => {
+        throw new Error('reporter down');
+      },
+    ],
+    [
+      'rejects',
+      async () => {
+        throw new Error('reporter down');
+      },
+    ],
+  ])('replaces the runner and warns when onWorkerLost %s', async (_, onWorkerLost) => {
+    const first = fakeRunner();
+    runnersInOrder(first, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost },
+      pool
+    );
+    await queue.start();
+
+    expect(() => loseWorker(first)).not.toThrow();
+    await vi.waitFor(() =>
+      expect(console.warn).toHaveBeenCalledWith(
+        '[world-postgres] onWorkerLost failed:',
+        expect.objectContaining({ message: 'reporter down' })
+      )
+    );
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('replaces the runner when Graphile Worker stops it over an error', async () => {
+    // As when the crontab query every runner makes at start meets a database
+    // that is going away.
+    const first = failingRunner();
+    runnersInOrder(first, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+
+    const error = first.fail();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    expect(console.warn).toHaveBeenCalledWith(
+      '[world-postgres] Graphile Worker stopped its runner over an error; starting another:',
+      error
+    );
+  });
+
+  it("leaves a failed runner's deliveries to Graphile Worker's abort", async () => {
+    // Graphile Worker is already stopping the runner, and aborts its jobs
+    // after the usual grace period.
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/.well-known/workflow/v1/flow',
+      () => new Promise<void>(() => {})
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const first = failingRunner();
+    runnersInOrder(first, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    const graphileAbort = new AbortController();
+    const delivery = getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { abortSignal: graphileAbort.signal, job: { attempts: 1 } }
+    );
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    first.fail();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    graphileAbort.abort();
+    await expect(delivery).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('does not replace a runner that fails once a signal is shutting the runners down', async () => {
+    const first = failingRunner();
+    runnersInOrder(first, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+
+    first.events.emit('gracefulShutdown', { signal: 'SIGTERM' });
+    first.fail();
+    await flush();
+    expect(run).toHaveBeenCalledOnce();
+    expect(console.warn).not.toHaveBeenCalledWith(
+      '[world-postgres] Graphile Worker stopped its runner over an error; starting another:',
+      expect.anything()
+    );
+  });
+
+  it('replaces a runner that fails after the replacement its lost worker started gave up on it', async () => {
+    // Graphile Worker emits `stop` before the runner's promise rejects, so a
+    // replacement under way first takes the stop for a deliberate one.
+    const first = failingRunner();
+    const discarded = fakeRunner();
+    const discardedUp = Promise.withResolvers<ReturnType<typeof fakeRunner>>();
+    runnersInOrder(first, discardedUp.promise, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+
+    loseWorker(first);
+    first.events.emit('stop', {});
+    discardedUp.resolve(discarded);
+    await vi.waitFor(() => expect(discarded.stop).toHaveBeenCalledOnce());
+    first.fail();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(3));
+  });
+
+  it('lets a delivery on a retired runner finish after Graphile Worker aborts its jobs', async () => {
+    // Retiring stops the runner, and Graphile Worker aborts a stopping
+    // runner's job signals after its grace period. Aborted, the delivery would
+    // lose an attempt and be redelivered while its handler still ran.
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const respond = Promise.withResolvers<void>();
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/.well-known/workflow/v1/flow',
+      () => respond.promise
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const first = fakeRunner();
+    runnersInOrder(first, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    const graphileAbort = new AbortController();
+    const delivery = getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { abortSignal: graphileAbort.signal, job: { attempts: 1 } }
+    );
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    loseWorker(first);
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+    graphileAbort.abort();
+    respond.resolve();
+    await expect(delivery).resolves.toBeUndefined();
+  });
+
+  /**
+   * Start a delivery the app never answers on the first runner, then retire
+   * that runner by losing one of its workers. Graphile Worker's stop waits for
+   * the jobs its workers are running, so the retired runner stops only once
+   * the delivery ends.
+   */
+  async function holdDeliveryOnRetiredRunner(
+    ...later: Array<ReturnType<typeof fakeRunner>>
+  ) {
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const answer = Promise.withResolvers<void>();
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/.well-known/workflow/v1/flow',
+      () => answer.promise
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const first = fakeRunner();
+    const second = fakeRunner();
+    runnersInOrder(first, second, ...later);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    const deliver = (runId: string) =>
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId }),
+        { abortSignal: new AbortController().signal, job: { attempts: 1 } }
+      );
+    const ended = deliver('run_01ABC').then(
+      () => 'fulfilled' as const,
+      (error: unknown) => error
+    );
+    first.stop.mockImplementation(async () => {
+      await ended;
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    loseWorker(first);
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+    let hasEnded = false;
+    void ended.then(() => {
+      hasEnded = true;
+    });
+    return {
+      queue,
+      active: second,
+      ended,
+      hasEnded: () => hasEnded,
+      deliver,
+      answer: () => answer.resolve(),
+    };
+  }
+
+  it("aborts a retired runner's deliveries once close() has given them the grace period", async () => {
+    const { queue, ended, hasEnded, deliver } =
+      await holdDeliveryOnRetiredRunner();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const closing = queue.close();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(hasEnded()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    await expect(ended).resolves.toMatchObject({ name: 'AbortError' });
+    // A job one of its workers claims after that is aborted at once.
+    await expect(deliver('run_01DEF')).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    await closing;
+  });
+
+  it.each([
+    'gracefulShutdown',
+    'forcefulShutdown',
+  ])("aborts a retired runner's deliveries at once on a signal Graphile Worker handles (%s)", async (signalEvent) => {
+    // Graphile Worker's signal handler does not wait for a retired runner, so
+    // the process can exit before a grace period would end.
+    const { active, ended, deliver } = await holdDeliveryOnRetiredRunner();
+    // Frozen: no grace period can pass.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    active.events.emit(signalEvent, { signal: 'SIGTERM' });
+    await expect(ended).resolves.toMatchObject({ name: 'AbortError' });
+    // A job one of its workers claims after that is aborted at once too.
+    await expect(deliver('run_01DEF')).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+
+  it("lets a retired runner's deliveries run on when Graphile Worker stops the active runner without a signal", async () => {
+    // A breaking migration, or the active runner's own failure, stops it
+    // without ending the process.
+    const { active, ended, hasEnded, answer } =
+      await holdDeliveryOnRetiredRunner();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    active.events.emit('stop', {});
+    active.events.emit('pool:gracefulShutdown', {});
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hasEnded()).toBe(false);
+    vi.useRealTimers();
+    answer();
+    await expect(ended).resolves.toBe('fulfilled');
+  });
+
+  it("gives an older retired runner's deliveries the grace period once a newer runner is retired", async () => {
+    // Only the latest retired runner's deliveries run without a time limit.
+    const { active, ended, hasEnded } = await holdDeliveryOnRetiredRunner(
+      fakeRunner()
+    );
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    loseWorker(active);
+    // `active` replaced a runner a moment ago, so its replacement waits 1s.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(active.stop).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(hasEnded()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    await expect(ended).resolves.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('aborts at once the deliveries of a runner that comes up after a signal', async () => {
+    // Its pool can already exist when the signal arrives, so Graphile Worker
+    // shuts it down too, and the process exits without waiting for it.
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/.well-known/workflow/v1/flow',
+      () => new Promise<void>(() => {})
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const first = fakeRunner();
+    const late = fakeRunner();
+    const lateUp = Promise.withResolvers<ReturnType<typeof fakeRunner>>();
+    runnersInOrder(first, lateUp.promise);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    loseWorker(first);
+    first.events.emit('gracefulShutdown', { signal: 'SIGTERM' });
+    lateUp.resolve(late);
+    await vi.waitFor(() => expect(late.stop).toHaveBeenCalledOnce());
+
+    const lateTask = vi.mocked(run).mock.calls[1]?.[0]?.taskList
+      ?.workflow_flows as (payload: unknown, helpers: unknown) => Promise<void>;
+    await expect(
+      lateTask(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        {
+          abortSignal: new AbortController().signal,
+          job: { attempts: 1 },
+        }
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('close() waits for a retired runner to finish its jobs before releasing the worker utils', async () => {
+    // A job that finishes after the utils are released cannot enqueue its
+    // follow-up.
+    const first = fakeRunner();
+    const firstStopped = Promise.withResolvers<void>();
+    first.stop.mockImplementation(() => firstStopped.promise);
+    runnersInOrder(first, fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    loseWorker(first);
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+
+    let closed = false;
+    const closing = queue.close().then(() => {
+      closed = true;
+    });
+    await flush();
+    expect(closed).toBe(false);
+    expect(workerUtilsMock.release).not.toHaveBeenCalled();
+    firstStopped.resolve();
+    await closing;
+    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
+  });
+
+  it('starts no runner after close(), even with a retry pending', async () => {
+    const first = fakeRunner();
+    runnersInOrder(first, new Error('connect ECONNREFUSED'), fakeRunner());
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    loseWorker(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(2);
+
+    await queue.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('close() stops the active runner, then retires a replacement still starting', async () => {
+    const first = fakeRunner();
+    const second = fakeRunner();
+    const secondUp = Promise.withResolvers<ReturnType<typeof fakeRunner>>();
+    runnersInOrder(first, secondUp.promise);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    loseWorker(first);
+
+    const closing = queue.close();
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+    // After close()'s own steps have run, so a close() that does not wait
+    // for the replacement has already returned.
+    setImmediate(() => secondUp.resolve(second));
+    await closing;
+    expect(second.stop).toHaveBeenCalledOnce();
+  });
+
+  it('aborts the deliveries of a runner retired during close() once the grace period passes', async () => {
+    // A replacement that comes up after close() began is retired at once, but
+    // its workers can already have claimed jobs.
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/.well-known/workflow/v1/flow',
+      () => new Promise<void>(() => {})
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const first = fakeRunner();
+    const late = fakeRunner();
+    const lateUp = Promise.withResolvers<ReturnType<typeof fakeRunner>>();
+    runnersInOrder(first, lateUp.promise);
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', onWorkerLost: vi.fn() },
+      pool
+    );
+    await queue.start();
+    loseWorker(first);
+    const closing = queue.close();
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledOnce());
+
+    const lateTask = vi.mocked(run).mock.calls[1]?.[0]?.taskList
+      ?.workflow_flows as (payload: unknown, helpers: unknown) => Promise<void>;
+    const ended = lateTask(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { abortSignal: new AbortController().signal, job: { attempts: 1 } }
+    ).then(
+      () => 'fulfilled' as const,
+      (error: unknown) => error
+    );
+    let hasEnded = false;
+    void ended.then(() => {
+      hasEnded = true;
+    });
+    late.stop.mockImplementation(async () => {
+      await ended;
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    lateUp.resolve(late);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(late.stop).toHaveBeenCalledOnce();
+    expect(hasEnded).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    await expect(ended).resolves.toMatchObject({ name: 'AbortError' });
+    await closing;
   });
 });
 
