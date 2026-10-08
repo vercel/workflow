@@ -83,6 +83,41 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
 );
 
 /**
+ * Whether the run executes dynamic workflow code stored with the run rather
+ * than the deployment's workflow bundle.
+ */
+export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
+
+/** SHA-256 of a dynamic run's source and step bindings. */
+export const WorkflowDynamicSourceHash = SemanticConvention<string>(
+  'workflow.dynamic.source_hash'
+);
+
+/** Size in bytes of a dynamic run's serialized workflow code. */
+export const WorkflowDynamicCodeBytes = SemanticConvention<number>(
+  'workflow.dynamic.code_bytes'
+);
+
+/** Whether a dynamic run's code was stored inline or behind a ref. */
+export const WorkflowDynamicCodeStorage = SemanticConvention<'inline' | 'ref'>(
+  'workflow.dynamic.code_storage'
+);
+
+/** Whether the compiled application workflow bundle was cached. */
+export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
+  'workflow.bundle.compile.cache_hit'
+);
+
+/** Operation that supplied events to the current replay. */
+export type WorkflowReplayLoadSource =
+  | 'run_started'
+  | 'hook_preload'
+  | 'events_list'
+  | 'events_list_incremental';
+export const WorkflowReplayLoadSource =
+  SemanticConvention<WorkflowReplayLoadSource>('workflow.replay.load.source');
+
+/**
  * Events the replay walked past that no consumer claimed, still held when the
  * replay stopped.
  *
@@ -158,6 +193,41 @@ export const QuickJSInlineSteps = SemanticConvention<number>(
   'quickjs.inline_steps'
 );
 
+/** Whether this QuickJS invocation restored a persisted VM snapshot */
+export const QuickJSSnapshotRestored = SemanticConvention<boolean>(
+  'workflow.quickjs.snapshot.restored'
+);
+
+/** Events replayed on top of a restored snapshot (the delta after its cursor) */
+export const QuickJSSnapshotDeltaEvents = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.delta_events'
+);
+
+/** Time spent loading, verifying and decoding a persisted snapshot */
+export const QuickJSSnapshotRestoreMs = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.restore_ms'
+);
+
+/** Why a stored snapshot was not restored (the invocation replayed in full) */
+export const QuickJSSnapshotFallbackReason = SemanticConvention<string>(
+  'workflow.quickjs.snapshot.fallback_reason'
+);
+
+/** Time the post-response snapshot save pipeline took */
+export const QuickJSSnapshotSaveMs = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.save_ms'
+);
+
+/** Uncompressed size of a saved VM snapshot */
+export const QuickJSSnapshotPlaintextBytes = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.plaintext_bytes'
+);
+
+/** Stored (compressed, encrypted) size of a saved VM snapshot */
+export const QuickJSSnapshotStoredBytes = SemanticConvention<number>(
+  'workflow.quickjs.snapshot.stored_bytes'
+);
+
 /** Active trace-correlation mode for this invocation (linked or continuous) */
 export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
   'workflow.trace.mode'
@@ -221,6 +291,16 @@ export const WorkflowOwnedRecoverySteps = SemanticConvention<number>(
  */
 export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
   'workflow.inline_ownership.backstop_wakes_armed'
+);
+
+/**
+ * Number of pending steps whose immediate step-execution enqueue this replay
+ * pass skipped because THIS invocation already published that step's message
+ * on an earlier pass (a fan-out that ran inline steps and replayed again).
+ * Invocation-local knowledge only: a fresh delivery never skips.
+ */
+export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
+  'workflow.dispatch.republish_skipped'
 );
 
 // Route attributes
@@ -328,6 +408,16 @@ export const StepLatencyOptimizations = SemanticConvention<string[]>(
   'step.latency_optimizations'
 );
 
+/**
+ * How the step's initial `step_started` claim was made. Only present for
+ * inline create claims; ordinary background starts and owned recovery remain
+ * unlabeled.
+ */
+export type StepStartStrategy = 'awaited' | 'optimistic' | 'batch_preclaimed';
+export const StepStartStrategy = SemanticConvention<StepStartStrategy>(
+  'workflow.step_start.strategy'
+);
+
 /** Whether the step was skipped during execution */
 export const StepSkipped = SemanticConvention<boolean>('step.skipped');
 
@@ -389,6 +479,15 @@ export const MessagingOperationType = SemanticConvention<
   'publish' | 'receive' | 'process'
 >('messaging.operation.type');
 
+/**
+ * Messages carried by one batched publish (standard OTEL:
+ * messaging.batch.message_count). Set only on the batch send, so a span
+ * without it is a single-message publish.
+ */
+export const MessagingBatchMessageCount = SemanticConvention<number>(
+  'messaging.batch.message_count'
+);
+
 /** Time taken to enqueue the message in milliseconds (workflow-specific) */
 export const QueueOverheadMs = SemanticConvention<number>(
   'workflow.queue.overhead_ms'
@@ -414,6 +513,40 @@ export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
   'workflow.deployment_mismatch.recovered'
 );
 
+/** The spec version `start()` stamped on the new run. */
+export const WorkflowRunSpecVersion = SemanticConvention<number>(
+  'workflow.run.spec_version'
+);
+
+/**
+ * Where the stamped spec version came from: the caller's own World
+ * (`same-deployment`), the caller (`explicit`), or, for a cross-deployment
+ * start, the target's capability probe (`probe`, `probe-unversioned`,
+ * `probe-malformed`) or a
+ * fallback when it did not answer (`probe-miss`, `no-probe-channel`).
+ */
+export const WorkflowRunSpecVersionSource = SemanticConvention<string>(
+  'workflow.run.spec_version_source'
+);
+
+/** Round-trip time of a cross-deployment capability probe that answered. */
+export const WorkflowCapabilityProbeLatencyMs = SemanticConvention<number>(
+  'workflow.capability_probe.latency_ms'
+);
+
+/**
+ * Whether a cross-deployment start reused an earlier answer from the same
+ * target deployment instead of probing it again.
+ */
+export const WorkflowCapabilityProbeCached = SemanticConvention<boolean>(
+  'workflow.capability_probe.cached'
+);
+
+/** Why a cross-deployment capability probe failed (e.g. a timeout). */
+export const WorkflowCapabilityProbeError = SemanticConvention<string>(
+  'workflow.capability_probe.error'
+);
+
 // Hook attributes
 
 /** Token identifying a specific hook */
@@ -430,18 +563,50 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
  * `hook_received` write failed transiently but the queue dispatch succeeded, so
  * the resume is recovered via the consumer's re-ensure. Corresponds to
  * `ResumedHook.resilientResume === true`.
+ *
+ * No longer emitted: current producers require the durable event write to
+ * succeed. Retained so dashboards and queries built on the attribute keep
+ * resolving while older producers are still deployed.
  */
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
 );
 
 /**
+ * Producer-side signal (on the `hook.resume` span) that the durable
+ * `hook_received` write COMMITTED. Stamped after the write resolves, so it
+ * distinguishes a committed resume from an attempted one — an entry-time
+ * attribute cannot, because a span that later records an exception may have
+ * failed either before or after the commit.
+ */
+export const HookResumeCommitted = SemanticConvention<boolean>(
+  'workflow.hook.resume_committed'
+);
+
+/**
+ * Producer-side signal (on the `hook.resume` span) that the workflow wake was
+ * ACCEPTED by the queue, stamped after the publish resolves.
+ *
+ * Together with {@link HookResumeCommitted} this makes stranded resumes
+ * queryable: `resume_committed=true` with `wake_published` absent is a resume
+ * whose durable event exists but whose wake publish failed (the caller was
+ * told, but nothing re-drives it), and `resume_committed=true` +
+ * `wake_published=true` with no subsequent workflow execution for the run is
+ * a wake the queue accepted but never delivered. Both are detection-only
+ * signals — nothing recovers such a run automatically today beyond a later
+ * wake from any other source.
+ */
+export const HookWakePublished = SemanticConvention<boolean>(
+  'workflow.hook.wake_published'
+);
+
+/**
  * Consumer-side signal (on the workflow execution span) that this replay
  * materialized the `hook_received` event from the queue message's `hookInput`
- * because the producer's direct write had not landed, which completes the
- * recovery path {@link HookResilientResume} began.
+ * because no committed event was found, which completes the recovery path
+ * {@link HookResilientResume} began.
  *
- * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * Legacy / non-atomic re-ensure signal only. Legacy atomic lazy resumes
  * (resumeId + digest) go through the hoisted preload write instead, whose
  * response cannot tell whether the producer or the consumer won the
  * `(runId, resumeId)` claim, so this attribute is deliberately NOT emitted
@@ -499,6 +664,17 @@ export const StepResilientDispatchRecovered = SemanticConvention<number>(
 export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
   'workflow.step.resilient_dispatch_materialized'
 );
+
+/**
+ * How the queued-step consumer resolved the run identity for this execution:
+ * `run_context` — carried on the dispatch message, no `runs.get` before the
+ * step (the fetch-free prologue); `runs_get` — the legacy blocking fetch
+ * (message from an older producer). Distinguishes the two paths during
+ * version-skew windows and makes the saved round trip directly measurable.
+ */
+export const StepDispatchPrologue = SemanticConvention<
+  'run_context' | 'runs_get'
+>('workflow.step.dispatch_prologue');
 
 // Hook-triggered time-to-resume (TTR) attributes
 //
@@ -568,10 +744,14 @@ export const ResumeTrigger = SemanticConvention<'hook'>(
   'workflow.resume.trigger'
 );
 
-/** Which `resumeHook()` dispatch path produced this resume. */
-export const ResumeStrategy = SemanticConvention<'parallel' | 'sequential'>(
-  'workflow.resume.strategy'
-);
+/**
+ * Which `resumeHook()` dispatch path produced this resume. `parallel` only
+ * appears for messages published by an older producer, which wrote
+ * `hook_received` itself in parallel with the publish.
+ */
+export const ResumeStrategy = SemanticConvention<
+  'lazy' | 'parallel' | 'sequential'
+>('workflow.resume.strategy');
 
 /**
  * How the consuming invocation initialized replay state. Distinct from the

@@ -9,8 +9,14 @@
  * what happens when it isn't one this client understands.
  */
 
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import {
+  EntityConflictError,
+  InBandSupersededError,
+  PreconditionFailedError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -18,7 +24,10 @@ import {
   MAX_EVENT_POST_RETRIES,
   withEventPostRetry,
 } from './event-retry.js';
-import { createWorkflowRunEventV4 } from './events-v4.js';
+import {
+  createEventResponseSchema,
+  createWorkflowRunEventV4,
+} from './events-v4.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 import { type WsFrameReply, WsTransportError } from './ws-transport.js';
 
@@ -108,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+  delete process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS;
   delete process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
 });
 
@@ -200,6 +210,63 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     });
 
     expect(result.event.eventId).toBe('evnt_1');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('per-workflow override (WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS)', () => {
+  const httpAgent = () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, materializedBody(), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': CREATED_AT,
+        },
+      });
+    return agent;
+  };
+
+  it('writes over WS for a run whose channel the override opened', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    requestMock.mockResolvedValueOnce(ack());
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes over HTTP for a run with no channel, even in strict mode', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
+    process.env.WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS =
+      'betaWorkflow';
+    // Strict mode promises a socket only for the deployment-wide gate; an
+    // unlisted workflow has no channel by design.
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    resolveWsTransportMock.mockReturnValueOnce(null);
+    const agent = httpAgent();
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(requestMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
   });
 });
@@ -365,6 +432,29 @@ describe('retry is owned by the shared policy, not the adapter', () => {
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
 
+  it('maps a 412 in-band-superseded reply to InBandSupersededError with the counters', async () => {
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'error', status: 412 },
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          error: 'in-band-superseded',
+          message: 'superseded',
+          seq: 9,
+          seqInBand: 4,
+        })
+      ),
+    });
+
+    const err = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    }).catch((e: unknown) => e);
+
+    expect(InBandSupersededError.is(err)).toBe(true);
+    expect(PreconditionFailedError.is(err)).toBe(false);
+    expect(err).toMatchObject({ seq: 9, seqInBand: 4 });
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry a 4xx the server will reject identically', async () => {
     requestMock.mockResolvedValue({
       meta: { reqId: 1, type: 'error', status: 409 },
@@ -425,6 +515,8 @@ describe('retry is owned by the shared policy, not the adapter', () => {
       token: 'test-token',
     }).catch((e: unknown) => e);
 
+    expect(ThrottleError.is(err)).toBe(true);
+    expect((err as ThrottleError).retryAfter).toBe(2);
     expect(isRetryableEventPostError(err)).toBe(false);
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
@@ -523,5 +615,60 @@ describe('withEventPostRetry over ws', () => {
       )
     ).rejects.toThrow(EntityConflictError);
     expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createWorkflowRunEventV4 decoding over ws', () => {
+  it('matches the uncompiled schema for a successful reply and a full issue list', async () => {
+    const bytes = materializedBody();
+    requestMock.mockResolvedValueOnce(ack({}, bytes));
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    });
+    const baseline = createEventResponseSchema('step_completed').parse(
+      decode(bytes)
+    );
+    expect(result).toEqual(baseline);
+
+    const decoded = decode(bytes) as {
+      event: Record<string, unknown>;
+    };
+    const mismatched = encode({
+      ...decoded,
+      event: { ...decoded.event, eventType: 'run_completed' },
+    });
+    requestMock.mockResolvedValueOnce(ack({}, new Uint8Array(mismatched)));
+    const parsed = createEventResponseSchema('step_completed').safeParse(
+      decode(mismatched)
+    );
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    await expect(
+      createWorkflowRunEventV4(input, { token: 'test-token' })
+    ).rejects.toSatisfy((error: unknown) => {
+      const issues = (error as { cause?: { issues?: unknown[] } }).cause
+        ?.issues;
+      expect(issues).toEqual(parsed.error.issues);
+      return true;
+    });
+  });
+
+  it('rejects empty and malformed CBOR before schema validation', async () => {
+    requestMock.mockResolvedValueOnce(ack({}, new Uint8Array()));
+    await expect(
+      createWorkflowRunEventV4(input, { token: 'test-token' })
+    ).rejects.toMatchObject({
+      code: 'PARSE_ERROR',
+      message: 'v4 createEvent: empty response body',
+    });
+
+    // 0x18 is a truncated CBOR uint. 0xff decodes as an empty map.
+    requestMock.mockResolvedValueOnce(ack({}, new Uint8Array([0x18])));
+    await expect(
+      createWorkflowRunEventV4(input, { token: 'test-token' })
+    ).rejects.toMatchObject({
+      code: 'PARSE_ERROR',
+      message: 'v4 createEvent: invalid CBOR response body',
+    });
   });
 });

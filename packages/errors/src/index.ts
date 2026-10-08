@@ -1,6 +1,7 @@
 import { parseDurationToDate, pluralize } from '@workflow/utils';
 
 import type { StringValue } from 'ms';
+import { RUN_ERROR_CODES } from './error-codes.js';
 
 // Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
 // main entry point doesn't pull `chalk` (and its ESM machinery) into every
@@ -84,6 +85,7 @@ export const ERROR_SLUGS = {
   FETCH_IN_WORKFLOW_FUNCTION: 'fetch-in-workflow',
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
+  HOOK_FORCE_CLAIMED: 'hook-force-claimed',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -162,6 +164,12 @@ export class WorkflowWorldError extends WorkflowError {
   url?: string;
   /** Retry-After value in seconds, present on 429 and 425 responses */
   retryAfter?: number;
+  /**
+   * The offending argument, present on client-side validation failures
+   * (`code: 'INVALID_ARGUMENT'`). Lets a caller correct the specific
+   * parameter without parsing the message.
+   */
+  field?: string;
 
   constructor(
     message: string,
@@ -170,6 +178,7 @@ export class WorkflowWorldError extends WorkflowError {
       url?: string;
       code?: string;
       retryAfter?: number;
+      field?: string;
       cause?: unknown;
     }
   ) {
@@ -181,6 +190,7 @@ export class WorkflowWorldError extends WorkflowError {
     this.code = options?.code;
     this.url = options?.url;
     this.retryAfter = options?.retryAfter;
+    this.field = options?.field;
   }
 
   static is(value: unknown): value is WorkflowWorldError {
@@ -213,6 +223,17 @@ export class WorkflowWorldError extends WorkflowError {
  * ```
  */
 export class WorkflowRunFailedError extends WorkflowError {
+  /**
+   * `failed` is terminal, and a run's terminal state is immutable. This error
+   * is only ever thrown after a *successful* read of such a run, so re-running
+   * the read returns the same record and throws the same error. Marking it
+   * non-retryable is what stops the step executor from spending a retry budget
+   * on that when the read happens inside a step — a parent awaiting a child's
+   * `returnValue` — and then replacing this error with its retry-exhaustion
+   * wrapper. A read that *fails* throws something else and stays retryable.
+   * See `FatalError.is()`.
+   */
+  fatal = true;
   runId: string;
   /**
    * The high-level error category (e.g. USER_ERROR, RUNTIME_ERROR) for the
@@ -710,6 +731,44 @@ export class HookConflictError extends WorkflowError {
 }
 
 /**
+ * Thrown from `await hook` (or the hook's async iterator) when another run
+ * took this hook's token with `createHook({ token, experimental_force: true })`.
+ *
+ * The hook is disposed: payloads it received before the takeover were still
+ * delivered, everything after goes to the new owner, and this run's log holds
+ * a `hook_disposed` naming the run that took it. Whether that ends the run is
+ * the workflow's call — catch it to hand over gracefully, or let it fail.
+ *
+ * Use the static `HookForceClaimedError.is()` method for type-safe checking
+ * in catch blocks; the class identity differs between the workflow VM and the
+ * host, so `instanceof` is not reliable across that boundary.
+ */
+export class HookForceClaimedError extends WorkflowError {
+  token: string;
+  /** The run that took the token. */
+  claimedByRunId: string;
+  /** The hook (in `claimedByRunId`) the token now belongs to. */
+  claimedByHookId?: string;
+
+  constructor(token: string, claimedByRunId: string, claimedByHookId?: string) {
+    super(
+      `Hook token "${token}" was force-claimed by another workflow (run "${claimedByRunId}")`,
+      { slug: ERROR_SLUGS.HOOK_FORCE_CLAIMED }
+    );
+    this.name = 'HookForceClaimedError';
+    this.token = token;
+    this.claimedByRunId = claimedByRunId;
+    if (claimedByHookId !== undefined) {
+      this.claimedByHookId = claimedByHookId;
+    }
+  }
+
+  static is(value: unknown): value is HookForceClaimedError {
+    return isError(value) && value.name === 'HookForceClaimedError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
@@ -775,17 +834,63 @@ export class EntityConflictError extends WorkflowWorldError {
  * Thrown when a run is no longer available, either because it has been
  * cleaned up, expired, or already reached a terminal state (completed/failed).
  *
- * The workflow runtime handles this error automatically. Users interacting
- * with world storage backends directly may encounter it.
+ * Also thrown by `await run.returnValue` when the run's data passed its
+ * retention boundary — because it was started with
+ * `experimental_retention: 0`, or simply because it aged out of the World's
+ * default window. The run's metadata usually outlives its payloads, so
+ * `runStatus` and `expiredAt` are populated when the World still has them: the
+ * caller can tell "it succeeded, but the result is gone" from "it failed".
+ * When even the metadata is gone the World reports the run as missing and you
+ * get {@link WorkflowRunNotFoundError} instead.
+ *
+ * This is terminal. Retrying cannot bring the data back.
  */
 export class RunExpiredError extends WorkflowWorldError {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    message: string,
+    /** The run whose data expired, when the caller knew it. */
+    readonly runId?: string,
+    /**
+     * The run's terminal status, when its metadata outlived its payloads.
+     * Lets a caller distinguish a successful run whose result is gone from a
+     * failed one whose error is gone.
+     *
+     * Named `runStatus` rather than `status` because the base
+     * {@link WorkflowWorldError} already carries the HTTP `status`.
+     */
+    readonly runStatus?: string,
+    /** When the data passed its retention boundary, if the World reports it. */
+    readonly expiredAt?: Date
+  ) {
+    super(message, { status: 410, code: 'run-expired' });
     this.name = 'RunExpiredError';
   }
 
   static is(value: unknown): value is RunExpiredError {
     return isError(value) && value.name === 'RunExpiredError';
+  }
+}
+
+/**
+ * Thrown when Workflow's stream infrastructure fails to read or write data.
+ * The failure is attributable to the Workflow service rather than user code.
+ */
+export class StreamError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    options?: { cause?: unknown; url?: string; status?: number }
+  ) {
+    super(message, {
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+      cause: options?.cause,
+      url: options?.url,
+      status: options?.status,
+    });
+    this.name = 'StreamError';
+  }
+
+  static is(value: unknown): value is StreamError {
+    return isError(value) && value.name === 'StreamError';
   }
 }
 
@@ -894,6 +999,43 @@ export class PreconditionFailedError extends WorkflowWorldError {
   }
 }
 
+/** Error code a World uses for an {@link InBandSupersededError} refusal. */
+export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
+
+/**
+ * Thrown when a World refuses an in-band write (a write made by the run's
+ * orchestrator) because another orchestrator invocation of the same run has
+ * written in-band since this one loaded the log (HTTP 412,
+ * `in-band-superseded`).
+ *
+ * The in-band fence keeps a run to one orchestrator writer: the World counts
+ * the positions it allocated to in-band writes, and accepts an in-band write
+ * only when the writer's expected count matches. Nothing is written or
+ * allocated for a refused write.
+ *
+ * @property seq - The run's allocated position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only.
+ * @property seqInBand - The run's in-band position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only: a client must never
+ *   adopt it as its own count, since that would make it a writer without
+ *   having seen the events the count stands for.
+ */
+export class InBandSupersededError extends WorkflowWorldError {
+  readonly seq?: number;
+  readonly seqInBand?: number;
+
+  constructor(message: string, options?: { seq?: number; seqInBand?: number }) {
+    super(message, { status: 412, code: IN_BAND_SUPERSEDED_CODE });
+    this.name = 'InBandSupersededError';
+    this.seq = options?.seq;
+    this.seqInBand = options?.seqInBand;
+  }
+
+  static is(value: unknown): value is InBandSupersededError {
+    return isError(value) && value.name === 'InBandSupersededError';
+  }
+}
+
 /**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
@@ -918,6 +1060,8 @@ export class PreconditionFailedError extends WorkflowWorldError {
  * ```
  */
 export class WorkflowRunCancelledError extends WorkflowError {
+  /** Terminal and immutable, for the same reason as {@link WorkflowRunFailedError.fatal}. */
+  fatal = true;
   runId: string;
 
   constructor(runId: string) {
@@ -1067,9 +1211,13 @@ const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
 const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookConflictError'
 );
+const HOOK_FORCE_CLAIMED_ERROR_KEY = Symbol.for(
+  '@workflow/errors//HookForceClaimedError'
+);
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
+const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1096,9 +1244,25 @@ if (typeof globalThis !== 'undefined') {
       configurable: false,
     });
   }
+  if (!Object.hasOwn(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY, {
+      value: HookForceClaimedError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
   if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
     Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
       value: RuntimeDecryptionError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
+    Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
+      value: StreamError,
       writable: false,
       enumerable: false,
       configurable: false,

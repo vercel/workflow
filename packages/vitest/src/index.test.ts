@@ -12,7 +12,17 @@ const workflowTransformPlugin = vi.fn((options) => ({
 }));
 const createBaseBuilderConfig = vi.fn((config) => config);
 const getInputFiles = vi.fn(async () => ['workflows/example.ts']);
-const createCombinedBundle = vi.fn(async () => {});
+const exampleManifest = {
+  workflows: {
+    'workflows/example.ts': {
+      exampleWorkflow: {
+        workflowId: 'workflow//./workflows/example//exampleWorkflow',
+      },
+    },
+  },
+};
+const createCombinedBundle = vi.fn(async () => ({ manifest: exampleManifest }));
+const createManifest = vi.fn(async () => '{}');
 const baseBuilderConfigs: unknown[] = [];
 
 vi.mock('@workflow/builders', () => {
@@ -27,6 +37,10 @@ vi.mock('@workflow/builders', () => {
 
     async createCombinedBundle(args: unknown) {
       return createCombinedBundle(args);
+    }
+
+    async createManifest(args: unknown) {
+      return createManifest(args);
     }
   }
 
@@ -123,6 +137,58 @@ describe('@workflow/vitest', () => {
     );
     expect(initDataDir).toHaveBeenCalledWith(
       path.join(rootDir, '.workflow-data')
+    );
+    // The manifest lands next to the bundles so getWorkflowRef() can read it.
+    expect(createManifest).toHaveBeenCalledWith({
+      workflowBundlePath: path.join(
+        rootDir,
+        '.workflow-vitest',
+        'combined.mjs'
+      ),
+      manifestDir: path.join(rootDir, '.workflow-vitest'),
+      manifest: exampleManifest,
+    });
+  });
+
+  it('skips the manifest when the bundle step produced none', async () => {
+    createCombinedBundle.mockResolvedValueOnce(
+      undefined as unknown as { manifest: typeof exampleManifest }
+    );
+    const { buildWorkflowTests } = await loadModule();
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), 'workflow-vitest-build-')
+    );
+    tempDirs.push(rootDir);
+
+    await buildWorkflowTests({ cwd: path.resolve('/repo/app'), rootDir });
+
+    expect(createManifest).not.toHaveBeenCalled();
+  });
+
+  it('resolves workflow references against the manifest of the active build', async () => {
+    const outDir = await mkdtemp(
+      path.join(os.tmpdir(), 'workflow-vitest-out-')
+    );
+    tempDirs.push(outDir);
+    await writeFile(
+      path.join(outDir, 'manifest.json'),
+      JSON.stringify({ version: '1.0.0', workflows: exampleManifest.workflows })
+    );
+
+    const { buildWorkflowTests, getWorkflowRef, listWorkflowRefs } =
+      await loadModule();
+    // buildWorkflowTests() records the directories the rest of the run uses.
+    await buildWorkflowTests({ cwd: path.resolve('/repo/app'), outDir });
+
+    expect(listWorkflowRefs()).toEqual([
+      {
+        name: 'exampleWorkflow',
+        file: 'workflows/example.ts',
+        workflowId: 'workflow//./workflows/example//exampleWorkflow',
+      },
+    ]);
+    expect(getWorkflowRef('exampleWorkflow').workflowId).toBe(
+      'workflow//./workflows/example//exampleWorkflow'
     );
   });
 

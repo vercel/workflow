@@ -6,7 +6,12 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { type Event, SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  type Event,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  type World,
+} from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
@@ -25,14 +30,17 @@ vi.mock('../serialization.js', async (importActual) => {
 });
 
 import { registerSerializationClass } from '../class-serialization.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
   dehydrateRunError,
   dehydrateStepReturnValue,
   dehydrateWorkflowReturnValue,
+  getSerializeStream,
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
+  cancelRun,
   cancelRuns,
   recreateRunFromExisting,
   reenqueueRun,
@@ -179,6 +187,73 @@ describe('reenqueueRun', () => {
   });
 });
 
+// A run started by a newer SDK: this one cannot write that version's format,
+// so everything it writes to the run is capped at its own.
+const NEWER_THAN_THIS_SDK = SPEC_VERSION_CURRENT + 1;
+
+describe('writes to a run started by a newer SDK', () => {
+  const waitCreated: Event = {
+    eventId: 'evnt_0',
+    runId: 'wrun_123',
+    eventType: 'wait_created',
+    correlationId: 'wait_abc',
+    eventData: { resumeAt: new Date('2024-01-01T00:00:01.000Z') },
+    createdAt: new Date(),
+  };
+
+  it("caps cancelRun's run_cancelled at this SDK's version", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+    });
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it("caps wakeUpRun's wait_completed and wake at this SDK's version", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+      events: [waitCreated],
+    });
+    await wakeUpRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'wait_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it("caps reenqueueRun's queue spec version at this SDK's", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+    });
+    await reenqueueRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it('still treats a run with no recorded version as legacy', async () => {
+    const world = createMockWorld({ run: { specVersion: undefined } });
+    await reenqueueRun(world, 'wrun_123');
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+    });
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+    });
+  });
+});
+
 describe('recreateRunFromExisting', () => {
   afterEach(() => {
     vi.mocked(start).mockReset();
@@ -201,6 +276,77 @@ describe('recreateRunFromExisting', () => {
         deploymentId: 'deploy_source',
       })
     );
+  });
+
+  it('pins the source run spec version for a replay on its own deployment', async () => {
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_source',
+    });
+
+    expect(vi.mocked(start).mock.calls[0][2]).toMatchObject({
+      deploymentId: 'deploy_source',
+      specVersion: 6,
+    });
+  });
+
+  it('leaves the spec version to start() when the replay targets another deployment', async () => {
+    // The source run's version describes its own deployment, not the one
+    // the replay is redirected to; start() probes the target instead.
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_other',
+    });
+
+    const opts = vi.mocked(start).mock.calls[0][2];
+    expect(opts).toMatchObject({ deploymentId: 'deploy_other' });
+    expect(opts?.specVersion).toBeUndefined();
+  });
+
+  it('still honours an explicit specVersion on a redirected replay', async () => {
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_other',
+      specVersion: 7,
+    });
+
+    expect(vi.mocked(start).mock.calls[0][2]?.specVersion).toBe(7);
+  });
+
+  it('refuses a dynamic run rather than creating one with no code behind it', async () => {
+    // Starting by name alone would create a run carrying the dynamic
+    // workflow id and none of the stored code, which no delivery could run.
+    const world = createMockWorld({
+      run: {
+        runId: 'wrun_dynamic',
+        workflowName: 'workflow//dynamic/abc123//workflow',
+        executionContext: {
+          dynamicWorkflow: {
+            version: 1,
+            sourceHash: 'abc123',
+            exportName: 'workflow',
+            steps: {},
+          },
+        },
+      },
+    });
+
+    await expect(
+      recreateRunFromExisting(world, 'wrun_dynamic')
+    ).rejects.toThrow(/dynamic workflow run; re-running it is not supported/);
+    expect(start).not.toHaveBeenCalled();
   });
 });
 
@@ -267,6 +413,21 @@ describe('Run.getReadable', () => {
     setWorld(undefined as unknown as World);
   });
 
+  async function encryptedFrames(value: unknown, material: Uint8Array) {
+    const serialize = getSerializeStream(
+      {},
+      await deriveRunPayloadKeys(material)
+    );
+    const reader = serialize.readable.getReader();
+    const read = reader.read();
+    const writer = serialize.writable.getWriter();
+    await writer.write(value);
+    await writer.close();
+    const first = await read;
+    if (!first.value) throw new Error('Expected serialized frame');
+    return first.value;
+  }
+
   it('does not fetch the run encryption key for an empty stream', async () => {
     const world = createMockWorld();
     world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
@@ -284,8 +445,147 @@ describe('Run.getReadable', () => {
     new Run('wrun_123').getReadable();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(world.streams.get).not.toHaveBeenCalled();
     expect(world.runs.get).not.toHaveBeenCalled();
     expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+  });
+
+  it('prefetches the run key when a consumed stream is empty', async () => {
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    await expect(
+      new Run('wrun_123').getReadable().getReader().read()
+    ).resolves.toMatchObject({ done: true });
+    expect(world.streams.get).toHaveBeenCalledOnce();
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+  });
+
+  it('resolves supplied ops when the caller releases an open readable lock', async () => {
+    const ops: Promise<any>[] = [];
+    const material = new Uint8Array(32).fill(6);
+    const frame = await encryptedFrames({ open: true }, material);
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            // Deliberately remain open: releaseLock(), not EOF, is the signal.
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const reader = new Run('wrun_123').getReadable({ ops }).getReader();
+    await reader.read();
+    reader.releaseLock();
+    await expect(Promise.all(ops)).resolves.toEqual([undefined]);
+  });
+
+  it('starts stream GET and the cached run-key lookup on first read', async () => {
+    const material = new Uint8Array(32).fill(7);
+    const frame = await encryptedFrames({ first: true }, material);
+    let resolveRun: (run: any) => void;
+    const runPromise = new Promise<any>((resolve) => {
+      resolveRun = resolve;
+    });
+    const world = createMockWorld();
+    world.runs.get = vi.fn().mockReturnValue(runPromise);
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const read = new Run('wrun_123').getReadable().getReader().read();
+    await vi.waitFor(() => {
+      expect(world.streams.get).toHaveBeenCalledOnce();
+      expect(world.runs.get).toHaveBeenCalledOnce();
+    });
+    resolveRun?.({
+      runId: 'wrun_123',
+      deploymentId: 'test-deployment',
+    });
+
+    await expect(read).resolves.toMatchObject({ value: { first: true } });
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+  });
+
+  it('reuses one run-key promise across readable sessions', async () => {
+    const material = new Uint8Array(32).fill(8);
+    const frame = await encryptedFrames({ reusable: true }, material);
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockImplementation(
+        async () =>
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(frame);
+              controller.close();
+            },
+          })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const run = new Run('wrun_123');
+    await expect(run.getReadable().getReader().read()).resolves.toMatchObject({
+      value: { reusable: true },
+    });
+    await expect(run.getReadable().getReader().read()).resolves.toMatchObject({
+      value: { reusable: true },
+    });
+
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+    expect(world.streams.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a prefetched key failure when an encrypted frame is consumed', async () => {
+    const material = new Uint8Array(32).fill(9);
+    const frame = await encryptedFrames({ secret: true }, material);
+    const keyError = new Error('key lookup failed');
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockRejectedValue(keyError);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    await expect(
+      new Run('wrun_123').getReadable().getReader().read()
+    ).rejects.toThrow('key lookup failed');
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
   });
 });
 

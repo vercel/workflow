@@ -1,5 +1,11 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
+  Button,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
+import {
   BULK_CANCEL_MAX_RUN_IDS,
   type Event,
   type WorkflowRun,
@@ -19,7 +25,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
-import { Button } from '~/components/ui/button';
 import { Card, CardContent } from '~/components/ui/card';
 import {
   DropdownMenu,
@@ -42,11 +47,6 @@ import {
   TableRow,
 } from '~/components/ui/table';
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
-import {
   bulkCancelToastSeverity,
   shouldRetainSelectionAfterBulkCancel,
 } from '~/lib/bulk-cancel-ui';
@@ -56,6 +56,7 @@ import {
 } from '~/lib/client/listing-window';
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
+import { getRunReplayDisabledReason } from '~/lib/run-replay';
 import type { EnvMap } from '~/lib/types';
 import {
   bulkCancelRuns,
@@ -86,30 +87,40 @@ function RunActionsDropdownContentInner({
   onSuccess: () => void;
 }) {
   const [events, setEvents] = useState<Event[] | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(true);
   const [run, setRun] = useState<WorkflowRun | undefined>(undefined);
+  const [runIdentityLoading, setRunIdentityLoading] = useState(true);
   const status = run?.status || runStatus;
 
   useEffect(() => {
-    setIsLoading(true);
-
-    Promise.all([
-      fetchRun(env, runId, 'none'),
-      fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' }),
-    ])
-      .then(([runResult, eventsResult]) => {
+    setRun(undefined);
+    setRunIdentityLoading(true);
+    fetchRun(env, runId, 'none')
+      .then((runResult) => {
         if (runResult.success) {
           setRun(runResult.data);
         }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to fetch run:', err);
+      })
+      .finally(() => {
+        setRunIdentityLoading(false);
+      });
+
+    setEvents(undefined);
+    setEventsLoading(true);
+    fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' })
+      .then((eventsResult) => {
         if (eventsResult.success) {
           setEvents(eventsResult.data.data);
         }
       })
       .catch((err: unknown) => {
-        console.error('Failed to fetch run or events:', err);
+        console.error('Failed to fetch events:', err);
       })
       .finally(() => {
-        setIsLoading(false);
+        setEventsLoading(false);
       });
   }, [env, runId]);
 
@@ -119,7 +130,8 @@ function RunActionsDropdownContentInner({
       runId={runId}
       runStatus={status}
       events={events}
-      eventsLoading={isLoading}
+      eventsLoading={eventsLoading}
+      replayDisabledReason={getRunReplayDisabledReason(run, runIdentityLoading)}
       stopPropagation
       callbacks={{ onSuccess }}
     />
@@ -144,9 +156,10 @@ function LazyDropdownMenu({
     <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
       <DropdownMenuTrigger asChild>
         <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
+          variant="tertiary"
+          size="small"
+          shape="square"
+          aria-label="Run actions"
           onClick={(e) => e.stopPropagation()}
         >
           <MoreHorizontal className="h-4 w-4" />
@@ -412,8 +425,8 @@ function FilterControls({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              size="small"
               onClick={onSortToggle}
               disabled={loading}
             >
@@ -434,8 +447,8 @@ function FilterControls({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              size="small"
               onClick={onRefresh}
               disabled={loading}
             >
@@ -976,8 +989,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="tertiary"
+                  size="small"
                   className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                   onClick={handleBulkReenqueue}
                   disabled={isBulkReenqueuing || selectedRuns.length === 0}
@@ -1002,8 +1015,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       button is disabled */}
                   <span className="inline-flex">
                     <Button
-                      variant="ghost"
-                      size="sm"
+                      variant="tertiary"
+                      size="small"
                       className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                       onClick={handleBulkCancel}
                       disabled={isBulkCancelling || exceedsBulkCancelLimit}

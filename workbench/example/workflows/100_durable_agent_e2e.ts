@@ -1,10 +1,11 @@
 /**
- * E2E test workflows for DurableAgent using @workflow/ai/test mock providers.
+ * E2E test workflows for AI SDK 7's WorkflowAgent.
  */
-import { DurableAgent } from '@workflow/ai/agent';
-import { mockSequenceModel, mockTextModel } from '@workflow/ai/test';
+import { WorkflowAgent } from '@ai-sdk/workflow';
+import type { Tool } from 'ai';
 import { FatalError, getWritable } from 'workflow';
 import z from 'zod/v4';
+import { mockSequenceModel, mockTextModel } from './ai-sdk-test-provider.js';
 
 // ============================================================================
 // Tool step functions
@@ -25,13 +26,29 @@ async function throwingStep(): Promise<string> {
   throw new FatalError('Tool execution failed fatally');
 }
 
+async function riskyStep(input: { action: string }): Promise<string> {
+  'use step';
+  return input.action;
+}
+
+function mockWebSearchTool(args: { maxUses?: number } = {}): Tool {
+  return {
+    type: 'provider',
+    isProviderExecuted: true,
+    id: 'anthropic.web_search',
+    args,
+    inputSchema: z.object({ query: z.string() }),
+    outputSchema: z.unknown(),
+  };
+}
+
 // ============================================================================
 // Core agent tests
 // ============================================================================
 
 export async function agentBasicE2e(prompt: string) {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockTextModel(`Echo: ${prompt}`),
     instructions: 'You are a helpful assistant.',
   });
@@ -47,7 +64,7 @@ export async function agentBasicE2e(prompt: string) {
 
 export async function agentToolCallE2e(a: number, b: number) {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'tool-call',
@@ -78,7 +95,7 @@ export async function agentToolCallE2e(a: number, b: number) {
 
 export async function agentMultiStepE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'tool-call',
@@ -117,7 +134,7 @@ export async function agentMultiStepE2e() {
 
 export async function agentErrorToolE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       { type: 'tool-call', toolName: 'throwingTool', input: '{}' },
       { type: 'text', text: 'Tool failed but I recovered.' },
@@ -151,7 +168,7 @@ export async function agentErrorToolE2e() {
  */
 export async function agentProviderToolE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'provider-tool-call',
@@ -162,11 +179,7 @@ export async function agentProviderToolE2e() {
       { type: 'text', text: 'I found a result for you.' },
     ]),
     tools: {
-      webSearch: {
-        type: 'provider',
-        id: 'anthropic.web_search',
-        args: { maxUses: 5 },
-      } as any,
+      webSearch: mockWebSearchTool({ maxUses: 5 }),
     },
   });
   const result = await agent.stream({
@@ -185,7 +198,7 @@ export async function agentProviderToolE2e() {
  */
 export async function agentMixedToolsE2e(a: number, b: number) {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'provider-tool-call',
@@ -201,11 +214,7 @@ export async function agentMixedToolsE2e(a: number, b: number) {
       { type: 'text', text: `The answer is ${a + b}` },
     ]),
     tools: {
-      webSearch: {
-        type: 'provider',
-        id: 'anthropic.web_search',
-        args: {},
-      } as any,
+      webSearch: mockWebSearchTool(),
       addNumbers: {
         description: 'Add two numbers',
         inputSchema: z.object({ a: z.number(), b: z.number() }),
@@ -224,28 +233,27 @@ export async function agentMixedToolsE2e(a: number, b: number) {
 }
 
 // ============================================================================
-// Callback tests — onStepFinish
+// Callback tests — onStepEnd
 // ============================================================================
 
-export async function agentOnStepFinishE2e() {
+export async function agentOnStepEndE2e() {
   'use workflow';
   const callSources: string[] = [];
-  let capturedStepResult: any = null;
-  const agent = new DurableAgent({
+  let capturedStepResult = null;
+  const agent = new WorkflowAgent({
     model: mockTextModel('hello'),
-    onStepFinish: async () => {
+    onStepEnd: async () => {
       callSources.push('constructor');
     },
   });
   const result = await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    onStepFinish: async (stepResult) => {
+    onStepEnd: async (stepResult) => {
       callSources.push('method');
       capturedStepResult = {
         text: stepResult.text,
         finishReason: stepResult.finishReason,
-        stepNumber: (stepResult as any).stepNumber,
       };
     },
   });
@@ -253,30 +261,30 @@ export async function agentOnStepFinishE2e() {
 }
 
 // ============================================================================
-// Callback tests — onFinish
+// Callback tests — onEnd
 // ============================================================================
 
-export async function agentOnFinishE2e() {
+export async function agentOnEndE2e() {
   'use workflow';
   const callSources: string[] = [];
-  let capturedEvent: any = null;
-  const agent = new DurableAgent({
+  let capturedEvent = null;
+  const agent = new WorkflowAgent({
     model: mockTextModel('hello from finish'),
-    onFinish: async () => {
+    onEnd: async () => {
       callSources.push('constructor');
     },
   });
   const result = await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    onFinish: async (event) => {
+    onEnd: async (event) => {
       callSources.push('method');
       capturedEvent = {
-        text: (event as any).text,
-        finishReason: (event as any).finishReason,
+        text: event.text,
+        finishReason: event.finishReason,
         stepsLength: event.steps.length,
         hasMessages: event.messages.length > 0,
-        hasTotalUsage: (event as any).totalUsage != null,
+        hasTotalUsage: event.totalUsage != null,
       };
     },
   });
@@ -289,7 +297,7 @@ export async function agentOnFinishE2e() {
 
 export async function agentInstructionsStringE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockTextModel('ok'),
     instructions: 'You are a pirate.',
   });
@@ -309,7 +317,7 @@ export async function agentInstructionsStringE2e() {
 
 export async function agentTimeoutE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockTextModel('fast response'),
   });
   const result = await agent.stream({
@@ -324,59 +332,59 @@ export async function agentTimeoutE2e() {
 }
 
 // ============================================================================
-// GAP tests — experimental_onStart
+// Callback tests — experimental_onStart
 // ============================================================================
 
 export async function agentOnStartE2e() {
   'use workflow';
   const callSources: string[] = [];
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockTextModel('hello'),
     experimental_onStart: async () => {
       callSources.push('constructor');
     },
-  } as any);
+  });
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
     experimental_onStart: async () => {
       callSources.push('method');
     },
-  } as any);
+  });
   return { callSources };
 }
 
 // ============================================================================
-// GAP tests — experimental_onStepStart
+// Callback tests — experimental_onStepStart
 // ============================================================================
 
 export async function agentOnStepStartE2e() {
   'use workflow';
   const callSources: string[] = [];
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockTextModel('hello'),
     experimental_onStepStart: async () => {
       callSources.push('constructor');
     },
-  } as any);
+  });
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
     experimental_onStepStart: async () => {
       callSources.push('method');
     },
-  } as any);
+  });
   return { callSources };
 }
 
 // ============================================================================
-// GAP tests — experimental_onToolCallStart
+// Callback tests — onToolExecutionStart
 // ============================================================================
 
-export async function agentOnToolCallStartE2e() {
+export async function agentOnToolExecutionStartE2e() {
   'use workflow';
   const calls: string[] = [];
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'tool-call',
@@ -392,29 +400,29 @@ export async function agentOnToolCallStartE2e() {
         execute: echoStep,
       },
     },
-    experimental_onToolCallStart: async () => {
+    onToolExecutionStart: async () => {
       calls.push('constructor');
     },
-  } as any);
+  });
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    experimental_onToolCallStart: async () => {
+    onToolExecutionStart: async () => {
       calls.push('method');
     },
-  } as any);
+  });
   return { calls };
 }
 
 // ============================================================================
-// GAP tests — experimental_onToolCallFinish
+// Callback tests — onToolExecutionEnd
 // ============================================================================
 
-export async function agentOnToolCallFinishE2e() {
+export async function agentOnToolExecutionEndE2e() {
   'use workflow';
   const calls: string[] = [];
-  let capturedEvent: any = null;
-  const agent = new DurableAgent({
+  let capturedEvent = null;
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'tool-call',
@@ -430,14 +438,14 @@ export async function agentOnToolCallFinishE2e() {
         execute: addNumbers,
       },
     },
-    experimental_onToolCallFinish: async () => {
+    onToolExecutionEnd: async () => {
       calls.push('constructor');
     },
-  } as any);
+  });
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    experimental_onToolCallFinish: async (event: any) => {
+    onToolExecutionEnd: async (event) => {
       calls.push('method');
       capturedEvent = {
         toolName: event?.toolCall?.toolName,
@@ -445,23 +453,26 @@ export async function agentOnToolCallFinishE2e() {
         output: event?.output,
       };
     },
-  } as any);
+  });
   return { calls, capturedEvent };
 }
 
 // ============================================================================
-// GAP tests — prepareCall
+// prepareCall
 // ============================================================================
 
 export async function agentPrepareCallE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  let prepareCallCount = 0;
+  const agent = new WorkflowAgent({
     model: mockTextModel('ok'),
-    prepareCall: ({ options, ...rest }: any) => ({
-      ...rest,
-      providerOptions: { test: { value: options?.value } },
-    }),
-  } as any);
+    prepareCall: () => {
+      prepareCallCount++;
+      return {
+        providerOptions: { test: { value: 'prepared' } },
+      };
+    },
+  });
   const result = await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
@@ -469,17 +480,18 @@ export async function agentPrepareCallE2e() {
   return {
     stepCount: result.steps.length,
     lastStepText: result.steps[result.steps.length - 1]?.text,
+    prepareCallCount,
   };
 }
 
 // ============================================================================
-// GAP tests — tool approval (needsApproval)
+// Tool approval (needsApproval)
 // ============================================================================
 
 /** Tool with needsApproval: true should pause the agent. */
 export async function agentToolApprovalE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
         type: 'tool-call',
@@ -492,9 +504,9 @@ export async function agentToolApprovalE2e() {
       riskyTool: {
         description: 'A dangerous tool that needs approval',
         inputSchema: z.object({ action: z.string() }),
-        execute: echoStep as any,
+        execute: riskyStep,
         needsApproval: true,
-      } as any,
+      },
     },
   });
   const result = await agent.stream({
@@ -524,8 +536,7 @@ async function prepareStepStep(input: { n: number }): Promise<string> {
 export async function agentConstructorPrepareStepE2e() {
   'use workflow';
   const stepNumbers: number[] = [];
-
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       { type: 'tool-call', toolName: 'greet', input: JSON.stringify({ n: 1 }) },
       { type: 'text', text: 'done' },
@@ -537,8 +548,8 @@ export async function agentConstructorPrepareStepE2e() {
         execute: prepareStepStep,
       },
     },
-    prepareStep: ({ stepNumber }) => {
-      stepNumbers.push(stepNumber);
+    prepareStep: (options) => {
+      stepNumbers.push(options.stepNumber);
       return {};
     },
   });
@@ -561,7 +572,7 @@ export async function agentStreamPrepareStepOverrideE2e() {
   'use workflow';
   const source: string[] = [];
 
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockTextModel('ok'),
     prepareStep: () => {
       source.push('constructor');
@@ -607,10 +618,10 @@ async function multimodalToolStep(): Promise<{
   };
 }
 
-/** Tools returning LanguageModelV3ToolResultOutput should pass through. */
+/** Tools returning LanguageModelV4ToolResultOutput should pass through. */
 export async function agentMultimodalToolResultE2e() {
   'use workflow';
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: mockSequenceModel([
       { type: 'tool-call', toolName: 'vision', input: '{}' },
       { type: 'text', text: 'I see the image' },

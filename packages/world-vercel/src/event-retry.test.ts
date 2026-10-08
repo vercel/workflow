@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   RunExpiredError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -8,12 +9,21 @@ import {
 import { EventTypeSchema } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  AfterCommitError,
   EVENT_RETRY_ELIGIBILITY,
   isRetryableEventPostError,
   MAX_EVENT_POST_RETRIES,
+  recordsStepOutcome,
+  THROTTLE_DEADLINE_RESERVE_MS,
   THROTTLE_RETRY_BUDGET_MS,
+  THROTTLE_RETRY_MAX_BUDGET_MS,
   withEventPostRetry,
 } from './event-retry.js';
+import { getDeadline } from './get-deadline.js';
+
+vi.mock('./get-deadline.js', () => ({
+  getDeadline: vi.fn(async () => undefined),
+}));
 
 const transportErr = (code: string) =>
   Object.assign(new Error(`transport ${code}`), { code });
@@ -198,6 +208,36 @@ describe('isRetryableEventPostError', () => {
     ).toBe(false);
   });
 
+  it.each([
+    'AbortError',
+    'ABORT_ERR',
+    'UND_ERR_ABORTED',
+    'ERR_HTTP2_STREAM_CANCEL',
+  ])('does not retry STREAM_ERROR wrapping cancellation marker %s', (marker) => {
+    const cause = Object.assign(new Error('cancelled'), {
+      code: marker,
+      name: marker,
+      cause: transportErr('ECONNRESET'),
+    });
+    expect(
+      isRetryableEventPostError(
+        new StreamError('stream failed', {
+          cause: new Error('wrapper', { cause }),
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('retries STREAM_ERROR wrapping an internal timeout', () => {
+    expect(
+      isRetryableEventPostError(
+        new StreamError('stream timed out', {
+          cause: new DOMException('deadline', 'TimeoutError'),
+        })
+      )
+    ).toBe(true);
+  });
+
   it('does not retry an unclassified error', () => {
     expect(isRetryableEventPostError(new Error('something else'))).toBe(false);
   });
@@ -359,6 +399,19 @@ describe('withEventPostRetry', () => {
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
+    it('never re-sends a POST whose failure came after it committed', async () => {
+      const throttled = new ThrottleError('429', { retryAfter: 1 });
+      const fn = vi.fn(async () => {
+        throw new AfterCommitError(throttled);
+      });
+
+      const err = await withEventPostRetry(fn, 'run_started').catch((e) => e);
+
+      expect(err).toBeInstanceOf(AfterCommitError);
+      expect((err as AfterCommitError).error).toBe(throttled);
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
     it('does not consume the transient retry allowance', async () => {
       // A throttle wait followed by transient blips: the transient counter
       // still permits MAX_EVENT_POST_RETRIES retries.
@@ -376,6 +429,136 @@ describe('withEventPostRetry', () => {
 
       await expect(p).resolves.toBe('ok');
       expect(fn).toHaveBeenCalledTimes(2 + MAX_EVENT_POST_RETRIES);
+    });
+  });
+
+  describe('throttle budget by what giving up would lose', () => {
+    const deadlineIn = (ms: number) =>
+      vi.mocked(getDeadline).mockResolvedValue(new Date(Date.now() + ms));
+    afterEach(() => {
+      vi.mocked(getDeadline).mockResolvedValue(undefined);
+    });
+    const alwaysThrottled = (retryAfter: number) =>
+      vi.fn(async () => {
+        throw new ThrottleError('429', { retryAfter });
+      });
+
+    it('gives only execution-only step outcomes the invocation budget', () => {
+      expect(
+        EventTypeSchema.options
+          .filter((type) => recordsStepOutcome(type))
+          .sort()
+      ).toEqual(['step_completed', 'step_retrying']);
+    });
+
+    it('keeps a step outcome waiting until the invocation deadline', async () => {
+      deadlineIn(300_000);
+      const fn = alwaysThrottled(14);
+
+      const p = withEventPostRetry(fn, 'step_completed').catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      // Every 14s wait that ends before (deadline - reserve) is taken.
+      const waits = Math.floor(
+        (300_000 - THROTTLE_DEADLINE_RESERVE_MS) / 14_000
+      );
+      expect(fn).toHaveBeenCalledTimes(waits + 1);
+    });
+
+    it('resends a step outcome past the 30s budget and returns', async () => {
+      deadlineIn(300_000);
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls++;
+        if (calls <= 4) throw new ThrottleError('429', { retryAfter: 12 });
+        return 'ok';
+      });
+
+      const p = withEventPostRetry(fn, 'step_completed');
+      await vi.runAllTimersAsync();
+
+      await expect(p).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(5);
+    });
+
+    it.each([
+      'step_started',
+      'step_failed',
+      'run_started',
+      'run_completed',
+      'hook_received',
+    ] as const)('keeps %s on the 30s budget', async (eventType) => {
+      deadlineIn(300_000);
+      const fn = alwaysThrottled(14);
+
+      const p = withEventPostRetry(fn, eventType).catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('falls back to the 30s budget when the deadline is unknown', async () => {
+      const fn = alwaysThrottled(14);
+
+      const p = withEventPostRetry(fn, 'step_completed').catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('never sleeps past the deadline, even within the 30s budget', async () => {
+      deadlineIn(THROTTLE_DEADLINE_RESERVE_MS + 5_000);
+      const fn = alwaysThrottled(10);
+
+      await expect(withEventPostRetry(fn, 'step_started')).rejects.toThrow(
+        '429'
+      );
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('caps the wait when the deadline is implausibly far', async () => {
+      deadlineIn(24 * 60 * 60_000);
+      const fn = alwaysThrottled(60);
+
+      const p = withEventPostRetry(fn, 'step_retrying').catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      expect(fn).toHaveBeenCalledTimes(
+        Math.floor(THROTTLE_RETRY_MAX_BUDGET_MS / 60_000) + 1
+      );
+    });
+
+    it('gives a step_failed recorded after the body ran the invocation budget', async () => {
+      deadlineIn(300_000);
+      const fn = alwaysThrottled(14);
+
+      const p = withEventPostRetry(fn, 'step_failed', {
+        afterStepBody: true,
+      }).catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      const waits = Math.floor(
+        (300_000 - THROTTLE_DEADLINE_RESERVE_MS) / 14_000
+      );
+      expect(fn).toHaveBeenCalledTimes(waits + 1);
+    });
+
+    it('keeps a batch on the 30s budget whatever its first event', async () => {
+      deadlineIn(300_000);
+      const fn = alwaysThrottled(14);
+
+      const p = withEventPostRetry(fn, 'step_completed', {
+        batchIdempotent: true,
+      }).catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      expect(ThrottleError.is(await p)).toBe(true);
+      expect(fn).toHaveBeenCalledTimes(3);
     });
   });
 

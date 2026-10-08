@@ -41,40 +41,92 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
+      # Keep setup-node because registry-url configures npm publishing. pnpm/setup
+      # handles the pnpm store cache after Node.js is available.
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v4
         with:
           node-version: 24.x
-          cache: "pnpm"
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup pnpm
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: true
+          require-lockfile: true
+          cache: true
 
       - name: Check package release major
         run: node .github/scripts/check-release-major.js "$RELEASE_VERSION"
 
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+      # changesets/action v2 pairs with @changesets/cli v3 (it refuses a v2
+      # CLI). It pushes the release commit and tags through the GitHub API, so
+      # they are signed with GitHub's key as the branch rules require; there is
+      # no `commitMode` input any more.
+      #
+      # These are its select-mode, publish and version sub-actions rather than
+      # the combined `changesets/action`, which publishes only when no
+      # changesets are pending. Under that rule a "Version Packages" PR merged
+      # without every pending changeset strands its versions: every later run,
+      # re-runs included, sees the leftover changeset and only versions. 5.2.0
+      # was stranded this way when the run that should have added #4733's
+      # changeset to #4687 died on a GitHub 502 and #4687 was merged stale. It
+      # was published by dispatching this workflow on #4687's head. A queued run
+      # cancelled by a newer push (see `concurrency` above) strands a release
+      # the same way with no outage at all. So the registry decides whether to
+      # publish, and the release PR is still refreshed in the same run.
+      - name: Select release mode
+        id: mode
+        uses: changesets/action/select-mode@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
 
-      - name: Create Release Pull Request or Publish to npm
-        id: changesets
-        uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1.8.0
+      # `select-mode` asks the registry only when no changesets are pending.
+      # Otherwise ask it here: `publish-plan` is the diff `changeset publish`
+      # acts on, so it is empty on every commit except one a stale release PR
+      # left behind. A registry error here must not turn an ordinary push red;
+      # the verify step below retries and still reports any version missing.
+      - name: Find versions on this commit that are not on npm
+        id: unpublished
+        if: steps.mode.outputs.mode != 'publish'
+        continue-on-error: true
+        run: |
+          pnpm exec changeset publish-plan --output "$RUNNER_TEMP/publish-plan.json"
+          missing=$(jq -r '[.plan[][] | select(.kind == "publish") | "\(.name)@\(.version)"] | join(" ")' "$RUNNER_TEMP/publish-plan.json")
+          if [ -n "$missing" ]; then
+            echo "::warning::Changesets are pending, but these versions on this commit were never published. Publishing them now: $missing"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The action learns what the publish script published from an NDJSON file
+      # it names in `CHANGESETS_OUTPUT`, which `pnpm ci:publish` inherits and
+      # passes on to `changeset publish`; without it the action sees nothing
+      # published and skips the release. Note the output is
+      # `published-packages`, not `publishedPackages`.
+      - name: Publish to npm
+        id: publish
+        if: steps.mode.outputs.mode == 'publish' || steps.unpublished.outputs.stale == 'true'
+        uses: changesets/action/publish@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          version: pnpm ci:version
-          publish: pnpm ci:publish
-          createGithubReleases: false
-          setupGitUser: false
-          # Use GitHub API for GPG-signed commits (required by branch rules).
-          commitMode: github-api
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          script: pnpm ci:publish
+          create-github-releases: false
+
+      # `changeset publish` runs one `pnpm publish` per package and one failure
+      # leaves the release half-shipped, with `workflow` possibly pointing at a
+      # `@workflow/core` that is not on npm yet. 5.0.0-beta.48 shipped 7 of 21
+      # packages on its first attempt, and the failure that stopped it crashed
+      # the publish loop before naming the packages it took down. Cross-check
+      # every publishable manifest on this commit against the registry, whatever
+      # the publish step's outcome, so the job says exactly what is missing.
+      - name: Verify every package version on this commit is on npm
+        if: ${{ !cancelled() && steps.mode.outcome == 'success' }}
+        run: node scripts/check-published.mjs
 
       - name: Create GitHub Release
-        if: steps.changesets.outputs.published == 'true'
+        if: steps.publish.outputs.published == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          PUBLISHED_PACKAGES: ${{ steps.publish.outputs.published-packages }}
         run: |
           # Generate release notes (PUBLISHED_PACKAGES filters to only include packages from this release)
           RELEASE_JSON=$(node scripts/generate-release-notes.mjs)
@@ -82,12 +134,23 @@ jobs:
           TITLE=$(echo "$RELEASE_JSON" | jq -r '.title')
           BODY=$(echo "$RELEASE_JSON" | jq -r '.body')
 
-          # Determine release flags based on branch
-          if [ "$GITHUB_REF_NAME" = "stable" ]; then
+          # Prerelease is derived from the published version rather than the
+          # branch: a version carrying a prerelease identifier (5.1.0-beta.1)
+          # is a prerelease wherever it was cut, and `main` publishes GA
+          # versions from 5.0.0 on.
+          VERSION="${TAG##*@}"
+          if [ "$VERSION" != "${VERSION#*-}" ]; then
+            PRERELEASE="true"
+          else
             PRERELEASE="false"
+          fi
+
+          # GitHub's "Latest" marker belongs to the current GA line, which
+          # lives on `main`. Maintenance branches (`stable` = 4.x) publish
+          # GA versions too, but must never claim the marker.
+          if [ "$PRERELEASE" = "false" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
             LATEST_FLAG="--latest"
           else
-            PRERELEASE="true"
             LATEST_FLAG="--latest=false"
           fi
 
@@ -109,12 +172,17 @@ jobs:
               --prerelease=$PRERELEASE
           fi
 
+      # A broken Slack token must not turn a successful release red: the Aug 26
+      # and Aug 31 releases published every package and still failed here
+      # (`token_expired`, then `invalid_auth`), which taught people to read a
+      # red Release job as noise. Surface it as a warning instead.
       - name: Post release notes to Slack
-        if: steps.changesets.outputs.published == 'true'
+        if: steps.publish.outputs.published == 'true'
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_RELEASE_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          PUBLISHED_PACKAGES: ${{ steps.publish.outputs.published-packages }}
         run: |
           if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_RELEASE_CHANNEL_ID" ]; then
             echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_RELEASE_CHANNEL_ID"
@@ -123,3 +191,22 @@ jobs:
 
           # Post to Slack via chat.postMessage (payload is chunked to Slack limits)
           node scripts/generate-release-slack-payload.mjs --post
+
+      # The version sub-action commits every file that differs from this
+      # commit, untracked ones included, to the release PR branch, and
+      # `changeset version` rewrites the CHANGELOGs and manifests that the
+      # release-notes steps above read. So it runs last, on a tree reset to this
+      # commit: a publish above leaves build output behind, and a publish that
+      # failed partway can leave a `prepack` copy its `postpack` never removed.
+      # It runs even when an earlier step failed, so a failed publish does not
+      # also leave the release PR behind main.
+      - name: Reset the working tree to this commit
+        id: reset
+        if: ${{ !cancelled() && steps.mode.outputs.mode == 'version' }}
+        run: git reset --hard HEAD && git clean -fd
+
+      - name: Create or update the release pull request
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' }}
+        uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        with:
+          script: pnpm ci:version

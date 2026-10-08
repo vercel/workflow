@@ -18,9 +18,12 @@ export interface DecodedFrame {
   body: Uint8Array;
 }
 
+/** The response body stopped before the next complete frame was available. */
+export class IncompleteFrameError extends Error {}
+
 // The protocol consumer validates the event or control-frame shape after the
 // body is available. The byte codec only requires a CBOR object here.
-const CborObjectSchema = z.record(z.string(), z.unknown());
+const CborObjectSchema = z.compile(z.record(z.string(), z.unknown()));
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */
@@ -36,6 +39,40 @@ export function encodeFrame(
   view.setUint32(4 + metaBytes.byteLength, body.byteLength, false);
   out.set(body, 4 + metaBytes.byteLength + 4);
   return out;
+}
+
+/**
+ * Decode exactly one frame from one buffer, synchronously: the counterpart of
+ * {@link encodeFrame} for a transport that delivers whole frames, such as one
+ * WebSocket message. Trailing bytes are an error. Throws on a truncated or
+ * malformed frame.
+ */
+export function decodeFrame(raw: Uint8Array): DecodedFrame {
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  if (raw.byteLength < 4) {
+    throw new Error('ws frame shorter than the meta length prefix');
+  }
+  const metaEnd = 4 + view.getUint32(0, false);
+  if (raw.byteLength < metaEnd + 4) {
+    throw new Error('ws frame too short for meta + body length prefix');
+  }
+  const meta: unknown = decode(raw.subarray(4, metaEnd));
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+    throw new Error('ws frame meta must be a CBOR map');
+  }
+  const bodyStart = metaEnd + 4;
+  const bodyEnd = bodyStart + view.getUint32(metaEnd, false);
+  if (raw.byteLength !== bodyEnd) {
+    throw new Error(
+      raw.byteLength < bodyEnd
+        ? 'ws frame shorter than its declared body length'
+        : `ws frame has ${raw.byteLength - bodyEnd} trailing bytes`
+    );
+  }
+  return {
+    meta: meta as Record<string, unknown>,
+    body: raw.subarray(bodyStart, bodyEnd),
+  };
 }
 
 /**
@@ -71,7 +108,14 @@ export async function* decodeFrames(
     const parts: Uint8Array[] = [buffer];
     let byteLength = buffer.byteLength;
     while (byteLength < needed) {
-      const chunk = await chunks.next();
+      let chunk: IteratorResult<Uint8Array>;
+      try {
+        chunk = await chunks.next();
+      } catch (cause) {
+        throw new IncompleteFrameError('decodeFrames: source stream failed', {
+          cause,
+        });
+      }
       if (chunk.done) return false;
       if (chunk.value.byteLength === 0) continue;
       parts.push(chunk.value);
@@ -104,12 +148,12 @@ export async function* decodeFrames(
       take(4);
 
       if (!(await refill(metaLen))) {
-        throw new Error('decodeFrames: truncated meta block');
+        throw new IncompleteFrameError('decodeFrames: truncated meta block');
       }
       const meta = CborObjectSchema.parse(decode(take(metaLen)));
 
       if (!(await refill(4))) {
-        throw new Error('decodeFrames: truncated body length');
+        throw new IncompleteFrameError('decodeFrames: truncated body length');
       }
       const bodyLen = new DataView(
         buffer.buffer,
@@ -119,7 +163,7 @@ export async function* decodeFrames(
       take(4);
 
       if (bodyLen > 0 && !(await refill(bodyLen))) {
-        throw new Error('decodeFrames: truncated body bytes');
+        throw new IncompleteFrameError('decodeFrames: truncated body bytes');
       }
       // Slice (not subarray) so the yielded body owns its bytes, so later
       // reads into the buffer won't overwrite it; bodyLen 0 yields empty.

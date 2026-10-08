@@ -1,4 +1,9 @@
-import { createSecureServer, type Http2SecureServer } from 'node:http2';
+import { createServer as createHttpServer } from 'node:http';
+import {
+  createSecureServer,
+  type Http2SecureServer,
+  constants as http2Constants,
+} from 'node:http2';
 import { type AddressInfo, connect, createServer, type Server } from 'node:net';
 import type { TLSSocket } from 'node:tls';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
@@ -17,22 +22,29 @@ import {
   _resetNodeHttpAgentsForTests,
   createDispatcherRecycler,
   createEventsDispatcher,
+  createQueueDispatcher,
   createStreamDispatcher,
   DEFAULT_AGENT_OPTIONS,
   type DispatcherRecycler,
   EVENTS_AGENT_OPTIONS,
   EVENTS_AGENT_OPTIONS_NO_H2,
   EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
+  EVENTS_REQUEST_TIMEOUT_MS,
   getDispatcher,
   getEventsDispatcher,
   getNodeHttpAgents,
+  getQueueAgentOptions,
   getQueueDispatcher,
+  getQueueRequestTimeoutMs,
   getStreamCloseDispatcher,
   getStreamDispatcher,
+  h2MultiplexInterceptor,
   isRecyclableTransportError,
   NODE_HTTP_BODY_TIMEOUT_MS,
   NODE_HTTP_HEADERS_TIMEOUT_MS,
   noteEventsTransportOutcome,
+  QUEUE_AGENT_CONNECTIONS,
+  QUEUE_REQUEST_TIMEOUT_MS,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
@@ -139,6 +151,17 @@ describe('agent transport', () => {
   // fault, so it has to leave nothing of H2 behind: `allowH2: true` with the
   // interceptor skipped still keeps a wedged session (see
   // EVENTS_AGENT_OPTIONS_NO_H2).
+  // undici's 300s defaults outlast the runtime's 240s replay budget, so a
+  // silent stream would cost the whole delivery before it even failed.
+  it('arms events deadlines well inside the replay budget', () => {
+    const REPLAY_BUDGET_MS = 240_000;
+    for (const options of [EVENTS_AGENT_OPTIONS, EVENTS_AGENT_OPTIONS_NO_H2]) {
+      expect(options.headersTimeout).toBe(EVENTS_REQUEST_TIMEOUT_MS);
+      expect(options.bodyTimeout).toBe(EVENTS_REQUEST_TIMEOUT_MS);
+    }
+    expect(EVENTS_REQUEST_TIMEOUT_MS).toBeLessThan(REPLAY_BUDGET_MS / 2);
+  });
+
   it('gives the kill switch an events agent with no HTTP/2 at all', () => {
     expect(EVENTS_AGENT_OPTIONS_NO_H2.allowH2).toBe(false);
     expect(EVENTS_AGENT_OPTIONS_NO_H2.pipelining).toBe(1);
@@ -470,6 +493,222 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   });
 });
 
+// undici dispatches a streamed request body on HTTP/2 only once the connection
+// has no stream in flight, and stops its whole queue behind it until then. The
+// multiplexing interceptor re-buffers small bodies to avoid that, so the
+// production shape that still hit it was a body too large to re-buffer (a
+// multi-MiB run input or event batch) on a connection that never drained.
+describe('events dispatcher on a busy HTTP/2 connection', () => {
+  const LARGE_BODY_BYTES = 2 * 1024 * 1024;
+  const LOOPBACK = { connect: { rejectUnauthorized: false } };
+
+  let server: Http2SecureServer;
+  let origin: string;
+  let seen: Array<{ path: string; httpVersion: string; bytes: number }>;
+  let releaseHold: (() => void) | undefined;
+  let holdArrived: Promise<void>;
+  let resetAttempts: number;
+
+  beforeAll(async () => {
+    // allowHTTP1 so one origin serves both the h2 stream and the h1 fallback.
+    server = createSecureServer({
+      key: TEST_KEY,
+      cert: TEST_CERT,
+      allowHTTP1: true,
+    });
+    server.on('sessionError', () => undefined);
+    server.on('clientError', () => undefined);
+    server.on('request', (req, res) => {
+      req.stream?.on('error', () => undefined);
+      const path = String(req.url);
+      let bytes = 0;
+      req.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+      });
+      req.on('end', () => {
+        seen.push({ path, httpVersion: req.httpVersion, bytes });
+        if (path === '/hold') {
+          holdArrivedResolve();
+          releaseHold = () => {
+            res.writeHead(200);
+            res.end('held');
+          };
+          return;
+        }
+        // The edge's per-stream reset on a busy connection. `/reset-once`
+        // answers the retry; `/reset-always` never does.
+        if (
+          (path === '/reset-once' && ++resetAttempts === 1) ||
+          path === '/reset-always'
+        ) {
+          if (path === '/reset-always') resetAttempts++;
+          req.stream.close(http2Constants.NGHTTP2_ENHANCE_YOUR_CALM);
+          return;
+        }
+        res.writeHead(200);
+        res.end(path);
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    origin = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  let holdArrivedResolve: () => void;
+  beforeEach(() => {
+    seen = [];
+    releaseHold = undefined;
+    resetAttempts = 0;
+    holdArrived = new Promise<void>((resolve) => {
+      holdArrivedResolve = resolve;
+    });
+  });
+
+  /**
+   * Opens a GET that the origin holds, so the H2 connection never drains.
+   * Resolves once the origin has it, to a wrapper (not the response promise
+   * itself, which an async return would await).
+   */
+  async function holdStreamOpen(dispatcher: unknown) {
+    const held = fetch(`${origin}/hold`, {
+      dispatcher,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    } as any).then((r) => r.text());
+    await holdArrived;
+    return { held };
+  }
+
+  function postLarge(dispatcher: unknown) {
+    return fetch(`${origin}/large`, {
+      method: 'POST',
+      body: new Uint8Array(LARGE_BODY_BYTES),
+      dispatcher,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    } as any).then((r) => r.text());
+  }
+
+  /** Resolves to 'settled' or 'pending' after `ms`. */
+  function stateAfter(promise: Promise<unknown>, ms: number) {
+    return Promise.race([
+      promise.then(() => 'settled' as const),
+      new Promise<'pending'>((resolve) => {
+        setTimeout(() => resolve('pending'), ms);
+      }),
+    ]);
+  }
+
+  // Establishes the premise with the interceptor alone (no fallback): the
+  // large POST cannot start while the held stream is in flight.
+  it('queues behind an in-flight H2 stream without the fallback (the failure this fixes)', async () => {
+    const agent = new Agent({ ...EVENTS_AGENT_OPTIONS, ...LOOPBACK });
+    const dispatcher = agent.compose(h2MultiplexInterceptor);
+    try {
+      const { held } = await holdStreamOpen(dispatcher);
+      const large = postLarge(dispatcher);
+      expect(await stateAfter(large, 1_000)).toBe('pending');
+      expect(seen.map((s) => s.path)).toEqual(['/hold']);
+
+      releaseHold?.();
+      expect(await held).toBe('held');
+      expect(await large).toBe('/large');
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('sends it over HTTP/1.1 so it does not wait for the H2 connection to drain', async () => {
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      const { held } = await holdStreamOpen(agent);
+      const large = postLarge(agent);
+      expect(await stateAfter(large, 5_000)).toBe('settled');
+      expect(await large).toBe('/large');
+      expect(seen).toContainEqual({
+        path: '/large',
+        httpVersion: '1.1',
+        bytes: LARGE_BODY_BYTES,
+      });
+
+      releaseHold?.();
+      expect(await held).toBe('held');
+      expect(seen).toContainEqual({
+        path: '/hold',
+        httpVersion: '2.0',
+        bytes: 0,
+      });
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('retries an event-log read whose stream the peer reset', async () => {
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      const response = await fetch(`${origin}/reset-once`, {
+        dispatcher: agent,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+      } as any);
+      expect(await response.text()).toBe('/reset-once');
+      expect(resetAttempts).toBe(2);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  // undici before 7.30.0 retired the wrong request when an H2 stream failed out
+  // of order, leaving a phantom "running" slot on the connection for good
+  // (nodejs/undici#5410, #5569). A streamed body then never dispatched on that
+  // connection again, since it waits for zero running streams. Pins the undici
+  // version this package depends on.
+  it('leaves no phantom running stream after a peer reset', async () => {
+    const agent = new Agent({ ...EVENTS_AGENT_OPTIONS, ...LOOPBACK });
+    try {
+      await (
+        await fetch(`${origin}/warm`, {
+          dispatcher: agent,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any)
+      ).text();
+      await expect(
+        fetch(`${origin}/reset-always`, {
+          dispatcher: agent,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any)
+      ).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(agent.stats[origin]?.running).toBe(0);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  // An event write may already have committed when its stream is reset, so it
+  // must surface the error rather than be replayed.
+  it('does not retry an event write whose stream the peer reset', async () => {
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      await expect(
+        fetch(`${origin}/reset-always`, {
+          method: 'POST',
+          body: 'x',
+          dispatcher: agent,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any)
+      ).rejects.toThrow();
+      expect(resetAttempts).toBe(1);
+    } finally {
+      await agent.close();
+    }
+  });
+});
+
 // The transport fault this whole mechanism exists for: an HTTP/2 session whose
 // TCP connection stays established while no bytes cross it. undici keeps such a
 // session in service — on a stream timeout it deliberately does not destroy the
@@ -732,7 +971,14 @@ describe('dispatcher recycling accounting', () => {
   // and an abort is the caller's own doing.
   it('counts only transport failures a rebuild can fix', () => {
     expect(isRecyclableTransportError(h2StreamTimeout())).toBe(true);
-    for (const code of ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+    for (const code of [
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_BODY_TIMEOUT',
+      'ERR_HTTP2_GOAWAY_SESSION',
+      'ERR_HTTP2_INVALID_SESSION',
+      'ERR_HTTP2_SESSION_ERROR',
+      'ERR_HTTP2_STREAM_ERROR',
+    ]) {
       expect(
         isRecyclableTransportError(Object.assign(new Error(code), { code }))
       ).toBe(true);
@@ -743,6 +989,8 @@ describe('dispatcher recycling accounting', () => {
       'ENOTFOUND',
       'ECONNREFUSED',
       'CERT_HAS_EXPIRED',
+      'ERR_HTTP2_INVALID_HEADER_VALUE',
+      'ERR_HTTP2_STREAM_CANCEL',
     ]) {
       expect(
         isRecyclableTransportError(Object.assign(new Error(code), { code }))
@@ -770,6 +1018,97 @@ describe('dispatcher recycling accounting', () => {
   });
 });
 
+describe('queue client transport', () => {
+  it('gives the queue client its own dispatcher, not the shared default', () => {
+    expect(getQueueDispatcher()).toBe(getQueueDispatcher());
+    expect(getQueueDispatcher()).not.toBe(getDispatcher());
+  });
+
+  it('still yields to a caller-supplied dispatcher', () => {
+    const custom = {};
+    expect(getQueueDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+
+  // The queue client issues about two small requests per invocation, so its
+  // concurrency tracks how many invocations the instance is serving, not any
+  // per-request fan-out. Sharing the control-plane pool's 8-connection cap made
+  // invocation concurrency the binding constraint on acknowledging messages.
+  it('gives the queue a connection budget well above the shared pool', () => {
+    expect(getQueueAgentOptions().connections).toBe(QUEUE_AGENT_CONNECTIONS);
+    expect(getQueueAgentOptions().connections).toBeGreaterThan(
+      DEFAULT_AGENT_OPTIONS.connections
+    );
+  });
+
+  // Nothing else bounds this path: QueueClient calls global fetch itself and
+  // takes no fetch override, so without these it inherits undici's 300s
+  // defaults. See QUEUE_REQUEST_TIMEOUT_MS.
+  it('arms explicit per-phase deadlines instead of undici defaults', () => {
+    const options = getQueueAgentOptions();
+    expect(options.headersTimeout).toBe(QUEUE_REQUEST_TIMEOUT_MS);
+    expect(options.bodyTimeout).toBe(QUEUE_REQUEST_TIMEOUT_MS);
+    expect(options.headersTimeout).toBeLessThan(NODE_HTTP_HEADERS_TIMEOUT_MS);
+  });
+
+  it('reads the deadline override, clamped', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', '45000');
+    expect(getQueueRequestTimeoutMs()).toBe(45_000);
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', '1');
+    expect(getQueueRequestTimeoutMs()).toBe(5_000);
+  });
+
+  it('reads the connection override', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_CONNECTIONS', '16');
+    expect(getQueueAgentOptions().connections).toBe(16);
+  });
+
+  // The regression this guards is not "an ack is slow", it is that waiting for
+  // a free connection is not covered by headersTimeout: undici arms that only
+  // once a request reaches a socket. With one connection and a server that
+  // never answers, an unbounded queue wait would settle the k-th request at
+  // k x deadline. The deadline is armed at dispatch and delivered through the
+  // controller onRequestStart hands over, so the whole backlog drains at the
+  // deadline instead.
+  it('bounds the pool queue wait, not just time on the wire', async () => {
+    const DEADLINE_MS = 5_000;
+    const DEPTH = 6;
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', String(DEADLINE_MS));
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_CONNECTIONS', '1');
+
+    // Accepts the connection, never responds.
+    const silent = createHttpServer(() => {});
+    await new Promise<void>((resolve) =>
+      silent.listen(0, '127.0.0.1', () => resolve())
+    );
+    const { port } = silent.address() as AddressInfo;
+    const dispatcher = createQueueDispatcher();
+
+    const started = Date.now();
+    const settled = await Promise.all(
+      Array.from({ length: DEPTH }, () =>
+        fetch(`http://127.0.0.1:${port}/ack`, {
+          method: 'POST',
+          body: '{}',
+          // @ts-expect-error -- `dispatcher` is undici's extension to RequestInit.
+          dispatcher,
+        })
+          .then(() => 'resolved')
+          .catch(() => 'aborted')
+      )
+    );
+    const elapsed = Date.now() - started;
+
+    silent.close();
+    await dispatcher.close();
+
+    expect(settled).toEqual(Array.from({ length: DEPTH }, () => 'aborted'));
+    // Serialised behind one connection with no queue-wait bound this would be
+    // DEPTH x DEADLINE_MS (30s). Allow generous slack for CI scheduling while
+    // staying far below that product.
+    expect(elapsed).toBeLessThan(DEADLINE_MS * 2);
+  }, 40_000);
+});
+
 describe('node:http mode', () => {
   beforeEach(() => {
     vi.stubEnv(NODE_HTTP_ENV_VAR, '1');
@@ -791,15 +1130,25 @@ describe('node:http mode', () => {
     expect(getStreamCloseDispatcher()).toBeUndefined();
   });
 
-  // `@vercel/queue` takes a dispatcher and no `fetch` override, so `undefined`
-  // would not move its requests off undici — it would only drop them onto
-  // undici's global agent and quietly lose this package's pool tuning.
-  it('keeps the undici agent for the client that cannot leave undici', () => {
+  // The queue client is the one path `undefined` cannot move to `node:http`,
+  // because `QueueClient` takes a dispatcher and no `fetch` override. It still
+  // has to honor the flag: `undefined` moves the request onto the runtime's own
+  // undici instead of the copy this package bundles, and a deployment where the
+  // bundled copy is broken is exactly what the flag is for. Leaving it on the
+  // bundled agent stranded queue acknowledgements, and an unacknowledged
+  // message is redelivered for as long as the platform keeps killing the
+  // invocation holding it.
+  it('hands the queue client an undefined dispatcher too', () => {
+    expect(getQueueDispatcher()).toBeUndefined();
+  });
+
+  it('keeps the tuned agent for the queue client with the flag off', () => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getQueueDispatcher()).toBeDefined();
     expect(getQueueDispatcher()).toBe(getQueueDispatcher());
-    // Same agent the flag-off path hands every other call site.
-    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
-    expect(getQueueDispatcher()).toBe(getDispatcher());
+    // Its own agent, not the one the flag-off path hands every other call
+    // site: see QUEUE_AGENT_CONNECTIONS for why the two pools differ.
+    expect(getQueueDispatcher()).not.toBe(getDispatcher());
   });
 
   it('still yields to a caller-supplied dispatcher on that path too', () => {

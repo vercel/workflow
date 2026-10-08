@@ -4,7 +4,7 @@
  * Demonstrates using a defineHook as a stop signal to break out of
  * a workflow loop gracefully.
  */
-import { defineHook } from 'workflow';
+import { defineHook, sleep } from 'workflow';
 
 export const stopHook = defineHook<{ reason?: string }>();
 
@@ -19,27 +19,37 @@ export async function stopWorkflowDemo(
 ) {
   'use workflow';
 
-  let stopRequested = false;
-  let stopReason: string | undefined;
-
-  const hook = stopHook.create({ token: stopToken });
-  hook.then(({ reason }) => {
-    stopRequested = true;
-    stopReason = reason;
-  });
-
+  using hook = stopHook.create({ token: stopToken });
+  const stop = hook.then(({ reason }) => ({
+    type: 'stop' as const,
+    reason,
+  }));
   const results: Array<{ iteration: number; result: string }> = [];
 
   for (let i = 0; i < maxIterations; i++) {
-    if (stopRequested) break;
-    const work = await doWork(i);
-    results.push(work);
+    // Park between iterations so the stop hook remains actionable instead of
+    // relying on an external caller to beat a fast sequence of local steps.
+    // A scheduler can wake this sleep whenever the next unit of work is ready.
+    const signal = await Promise.race([
+      stop,
+      sleep('1h').then(() => ({ type: 'continue' as const })),
+    ]);
+    if (signal.type === 'stop') {
+      return {
+        completed: results.length,
+        stopped: true,
+        stopReason: signal.reason,
+        results,
+      };
+    }
+
+    results.push(await doWork(i));
   }
 
   return {
     completed: results.length,
-    stopped: stopRequested,
-    stopReason,
+    stopped: false,
+    stopReason: undefined,
     results,
   };
 }

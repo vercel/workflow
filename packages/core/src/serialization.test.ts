@@ -4,12 +4,21 @@ import {
   FatalError,
   HookConflictError,
   RetryableError,
+  RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  SerializationError,
+  StreamError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { stringify } from 'devalue';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
+import {
+  drainFlushableSnapshot,
+  type FlushableStreamState,
+} from './flushable-stream.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
 import {
@@ -20,17 +29,20 @@ import {
 import {
   cancelAbortReaders,
   decodeFormatPrefix,
+  dehydrateDynamicWorkflowCode,
   dehydrateRunError,
   dehydrateStepArguments,
   dehydrateStepError,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  encodeWithFormatPrefix,
   getCommonRevivers,
   getDeserializeStream,
   getSerializeStream,
   getStreamType,
   getWorkflowReducers,
+  hydrateDynamicWorkflowCode,
   hydrateRunError,
   hydrateStepArguments,
   hydrateStepError,
@@ -590,6 +602,7 @@ describe('workflow arguments', () => {
         noEncryptionKey
       );
       const ops: Promise<void>[] = [];
+      const streamStates: FlushableStreamState[] = [];
       const hydrated = (await hydrateStepArguments(
         serialized,
         'wrun_child',
@@ -597,11 +610,14 @@ describe('workflow arguments', () => {
         ops,
         globalThis,
         {},
-        'dpl_child'
+        'dpl_child',
+        streamStates
       )) as WritableStream<string>;
 
       const writer = hydrated.getWriter();
       await writer.write('cross-deployment');
+      expect(streamStates).toHaveLength(1);
+      await Promise.all(streamStates.map(drainFlushableSnapshot));
       await writer.close();
       await Promise.all(ops);
 
@@ -1000,6 +1016,194 @@ describe('workflow arguments', () => {
     } finally {
       vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
     }
+  });
+
+  describe('forwarded writable key lookup is deferred to the first write', () => {
+    /**
+     * A descriptor from a deployment that predates deployment ids and public
+     * keys on the wire, so the reviver has to fall back to reading the owning
+     * run — the request that timed out in #3935.
+     */
+    const dehydrateLegacyForwardedWritable = (
+      dehydrate:
+        | typeof dehydrateStepArguments
+        | typeof dehydrateWorkflowReturnValue
+    ) => {
+      const ownerWritable = new WritableStream();
+      Object.defineProperty(ownerWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_ownerstream',
+        writable: false,
+      });
+      Object.defineProperty(ownerWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_owner',
+        writable: false,
+      });
+      return dehydrate(ownerWritable, 'wrun_local', noEncryptionKey);
+    };
+
+    const installTimingOutWorld = async () => {
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      // The shape `makeRequest` raises on a timed-out read in world-vercel.
+      const runsGet = vi
+        .fn()
+        .mockRejectedValue(
+          new WorkflowWorldError(
+            'GET /v2/runs/wrun_owner?remoteRefBehavior=resolve timed out after 71779ms',
+            { code: 'TIMEOUT' }
+          )
+        );
+      const getEncryptionKeyForRun = vi
+        .fn()
+        .mockResolvedValue(new Uint8Array(32).fill(5));
+      vi.mocked(getWorldLazy).mockReturnValue({
+        ...makeMockWorld(),
+        runs: { get: runsGet },
+        getEncryptionKeyForRun,
+      } as any);
+      return { runsGet };
+    };
+
+    const captureUnhandledRejections = () => {
+      const seen: unknown[] = [];
+      const onUnhandled = (reason: unknown) => seen.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      return {
+        messages: () => seen.map((r) => (r as Error)?.message),
+        stop: () => process.off('unhandledRejection', onUnhandled),
+      };
+    };
+
+    /** Give Node a macrotask boundary to run its unhandled-rejection check. */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+    afterEach(async () => {
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    });
+
+    // Regression test for #3935. Hydrating a payload that merely *contains* a
+    // forwarded writable used to start the owner-run read immediately and hand
+    // the reviver the unobserved promise. Nothing awaits it until the first
+    // write, so a failing lookup crashed the process with an unhandled
+    // rejection — even for a caller that never touched the stream.
+    it('makes no request and leaves no unhandled rejection when a client hydrates a return value it never writes to', async () => {
+      const { runsGet } = await installTimingOutWorld();
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateWorkflowReturnValue
+      );
+      const capture = captureUnhandledRejections();
+
+      try {
+        const hydrated = (await hydrateWorkflowReturnValue(
+          serialized,
+          'wrun_local',
+          noEncryptionKey,
+          []
+        )) as WritableStream<string>;
+        await settle();
+
+        expect(hydrated).toBeInstanceOf(WritableStream);
+        // The crash in #3935: the lookup's rejection had no handler.
+        expect(capture.messages()).toEqual([]);
+        // And a stream nobody writes to should make no request at all.
+        expect(runsGet).not.toHaveBeenCalled();
+      } finally {
+        capture.stop();
+      }
+    });
+
+    it('makes no request and leaves no unhandled rejection when a step hydrates arguments it never writes to', async () => {
+      const { runsGet } = await installTimingOutWorld();
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateStepArguments
+      );
+      const capture = captureUnhandledRejections();
+
+      try {
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          'wrun_local',
+          noEncryptionKey,
+          []
+        )) as WritableStream<string>;
+        await settle();
+
+        expect(hydrated).toBeInstanceOf(WritableStream);
+        // The crash in #3935: the lookup's rejection had no handler.
+        expect(capture.messages()).toEqual([]);
+        // And a stream nobody writes to should make no request at all.
+        expect(runsGet).not.toHaveBeenCalled();
+      } finally {
+        capture.stop();
+      }
+    });
+
+    it('surfaces a failed lookup on the writer that needed the key', async () => {
+      const { runsGet } = await installTimingOutWorld();
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateStepArguments
+      );
+      const capture = captureUnhandledRejections();
+
+      try {
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          'wrun_local',
+          noEncryptionKey,
+          []
+        )) as WritableStream<string>;
+
+        const writer = hydrated.getWriter();
+        // `write()` early-acks, so the failure lands on `closed` — catchable,
+        // with the world error preserved as the cause.
+        await writer.write('payload').catch(() => {});
+        await expect(writer.closed).rejects.toMatchObject({
+          cause: { code: 'TIMEOUT' },
+        });
+        expect(runsGet).toHaveBeenCalledTimes(1);
+
+        await settle();
+        expect(capture.messages()).toEqual([]);
+      } finally {
+        capture.stop();
+      }
+    });
+
+    it('resolves the owner key at most once across many writes', async () => {
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      const runsGet = vi
+        .fn()
+        .mockResolvedValue({ runId: 'wrun_owner', deploymentId: 'dpl_owner' });
+      const getEncryptionKeyForRun = vi
+        .fn()
+        .mockResolvedValue(new Uint8Array(32).fill(3));
+      vi.mocked(getWorldLazy).mockReturnValue({
+        ...makeMockWorld(),
+        runs: { get: runsGet },
+        getEncryptionKeyForRun,
+      } as any);
+
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateStepArguments
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_local',
+        noEncryptionKey,
+        ops
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('one');
+      await writer.write('two');
+      await writer.write('three');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(runsGet).toHaveBeenCalledTimes(1);
+      expect(getEncryptionKeyForRun).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('should work with ReadableStream', async () => {
@@ -2312,6 +2516,37 @@ describe('workflow arguments', () => {
     }
   });
 
+  it('separates producer uploads from workflow readback pipes', async () => {
+    const request = new Request('https://example.com/webhook', {
+      method: 'POST',
+      body: 'webhook payload',
+      duplex: 'half',
+    } as RequestInit);
+    request[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] = new WritableStream();
+    const uploadOps: Promise<void>[] = [];
+    const readbackOps: Promise<void>[] = [];
+
+    await dehydrateStepReturnValue(
+      request,
+      mockRunId,
+      noEncryptionKey,
+      uploadOps,
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      readbackOps
+    );
+
+    // The request body is producer -> workflow and must finish before the
+    // event commit. The manual response writable is workflow -> producer and
+    // cannot finish until after the workflow has been woken.
+    expect(uploadOps).toHaveLength(1);
+    expect(readbackOps).toHaveLength(1);
+    await Promise.allSettled([...uploadOps, ...readbackOps]);
+  });
+
   it('should throw error for an unsupported type', async () => {
     class Foo {}
     let err: WorkflowRuntimeError | undefined;
@@ -2512,6 +2747,256 @@ describe('step return value', () => {
     );
   });
 });
+
+describe('DataView serialization', () => {
+  /**
+   * A step that returns a `DataView` must persist the bytes that view spans
+   * and nothing else.
+   *
+   * Left to devalue's built-in `DataView` encoding, the payload is the whole
+   * backing `ArrayBuffer` plus the view's offset and length. Node hands out
+   * small `Buffer`s as windows onto a shared 8 KiB pool, so "the whole
+   * backing buffer" for a `DataView` over a `Buffer.allocUnsafe(n)` is a
+   * slab of unrelated prior allocations — and a step return is written to
+   * the run's event log, where it outlives the process that leaked it.
+   */
+  it('writes only the viewed bytes of a pooled DataView to a step return', async () => {
+    // A neighbour in the pool, allocated first so the pool offset the view
+    // lands on sits after it. `Buffer.allocUnsafe` does not zero what it
+    // hands back, so these bytes are exactly the kind of residue that must
+    // not reach the event log.
+    const neighbour = Buffer.allocUnsafe(256);
+    neighbour.fill('SECRET-POOL-RESIDUE-');
+
+    const viewed = Buffer.allocUnsafe(4);
+    viewed.set([1, 2, 3, 4]);
+    const dataView = new DataView(
+      viewed.buffer,
+      viewed.byteOffset,
+      viewed.byteLength
+    );
+
+    // Precondition: this really is a pooled view, not a standalone buffer.
+    // Without it a passing assertion below would prove nothing.
+    expect(dataView.buffer.byteLength).toBeGreaterThan(dataView.byteLength);
+
+    const serialized = (await dehydrateStepReturnValue(
+      dataView,
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    const wire = new TextDecoder().decode(serialized);
+    expect(wire).not.toContain('ArrayBuffer');
+    // Every byte of the payload is accounted for by the four viewed bytes:
+    // base64 of the pool would be several KiB of it.
+    expect(wire).toBe('devl[["DataViewBytes",1],"AQIDBA=="]');
+
+    const hydrated = (await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as DataView;
+
+    expect(hydrated).toBeInstanceOf(DataView);
+    expect(hydrated.byteOffset).toBe(0);
+    expect(hydrated.byteLength).toBe(4);
+    expect(hydrated.buffer.byteLength).toBe(4);
+    expect([...new Uint8Array(hydrated.buffer)]).toEqual([1, 2, 3, 4]);
+  });
+
+  it('writes only the viewed window of a subview onto a larger buffer', async () => {
+    const backing = new Uint8Array(64);
+    for (let i = 0; i < backing.length; i++) backing[i] = i;
+    const dataView = new DataView(backing.buffer, 8, 4);
+
+    const serialized = (await dehydrateStepReturnValue(
+      dataView,
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    const hydrated = (await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as DataView;
+
+    expect([...new Uint8Array(hydrated.buffer)]).toEqual([8, 9, 10, 11]);
+    expect(hydrated.getUint8(0)).toBe(8);
+    expect(hydrated.getUint8(3)).toBe(11);
+  });
+
+  it('round-trips a zero-length DataView', async () => {
+    const serialized = await dehydrateStepReturnValue(
+      new DataView(new ArrayBuffer(8), 4, 0),
+      mockRunId,
+      noEncryptionKey,
+      []
+    );
+
+    const hydrated = (await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as DataView;
+
+    expect(hydrated).toBeInstanceOf(DataView);
+    expect(hydrated.byteLength).toBe(0);
+    expect(hydrated.buffer.byteLength).toBe(0);
+  });
+
+  it('revives into the workflow VM realm', async () => {
+    const { globalThis: vmGlobalThis, context } = createContext({
+      seed: 'test',
+      fixedTimestamp: 1714857600000,
+    });
+
+    const serialized = await dehydrateStepReturnValue(
+      new DataView(new Uint8Array([9, 8, 7]).buffer),
+      mockRunId,
+      noEncryptionKey,
+      []
+    );
+
+    vmGlobalThis.val = await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+
+    expect(runInContext('val instanceof DataView', context)).toBe(true);
+    expect(runInContext('val.byteLength', context)).toBe(3);
+    expect(runInContext('val.getUint8(0)', context)).toBe(9);
+  });
+
+  it('revives a pre-existing DataView payload with its bounds', async () => {
+    // devalue's built-in encoding: a reference to the whole backing
+    // ArrayBuffer, with the subview bounds alongside it. This is what is
+    // already in event logs, and the tuple below records the two bytes
+    // [2, 3] of a four-byte buffer.
+    //
+    // devalue skips its built-in branch for any tag that has a custom
+    // reviver, and hands a custom reviver the hydrated referent rather than
+    // the tuple — so a reviver registered under `DataView` could not see
+    // `1, 2` and would widen this back to the whole buffer. That is why the
+    // new encoding uses its own tag; this pins that the old one is
+    // untouched.
+    const legacy = [
+      ['DataView', 1, 1, 2],
+      ['ArrayBuffer', 2],
+      Buffer.from([1, 2, 3, 4]).toString('base64'),
+    ];
+
+    const hydrated = hydrateData(legacy, getCommonRevivers()) as DataView;
+
+    expect(hydrated).toBeInstanceOf(DataView);
+    expect(hydrated.byteOffset).toBe(1);
+    expect(hydrated.byteLength).toBe(2);
+    expect(hydrated.getUint8(0)).toBe(2);
+    expect(hydrated.getUint8(1)).toBe(3);
+  });
+
+  it('keeps the old and new encodings distinguishable on the wire', async () => {
+    const serialized = (await dehydrateStepReturnValue(
+      new DataView(new Uint8Array([1, 2, 3, 4]).buffer, 1, 2),
+      mockRunId,
+      noEncryptionKey,
+      []
+    )) as Uint8Array;
+
+    // The reducer claims the value before devalue's built-in DataView
+    // branch can run, so the built-in tag never appears in a new payload
+    // and cannot collide with the tuples already in event logs.
+    const wire = new TextDecoder().decode(serialized);
+    expect(wire).toBe('devl[["DataViewBytes",1],"AgM="]');
+  });
+});
+
+describe.skipIf(typeof Float16Array !== 'function')(
+  'unclaimed typed array serialization',
+  () => {
+    /**
+     * No reducer claims `Float16Array`, so it reaches devalue's built-in
+     * typed-array encoding, which emits the view's whole backing buffer plus
+     * offset/length. The hardened `viewInfo` operation must hand devalue only
+     * the viewed bytes, or a view onto Node's shared `Buffer` pool leaks
+     * unrelated allocations into the event log. See the `DataView` tests
+     * above for the same hazard on a claimed type.
+     */
+    it('writes only the viewed bytes of a pooled Float16Array to a step return', async () => {
+      const neighbour = Buffer.allocUnsafe(256);
+      neighbour.fill('SECRET-POOL-RESIDUE-');
+
+      const viewed = Buffer.allocUnsafe(4);
+      viewed.set([0x00, 0x3c, 0x00, 0x40]); // 1.0, 2.0 as little-endian f16
+      const f16 = new Float16Array(viewed.buffer, viewed.byteOffset, 2);
+
+      // Precondition: really a pooled view.
+      expect(f16.buffer.byteLength).toBeGreaterThan(f16.byteLength);
+
+      const serialized = (await dehydrateStepReturnValue(
+        f16,
+        mockRunId,
+        noEncryptionKey,
+        []
+      )) as Uint8Array;
+
+      const wire = new TextDecoder().decode(serialized);
+      expect(wire).not.toContain(Buffer.from('SECRET').toString('base64'));
+      expect(wire).toBe(
+        `devl[["Float16Array",1],["ArrayBuffer",2],"${Buffer.from([0x00, 0x3c, 0x00, 0x40]).toString('base64')}"]`
+      );
+
+      const hydrated = (await hydrateStepReturnValue(
+        serialized,
+        mockRunId,
+        noEncryptionKey
+      )) as Float16Array;
+
+      expect(hydrated).toBeInstanceOf(Float16Array);
+      expect(hydrated.byteOffset).toBe(0);
+      expect(hydrated.buffer.byteLength).toBe(4);
+      expect([...hydrated]).toEqual([1, 2]);
+    });
+
+    it('round-trips a Float16Array that spans its whole buffer', async () => {
+      const f16 = new Float16Array([0.5, -1, 65504]);
+      const serialized = await dehydrateStepReturnValue(
+        f16,
+        mockRunId,
+        noEncryptionKey,
+        []
+      );
+      const hydrated = (await hydrateStepReturnValue(
+        serialized,
+        mockRunId,
+        noEncryptionKey
+      )) as Float16Array;
+      expect([...hydrated]).toEqual([0.5, -1, 65504]);
+    });
+
+    it('round-trips a zero-length Float16Array subview', async () => {
+      const serialized = await dehydrateStepReturnValue(
+        new Float16Array(new ArrayBuffer(8), 4, 0),
+        mockRunId,
+        noEncryptionKey,
+        []
+      );
+      const hydrated = (await hydrateStepReturnValue(
+        serialized,
+        mockRunId,
+        noEncryptionKey
+      )) as Float16Array;
+      expect(hydrated).toBeInstanceOf(Float16Array);
+      expect(hydrated.length).toBe(0);
+      expect(hydrated.buffer.byteLength).toBe(0);
+    });
+  }
+);
 
 describe('step function serialization', () => {
   const { globalThis: vmGlobalThis } = createContext({
@@ -4559,6 +5044,132 @@ describe('dehydrate/hydrateStepError', () => {
   });
 });
 
+describe('dehydrate/hydrateDynamicWorkflowCode', () => {
+  const code =
+    'globalThis.__private_workflows ??= new Map();\nasync function workflow() { "use workflow"; return 1; }\n';
+
+  it('round-trips through compression and encryption', async () => {
+    const previousCodec = process.env.WORKFLOW_COMPRESSION_CODEC;
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
+    try {
+      const compressibleCode = `${code}${'// repetitive generated code\n'.repeat(100)}`;
+      const material = new Uint8Array(32).fill(0x7d);
+      const keys = runPayloadKeys(
+        await importKey(material),
+        await deriveRunKeyPair(material)
+      );
+      const stored = await dehydrateDynamicWorkflowCode(
+        compressibleCode,
+        keys,
+        true
+      );
+      expect(isEncrypted(stored)).toBe(true);
+      const decrypted = await decryptEnvelope(stored, keys);
+      expect(decodeFormatPrefix(decrypted as Uint8Array).format).toBe(
+        SerializationFormat.GZIP
+      );
+      expect(await hydrateDynamicWorkflowCode(stored, keys)).toBe(
+        compressibleCode
+      );
+    } finally {
+      if (previousCodec === undefined) {
+        delete process.env.WORKFLOW_COMPRESSION_CODEC;
+      } else {
+        process.env.WORKFLOW_COMPRESSION_CODEC = previousCodec;
+      }
+    }
+  });
+
+  it('round-trips unencrypted and uncompressed', async () => {
+    const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+    expect(await hydrateDynamicWorkflowCode(stored, undefined)).toBe(code);
+  });
+
+  it('is readable by the generic hydrator the CLI and UI use', async () => {
+    const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+    expect(hydrateData(stored, {})).toBe(code);
+  });
+
+  describe('when encryption is required', () => {
+    const material = new Uint8Array(32).fill(0x3c);
+    async function runKeys() {
+      return runPayloadKeys(
+        await importKey(material),
+        await deriveRunKeyPair(material)
+      );
+    }
+
+    it('rejects plaintext code when the run has a key', async () => {
+      const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+      await expect(
+        hydrateDynamicWorkflowCode(stored, await runKeys())
+      ).rejects.toThrow(/must be encrypted.*"devl"/);
+    });
+
+    it('rejects plaintext code when the run was started with encryption', async () => {
+      const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+      await expect(
+        hydrateDynamicWorkflowCode(stored, undefined, {
+          encryptionRequired: true,
+        })
+      ).rejects.toBeInstanceOf(SerializationError);
+    });
+
+    it('rejects code sealed to the run public key', async () => {
+      const { publicKey } = await deriveRunKeyPair(material);
+      const stored = await dehydrateDynamicWorkflowCode(
+        code,
+        sealTo(publicKey)
+      );
+      expect(decodeFormatPrefix(stored).format).toBe(
+        SerializationFormat.SEALED
+      );
+      await expect(
+        hydrateDynamicWorkflowCode(stored, await runKeys())
+      ).rejects.toThrow(/must be encrypted.*"encp"/);
+    });
+
+    it('rejects compressed plaintext code when the run has a key', async () => {
+      const stored = await dehydrateDynamicWorkflowCode(
+        `${code}${'// padding\n'.repeat(200)}`,
+        undefined,
+        true
+      );
+      await expect(
+        hydrateDynamicWorkflowCode(stored, await runKeys())
+      ).rejects.toBeInstanceOf(SerializationError);
+    });
+
+    it('accepts code encrypted with the run key', async () => {
+      const keys = await runKeys();
+      const stored = await dehydrateDynamicWorkflowCode(code, keys);
+      await expect(
+        hydrateDynamicWorkflowCode(stored, keys, { encryptionRequired: true })
+      ).resolves.toBe(code);
+    });
+  });
+
+  it('rejects a payload that is not a string with SerializationError', async () => {
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(stringify({ a: 1 }))
+    );
+    await expect(
+      hydrateDynamicWorkflowCode(prefixed, undefined)
+    ).rejects.toBeInstanceOf(SerializationError);
+  });
+
+  it('rejects a corrupt payload with SerializationError, not a raw SyntaxError', async () => {
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode('{not json')
+    );
+    await expect(
+      hydrateDynamicWorkflowCode(prefixed, undefined)
+    ).rejects.toBeInstanceOf(SerializationError);
+  });
+});
+
 describe('dehydrate/hydrateRunError', () => {
   // The run-error helpers use the workflow reducers (vs. the step reducers
   // used above), but the surface contract is the same. These tests cover the
@@ -4681,6 +5292,34 @@ describe('dehydrate/hydrateRunError', () => {
     // The underlying DOMException cause is preserved too.
     const cause = (hydrated as Error).cause as Error;
     expect(cause?.name).toBe('OperationError');
+  });
+
+  it('should round-trip StreamError as a catchable error type', async () => {
+    const original = new StreamError('stream write failed', {
+      cause: new Error('HTTP 500'),
+      status: 503,
+      url: 'https://workflow.example/stream',
+    });
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as StreamError;
+
+    expect(StreamError.is(hydrated)).toBe(true);
+    expect(hydrated).toBeInstanceOf(StreamError);
+    expect(hydrated).toMatchObject({
+      message: 'stream write failed',
+      status: 503,
+      url: 'https://workflow.example/stream',
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+    });
+    expect((hydrated.cause as Error).message).toBe('HTTP 500');
   });
 
   it('should produce DEVALUE_V1-prefixed binary output', async () => {

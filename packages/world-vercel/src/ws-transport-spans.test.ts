@@ -242,7 +242,56 @@ const writeSpan = (): ReadableSpan => {
   return spans[0];
 };
 
+const startedBody = (eventId = 'evnt_1') =>
+  new Uint8Array(
+    encode({
+      event: {
+        eventId,
+        runId: 'wrun_1',
+        createdAt: CREATED_AT,
+        eventType: 'step_started',
+        specVersion: 2,
+        correlationId: 'step_1',
+        eventData: { stepName: 'step' },
+      },
+      step: {
+        runId: 'wrun_1',
+        stepId: 'step_1',
+        stepName: 'step',
+        status: 'running',
+        attempt: 1,
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+        startedAt: CREATED_AT,
+      },
+    })
+  );
+
 describe('per-write client span', () => {
+  it('attributes a stamped lazy step claim', async () => {
+    await withOpenChannel(() => ({
+      status: 201,
+      body: startedBody(),
+    }));
+
+    await createWorkflowRunEventV4(
+      {
+        ...input,
+        eventType: 'step_started',
+        payload: new Uint8Array([1]),
+        ownerMessageId: 'msg_1',
+        stepName: 'step',
+      },
+      { token: 'test-token' }
+    );
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.step_start.mode']).toBe(
+      'single_lazy_create_claim'
+    );
+    expect(span.attributes['workflow.step_start.owner_stamped']).toBe(true);
+  });
+
   it('emits one `http POST` CLIENT span per event write', async () => {
     await withOpenChannel();
 
@@ -426,6 +475,78 @@ describe('failure reporting', () => {
       'HTTP 500',
       undefined,
     ]);
+  });
+});
+
+describe('split frames', () => {
+  const LIMIT = 2 * 1024 * 1024;
+  const splitInput = {
+    ...input,
+    payload: new Uint8Array(LIMIT * 2 + 7).fill(7),
+  };
+
+  beforeEach(() => {
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
+  });
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
+  });
+
+  it('records the request part count on a split write that succeeds', async () => {
+    const { socket } = await withOpenChannel();
+    const received: Uint8Array[] = [];
+    // Answer once the last part is in.
+    socket.onFrame = (raw) => {
+      received.push(raw);
+      void decodeOne(raw).then((frame) => {
+        const { partIndex, partCount, reqId } = frame.meta;
+        if (typeof partCount === 'number' && partIndex !== partCount - 1) {
+          return;
+        }
+        socket.deliver(
+          encodeFrame(
+            { reqId, type: 'event_ack', status: 201 },
+            materializedBody()
+          )
+        );
+      });
+    };
+
+    await createWorkflowRunEventV4(splitInput, { token: 'test-token' });
+
+    expect(received.length).toBeGreaterThan(1);
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.ws.request_parts']).toBe(
+      received.length
+    );
+    expect(span.attributes['workflow.events.ws.reply_parts']).toBeUndefined();
+  });
+
+  it('records the request part count on a split write whose socket dies before a reply', async () => {
+    const { socket } = await withOpenChannel();
+    let sent = 0;
+    socket.onFrame = () => {
+      sent++;
+    };
+    const write = createWorkflowRunEventV4(splitInput, {
+      token: 'test-token',
+    });
+    await vi.waitFor(() => expect(sent).toBeGreaterThan(1));
+    socket.close(1006);
+
+    await expect(write).rejects.toThrow(/transport failure/);
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.ws.request_parts']).toBe(sent);
+    expect(span.attributes['error.type']).toBe('TRANSPORT');
+  });
+
+  it('leaves the part count off a write that fits in one message', async () => {
+    await withOpenChannel();
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    expect(
+      writeSpan().attributes['workflow.events.ws.request_parts']
+    ).toBeUndefined();
   });
 });
 

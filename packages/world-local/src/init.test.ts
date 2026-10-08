@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DataDirAccessError,
+  DataDirLayoutError,
   DataDirVersionError,
   ensureDataDir,
   formatVersion,
@@ -22,6 +23,7 @@ import {
   parseVersionFile,
   upgradeVersion,
 } from './init.js';
+import { permissionEnforcement } from './test-helpers.js';
 
 describe('parseVersion', () => {
   it('should parse a simple version string', () => {
@@ -127,8 +129,8 @@ describe('formatVersionFile', () => {
 });
 
 describe('upgradeVersion', () => {
-  it('should log upgrade message', () => {
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('should log upgrade message on stderr', () => {
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const oldVersion = parseVersion('3.0.0');
     const newVersion = parseVersion('4.0.1-beta.20');
@@ -208,9 +210,10 @@ describe('ensureDataDir', () => {
   });
 
   describe('permission errors', () => {
-    const isWindows = process.platform === 'win32';
-
-    it.skipIf(isWindows)(
+    // These cases simulate the failure with `chmod`, so they can only run
+    // where the permission bits are actually enforced — see
+    // `permissionEnforcement`.
+    it.skipIf(!permissionEnforcement.accessCheck)(
       'should throw DataDirAccessError if directory is not readable',
       async () => {
         const dataDir = path.join(testBaseDir, 'unreadable-dir');
@@ -228,7 +231,7 @@ describe('ensureDataDir', () => {
       }
     );
 
-    it.skipIf(isWindows)(
+    it.skipIf(!permissionEnforcement.write)(
       'should throw DataDirAccessError if directory is not writable',
       async () => {
         const dataDir = path.join(testBaseDir, 'readonly-dir');
@@ -246,7 +249,7 @@ describe('ensureDataDir', () => {
       }
     );
 
-    it.skipIf(isWindows)(
+    it.skipIf(!permissionEnforcement.write)(
       'should throw DataDirAccessError if parent directory is not writable',
       async () => {
         const parentDir = path.join(testBaseDir, 'readonly-parent');
@@ -384,7 +387,7 @@ describe('initDataDir', () => {
     const currentVersion = `${packageInfo.name}@${packageInfo.version}`;
     writeFileSync(versionPath, currentVersion);
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
 
@@ -404,7 +407,7 @@ describe('initDataDir', () => {
     const versionPath = path.join(dataDir, 'version.txt');
     writeFileSync(versionPath, '@workflow/world-local@3.0.0');
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
 
@@ -424,17 +427,123 @@ describe('initDataDir', () => {
     mkdirSync(dataDir, { recursive: true });
 
     // Write a newer version (simulating downgrade scenario)
+    const packageInfo = await getPackageInfo();
+    const newerVersion = `${parseVersion(packageInfo.version).major + 1}.0.0`;
     const versionPath = path.join(dataDir, 'version.txt');
-    writeFileSync(versionPath, '@workflow/world-local@5.0.0');
+    writeFileSync(versionPath, `${packageInfo.name}@${newerVersion}`);
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // This will call upgradeVersion which just logs for now
     await initDataDir(dataDir);
 
     // Should log the upgrade message (even for "downgrades")
     expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Upgrading from version 5.0.0')
+      expect.stringContaining(`Upgrading from version ${newerVersion}`)
+    );
+  });
+});
+
+describe('initDataDir legacy flat layout', () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = path.join(
+      tmpdir(),
+      `workflow-init-layout-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      path.join(dataDir, 'version.txt'),
+      '@workflow/world-local@4.1.0'
+    );
+    mkdirSync(path.join(dataDir, 'runs'));
+    writeFileSync(path.join(dataDir, 'runs', 'wrun_A.json'), '{}');
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    'events',
+    'steps',
+  ])('wipes a data directory with flat %s files', async (entityDir) => {
+    mkdirSync(path.join(dataDir, entityDir));
+    writeFileSync(path.join(dataDir, entityDir, 'wrun_A-x_1.json'), '{}');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await initDataDir(dataDir);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Deleting local workflow data')
+    );
+    expect(existsSync(path.join(dataDir, 'runs'))).toBe(false);
+    expect(existsSync(path.join(dataDir, entityDir))).toBe(false);
+    const packageInfo = await getPackageInfo();
+    expect(readFileSync(path.join(dataDir, 'version.txt'), 'utf-8')).toBe(
+      `${packageInfo.name}@${packageInfo.version}`
+    );
+  });
+
+  it('keeps a data directory in the per-run layout', async () => {
+    mkdirSync(path.join(dataDir, 'events', 'wrun_A'), { recursive: true });
+    writeFileSync(
+      path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'),
+      '{}'
+    );
+    // Not an entity file, so not a sign of the old layout.
+    writeFileSync(path.join(dataDir, 'events', '.DS_Store'), '');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await initDataDir(dataDir);
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('Deleting local workflow data')
+    );
+    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
+    expect(
+      existsSync(path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'))
+    ).toBe(true);
+  });
+  it.each([
+    ['a flat event file next to per-run directories', 'wrun_A-evnt_2.json'],
+    ['a .json file this package did not write', 'notes.json'],
+  ])('refuses, without deleting, %s', async (_, stray) => {
+    mkdirSync(path.join(dataDir, 'events', 'wrun_A'), { recursive: true });
+    writeFileSync(
+      path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'),
+      '{}'
+    );
+    writeFileSync(path.join(dataDir, 'events', stray), '{}');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const error = await initDataDir(dataDir).catch((e) => e);
+
+    expect(error).toBeInstanceOf(DataDirLayoutError);
+    expect(error.message).toContain(path.join('events', stray));
+    expect(error.message).toContain(path.resolve(dataDir));
+    for (const kept of [
+      path.join('runs', 'wrun_A.json'),
+      path.join('events', 'wrun_A', 'wrun_A-evnt_1.json'),
+      path.join('events', stray),
+    ]) {
+      expect(existsSync(path.join(dataDir, kept))).toBe(true);
+    }
+  });
+
+  it('refuses an unrecognized file in an otherwise flat directory', async () => {
+    mkdirSync(path.join(dataDir, 'steps'));
+    writeFileSync(path.join(dataDir, 'steps', 'wrun_A-step_1.json'), '{}');
+    writeFileSync(path.join(dataDir, 'steps', 'backup.json'), '{}');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(initDataDir(dataDir)).rejects.toBeInstanceOf(
+      DataDirLayoutError
+    );
+    expect(existsSync(path.join(dataDir, 'steps', 'wrun_A-step_1.json'))).toBe(
+      true
     );
   });
 });

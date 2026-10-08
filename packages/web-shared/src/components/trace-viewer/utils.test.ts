@@ -8,6 +8,7 @@ import {
   computeSpanSegments,
   computeTimeMarkers,
   getResourceClassNames,
+  isSpanCancelled,
 } from './utils';
 
 /** Build a high-res timestamp tuple ([seconds, nanoseconds]) for a given ms. */
@@ -91,6 +92,15 @@ describe('computeSpanSegments (run)', () => {
     expect(computeSpanSegments(runSpan('running'))).toEqual([
       { startFraction: 0, endFraction: 1, status: 'running' },
     ]);
+  });
+
+  it('maps cancelled runs to a cancelled segment', () => {
+    const span = runSpan('cancelled');
+
+    expect(computeSpanSegments(span)).toEqual([
+      { startFraction: 0, endFraction: 1, status: 'cancelled' },
+    ]);
+    expect(isSpanCancelled(span)).toBe(true);
   });
 });
 

@@ -1,5 +1,146 @@
 # @workflow/nuxt
 
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- Updated dependencies [[`e915eab`](https://github.com/vercel/workflow/commit/e915eab3ea98d300e6431ad005c766c90b81695c)]:
+  - @workflow/nitro@5.0.1
+
+## 5.0.0
+
+### Major Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Initial v5 beta release
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#2713](https://github.com/vercel/workflow/pull/2713) [`3077b8a`](https://github.com/vercel/workflow/commit/3077b8a8034c61b85ced46166f53c1532fddfd65) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use Nitro's workspace root for workflow module resolution so Nitro and Nuxt monorepo apps can import sibling workspace packages without extra config.
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- [#2301](https://github.com/vercel/workflow/pull/2301) [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+- Updated dependencies [[`923ddd9`](https://github.com/vercel/workflow/commit/923ddd98d9c93b533b2fd3f3bd62e7f4b8a490c8), [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`6f4dd0e`](https://github.com/vercel/workflow/commit/6f4dd0e7169c5b3eb48e920a2e86e61450a565d3), [`a651052`](https://github.com/vercel/workflow/commit/a65105235cb0987157357a1aa4949c43bc77ed73), [`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10), [`cbecbaa`](https://github.com/vercel/workflow/commit/cbecbaa5fe0cc58da4b758dbd84a48e89ca7ba88), [`a1cbc8b`](https://github.com/vercel/workflow/commit/a1cbc8b776d636f6e030889d9d521c2024bf6e60), [`3077b8a`](https://github.com/vercel/workflow/commit/3077b8a8034c61b85ced46166f53c1532fddfd65), [`c1242e8`](https://github.com/vercel/workflow/commit/c1242e8dc5db42748ae2739c7d24f964b39b7232), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3), [`3589958`](https://github.com/vercel/workflow/commit/35899580bd2a1b6eb2817f04583139dcee4ffd2a), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`c44b4f8`](https://github.com/vercel/workflow/commit/c44b4f8586a159e4deb5ec947e1855d80cc2680d), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8)]:
+  - @workflow/nitro@5.0.0
+
+## 5.0.0-beta.58
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.58
+
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.57
+
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.56
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.54
+
+## 5.0.0-beta.53
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.53
+
+## 5.0.0-beta.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.52
+
+## 5.0.0-beta.51
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.51
+
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.49
+
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.47
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.45
+
 ## 5.0.0-beta.44
 
 ### Patch Changes

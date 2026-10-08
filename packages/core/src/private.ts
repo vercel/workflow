@@ -2,10 +2,11 @@
  * Utils used by the bundler when transforming code
  */
 
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
 import type { EventsConsumer } from './events-consumer.js';
-import type { QueueItem } from './global.js';
+import { type QueueItem, WorkflowSuspension } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 import type { PayloadKey } from './serialization/encryption.js';
@@ -137,12 +138,10 @@ export interface WorkflowOrchestratorContext {
   globalThis: typeof globalThis;
   /**
    * Increments when a suspension is accepted and on every retained-session
-   * resume. STEP suspension signals capture it when scheduled and no-op if
-   * it moved (see step.ts), which drops same-boundary sibling signals and
-   * timers queued at boundary N that would fire after the session resumed
-   * into boundary N+1. Sleep/hook/attribute signals are intentionally
-   * unguarded: their presence makes the boundary unretainable, so a late
-   * signal correctly demotes the session (workflow.ts `onWorkflowError`).
+   * resume. Step, hook, wait, and attribute suspension signals capture it when
+   * scheduled and no-op if it moved, which drops same-boundary sibling signals
+   * and timers queued at boundary N that would fire after the session resumed
+   * into boundary N+1.
    */
   suspensionGeneration: number;
   eventsConsumer: EventsConsumer;
@@ -151,6 +150,17 @@ export interface WorkflowOrchestratorContext {
    * Using Map instead of Array for O(1) lookup/delete operations.
    */
   invocationsQueue: Map<string, QueueItem>;
+  /**
+   * Per open hook, a probe for whether workflow code is currently waiting on
+   * its next payload (an `await hook`, a pending `for await` iteration, or a
+   * `.then` on it). Registered by `createHook` and dropped once the hook can
+   * receive nothing more. Snapshotted into
+   * {@link WorkflowSuspension.observedHookIds} when a suspension is raised.
+   *
+   * Optional so older/out-of-tree contexts (and lightweight test harnesses)
+   * degrade to "every open hook is observed".
+   */
+  hookPayloadAwaiters?: Map<string, () => boolean>;
   onWorkflowError: (error: Error) => void;
   /**
    * Mints the ULID body of a correlation id. Every entity a replay creates
@@ -186,10 +196,10 @@ export interface WorkflowOrchestratorContext {
   /**
    * Ordered registry of in-flight "branch-deciding" deliveries: the
    * resolutions a workflow typically `Promise.race`s on, or awaits from
-   * independent concurrent branches: hook payloads (`hook_received`), wait
-   * completions (`wait_completed`), and step results (`step_completed` /
-   * `step_failed`). Keyed by the delivery's position (index) in the consumed
-   * event log.
+   * independent concurrent branches: hook payloads (`hook_received`), hook
+   * registration outcomes (`hook_created` / `hook_conflict`), wait completions
+   * (`wait_completed`), and step results (`step_completed` / `step_failed`).
+   * Keyed by the delivery's position (index) in the consumed event log.
    *
    * The problem: each of these resolutions reaches workflow code after a
    * different, workload-dependent number of microtask hops. A buffered hook
@@ -222,6 +232,29 @@ export interface WorkflowOrchestratorContext {
    */
   pendingDeliveryBarriers?: Map<number, DeliveryBarrierEntry>;
   /**
+   * Advance the workflow's deterministic clock (`Date.now()` inside the VM)
+   * to `at`, never backwards. Called by {@link registerDeliveryBarrier} when a
+   * branch-deciding delivery is handed to the workflow, so the clock a
+   * cascade observes is the timestamp of the delivery that woke it.
+   *
+   * The clock is NOT advanced when an event is merely consumed. The
+   * `EventsConsumer` walks ahead of delivery: within one drain window it
+   * consumes every event whose consumer exists, so a `hook_received` for a
+   * hook the workflow has not read, or a `wait_completed` the body is still
+   * hops away from observing, is consumed while an earlier delivery is
+   * still parked on its barrier. Advancing the clock at consumption let those
+   * later timestamps leak into the earlier delivery's cascade, and the value
+   * `Date.now()` returned at a body position then depended on how much log
+   * the replay had loaded: the execution that wrote the log saw the
+   * heartbeat's time, a later replay holding one more payload saw the
+   * payload's. A workflow whose control flow reads the clock (an idle loop
+   * budgeted by `Date.now()`, a deadline) then drew different ordinals in
+   * different replays and died `CORRUPTED_EVENT_LOG`.
+   *
+   * Optional so older/out-of-tree contexts degrade gracefully.
+   */
+  advanceClock?: (at: number) => void;
+  /**
    * Invocation-scoped cache of prepared serialized payloads and immutable final
    * values. Prepared bytes survive fresh replay VMs; object graphs do not.
    */
@@ -233,8 +266,8 @@ export type DeliveryKind = 'hook' | 'wait' | 'step';
 
 interface DeliveryBarrierEntry {
   kind: DeliveryKind;
-  /** Resolves once this delivery has resolved to the workflow. */
-  delivered: Promise<void>;
+  /** Resolves once this delivery is handed to the workflow or retired. */
+  released: Promise<void>;
   /**
    * Whether this delivery is committed to reaching the workflow without any
    * further action by workflow code. True for wait completions and step
@@ -247,11 +280,15 @@ interface DeliveryBarrierEntry {
    * once a consumer takes the payload.
    */
   armed: boolean;
+  /** Whether this entry has been removed and its `released` promise settled. */
+  retired: boolean;
   /**
-   * Retire this entry: resolve `delivered` and remove it from the registry,
-   * exactly as `markDelivered` would. Called only by the context's safety-net
-   * dispenser ({@link ensureBarrierSafetyNet}), and only on the lowest-index
-   * entry at delivery idle. Idempotent.
+   * Retire this entry: resolve `released` and remove it from the registry,
+   * without marking the handle delivered to the workflow. A safety-retired
+   * buffered payload may therefore install a fresh entry if it is claimed by
+   * a retained VM later. Called only by the context's safety-net dispenser
+   * ({@link ensureBarrierSafetyNet}), and only on the lowest-index entry at
+   * delivery idle. Idempotent.
    */
   retire: () => void;
 }
@@ -573,7 +610,7 @@ export async function awaitEarlierDeliveries(
     if (!gatesOn(kind, eventIndex, index, entry)) {
       continue;
     }
-    earlier.push(entry.delivered);
+    earlier.push(entry.released);
   }
   if (earlier.length > 0) {
     await Promise.all(earlier);
@@ -612,7 +649,7 @@ export async function awaitEarlierDeliveries(
 export interface DeliveryBarrier {
   /**
    * Mark this delivery as delivered to the workflow. Resolves its
-   * `delivered` promise so any later-in-log delivery gated on it (via
+   * `released` promise so any later-in-log delivery gated on it (via
    * {@link awaitEarlierDeliveries}) may proceed, and removes it from the
    * registry. Idempotent.
    */
@@ -651,48 +688,104 @@ export function registerDeliveryBarrier(
   ctx: WorkflowOrchestratorContext,
   eventIndex: number | undefined,
   kind: DeliveryKind,
-  options: { armed?: boolean } = {}
+  options: {
+    armed?: boolean;
+    /**
+     * The delivered event's `createdAt`. On `markDelivered` the workflow
+     * clock advances to it (see {@link WorkflowOrchestratorContext.advanceClock}),
+     * so `Date.now()` in the cascade this delivery wakes reads the delivery's
+     * own time, whatever the consumer walk has read ahead of it. Required so
+     * that a new delivery site cannot forget the clock: a delivery that does
+     * not move it leaves the cascade it wakes reading a stale time.
+     */
+    deliveredAt: number;
+  }
 ): DeliveryBarrier {
+  // Idempotent like the handle it backs; `advanceClock` never moves backwards,
+  // so a repeat is a no-op either way.
+  let deliveredToWorkflow = false;
+  const deliver = () => {
+    if (deliveredToWorkflow) {
+      return false;
+    }
+    deliveredToWorkflow = true;
+    ctx.advanceClock?.(options.deliveredAt);
+    return true;
+  };
+
   const barriers = ctx.pendingDeliveryBarriers;
   if (!barriers || eventIndex === undefined) {
-    return { markDelivered: () => {}, arm: () => {} };
+    return {
+      markDelivered: () => {
+        deliver();
+      },
+      arm: () => {},
+    };
   }
 
-  let done = false;
-  const { promise, resolve } = withResolvers<void>();
+  const install = (armed: boolean): DeliveryBarrierEntry => {
+    if (barriers.has(eventIndex)) {
+      throw new WorkflowRuntimeError(
+        `Delivery barrier already registered at event index ${eventIndex}`
+      );
+    }
+    const { promise, resolve } = withResolvers<void>();
+    const entry: DeliveryBarrierEntry = {
+      kind,
+      released: promise,
+      armed,
+      retired: false,
+      retire: () => {
+        if (entry.retired) {
+          return;
+        }
+        entry.retired = true;
+        if (barriers.get(eventIndex) === entry) {
+          barriers.delete(eventIndex);
+        }
+        resolve();
+      },
+    };
+    barriers.set(eventIndex, entry);
 
-  const finish = () => {
-    if (done) {
-      return;
-    }
-    done = true;
-    if (barriers.get(eventIndex) === entry) {
-      barriers.delete(eventIndex);
-    }
-    resolve();
+    // Safety net: if this delivery is never delivered to the workflow (its
+    // branch was not taken / the run is suspending, or a buffered hook payload
+    // is only claimed after a later delivery the workflow is still waiting
+    // on), it is retired at idle so a later delivery gated on it cannot
+    // deadlock and the registry cannot leak an entry per abandoned delivery.
+    // Retirement goes through the context's single ordered dispenser rather
+    // than a per-barrier idle poll. See {@link ensureBarrierSafetyNet} for why
+    // the ORDER of these retirements is load-bearing.
+    ensureBarrierSafetyNet(ctx);
+    return entry;
   };
 
-  const entry: DeliveryBarrierEntry = {
-    kind,
-    delivered: promise,
-    armed: options.armed ?? true,
-    retire: finish,
-  };
-  barriers.set(eventIndex, entry);
-
-  // Safety net: if this delivery is never delivered to the workflow (its
-  // branch was not taken / the run is suspending, or a buffered hook payload
-  // is only claimed after a later delivery the workflow is still waiting on),
-  // it is retired at idle so a later delivery gated on it cannot deadlock and
-  // the registry cannot leak an entry per abandoned delivery. Retirement goes
-  // through the context's single ordered dispenser rather than a per-barrier
-  // idle poll. See {@link ensureBarrierSafetyNet} for why the ORDER of these
-  // retirements is load-bearing.
-  ensureBarrierSafetyNet(ctx);
+  let entry = install(options.armed ?? true);
 
   return {
-    markDelivered: finish,
+    markDelivered: () => {
+      if (!deliver()) {
+        return;
+      }
+      entry.retire();
+    },
     arm: () => {
+      if (deliveredToWorkflow) {
+        return;
+      }
+      // The idle safety net may retire an unclaimed buffered hook payload
+      // while a retained VM keeps its `claim()` closure alive. If workflow
+      // code later claims that payload, replace the settled entry so delivery
+      // remains non-idle until the claim reaches the workflow.
+      if (entry.retired) {
+        entry = install(true);
+        return;
+      }
+      if (barriers.get(eventIndex) !== entry) {
+        throw new WorkflowRuntimeError(
+          `Delivery barrier lost ownership of event index ${eventIndex}`
+        );
+      }
       entry.armed = true;
     },
   };
@@ -931,4 +1024,28 @@ export function scheduleWhenIdle(
     }
   };
   setTimeout(check, 0);
+}
+
+/** Schedule a generation-guarded suspension after deliveries settle. */
+export function scheduleWorkflowSuspension(
+  ctx: WorkflowOrchestratorContext
+): void {
+  const generation = ctx.suspensionGeneration;
+  scheduleWhenIdle(ctx, () => {
+    if (generation !== ctx.suspensionGeneration) return;
+    const suspension = new WorkflowSuspension(
+      ctx.invocationsQueue,
+      ctx.globalThis
+    );
+    // Taken at idle, the same instant the queue is: the awaiters that are
+    // pending now are exactly the ones this suspension's outcome depends on.
+    if (ctx.hookPayloadAwaiters) {
+      const observed = new Set<string>();
+      for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+        if (isAwaited()) observed.add(correlationId);
+      }
+      suspension.observedHookIds = observed;
+    }
+    ctx.onWorkflowError(suspension);
+  });
 }

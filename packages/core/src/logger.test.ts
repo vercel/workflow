@@ -59,6 +59,18 @@ describe('logger', () => {
     expect(debugSpy).toHaveBeenCalledTimes(1);
   });
 
+  test('ignores a DEBUG value that a bundler defined as a non-string', () => {
+    const env = process.env;
+    process.env = { ...env, DEBUG: true as unknown as string };
+    try {
+      expect(() => buildLogger.debug('defined')).not.toThrow();
+      expect(() => runtimeLogger.info('defined')).not.toThrow();
+      expect(debugSpy).not.toHaveBeenCalled();
+    } finally {
+      process.env = env;
+    }
+  });
+
   test('child() merges parent metadata into every call', () => {
     const child = runtimeLogger.child({ workflowRunId: 'run-1' });
     child.error('boom', { stepId: 'step-1' });
@@ -148,6 +160,7 @@ describe('logger', () => {
           user error · FatalError
           run    wrun_123
           step   step_456
+          error  boom
           hint: Move the call to a step function.",
           ],
         ]
@@ -178,7 +191,8 @@ describe('logger', () => {
           user error · Error
           run    wrun_abc
           step   step_xyz
-          retry  4 attempts · 3 max retries",
+          retry  4 attempts · 3 max retries
+          error  Transient failure",
           ],
         ]
       `);

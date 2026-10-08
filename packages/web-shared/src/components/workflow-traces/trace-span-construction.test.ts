@@ -82,6 +82,39 @@ describe('runToSpan', () => {
     expect(data.completedAt).toEqual(date(500));
     expect(data).not.toHaveProperty('occurredAt');
   });
+
+  it('adds the cancellation reason to cancelled run details', () => {
+    const span = runToSpan(
+      run({ status: 'cancelled' }),
+      [
+        event({ eventType: 'run_created' }),
+        event({
+          eventType: 'run_cancelled',
+          createdAt: date(6_000),
+          eventData: { cancelReason: 'Superseded by a newer run.' },
+        }),
+      ],
+      date(10_000)
+    );
+
+    expect(span.attributes.data).toMatchObject({
+      status: 'cancelled',
+      cancelReason: 'Superseded by a newer run.',
+    });
+  });
+
+  it('marks cancelled run details when no reason was recorded', () => {
+    const span = runToSpan(
+      run({ status: 'cancelled' }),
+      [event({ eventType: 'run_created' })],
+      date(10_000)
+    );
+
+    expect(span.attributes.data).toMatchObject({
+      status: 'cancelled',
+      cancelReason: null,
+    });
+  });
 });
 
 describe('stepToSpan', () => {

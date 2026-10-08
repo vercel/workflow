@@ -1,4 +1,8 @@
-import { StreamExpiredError } from '@workflow/errors';
+import {
+  StreamError,
+  StreamExpiredError,
+  ThrottleError,
+} from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
@@ -11,6 +15,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -186,12 +191,90 @@ describe('encodeMultiChunks', () => {
 // describe block. Keeping it here (next to the tests that need it)
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
-vi.mock('./utils.js', () => ({
+vi.mock('./utils.js', async (importOriginal) => ({
+  // Real proxy detection: it is a pure function of the World's config.
+  getHttpUrl: (await importOriginal<typeof import('./utils.js')>()).getHttpUrl,
+  makeRequest: vi.fn(),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
   }),
 }));
+
+describe('stream writer session capability', () => {
+  it('advertises the stateful seam by default', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', undefined);
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+  });
+
+  it.each([
+    '',
+    'ws',
+    'WS',
+    'websocket',
+  ])('advertises the stateful seam for a non-http value: %j', async (value) => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', value);
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+  });
+
+  it.each([
+    'http',
+    'HTTP',
+    ' http ',
+    'Http\t',
+  ])('leaves the stateful seam absent on the http opt-out: %j', async (value) => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', value);
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeUndefined();
+  });
+
+  it('leaves the stateful seam absent on the projectConfig proxy', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', 'ws');
+    const { createStreamer } = await import('./streamer.js');
+    const streamer = createStreamer({
+      projectConfig: { projectId: 'prj_test', teamId: 'team_test' },
+    });
+    expect(streamer.streams.createWriteSession).toBeUndefined();
+  });
+
+  it('creates a write session with no env var set', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', undefined);
+    const { createStreamer } = await import('./streamer.js');
+    const session = await createStreamer().streams.createWriteSession?.(
+      'wrun_test',
+      'stream',
+      { writerId: 'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV' }
+    );
+    expect(session).toBeDefined();
+    expect(session?.write).toBeTypeOf('function');
+    session?.dispose?.();
+  });
+});
+
+describe('session HTTP fallback', () => {
+  it('paginates with the configured request-work cap', async () => {
+    vi.stubEnv('WORKFLOW_MAX_CHUNKS_PER_REQUEST', '2');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(null, { status: 200 }));
+    const { writeStreamSessionOverHttp } = await import('./streamer.js');
+
+    await writeStreamSessionOverHttp('run-123', 'stream', [
+      new Uint8Array([1]),
+      new Uint8Array([2]),
+      new Uint8Array([3]),
+    ]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(
+      fetchSpy.mock.calls.map(
+        (call) => (call[1]?.body as Uint8Array).byteLength
+      )
+    ).toEqual([10, 5]);
+  });
+});
 
 describe('streams.get', () => {
   async function getStreamer() {
@@ -290,6 +373,22 @@ describe('streams.get', () => {
   });
 });
 
+describe('stream snapshot errors', () => {
+  it('preserves typed World errors from snapshot requests', async () => {
+    const { makeRequest } = await import('./utils.js');
+    const throttled = new ThrottleError('rate limited', { retryAfter: 5 });
+    vi.mocked(makeRequest).mockRejectedValueOnce(throttled);
+    const { createStreamer } = await import('./streamer.js');
+
+    const error = await createStreamer()
+      .streams.getInfo('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBe(throttled);
+    expect(error).toMatchObject({ name: 'ThrottleError', retryAfter: 5 });
+  });
+});
+
 describe('streams.write error diagnostics', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');
@@ -314,9 +413,14 @@ describe('streams.write error diagnostics', () => {
 
     const streamer = await getStreamer();
 
-    await expect(
-      streamer.streams.write('wrun_test', 'user', 'chunk')
-    ).rejects.toThrow(
+    const error = await streamer.streams
+      .write('wrun_test', 'user', 'chunk')
+      .catch((cause: unknown) => cause);
+
+    expect(StreamError.is(error)).toBe(true);
+    expect(error).toMatchObject({ status: 500, code: 'STREAM_ERROR' });
+    expect(error).toHaveProperty(
+      'message',
       'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
   });

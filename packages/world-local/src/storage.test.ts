@@ -26,6 +26,7 @@ import {
   createStep,
   createWait,
   disposeHook,
+  permissionEnforcement,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -643,6 +644,50 @@ describe('Storage', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].runId).not.toBe(page1.data[0].runId);
       });
+
+      it('filters by a single status', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({ status: 'pending' });
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0]!.status).toBe('pending');
+      });
+
+      it('filters by an array of statuses (matches any)', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({
+          status: ['pending', 'running'],
+        });
+        expect(result.data).toHaveLength(1);
+        expect(['pending', 'running']).toContain(result.data[0]!.status);
+      });
+
+      it('returns no runs when status is an empty array (matches SQL `IN ()`)', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({ status: [] });
+        expect(result.data).toHaveLength(0);
+      });
+
+      it('leaves the filter unset when status field is omitted', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({});
+        expect(result.data).toHaveLength(1);
+      });
     });
   });
 
@@ -685,6 +730,7 @@ describe('Storage', () => {
         const filePath = path.join(
           testDir,
           'steps',
+          testRunId,
           `${testRunId}-step_123.json`
         );
         const fileExists = await fs
@@ -1273,6 +1319,7 @@ describe('Storage', () => {
         const filePath = path.join(
           testDir,
           'events',
+          testRunId,
           `${testRunId}-${event.eventId}.json`
         );
         const fileExists = await fs
@@ -1656,6 +1703,62 @@ describe('Storage', () => {
           )
         ).toBe(true);
         expect(result.hasMore).toBe(false);
+      });
+
+      it('returns a delta for a create that committed hook_conflict', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_owner',
+          eventData: { token: 'delta-conflict-token' },
+        });
+        const sinceCursor = await currentCursor();
+
+        // A create whose token is taken commits `hook_conflict` and returns
+        // early, ahead of the shared delta block — but the conflict is the
+        // event the create's awaiters settle on, so the caller has to get it
+        // here or pay a re-invocation to read back an event this response
+        // already held.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'hook_created' as const,
+            correlationId: 'corr_hook_loser',
+            eventData: { token: 'delta-conflict-token' },
+          },
+          { sinceCursor }
+        );
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        const expected = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          expected.data.map((e) => e.eventId)
+        );
+        expect(result.events?.at(-1)?.eventType).toBe('hook_conflict');
+        expect(result.cursor).toBe(expected.cursor);
+        expect(result.hasMore).toBe(expected.hasMore);
+      });
+
+      it('does not return a delta on a hook_conflict when sinceCursor is omitted', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_owner2',
+          eventData: { token: 'no-delta-conflict-token' },
+        });
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_loser2',
+          eventData: { token: 'no-delta-conflict-token' },
+        });
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        expect(result.events).toBeUndefined();
+        expect(result.cursor).toBeUndefined();
       });
     });
 
@@ -3901,7 +4004,12 @@ describe('Storage', () => {
       // Simulate a crash after the hook entity write but before the
       // event write by deleting the just-written event from disk.
       await fs.unlink(
-        path.join(testDir, 'events', `${testRunId}-${first.event.eventId}.json`)
+        path.join(
+          testDir,
+          'events',
+          testRunId,
+          `${testRunId}-${first.event.eventId}.json`
+        )
       );
 
       // Sanity: the hook entity is still durable but the
@@ -4099,7 +4207,12 @@ describe('Storage', () => {
       await fs.unlink(hookPath);
       await fs.unlink(tokenClaimPath);
       await fs.writeFile(
-        path.join(testDir, 'events', 'wrun_malformed-event.json'),
+        path.join(
+          testDir,
+          'events',
+          testRunId,
+          `${testRunId}-evnt_malformed.json`
+        ),
         '{'
       );
 
@@ -4470,7 +4583,7 @@ describe('Storage', () => {
         JSON.stringify({ token, hookId, runId: run.runId })
       );
       const preExistingEventId = 'evnt_pre_upgrade_existing';
-      const eventsDir = path.join(testDir, 'events');
+      const eventsDir = path.join(testDir, 'events', run.runId);
       await fs.mkdir(eventsDir, { recursive: true });
       await fs.writeFile(
         path.join(eventsDir, `${run.runId}-${preExistingEventId}.json`),
@@ -4757,6 +4870,71 @@ describe('Storage', () => {
             error: 'Should not work',
           })
         ).rejects.toThrow(/terminal/i);
+      });
+    });
+  });
+
+  describe('terminal-run step_started fencing', () => {
+    describe.each([
+      ['run_completed', { output: new Uint8Array([3]) }],
+      ['run_failed', { error: 'run failed' }],
+      ['run_cancelled', undefined],
+    ] as const)('%s', (terminalEvent, terminalData) => {
+      it.each([
+        ['step_completed', { result: new Uint8Array([1]) }, 'completed'],
+        ['step_failed', { error: 'step failed' }, 'failed'],
+      ] as const)('rejects restarting a running step but accepts %s', async (stepEvent, stepData, stepStatus) => {
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        await updateRun(storage, run.runId, 'run_started');
+        const stepId = 'step_in_progress';
+        await createStep(storage, run.runId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        });
+        const started = await updateStep(
+          storage,
+          run.runId,
+          stepId,
+          'step_started'
+        );
+        expect(started.status).toBe('running');
+        const terminal = await storage.events.create(run.runId, {
+          eventType: terminalEvent,
+          eventData: terminalData,
+        });
+        const eventsBefore = await storage.events.list({ runId: run.runId });
+
+        // Redelivery must not claim another attempt, even while the step is running.
+        await expect(
+          updateStep(storage, run.runId, stepId, 'step_started')
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+        expect(await storage.steps.get(run.runId, stepId)).toEqual(started);
+        expect(await storage.events.list({ runId: run.runId })).toEqual(
+          eventsBefore
+        );
+
+        const finished = await updateStep(
+          storage,
+          run.runId,
+          stepId,
+          stepEvent,
+          stepData
+        );
+        expect(finished.status).toBe(stepStatus);
+        expect(finished.attempt).toBe(started.attempt);
+        expect(await storage.steps.get(run.runId, stepId)).toEqual(finished);
+        expect(await storage.runs.get(run.runId)).toEqual(terminal.run);
+        const eventsAfter = await storage.events.list({ runId: run.runId });
+        expect(eventsAfter.data).toHaveLength(eventsBefore.data.length + 1);
+        expect(eventsAfter.data.at(-1)).toMatchObject({
+          eventType: stepEvent,
+          correlationId: stepId,
+        });
       });
     });
   });
@@ -5316,6 +5494,7 @@ describe('Storage', () => {
       const eventPath = path.join(
         testDir,
         'events',
+        run.runId,
         `${run.runId}-${stalledEventId}.json`
       );
       await expect(promoteExclusive(stagedPath, eventPath)).resolves.toBe(
@@ -5399,8 +5578,10 @@ describe('Storage', () => {
     });
 
     // chmod-based permission simulation is a no-op for directories on
-    // Windows, so these two abort-path tests only run on POSIX platforms.
-    it.skipIf(process.platform === 'win32')(
+    // Windows, and is bypassed outright by root / CAP_DAC_OVERRIDE, so these
+    // two abort-path tests only run where the permission bits are actually
+    // enforced — see `permissionEnforcement`.
+    it.skipIf(!permissionEnforcement.write)(
       'should abort the terminal transition when the staging reap fails',
       async () => {
         // The reap is the correctness-critical half of the arbitration: if
@@ -5449,7 +5630,7 @@ describe('Storage', () => {
       }
     );
 
-    it.skipIf(process.platform === 'win32')(
+    it.skipIf(!permissionEnforcement.read)(
       'should abort the terminal transition when the dominance scan fails',
       async () => {
         // mintRunDominantEventKey's ordering guarantee depends on seeing
@@ -5461,7 +5642,7 @@ describe('Storage', () => {
           workflowName: 'test-workflow',
           input: new Uint8Array(),
         });
-        const eventsDir = path.join(testDir, 'events');
+        const eventsDir = path.join(testDir, 'events', run.runId);
         await fs.chmod(eventsDir, 0o000);
 
         try {

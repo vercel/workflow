@@ -130,13 +130,22 @@ pnpm run test:e2e
 ### Event log race repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
-`CORRUPTED_EVENT_LOG`. It drives four scenarios against one deployment:
+`CORRUPTED_EVENT_LOG`. It drives six scenarios against one deployment:
 `step-storm` and `hook-storm` (concurrent replays of a single run racing the
-per-branch watchdog; `hook-storm` is the production shape), `blocked-branch`
+per-branch watchdog; `hook-storm` is a production shape), `blocked-branch`
 (each branch parks on a launch step before its hook race, so a woken replay can
 hold a log that predates a sibling's launch completion and take the ordinal that
 sibling's wait is about to get; it covers the class the wake-order fixes miss),
-plus a `hook-sleep` control that provides the calibration baseline. Any outcome
+`wake-loop` (one sequential loop racing a reusable hook read against a
+heartbeat sleep, no fan-out; the driver supplies the concurrency with bursty
+resumes and resumes aimed at the heartbeat deadline, the shape of a production
+run whose replays of one immutable prefix diverged non-deterministically on an
+unconsumable `wait_created`), `dag-runner` (a ready-set scheduler over a fixed
+DAG, width above the inline step limit so waves mix inline and dispatched
+steps, whose worker nodes bind a hook and await `hook.getConflict()` mid-fan-out;
+it needs no racing driver, only worker callbacks, and is the shape of a
+production runner whose single-writer logs failed to replay), plus a
+`hook-sleep` control that provides the calibration baseline. Any outcome
 other than `completed` fails the run, except `infra`, which means the harness
 could not reach the deployment.
 
@@ -356,6 +365,23 @@ This project uses pnpm with workspace configuration. The required version is spe
 
 Linting, formatting, and typechecking (`pnpm lint`, `pnpm format`, `pnpm typecheck`) are all facets of the same static-quality gate, and CI runs them on every PR. Treat them as **advisory** while working locally: run them and fix obvious issues when it's convenient, but a failure in any of them should **not** block you from committing, pushing, or opening a PR. CI is the source of truth and will report anything that matters. Don't get stuck iterating locally to make these pass before handing off.
 
+## Bundle size
+
+`.github/workflows/bundle-size.yml` builds the `nextjs-turbopack` and `hono` workbench apps on every PR, measures the `/.well-known/workflow/v1/flow` route, and posts a sticky comment with the delta against `main`. Pushes to `main` exist to produce the baseline artifacts that PR runs download.
+
+It reports two numbers per app, because neither app emits an isolable function bundle for that route (Next.js emits a ~1 KB turbopack chunk loader pointing at chunks shared with other routes; nitro inlines the handler into a single server entry):
+
+- **Gated**: what the workflow builders emit for the flow route, before the framework bundles it. Growth beyond `max(2%, 50 KiB)` raw fails the job. Add the `allow-bundle-size-growth` label to accept it.
+- **Informational**: the framework's own build output. Unrelated changes move it, so it never gates.
+
+The comment is a single table showing **gzip** sizes with the change against `main` in parentheses, because that is the number worth reading at a glance. Everything else, including what gates the job, sits in a collapsed block below it. The gate compares **raw** bytes, which is what the runtime parses on a cold start, so a red check can sit next to a small gzip delta; the collapsed block says so.
+
+The two are only ever compared against their own baselines, never against each other, and neither alone is the deployed function: the gated bundle is the VM code the route carries as an inline string, while the code hosting it sits in the framework output.
+
+**The gate does not cover the world adapters.** Building `nextjs-turbopack` with `WORKFLOW_TARGET_WORLD=local` and `=vercel` produces byte-identical reports on all three metrics, because every world the app depends on is bundled into the framework output either way and the choice is made at runtime. A change confined to `@workflow/world-vercel` will not move the gated numbers.
+
+The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TARGET_WORLD`, and records them in each report's fingerprint; the renderer refuses to diff reports whose fingerprints disagree. `WORKFLOW_SOURCEMAP=false` is the one that moves the numbers, since sourcemap mode defaults to inline outside a production build and that alone takes the Next flow bundle from 1.38 MB to 5.85 MB. Changing any pin invalidates comparisons against older baselines.
+
 ## Documentation standards
 
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
@@ -384,8 +410,10 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 ### Branch model
 
-- **`main`**: Bleeding-edge / beta channel. Changesets are in pre-release mode (`beta` tag). Published packages get the `beta` npm dist-tag (e.g. `5.0.0-beta.3`).
-- **`stable`**: GA / production channel. Changesets are in regular mode. Published packages get the `latest` npm dist-tag (e.g. `4.2.1`).
+- **`main`**: Current GA line (5.x). Changesets are in regular mode; published packages get the `latest` npm dist-tag (e.g. `5.0.0`). `main` re-enters pre-release mode only while a new major is baking, and publishes `beta`/`rc` dist-tags for as long as it stays there.
+- **`stable`**: 4.x maintenance line. Changesets are in regular mode; published packages get the `previous` npm dist-tag (`ci:publish` passes `--tag previous`), so a 4.x patch never moves `latest` off 5.x. The tag is not version-numbered because npm rejects tag names that parse as a semver range (`v4`, `4.x`).
+
+Before 5.0.0 this was inverted: `main` was the beta channel and `stable` owned `latest`. The `stable` side of the flip is a separate commit on that branch; see "Retiring a major" below for the order the two have to land in.
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
@@ -406,13 +434,16 @@ Because those PRs have no deployment of their own, CI treats them specially: the
 
 ### Changesets
 
-- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy, so they always have the same version number
+- `workflow`, `@workflow/core`, and `@workflow/world-vercel` use changesets' "fixed" versioning strategy, so they always have the same version number. A changeset touching only one of the three still republishes all of them, and the other two get a `No changes in this release.` changelog section.
+  - `@workflow/world-vercel` joined the group at 5.0.0. `@workflow/core` already depended on it (`"@workflow/world-vercel": "workspace:*"`, published as an exact pin), so a world-vercel release always dragged core along; nothing pulled the other way, and the adapter drifted five betas behind by 5.0.0. Since the adapter reports its own version to the backend (`WorkflowClientVersion` in `packages/world-vercel/src/events-v4.ts`), that drift made the reported version ambiguous.
+  - The other worlds (`@workflow/world`, `@workflow/world-postgres`, `@workflow/world-local`) are deliberately **not** in the group. They version independently and are expected to drift from the SDK version.
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
+  - Never list a package from the `ignore` array in `.changeset/config.json` (private workbench and simulation packages such as `@workflow/world-sim`), even when the PR changes it. Changesets rejects a changeset that mixes ignored and published packages, and the failure only surfaces in the Release job on `main`. `node scripts/check-changesets.mjs` runs that validation locally; CI runs it in `lint.yml`.
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
-  - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
+  - The bump type determines the released version on both branches. While `main` is in pre-release mode it only increments `beta.N`, but the type is still recorded and applies when pre mode exits and when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
 - When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse: one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
@@ -443,7 +474,9 @@ When in doubt, AI is told to decline: a missed fix can be forced through later v
 
 ### Pre-release lifecycle
 
-The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
+`main` is **not** in pre-release mode today — it ships GA 5.x versions straight to the `latest` dist-tag. The steps below apply when baking the next major, at which point `main` uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
+
+Changesets that a "Version Packages (beta)" merge has already turned into a beta live in `.changeset/pre/` (changesets v3 keeps them there instead of listing their ids in `pre.json`, which now holds only `mode` and `tag`). Only the `.md` files directly under `.changeset/` are pending. Do not edit or delete anything under `.changeset/pre/`: those files become the final stable release's changelog when pre mode exits.
 
 **Starting a new pre-release cycle:**
 1. Create a changeset with the desired base bump (e.g. `major` for a new major version)
@@ -454,10 +487,22 @@ The `main` branch uses changesets' [pre-release mode](https://github.com/changes
 - Merge PRs with changesets to `main` as normal
 - Each "Version Packages (beta)" PR merge publishes the next `beta.N` increment
 
-**Graduating to stable:**
+**Graduating to GA:**
 1. (Optional) Transition to release candidates: `pnpm changeset pre enter rc` (publishes `X.Y.Z-rc.N`)
 2. Exit pre-release mode: `pnpm changeset pre exit`
-3. The next "Version Packages" PR will publish the final stable version to npm
+3. The next "Version Packages" PR will publish the final GA version to npm under the `latest` dist-tag. That PR is enormous — exiting pre mode consumes every `.changeset/pre/*.md` at once, so it deletes hundreds of files and rewrites every CHANGELOG. Review it for *shape* (version bumps and changelogs only, nothing else touched), not line by line.
+4. Retire the outgoing major — see below.
+
+Note that between the `pre exit` merge and the "Version Packages" merge, `main` cannot cut another beta: the pending changesets all belong to the GA release now. Do not exit pre mode until you intend to ship GA promptly. Throughout that window the manifests on `main` are still `5.0.0-beta.N` — `pre exit` bumps nothing, it only flips `.changeset/pre.json` to `{"mode": "exit"}` so the next `changeset version` writes GA versions and deletes the file. Anything that keys off the release channel has to treat exit mode as still-a-prerelease for that reason; `scripts/check-published.mjs` does.
+
+### Retiring a major
+
+When a new major takes over `latest`, the outgoing major moves to a maintenance branch (`stable`) and needs its own dist-tag so its patches never reclaim `latest`:
+
+- Pin the maintenance branch's `ci:publish` to that tag: `changeset publish --tag previous`. The tag must not parse as a semver range — npm rejects `v4` and `4.x` (`Tag name must not be a valid SemVer range`), which is why it is `previous` and not version-numbered.
+- Pass the same tag to the publication check: `node scripts/check-published.mjs --tag previous`. That script defaults to the tag in `.changeset/pre.json` when that file exists and `latest` otherwise, so on a maintenance branch — which is in regular mode and has no `pre.json` — it would otherwise assert that `latest` points at the version just published and fail every release.
+
+**Order matters, and getting it wrong is a user-visible regression.** The maintenance branch must keep publishing to `latest` right up until the new major's GA actually lands on npm. Pinning it to `previous` early does not "leave `latest` where it is" — it *freezes* `latest` at the last release before the pin, so `npm install workflow` silently stops picking up maintenance patches. This happened once: #3091 pinned 4.x to `previous` on 2026-07-24 while 4.x was still the GA line, and #3168 reverted it four days later, about three hours before `4.7.0` would have shipped without moving `latest`. Land the maintenance-branch pin **after** the new major's GA publish, not before.
 
 ## Common patterns
 

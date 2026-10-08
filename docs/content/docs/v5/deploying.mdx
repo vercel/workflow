@@ -51,6 +51,17 @@ vercel deploy
 
 <FluidComputeCallout />
 
+<Callout type="warn">
+  **Enable access to System Environment Variables before deploying.** Workflow
+  recognizes a Vercel deployment by `VERCEL_DEPLOYMENT_ID`, which Vercel exposes
+  to your build and your functions only when the **Enable access to System
+  Environment Variables** checkbox is selected under **Settings**, then
+  **Environment Variables**, in your project. With it cleared, the deployment
+  falls back to the Local World and every run fails on the read-only
+  filesystem. See
+  [System environment variables](/worlds/vercel#system-environment-variables).
+</Callout>
+
 <Callout>
   Learn more about the [Vercel World](/worlds/vercel) and its capabilities, including [multi-region](/worlds/vercel#multi-region).
 </Callout>

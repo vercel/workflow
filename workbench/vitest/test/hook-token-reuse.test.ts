@@ -14,12 +14,24 @@ describe('hook token reuse after dispose', () => {
     const rounds = 3;
     const run = await start(reuseHookTokenWorkflow, [token, rounds]);
 
+    // Each round must wait for a hook OTHER than the one it just resumed.
+    // `resumeHook` returning does not mean the payload has been recorded: on
+    // the lazy path the consuming invocation writes `hook_received`, so the
+    // previous round's hook can still look un-received here and be resumed a
+    // second time, starving the round that was waiting for its own payload.
+    let resumedHookId: string | undefined;
     for (let round = 0; round < rounds; round++) {
       const settled = await Promise.race([
-        waitForHook(run, { token }).then(() => 'hook' as const),
+        waitForHook(run, { token, notHookId: resumedHookId }).then(
+          (hook) => hook
+        ),
         run.returnValue.then((value) => ({ value })),
       ]);
-      expect(settled, `round ${round} should register a hook`).toBe('hook');
+      expect(
+        settled,
+        `round ${round} should register a hook, got ${JSON.stringify(settled)}`
+      ).toHaveProperty('hookId');
+      resumedHookId = (settled as { hookId: string }).hookId;
       await resumeHook(token, { n: round });
     }
 

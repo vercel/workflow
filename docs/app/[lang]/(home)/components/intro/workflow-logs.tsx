@@ -72,8 +72,8 @@ export function WorkflowLogs({
     <div
       className={cn(
         'relative inline-block whitespace-nowrap w-full border-t',
-        'overflow-x-auto p-4 font-mono text-sm text-muted-foreground absolute bottom-0 right-0 left-0',
-        hasError && 'bg-destructive/10',
+        'overflow-x-auto p-4 font-mono text-sm text-gray-900 absolute bottom-0 right-0 left-0',
+        hasError && 'bg-red-900/10',
         className
       )}
     >
@@ -85,7 +85,7 @@ export function WorkflowLogs({
           exit="exit"
           transition={transition}
           variants={variants || motionVariants}
-          className={cn(hasError && 'text-destructive')}
+          className={cn(hasError && 'text-red-900')}
         >
           {currentText}
         </motion.div>

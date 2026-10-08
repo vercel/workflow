@@ -1,6 +1,10 @@
 import {
+  Button,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
   useHookActions,
 } from '@workflow/web-shared';
 import type { Hook } from '@workflow/world';
@@ -13,7 +17,6 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
-import { Button } from '~/components/ui/button';
 import { Card, CardContent } from '~/components/ui/card';
 import { DocsLink } from '~/components/ui/docs-link';
 import {
@@ -30,11 +33,6 @@ import {
   TableHeader,
   TableRow,
 } from '~/components/ui/table';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import { fetchEvents } from '~/lib/rpc-client';
 import type { EnvMap, HookListItem } from '~/lib/types';
 import {
@@ -262,8 +260,8 @@ export function HooksTable({
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant="outline"
-                size="sm"
+                variant="secondary"
+                size="small"
                 onClick={onRefresh}
                 disabled={loading}
               >
@@ -354,9 +352,10 @@ export function HooksTable({
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
+                              variant="tertiary"
+                              size="small"
+                              shape="square"
+                              aria-label="Hook actions"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <MoreHorizontal className="h-4 w-4" />
@@ -387,8 +386,8 @@ export function HooksTable({
             <div className="text-sm text-muted-foreground">{pageInfo}</div>
             <div className="flex gap-2 items-center">
               <Button
-                variant="outline"
-                size="sm"
+                variant="secondary"
+                size="small"
                 onClick={previousPage}
                 disabled={!hasPreviousPage}
               >
@@ -396,8 +395,8 @@ export function HooksTable({
                 Previous
               </Button>
               <Button
-                variant="outline"
-                size="sm"
+                variant="secondary"
+                size="small"
                 onClick={nextPage}
                 disabled={!hasNextPage}
               >

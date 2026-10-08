@@ -564,3 +564,545 @@ export async function blockedBranchReproWorkflow(
     width: config.width,
   };
 }
+
+// ---------------------------------------------------------------------------
+// wake-loop
+// ---------------------------------------------------------------------------
+
+interface WakeLoopInput {
+  token: string;
+  /** Wakes carrying `fresh: true` to process before returning. */
+  wakes?: number;
+  /** The heartbeat sleep raced against the hook read. */
+  heartbeatMs?: number;
+  /** Base duration of the drain step, the long step of each cycle. */
+  stepDelayMs?: number;
+  /** Deterministic per-cycle spread added to `stepDelayMs`. */
+  stepDelayJitterMs?: number;
+  /** Bytes every step returns, so each replay pays real hydration per event. */
+  stepPayloadBytes?: number;
+  /** Every Nth cycle's drain reports more work, so the loop runs another cycle
+   *  without racing. 0 disables. */
+  continueEvery?: number;
+  /** Hard cap on cycles, so a driver that never sends enough fresh wakes still
+   *  ends the run. */
+  maxCycles?: number;
+}
+
+interface WakeLoopPayload {
+  seq: number;
+  /** Whether this wake has work behind it. A stale wake is consumed without
+   *  emitting a single step, which is the step-count amplifier of this shape. */
+  fresh: boolean;
+  sentAt: number;
+}
+
+type WakeLoopCause = 'start' | 'wake' | 'heartbeat' | 'continue';
+
+interface WakeLoopCycle {
+  cycle: number;
+  cause: WakeLoopCause;
+}
+
+interface WakeLoopResult {
+  runId: string;
+  cycles: number;
+  freshWakes: number;
+  staleWakes: number;
+  heartbeats: number;
+  ledger: WakeLoopCycle[];
+}
+
+const HEARTBEAT = Symbol.for('event-log-corruption-repro:heartbeat');
+
+function payloadOf(bytes: number, tag: string) {
+  return bytes > 0 ? tag.padEnd(bytes, 'x') : tag;
+}
+
+/** The short bookkeeping steps of a cycle (two per cycle, plus one before every
+ *  heartbeat is armed). */
+async function verifyStep(input: {
+  runId: string;
+  cycle: number;
+  phase: string;
+  payloadBytes: number;
+}) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return {
+    runId: input.runId,
+    cycle: input.cycle,
+    phase: input.phase,
+    verifiedAt: Date.now(),
+    payload: payloadOf(
+      input.payloadBytes,
+      `verify:${input.cycle}:${input.phase}`
+    ),
+  };
+}
+
+/**
+ * The long step of a cycle. Its duration is what lets a heartbeat completion
+ * and a burst of wakes commit while a replay is parked on it, so the events the
+ * next replay has to order against each other sit inside one step's span.
+ * Whether the loop runs another cycle right away is decided here, from inputs
+ * only, so it replays identically.
+ */
+async function drainStep(input: {
+  runId: string;
+  cycle: number;
+  delayMs: number;
+  continueEvery: number;
+  payloadBytes: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    cycle: input.cycle,
+    more:
+      input.continueEvery > 0 &&
+      input.cycle % input.continueEvery === input.continueEvery - 1,
+    drainedAt: Date.now(),
+    payload: payloadOf(input.payloadBytes, `drain:${input.cycle}`),
+  };
+}
+
+async function syncStep(input: {
+  runId: string;
+  cycle: number;
+  payloadBytes: number;
+}) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return {
+    runId: input.runId,
+    cycle: input.cycle,
+    syncedAt: Date.now(),
+    payload: payloadOf(input.payloadBytes, `sync:${input.cycle}`),
+  };
+}
+
+function normalizeWakeLoop(input: WakeLoopInput) {
+  return {
+    wakes: input.wakes ?? 12,
+    heartbeatMs: input.heartbeatMs ?? 4000,
+    stepDelayMs: input.stepDelayMs ?? 600,
+    stepDelayJitterMs: input.stepDelayJitterMs ?? 500,
+    stepPayloadBytes: input.stepPayloadBytes ?? 8192,
+    continueEvery: input.continueEvery ?? 5,
+    maxCycles: input.maxCycles ?? 80,
+  };
+}
+
+/**
+ * The wake-loop shape: ONE sequential loop that races a reusable hook read
+ * against a heartbeat sleep, the pattern of a long-lived agent loop that is
+ * woken by external events and heartbeats in between. It is the shape of a
+ * production run that died `CORRUPTED_EVENT_LOG` on an unconsumable
+ * `wait_created` after replays of the same immutable prefix diverged
+ * non-deterministically: one replay in several observed a hook payload ahead of
+ * an earlier heartbeat completion, ran a wake cycle where the committed log
+ * recorded a heartbeat, and drew the heartbeat's ordinal for a step.
+ *
+ * Nothing here fans out. The concurrency comes from outside: every wake the
+ * driver sends is its own invocation replaying the run, and the driver sends
+ * them in bursts and right around the heartbeat deadline, the two moments the
+ * production log showed a `hook_received` landing next to a `wait_completed`.
+ *
+ * Three properties make an ordering slip fatal rather than benign:
+ *  - the hook read is carried across heartbeat wins (a pending `next()` is
+ *    never dropped), so whichever of hook and heartbeat the replay sees first
+ *    decides the branch;
+ *  - a stale wake emits zero steps and a fresh one emits four, so the branch
+ *    decision changes the step count;
+ *  - the heartbeat is only re-armed (behind a `verify` step) after a heartbeat
+ *    win, so a wake mistaken for a heartbeat, or the reverse, moves a
+ *    `wait_created` in the correlation-id sequence.
+ */
+export async function wakeLoopReproWorkflow(
+  input: WakeLoopInput
+): Promise<WakeLoopResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const config = normalizeWakeLoop(input);
+  const runId = metadata.workflowRunId;
+  const ledger: WakeLoopCycle[] = [];
+  let cycles = 0;
+  let freshWakes = 0;
+  let staleWakes = 0;
+  let heartbeats = 0;
+
+  // A second hook the workflow never reads, as the production run had: it
+  // keeps a live consumer with no waiter in the replay.
+  const abortHook = createHook<unknown>({ token: `${input.token}:abort` });
+  const wake = createHook<WakeLoopPayload>({ token: input.token });
+  const iterator = wake[Symbol.asyncIterator]();
+
+  const cycle = async (cause: WakeLoopCause): Promise<boolean> => {
+    const index = cycles;
+    cycles += 1;
+    ledger.push({ cycle: index, cause });
+    const payloadBytes = config.stepPayloadBytes;
+    await verifyStep({ runId, cycle: index, phase: 'before', payloadBytes });
+    const drained = await drainStep({
+      runId,
+      cycle: index,
+      // Deterministic spread: the drain has to be long enough for heartbeat
+      // completions and wake bursts to land inside it, and vary so they land
+      // at different offsets across cycles.
+      delayMs:
+        config.stepDelayMs +
+        Math.floor(((index * 7) % 10) * (config.stepDelayJitterMs / 10)),
+      continueEvery: config.continueEvery,
+      payloadBytes,
+    });
+    await verifyStep({ runId, cycle: index, phase: 'after', payloadBytes });
+    await syncStep({ runId, cycle: index, payloadBytes });
+    return drained.more;
+  };
+
+  try {
+    let pendingRead = iterator.next();
+    let heartbeat: Promise<typeof HEARTBEAT> | null = null;
+    let more = await cycle('start');
+
+    while (freshWakes < config.wakes && cycles < config.maxCycles) {
+      while (more && cycles < config.maxCycles) {
+        more = await cycle('continue');
+      }
+      if (cycles >= config.maxCycles) break;
+
+      if (!heartbeat) {
+        await verifyStep({
+          runId,
+          cycle: cycles,
+          phase: 'heartbeat',
+          payloadBytes: config.stepPayloadBytes,
+        });
+        heartbeat = sleep(config.heartbeatMs).then(() => HEARTBEAT);
+      }
+
+      const winner = await Promise.race([
+        pendingRead.then((result) => ({ payload: result.value })),
+        heartbeat,
+      ]);
+
+      if (winner === HEARTBEAT) {
+        heartbeat = null;
+        heartbeats += 1;
+        more = await cycle('heartbeat');
+        continue;
+      }
+
+      // The read is consumed only when it wins; a heartbeat win above carries
+      // the same pending read into the next race.
+      pendingRead = iterator.next();
+      const payload = (winner as { payload: WakeLoopPayload | undefined })
+        .payload;
+      if (payload?.fresh) {
+        freshWakes += 1;
+        more = await cycle('wake');
+      } else {
+        staleWakes += 1;
+        more = false;
+      }
+    }
+  } finally {
+    wake.dispose();
+    abortHook.dispose();
+  }
+
+  return { runId, cycles, freshWakes, staleWakes, heartbeats, ledger };
+}
+
+// ---------------------------------------------------------------------------
+// dag-runner
+// ---------------------------------------------------------------------------
+
+interface DagRunnerInput {
+  token: string;
+  /** Nodes in the DAG. Every node runs the same four-step chain. */
+  nodes?: number;
+  /** Ready-set width: how many nodes are in flight at once. Above the inline
+   *  step limit (3), so part of every wave is dispatched to the queue while
+   *  the rest runs inline in the orchestrator invocation. */
+  width?: number;
+  /** Base duration of the node's evaluate step, the long step of the chain. */
+  evaluateMs?: number;
+  /** Deterministic per-node spread added to `evaluateMs`, so sibling
+   *  completions land a few milliseconds to a few seconds apart. */
+  evaluateJitterMs?: number;
+  /** Duration of the three short bookkeeping steps. */
+  shortStepMs?: number;
+  /** Every Nth node is a worker node: after its evaluate it binds a hook,
+   *  awaits `hook.getConflict()`, enqueues the worker and waits for the
+   *  worker's callback (raced against a watchdog). 0 disables. */
+  workerEvery?: number;
+  /** Worker nodes: how long to wait for the callback before giving up. */
+  workerWatchdogMs?: number;
+  /** Sequential steps before the DAG, each followed by a bound hook, the way
+   *  a runner registers itself before it starts scheduling. */
+  preludeBinds?: number;
+}
+
+interface DagNodeRecord {
+  node: number;
+  worker: boolean;
+  callback: 'received' | 'watchdog' | 'none';
+  order: number;
+}
+
+interface DagRunnerResult {
+  runId: string;
+  nodes: number;
+  width: number;
+  ledger: DagNodeRecord[];
+  bindsConfirmed: number;
+}
+
+interface WorkerCallbackPayload {
+  node: number;
+  sentAt: number;
+}
+
+const DAG_WATCHDOG = Symbol.for('event-log-corruption-repro:dag-watchdog');
+
+async function claimNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, claimedAt: Date.now() };
+}
+
+async function evaluateNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+  worker: boolean;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    node: input.node,
+    needsWorker: input.worker,
+    evaluatedAt: Date.now(),
+  };
+}
+
+async function enqueueWorkerStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, enqueuedAt: Date.now() };
+}
+
+async function finishNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+  callback: DagNodeRecord['callback'];
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, finishedAt: Date.now() };
+}
+
+async function transitionNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, transitionedAt: Date.now() };
+}
+
+async function preludeStep(input: {
+  runId: string;
+  index: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, index: input.index, at: Date.now() };
+}
+
+function normalizeDagRunner(input: DagRunnerInput) {
+  return {
+    nodes: input.nodes ?? 12,
+    // Clamped: a width of 0 would leave the scheduler racing an empty set,
+    // which never settles, and the run would sit until the harness gave up.
+    width: Math.max(1, input.width ?? 5),
+    evaluateMs: input.evaluateMs ?? 1500,
+    evaluateJitterMs: input.evaluateJitterMs ?? 2500,
+    shortStepMs: input.shortStepMs ?? 150,
+    workerEvery: input.workerEvery ?? 3,
+    workerWatchdogMs: input.workerWatchdogMs ?? 6000,
+    preludeBinds: input.preludeBinds ?? 2,
+  };
+}
+
+/**
+ * The DAG-runner shape: a ready-set scheduler keeps `width` nodes in flight
+ * and refills a slot as soon as any in-flight node settles (`Promise.race`),
+ * every node running the same `claim -> evaluate -> finish -> transition`
+ * chain of short steps around one long one. Taken from a production runner
+ * that corrupted 90% of its runs on the day it shipped, with no concurrent
+ * writer involved: one orchestrator invocation wrote the whole log, and then
+ * fresh replays of that log diverged four times in six seconds.
+ *
+ * Three things distinguish it from the storms above:
+ *
+ *  - **Nothing outside the run races it.** Sibling steps complete a few
+ *    milliseconds apart because they are siblings, not because a driver aims
+ *    them; the concurrency is the scheduler's own.
+ *  - **The width exceeds the inline step limit**, so every wave is a mix of
+ *    steps run inline by the orchestrator (whose completions it observes on
+ *    its own next replay pass) and steps dispatched to the queue (whose
+ *    completions wake fresh invocations).
+ *  - **Worker nodes bind a hook mid-fan-out** and await `hook.getConflict()`
+ *    before enqueueing the worker and waiting for its callback. A
+ *    `getConflict()` awaiter changes how the runtime handles the suspension
+ *    it lands in: nothing in that batch runs inline, every sibling step is
+ *    dispatched, and the run is handed back through the queue to resume over
+ *    the committed `hook_created`. That is the suspension the production run
+ *    died on.
+ *
+ * The prelude reproduces the runner's registration: sequential steps each
+ * followed by a bound hook, so the run crosses several such boundaries
+ * before the DAG starts.
+ */
+export async function dagRunnerReproWorkflow(
+  input: DagRunnerInput
+): Promise<DagRunnerResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const config = normalizeDagRunner(input);
+  const runId = metadata.workflowRunId;
+  const ledger: DagNodeRecord[] = [];
+  const hooks: { dispose(): void }[] = [];
+  let bindsConfirmed = 0;
+  let order = 0;
+
+  const bind = async (name: string) => {
+    const hook = createHook<WorkerCallbackPayload>({
+      token: `${input.token}:${name}`,
+    });
+    hooks.push(hook);
+    const conflict = await hook.getConflict();
+    if (conflict === null) bindsConfirmed += 1;
+    // Wrapped: a hook is a thenable, and returning it bare from an async
+    // function would make the caller's `await` read its first payload.
+    return { hook };
+  };
+
+  // Deterministic spread of the long step, so sibling completions land at
+  // different offsets: some milliseconds apart, some seconds.
+  const evaluateDelay = (node: number) =>
+    config.evaluateMs +
+    Math.floor(((node * 7) % 10) * (config.evaluateJitterMs / 10));
+
+  const runNode = async (node: number): Promise<DagNodeRecord> => {
+    // Which nodes are workers. The harness's driver applies the same
+    // predicate to know which hooks to answer, and its ledger validator
+    // derives the expected bind count from it (`workerNodes` and
+    // `validateDagRunnerReturn` in event-log-race-repro.test.ts); change all
+    // three together.
+    const worker =
+      config.workerEvery > 0 &&
+      node % config.workerEvery === config.workerEvery - 1;
+    await claimNodeStep({ runId, node, delayMs: config.shortStepMs });
+    const evaluated = await evaluateNodeStep({
+      runId,
+      node,
+      delayMs: evaluateDelay(node),
+      worker,
+    });
+    let callback: DagNodeRecord['callback'] = 'none';
+    if (evaluated.needsWorker) {
+      // The bind: a hook whose registration the node waits on before it
+      // enqueues the worker, while its siblings keep launching steps.
+      const { hook } = await bind(`node:${node}`);
+      await enqueueWorkerStep({ runId, node, delayMs: config.shortStepMs });
+      const iterator = hook[Symbol.asyncIterator]();
+      const winner = await Promise.race([
+        iterator.next().then(() => 'received' as const),
+        sleep(config.workerWatchdogMs).then(() => DAG_WATCHDOG),
+      ]);
+      callback = winner === DAG_WATCHDOG ? 'watchdog' : 'received';
+    }
+    await finishNodeStep({
+      runId,
+      node,
+      delayMs: config.shortStepMs,
+      callback,
+    });
+    await transitionNodeStep({ runId, node, delayMs: config.shortStepMs });
+    order += 1;
+    return { node, worker, callback, order };
+  };
+
+  try {
+    for (let index = 0; index < config.preludeBinds; index += 1) {
+      await preludeStep({ runId, index, delayMs: config.shortStepMs });
+      await bind(`prelude:${index}`);
+    }
+
+    // Ready-set scheduler: keep `width` nodes in flight, refill on any
+    // settlement. `Promise.race` over the in-flight set is what makes the
+    // scheduler's next launch depend on which sibling settled first. Each
+    // node records itself as it settles; the race is only the wake signal,
+    // since two nodes settling in one turn both leave the set but only one
+    // of them is the race's value.
+    const inFlight = new Map<number, Promise<void>>();
+    let next = 0;
+    while (next < config.nodes || inFlight.size > 0) {
+      while (next < config.nodes && inFlight.size < config.width) {
+        const node = next;
+        next += 1;
+        inFlight.set(
+          node,
+          runNode(node).then((record) => {
+            inFlight.delete(node);
+            ledger.push(record);
+          })
+        );
+      }
+      await Promise.race(inFlight.values());
+    }
+  } finally {
+    for (const hook of hooks) hook.dispose();
+  }
+
+  return {
+    runId,
+    nodes: config.nodes,
+    width: config.width,
+    ledger,
+    bindsConfirmed,
+  };
+}

@@ -396,19 +396,25 @@ describe('getInlineOwnershipLeaseSeconds', () => {
 });
 
 describe('pre-claimed inline pairs fit one batch chunk', () => {
-  it('keeps two rows per inline step inside MAX_BATCH_FANOUT_EVENTS', () => {
+  it('keeps two rows per default inline step inside MAX_BATCH_FANOUT_EVENTS', () => {
     // The suspension fold folds each lazy-inline step into an adjacent
-    // [step_created, step_started] pair, and the inline slice sorts to the
-    // front of the batch — so every pair lands in the FIRST chunk exactly
-    // while two rows per inline step fit inside one chunk.
+    // [step_created, step_started] pair and commits the pairs in chunk(s)
+    // of their own, ahead of the plain creates — so every pair lands in ONE
+    // leading chunk exactly while two rows per inline step fit inside one
+    // chunk, and the inline bodies gate on a single small commit.
     //
-    // Past that, pairs spill into a trailing chunk. `handleSuspension` gates
-    // its return on every pair-carrying chunk so that degrades safely, but a
-    // spilled pair costs the caller its claim/body overlap for no reason.
-    // Raising MAX_MAX_INLINE_STEPS therefore has to raise the chunk cap with
-    // it (and re-check the server's per-batch transaction budget).
-    expect(2 * MAX_MAX_INLINE_STEPS).toBeLessThanOrEqual(
-      MAX_BATCH_FANOUT_EVENTS
-    );
+    // Past that, pairs spill into a second pair chunk. `handleSuspension`
+    // gates its return on every pair-carrying chunk (committed concurrently)
+    // so that degrades latency, not correctness. The default inline cap must
+    // fit one chunk; a WORKFLOW_MAX_INLINE_STEPS override up to
+    // MAX_MAX_INLINE_STEPS may spill.
+    expect(2 * MAX_INLINE_STEPS).toBeLessThanOrEqual(MAX_BATCH_FANOUT_EVENTS);
+  });
+
+  it('stays inside the server batch transaction budget', () => {
+    // 100 DynamoDB transaction items per batch; a plain create costs 2
+    // (entity + event row) and a pair 3, so a full chunk of plain creates is
+    // the most expensive one.
+    expect(2 * MAX_BATCH_FANOUT_EVENTS).toBeLessThanOrEqual(100);
   });
 });

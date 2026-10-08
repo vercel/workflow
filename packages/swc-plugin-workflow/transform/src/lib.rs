@@ -35,12 +35,42 @@ enum WorkflowErrorKind {
         span: swc_core::common::Span,
         directive: &'static str,
     },
+    /// A class declared inside a function that uses step methods or custom
+    /// serialization. Its registration would only run when (and each time)
+    /// the enclosing function runs, not at module load, so its steps could
+    /// not be resolved by ID.
+    NestedClass {
+        span: swc_core::common::Span,
+        feature: &'static str,
+    },
 }
 
 #[derive(Debug, Clone)]
 enum DirectiveLocation {
     Module,
     FunctionBody,
+}
+
+/// A module-level class expression that has been visited and may need to be
+/// wrapped in a registration IIFE (see `wrap_class_expr_with_registrations`).
+#[derive(Debug, Clone)]
+struct PendingClassExpr {
+    /// Logical class name used for step/class IDs.
+    name: String,
+    /// When the class expression is anonymous and its name came from the
+    /// variable it is assigned to, the name is inserted as the class's own
+    /// identifier so that `.name` inference survives the IIFE wrapping.
+    /// `None` when the class already has an identifier, or when the name was
+    /// derived from a property key and must not be introduced as a binding.
+    ident_to_insert: Option<String>,
+    /// When the class expression is anonymous and its name came from a
+    /// property key (`exports.Foo = class {}`, `{ Foo: class {} }`), `.name`
+    /// is set at runtime inside the registration IIFE instead, preserving the
+    /// name the original position inferred without introducing a binding.
+    /// `None` for generated names, which leave `.name` as it was (`""`).
+    name_to_define: Option<String>,
+    /// Whether the class defines `WORKFLOW_SERIALIZE`/`WORKFLOW_DESERIALIZE`.
+    has_custom_serialization: bool,
 }
 
 /// Sanitize a string for use as part of a JavaScript identifier.
@@ -52,6 +82,144 @@ fn sanitize_ident_part(name: &str) -> String {
             _ => '_',
         })
         .collect()
+}
+
+fn block_has_use_step_directive(body: Option<&BlockStmt>) -> bool {
+    body.is_some_and(|body| {
+        body.stmts.iter().any(|stmt| {
+            matches!(
+                stmt,
+                Stmt::Expr(ExprStmt { expr, .. })
+                    if matches!(&**expr, Expr::Lit(Lit::Str(value)) if value.value == "use step")
+            )
+        })
+    })
+}
+
+/// Cheaply determine whether step mode can discover a step that workflow mode
+/// cannot see after replacing an enclosing function body. Most modules only
+/// contain module-level steps, so they do not need the authoritative step-mode
+/// naming pre-pass.
+struct NestedStepDetector {
+    function_depth: usize,
+    found: bool,
+}
+
+impl NestedStepDetector {
+    fn detect(program: &Program) -> bool {
+        let mut detector = Self {
+            function_depth: 0,
+            found: false,
+        };
+        program.visit_with(&mut detector);
+        detector.found
+    }
+
+    fn inspect_body(&mut self, body: Option<&BlockStmt>) {
+        if self.function_depth > 0 && block_has_use_step_directive(body) {
+            self.found = true;
+        }
+    }
+}
+
+impl Visit for NestedStepDetector {
+    noop_visit_type!();
+
+    fn visit_function(&mut self, function: &Function) {
+        if self.found {
+            return;
+        }
+        self.inspect_body(function.body.as_ref());
+        self.function_depth += 1;
+        function.visit_children_with(self);
+        self.function_depth -= 1;
+    }
+
+    fn visit_arrow_expr(&mut self, arrow: &ArrowExpr) {
+        if self.found {
+            return;
+        }
+        if let BlockStmtOrExpr::BlockStmt(body) = &*arrow.body {
+            self.inspect_body(Some(body));
+        }
+        self.function_depth += 1;
+        arrow.visit_children_with(self);
+        self.function_depth -= 1;
+    }
+
+    fn visit_getter_prop(&mut self, getter: &GetterProp) {
+        if self.found {
+            return;
+        }
+        self.inspect_body(getter.body.as_ref());
+        self.function_depth += 1;
+        getter.visit_children_with(self);
+        self.function_depth -= 1;
+    }
+}
+
+fn prop_name_contains_tilde(name: &PropName) -> bool {
+    match name {
+        PropName::Ident(ident) => ident.sym.contains('~'),
+        PropName::Str(value) => value.value.to_string_lossy().contains('~'),
+        _ => false,
+    }
+}
+
+/// Explicit names can only collide with a generated suffix when they contain
+/// `~`. Avoid the reservation pass for the common case where no step key can
+/// collide with one.
+struct ExplicitTildeStepDetector {
+    found: bool,
+}
+
+impl ExplicitTildeStepDetector {
+    fn detect(program: &Program) -> bool {
+        let mut detector = Self { found: false };
+        program.visit_with(&mut detector);
+        detector.found
+    }
+}
+
+impl Visit for ExplicitTildeStepDetector {
+    noop_visit_type!();
+
+    fn visit_key_value_prop(&mut self, prop: &KeyValueProp) {
+        if self.found {
+            return;
+        }
+        let has_step = match &*prop.value {
+            Expr::Arrow(arrow) => match &*arrow.body {
+                BlockStmtOrExpr::BlockStmt(body) => block_has_use_step_directive(Some(body)),
+                BlockStmtOrExpr::Expr(_) => false,
+            },
+            Expr::Fn(function) => block_has_use_step_directive(function.function.body.as_ref()),
+            _ => false,
+        };
+        if prop_name_contains_tilde(&prop.key) && has_step {
+            self.found = true;
+        } else {
+            prop.visit_children_with(self);
+        }
+    }
+
+    fn visit_method_prop(&mut self, prop: &MethodProp) {
+        if prop_name_contains_tilde(&prop.key)
+            && block_has_use_step_directive(prop.function.body.as_ref())
+        {
+            self.found = true;
+        } else if !self.found {
+            prop.visit_children_with(self);
+        }
+    }
+
+    fn visit_getter_prop(&mut self, prop: &GetterProp) {
+        if prop_name_contains_tilde(&prop.key) && block_has_use_step_directive(prop.body.as_ref()) {
+            self.found = true;
+        } else if !self.found {
+            prop.visit_children_with(self);
+        }
+    }
 }
 
 fn emit_error(error: WorkflowErrorKind) {
@@ -113,6 +281,13 @@ fn emit_error(error: WorkflowErrorKind) {
                     directive
                 )
             },
+        ),
+        WorkflowErrorKind::NestedClass { span, feature } => (
+            span,
+            format!(
+                "Classes using {} must be declared at the top level of the module, not inside a function. Registration runs at module load and cannot reach a class declared in an inner scope",
+                feature
+            ),
         ),
     };
 
@@ -383,15 +558,48 @@ pub struct StepTransform {
     // Track object properties that need to be converted to initializer calls in workflow mode
     // (parent_var_name, prop_name, step_id)
     object_property_workflow_conversions: Vec<(String, String, String)>,
-    // Map from a step's bare name (e.g. "_anonymousStep0") to the full
-    // namespaced step name used to compute its registered step ID
-    // (e.g. "myWorkflow/_anonymousStep0"). Steps not present in this map
-    // use their bare name (which produces the same ID as the registered
-    // one). Populated when a nested step is hoisted out of a workflow
-    // function so that the `__internal_workflows` manifest comment matches
-    // the actual runtime step ID used by both the step-mode registration
-    // and the workflow-mode `WORKFLOW_USE_STEP` proxy lookup.
-    nested_step_full_names: HashMap<String, String>,
+    // Local names of steps hoisted out of an enclosing function (e.g.
+    // "_anonymousStep0"). Their manifest entries are keyed by the namespaced
+    // name in `nested_step_full_names` instead of the bare local name.
+    nested_step_local_names: HashSet<String>,
+    // Namespaced names (e.g. "myWorkflow/_anonymousStep0") of steps hoisted
+    // out of an enclosing function. Each is emitted as its own
+    // `__internal_workflows` manifest entry with the same step ID that is
+    // registered in step mode and looked up by the `WORKFLOW_USE_STEP` proxy
+    // in workflow mode. Keying by the namespaced name keeps same-named nested
+    // steps of different workflows from overwriting each other's entries.
+    nested_step_full_names: HashSet<String>,
+    // Namespaced names already claimed by steps hoisted out of an enclosing
+    // function (e.g. "myWorkflow/act", "myWorkflow/helpers/act"). Two steps
+    // with the same local name in different block scopes are distinct
+    // functions, so the second one is given a `~N` suffix to keep its step ID
+    // from colliding with (and silently replacing) the first.
+    claimed_step_names: HashSet<String>,
+    // Explicit source-level names in each namespace. These are collected in a
+    // lightweight reservation pass before step names are assigned so a
+    // generated `~N` suffix never takes a name written later in the file.
+    reserved_step_names: HashSet<String>,
+    // Workflow mode only: the namespaced name step mode assigns to each step,
+    // keyed by the step's source span (see `step_names_from_step_mode`).
+    // Workflow mode doesn't see every step that step mode does (e.g. steps
+    // nested in a step body), so it reuses step mode's names rather than
+    // claiming its own; otherwise the two modes could assign the same ID to
+    // different function bodies.
+    step_mode_step_names: HashMap<(u32, u32), String>,
+    // (span lo, span hi, namespaced step name) for every step whose name was
+    // claimed via `claim_unique_step_name`, in claim order. Both transform
+    // modes must assign the same name to the same source span.
+    step_name_assignments: Vec<(u32, u32, String)>,
+    // Names of steps declared at module level (as opposed to steps hoisted
+    // out of an enclosing function).
+    module_level_step_names: HashSet<String>,
+    // Module-level bindings created for steps hoisted out of an enclosing
+    // function in step mode. Unlike step IDs these aren't durable, so a
+    // binding that would collide is simply renamed.
+    hoisted_step_bindings: HashSet<String>,
+    // Hoisted binding of each object property step in step mode, keyed by
+    // (workflow name, parent variable path, claimed property key).
+    object_property_step_bindings: HashMap<(String, String, String), String>,
     // Current context: variable name being processed when visiting object properties
     #[allow(dead_code)]
     current_var_context: Option<String>,
@@ -403,6 +611,25 @@ pub struct StepTransform {
     // e.g., for `var Bash = class _Bash {}`, this would be "Bash"
     // This is needed because the internal class name (_Bash) is not in scope at module level
     current_class_binding_name: Option<String>,
+    // True when `current_class_binding_name` was derived from a property key
+    // (`exports.Foo = class {}`, `{ Foo: class {} }`) rather than a variable
+    // binding. Such names are used for IDs only and are never inserted as the
+    // class's own identifier, since that could shadow an unrelated outer `Foo`.
+    current_class_binding_from_key: bool,
+    // Set by `visit_mut_class_expr` for a module-level class expression whose
+    // name resolved; consumed by `visit_mut_expr`, which owns the enclosing
+    // `Expr` node and can replace it with the registration IIFE.
+    pending_class_expr_registration: Option<PendingClassExpr>,
+    // Set while visiting a class declared inside a function (see
+    // `WorkflowErrorKind::NestedClass`). `current_class_name` is `None` for
+    // such classes so that step methods and custom serialization are reported
+    // as errors instead of registering a class that cannot be resolved at
+    // module load. Cleared after the first error so a class produces at most
+    // one diagnostic.
+    current_class_is_nested: bool,
+    // Counter for naming anonymous class expressions that have nothing to
+    // derive a name from (`foo(class { ... })`): `AnonymousClass1`, ...
+    anonymous_class_counter: usize,
     // Track static method steps that need registration after the class declaration
     // (class_name, method_name, step_id, span)
     static_method_step_registrations: Vec<(String, String, String, swc_core::common::Span)>,
@@ -444,6 +671,12 @@ pub struct StepTransform {
     require_namespace_identifiers: HashSet<String>,
     // Track class names for the manifest (preserved copy before drain)
     classes_for_manifest: HashSet<String>,
+    // Spans of class expressions that were wrapped in a registration IIFE.
+    // Dead-code elimination must keep any declaration whose initializer
+    // contains one of these: the registration is a side effect of evaluating
+    // the initializer, and the declared binding may be otherwise unused
+    // (`const registry = new Map([["point", class { ...serde... }]])`).
+    registered_class_expr_spans: HashSet<swc_core::common::Span>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1563,7 +1796,9 @@ impl Visit for LexicalThisDetector {
                     }
                 }
                 ClassMember::StaticBlock(_) => { /* `this` inside is class itself */ }
-                ClassMember::Empty(_) | ClassMember::TsIndexSignature(_) | ClassMember::AutoAccessor(_) => {}
+                ClassMember::Empty(_)
+                | ClassMember::TsIndexSignature(_)
+                | ClassMember::AutoAccessor(_) => {}
             }
         }
     }
@@ -1585,7 +1820,7 @@ impl StepTransform {
                 );
 
                 if self.should_transform_function(&fn_decl.function, false) {
-                    self.step_function_names.insert(fn_name.clone());
+                    self.insert_step_function_name(fn_name.clone());
 
                     if !self.in_module_level {
                         match self.mode {
@@ -1605,7 +1840,7 @@ impl StepTransform {
                                     ident: Some(fn_decl.ident.clone()),
                                     function: cloned_function,
                                 };
-                                self.nested_step_functions.push((
+                                self.push_nested_step_function((
                                     fn_name.clone(),
                                     fn_expr,
                                     fn_decl.function.span,
@@ -1624,13 +1859,13 @@ impl StepTransform {
                                 return;
                             }
                             TransformMode::Workflow => {
-                                // Include parent workflow name in step ID
+                                // Use current_parent_function_name to match step mode's ID generation
                                 let parent_workflow = self
-                                    .current_workflow_function_name
+                                    .current_parent_function_name
                                     .clone()
                                     .unwrap_or_default();
                                 let step_fn_name =
-                                    self.record_nested_step_name(&fn_name, &parent_workflow);
+                                    self.record_nested_step_name(&fn_name, &parent_workflow, fn_decl.function.span);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_decl.function.span,
@@ -1840,11 +2075,23 @@ impl StepTransform {
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
             object_property_workflow_conversions: Vec::new(),
-            nested_step_full_names: HashMap::new(),
+            nested_step_local_names: HashSet::new(),
+            nested_step_full_names: HashSet::new(),
+            claimed_step_names: HashSet::new(),
+            reserved_step_names: HashSet::new(),
+            step_mode_step_names: HashMap::new(),
+            module_level_step_names: HashSet::new(),
+            step_name_assignments: Vec::new(),
+            hoisted_step_bindings: HashSet::new(),
+            object_property_step_bindings: HashMap::new(),
             current_var_context: None,
             module_imports: HashSet::new(),
             current_class_name: None,
             current_class_binding_name: None,
+            current_class_binding_from_key: false,
+            pending_class_expr_registration: None,
+            current_class_is_nested: false,
+            anonymous_class_counter: 0,
             static_method_step_registrations: Vec::new(),
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
@@ -1859,6 +2106,7 @@ impl StepTransform {
             serialization_symbol_identifiers: HashMap::new(),
             require_namespace_identifiers: HashSet::new(),
             classes_for_manifest: HashSet::new(),
+            registered_class_expr_spans: HashSet::new(),
         }
     }
 
@@ -1881,19 +2129,263 @@ impl StepTransform {
     /// (empty if there is no enclosing workflow). When `parent_workflow_name`
     /// is non-empty, the returned name is `parent/fn_name`; otherwise it is
     /// just `fn_name`. The mapping is recorded only when a prefix is added.
+    ///
+    /// If another step hoisted out of the same parent already uses `fn_name`
+    /// (e.g. two block-scoped `const act = async () => { "use step" }`), the
+    /// name gets a `~N` suffix via `claim_unique_step_name`.
     fn record_nested_step_name(
         &mut self,
         fn_name: &str,
         parent_workflow_name: &str,
+        span: swc_core::common::Span,
     ) -> String {
-        if parent_workflow_name.is_empty() {
-            fn_name.to_string()
+        self.claim_nested_step_name(fn_name, parent_workflow_name, span)
+            .1
+    }
+
+    /// Queue a nested step for hoisting in step mode. Its name is claimed now,
+    /// at discovery, so that claims happen in the same order as in workflow
+    /// mode (which claims while visiting). Claiming while hoisting instead
+    /// would let a same-named object property step that is discovered later
+    /// claim the name first, swapping which body gets which step ID.
+    /// The stored name is the claimed local name (`fn_name` or `fn_name~N`).
+    fn push_nested_step_function(
+        &mut self,
+        (fn_name, fn_expr, span, closure_vars, was_arrow, parent_name, references_lexical_this): (
+            String,
+            FnExpr,
+            swc_core::common::Span,
+            Vec<String>,
+            bool,
+            String,
+            bool,
+        ),
+    ) {
+        let (local_name, _) = self.claim_nested_step_name(&fn_name, &parent_name, span);
+        self.nested_step_functions.push((
+            local_name,
+            fn_expr,
+            span,
+            closure_vars,
+            was_arrow,
+            parent_name,
+            references_lexical_this,
+        ));
+    }
+
+    /// The (span lo, span hi, namespaced step name) assigned to each step
+    /// whose name may need a `~N` suffix, in claim order. Exposed for tests
+    /// that check both transform modes assign the same names.
+    #[doc(hidden)]
+    pub fn step_name_assignments(&self) -> &[(u32, u32, String)] {
+        &self.step_name_assignments
+    }
+
+    /// Like `record_nested_step_name`, but also returns the unique local name
+    /// (`fn_name`, or `fn_name~N` on a collision).
+    fn claim_nested_step_name(
+        &mut self,
+        fn_name: &str,
+        parent_workflow_name: &str,
+        span: swc_core::common::Span,
+    ) -> (String, String) {
+        let local_name = self.claim_step_name_at(parent_workflow_name, fn_name, span);
+        let full = if parent_workflow_name.is_empty() {
+            local_name.clone()
         } else {
-            let full = format!("{}/{}", parent_workflow_name, fn_name);
-            self.nested_step_full_names
-                .insert(fn_name.to_string(), full.clone());
-            full
+            format!("{}/{}", parent_workflow_name, local_name)
+        };
+        self.nested_step_local_names.insert(fn_name.to_string());
+        self.nested_step_full_names.insert(full.clone());
+        self.step_name_assignments
+            .push((span.lo.0, span.hi.0, full.clone()));
+        (local_name, full)
+    }
+
+    /// Return `name`, or `name~N` for the smallest `N` that is neither claimed
+    /// nor explicitly reserved under `scope`, and claim it. The unsuffixed
+    /// source name itself may use its reservation; only generated suffixes
+    /// skip reserved names.
+    fn claim_unique_step_name(&mut self, scope: &str, name: &str) -> String {
+        let qualify = |candidate: &str| {
+            if scope.is_empty() {
+                candidate.to_string()
+            } else {
+                format!("{}/{}", scope, candidate)
+            }
+        };
+        let explicit_name = qualify(name);
+        self.reserved_step_names.insert(explicit_name.clone());
+        if !self.claimed_step_names.contains(&explicit_name) {
+            self.claimed_step_names.insert(explicit_name);
+            return name.to_string();
         }
+
+        let mut counter = 1;
+        loop {
+            let candidate = format!("{}~{}", name, counter);
+            let qualified = qualify(&candidate);
+            if !self.claimed_step_names.contains(&qualified)
+                && !self.reserved_step_names.contains(&qualified)
+            {
+                self.claimed_step_names.insert(qualified);
+                return candidate;
+            }
+            counter += 1;
+        }
+    }
+
+    /// Claim the name for the step at `span`. In workflow mode this is the name
+    /// step mode assigns to the same span; otherwise (and for a span step mode
+    /// didn't name) it is claimed via `claim_unique_step_name`.
+    fn claim_step_name_at(
+        &mut self,
+        scope: &str,
+        name: &str,
+        span: swc_core::common::Span,
+    ) -> String {
+        if let Some(full) = self.step_mode_step_names.get(&(span.lo.0, span.hi.0)) {
+            let local = if scope.is_empty() {
+                Some(full.as_str())
+            } else {
+                full.strip_prefix(scope)
+                    .and_then(|rest| rest.strip_prefix('/'))
+            };
+            if let Some(local) = local {
+                return local.to_string();
+            }
+        }
+        self.claim_unique_step_name(scope, name)
+    }
+
+    /// Run step mode over a copy of `program`. Diagnostics from the copy are
+    /// discarded; the real transform emits its own.
+    fn step_mode_prepass(&self, program: &Program) -> Self {
+        let mut program = program.clone();
+        let mut step_mode = StepTransform::new(
+            TransformMode::Step,
+            self.filename.clone(),
+            self.module_specifier.clone(),
+        );
+        let silent = swc_core::common::errors::Handler::with_emitter_writer(
+            Box::new(std::io::sink()),
+            None,
+        );
+        HANDLER.set(&silent, || program.visit_mut_with(&mut step_mode));
+        step_mode
+    }
+
+    /// Record the name step mode assigns to each step, so workflow mode can
+    /// use the same names.
+    fn step_names_from_step_mode(&self, program: &Program) -> HashMap<(u32, u32), String> {
+        self.step_mode_prepass(program)
+            .step_name_assignments
+            .into_iter()
+            .map(|(lo, hi, name)| ((lo, hi), name))
+            .collect()
+    }
+
+    /// Collect every source-level nested-step name before assigning generated
+    /// collision suffixes. The collector runs the normal discovery walk on a
+    /// clone but skips program finalization; only its reservations are kept.
+    fn step_name_reservations(&self, program: &Program) -> HashSet<String> {
+        let mut program = program.clone();
+        let mut collector = StepTransform::new(
+            TransformMode::Step,
+            self.filename.clone(),
+            self.module_specifier.clone(),
+        );
+        let silent =
+            swc_core::common::errors::Handler::with_emitter_writer(Box::new(std::io::sink()), None);
+        HANDLER.set(&silent, || program.visit_mut_children_with(&mut collector));
+        collector.reserved_step_names
+    }
+
+    /// Claim a unique naming key for an object property step. `parent_var_name`
+    /// is the (possibly compound) variable path, e.g. `helpers` or `a/b`.
+    fn claim_object_property_step_name(
+        &mut self,
+        parent_var_name: &str,
+        prop_key: &str,
+        span: swc_core::common::Span,
+    ) -> String {
+        let scope = match &self.current_workflow_function_name {
+            Some(wf_name) => format!("{}/{}", wf_name, parent_var_name),
+            None => parent_var_name.to_string(),
+        };
+        let claimed = self.claim_step_name_at(&scope, prop_key, span);
+        self.step_name_assignments
+            .push((span.lo.0, span.hi.0, format!("{}/{}", scope, claimed)));
+        claimed
+    }
+
+    /// Return a module-level binding for a hoisted step (or step proxy), based
+    /// on `base`, that is a valid JS identifier and doesn't redeclare another
+    /// hoisted step or a module-level name. `~` (as in a `~N` step-name
+    /// suffix) becomes `$` and any other character not allowed in an
+    /// identifier becomes `_`, so distinct keys such as `act~1`, `act_1` and
+    /// `act-1` may map to the same base; the `$N` suffix keeps them apart. A
+    /// redeclared `var`/`function` would silently replace the earlier
+    /// function, so the step registered under one ID would run another step's
+    /// body.
+    fn claim_hoisted_step_binding(&mut self, base: &str) -> String {
+        let base = sanitize_ident_part(&base.replace('~', "$"));
+        let mut binding = base.clone();
+        let mut counter = 0;
+        while self.declared_identifiers.contains(&binding)
+            || self.hoisted_step_bindings.contains(&binding)
+        {
+            counter += 1;
+            binding = format!("{}${}", base, counter);
+        }
+        self.hoisted_step_bindings.insert(binding.clone());
+        binding
+    }
+
+    /// Hoisted binding for an object property step (e.g.
+    /// `myWorkflow$helpers$act`), claimed on first use so that the object
+    /// literal reference and the hoisted declaration agree.
+    fn object_property_step_binding(
+        &mut self,
+        workflow_name: &str,
+        parent_var_name: &str,
+        prop_key: &str,
+    ) -> String {
+        let key = (
+            workflow_name.to_string(),
+            parent_var_name.to_string(),
+            prop_key.to_string(),
+        );
+        if let Some(binding) = self.object_property_step_bindings.get(&key) {
+            return binding.clone();
+        }
+        let safe_parent_name = parent_var_name.replace('/', "$");
+        let base = if workflow_name.is_empty() {
+            format!("{}${}", safe_parent_name, prop_key)
+        } else {
+            format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
+        };
+        let binding = self.claim_hoisted_step_binding(&base);
+        self.object_property_step_bindings
+            .insert(key, binding.clone());
+        binding
+    }
+
+    /// Whether a module-level declaration named `name` is a step. A name in
+    /// `step_function_names` may instead belong only to a step nested in some
+    /// function (e.g. a module-level `const act = 1` next to a workflow's
+    /// nested step `act`), which must not turn the declaration into a step.
+    fn is_module_level_step(&self, name: &str) -> bool {
+        self.step_function_names.contains(name)
+            && (!self.nested_step_local_names.contains(name)
+                || self.module_level_step_names.contains(name))
+    }
+
+    fn insert_step_function_name(&mut self, name: String) {
+        if self.in_module_level {
+            self.module_level_step_names.insert(name.clone());
+        }
+        self.step_function_names.insert(name);
     }
 
     fn create_id(
@@ -2214,6 +2706,13 @@ impl StepTransform {
                                 continue;
                             }
 
+                            // Disambiguate from a same-named step property in another block scope
+                            let prop_key = self.claim_object_property_step_name(
+                                parent_var_name,
+                                &prop_key,
+                                swc_core::common::Spanned::span(&*kv_prop.value),
+                            );
+
                             // Process the transformation
                             match &mut *kv_prop.value {
                                 Expr::Arrow(arrow_expr) => {
@@ -2353,6 +2852,13 @@ impl StepTransform {
                                 continue;
                             }
 
+                            // Disambiguate from a same-named step property in another block scope
+                            let prop_key = self.claim_object_property_step_name(
+                                parent_var_name,
+                                &prop_key,
+                                method_prop.function.span,
+                            );
+
                             // Remove the directive first
                             self.remove_use_step_directive(&mut method_prop.function.body);
 
@@ -2383,17 +2889,15 @@ impl StepTransform {
                                     // Replace method with key-value property referencing the hoisted variable
                                     // so the stepId property is accessible on the same function object.
                                     self.remove_use_step_directive(&mut method_prop.function.body);
-                                    let safe_parent_name = parent_var_name.replace('/', "$");
-                                    let hoist_var_name = if let Some(ref workflow_name) =
-                                        self.current_workflow_function_name
-                                    {
-                                        format!(
-                                            "{}${}${}",
-                                            workflow_name, safe_parent_name, prop_key
-                                        )
-                                    } else {
-                                        format!("{}${}", safe_parent_name, prop_key)
-                                    };
+                                    let workflow_name = self
+                                        .current_workflow_function_name
+                                        .clone()
+                                        .unwrap_or_default();
+                                    let hoist_var_name = self.object_property_step_binding(
+                                        &workflow_name,
+                                        parent_var_name,
+                                        &prop_key,
+                                    );
                                     let step_id = self.create_object_property_id(
                                         parent_var_name,
                                         &prop_key,
@@ -2468,6 +2972,13 @@ impl StepTransform {
                                 continue;
                             }
 
+                            // Disambiguate from a same-named step property in another block scope
+                            let prop_key = self.claim_object_property_step_name(
+                                parent_var_name,
+                                &prop_key,
+                                getter_prop.span,
+                            );
+
                             // Getters don't need async validation (they can't be async syntactically)
 
                             // Remove the directive from the getter body
@@ -2532,19 +3043,15 @@ impl StepTransform {
                                         self.current_workflow_function_name.as_deref(),
                                     );
 
-                                    let safe_parent_name = sanitize_ident_part(parent_var_name);
-                                    let safe_prop_key = sanitize_ident_part(&prop_key);
-                                    let var_name = if let Some(ref workflow_name) =
-                                        self.current_workflow_function_name
-                                    {
-                                        let safe_wf = sanitize_ident_part(workflow_name);
-                                        format!(
+                                    let parent_part = parent_var_name.replace('/', "_");
+                                    let base = match &self.current_workflow_function_name {
+                                        Some(workflow_name) => format!(
                                             "__step_{}${}${}",
-                                            safe_wf, safe_parent_name, safe_prop_key
-                                        )
-                                    } else {
-                                        format!("__step_{}${}", safe_parent_name, safe_prop_key)
+                                            workflow_name, parent_part, prop_key
+                                        ),
+                                        None => format!("__step_{}${}", parent_part, prop_key),
                                     };
+                                    let var_name = self.claim_hoisted_step_binding(&base);
 
                                     // Track for hoisting
                                     self.getter_workflow_proxy_hoists
@@ -2600,13 +3107,12 @@ impl StepTransform {
             TransformMode::Step => {
                 // Replace with reference to hoisted variable so the stepId
                 // property is accessible on the same function object.
-                let safe_parent_name = parent_var_name.replace('/', "$");
+                let workflow_name = self
+                    .current_workflow_function_name
+                    .clone()
+                    .unwrap_or_default();
                 let hoist_var_name =
-                    if let Some(ref workflow_name) = self.current_workflow_function_name {
-                        format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
-                    } else {
-                        format!("{}${}", safe_parent_name, prop_key)
-                    };
+                    self.object_property_step_binding(&workflow_name, parent_var_name, prop_key);
                 *kv_prop.value = Expr::Ident(Ident::new(
                     hoist_var_name.into(),
                     DUMMY_SP,
@@ -3213,6 +3719,92 @@ impl StepTransform {
         has_serialize && has_deserialize
     }
 
+    /// Report that the class currently being visited uses `feature` but is
+    /// declared inside a function. Emits at most one error per class (at the
+    /// first offending member), and never in `Detect` mode, which generates
+    /// no code.
+    ///
+    /// Returns `true` if the class is nested (regardless of whether an error
+    /// was emitted), so callers can skip code generation.
+    fn report_nested_class(&mut self, span: swc_core::common::Span, feature: &'static str) -> bool {
+        if !self.current_class_is_nested {
+            return false;
+        }
+        if !matches!(self.mode, TransformMode::Detect) {
+            emit_error(WorkflowErrorKind::NestedClass { span, feature });
+        }
+        // Only report once per class.
+        self.current_class_is_nested = false;
+        true
+    }
+
+    /// Resolve the name used for a module-level class expression's step and
+    /// class IDs.
+    ///
+    /// Prefers the binding the expression is assigned to (`Foo` in
+    /// `var Foo = class _Foo {}`) over the expression's own identifier
+    /// (`_Foo`), which is only in scope inside the class body. When neither
+    /// exists (`foo(class { ... })`) a deterministic `AnonymousClass<N>` name
+    /// is generated, counting only anonymous classes that have something to
+    /// register so unrelated anonymous classes do not shift the numbering.
+    /// Returns `None` for an anonymous class with nothing to register.
+    ///
+    /// Generated names are positional: adding another such class earlier in
+    /// the module renumbers the ones after it, and with them their step IDs.
+    fn resolve_class_expr_name(
+        &mut self,
+        class_expr: &ClassExpr,
+        binding_name: Option<String>,
+    ) -> Option<String> {
+        binding_name
+            .or_else(|| class_expr.ident.as_ref().map(|i| i.sym.to_string()))
+            .or_else(|| {
+                if !self.class_needs_binding_rewrite(&class_expr.class) {
+                    return None;
+                }
+                self.anonymous_class_counter += 1;
+                Some(self.generate_unique_name(&format!(
+                    "AnonymousClass{}",
+                    self.anonymous_class_counter
+                )))
+            })
+    }
+
+    /// The static name of a member access (`obj.name` or `obj["name"]`), if any.
+    fn member_prop_name(prop: &MemberProp) -> Option<String> {
+        match prop {
+            MemberProp::Ident(ident) => Some(ident.sym.to_string()),
+            MemberProp::Computed(computed) => match &*computed.expr {
+                Expr::Lit(Lit::Str(s)) => Some(s.value.to_string_lossy().to_string()),
+                _ => None,
+            },
+            MemberProp::PrivateName(_) => None,
+        }
+    }
+
+    /// The static name of an object literal / class member key, if any.
+    fn prop_name_string(key: &PropName) -> Option<String> {
+        match key {
+            PropName::Ident(ident) => Some(ident.sym.to_string()),
+            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+            _ => None,
+        }
+    }
+
+    /// Returns the class expression a variable initializer ultimately
+    /// evaluates to, looking through parentheses and chained assignments
+    /// (`var A = (class {})`, `var A = exports.A = class {}`).
+    fn class_expr_of_initializer(init: &Expr) -> Option<&ClassExpr> {
+        match init {
+            Expr::Class(class_expr) => Some(class_expr),
+            Expr::Paren(paren) => Self::class_expr_of_initializer(&paren.expr),
+            Expr::Assign(assign) if assign.op == AssignOp::Assign => {
+                Self::class_expr_of_initializer(&assign.right)
+            }
+            _ => None,
+        }
+    }
+
     /// Returns `true` if the class has any methods with `"use step"` or `"use workflow"`
     /// directives, or has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE).
     /// Used to determine whether an anonymous default class export needs a binding name rewrite.
@@ -3324,217 +3916,258 @@ impl StepTransform {
     //     __wf_reg.set(__wf_id, __wf_cls);
     //     Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
     //   })(ClassName, "class//module_path//ClassName");
-    fn create_class_serialization_registration(&self, class_name: &str) -> Stmt {
-        let class_id = naming::format_name("class", &self.get_module_path(), class_name);
-
-        // Helper to create an identifier
-        let ident =
-            |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
-
-        // Helper to create an identifier expression
-        let ident_expr = |name: &str| -> Box<Expr> { Box::new(Expr::Ident(ident(name))) };
-
-        // var __wf_sym = Symbol.for("workflow-class-registry");
-        let sym_decl = VarDeclarator {
+    /// Build the inline IIFE that registers a class for custom serialization.
+    /// `class_ref` is the identifier used to reference the class; `class_name`
+    /// is the logical class name used to derive the class ID.
+    /// Registry key (a `Symbol.for` name) and the variable names used for the
+    /// registry lookup emitted by `registry_lookup_stmt`.
+    fn registry_lookup_stmt(sym_var: &str, reg_var: &str, key: &str, extra_vars: &[&str]) -> Stmt {
+        // var <sym_var> = Symbol.for("<key>"),
+        //     <reg_var> = globalThis[<sym_var>] || (globalThis[<sym_var>] = new Map())[, <extra>];
+        let global_sym_access = || {
+            Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Self::ident_expr("globalThis"),
+                prop: MemberProp::Computed(ComputedPropName {
+                    span: DUMMY_SP,
+                    expr: Self::ident_expr(sym_var),
+                }),
+            }))
+        };
+        let declarator = |name: &str, init: Option<Expr>| VarDeclarator {
             span: DUMMY_SP,
             name: Pat::Ident(BindingIdent {
-                id: ident("__wf_sym"),
+                id: Self::ident(name),
                 type_ann: None,
             }),
-            init: Some(Box::new(Expr::Call(CallExpr {
-                span: DUMMY_SP,
-                ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("Symbol"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "for".into(),
-                    }),
-                }))),
-                args: vec![ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Lit(Lit::Str(Str {
-                        span: DUMMY_SP,
-                        value: "workflow-class-registry".into(),
-                        raw: None,
-                    }))),
-                }],
-                type_args: None,
-            }))),
+            init: init.map(Box::new),
             definite: false,
         };
 
-        // var __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-        let global_sym_access = Box::new(Expr::Member(MemberExpr {
+        let sym_init = Expr::Call(CallExpr {
             span: DUMMY_SP,
-            obj: ident_expr("globalThis"),
-            prop: MemberProp::Computed(ComputedPropName {
-                span: DUMMY_SP,
-                expr: ident_expr("__wf_sym"),
-            }),
-        }));
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Self::member(Self::ident_expr("Symbol"), "for")),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Self::str_lit(key),
+            }],
+            type_args: None,
+        });
 
-        let reg_decl = VarDeclarator {
+        let Expr::Member(assign_target) = *global_sym_access() else {
+            unreachable!()
+        };
+        let reg_init = Expr::Bin(BinExpr {
             span: DUMMY_SP,
-            name: Pat::Ident(BindingIdent {
-                id: ident("__wf_reg"),
-                type_ann: None,
-            }),
-            init: Some(Box::new(Expr::Bin(BinExpr {
+            op: BinaryOp::LogicalOr,
+            left: global_sym_access(),
+            right: Box::new(Expr::Paren(ParenExpr {
                 span: DUMMY_SP,
-                op: BinaryOp::LogicalOr,
-                left: global_sym_access.clone(),
-                right: Box::new(Expr::Paren(ParenExpr {
+                expr: Box::new(Expr::Assign(AssignExpr {
                     span: DUMMY_SP,
-                    expr: Box::new(Expr::Assign(AssignExpr {
+                    op: AssignOp::Assign,
+                    left: AssignTarget::Simple(SimpleAssignTarget::Member(assign_target)),
+                    right: Box::new(Expr::New(NewExpr {
                         span: DUMMY_SP,
-                        op: AssignOp::Assign,
-                        left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
-                            span: DUMMY_SP,
-                            obj: ident_expr("globalThis"),
-                            prop: MemberProp::Computed(ComputedPropName {
-                                span: DUMMY_SP,
-                                expr: ident_expr("__wf_sym"),
-                            }),
-                        })),
-                        right: Box::new(Expr::New(NewExpr {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            callee: ident_expr("Map"),
-                            args: Some(vec![]),
-                            type_args: None,
-                        })),
+                        ctxt: SyntaxContext::empty(),
+                        callee: Self::ident_expr("Map"),
+                        args: Some(vec![]),
+                        type_args: None,
                     })),
                 })),
-            }))),
-            definite: false,
-        };
+            })),
+        });
 
-        // __wf_reg.set(__wf_id, __wf_cls);
-        let set_call = Stmt::Expr(ExprStmt {
+        let mut decls = vec![
+            declarator(sym_var, Some(sym_init)),
+            declarator(reg_var, Some(reg_init)),
+        ];
+        decls.extend(extra_vars.iter().map(|name| declarator(name, None)));
+
+        Stmt::Decl(Decl::Var(Box::new(VarDecl {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            kind: VarDeclKind::Var,
+            declare: false,
+            decls,
+        })))
+    }
+
+    /// `<reg_var>.set(key, value);`
+    fn registry_set_stmt(reg_var: &str, key: Box<Expr>, value: Box<Expr>) -> Stmt {
+        Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
                 span: DUMMY_SP,
                 ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("__wf_reg"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "set".into(),
-                    }),
-                }))),
+                callee: Callee::Expr(Self::member(Self::ident_expr(reg_var), "set")),
                 args: vec![
                     ExprOrSpread {
                         spread: None,
-                        expr: ident_expr("__wf_id"),
+                        expr: key,
                     },
                     ExprOrSpread {
                         spread: None,
-                        expr: ident_expr("__wf_cls"),
+                        expr: value,
                     },
                 ],
                 type_args: None,
             })),
-        });
+        })
+    }
 
-        // Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
-        let define_property_call = Stmt::Expr(ExprStmt {
+    /// `Object.defineProperty(target, "prop", { <key>: <value>, ... })`
+    fn define_property_stmt(
+        target: Box<Expr>,
+        prop: &str,
+        descriptor: Vec<(&str, Box<Expr>)>,
+    ) -> Stmt {
+        Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
                 span: DUMMY_SP,
                 ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("Object"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "defineProperty".into(),
-                    }),
-                }))),
+                callee: Callee::Expr(Self::member(Self::ident_expr("Object"), "defineProperty")),
                 args: vec![
                     ExprOrSpread {
                         spread: None,
-                        expr: ident_expr("__wf_cls"),
+                        expr: target,
                     },
                     ExprOrSpread {
                         spread: None,
-                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                            span: DUMMY_SP,
-                            value: "classId".into(),
-                            raw: None,
-                        }))),
+                        expr: Self::str_lit(prop),
                     },
                     ExprOrSpread {
                         spread: None,
                         expr: Box::new(Expr::Object(ObjectLit {
                             span: DUMMY_SP,
-                            props: vec![
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName {
-                                        span: DUMMY_SP,
-                                        sym: "value".into(),
-                                    }),
-                                    value: ident_expr("__wf_id"),
-                                }))),
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName {
-                                        span: DUMMY_SP,
-                                        sym: "writable".into(),
-                                    }),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: false,
-                                    }))),
-                                }))),
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName {
-                                        span: DUMMY_SP,
-                                        sym: "enumerable".into(),
-                                    }),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: false,
-                                    }))),
-                                }))),
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName {
-                                        span: DUMMY_SP,
-                                        sym: "configurable".into(),
-                                    }),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: false,
-                                    }))),
-                                }))),
-                            ],
+                            props: descriptor
+                                .into_iter()
+                                .map(|(key, value)| {
+                                    PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                        key: PropName::Ident(IdentName::new(key.into(), DUMMY_SP)),
+                                        value,
+                                    })))
+                                })
+                                .collect(),
                         })),
                     },
                 ],
                 type_args: None,
             })),
-        });
+        })
+    }
 
-        // The function body: var decls + set + defineProperty
-        let function_body = BlockStmt {
+    fn bool_lit(value: bool) -> Box<Expr> {
+        Box::new(Expr::Lit(Lit::Bool(Bool {
+            span: DUMMY_SP,
+            value,
+        })))
+    }
+
+    /// The statements that register a step function `fn_ref` under `step_id`
+    /// in the registry held in `reg_var`, and stamp the function:
+    ///
+    /// ```js
+    /// __wf_reg.set(<step_id>, <fn>);
+    /// <fn>.stepId = <step_id>;
+    /// Object.defineProperty(<fn>, "name", { value: "<fn_name>", configurable: true });
+    /// ```
+    ///
+    /// The `name` definition preserves the original function name in stack
+    /// traces even after bundler minification.
+    fn step_registration_stmts(
+        reg_var: &str,
+        fn_ref: &Expr,
+        step_id: &Expr,
+        fn_name: &str,
+    ) -> Vec<Stmt> {
+        let boxed = |expr: &Expr| Box::new(expr.clone());
+        vec![
+            Self::registry_set_stmt(reg_var, boxed(step_id), boxed(fn_ref)),
+            Self::assign_stmt(*Self::member(boxed(fn_ref), "stepId"), step_id.clone()),
+            Self::define_property_stmt(
+                boxed(fn_ref),
+                "name",
+                vec![
+                    ("value", Self::str_lit(fn_name)),
+                    ("configurable", Self::bool_lit(true)),
+                ],
+            ),
+        ]
+    }
+
+    /// The statements that register a class `cls_ref` for custom
+    /// serialization under `class_id` in the registry held in `reg_var`:
+    ///
+    /// ```js
+    /// __wf_reg.set(<class_id>, <cls>);
+    /// if (!Object.prototype.hasOwnProperty.call(<cls>, "classId")) {
+    ///   Object.defineProperty(<cls>, "classId", { value: <class_id>, writable: false, enumerable: false, configurable: false });
+    /// }
+    /// ```
+    ///
+    /// The `hasOwnProperty` guard makes the `defineProperty` call idempotent.
+    /// Some multi-pass bundler pipelines (observed with a Vite/Nitro SSR
+    /// build re-running this transform over its own already-registered
+    /// output for a dependency reached through more than one build stage)
+    /// visit the same class object twice; since `defineProperty` marks
+    /// `classId` non-configurable, a second, unguarded call would throw
+    /// "Cannot redefine property: classId" and crash the bundle at module
+    /// load. The registry `.set()` above stays unconditional: it is what
+    /// makes {@link aliasSerializationClass}-style dual lookups work, and a
+    /// repeated `.set()` under the same or a different id is harmless.
+    fn class_registration_stmts(reg_var: &str, cls_ref: &Expr, class_id: &Expr) -> Vec<Stmt> {
+        let boxed = |expr: &Expr| Box::new(expr.clone());
+        let has_own_class_id = Expr::Call(CallExpr {
             span: DUMMY_SP,
             ctxt: SyntaxContext::empty(),
-            stmts: vec![
-                // var __wf_sym = ..., __wf_reg = ...;
-                Stmt::Decl(Decl::Var(Box::new(VarDecl {
-                    span: DUMMY_SP,
-                    ctxt: SyntaxContext::empty(),
-                    kind: VarDeclKind::Var,
-                    declare: false,
-                    decls: vec![sym_decl, reg_decl],
-                }))),
-                set_call,
-                define_property_call,
+            callee: Callee::Expr(Self::member(
+                Self::member(
+                    Self::member(Self::ident_expr("Object"), "prototype"),
+                    "hasOwnProperty",
+                ),
+                "call",
+            )),
+            args: vec![
+                ExprOrSpread {
+                    spread: None,
+                    expr: boxed(cls_ref),
+                },
+                ExprOrSpread {
+                    spread: None,
+                    expr: Self::str_lit("classId"),
+                },
             ],
-        };
+            type_args: None,
+        });
+        vec![
+            Self::registry_set_stmt(reg_var, boxed(class_id), boxed(cls_ref)),
+            Stmt::If(IfStmt {
+                span: DUMMY_SP,
+                test: Box::new(Expr::Unary(UnaryExpr {
+                    span: DUMMY_SP,
+                    op: UnaryOp::Bang,
+                    arg: Box::new(has_own_class_id),
+                })),
+                cons: Box::new(Self::define_property_stmt(
+                    boxed(cls_ref),
+                    "classId",
+                    vec![
+                        ("value", boxed(class_id)),
+                        ("writable", Self::bool_lit(false)),
+                        ("enumerable", Self::bool_lit(false)),
+                        ("configurable", Self::bool_lit(false)),
+                    ],
+                )),
+                alt: None,
+            }),
+        ]
+    }
 
-        // The IIFE: (function(__wf_cls, __wf_id) { ... })(ClassName, /* generated class ID string */);
+    /// `(function(<params>) { <body> })(<args>);`
+    fn iife_stmt(params: &[&str], body: Vec<Stmt>, args: Vec<Expr>) -> Stmt {
         Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
@@ -3545,28 +4178,25 @@ impl StepTransform {
                     expr: Box::new(Expr::Fn(FnExpr {
                         ident: None,
                         function: Box::new(Function {
-                            params: vec![
-                                Param {
+                            params: params
+                                .iter()
+                                .map(|name| Param {
                                     span: DUMMY_SP,
                                     decorators: vec![],
                                     pat: Pat::Ident(BindingIdent {
-                                        id: ident("__wf_cls"),
+                                        id: Self::ident(name),
                                         type_ann: None,
                                     }),
-                                },
-                                Param {
-                                    span: DUMMY_SP,
-                                    decorators: vec![],
-                                    pat: Pat::Ident(BindingIdent {
-                                        id: ident("__wf_id"),
-                                        type_ann: None,
-                                    }),
-                                },
-                            ],
+                                })
+                                .collect(),
                             decorators: vec![],
                             span: DUMMY_SP,
                             ctxt: SyntaxContext::empty(),
-                            body: Some(function_body),
+                            body: Some(BlockStmt {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                stmts: body,
+                            }),
                             is_generator: false,
                             is_async: false,
                             type_params: None,
@@ -3574,25 +4204,53 @@ impl StepTransform {
                         }),
                     })),
                 }))),
-                args: vec![
-                    // First argument: ClassName
-                    ExprOrSpread {
+                args: args
+                    .into_iter()
+                    .map(|expr| ExprOrSpread {
                         spread: None,
-                        expr: Box::new(Expr::Ident(ident(class_name))),
-                    },
-                    // Second argument: class ID string
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                            span: DUMMY_SP,
-                            value: class_id.into(),
-                            raw: None,
-                        }))),
-                    },
-                ],
+                        expr: Box::new(expr),
+                    })
+                    .collect(),
                 type_args: None,
             })),
         })
+    }
+
+    fn class_id_for(&self, class_name: &str) -> String {
+        naming::format_name("class", &self.get_module_path(), class_name)
+    }
+
+    /// Build the inline IIFE that registers a class for custom serialization.
+    /// `class_ref` is the identifier used to reference the class; `class_name`
+    /// is the logical class name used to derive the class ID.
+    ///
+    /// Generates:
+    ///   (function(__wf_cls, __wf_id) {
+    ///     var __wf_sym = Symbol.for("workflow-class-registry"),
+    ///         __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    ///     __wf_reg.set(__wf_id, __wf_cls);
+    ///     Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    ///   })(ClassName, "class//module_path//ClassName");
+    fn create_class_serialization_registration(&self, class_ref: &str, class_name: &str) -> Stmt {
+        let mut body = vec![Self::registry_lookup_stmt(
+            "__wf_sym",
+            "__wf_reg",
+            CLASS_REGISTRY_KEY,
+            &[],
+        )];
+        body.extend(Self::class_registration_stmts(
+            "__wf_reg",
+            &Self::ident_expr("__wf_cls"),
+            &Self::ident_expr("__wf_id"),
+        ));
+        Self::iife_stmt(
+            &["__wf_cls", "__wf_id"],
+            body,
+            vec![
+                *Self::ident_expr(class_ref),
+                *Self::str_lit(&self.class_id_for(class_name)),
+            ],
+        )
     }
 
     // Create an inline step function registration statement (step mode).
@@ -3607,275 +4265,26 @@ impl StepTransform {
     //         __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     //     __wf_reg.set(__wf_id, __wf_fn);
     //     __wf_fn.stepId = __wf_id;
+    //     Object.defineProperty(__wf_fn, "name", { value: "fnName", configurable: true });
     //   })(fnRef, "step//module_path//fnName");
     fn create_inline_step_registration(&self, step_id: &str, fn_ref: Expr, fn_name: &str) -> Stmt {
-        // Helper to create an identifier
-        let ident =
-            |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
-
-        // Helper to create an identifier expression
-        let ident_expr = |name: &str| -> Box<Expr> { Box::new(Expr::Ident(ident(name))) };
-
-        // var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
-        //     __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-        let sym_decl = VarDeclarator {
-            span: DUMMY_SP,
-            name: Pat::Ident(BindingIdent {
-                id: ident("__wf_sym"),
-                type_ann: None,
-            }),
-            init: Some(Box::new(Expr::Call(CallExpr {
-                span: DUMMY_SP,
-                ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("Symbol"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "for".into(),
-                    }),
-                }))),
-                args: vec![ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Lit(Lit::Str(Str {
-                        span: DUMMY_SP,
-                        value: "@workflow/core//registeredSteps".into(),
-                        raw: None,
-                    }))),
-                }],
-                type_args: None,
-            }))),
-            definite: false,
-        };
-
-        let global_sym_access = Box::new(Expr::Member(MemberExpr {
-            span: DUMMY_SP,
-            obj: ident_expr("globalThis"),
-            prop: MemberProp::Computed(ComputedPropName {
-                span: DUMMY_SP,
-                expr: ident_expr("__wf_sym"),
-            }),
-        }));
-
-        let reg_decl = VarDeclarator {
-            span: DUMMY_SP,
-            name: Pat::Ident(BindingIdent {
-                id: ident("__wf_reg"),
-                type_ann: None,
-            }),
-            init: Some(Box::new(Expr::Bin(BinExpr {
-                span: DUMMY_SP,
-                op: BinaryOp::LogicalOr,
-                left: global_sym_access.clone(),
-                right: Box::new(Expr::Paren(ParenExpr {
-                    span: DUMMY_SP,
-                    expr: Box::new(Expr::Assign(AssignExpr {
-                        span: DUMMY_SP,
-                        op: AssignOp::Assign,
-                        left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
-                            span: DUMMY_SP,
-                            obj: ident_expr("globalThis"),
-                            prop: MemberProp::Computed(ComputedPropName {
-                                span: DUMMY_SP,
-                                expr: ident_expr("__wf_sym"),
-                            }),
-                        })),
-                        right: Box::new(Expr::New(NewExpr {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            callee: ident_expr("Map"),
-                            args: Some(vec![]),
-                            type_args: None,
-                        })),
-                    })),
-                })),
-            }))),
-            definite: false,
-        };
-
-        // __wf_reg.set(__wf_id, __wf_fn);
-        let set_call = Stmt::Expr(ExprStmt {
-            span: DUMMY_SP,
-            expr: Box::new(Expr::Call(CallExpr {
-                span: DUMMY_SP,
-                ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("__wf_reg"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "set".into(),
-                    }),
-                }))),
-                args: vec![
-                    ExprOrSpread {
-                        spread: None,
-                        expr: ident_expr("__wf_id"),
-                    },
-                    ExprOrSpread {
-                        spread: None,
-                        expr: ident_expr("__wf_fn"),
-                    },
-                ],
-                type_args: None,
-            })),
-        });
-
-        // __wf_fn.stepId = __wf_id;
-        let step_id_assignment = Stmt::Expr(ExprStmt {
-            span: DUMMY_SP,
-            expr: Box::new(Expr::Assign(AssignExpr {
-                span: DUMMY_SP,
-                op: AssignOp::Assign,
-                left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("__wf_fn"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "stepId".into(),
-                    }),
-                })),
-                right: ident_expr("__wf_id"),
-            })),
-        });
-
-        // Object.defineProperty(__wf_fn, "name", { value: "originalName", configurable: true })
-        // This preserves the original function name in stack traces even after bundler minification.
-        let define_name = Stmt::Expr(ExprStmt {
-            span: DUMMY_SP,
-            expr: Box::new(Expr::Call(CallExpr {
-                span: DUMMY_SP,
-                ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                    span: DUMMY_SP,
-                    obj: ident_expr("Object"),
-                    prop: MemberProp::Ident(IdentName {
-                        span: DUMMY_SP,
-                        sym: "defineProperty".into(),
-                    }),
-                }))),
-                args: vec![
-                    ExprOrSpread {
-                        spread: None,
-                        expr: ident_expr("__wf_fn"),
-                    },
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                            span: DUMMY_SP,
-                            value: "name".into(),
-                            raw: None,
-                        }))),
-                    },
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(Expr::Object(ObjectLit {
-                            span: DUMMY_SP,
-                            props: vec![
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName {
-                                        span: DUMMY_SP,
-                                        sym: "value".into(),
-                                    }),
-                                    value: Box::new(Expr::Lit(Lit::Str(Str {
-                                        span: DUMMY_SP,
-                                        value: fn_name.into(),
-                                        raw: None,
-                                    }))),
-                                }))),
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName {
-                                        span: DUMMY_SP,
-                                        sym: "configurable".into(),
-                                    }),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: true,
-                                    }))),
-                                }))),
-                            ],
-                        })),
-                    },
-                ],
-                type_args: None,
-            })),
-        });
-
-        // The function body: var decls + set + stepId assignment + name preservation
-        let function_body = BlockStmt {
-            span: DUMMY_SP,
-            ctxt: SyntaxContext::empty(),
-            stmts: vec![
-                Stmt::Decl(Decl::Var(Box::new(VarDecl {
-                    span: DUMMY_SP,
-                    ctxt: SyntaxContext::empty(),
-                    kind: VarDeclKind::Var,
-                    declare: false,
-                    decls: vec![sym_decl, reg_decl],
-                }))),
-                set_call,
-                step_id_assignment,
-                define_name,
-            ],
-        };
-
-        // The IIFE: (function(__wf_fn, __wf_id) { ... })(fnRef, "step_id");
-        Stmt::Expr(ExprStmt {
-            span: DUMMY_SP,
-            expr: Box::new(Expr::Call(CallExpr {
-                span: DUMMY_SP,
-                ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
-                    span: DUMMY_SP,
-                    expr: Box::new(Expr::Fn(FnExpr {
-                        ident: None,
-                        function: Box::new(Function {
-                            params: vec![
-                                Param {
-                                    span: DUMMY_SP,
-                                    decorators: vec![],
-                                    pat: Pat::Ident(BindingIdent {
-                                        id: ident("__wf_fn"),
-                                        type_ann: None,
-                                    }),
-                                },
-                                Param {
-                                    span: DUMMY_SP,
-                                    decorators: vec![],
-                                    pat: Pat::Ident(BindingIdent {
-                                        id: ident("__wf_id"),
-                                        type_ann: None,
-                                    }),
-                                },
-                            ],
-                            decorators: vec![],
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            body: Some(function_body),
-                            is_generator: false,
-                            is_async: false,
-                            type_params: None,
-                            return_type: None,
-                        }),
-                    })),
-                }))),
-                args: vec![
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(fn_ref),
-                    },
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                            span: DUMMY_SP,
-                            value: step_id.into(),
-                            raw: None,
-                        }))),
-                    },
-                ],
-                type_args: None,
-            })),
-        })
+        let mut body = vec![Self::registry_lookup_stmt(
+            "__wf_sym",
+            "__wf_reg",
+            STEP_REGISTRY_KEY,
+            &[],
+        )];
+        body.extend(Self::step_registration_stmts(
+            "__wf_reg",
+            &Self::ident_expr("__wf_fn"),
+            &Self::ident_expr("__wf_id"),
+            fn_name,
+        ));
+        Self::iife_stmt(
+            &["__wf_fn", "__wf_id"],
+            body,
+            vec![fn_ref, *Self::str_lit(step_id)],
+        )
     }
 
     // Create an inline closure variable access expression (step mode).
@@ -4450,6 +4859,34 @@ impl StepTransform {
     }
 
     // Remove dead code (unused functions, variables, statements, and imports) recursively
+    /// Whether any initializer in `var_decl` contains a class expression that
+    /// was wrapped in a registration IIFE.
+    fn contains_registered_class_expr(&self, var_decl: &VarDecl) -> bool {
+        if self.registered_class_expr_spans.is_empty() {
+            return false;
+        }
+        struct Finder<'a> {
+            spans: &'a HashSet<swc_core::common::Span>,
+            found: bool,
+        }
+        impl Visit for Finder<'_> {
+            noop_visit_type!();
+            fn visit_class(&mut self, class: &Class) {
+                if self.spans.contains(&class.span) {
+                    self.found = true;
+                } else {
+                    class.visit_children_with(self);
+                }
+            }
+        }
+        let mut finder = Finder {
+            spans: &self.registered_class_expr_spans,
+            found: false,
+        };
+        var_decl.visit_with(&mut finder);
+        finder.found
+    }
+
     fn remove_dead_code(&self, items: &mut Vec<ModuleItem>) {
         // Only runs in workflow and step mode
         if !matches!(self.mode, TransformMode::Workflow | TransformMode::Step) {
@@ -4482,8 +4919,13 @@ impl StepTransform {
                             && !self.step_function_names.contains(&fn_name)
                             && !self.workflow_function_names.contains(&fn_name)
                     }
-                    // Remove unused variable declarations
+                    // Remove unused variable declarations, unless evaluating an
+                    // initializer registers a class (see
+                    // `registered_class_expr_spans`).
                     ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
+                        if self.contains_registered_class_expr(var_decl) {
+                            continue;
+                        }
                         // Check if all variables in this declaration are unused
                         var_decl.decls.iter().all(|declarator| {
                             match &declarator.name {
@@ -4731,29 +5173,36 @@ impl StepTransform {
         if !self.step_function_names.is_empty()
             || !self.object_property_workflow_conversions.is_empty()
         {
-            let mut steps_entries: Vec<String> = self
+            // Steps hoisted out of an enclosing function are registered (and
+            // looked up) under a namespaced name like
+            // "myWorkflow/_anonymousStep0", and are listed under that name so
+            // that same-named nested steps of different workflows each get an
+            // entry. Their bare local names are skipped unless a module-level
+            // step also uses the name (e.g. a top-level step `act` alongside
+            // a nested step `act`).
+            let step_names: std::collections::BTreeSet<&String> = self
                 .step_function_names
                 .iter()
+                .filter(|fn_name| self.is_module_level_step(fn_name))
+                .chain(self.nested_step_full_names.iter())
+                .collect();
+            let mut steps_entries: Vec<String> = step_names
+                .into_iter()
                 .map(|fn_name| {
-                    // If this step was hoisted out of a workflow function it
-                    // is registered (and looked up) under a namespaced name
-                    // like "myWorkflow/_anonymousStep0". The manifest must
-                    // report the same step ID so downstream tooling (e.g.
-                    // builders consuming `__internal_workflows`) sees the
-                    // correct ID.
-                    let id_name = self
-                        .nested_step_full_names
-                        .get(fn_name)
-                        .map(|s| s.as_str())
-                        .unwrap_or(fn_name.as_str());
-                    let step_id = self.create_id(Some(id_name), DUMMY_SP, false);
+                    let step_id = self.create_id(Some(fn_name), DUMMY_SP, false);
                     format!("\"{}\":{{\"stepId\":\"{}\"}}", fn_name, step_id)
                 })
                 .collect();
 
-            // Add object property step functions to metadata
+            // Add object property step functions to metadata, keyed by the
+            // namespaced name from the step ID (e.g. "myWorkflow/helpers/act")
+            // so same-named objects in different workflows don't collide.
+            let step_id_prefix = format!("step//{}//", self.get_module_path());
             for (parent_var, prop_name, step_id) in &self.object_property_workflow_conversions {
-                let key = format!("{}/{}", parent_var, prop_name);
+                let key = step_id
+                    .strip_prefix(&step_id_prefix)
+                    .map(|name| name.to_string())
+                    .unwrap_or_else(|| format!("{}/{}", parent_var, prop_name));
                 steps_entries.push(format!("\"{}\":{{\"stepId\":\"{}\"}}", key, step_id));
             }
 
@@ -5109,13 +5558,726 @@ impl<'a> ComprehensiveUsageCollector<'a> {
     }
 }
 
+/// Identifier used inside a class-expression registration IIFE to refer to
+/// the class being registered (the IIFE's parameter).
+const CLASS_EXPR_IIFE_PARAM: &str = "__wf_cls";
+
+/// `Symbol.for` key of the global step registry (`Map<stepId, fn>`).
+const STEP_REGISTRY_KEY: &str = "@workflow/core//registeredSteps";
+/// `Symbol.for` key of the global serialization class registry (`Map<classId, class>`).
+const CLASS_REGISTRY_KEY: &str = "workflow-class-registry";
+
+/// Builders for the module-level code that registers a class's step methods,
+/// getters, workflows and custom serialization.
+///
+/// Every builder takes `class_ref`, the identifier through which the emitted
+/// code refers to the class. For class declarations this is the class name and
+/// the statements are appended to the module body. For class expressions the
+/// class has no guaranteed module-scope binding (`exports.Foo = class {}`,
+/// `foo(class {})`, `var A = class {}, B = class {}`, ...), so the statements
+/// are placed inside an IIFE that receives the class as its argument and
+/// `class_ref` is that parameter. See `wrap_class_expr_with_registrations`.
+impl StepTransform {
+    fn ident(name: &str) -> Ident {
+        Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty())
+    }
+
+    fn ident_expr(name: &str) -> Box<Expr> {
+        Box::new(Expr::Ident(Self::ident(name)))
+    }
+
+    fn str_lit(value: &str) -> Box<Expr> {
+        Box::new(Expr::Lit(Lit::Str(Str {
+            span: DUMMY_SP,
+            value: value.into(),
+            raw: None,
+        })))
+    }
+
+    /// `class_ref.prop`
+    fn member(obj: Box<Expr>, prop: &str) -> Box<Expr> {
+        Box::new(Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj,
+            prop: MemberProp::Ident(IdentName::new(prop.into(), DUMMY_SP)),
+        }))
+    }
+
+    /// `obj["name"]`
+    fn computed_member(obj: Box<Expr>, name: &str) -> Box<Expr> {
+        Box::new(Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj,
+            prop: MemberProp::Computed(ComputedPropName {
+                span: DUMMY_SP,
+                expr: Self::str_lit(name),
+            }),
+        }))
+    }
+
+    /// `Object.getOwnPropertyDescriptor(target, "name").get`
+    fn getter_ref(target: Box<Expr>, name: &str) -> Expr {
+        Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Self::member(
+                    Self::ident_expr("Object"),
+                    "getOwnPropertyDescriptor",
+                )),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: target,
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Self::str_lit(name),
+                    },
+                ],
+                type_args: None,
+            })),
+            prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
+        })
+    }
+
+    /// `target = value;` where `target` is a member expression.
+    fn assign_stmt(target: Expr, value: Expr) -> Stmt {
+        let Expr::Member(target) = target else {
+            unreachable!("assignment targets built here are always member expressions");
+        };
+        Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Assign(AssignExpr {
+                span: DUMMY_SP,
+                left: AssignTarget::Simple(SimpleAssignTarget::Member(target)),
+                op: AssignOp::Assign,
+                right: Box::new(value),
+            })),
+        })
+    }
+
+    /// `Object.defineProperty(target, "name", { value: "name", configurable: true })`
+    fn define_name_stmt(target: &str, name: &str) -> Stmt {
+        Self::define_property_stmt(
+            Self::ident_expr(target),
+            "name",
+            vec![
+                ("value", Self::str_lit(name)),
+                ("configurable", Self::bool_lit(true)),
+            ],
+        )
+    }
+
+    fn var_stmt(name: &str, init: Expr) -> Stmt {
+        Stmt::Decl(Decl::Var(Box::new(VarDecl {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            kind: VarDeclKind::Var,
+            declare: false,
+            decls: vec![VarDeclarator {
+                span: DUMMY_SP,
+                name: Pat::Ident(BindingIdent {
+                    id: Self::ident(name),
+                    type_ann: None,
+                }),
+                init: Some(Box::new(init)),
+                definite: false,
+            }],
+        })))
+    }
+
+    /// Step mode: register `class_ref.method` as a step.
+    fn build_static_step_registration(
+        &self,
+        class_ref: &str,
+        method_name: &str,
+        step_id: &str,
+    ) -> Stmt {
+        let fn_ref = *Self::member(Self::ident_expr(class_ref), method_name);
+        self.create_inline_step_registration(step_id, fn_ref, method_name)
+    }
+
+    /// Step mode: register `class_ref.prototype["method"]` as a step.
+    fn build_instance_step_registration(
+        &self,
+        class_ref: &str,
+        method_name: &str,
+        step_id: &str,
+    ) -> Stmt {
+        let fn_ref = *Self::computed_member(
+            Self::member(Self::ident_expr(class_ref), "prototype"),
+            method_name,
+        );
+        self.create_inline_step_registration(step_id, fn_ref, method_name)
+    }
+
+    /// Step mode: register the getter function of `class_ref.prototype` (or of
+    /// `class_ref` itself for static getters) as a step.
+    fn build_getter_step_registration(
+        &self,
+        class_ref: &str,
+        getter_name: &str,
+        step_id: &str,
+        is_static: bool,
+    ) -> Stmt {
+        let target = if is_static {
+            Self::ident_expr(class_ref)
+        } else {
+            Self::member(Self::ident_expr(class_ref), "prototype")
+        };
+        self.create_inline_step_registration(
+            step_id,
+            Self::getter_ref(target, getter_name),
+            getter_name,
+        )
+    }
+
+    /// Workflow mode: `class_ref.method = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")`
+    /// (or on `class_ref.prototype["method"]` for instance methods), replacing
+    /// the method that was stripped from the class body.
+    fn build_step_proxy_assignment(
+        &self,
+        class_ref: &str,
+        method_name: &str,
+        step_id: &str,
+        is_static: bool,
+    ) -> Stmt {
+        let target = if is_static {
+            Self::member(Self::ident_expr(class_ref), method_name)
+        } else {
+            Self::computed_member(
+                Self::member(Self::ident_expr(class_ref), "prototype"),
+                method_name,
+            )
+        };
+        Self::assign_stmt(*target, self.create_step_initializer(step_id))
+    }
+
+    /// Workflow mode: redefine a stripped getter step as a property whose
+    /// getter invokes the step proxy:
+    ///
+    /// ```js
+    /// var __step_Class$getter = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id");
+    /// Object.defineProperty(Class.prototype, "getter", {
+    ///   get() { return __step_Class$getter.call(this); },
+    ///   configurable: true,
+    ///   enumerable: false
+    /// });
+    /// ```
+    ///
+    /// Static getters target `Class` and call the proxy without `this`.
+    fn build_getter_step_definition(
+        &self,
+        class_ref: &str,
+        class_name: &str,
+        getter_name: &str,
+        step_id: &str,
+        is_static: bool,
+    ) -> Vec<Stmt> {
+        let var_name = format!(
+            "__step_{}${}",
+            sanitize_ident_part(class_name),
+            sanitize_ident_part(getter_name)
+        );
+
+        let var_decl = Self::var_stmt(&var_name, self.create_step_initializer(step_id));
+
+        let proxy_call = if is_static {
+            // __step_var()
+            Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Self::ident_expr(&var_name)),
+                args: vec![],
+                type_args: None,
+            })
+        } else {
+            // __step_var.call(this)
+            Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Self::member(Self::ident_expr(&var_name), "call")),
+                args: vec![ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(Expr::This(ThisExpr { span: DUMMY_SP })),
+                }],
+                type_args: None,
+            })
+        };
+
+        let bool_prop = |key: &str, value: bool| {
+            PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                key: PropName::Ident(IdentName::new(key.into(), DUMMY_SP)),
+                value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                    span: DUMMY_SP,
+                    value,
+                }))),
+            })))
+        };
+
+        let descriptor = Expr::Object(ObjectLit {
+            span: DUMMY_SP,
+            props: vec![
+                PropOrSpread::Prop(Box::new(Prop::Method(MethodProp {
+                    key: PropName::Ident(IdentName::new("get".into(), DUMMY_SP)),
+                    function: Box::new(Function {
+                        params: vec![],
+                        decorators: vec![],
+                        span: DUMMY_SP,
+                        ctxt: SyntaxContext::empty(),
+                        body: Some(BlockStmt {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            stmts: vec![Stmt::Return(ReturnStmt {
+                                span: DUMMY_SP,
+                                arg: Some(Box::new(proxy_call)),
+                            })],
+                        }),
+                        is_generator: false,
+                        is_async: false,
+                        type_params: None,
+                        return_type: None,
+                    }),
+                }))),
+                bool_prop("configurable", true),
+                bool_prop("enumerable", false),
+            ],
+        });
+
+        let target = if is_static {
+            Self::ident_expr(class_ref)
+        } else {
+            Self::member(Self::ident_expr(class_ref), "prototype")
+        };
+
+        let define_property_call = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Self::member(Self::ident_expr("Object"), "defineProperty")),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: target,
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Self::str_lit(getter_name),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(descriptor),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        vec![var_decl, define_property_call]
+    }
+
+    /// `class_ref.method.workflowId = "workflow_id"`
+    fn build_static_workflow_id_assignment(
+        &self,
+        class_ref: &str,
+        method_name: &str,
+        workflow_id: &str,
+    ) -> Stmt {
+        Self::assign_stmt(
+            *Self::member(
+                Self::member(Self::ident_expr(class_ref), method_name),
+                "workflowId",
+            ),
+            *Self::str_lit(workflow_id),
+        )
+    }
+
+    /// Workflow mode: `globalThis.__private_workflows.set("workflow_id", class_ref.method)`
+    fn build_static_workflow_registration(
+        &self,
+        class_ref: &str,
+        method_name: &str,
+        workflow_id: &str,
+    ) -> Stmt {
+        Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Self::member(
+                    Self::member(Self::ident_expr("globalThis"), "__private_workflows"),
+                    "set",
+                )),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Self::str_lit(workflow_id),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Self::member(Self::ident_expr(class_ref), method_name),
+                    },
+                ],
+                type_args: None,
+            })),
+        })
+    }
+
+    /// Remove and return the entries of `entries` whose class (selected by
+    /// `class_of`) is `class_name`, preserving the order of the rest.
+    fn drain_class_entries<T>(
+        entries: &mut Vec<T>,
+        class_name: &str,
+        class_of: impl Fn(&T) -> &str,
+    ) -> Vec<T> {
+        let (taken, kept): (Vec<T>, Vec<T>) = std::mem::take(entries)
+            .into_iter()
+            .partition(|entry| class_of(entry) == class_name);
+        *entries = kept;
+        taken
+    }
+
+    /// Build the statements that register everything recorded for
+    /// `class_name` while visiting its body, referring to the class as
+    /// `class_ref`. The recorded entries are consumed so the module-level
+    /// emission in `visit_mut_program` does not register them a second time.
+    ///
+    /// The statements are meant to run inside a scope of their own (the class
+    /// expression's registration IIFE), so the registry lookups are hoisted
+    /// once per registry rather than repeated per registration as the
+    /// module-level IIFEs do:
+    ///
+    /// ```js
+    /// var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+    ///     __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map()), __wf_fn;
+    /// __wf_fn = __wf_cls.prototype["run"];
+    /// __wf_reg.set("step//...//Foo#run", __wf_fn);
+    /// __wf_fn.stepId = "step//...//Foo#run";
+    /// Object.defineProperty(__wf_fn, "name", { value: "run", configurable: true });
+    /// var __wf_cls_sym = Symbol.for("workflow-class-registry"),
+    ///     __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
+    /// __wf_cls_reg.set("class//...//Foo", __wf_cls);
+    /// Object.defineProperty(__wf_cls, "classId", { ... });
+    /// ```
+    ///
+    /// The statement order mirrors the module-level emission: step
+    /// registrations (or, in workflow mode, proxy assignments for the stripped
+    /// methods), getters, custom serialization, then workflow methods.
+    fn build_class_registration_stmts(&mut self, class_name: &str, class_ref: &str) -> Vec<Stmt> {
+        let mut stmts = Vec::new();
+
+        let static_steps = Self::drain_class_entries(
+            &mut self.static_method_step_registrations,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let instance_steps = Self::drain_class_entries(
+            &mut self.instance_method_step_registrations,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let instance_getters = Self::drain_class_entries(
+            &mut self.instance_getter_step_registrations,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let static_getters = Self::drain_class_entries(
+            &mut self.static_getter_step_registrations,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let static_strips = Self::drain_class_entries(
+            &mut self.static_step_methods_to_strip,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let instance_strips = Self::drain_class_entries(
+            &mut self.instance_step_methods_to_strip,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let instance_getter_strips = Self::drain_class_entries(
+            &mut self.instance_getter_steps_to_strip,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let static_getter_strips = Self::drain_class_entries(
+            &mut self.static_getter_steps_to_strip,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let workflows = Self::drain_class_entries(
+            &mut self.static_method_workflow_registrations,
+            class_name,
+            |(cn, ..)| cn,
+        );
+        let needs_serialization = self.classes_needing_serialization.remove(class_name);
+        if needs_serialization {
+            // The module-level pass snapshots `classes_needing_serialization`
+            // for the manifest after traversal; this class is consumed before
+            // then, so record it directly.
+            self.classes_for_manifest.insert(class_name.to_string());
+        }
+
+        let cls = Self::ident_expr(class_ref);
+        let proto = || Self::member(Self::ident_expr(class_ref), "prototype");
+
+        match self.mode {
+            TransformMode::Step => {
+                // (fn reference, step id, name to stamp on the function)
+                let mut steps: Vec<(Box<Expr>, &str, &str)> = Vec::new();
+                for (_, method, step_id, _) in &static_steps {
+                    steps.push((Self::member(cls.clone(), method), step_id, method));
+                }
+                for (_, method, step_id, _) in &instance_steps {
+                    steps.push((Self::computed_member(proto(), method), step_id, method));
+                }
+                for (_, getter, step_id, _) in &instance_getters {
+                    steps.push((Box::new(Self::getter_ref(proto(), getter)), step_id, getter));
+                }
+                for (_, getter, step_id, _) in &static_getters {
+                    steps.push((
+                        Box::new(Self::getter_ref(cls.clone(), getter)),
+                        step_id,
+                        getter,
+                    ));
+                }
+
+                if !steps.is_empty() {
+                    stmts.push(Self::registry_lookup_stmt(
+                        "__wf_sym",
+                        "__wf_reg",
+                        STEP_REGISTRY_KEY,
+                        &["__wf_fn"],
+                    ));
+                    let fn_var = Self::ident_expr("__wf_fn");
+                    for (fn_ref, step_id, fn_name) in steps {
+                        // __wf_fn = <fn_ref>;
+                        stmts.push(Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Assign(AssignExpr {
+                                span: DUMMY_SP,
+                                op: AssignOp::Assign,
+                                left: AssignTarget::Simple(SimpleAssignTarget::Ident(
+                                    BindingIdent {
+                                        id: Self::ident("__wf_fn"),
+                                        type_ann: None,
+                                    },
+                                )),
+                                right: fn_ref,
+                            })),
+                        }));
+                        stmts.extend(Self::step_registration_stmts(
+                            "__wf_reg",
+                            &fn_var,
+                            &Self::str_lit(step_id),
+                            fn_name,
+                        ));
+                    }
+                }
+            }
+            TransformMode::Workflow => {
+                for (_, method, step_id) in &static_strips {
+                    stmts.push(self.build_step_proxy_assignment(class_ref, method, step_id, true));
+                }
+                for (_, method, step_id) in &instance_strips {
+                    stmts.push(self.build_step_proxy_assignment(class_ref, method, step_id, false));
+                }
+                for (_, getter, step_id) in &instance_getter_strips {
+                    stmts.extend(self.build_getter_step_definition(
+                        class_ref, class_name, getter, step_id, false,
+                    ));
+                }
+                for (_, getter, step_id) in &static_getter_strips {
+                    stmts.extend(self.build_getter_step_definition(
+                        class_ref, class_name, getter, step_id, true,
+                    ));
+                }
+            }
+            TransformMode::Detect => return stmts,
+        }
+
+        if needs_serialization {
+            stmts.push(Self::registry_lookup_stmt(
+                "__wf_cls_sym",
+                "__wf_cls_reg",
+                CLASS_REGISTRY_KEY,
+                &[],
+            ));
+            stmts.extend(Self::class_registration_stmts(
+                "__wf_cls_reg",
+                &cls,
+                &Self::str_lit(&self.class_id_for(class_name)),
+            ));
+        }
+
+        for (_, method, workflow_id, _) in &workflows {
+            stmts.push(self.build_static_workflow_id_assignment(class_ref, method, workflow_id));
+            if matches!(self.mode, TransformMode::Workflow) {
+                stmts.push(self.build_static_workflow_registration(class_ref, method, workflow_id));
+            }
+        }
+
+        stmts
+    }
+
+    /// Wrap a class expression that needs registration code in an IIFE that
+    /// receives the class, runs the registrations, and returns it:
+    ///
+    /// ```js
+    /// var Foo = class { async run() { "use step"; } };
+    /// // becomes
+    /// var Foo = (function(__wf_cls) {
+    ///     (function(__wf_fn, __wf_id) { ... })(__wf_cls.prototype["run"], "step//...//Foo#run");
+    ///     return __wf_cls;
+    /// })(class { async run() { ... } });
+    /// ```
+    ///
+    /// The IIFE closes over the class value itself, so the registration does
+    /// not depend on the class being reachable through a module-scope binding.
+    /// This makes every position a class expression can appear in work the
+    /// same way: `exports.Foo = class {}`, `{ Foo: class {} }`,
+    /// `var A = class {}, B = class {}`, `foo(class Named {})`, etc.
+    ///
+    /// Leaves the expression untouched when nothing was recorded for the class.
+    fn wrap_class_expr_with_registrations(&mut self, expr: &mut Expr, pending: PendingClassExpr) {
+        let PendingClassExpr {
+            name: class_name,
+            ident_to_insert,
+            name_to_define,
+            ..
+        } = pending;
+
+        let stmts = self.build_class_registration_stmts(&class_name, CLASS_EXPR_IIFE_PARAM);
+        if stmts.is_empty() {
+            return;
+        }
+
+        let Expr::Class(mut class_expr) =
+            std::mem::replace(expr, Expr::Invalid(Invalid { span: DUMMY_SP }))
+        else {
+            unreachable!("wrap_class_expr_with_registrations is only called on class expressions");
+        };
+        self.registered_class_expr_spans
+            .insert(class_expr.class.span);
+
+        let mut body = Vec::with_capacity(stmts.len() + 2);
+
+        if class_expr.ident.is_none() {
+            // `var Foo = class {}` -> `var Foo = (...)(class Foo {})`.
+            // Passing the class as a call argument defeats the `.name`
+            // inference the original assignment provided, so make the name
+            // explicit. This mirrors `var Foo = class Foo {}`, which is
+            // behaviorally equivalent for typical class usage.
+            if let Some(name) = ident_to_insert {
+                class_expr.ident = Some(Self::ident(&name));
+            }
+            // The name came from a property key (`exports.Foo = class {}`,
+            // `{ Foo: class {} }`). Introducing `Foo` as the class's own
+            // binding could shadow an unrelated outer `Foo` referenced from
+            // the class body, so set `.name` at runtime instead.
+            if let Some(name) = name_to_define {
+                body.push(Self::define_name_stmt(CLASS_EXPR_IIFE_PARAM, &name));
+            }
+        }
+
+        body.extend(stmts);
+        body.push(Stmt::Return(ReturnStmt {
+            span: DUMMY_SP,
+            arg: Some(Self::ident_expr(CLASS_EXPR_IIFE_PARAM)),
+        }));
+
+        let iife = Expr::Fn(FnExpr {
+            ident: None,
+            function: Box::new(Function {
+                params: vec![Param {
+                    span: DUMMY_SP,
+                    decorators: vec![],
+                    pat: Pat::Ident(BindingIdent {
+                        id: Self::ident(CLASS_EXPR_IIFE_PARAM),
+                        type_ann: None,
+                    }),
+                }],
+                decorators: vec![],
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                body: Some(BlockStmt {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    stmts: body,
+                }),
+                is_generator: false,
+                is_async: false,
+                type_params: None,
+                return_type: None,
+            }),
+        });
+
+        *expr = Expr::Call(CallExpr {
+            span: class_expr.class.span,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
+                span: DUMMY_SP,
+                expr: Box::new(iife),
+            }))),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::Class(class_expr)),
+            }],
+            type_args: None,
+        });
+    }
+}
+
 impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
+        if self.mode == TransformMode::Step && ExplicitTildeStepDetector::detect(program) {
+            self.reserved_step_names = self.step_name_reservations(program);
+        }
+
+        let has_nested_steps = matches!(self.mode, TransformMode::Workflow | TransformMode::Detect)
+            && NestedStepDetector::detect(program);
+
+        if self.mode == TransformMode::Workflow && has_nested_steps {
+            self.step_mode_step_names = self.step_names_from_step_mode(program);
+            // Reserve every name step mode uses, so a step that only workflow
+            // mode names can't take one of them.
+            self.claimed_step_names
+                .extend(self.step_mode_step_names.values().cloned());
+        }
+
+        // Detect mode does not rewrite nested functions, so use step mode's
+        // completed metadata as the authoritative source when nested steps are
+        // present. This keeps discovery manifests aligned with the step and
+        // workflow transforms without teaching every Detect branch to repeat
+        // the naming walk.
+        let detect_step_mode = if self.mode == TransformMode::Detect && has_nested_steps {
+            Some(self.step_mode_prepass(program))
+        } else {
+            None
+        };
+
         // First pass: collect step functions
         program.visit_mut_children_with(self);
 
-        // Preserve class names for manifest before they get drained during registration
-        self.classes_for_manifest = self.classes_needing_serialization.clone();
+        if let Some(step_mode) = detect_step_mode {
+            self.step_function_names = step_mode.step_function_names;
+            self.nested_step_local_names = step_mode.nested_step_local_names;
+            self.nested_step_full_names = step_mode.nested_step_full_names;
+            self.module_level_step_names = step_mode.module_level_step_names;
+            self.object_property_workflow_conversions =
+                step_mode.object_property_workflow_conversions;
+        }
+
+        // Preserve class names for manifest before they get drained during
+        // registration. Class expressions were already drained (and recorded)
+        // while wrapping them in their registration IIFE, so extend rather
+        // than replace.
+        self.classes_for_manifest
+            .extend(self.classes_needing_serialization.iter().cloned());
 
         // Add necessary imports and registrations
         match program {
@@ -5147,12 +6309,22 @@ impl VisitMut for StepTransform {
                         references_lexical_this,
                     ) in nested_functions
                     {
-                        // Generate hoisted name including parent workflow function name
-                        let hoisted_name = if parent_workflow_name.is_empty() {
+                        // `fn_name` is the local name claimed at discovery (see
+                        // `push_nested_step_function`), possibly with a `~N` suffix.
+                        let local_name = fn_name.clone();
+                        let step_fn_name = if parent_workflow_name.is_empty() {
                             fn_name.clone()
                         } else {
-                            format!("{}${}", parent_workflow_name, fn_name)
+                            format!("{}/{}", parent_workflow_name, fn_name)
                         };
+                        // Generate hoisted name including parent workflow function name
+                        let hoisted_name = self.claim_hoisted_step_binding(
+                            &if parent_workflow_name.is_empty() {
+                                local_name
+                            } else {
+                                format!("{}${}", parent_workflow_name, local_name)
+                            },
+                        );
                         // If there are closure variables, add destructuring as first statement
                         if !closure_vars.is_empty() {
                             if let Some(body) = &mut fn_expr.function.body {
@@ -5253,8 +6425,6 @@ impl VisitMut for StepTransform {
                         current_insert_pos += 1;
 
                         // Create a registration call or stepId assignment with parent workflow name in the step ID
-                        let step_fn_name =
-                            self.record_nested_step_name(&fn_name, &parent_workflow_name);
                         let step_id = self.create_id(Some(&step_fn_name), span, false);
 
                         // Insert inline IIFE registration right after the hoisted declaration
@@ -5274,18 +6444,17 @@ impl VisitMut for StepTransform {
 
                     // Then process object property step functions (they typically appear later)
                     // Collect hoisting information before the loop
-                    let hoisting_info: Vec<_> = self
-                        .object_property_step_functions
+                    let object_property_steps: Vec<_> =
+                        self.object_property_step_functions.drain(..).collect();
+                    let hoisting_info: Vec<_> = object_property_steps
                         .iter()
                         .map(
                             |(parent_var, prop_name, fn_expr, _span, workflow_name, _was_arrow)| {
-                                // Replace slashes with $ in parent_var to create valid JS identifier
-                                let safe_parent_var = parent_var.replace('/', "$");
-                                let hoist_var_name = if !workflow_name.is_empty() {
-                                    format!("{}${}${}", workflow_name, safe_parent_var, prop_name)
-                                } else {
-                                    format!("{}${}", safe_parent_var, prop_name)
-                                };
+                                let hoist_var_name = self.object_property_step_binding(
+                                    workflow_name,
+                                    parent_var,
+                                    prop_name,
+                                );
                                 let wf_name = if workflow_name.is_empty() {
                                     None
                                 } else {
@@ -5294,15 +6463,13 @@ impl VisitMut for StepTransform {
                                 let step_id = self.create_object_property_id(
                                     parent_var, prop_name, false, wf_name,
                                 );
-                                (hoist_var_name, fn_expr.clone(), step_id, parent_var.clone())
+                                (hoist_var_name, fn_expr.clone(), step_id)
                             },
                         )
                         .collect();
 
-                    // Now drain and process
-                    self.object_property_step_functions.drain(..);
+                    for (hoist_var_name, fn_expr, step_id) in hoisting_info {
 
-                    for (hoist_var_name, fn_expr, step_id, _parent_var) in hoisting_info {
                         // Create a var declaration for the hoisted function
                         // Using function expression (not arrow) to preserve `this` binding
                         let hoisted_decl =
@@ -5345,198 +6512,68 @@ impl VisitMut for StepTransform {
                         current_insert_pos += 1;
                     }
 
-                    // Add static method step registrations (inline IIFE)
+                    // Add class registrations for class declarations. Class *expressions*
+                    // register themselves inline (see `wrap_class_expr_with_registrations`)
+                    // and have already been drained from these lists.
+
+                    // Static method step registrations (inline IIFE)
                     let static_step_regs: Vec<_> =
                         self.static_method_step_registrations.drain(..).collect();
                     for (class_name, method_name, step_id, _span) in static_step_regs {
-                        let fn_ref = Expr::Member(MemberExpr {
-                            span: DUMMY_SP,
-                            obj: Box::new(Expr::Ident(Ident::new(
-                                class_name.into(),
-                                DUMMY_SP,
-                                SyntaxContext::empty(),
-                            ))),
-                            prop: MemberProp::Ident(IdentName::new(
-                                method_name.clone().into(),
-                                DUMMY_SP,
-                            )),
-                        });
-                        let registration_call =
-                            self.create_inline_step_registration(&step_id, fn_ref, &method_name);
-                        module.body.push(ModuleItem::Stmt(registration_call));
+                        let stmt = self.build_static_step_registration(
+                            &class_name,
+                            &method_name,
+                            &step_id,
+                        );
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
 
-                    // Add instance method step registrations (inline IIFE)
-                    // For instance methods, we register ClassName.prototype["methodName"]
+                    // Instance method step registrations: ClassName.prototype["methodName"]
                     let instance_step_regs: Vec<_> =
                         self.instance_method_step_registrations.drain(..).collect();
                     for (class_name, method_name, step_id, _span) in instance_step_regs {
-                        let fn_ref = Expr::Member(MemberExpr {
-                            span: DUMMY_SP,
-                            obj: Box::new(Expr::Member(MemberExpr {
-                                span: DUMMY_SP,
-                                obj: Box::new(Expr::Ident(Ident::new(
-                                    class_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ))),
-                                prop: MemberProp::Ident(IdentName::new(
-                                    "prototype".into(),
-                                    DUMMY_SP,
-                                )),
-                            })),
-                            prop: MemberProp::Computed(ComputedPropName {
-                                span: DUMMY_SP,
-                                expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: method_name.clone().into(),
-                                    raw: None,
-                                }))),
-                            }),
-                        });
-                        let registration_call =
-                            self.create_inline_step_registration(&step_id, fn_ref, &method_name);
-                        module.body.push(ModuleItem::Stmt(registration_call));
-                    }
-
-                    // Add instance getter step registrations
-                    // For getters, we register Object.getOwnPropertyDescriptor(ClassName.prototype, "getterName").get
-                    // using an inline IIFE (same pattern as other step registrations)
-                    for (class_name, getter_name, step_id, _span) in {
-                        let regs: Vec<_> =
-                            self.instance_getter_step_registrations.drain(..).collect();
-                        regs
-                    }
-                    .into_iter()
-                    {
-                        // Build: Object.getOwnPropertyDescriptor(ClassName.prototype, "getterName").get
-                        let getter_ref = Expr::Member(MemberExpr {
-                            span: DUMMY_SP,
-                            obj: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                    span: DUMMY_SP,
-                                    obj: Box::new(Expr::Ident(Ident::new(
-                                        "Object".into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ))),
-                                    prop: MemberProp::Ident(IdentName::new(
-                                        "getOwnPropertyDescriptor".into(),
-                                        DUMMY_SP,
-                                    )),
-                                }))),
-                                args: vec![
-                                    // First arg: ClassName.prototype
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                class_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                "prototype".into(),
-                                                DUMMY_SP,
-                                            )),
-                                        })),
-                                    },
-                                    // Second arg: "getterName"
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: getter_name.clone().into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                            prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
-                        });
-
-                        let registration_call = self.create_inline_step_registration(
+                        let stmt = self.build_instance_step_registration(
+                            &class_name,
+                            &method_name,
                             &step_id,
-                            getter_ref,
-                            &getter_name,
                         );
-                        module.body.push(ModuleItem::Stmt(registration_call));
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
 
-                    // Add static getter step registrations
-                    // For static getters, we register Object.getOwnPropertyDescriptor(ClassName, "getterName").get
-                    for (class_name, getter_name, step_id, _span) in {
-                        let regs: Vec<_> =
-                            self.static_getter_step_registrations.drain(..).collect();
-                        regs
-                    }
-                    .into_iter()
-                    {
-                        // Build: Object.getOwnPropertyDescriptor(ClassName, "getterName").get
-                        let getter_ref = Expr::Member(MemberExpr {
-                            span: DUMMY_SP,
-                            obj: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                    span: DUMMY_SP,
-                                    obj: Box::new(Expr::Ident(Ident::new(
-                                        "Object".into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ))),
-                                    prop: MemberProp::Ident(IdentName::new(
-                                        "getOwnPropertyDescriptor".into(),
-                                        DUMMY_SP,
-                                    )),
-                                }))),
-                                args: vec![
-                                    // First arg: ClassName (not .prototype for static)
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Ident(Ident::new(
-                                            class_name.clone().into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                    },
-                                    // Second arg: "getterName"
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: getter_name.clone().into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                            prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
-                        });
-
-                        let registration_call = self.create_inline_step_registration(
+                    // Getter step registrations:
+                    // Object.getOwnPropertyDescriptor(ClassName.prototype | ClassName, "getterName").get
+                    let instance_getter_regs: Vec<_> =
+                        self.instance_getter_step_registrations.drain(..).collect();
+                    for (class_name, getter_name, step_id, _span) in instance_getter_regs {
+                        let stmt = self.build_getter_step_registration(
+                            &class_name,
+                            &getter_name,
                             &step_id,
-                            getter_ref,
-                            &getter_name,
+                            false,
                         );
-                        module.body.push(ModuleItem::Stmt(registration_call));
+                        module.body.push(ModuleItem::Stmt(stmt));
+                    }
+                    let static_getter_regs: Vec<_> =
+                        self.static_getter_step_registrations.drain(..).collect();
+                    for (class_name, getter_name, step_id, _span) in static_getter_regs {
+                        let stmt = self.build_getter_step_registration(
+                            &class_name,
+                            &getter_name,
+                            &step_id,
+                            true,
+                        );
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
 
-                    // Add class serialization registrations for step mode
-                    // Uses inlined IIFE registration (no import needed)
-                    // Sort for deterministic output ordering
+                    // Class serialization registrations (inline IIFE, no import needed).
+                    // Sort for deterministic output ordering.
                     let mut sorted_classes: Vec<_> =
                         self.classes_needing_serialization.drain().collect();
                     sorted_classes.sort();
                     for class_name in sorted_classes {
-                        let registration_call =
-                            self.create_class_serialization_registration(&class_name);
-                        module.body.push(ModuleItem::Stmt(registration_call));
+                        let stmt =
+                            self.create_class_serialization_registration(&class_name, &class_name);
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
                 }
 
@@ -5582,636 +6619,96 @@ impl VisitMut for StepTransform {
                     }
                 }
 
-                // Add static step method property assignments (workflow mode)
-                // These methods were stripped from the class and need to be assigned as properties
+                // Workflow mode: the "use step" methods of class declarations were
+                // stripped from the class body; reattach them as step proxies. Class
+                // expressions did this inline (see `wrap_class_expr_with_registrations`).
                 if matches!(self.mode, TransformMode::Workflow) {
-                    for (class_name, method_name, step_id) in
-                        self.static_step_methods_to_strip.drain(..)
-                    {
-                        // Create: ClassName.methodName = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")
-                        let proxy_expr = Expr::Call(CallExpr {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                span: DUMMY_SP,
-                                obj: Box::new(Expr::Ident(Ident::new(
-                                    "globalThis".into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ))),
-                                prop: MemberProp::Computed(ComputedPropName {
-                                    span: DUMMY_SP,
-                                    expr: Box::new(Expr::Call(CallExpr {
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                "Symbol".into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                "for".into(),
-                                                DUMMY_SP,
-                                            )),
-                                        }))),
-                                        args: vec![ExprOrSpread {
-                                            spread: None,
-                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                                span: DUMMY_SP,
-                                                value: "WORKFLOW_USE_STEP".into(),
-                                                raw: None,
-                                            }))),
-                                        }],
-                                        type_args: None,
-                                    })),
-                                }),
-                            }))),
-                            args: vec![ExprOrSpread {
-                                spread: None,
-                                expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: step_id.into(),
-                                    raw: None,
-                                }))),
-                            }],
-                            type_args: None,
-                        });
-
-                        let assignment = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Assign(AssignExpr {
-                                span: DUMMY_SP,
-                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
-                                    MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Ident(Ident::new(
-                                            class_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            method_name.into(),
-                                            DUMMY_SP,
-                                        )),
-                                    },
-                                )),
-                                op: AssignOp::Assign,
-                                right: Box::new(proxy_expr),
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(assignment));
+                    let static_strips: Vec<_> =
+                        self.static_step_methods_to_strip.drain(..).collect();
+                    for (class_name, method_name, step_id) in static_strips {
+                        // ClassName.methodName = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")
+                        let stmt = self.build_step_proxy_assignment(
+                            &class_name,
+                            &method_name,
+                            &step_id,
+                            true,
+                        );
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
 
-                    // Add instance step method property assignments (workflow mode)
-                    // These methods were stripped from the class and need to be assigned as prototype properties
-                    for (class_name, method_name, step_id) in
-                        self.instance_step_methods_to_strip.drain(..)
-                    {
-                        // Create: ClassName.prototype.methodName = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")
-                        let proxy_expr = Expr::Call(CallExpr {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                span: DUMMY_SP,
-                                obj: Box::new(Expr::Ident(Ident::new(
-                                    "globalThis".into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ))),
-                                prop: MemberProp::Computed(ComputedPropName {
-                                    span: DUMMY_SP,
-                                    expr: Box::new(Expr::Call(CallExpr {
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                "Symbol".into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                "for".into(),
-                                                DUMMY_SP,
-                                            )),
-                                        }))),
-                                        args: vec![ExprOrSpread {
-                                            spread: None,
-                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                                span: DUMMY_SP,
-                                                value: "WORKFLOW_USE_STEP".into(),
-                                                raw: None,
-                                            }))),
-                                        }],
-                                        type_args: None,
-                                    })),
-                                }),
-                            }))),
-                            args: vec![ExprOrSpread {
-                                spread: None,
-                                expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: step_id.into(),
-                                    raw: None,
-                                }))),
-                            }],
-                            type_args: None,
-                        });
-
-                        // Create: ClassName.prototype.methodName = proxy_expr
-                        let assignment = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Assign(AssignExpr {
-                                span: DUMMY_SP,
-                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
-                                    MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                class_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                "prototype".into(),
-                                                DUMMY_SP,
-                                            )),
-                                        })),
-                                        prop: MemberProp::Computed(ComputedPropName {
-                                            span: DUMMY_SP,
-                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                                span: DUMMY_SP,
-                                                value: method_name.into(),
-                                                raw: None,
-                                            }))),
-                                        }),
-                                    },
-                                )),
-                                op: AssignOp::Assign,
-                                right: Box::new(proxy_expr),
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(assignment));
+                    let instance_strips: Vec<_> =
+                        self.instance_step_methods_to_strip.drain(..).collect();
+                    for (class_name, method_name, step_id) in instance_strips {
+                        // ClassName.prototype["methodName"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")
+                        let stmt = self.build_step_proxy_assignment(
+                            &class_name,
+                            &method_name,
+                            &step_id,
+                            false,
+                        );
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
 
-                    // Add instance getter step definitions (workflow mode)
-                    // These getters were stripped from the class and need to be redefined via Object.defineProperty
+                    // Stripped getter steps are redefined via Object.defineProperty
                     let getter_strips: Vec<_> =
                         self.instance_getter_steps_to_strip.drain(..).collect();
                     for (class_name, getter_name, step_id) in getter_strips {
-                        // Sanitize names for use in JS identifier
-                        let safe_getter = sanitize_ident_part(&getter_name);
-                        let var_name = format!(
-                            "__step_{}${}",
-                            sanitize_ident_part(&class_name),
-                            safe_getter
+                        let stmts = self.build_getter_step_definition(
+                            &class_name,
+                            &class_name,
+                            &getter_name,
+                            &step_id,
+                            false,
                         );
-
-                        // Create: var __step_ClassName$getterName = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")
-                        let step_proxy = self.create_step_initializer(&step_id);
-                        let var_decl = Stmt::Decl(Decl::Var(Box::new(VarDecl {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            kind: VarDeclKind::Var,
-                            declare: false,
-                            decls: vec![VarDeclarator {
-                                span: DUMMY_SP,
-                                name: Pat::Ident(BindingIdent {
-                                    id: Ident::new(
-                                        var_name.clone().into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ),
-                                    type_ann: None,
-                                }),
-                                init: Some(Box::new(step_proxy)),
-                                definite: false,
-                            }],
-                        })));
-                        module.body.push(ModuleItem::Stmt(var_decl));
-
-                        // Create: Object.defineProperty(ClassName.prototype, "getterName", {
-                        //   get() { return __step_ClassName$getterName.call(this); },
-                        //   configurable: true,
-                        //   enumerable: false
-                        // })
-                        let getter_body = BlockStmt {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            stmts: vec![Stmt::Return(ReturnStmt {
-                                span: DUMMY_SP,
-                                arg: Some(Box::new(Expr::Call(CallExpr {
-                                    span: DUMMY_SP,
-                                    ctxt: SyntaxContext::empty(),
-                                    callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Ident(Ident::new(
-                                            var_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            "call".into(),
-                                            DUMMY_SP,
-                                        )),
-                                    }))),
-                                    args: vec![ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::This(ThisExpr { span: DUMMY_SP })),
-                                    }],
-                                    type_args: None,
-                                }))),
-                            })],
-                        };
-
-                        let descriptor = Expr::Object(ObjectLit {
-                            span: DUMMY_SP,
-                            props: vec![
-                                // get() { return __step_var.call(this); }
-                                PropOrSpread::Prop(Box::new(Prop::Method(MethodProp {
-                                    key: PropName::Ident(IdentName::new("get".into(), DUMMY_SP)),
-                                    function: Box::new(Function {
-                                        params: vec![],
-                                        decorators: vec![],
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        body: Some(getter_body),
-                                        is_generator: false,
-                                        is_async: false,
-                                        type_params: None,
-                                        return_type: None,
-                                    }),
-                                }))),
-                                // configurable: true
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName::new(
-                                        "configurable".into(),
-                                        DUMMY_SP,
-                                    )),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: true,
-                                    }))),
-                                }))),
-                                // enumerable: false
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName::new(
-                                        "enumerable".into(),
-                                        DUMMY_SP,
-                                    )),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: false,
-                                    }))),
-                                }))),
-                            ],
-                        });
-
-                        let define_property_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                    span: DUMMY_SP,
-                                    obj: Box::new(Expr::Ident(Ident::new(
-                                        "Object".into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ))),
-                                    prop: MemberProp::Ident(IdentName::new(
-                                        "defineProperty".into(),
-                                        DUMMY_SP,
-                                    )),
-                                }))),
-                                args: vec![
-                                    // ClassName.prototype
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                class_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                "prototype".into(),
-                                                DUMMY_SP,
-                                            )),
-                                        })),
-                                    },
-                                    // "getterName"
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: getter_name.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    // { get() { ... }, configurable: true, enumerable: false }
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(descriptor),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(define_property_call));
+                        module.body.extend(stmts.into_iter().map(ModuleItem::Stmt));
                     }
-
-                    // Add static getter step definitions (workflow mode)
-                    // Same as instance getters but targets ClassName instead of ClassName.prototype
                     let static_getter_strips: Vec<_> =
                         self.static_getter_steps_to_strip.drain(..).collect();
                     for (class_name, getter_name, step_id) in static_getter_strips {
-                        let safe_getter = sanitize_ident_part(&getter_name);
-                        let var_name = format!(
-                            "__step_{}${}",
-                            sanitize_ident_part(&class_name),
-                            safe_getter
+                        let stmts = self.build_getter_step_definition(
+                            &class_name,
+                            &class_name,
+                            &getter_name,
+                            &step_id,
+                            true,
                         );
-
-                        let step_proxy = self.create_step_initializer(&step_id);
-                        let var_decl = Stmt::Decl(Decl::Var(Box::new(VarDecl {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            kind: VarDeclKind::Var,
-                            declare: false,
-                            decls: vec![VarDeclarator {
-                                span: DUMMY_SP,
-                                name: Pat::Ident(BindingIdent {
-                                    id: Ident::new(
-                                        var_name.clone().into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ),
-                                    type_ann: None,
-                                }),
-                                init: Some(Box::new(step_proxy)),
-                                definite: false,
-                            }],
-                        })));
-                        module.body.push(ModuleItem::Stmt(var_decl));
-
-                        // Object.defineProperty(ClassName, "getterName", { get() { return __step_var(); }, ... })
-                        // Note: static getters don't need .call(this), just invoke directly
-                        let getter_body = BlockStmt {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            stmts: vec![Stmt::Return(ReturnStmt {
-                                span: DUMMY_SP,
-                                arg: Some(Box::new(Expr::Call(CallExpr {
-                                    span: DUMMY_SP,
-                                    ctxt: SyntaxContext::empty(),
-                                    callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                                        var_name.into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    )))),
-                                    args: vec![],
-                                    type_args: None,
-                                }))),
-                            })],
-                        };
-
-                        let descriptor = Expr::Object(ObjectLit {
-                            span: DUMMY_SP,
-                            props: vec![
-                                PropOrSpread::Prop(Box::new(Prop::Method(MethodProp {
-                                    key: PropName::Ident(IdentName::new("get".into(), DUMMY_SP)),
-                                    function: Box::new(Function {
-                                        params: vec![],
-                                        decorators: vec![],
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        body: Some(getter_body),
-                                        is_generator: false,
-                                        is_async: false,
-                                        type_params: None,
-                                        return_type: None,
-                                    }),
-                                }))),
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName::new(
-                                        "configurable".into(),
-                                        DUMMY_SP,
-                                    )),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: true,
-                                    }))),
-                                }))),
-                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                                    key: PropName::Ident(IdentName::new(
-                                        "enumerable".into(),
-                                        DUMMY_SP,
-                                    )),
-                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
-                                        span: DUMMY_SP,
-                                        value: false,
-                                    }))),
-                                }))),
-                            ],
-                        });
-
-                        let define_property_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                    span: DUMMY_SP,
-                                    obj: Box::new(Expr::Ident(Ident::new(
-                                        "Object".into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ))),
-                                    prop: MemberProp::Ident(IdentName::new(
-                                        "defineProperty".into(),
-                                        DUMMY_SP,
-                                    )),
-                                }))),
-                                args: vec![
-                                    // ClassName (not .prototype for static)
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Ident(Ident::new(
-                                            class_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                    },
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: getter_name.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(descriptor),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(define_property_call));
+                        module.body.extend(stmts.into_iter().map(ModuleItem::Stmt));
                     }
 
-                    // Add class serialization registrations for workflow mode
-                    // This is now the same as step mode - using registerSerializationClass()
-                    // which sets both classId and registers in the globalThis Map
-                    // Sort for deterministic output ordering
+                    // Class serialization registrations (same as step mode).
+                    // Sort for deterministic output ordering.
                     let mut sorted_classes: Vec<_> =
                         self.classes_needing_serialization.drain().collect();
                     sorted_classes.sort();
                     for class_name in sorted_classes {
-                        let registration_call =
-                            self.create_class_serialization_registration(&class_name);
-                        module.body.push(ModuleItem::Stmt(registration_call));
+                        let stmt =
+                            self.create_class_serialization_registration(&class_name, &class_name);
+                        module.body.push(ModuleItem::Stmt(stmt));
                     }
                 }
 
-                // Add static method workflow registrations (workflowId and __private_workflows.set)
-                if matches!(self.mode, TransformMode::Workflow) {
-                    for (class_name, method_name, workflow_id, _span) in
-                        self.static_method_workflow_registrations.drain(..)
-                    {
-                        // Add ClassName.methodName.workflowId = "workflow_id"
-                        let workflow_id_assignment = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Assign(AssignExpr {
-                                span: DUMMY_SP,
-                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
-                                    MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                class_name.clone().into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                method_name.clone().into(),
-                                                DUMMY_SP,
-                                            )),
-                                        })),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            "workflowId".into(),
-                                            DUMMY_SP,
-                                        )),
-                                    },
-                                )),
-                                op: AssignOp::Assign,
-                                right: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: workflow_id.clone().into(),
-                                    raw: None,
-                                }))),
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(workflow_id_assignment));
-
-                        // Add globalThis.__private_workflows.set("workflow_id", ClassName.methodName)
-                        let workflows_set_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
-                                    span: DUMMY_SP,
-                                    obj: Box::new(Expr::Member(MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Ident(Ident::new(
-                                            "globalThis".into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            "__private_workflows".into(),
-                                            DUMMY_SP,
-                                        )),
-                                    })),
-                                    prop: MemberProp::Ident(IdentName::new("set".into(), DUMMY_SP)),
-                                }))),
-                                args: vec![
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: workflow_id.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                class_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                method_name.into(),
-                                                DUMMY_SP,
-                                            )),
-                                        })),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(workflows_set_call));
-                    }
-                } else if matches!(self.mode, TransformMode::Step) {
-                    // For step mode, just add the workflowId assignment
-                    for (class_name, method_name, workflow_id, _span) in
-                        self.static_method_workflow_registrations.drain(..)
-                    {
-                        let workflow_id_assignment = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Assign(AssignExpr {
-                                span: DUMMY_SP,
-                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
-                                    MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Member(MemberExpr {
-                                            span: DUMMY_SP,
-                                            obj: Box::new(Expr::Ident(Ident::new(
-                                                class_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                method_name.into(),
-                                                DUMMY_SP,
-                                            )),
-                                        })),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            "workflowId".into(),
-                                            DUMMY_SP,
-                                        )),
-                                    },
-                                )),
-                                op: AssignOp::Assign,
-                                right: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: workflow_id.into(),
-                                    raw: None,
-                                }))),
-                            })),
-                        });
-                        module.body.push(ModuleItem::Stmt(workflow_id_assignment));
+                // Static method workflow registrations: `ClassName.method.workflowId = "..."`
+                // in both modes, plus `globalThis.__private_workflows.set(...)` in workflow mode.
+                if !matches!(self.mode, TransformMode::Detect) {
+                    let workflow_regs: Vec<_> = self
+                        .static_method_workflow_registrations
+                        .drain(..)
+                        .collect();
+                    for (class_name, method_name, workflow_id, _span) in workflow_regs {
+                        let stmt = self.build_static_workflow_id_assignment(
+                            &class_name,
+                            &method_name,
+                            &workflow_id,
+                        );
+                        module.body.push(ModuleItem::Stmt(stmt));
+                        if matches!(self.mode, TransformMode::Workflow) {
+                            let stmt = self.build_static_workflow_registration(
+                                &class_name,
+                                &method_name,
+                                &workflow_id,
+                            );
+                            module.body.push(ModuleItem::Stmt(stmt));
+                        }
                     }
                 }
 
@@ -6270,8 +6767,8 @@ impl VisitMut for StepTransform {
                             self.classes_needing_serialization.drain().collect();
                         sorted_classes.sort();
                         for class_name in sorted_classes {
-                            let registration_call =
-                                self.create_class_serialization_registration(&class_name);
+                            let registration_call = self
+                                .create_class_serialization_registration(&class_name, &class_name);
                             module_items.push(ModuleItem::Stmt(registration_call));
                         }
                     }
@@ -7172,7 +7669,7 @@ impl VisitMut for StepTransform {
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
                         if let Decl::Fn(fn_decl) = &export_decl.decl {
                             let fn_name = fn_decl.ident.sym.to_string();
-                            if self.step_function_names.contains(&fn_name) {
+                            if self.is_module_level_step(&fn_name) {
                                 // This is a step function - convert to var declaration (for named functions)
                                 let step_id =
                                     self.create_id(Some(&fn_name), fn_decl.function.span, false);
@@ -7205,7 +7702,7 @@ impl VisitMut for StepTransform {
                             let has_step_functions = var_decl.decls.iter().any(|declarator| {
                                 if let Pat::Ident(binding) = &declarator.name {
                                     let name = binding.id.sym.to_string();
-                                    self.step_function_names.contains(&name)
+                                    self.is_module_level_step(&name)
                                 } else {
                                     false
                                 }
@@ -7219,7 +7716,7 @@ impl VisitMut for StepTransform {
                                 for declarator in &mut new_var_decl.decls {
                                     if let Pat::Ident(binding) = &declarator.name {
                                         let name = binding.id.sym.to_string();
-                                        if self.step_function_names.contains(&name) {
+                                        if self.is_module_level_step(&name) {
                                             // This is an exported step function variable - convert to assignment
                                             let step_id =
                                                 self.create_id(Some(&name), declarator.span, false);
@@ -7249,7 +7746,7 @@ impl VisitMut for StepTransform {
                     // Handle non-exported function declarations
                     ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
                         let fn_name = fn_decl.ident.sym.to_string();
-                        if self.step_function_names.contains(&fn_name) {
+                        if self.is_module_level_step(&fn_name) {
                             // This is a non-exported step function - convert to var declaration (for named functions)
                             let step_id =
                                 self.create_id(Some(&fn_name), fn_decl.function.span, false);
@@ -7285,7 +7782,7 @@ impl VisitMut for StepTransform {
                         let has_step_functions = var_decl.decls.iter().any(|declarator| {
                             if let Pat::Ident(binding) = &declarator.name {
                                 let name = binding.id.sym.to_string();
-                                self.step_function_names.contains(&name)
+                                self.is_module_level_step(&name)
                             } else {
                                 false
                             }
@@ -7299,7 +7796,7 @@ impl VisitMut for StepTransform {
                             for declarator in &mut new_var_decl.decls {
                                 if let Pat::Ident(binding) = &declarator.name {
                                     let name = binding.id.sym.to_string();
-                                    if self.step_function_names.contains(&name) {
+                                    if self.is_module_level_step(&name) {
                                         // This is a non-exported step function variable - convert to assignment
                                         let step_id =
                                             self.create_id(Some(&name), declarator.span, false);
@@ -7338,7 +7835,7 @@ impl VisitMut for StepTransform {
         if self.has_step_directive(&fn_decl.function, false) {
             // Validate that it's async - emit error if not
             // It's valid - proceed with transformation
-            self.step_function_names.insert(fn_name.clone());
+            self.insert_step_function_name(fn_name.clone());
 
             match self.mode {
                 TransformMode::Step => {
@@ -7443,7 +7940,7 @@ impl VisitMut for StepTransform {
                 if self.has_step_directive(&fn_decl.function, true) {
                     // Validate that it's async - emit error if not
                     // It's valid - proceed with transformation
-                    self.step_function_names.insert(fn_name.clone());
+                    self.insert_step_function_name(fn_name.clone());
 
                     match self.mode {
                         TransformMode::Step => {
@@ -7649,7 +8146,7 @@ impl VisitMut for StepTransform {
                                     if self.has_step_directive_arrow(arrow_expr, true) {
                                         // Validate that it's async - emit error if not
                                         // It's valid - proceed with transformation
-                                        self.step_function_names.insert(name.clone());
+                                        self.insert_step_function_name(name.clone());
 
                                         match self.mode {
                                             TransformMode::Step => {
@@ -7821,7 +8318,7 @@ impl VisitMut for StepTransform {
                             if has_step {
                                 // Validate that it's async - emit error if not
                                 // It's valid - proceed with transformation
-                                self.step_function_names.insert(name.clone());
+                                self.insert_step_function_name(name.clone());
 
                                 match self.mode {
                                     TransformMode::Step => {
@@ -7889,8 +8386,7 @@ impl VisitMut for StepTransform {
                                     let old_in_workflow = self.in_workflow_function;
                                     let old_workflow_name =
                                         self.current_workflow_function_name.clone();
-                                    let old_parent_name =
-                                        self.current_parent_function_name.clone();
+                                    let old_parent_name = self.current_parent_function_name.clone();
                                     let old_in_module = self.in_module_level;
                                     self.in_workflow_function = true;
                                     self.current_workflow_function_name = Some(name.clone());
@@ -7971,7 +8467,7 @@ impl VisitMut for StepTransform {
                             if has_step {
                                 // Validate that it's async - emit error if not
                                 // It's valid - proceed with transformation
-                                self.step_function_names.insert(name.clone());
+                                self.insert_step_function_name(name.clone());
 
                                 // Check if we're inside any function (nested), not just workflow functions
                                 if !self.in_module_level {
@@ -8043,7 +8539,7 @@ impl VisitMut for StepTransform {
                                                 }),
                                             };
 
-                                            self.nested_step_functions.push((
+                                            self.push_nested_step_function((
                                                 name.clone(),
                                                 fn_expr,
                                                 arrow_expr.span,
@@ -8064,13 +8560,13 @@ impl VisitMut for StepTransform {
                                         }
                                         TransformMode::Workflow => {
                                             // Replace with proxy reference (not a function call)
-                                            // Include parent workflow name in step ID
+                                            // Use current_parent_function_name to match step mode's ID generation
                                             let parent_workflow = self
-                                                .current_workflow_function_name
+                                                .current_parent_function_name
                                                 .clone()
                                                 .unwrap_or_default();
                                             let step_fn_name = self
-                                                .record_nested_step_name(&name, &parent_workflow);
+                                                .record_nested_step_name(&name, &parent_workflow, arrow_expr.span);
                                             let step_id = self.create_id(
                                                 Some(&step_fn_name),
                                                 arrow_expr.span,
@@ -8158,8 +8654,7 @@ impl VisitMut for StepTransform {
                                     let old_in_workflow = self.in_workflow_function;
                                     let old_workflow_name =
                                         self.current_workflow_function_name.clone();
-                                    let old_parent_name =
-                                        self.current_parent_function_name.clone();
+                                    let old_parent_name = self.current_parent_function_name.clone();
                                     let old_in_module = self.in_module_level;
                                     self.in_workflow_function = true;
                                     self.current_workflow_function_name = Some(name.clone());
@@ -8247,22 +8742,32 @@ impl VisitMut for StepTransform {
                                 }
                             }
                         }
-                        Expr::Class(_) => {
-                            // Track the binding name for class expressions like:
-                            // var Bash = class _Bash {}
-                            // The binding name (Bash) is what's accessible at module scope,
-                            // not the internal class name (_Bash)
-                            // We set the binding name here; it will be used when visit_mut_class_expr
-                            // is called during visit_mut_children_with below
-                            self.current_class_binding_name = Some(name.clone());
-                        }
                         _ => {}
                     }
                 }
             }
         }
 
-        var_decl.visit_mut_children_with(self);
+        // Visit each declarator individually so that class expressions pick up
+        // the binding they are assigned to, e.g. `Bash` in
+        // `var Bash = class _Bash {}`. The binding name is what is accessible
+        // at module scope (the internal `_Bash` is only in scope inside the
+        // class body), so it is what generated registration code must use.
+        // The name is set per declarator: with `var A = class {}, B = class {}`
+        // each class must resolve to its own binding.
+        for decl in var_decl.decls.iter_mut() {
+            let class_binding = match (&decl.name, decl.init.as_deref()) {
+                (Pat::Ident(binding), Some(init))
+                    if Self::class_expr_of_initializer(init).is_some() =>
+                {
+                    Some(binding.id.sym.to_string())
+                }
+                _ => None,
+            };
+            self.current_class_binding_name = class_binding;
+            decl.visit_mut_with(self);
+            self.current_class_binding_name = None;
+        }
     }
 
     // Handle JSX attributes with function values
@@ -8295,6 +8800,19 @@ impl VisitMut for StepTransform {
                             });
                         }
                     }
+                    // A class expression as a property value (`{ Job: class {} }`)
+                    // takes the property key as its name. The name is only used
+                    // for IDs; see `current_class_binding_from_key`.
+                    Prop::KeyValue(kv) if Self::class_expr_of_initializer(&kv.value).is_some() => {
+                        if let Some(name) = Self::prop_name_string(&kv.key) {
+                            self.current_class_binding_name = Some(name);
+                            self.current_class_binding_from_key = true;
+                            prop.visit_mut_children_with(self);
+                            self.current_class_binding_name = None;
+                            self.current_class_binding_from_key = false;
+                            return;
+                        }
+                    }
                     // Note: Prop::Getter validation is handled in process_object_properties_for_step_functions
                     // to avoid emitting duplicate errors when the visitor recurses into the same node.
                     _ => {}
@@ -8310,12 +8828,28 @@ impl VisitMut for StepTransform {
     fn visit_mut_class_decl(&mut self, class_decl: &mut ClassDecl) {
         let class_name = class_decl.ident.sym.to_string();
         let old_class_name = self.current_class_name.take();
-        self.current_class_name = Some(class_name.clone());
+        let old_is_nested = std::mem::replace(&mut self.current_class_is_nested, false);
 
-        // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
-        if self.has_custom_serialization_methods(&class_decl.class) {
-            self.classes_needing_serialization
-                .insert(class_name.clone());
+        if self.in_module_level {
+            self.current_class_name = Some(class_name.clone());
+
+            // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+            if self.has_custom_serialization_methods(&class_decl.class) {
+                self.classes_needing_serialization
+                    .insert(class_name.clone());
+            }
+        } else {
+            // A class declared inside a function would only be registered when
+            // that function runs, not at module load. Leave `current_class_name`
+            // unset so step methods / serialization inside it are reported
+            // instead of generating a registration that cannot be resolved.
+            self.current_class_is_nested = true;
+            if self.has_custom_serialization_methods(&class_decl.class) {
+                self.report_nested_class(
+                    class_decl.class.span,
+                    "custom serialization (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)",
+                );
+            }
         }
 
         // Visit the class body (this populates static_step_methods_to_strip)
@@ -8396,91 +8930,106 @@ impl VisitMut for StepTransform {
 
         // Restore previous class name
         self.current_class_name = old_class_name;
+        self.current_class_is_nested = old_is_nested;
     }
 
     // Handle class expressions to track class name for static methods
     fn visit_mut_class_expr(&mut self, class_expr: &mut ClassExpr) {
-        // Get the binding name set by visit_mut_var_decl (e.g., "Foo" from `var Foo = class { ... }`)
+        // Get the binding name set by visit_mut_var_decl / visit_mut_assign_expr /
+        // visit_mut_prop_or_spread (e.g., "Foo" from `var Foo = class { ... }`)
         let binding_name = self.current_class_binding_name.take();
-
-        // Get the internal class expression name (e.g. `_Foo` from `class _Foo { ... }`)
-        let expr_ident_name = class_expr
-            .ident
-            .as_ref()
-            .map(|i| i.sym.to_string())
-            .unwrap_or_else(|| "AnonymousClass".to_string());
+        let binding_from_key = std::mem::replace(&mut self.current_class_binding_from_key, false);
 
         // Compute the tracked class name: prefer the binding name (e.g. `Foo`
         // from `var Foo = class _Foo {}`) over the internal class expression
-        // name (`_Foo`). The internal name is only scoped inside the class body
-        // and is not accessible at module level, so all generated code emitted
-        // outside the class — method step registrations, class serialization
-        // IIFEs, and method-stripping filters — must use the binding name.
-        // Without this, generated code like
-        // `registerStepFunction("...", _Foo.prototype["method"])` would
-        // produce a ReferenceError at runtime.
-        let tracked_class_name = binding_name
-            .clone()
-            .unwrap_or_else(|| expr_ident_name.clone());
-
+        // name (`_Foo`), falling back to a generated `AnonymousClass<N>`. The
+        // name is used to derive step and class IDs, and to match the
+        // registrations recorded while visiting the body.
+        //
+        // Generated registration code never references a class expression by
+        // name: `visit_mut_expr` wraps the expression in an IIFE that receives
+        // the class as an argument (see `wrap_class_expr_with_registrations`),
+        // so the class does not need a module-scope binding at all, only a
+        // name for its IDs. A class nested inside a function is the exception:
+        // its registration would only run when that function runs, not at
+        // module load, so any step method or custom serialization found in
+        // its body is reported as a compile error instead.
         let old_class_name = self.current_class_name.take();
-        self.current_class_name = Some(tracked_class_name.clone());
+        let old_is_nested = std::mem::replace(&mut self.current_class_is_nested, false);
+
+        let tracked_class_name = if self.in_module_level {
+            let name = self.resolve_class_expr_name(class_expr, binding_name.clone());
+            self.current_class_name = name.clone();
+            name
+        } else {
+            self.current_class_is_nested = true;
+            None
+        };
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         let has_serde = self.has_custom_serialization_methods(&class_expr.class);
         if has_serde {
-            self.classes_needing_serialization
-                .insert(tracked_class_name.clone());
-        }
-
-        // esbuild emits anonymous class expressions for classes that don't
-        // self-reference (e.g. `var Foo = class { ... }`). Downstream bundlers
-        // (like Nitro's Rollup bundler) rely on the class expression name for
-        // serialization class registration. Without a name, the class `.name`
-        // property is empty and lookups can fail at runtime. Re-insert the
-        // binding name so the output becomes `var Foo = class Foo { ... }` —
-        // behaviorally equivalent for typical class usage and preserves the
-        // identifier through subsequent bundling passes.
-        if has_serde && class_expr.ident.is_none() {
-            if let Some(ref name) = binding_name {
-                class_expr.ident = Some(Ident::new(
-                    name.clone().into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ));
+            match &tracked_class_name {
+                Some(name) => {
+                    self.classes_needing_serialization.insert(name.clone());
+                }
+                None => {
+                    self.report_nested_class(
+                        class_expr.class.span,
+                        "custom serialization (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)",
+                    );
+                }
             }
         }
+
+        // When the class expression is anonymous and its name comes from the
+        // variable it is assigned to, the name is inserted as the class's own
+        // identifier if the expression ends up wrapped in a registration IIFE
+        // (`var Foo = class {}` -> `var Foo = (...)(class Foo {})`), so that
+        // `.name` survives the wrapping. Names derived from property keys are
+        // not inserted: `exports.Foo = class { m() { Foo } }` may refer to an
+        // unrelated outer `Foo`, which a class-scoped `Foo` would shadow.
+        // Generated names leave `.name` untouched: the original position
+        // inferred no name either.
+        let (ident_to_insert, name_to_define) =
+            match (&binding_name, class_expr.ident.is_none(), binding_from_key) {
+                (Some(name), true, false) => (Some(name.clone()), None),
+                (Some(name), true, true) => (None, Some(name.clone())),
+                _ => (None, None),
+            };
 
         // Visit the class body (this populates static_step_methods_to_strip)
         class_expr.class.visit_mut_with(self);
 
         // In workflow mode, remove static and instance step methods from the class body
-        if matches!(self.mode, TransformMode::Workflow) {
+        if let (TransformMode::Workflow, Some(tracked_class_name)) =
+            (&self.mode, &tracked_class_name)
+        {
             let static_methods_to_strip: Vec<_> = self
                 .static_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &tracked_class_name)
+                .filter(|(cn, _, _)| cn == tracked_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 
             let instance_methods_to_strip: Vec<_> = self
                 .instance_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &tracked_class_name)
+                .filter(|(cn, _, _)| cn == tracked_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 
             let instance_getters_to_strip: Vec<_> = self
                 .instance_getter_steps_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &tracked_class_name)
+                .filter(|(cn, _, _)| cn == tracked_class_name)
                 .map(|(_, gn, _)| gn.clone())
                 .collect();
 
             let static_getters_to_strip: Vec<_> = self
                 .static_getter_steps_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &tracked_class_name)
+                .filter(|(cn, _, _)| cn == tracked_class_name)
                 .map(|(_, gn, _)| gn.clone())
                 .collect();
 
@@ -8517,8 +9066,18 @@ impl VisitMut for StepTransform {
             }
         }
 
+        // Hand off to `visit_mut_expr`, which owns the enclosing `Expr` and can
+        // replace it with the registration IIFE.
+        self.pending_class_expr_registration = tracked_class_name.map(|name| PendingClassExpr {
+            name,
+            ident_to_insert,
+            name_to_define,
+            has_custom_serialization: has_serde,
+        });
+
         // Restore previous class name
         self.current_class_name = old_class_name;
+        self.current_class_is_nested = old_is_nested;
     }
 
     // Handle class methods
@@ -8556,6 +9115,10 @@ impl VisitMut for StepTransform {
                 let class_name = match &self.current_class_name {
                     Some(name) => name.clone(),
                     None => {
+                        // The enclosing class is declared inside a function (or
+                        // has nothing to register), so the getter cannot be
+                        // registered. Report it and leave the getter untouched.
+                        self.report_nested_class(method.span, "\"use step\" getters");
                         method.visit_mut_children_with(self);
                         return;
                     }
@@ -8566,7 +9129,7 @@ impl VisitMut for StepTransform {
                 let full_name = format!("{}{}{}", class_name, separator, getter_name);
                 let hoisted_parent_name = format!("{}${}", class_name, getter_name);
 
-                self.step_function_names.insert(full_name.clone());
+                self.insert_step_function_name(full_name.clone());
                 if !method.is_static {
                     self.classes_needing_serialization
                         .insert(class_name.clone());
@@ -8660,7 +9223,10 @@ impl VisitMut for StepTransform {
                 let class_name = match &self.current_class_name {
                     Some(name) => name.clone(),
                     None => {
-                        // No class context - shouldn't happen, but fall back
+                        // The enclosing class is declared inside a function, so
+                        // the method cannot be registered at module load.
+                        // Report it and leave the method untouched.
+                        self.report_nested_class(method.span, "\"use step\" methods");
                         method.visit_mut_children_with(self);
                         return;
                     }
@@ -8672,7 +9238,7 @@ impl VisitMut for StepTransform {
                 // For nested step hoisting, use $ instead of # to produce valid JS identifiers
                 let hoisted_parent_name = format!("{}${}", class_name, method_name);
 
-                self.step_function_names.insert(full_name.clone());
+                self.insert_step_function_name(full_name.clone());
 
                 // Track class for serialization (needed for `this` serialization)
                 self.classes_needing_serialization
@@ -8754,7 +9320,17 @@ impl VisitMut for StepTransform {
                 let class_name = match &self.current_class_name {
                     Some(name) => name.clone(),
                     None => {
-                        // No class context - shouldn't happen, but fall back
+                        // The enclosing class is declared inside a function, so
+                        // the method cannot be registered at module load.
+                        // Report it and leave the method untouched.
+                        self.report_nested_class(
+                            method.span,
+                            if has_workflow {
+                                "\"use workflow\" methods"
+                            } else {
+                                "\"use step\" methods"
+                            },
+                        );
                         method.visit_mut_children_with(self);
                         return;
                     }
@@ -8764,7 +9340,7 @@ impl VisitMut for StepTransform {
                 let full_name = format!("{}.{}", class_name, method_name);
 
                 if has_step {
-                    self.step_function_names.insert(full_name.clone());
+                    self.insert_step_function_name(full_name.clone());
 
                     // Track class for serialization (needed for `this` serialization in static method calls)
                     self.classes_needing_serialization
@@ -8890,8 +9466,37 @@ impl VisitMut for StepTransform {
 
     // Handle assignment expressions
     fn visit_mut_assign_expr(&mut self, assign: &mut AssignExpr) {
-        // Track function names from assignments like `foo = async () => {}`
+        // A class expression assigned to a plain identifier
+        // (`Foo = class { ... }`) is referenceable through that identifier, so
+        // use it as the class name unless an enclosing variable declarator
+        // already provided one (`var Foo = Bar = class {}` keeps `Foo`).
+        //
+        // A class assigned to a property (`exports.Foo = class {}`,
+        // `module.exports.Foo = class {}`) takes the property name. That name
+        // is only used for IDs; see `current_class_binding_from_key`.
+        let had_pending_binding = self.current_class_binding_name.is_some();
+        if !had_pending_binding
+            && assign.op == AssignOp::Assign
+            && Self::class_expr_of_initializer(&assign.right).is_some()
+        {
+            match &assign.left {
+                AssignTarget::Simple(SimpleAssignTarget::Ident(binding)) => {
+                    self.current_class_binding_name = Some(binding.id.sym.to_string());
+                }
+                AssignTarget::Simple(SimpleAssignTarget::Member(member)) => {
+                    if let Some(name) = Self::member_prop_name(&member.prop) {
+                        self.current_class_binding_name = Some(name);
+                        self.current_class_binding_from_key = true;
+                    }
+                }
+                _ => {}
+            }
+        }
         assign.visit_mut_children_with(self);
+        if !had_pending_binding {
+            self.current_class_binding_name = None;
+            self.current_class_binding_from_key = false;
+        }
     }
 
     // Override visit_mut_expr to track closure variables and handle step functions
@@ -8910,6 +9515,19 @@ impl VisitMut for StepTransform {
         // Handle step functions that appear in expressions (e.g., return statements)
         // but are not in var declarators (those are handled in visit_mut_var_decl)
         match expr {
+            Expr::Class(_) => {
+                // Visit the class (runs `visit_mut_class_expr`, which records
+                // the class's registrations and hands back its resolved name),
+                // then wrap the expression in the registration IIFE. Clearing
+                // first guards against a stale hand-off from a class that was
+                // visited through a path that does not go through here.
+                self.pending_class_expr_registration = None;
+                expr.visit_mut_children_with(self);
+                if let Some(pending) = self.pending_class_expr_registration.take() {
+                    self.wrap_class_expr_with_registrations(expr, pending);
+                }
+                return;
+            }
             Expr::Fn(fn_expr) => {
                 if self.has_step_directive(&fn_expr.function, false) {
                     if !self.in_module_level {
@@ -8930,7 +9548,7 @@ impl VisitMut for StepTransform {
                             // (the closure above already incremented)
                         }
 
-                        self.step_function_names.insert(name.clone());
+                        self.insert_step_function_name(name.clone());
 
                         match self.mode {
                             TransformMode::Step => {
@@ -8953,7 +9571,7 @@ impl VisitMut for StepTransform {
                                     function: cloned_function,
                                 };
 
-                                self.nested_step_functions.push((
+                                self.push_nested_step_function((
                                     name.clone(),
                                     hoisted_fn_expr,
                                     fn_expr.function.span,
@@ -8979,7 +9597,7 @@ impl VisitMut for StepTransform {
                                     .clone()
                                     .unwrap_or_default();
                                 let step_fn_name =
-                                    self.record_nested_step_name(&name, &parent_workflow);
+                                    self.record_nested_step_name(&name, &parent_workflow, fn_expr.function.span);
                                 let step_id = self.create_id(
                                     Some(&step_fn_name),
                                     fn_expr.function.span,
@@ -9005,7 +9623,7 @@ impl VisitMut for StepTransform {
                         // Nested step arrow function in an expression (e.g., return statement)
                         let name = format!("_anonymousStep{}", self.anonymous_fn_counter);
                         self.anonymous_fn_counter += 1;
-                        self.step_function_names.insert(name.clone());
+                        self.insert_step_function_name(name.clone());
 
                         // Detect whether the arrow body references the
                         // enclosing function's `this` (lexical capture).
@@ -9063,7 +9681,7 @@ impl VisitMut for StepTransform {
                                     }),
                                 };
 
-                                self.nested_step_functions.push((
+                                self.push_nested_step_function((
                                     name.clone(),
                                     fn_expr,
                                     arrow_expr.span,
@@ -9089,7 +9707,7 @@ impl VisitMut for StepTransform {
                                     .clone()
                                     .unwrap_or_default();
                                 let step_fn_name =
-                                    self.record_nested_step_name(&name, &parent_workflow);
+                                    self.record_nested_step_name(&name, &parent_workflow, arrow_expr.span);
                                 let step_id =
                                     self.create_id(Some(&step_fn_name), arrow_expr.span, false);
 
@@ -9232,7 +9850,7 @@ impl VisitMut for StepTransform {
                         TransformMode::Detect => {}
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
-                    self.step_function_names.insert(fn_name.clone());
+                    self.insert_step_function_name(fn_name.clone());
 
                     match self.mode {
                         TransformMode::Step => {
@@ -9298,6 +9916,24 @@ impl VisitMut for StepTransform {
 
                 // Visit the class body so serde/step transforms run
                 decl.visit_mut_children_with(self);
+
+                // `DefaultDecl::Class` holds a `ClassExpr` directly rather than
+                // an `Expr`, so the registration IIFE wrapping done by
+                // `visit_mut_expr` does not apply here. The class is instead
+                // rewritten to a `const` (below) and registered at module
+                // level by name, so consume the hand-off. Only the identifier
+                // insertion carries over, and only for classes with custom
+                // serialization: downstream bundlers (e.g. Nitro's Rollup) rely
+                // on the class expression name for serialization lookups.
+                if let Some(pending) = self.pending_class_expr_registration.take() {
+                    if let (DefaultDecl::Class(class_expr), Some(name)) =
+                        (&mut decl.decl, pending.ident_to_insert)
+                    {
+                        if class_expr.ident.is_none() && pending.has_custom_serialization {
+                            class_expr.ident = Some(Self::ident(&name));
+                        }
+                    }
+                }
 
                 // After visiting, defer the rewrite for anonymous classes
                 if let Some(const_name) = saved_const_name {
@@ -9403,7 +10039,7 @@ impl VisitMut for StepTransform {
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
                     // Handle step functions
-                    self.step_function_names.insert("default".to_string());
+                    self.insert_step_function_name("default".to_string());
                     // Similar logic for steps...
                 }
             }
@@ -9503,7 +10139,7 @@ impl VisitMut for StepTransform {
                     }
                 } else if self.has_step_directive_arrow(arrow_expr, true) {
                     // Handle step arrow functions
-                    self.step_function_names.insert("default".to_string());
+                    self.insert_step_function_name("default".to_string());
                     // Similar logic for steps...
                 }
             }
@@ -9563,7 +10199,7 @@ impl VisitMut for StepTransform {
                                                 self.anonymous_fn_counter
                                             );
                                             self.anonymous_fn_counter += 1;
-                                            self.step_function_names.insert(generated_name.clone());
+                                            self.insert_step_function_name(generated_name.clone());
 
                                             // Detect lexical `this` capture so we
                                             // can hoist as a regular function (step
@@ -9632,7 +10268,7 @@ impl VisitMut for StepTransform {
                                                         }),
                                                     };
 
-                                                    self.nested_step_functions.push((
+                                                    self.push_nested_step_function((
                                                         generated_name.clone(),
                                                         fn_expr,
                                                         arrow_expr.span,
@@ -9660,10 +10296,7 @@ impl VisitMut for StepTransform {
                                                         .clone()
                                                         .unwrap_or_default();
                                                     let step_fn_name = self
-                                                        .record_nested_step_name(
-                                                            &generated_name,
-                                                            &parent_workflow,
-                                                        );
+                                                        .record_nested_step_name(&generated_name, &parent_workflow, arrow_expr.span);
                                                     let step_id = self.create_id(
                                                         Some(&step_fn_name),
                                                         arrow_expr.span,
@@ -9691,7 +10324,7 @@ impl VisitMut for StepTransform {
                                                 self.anonymous_fn_counter
                                             );
                                             self.anonymous_fn_counter += 1;
-                                            self.step_function_names.insert(generated_name.clone());
+                                            self.insert_step_function_name(generated_name.clone());
 
                                             match self.mode {
                                                 TransformMode::Step => {
@@ -9713,7 +10346,7 @@ impl VisitMut for StepTransform {
                                                         function: cloned_fn.function,
                                                     };
 
-                                                    self.nested_step_functions.push((
+                                                    self.push_nested_step_function((
                                                         generated_name.clone(),
                                                         hoisted_fn_expr,
                                                         fn_expr.function.span,
@@ -9741,10 +10374,7 @@ impl VisitMut for StepTransform {
                                                         .clone()
                                                         .unwrap_or_default();
                                                     let step_fn_name = self
-                                                        .record_nested_step_name(
-                                                            &generated_name,
-                                                            &parent_workflow,
-                                                        );
+                                                        .record_nested_step_name(&generated_name, &parent_workflow, fn_expr.function.span);
                                                     let step_id = self.create_id(
                                                         Some(&step_fn_name),
                                                         fn_expr.function.span,
@@ -9774,7 +10404,7 @@ impl VisitMut for StepTransform {
                                     let generated_name =
                                         format!("_anonymousStep{}", self.anonymous_fn_counter);
                                     self.anonymous_fn_counter += 1;
-                                    self.step_function_names.insert(generated_name.clone());
+                                    self.insert_step_function_name(generated_name.clone());
 
                                     match self.mode {
                                         TransformMode::Step => {
@@ -9801,7 +10431,7 @@ impl VisitMut for StepTransform {
                                                 function: cloned_function,
                                             };
 
-                                            self.nested_step_functions.push((
+                                            self.push_nested_step_function((
                                                 generated_name.clone(),
                                                 fn_expr,
                                                 method_prop.function.span,
@@ -9828,10 +10458,7 @@ impl VisitMut for StepTransform {
                                                 .current_workflow_function_name
                                                 .clone()
                                                 .unwrap_or_default();
-                                            let step_fn_name = self.record_nested_step_name(
-                                                &generated_name,
-                                                &parent_workflow,
-                                            );
+                                            let step_fn_name = self.record_nested_step_name(&generated_name, &parent_workflow, method_prop.function.span);
                                             let step_id = self.create_id(
                                                 Some(&step_fn_name),
                                                 method_prop.function.span,

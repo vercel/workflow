@@ -186,13 +186,29 @@ export async function getSpanKind(
 export async function injectTraceContextIntoHeaders(
   headers: Headers
 ): Promise<void> {
-  const otel = await getOtelApi();
-  if (!otel) return;
-  const carrier: Record<string, string> = {};
-  otel.propagation.inject(otel.context.active(), carrier);
-  for (const [key, value] of Object.entries(carrier)) {
+  for (const [key, value] of Object.entries(await getTraceContextHeaders())) {
     headers.set(key, value);
   }
+}
+
+/**
+ * The active W3C trace context as a plain header record.
+ *
+ * The same source as {@link injectTraceContextIntoHeaders}, shaped for APIs
+ * that take a header map rather than a `Headers` — a batched queue send
+ * carries its context on each message's own headers, not on the request's.
+ *
+ * Empty when `@opentelemetry/api` is unavailable or no propagator is
+ * registered, so callers can spread it unconditionally.
+ */
+export async function getTraceContextHeaders(): Promise<
+  Record<string, string>
+> {
+  const otel = await getOtelApi();
+  if (!otel) return {};
+  const carrier: Record<string, string> = {};
+  otel.propagation.inject(otel.context.active(), carrier);
+  return carrier;
 }
 
 // Semantic conventions for World/Storage tracing
@@ -307,6 +323,48 @@ export const WorkflowEventType = SemanticConvention<string>(
   'workflow.event.type'
 );
 
+/**
+ * Whether an event write carried the in-band writer fence
+ * (workflow.event.in_band), i.e. the run's orchestrator made it. Set only when
+ * the caller set `CreateEventParams.inBand`.
+ */
+export const WorkflowEventInBand = SemanticConvention<boolean>(
+  'workflow.event.in_band'
+);
+
+/**
+ * The in-band count an in-band write expected
+ * (workflow.event.expected_seq_in_band).
+ */
+export const WorkflowEventExpectedSeqInBand = SemanticConvention<number>(
+  'workflow.event.expected_seq_in_band'
+);
+
+/**
+ * The World's in-band count when it refused an in-band write as
+ * `InBandSupersededError` (workflow.event.seq_in_band). Diagnostic only; set
+ * only on a refusal that reported it.
+ */
+export const WorkflowEventSeqInBand = SemanticConvention<number>(
+  'workflow.event.seq_in_band'
+);
+
+/** Server-side classification of a step_started write. */
+export type WorkflowStepStartMode =
+  | 'single_lazy_create_claim'
+  | 'single_owned_recovery'
+  | 'single_bare'
+  | 'batch_create_claim'
+  | 'batch_bare';
+export const WorkflowStepStartMode = SemanticConvention<WorkflowStepStartMode>(
+  'workflow.step_start.mode'
+);
+
+/** Whether a step_started write carries an inline ownership stamp. */
+export const WorkflowStepStartOwnerStamped = SemanticConvention<boolean>(
+  'workflow.step_start.owner_stamped'
+);
+
 /** Version of the Workflow client package issuing the request. */
 export const WorkflowClientVersion = SemanticConvention<string>(
   'workflow.client.version'
@@ -336,6 +394,23 @@ export const WorkflowWsUrl = SemanticConvention<string>(
  */
 export const WorkflowWsRequestId = SemanticConvention<number>(
   'workflow.events.ws.req_id'
+);
+
+/**
+ * Number of WebSocket messages a WS event write went out as
+ * (workflow.events.ws.request_parts). Set only when the frame was over the
+ * message limit and was split.
+ */
+export const WorkflowWsRequestParts = SemanticConvention<number>(
+  'workflow.events.ws.request_parts'
+);
+
+/**
+ * Number of WebSocket messages the reply to a WS event write arrived as
+ * (workflow.events.ws.reply_parts). Set only when the reply was split.
+ */
+export const WorkflowWsReplyParts = SemanticConvention<number>(
+  'workflow.events.ws.reply_parts'
 );
 
 /**

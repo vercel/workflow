@@ -131,6 +131,30 @@ test('all-passing runs omit the Failed E2E Tests section entirely', () => {
   assert.match(body, /<details>\n<summary>Summary<\/summary>/);
 });
 
+test('paired flaky sidecars retain exact lane and VM attribution', () => {
+  const body = renderAggregate({
+    'e2e-local-postgres-nextjs-turbopack-stable-quickjs.json': resultJson(
+      'a',
+      1
+    ),
+    'e2e-local-postgres-nextjs-turbopack-stable-quickjs.flaky.json':
+      JSON.stringify([
+        {
+          testName: 'passes on retry',
+          fullName: 'e2e passes on retry',
+          retryCount: 1,
+        },
+      ]),
+  });
+
+  assert.match(body, /`passes on retry`/);
+  assert.match(
+    body,
+    /nextjs-turbopack · local-postgres \/ postgres \/ quickjs \/ stable/
+  );
+  assert.doesNotMatch(body, /Results by File[\s\S]*\.flaky\.json/);
+});
+
 test('Details by Category has no nested collapsibles', () => {
   const body = renderAggregate({
     'e2e-vercel-prod-nextjs-turbopack.json': resultJson('a', 40, ['x']),

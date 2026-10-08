@@ -156,7 +156,14 @@ const stepB = {
 const fullSuccessBody = () =>
   encode({
     results: [
-      { status: 200, event: completedEvent, step: stepA },
+      {
+        status: 200,
+        event: {
+          ...completedEvent,
+          eventData: { ...completedEvent.eventData, result: undefined },
+        },
+        step: stepA,
+      },
       { status: 200, event: createdEvent, step: { ...stepB } },
       { status: 200, event: startedEvent, step: { ...stepB } },
     ],
@@ -188,6 +195,15 @@ describe('createWorkflowRunEventBatch', () => {
     );
 
     expect(result.results).toHaveLength(3);
+    expect(result.results[0]?.event).toStrictEqual({
+      ...completedEvent,
+      createdAt: new Date(CREATED_AT),
+      eventData: { ...completedEvent.eventData, result: undefined },
+    });
+    expect(result.results[1]?.event).toStrictEqual({
+      ...createdEvent,
+      createdAt: new Date(CREATED_AT),
+    });
     expect(requestBody).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: asserted above
     const frames = decodeBatchFrames(requestBody!);
@@ -520,6 +536,32 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
         token: 'test-token',
         dispatcher: agent,
       })
+    ).rejects.toMatchObject({ status: 503 });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does NOT retry a transient 5xx for an in-band batch, even an entity-conditioned one', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+      })
+      .reply(503, JSON.stringify({ message: 'unavailable' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+
+    // The same batch the convergence test above retries. Fenced, a re-send of
+    // a committed attempt is refused by that attempt's own allocation
+    // (in-band-superseded) instead of converging on 409, so it runs once.
+    await expect(
+      createWorkflowRunEventBatch(
+        RUN_ID,
+        transitionEvents().slice(0, 2),
+        { inBand: true, expectedSeqInBand: 2 },
+        { token: 'test-token', dispatcher: agent }
+      )
     ).rejects.toMatchObject({ status: 503 });
     agent.assertNoPendingInterceptors();
   });

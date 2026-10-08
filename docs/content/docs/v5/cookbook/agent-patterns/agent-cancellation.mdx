@@ -1,54 +1,59 @@
 ---
 title: Agent Cancellation
-description: Cancel a running agent from the outside using AbortSignal. A hook fires the abort, the agent step bails out of the model stream, and the client gets a clean stop notification.
+description: Cancel a running WorkflowAgent from the outside using AbortSignal and a durable stop hook.
 type: guide
-summary: Cancel a running agent cooperatively with AbortController. A stop hook fires controller.abort(), the signal propagates into the agent step to cancel the model stream, and a data-stopped part is emitted to streaming clients before the workflow returns.
+summary: Cancel a running WorkflowAgent cooperatively with AbortController so the model stream stops and the workflow can return a clean status.
 ---
 
 <CopyPrompt
-  text="Add cancellation to this durable AI agent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful stop, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race the agent loop against the stop hook using `Promise.race`. Use `getWritable<UIMessageChunk>()` to emit a final stopped/canceled message before returning. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`. Verify active model/tool work stops, cleanup runs for graceful stop, and stale run IDs are handled."
+  text="Add cancellation to this AI SDK WorkflowAgent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful cancellation, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race `WorkflowAgent.stream()` against the stop hook using `Promise.race`. Pass an `AbortController` signal to the agent, forward the tool execution signal to cancellable I/O, and wait for the agent branch to settle after aborting before returning a stopped status. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`, and verify stale run IDs are handled."
 />
 
 Cancel a running agent from the outside through a **Stop** button in a chat user interface (UI), an admin cancellation endpoint, or a timeout fallback.
 
-<Callout type="warn">
-This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The cancellation patterns here (`run.cancel()`, stop-signal hook + `Promise.race`, `AbortController`) apply to either API.
-</Callout>
-
 ## Pattern
 
-Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, `controller.abort()` is called: the signal propagates into the agent step and cancels the underlying model stream. Before returning, a `data-stopped` part is written to the stream so any streaming clients can render a clean end state.
+Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, call `controller.abort()`, then wait for the agent branch to observe the signal and settle before the workflow returns. The signal cancels the underlying model stream and is passed to tool execution; each tool must forward it to cancellable I/O. The workflow return value records whether it completed or stopped; read that value through the run API or persist it in application state.
 
+{/* @skip-typecheck: requires AI SDK 7 and @ai-sdk/workflow */}
 ```typescript lineNumbers
-import { DurableAgent } from "@workflow/ai/agent";
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
+import {
+  isStepCount,
+  tool,
+  type ModelMessage,
+  type ToolExecutionOptions,
+} from "ai";
 import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
 import { z } from "zod";
-import type { ModelMessage, UIMessageChunk } from "ai";
 
 export const stopHook = defineHook({
   schema: z.object({ reason: z.string().optional() }),
 });
 
-async function searchWeb({ query }: { query: string }) {
+async function searchWeb(
+  { query }: { query: string },
+  { abortSignal }: ToolExecutionOptions<unknown>,
+) {
   "use step";
-  await new Promise((r) => setTimeout(r, 1500));
-  return { results: [{ title: `${query} - Wikipedia`, snippet: `Overview of ${query}...` }] };
+  const response = await fetch(
+    `https://api.example.com/search?q=${encodeURIComponent(query)}`,
+    { signal: abortSignal }, // [!code highlight]
+  );
+  return response.json();
 }
 
-async function analyzeData({ topic }: { topic: string }) {
+async function analyzeData(
+  { topic }: { topic: string },
+  { abortSignal }: ToolExecutionOptions<unknown>,
+) {
   "use step";
-  await new Promise((r) => setTimeout(r, 1200));
-  return { summary: `Analysis of ${topic}: significant developments found.`, confidence: 0.85 };
-}
-
-async function emitStopSignal(details: { reason?: string }) {
-  "use step";
-  const writer = getWritable<UIMessageChunk>().getWriter();
-  try {
-    await writer.write({ type: "data-stopped", id: "stop-signal", data: details } as UIMessageChunk);
-  } finally {
-    writer.releaseLock();
-  }
+  const response = await fetch("https://api.example.com/analyze", {
+    method: "POST",
+    body: JSON.stringify({ topic }),
+    signal: abortSignal, // [!code highlight]
+  });
+  return response.json();
 }
 
 export async function stoppableAgent(messages: ModelMessage[]) {
@@ -58,43 +63,48 @@ export async function stoppableAgent(messages: ModelMessage[]) {
   const controller = new AbortController(); // [!code highlight]
   const hook = stopHook.create({ token: `stop:${workflowRunId}` });
 
-  const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+  const agent = new WorkflowAgent({
+    model: "spacexai/grok-4.6",
     instructions: "You are a research assistant. Search and analyze data as needed.",
     tools: {
-      searchWeb: {
+      searchWeb: tool({
         description: "Search the web for information",
         inputSchema: z.object({ query: z.string() }),
         execute: searchWeb,
-      },
-      analyzeData: {
+      }),
+      analyzeData: tool({
         description: "Analyze a piece of data",
         inputSchema: z.object({ topic: z.string() }),
         execute: analyzeData,
-      },
+      }),
     },
   });
 
-  const result = await Promise.race([
-    agent
-      .stream({
-        messages,
-        writable: getWritable<UIMessageChunk>(),
-        abortSignal: controller.signal, // [!code highlight]
-        maxSteps: 15,
-      })
-      .then((r) => ({ type: "complete" as const, messages: r.messages })),
-    hook.then(({ reason }) => {
-      controller.abort(reason); // [!code highlight]
-      return { type: "stopped" as const, reason };
-    }),
+  const agentPromise = agent.stream({
+    messages,
+    writable: getWritable<ModelCallStreamPart>(),
+    abortSignal: controller.signal, // [!code highlight]
+    stopWhen: isStepCount(15),
+  });
+
+  const outcome = await Promise.race([
+    agentPromise.then((result) => ({
+      type: "complete" as const,
+      messages: result.messages,
+    })),
+    hook.then(({ reason }) => ({
+      type: "stop-requested" as const,
+      reason,
+    })),
   ]);
 
-  if (result.type === "stopped") {
-    await emitStopSignal({ reason: result.reason });
+  if (outcome.type === "stop-requested") {
+    controller.abort(outcome.reason); // [!code highlight]
+    await agentPromise; // Wait until the losing branch has stopped. // [!code highlight]
+    return { type: "stopped" as const, reason: outcome.reason };
   }
 
-  return result;
+  return outcome;
 }
 ```
 
@@ -145,20 +155,20 @@ export function StopButton({ runId }: { runId: string }) {
 1. The workflow creates an `AbortController` when it starts.
 2. The workflow creates a hook with the token `stop:${workflowRunId}`.
 3. `Promise.race` runs the agent stream and the stop hook concurrently.
-4. The agent receives `controller.signal`. When aborted, the signal cancels the underlying model stream.
-5. When the stop API resumes the hook, the workflow calls `controller.abort()`, resolves the race, and exits.
-6. `emitStopSignal` writes a `data-stopped` part to the stream so the client renders a clean stop state.
+4. The agent receives `controller.signal`. When aborted, the signal cancels the active model stream, propagates to tool execution, and prevents another model step from starting. Tool implementations must forward it to operations such as `fetch` that support cancellation.
+5. When the stop API resumes the hook, the race reports a stop request. The workflow aborts the controller and awaits `agentPromise`, so it does not return while that branch is still running.
+6. After the agent branch settles, the workflow returns a `stopped` result. That return value is not written to the model-call stream automatically; the application can read `run.returnValue` or persist the status separately.
 
 ## Adapting this
 
 - **Add a timeout**: Race a third `sleep()` promise to stop automatically after a deadline.
 - **Audit logging**: Include a `reason` field in the stop schema to record who stopped the agent and why.
 - **Cross-process**: The hook token is deterministic, so any process can call `stopHook.resume()` with the run ID.
-- **Step limits**: Combine the pattern with `maxSteps` on the agent to cap execution without a manual stop.
+- **Step limits**: Combine the pattern with `stopWhen: isStepCount(...)` to cap execution without a manual stop.
 
 ## Key APIs
 
 - [`defineHook()`](/docs/api-reference/workflow/define-hook): Defines a type-safe hook for the stop signal.
 - [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata): Provides the run ID for deterministic hook tokens.
-- [`getWritable()`](/docs/api-reference/workflow/get-writable): Streams output and the stop notification to the client.
-- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): AI SDK's durable agent that respects the abort signal and replaces `DurableAgent`.
+- [`getWritable()`](/docs/api-reference/workflow/get-writable): Stores durable model-call output from the agent.
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): AI SDK's durable agent that applies the abort signal to model calls and replaces `DurableAgent`.

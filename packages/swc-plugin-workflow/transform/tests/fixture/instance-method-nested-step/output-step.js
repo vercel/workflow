@@ -1,5 +1,5 @@
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
-/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//./input//Service#process"},"helper":{"stepId":"step//./input//Service$process/helper"}}},"classes":{"input.js":{"Service":{"classId":"class//./input//Service"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//./input//Service#process"},"Service$process/helper":{"stepId":"step//./input//Service$process/helper"}}},"classes":{"input.js":{"Service":{"classId":"class//./input//Service"}}}}*/;
 var Service$process$helper = async (x)=>x * 2;
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
@@ -44,7 +44,7 @@ export class Service {
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: __wf_id,
         writable: false,
         enumerable: false,

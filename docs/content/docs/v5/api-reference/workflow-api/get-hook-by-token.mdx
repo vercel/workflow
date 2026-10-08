@@ -13,8 +13,14 @@ Retrieves a hook by its unique token, returning the associated workflow run info
 
 When `experimental_minRetention` is set, this function continues to return the Hook after its workflow ends until retention ends. That Hook cannot be resumed. Use `getRun(hook.runId)` to inspect the finished run.
 
+When the Hook was created with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) and took its token from another run, `hook.claimedFrom` names that run and its Hook. A lookup always follows the token to its current owner, so the same token returns the new Hook as soon as the takeover happens.
+
 <Callout type="warn">
 `getHookByToken` is a runtime function that must be called from outside a workflow function.
+</Callout>
+
+<Callout type="info">
+`hook.metadata` is a getter that returns a Promise, so `await` it to read the value. Hydrating metadata can add extra network round trips, so that work is deferred to first access and the lookup itself stays a single read. Awaiting it on a hook with no metadata resolves `undefined` and performs no extra work, and repeat reads are free.
 </Callout>
 
 <Callout type="info">
@@ -48,7 +54,7 @@ Returns a `Promise<Hook>` that resolves to:
 
 <TSDoc
 definition={`
-import type { Hook } from "@workflow/world";
+import type { Hook } from "workflow/api";
 export default Hook;`}
 showSections={["returns"]}
 />
@@ -70,7 +76,7 @@ export async function POST(request: Request) {
     const hook = await getHookByToken(token); // [!code highlight]
 
     console.log("Resuming workflow run:", hook.runId);
-    console.log("Hook metadata:", hook.metadata);
+    console.log("Hook metadata:", await hook.metadata); // [!code highlight]
 
     // Then resume the hook with the payload
     await resumeHook(token, data);
@@ -87,20 +93,27 @@ export async function POST(request: Request) {
 
 ### Validating hook before resume
 
-Use `getHookByToken` to validate hook ownership or metadata before resuming:
+Use `getHookByToken` to validate hook ownership or metadata before resuming. Take the user's identity from your authentication layer, not from the request body. See [Hook and webhook security](/docs/foundations/hooks#security).
 
 ```typescript lineNumbers
 import { getHookByToken, resumeHook } from "workflow/api";
 
+declare function getSession(request: Request): Promise<{ userId: string } | null>; // @setup
+
 export async function POST(request: Request) {
-  const { token, userId, data } = await request.json();
+  const session = await getSession(request);
+  if (!session) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { token, data } = await request.json();
 
   try {
     const hook = await getHookByToken(token); // [!code highlight]
-    const metadata = hook.metadata as { allowedUserId?: string } | undefined;
+    // `metadata` is a Promise, so awaiting it hydrates the stored value.
+    const metadata = (await hook.metadata) as { allowedUserId?: string } | undefined; // [!code highlight]
 
     // Validate that the hook metadata matches the user
-    if (metadata?.allowedUserId !== userId) {
+    if (metadata?.allowedUserId !== session.userId) {
       return Response.json(
         { error: "Unauthorized to resume this hook" },
         { status: 403 }

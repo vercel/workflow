@@ -1,46 +1,37 @@
 ---
 title: Human-in-the-Loop
-description: Pause an AI agent to wait for human approval, then resume based on the decision.
+description: Pause a WorkflowAgent for human approval before a consequential tool executes.
 type: guide
-summary: Use defineHook with the tool call ID to suspend an agent for human approval, with an optional timeout.
+summary: Use WorkflowAgent's needsApproval option and AI SDK approval responses to build durable human approval flows.
 ---
 
 <CopyPrompt
-  text="Add a human approval gate to this AI workflow. Define a typed hook with `defineHook()` from `workflow` for approval payloads. At the approval point, create the hook once with a stable token, await it inside the `&quot;use workflow&quot;` function, and branch on approved/rejected input. Add a server route that receives the human decision and calls `resumeHook(token, payload)` from `workflow/api`. If the approval should expire, race the hook against `sleep()` from `workflow`. Update the UI to show the pending approval and call the resume route. Verify approve, reject, timeout, and duplicate resume behavior."
+  text="Add a human approval gate to this AI SDK WorkflowAgent. Define the consequential action with AI SDK's `tool()` helper, set `needsApproval: true` (or an input-dependent function), and keep the tool's `execute` function as a durable `&quot;use step&quot;` function. Configure `experimental_toolApprovalSecret` with the name of a high-entropy secret environment variable so client-supplied approvals are signed and verified. Stream `ModelCallStreamPart` values through `getWritable()` and convert them with `createModelCallToUIChunkTransform()` in the API route. In the client, render tool parts whose state is `approval-requested`, call `addToolApprovalResponse()` with the approval ID and decision, and use `lastAssistantMessageIsCompleteWithApprovalResponses` to continue automatically. Verify approve and reject paths, invalid or missing signatures, duplicate responses, and that the side effect never runs before approval."
 />
 
-<Callout type="warn">
-This recipe uses the deprecated `DurableAgent` API. For new agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and follow the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The human-in-the-loop pattern here (hooks, `Promise.race`, approval gating) applies to either API.
-</Callout>
-
-Use this pattern when an AI agent needs human confirmation before performing a consequential action like booking, purchasing, or publishing. The workflow suspends without consuming resources until the human responds through a user interface (UI) or API.
+Use this pattern when an AI agent needs confirmation before performing an action such as booking, purchasing, publishing, or deleting data. `WorkflowAgent` makes approval a first-class part of the durable agent loop: it emits an approval request, pauses before the tool executes, and resumes after the user responds.
 
 ## When to use this
 
 - Booking confirmations where users must approve before charges are made
 - Content publishing gates where an editor must sign off
-- Agent actions where the cost of an error justifies a human check
-- Actions with side effects that are difficult to reverse
+- Agent actions where the cost of an error justifies human review
+- Side effects that are difficult to reverse
 
-## Pattern
+## Define an approval-gated tool
 
-Create a typed hook using `defineHook()`. When the agent calls the approval tool, the tool emits a custom data part to the stream so the client can render approval controls, then creates a hook and suspends. An API route resumes the hook with the decision.
+Set `needsApproval` on the tool. Keep the action itself in a step so it receives Workflow retries and observability only after approval succeeds.
 
-### Workflow
-
-```typescript
-import { DurableAgent } from "@workflow/ai/agent";
-import { defineHook, sleep, getWritable } from "workflow";
+```typescript title="workflows/booking-agent.ts" lineNumbers
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
+import {
+  tool,
+  type InferUITools,
+  type ModelMessage,
+  type UIMessage,
+} from "ai";
+import { getWritable } from "workflow";
 import { z } from "zod";
-import type { ModelMessage, UIMessageChunk } from "ai";
-
-// Exported so the approval API route can call .resume()
-export const bookingApprovalHook = defineHook({ // [!code highlight]
-  schema: z.object({
-    approved: z.boolean(),
-    comment: z.string().optional(),
-  }),
-});
 
 async function searchFlights({ from, to, date }: {
   from: string;
@@ -48,216 +39,202 @@ async function searchFlights({ from, to, date }: {
   date: string;
 }) {
   "use step";
-  const res = await fetch(
+
+  const response = await fetch(
     `https://api.example.com/flights?from=${from}&to=${to}&date=${date}`
   );
-  return res.json();
+  return response.json();
 }
 
-async function confirmBooking({ flightId, passenger }: {
-  flightId: string;
-  passenger: string;
-}) {
-  "use step";
-  const res = await fetch("https://api.example.com/bookings", {
-    method: "POST",
-    body: JSON.stringify({ flightId, passenger }),
-  });
-  return res.json();
-}
-
-// Stream a custom data part so the client can render the approval UI.
-// This MUST run before the hook suspends the workflow, otherwise
-// the tool-invocation won't appear in the stream until the tool returns,
-// and the client would have no way to show approval buttons.
-async function emitApprovalRequest(details: {
+async function confirmBooking({ flightId, passenger, price }: {
   flightId: string;
   passenger: string;
   price: number;
-  toolCallId: string;
 }) {
   "use step";
-  const writer = getWritable<UIMessageChunk>().getWriter();
-  try {
-    await writer.write({
-      type: "data-approval-needed", // [!code highlight]
-      id: details.toolCallId,
-      data: details,
-    } as UIMessageChunk);
-  } finally {
-    writer.releaseLock();
-  }
+
+  const response = await fetch("https://api.example.com/bookings", {
+    method: "POST",
+    body: JSON.stringify({ flightId, passenger, price }),
+  });
+  return response.json();
 }
 
-// Stream the resolution so the client can update the approval card.
-async function emitApprovalResolved(details: {
-  toolCallId: string;
-  result: string;
-}) {
-  "use step";
-  const writer = getWritable<UIMessageChunk>().getWriter();
-  try {
-    await writer.write({
-      type: "data-approval-resolved", // [!code highlight]
-      id: details.toolCallId,
-      data: details,
-    } as UIMessageChunk);
-  } finally {
-    writer.releaseLock();
-  }
-}
+export const bookingTools = {
+  searchFlights: tool({
+    description: "Search for available flights",
+    inputSchema: z.object({
+      from: z.string().describe("Departure airport code"),
+      to: z.string().describe("Arrival airport code"),
+      date: z.string().describe("Travel date (YYYY-MM-DD)"),
+    }),
+    execute: searchFlights,
+  }),
+  confirmBooking: tool({
+    description: "Book a selected flight for a passenger",
+    inputSchema: z.object({
+      flightId: z.string(),
+      passenger: z.string(),
+      price: z.number(),
+    }),
+    needsApproval: true, // [!code highlight]
+    execute: confirmBooking,
+  }),
+};
 
-// No "use step": hooks are workflow-level primitives
-async function requestBookingApproval(
-  { flightId, passenger, price }: {
-    flightId: string;
-    passenger: string;
-    price: number;
-  },
-  { toolCallId }: { toolCallId: string }
-) {
-  // Emit to the stream before suspending so the UI can show buttons
-  await emitApprovalRequest({ flightId, passenger, price, toolCallId }); // [!code highlight]
-
-  const hook = bookingApprovalHook.create({ token: toolCallId });
-
-  // Race: human decision vs. timeout
-  const result = await Promise.race([
-    hook.then((payload) => ({ type: "decision" as const, ...payload })),
-    sleep("24h").then(() => ({ type: "timeout" as const, approved: false as const })),
-  ]);
-
-  if (result.type === "timeout") {
-    const msg = "Booking request expired.";
-    await emitApprovalResolved({ toolCallId, result: msg }); // [!code highlight]
-    return msg;
-  }
-  if (!result.approved) {
-    const msg = `Rejected: ${result.comment || "No reason given"}`;
-    await emitApprovalResolved({ toolCallId, result: msg }); // [!code highlight]
-    return msg;
-  }
-
-  const booking = await confirmBooking({ flightId, passenger });
-  const msg = `Booked! Confirmation: ${booking.confirmationId}`;
-  await emitApprovalResolved({ toolCallId, result: msg }); // [!code highlight]
-  return msg;
-}
+export type BookingAgentUIMessage = UIMessage<
+  unknown,
+  never,
+  InferUITools<typeof bookingTools>
+>;
 
 export async function bookingAgent(messages: ModelMessage[]) {
   "use workflow";
 
-  const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
-    instructions: "You help book flights. Always request approval before booking.",
-    tools: {
-      searchFlights: {
-        description: "Search for available flights",
-        inputSchema: z.object({
-          from: z.string().describe("Departure airport code"),
-          to: z.string().describe("Arrival airport code"),
-          date: z.string().describe("Travel date (YYYY-MM-DD)"),
-        }),
-        execute: searchFlights,
-      },
-      requestBookingApproval: {
-        description: "Request human approval before booking a flight",
-        inputSchema: z.object({
-          flightId: z.string().describe("Flight ID to book"),
-          passenger: z.string().describe("Passenger name"),
-          price: z.number().describe("Total price"),
-        }),
-        execute: requestBookingApproval,
-      },
-    },
+  const agent = new WorkflowAgent({
+    model: "spacexai/grok-4.6",
+    instructions: "Help the user find and book flights.",
+    tools: bookingTools,
+    experimental_toolApprovalSecret: { // [!code highlight]
+      environmentVariable: "WORKFLOW_TOOL_APPROVAL_SECRET", // [!code highlight]
+    }, // [!code highlight]
   });
 
-  await agent.stream({
+  return agent.stream({
     messages,
-    writable: getWritable<UIMessageChunk>(),
+    writable: getWritable<ModelCallStreamPart>(),
   });
 }
 ```
 
-### Approval API route
+## Sign approval requests
 
-The approval route imports the hook definition and calls `.resume()` with the tool call ID as the token:
+When approval responses come from client-supplied message history, configure `experimental_toolApprovalSecret` as shown above. `WorkflowAgent` signs the approval ID, tool-call ID, tool name, and validated input when it emits the approval request, then verifies that signature before an approved tool can execute. Missing or invalid signatures prevent the action from running.
 
+Set `WORKFLOW_TOOL_APPROVAL_SECRET` to a high-entropy secret in every environment that can execute the workflow. For example, generate one with `openssl rand -base64 32`, then store it in your deployment's secret environment variables. Only the environment variable name crosses the workflow boundary; the secret is read inside signing and verification steps and is never serialized into workflow history.
+
+Signed approvals require `@ai-sdk/workflow` 2.0.16 or later.
+
+`needsApproval` can also decide from the parsed tool input. For example, require approval only when a booking costs more than a threshold:
+
+{/* @skip-typecheck: property excerpt */}
 ```typescript
-import { bookingApprovalHook } from "@/app/workflows/booking-agent";
+needsApproval: async ({ price }) => price > 500,
+```
 
-export async function POST(req: Request) {
-  const { toolCallId, approved, comment } = await req.json();
+## Start the workflow and transform its stream
 
-  await bookingApprovalHook.resume(toolCallId, { approved, comment }); // [!code highlight]
+`WorkflowAgent` stores `ModelCallStreamPart` values. Convert those durable parts into AI SDK UI chunks at the HTTP boundary:
 
-  return Response.json({ success: true });
+```typescript title="app/api/chat/route.ts" lineNumbers
+import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+} from "ai";
+import { start } from "workflow/api";
+import {
+  bookingAgent,
+  type BookingAgentUIMessage,
+} from "@/workflows/booking-agent";
+
+export async function POST(request: Request) {
+  const { messages }: { messages: BookingAgentUIMessage[] } =
+    await request.json();
+  const modelMessages = await convertToModelMessages(messages);
+  const run = await start(bookingAgent, [modelMessages]);
+
+  return createUIMessageStreamResponse({
+    stream: run.readable.pipeThrough(createModelCallToUIChunkTransform()),
+    headers: { "x-workflow-run-id": run.runId },
+  });
 }
 ```
 
-### Client rendering
+## Render and answer approval requests
 
-Listen for `data-approval-needed` and `data-approval-resolved` custom data parts in the message stream. The approval tool invocation itself won't appear until the tool returns, so the custom data parts are the mechanism for showing and updating the approval UI.
+Approval requests arrive as typed tool parts with `state: "approval-requested"`. Call `addToolApprovalResponse()` with the approval ID. The AI SDK then sends the updated message history back to the route and `WorkflowAgent` continues the durable tool flow.
 
-```tsx
-// Scan all messages for the resolution
-const approvalResult = messages
-  .flatMap((m) => m.parts)
-  .find((p) => p.type === "data-approval-resolved")
-  ?.data?.result;
+```tsx title="app/chat.tsx" lineNumbers
+"use client";
 
-// In your message parts loop:
-{message.parts.map((part, i) => {
-  if (part.type === "data-approval-needed") { // [!code highlight]
-    const { flightId, passenger, price, toolCallId } = part.data;
-    if (approvalResult) {
-      return <div key={i}>Result: {approvalResult}</div>;
-    }
-    return (
-      <div key={i} className="rounded-lg border p-4 space-y-3">
-        <div className="text-sm">
-          <div>Flight: {flightId}</div>
-          <div>Passenger: {passenger}</div>
-          <div>Price: ${price}</div>
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@ai-sdk/workflow";
+import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
+import { useMemo } from "react";
+import type { BookingAgentUIMessage } from "@/workflows/booking-agent";
+
+export function Chat() {
+  const transport = useMemo(
+    () => new WorkflowChatTransport({ api: "/api/chat" }),
+    []
+  );
+  const { messages, addToolApprovalResponse } = useChat<BookingAgentUIMessage>({
+    transport,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  });
+
+  return messages.map((message) =>
+    message.parts.map((part) => {
+      if (
+        part.type !== "tool-confirmBooking" ||
+        part.state !== "approval-requested" ||
+        part.approval.isAutomatic
+      ) {
+        return null;
+      }
+
+      return (
+        <div key={part.toolCallId}>
+          <p>
+            Book flight {part.input.flightId} for {part.input.passenger} at
+            ${part.input.price}?
+          </p>
+          <button
+            onClick={() =>
+              addToolApprovalResponse({
+                id: part.approval.id,
+                approved: true,
+              })
+            }
+          >
+            Approve
+          </button>
+          <button
+            onClick={() =>
+              addToolApprovalResponse({
+                id: part.approval.id,
+                approved: false,
+              })
+            }
+          >
+            Reject
+          </button>
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => approve(toolCallId)}>Approve</button> {/* [!code highlight] */}
-          <button onClick={() => reject(toolCallId)}>Reject</button> {/* [!code highlight] */}
-        </div>
-      </div>
-    );
-  }
-  // Hide the requestBookingApproval tool-invocation part
-  if (part.type === "tool-invocation" &&
-      part.toolInvocation.toolName === "requestBookingApproval") {
-    return null;
-  }
-  // ... other part types
-})}
+      );
+    })
+  );
+}
 ```
 
 ## How it works
 
-1. **`defineHook()` with schema**: Creates a typed hook with Zod validation. The approval payload is validated before the workflow receives it.
-2. **`toolCallId` as token**: Uses the tool call ID as the hook token, linking the hook to the specific tool invocation.
-3. **`emitApprovalRequest` step**: Writes a `data-approval-needed` custom data part to the stream *before* the hook suspends. Without this step, the client wouldn't see the approval controls because tool invocations don't stream until the tool returns.
-4. **No `"use step"` on the approval tool**: Runs the tool at the workflow level because `defineHook().create()` is a workflow primitive. The tool calls step functions (`emitApprovalRequest`, `emitApprovalResolved`, and `confirmBooking`) for I/O.
-5. **`Promise.race` with sleep**: Races the approval against a durable timeout. If nobody responds, the workflow continues with an expiration message.
-6. **`emitApprovalResolved` step**: Writes the outcome to the stream so the client can update the card immediately without waiting for the tool-invocation result.
+1. The model calls `confirmBooking` with validated input.
+2. `needsApproval` prevents the tool's `execute` function from running and emits an approval request.
+3. The durable stream preserves the request across disconnects and process restarts.
+4. The client adds an approval response to the conversation.
+5. If approved, `confirmBooking` runs as a durable step. If rejected, the model receives the denial and can respond without performing the side effect.
 
-## Adapting to your use case
+## Adapting the pattern
 
-- **Change the approval schema**: Add fields such as `reason`, `amount`, and `reviewerEmail` to match your domain.
-- **Multiple approval gates**: Apply the pattern to any number of tools. Each tool creates its own hook with its own `toolCallId`.
-- **Escalation**: If the first approver doesn't respond, use `sleep()` and another hook to escalate to a backup reviewer.
-- **Adjust the timeout**: Use `"24h"` for production and shorter durations for demos.
-- **Workflow-level versus step tools**: Tools that use `sleep()`, `defineHook()`, or other workflow primitives must not use `"use step"`. Tools with only I/O, such as API calls and database queries, should use `"use step"` for retries.
+- **Conditional approval**: Return a boolean from `needsApproval` based on amount, tenant policy, or risk.
+- **Timeouts and escalation**: Combine the surrounding workflow with `sleep()` and hooks when an approval must expire or escalate.
+- **Audit context**: Include durable user and tenant identifiers in the workflow input, then record the approver in your application database.
+- **Multiple gates**: Set `needsApproval` on every consequential tool independently.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions): Declares the orchestrator function.
-- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions): Declares step functions with retries.
-- [`defineHook()`](/docs/api-reference/workflow/define-hook): Defines a type-safe hook with schema validation.
-- [`sleep()`](/docs/api-reference/workflow/sleep): Provides a durable timeout for approval expiration.
-- [`getWritable()`](/docs/api-reference/workflow/get-writable): Streams custom data parts from steps.
-- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Provides AI SDK's durable agent and replaces `DurableAgent`.
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Durable AI SDK agent with first-class tool approvals
+- [`tool()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/tool): Defines a typed tool and its approval policy
+- [`getWritable()`](/docs/api-reference/workflow/get-writable): Stores durable model-call stream parts
+- [`WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport): Reconnects interrupted chat streams

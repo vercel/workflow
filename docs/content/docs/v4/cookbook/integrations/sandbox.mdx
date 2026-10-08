@@ -88,9 +88,9 @@ When the timer wins:
 
 The only way out is an explicit `/destroy` command.
 
-<Tabs items={['Workflow', 'API Routes', 'Client']}>
+<TabsWithChildren tabs={["Workflow","API Routes","Client"]}>
 
-<Tab value="Workflow">
+<TabContent order={1}>
 
 ```typescript title="workflows/sandbox-session.ts" lineNumbers
 import { defineHook, sleep, getWritable, getWorkflowMetadata } from "workflow";
@@ -298,9 +298,9 @@ export async function sandboxSessionWorkflow() {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="API Routes">
+<TabContent order={2}>
 
 Two endpoints manage the session. `/start` accepts an optional `{ runId }`: if the run still exists, it replays the event log from index 0 so a returning client fully rehydrates. `/command` resumes the hook and returns immediately; command output lands on the `/start` stream.
 
@@ -379,9 +379,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Client">
+<TabContent order={3}>
 
 On mount, reconnect to the existing run if `localStorage` contains a `runId`. Otherwise, start a new run. Send commands to `/command` with POST requests. Output arrives on the `/start` stream.
 
@@ -472,9 +472,9 @@ export function SandboxRunner() {
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 ## How it works
 

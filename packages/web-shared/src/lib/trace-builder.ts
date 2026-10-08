@@ -14,6 +14,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import {
+  type GetStepAttributes,
   getEventTimestamp,
   hookToSpan,
   runToSpan,
@@ -137,7 +138,8 @@ function buildSpans(
   run: WorkflowRun,
   groupedEvents: GroupedEvents,
   now: Date,
-  latestKnownTime: Date
+  latestKnownTime: Date,
+  getStepAttributes?: GetStepAttributes
 ) {
   // Active child spans cap at latestKnownTime so they don't extend into
   // unknown territory. Even when the run is completed, we may not have loaded
@@ -146,7 +148,7 @@ function buildSpans(
   const runMaxEnd = run.completedAt ?? now;
 
   const stepSpans = Array.from(groupedEvents.eventsByStepId.values())
-    .map((events) => stepToSpan(events, childMaxEnd))
+    .map((events) => stepToSpan(events, childMaxEnd, getStepAttributes))
     .filter((span): span is Span => span !== null);
 
   const hookSpans = Array.from(groupedEvents.hookEvents.values())
@@ -208,7 +210,13 @@ export function buildTrace(
    * from the only copy the caller was given, and dropping the wrong one moves
    * a span. See {@link findDuplicateEventIds}.
    */
-  { isCompleteHistory = false }: { isCompleteHistory?: boolean } = {}
+  {
+    isCompleteHistory = false,
+    getStepAttributes,
+  }: {
+    isCompleteHistory?: boolean;
+    getStepAttributes?: GetStepAttributes;
+  } = {}
 ): TraceWithMeta {
   // Span geometry comes from what the run acted on. A repeat of a class the
   // log already records is read past by every replay, and letting one through
@@ -232,7 +240,8 @@ export function buildTrace(
     run,
     groupedEvents,
     now,
-    latestKnownTime
+    latestKnownTime,
+    getStepAttributes
   );
   const sortedCascadingSpans = cascadeSpans(runSpan, spans);
 

@@ -5,17 +5,19 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
 
-const StreamPublishMessage = z.object({
-  streamId: z.string(),
-  chunkId: z.templateLiteral(['chnk_', z.string()]),
-});
+const StreamPublishMessage = z.compile(
+  z.object({
+    streamId: z.string(),
+    chunkId: z.templateLiteral(['chnk_', z.string()]),
+  })
+);
 
 interface StreamChunkEvent {
   id: `chnk_${string}`;
@@ -44,37 +46,145 @@ class Rc<T extends { drop(): void }> {
 }
 
 /**
+ * Delay between attempts to re-establish a `LISTEN` connection after it
+ * dropped (database restart, failover, `pg_terminate_backend`).
+ */
+export const LISTEN_RECONNECT_DELAY_MS = 1_000;
+
+/**
+ * Upper bound on a single reconnect attempt when the pool sets no
+ * `connectionTimeoutMillis`. `pg` defaults to no timeout, so a connect into a
+ * network partition would otherwise stall the reconnect loop indefinitely.
+ */
+const LISTEN_RECONNECT_CONNECT_TIMEOUT_MS = 10_000;
+
+export interface ListenChannelOptions {
+  /**
+   * Runs after a dropped connection has been replaced and `LISTEN` is active
+   * again. A `NOTIFY` sent while no connection listened is lost, so callers
+   * that cannot tolerate a missed notification re-read their state here.
+   */
+  onReconnect?: () => void;
+}
+
+/**
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
  * from the pool's connection options. `channel` must be a trusted identifier.
+ *
+ * A failure to establish the first connection rejects. Once subscribed, a
+ * dropped connection is replaced every {@link LISTEN_RECONNECT_DELAY_MS} until
+ * `LISTEN` succeeds again or the subscription is closed.
  */
 export const listenChannel = async (
   pool: Pool,
   channel: string,
-  onPayload: (payload: string) => Promise<void>
+  onPayload: (payload: string) => Promise<void>,
+  options: ListenChannelOptions = {}
 ): Promise<{ close: () => Promise<void> }> => {
-  const client = new Client(pool.options);
-
-  try {
-    await client.connect();
-    await client.query(`LISTEN ${channel}`);
-  } catch (err) {
-    await client.end().catch(() => {});
-    throw err;
-  }
+  let closed = false;
+  let current: Client | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  // Set while the subscription is down, so the drop and the recovery each
+  // log once per outage rather than once per failed attempt.
+  let degraded = false;
 
   const onNotification = (msg: { payload?: string | undefined }) => {
     onPayload(msg.payload ?? '').catch(() => {});
   };
 
-  client.on('notification', onNotification);
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      void reconnect();
+    }, LISTEN_RECONNECT_DELAY_MS);
+  };
+
+  const dropped = (client: Client) => {
+    // `pg` emits both `error` and `end` for one drop, and a replaced client
+    // can still emit late; only the active client's first signal counts.
+    if (current !== client) return;
+    current = undefined;
+    client.removeListener('notification', onNotification);
+    void client.end().catch(() => {});
+    if (closed) return;
+    if (!degraded) {
+      degraded = true;
+      console.warn(
+        `[world-postgres] LISTEN ${channel} connection lost; reconnecting`
+      );
+    }
+    scheduleReconnect();
+  };
+
+  const subscribe = async (connectionTimeoutMillis?: number) => {
+    const client = new Client(
+      connectionTimeoutMillis
+        ? { ...pool.options, connectionTimeoutMillis }
+        : pool.options
+    );
+    // Without an `error` listener, a server-side disconnect is rethrown by
+    // the EventEmitter as an uncaught exception and ends the process. Keep it
+    // attached after the client is retired: `pg` can still emit while the
+    // connection unwinds.
+    client.on('error', () => dropped(client));
+    client.on('end', () => dropped(client));
+    try {
+      await client.connect();
+      await client.query(`LISTEN ${channel}`);
+    } catch (err) {
+      await client.end().catch(() => {});
+      throw err;
+    }
+    if (closed) {
+      // `close()` ran while this client was connecting.
+      await client.end().catch(() => {});
+      return false;
+    }
+    client.on('notification', onNotification);
+    current = client;
+    return true;
+  };
+
+  const reconnect = async () => {
+    if (closed) return;
+    let subscribed: boolean;
+    try {
+      subscribed = await subscribe(
+        pool.options.connectionTimeoutMillis ||
+          LISTEN_RECONNECT_CONNECT_TIMEOUT_MS
+      );
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    if (!subscribed) return;
+    degraded = false;
+    console.warn(`[world-postgres] LISTEN ${channel} connection restored`);
+    try {
+      options.onReconnect?.();
+    } catch {
+      // A failing callback must not take the restored subscription down.
+    }
+  };
+
+  await subscribe();
 
   return {
     close: async () => {
+      closed = true;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      const client = current;
+      current = undefined;
+      if (!client) return;
       client.removeListener('notification', onNotification);
       try {
         await client.query(`UNLISTEN ${channel}`);
+      } catch {
+        // Ending the connection drops its subscriptions anyway.
       } finally {
-        await client.end();
+        await client.end().catch(() => {});
       }
     },
   };
@@ -93,6 +203,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const { streams } = Schema;
   const genChunkId = () => `chnk_${ulid()}` as const;
   const mutexes = new Map<string, Rc<{ drop(): void; mutex: Mutex }>>();
+  // One abort function per reader that has not yet reached a terminal state
+  // (EOF, cancel, or initial-query failure). `close()` drains this set so a
+  // streamer shutdown detaches every listener still registered on `events`
+  // and settles readers that would otherwise wait forever: the LISTEN client
+  // is gone, so no notification can ever wake them.
+  const activeReaders = new Set<() => void>();
+  let closed = false;
+  const streamerClosedError = () =>
+    new Error('Cannot read stream: the Postgres streamer has been closed');
   const getMutex = (key: string) => {
     let mutex = mutexes.get(key);
     if (!mutex) {
@@ -107,34 +226,103 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
-  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
-    const parsed = StreamPublishMessage.parse(JSON.parse(msg));
+  const listenSubscription = listenChannel(
+    pool,
+    STREAM_TOPIC,
+    async (msg) => {
+      const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
-    const key = `strm:${parsed.streamId}` as const;
-    if (!events.listenerCount(key)) {
-      return;
-    }
+      const key = `strm:${parsed.streamId}` as const;
+      if (!events.listenerCount(key)) {
+        return;
+      }
 
-    const resource = getMutex(key);
-    await resource.mutex.andThen(async () => {
-      const [value] = await drizzle
-        .select({ eof: streams.eof, data: streams.chunkData })
-        .from(streams)
-        .where(
-          and(
-            eq(streams.streamId, parsed.streamId),
-            eq(streams.chunkId, parsed.chunkId)
+      const resource = getMutex(key);
+      await resource.mutex.andThen(async () => {
+        const [value] = await drizzle
+          .select({ eof: streams.eof, data: streams.chunkData })
+          .from(streams)
+          .where(
+            and(
+              eq(streams.streamId, parsed.streamId),
+              eq(streams.chunkId, parsed.chunkId)
+            )
           )
-        )
-        .limit(1);
-      if (!value) return;
-      const { data, eof } = value;
-      events.emit(key, { id: parsed.chunkId, data, eof });
-    });
-  });
+          .limit(1);
+        if (!value) return;
+        const { data, eof } = value;
+        events.emit(key, { id: parsed.chunkId, data, eof });
+      });
+    },
+    { onReconnect: () => replayActiveStreams() }
+  );
+
+  // Notifications sent while the LISTEN connection was down are lost, and a
+  // reader would then miss those chunks or wait forever for a lost EOF. After
+  // a reconnect, re-emit the persisted chunks of every stream that still has
+  // a reader. Readers skip chunk ids at or below the last one they delivered,
+  // so the replay only surfaces what they missed.
+  const replayActiveStreams = () => {
+    for (const key of events.eventNames()) {
+      if (events.listenerCount(key)) void replayStream(key);
+    }
+  };
+
+  const replayStream = async (key: `strm:${string}`) => {
+    const resource = getMutex(key);
+    try {
+      await resource.mutex.andThen(async () => {
+        if (closed || !events.listenerCount(key)) return;
+        const chunks = await loadPersistedChunks(key.slice('strm:'.length));
+        for (const chunk of chunks) {
+          if (!events.listenerCount(key)) break;
+          events.emit(key, chunk);
+        }
+      });
+    } catch {
+      // The database is likely still recovering. Retry while a reader waits;
+      // the stream name is not logged since it can carry user data.
+      if (closed || !events.listenerCount(key)) return;
+      console.warn(
+        '[world-postgres] Stream re-read after LISTEN reconnect failed; retrying'
+      );
+      setTimeout(() => {
+        if (!closed && events.listenerCount(key)) void replayStream(key);
+      }, LISTEN_RECONNECT_DELAY_MS);
+    } finally {
+      resource[Symbol.dispose]();
+    }
+  };
 
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
+  };
+
+  const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
+    drizzle
+      .select({
+        id: streams.chunkId,
+        eof: streams.eof,
+        data: streams.chunkData,
+      })
+      .from(streams)
+      .where(and(eq(streams.streamId, name)))
+      .orderBy(streams.chunkId);
+
+  // The chunkId of the first EOF row, if any has been written. A producer
+  // that retries a terminal write can append data and EOF rows after it;
+  // `getChunks`/`getInfo` bound their queries by this so those rows are
+  // ignored the same way `streams.get()` ignores them.
+  const findFirstEofChunkId = async (
+    name: string
+  ): Promise<`chnk_${string}` | null> => {
+    const [row] = await drizzle
+      .select({ chunkId: streams.chunkId })
+      .from(streams)
+      .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+      .orderBy(asc(streams.chunkId))
+      .limit(1);
+    return row?.chunkId ?? null;
   };
 
   // Helper to convert chunk to Buffer
@@ -251,6 +439,11 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           }
         }
 
+        // A producer that retries a terminal write can append data and EOF
+        // rows after the first EOF; bound the page by it so a retried write
+        // does not surface as (or inflate the count of) live data.
+        const firstEofChunkId = await findFirstEofChunkId(name);
+
         // Fetch only data rows (exclude EOF) with limit + 1 to detect hasMore.
         // Filtering EOF here avoids the edge case where an EOF row sorting
         // mid-batch (e.g. due to clock skew) silently drops data rows.
@@ -264,6 +457,9 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             and(
               eq(streams.streamId, name),
               eq(streams.eof, false),
+              ...(firstEofChunkId
+                ? [lt(streams.chunkId, firstEofChunkId)]
+                : []),
               ...(cursorChunkId
                 ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
                 : [])
@@ -274,17 +470,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
         const hasMore = rows.length > limit;
         const pageRows = rows.slice(0, limit);
-
-        // Check if stream is complete via a separate EOF query
-        let streamDone = false;
-        const [eofRow] = await drizzle
-          .select({ eof: streams.eof })
-          .from(streams)
-          .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
-          .limit(1);
-        if (eofRow) {
-          streamDone = true;
-        }
+        const streamDone = firstEofChunkId !== null;
 
         // Build the cursor index: we need a running index across pages.
         // Decode the current start index from the cursor.
@@ -326,24 +512,28 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       },
 
       async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
+        // A producer that retries a terminal write can append data and EOF
+        // rows after the first EOF; bound the count by it so those rows
+        // don't inflate tailIndex.
+        const firstEofChunkId = await findFirstEofChunkId(name);
+
         // Use COUNT(*) instead of fetching all rows into memory
         const [countResult] = await drizzle
           .select({ count: sql<number>`count(*)` })
           .from(streams)
-          .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
+          .where(
+            and(
+              eq(streams.streamId, name),
+              eq(streams.eof, false),
+              ...(firstEofChunkId ? [lt(streams.chunkId, firstEofChunkId)] : [])
+            )
+          );
 
         const dataCount = Number(countResult?.count ?? 0);
 
-        // Check for EOF
-        const [eofRow] = await drizzle
-          .select({ eof: streams.eof })
-          .from(streams)
-          .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
-          .limit(1);
-
         return {
           tailIndex: dataCount - 1,
-          done: !!eofRow,
+          done: firstEofChunkId !== null,
         };
       },
 
@@ -352,10 +542,34 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         name: string,
         startIndex?: number
       ): Promise<ReadableStream<Uint8Array>> {
+        if (closed) {
+          throw streamerClosedError();
+        }
+
         const cleanups: (() => void)[] = [];
+        let cleanedUp = false;
+        // Idempotent: reachable from EOF, cancel(), initial-query failure,
+        // and streamer close(), and more than one of those can fire for the
+        // same reader (e.g. cancel() while the initial query is in flight).
+        const cleanup = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          activeReaders.delete(abort);
+          cleanups.forEach((fn) => void fn());
+        };
+        // `start()` runs synchronously inside the ReadableStream constructor
+        // up to its first `await`, so `controller` is assigned before `get()`
+        // returns and before `abort` can be invoked from `close()`.
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const abort = () => {
+          cleanup();
+          controller.error(streamerClosedError());
+        };
+        activeReaders.add(abort);
 
         return new ReadableStream<Uint8Array>({
-          async start(controller) {
+          async start(ctrl) {
+            controller = ctrl;
             // an empty string is always < than any string,
             // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
             let lastChunkId = '';
@@ -367,12 +581,30 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               data: Uint8Array;
               eof: boolean;
             }) {
+              if (cleanedUp) {
+                // The reader was cancelled or the streamer closed while the
+                // initial query was in flight; the controller is no longer
+                // writable. Also true once the first EOF has been delivered
+                // (cleanup() runs below): a producer that retries a
+                // terminal write (lost ACK, overlapping attempts) can append
+                // data and EOF rows after it, and enqueuing those on the
+                // already-closed controller would throw out of `start()`,
+                // discarding every chunk still queued.
+                return;
+              }
+
               if (lastChunkId >= msg.id) {
                 // already sent or out of order
                 return;
               }
+              lastChunkId = msg.id;
 
-              if (offset > 0) {
+              // The EOF marker is not a data chunk (`getInfo`'s tailIndex
+              // excludes it), so it never counts toward `offset`: a start
+              // index at or past the data count must still close the
+              // stream rather than consume the marker and then hang, or
+              // surface rows written after it.
+              if (offset > 0 && !msg.eof) {
                 offset--;
                 return;
               }
@@ -381,9 +613,9 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 controller.enqueue(new Uint8Array(msg.data));
               }
               if (msg.eof) {
+                cleanup();
                 controller.close();
               }
-              lastChunkId = msg.id;
             }
 
             function onData(data: StreamChunkEvent) {
@@ -398,23 +630,20 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               events.off(`strm:${name}`, onData);
             });
 
-            const chunks = await drizzle
-              .select({
-                id: streams.chunkId,
-                eof: streams.eof,
-                data: streams.chunkData,
-              })
-              .from(streams)
-              .where(and(eq(streams.streamId, name)))
-              .orderBy(streams.chunkId);
+            // A rejection here fails the stream; detach the listener that was
+            // registered above so a failing stream does not leak on each read.
+            const chunks = await loadPersistedChunks(name).catch((err) => {
+              cleanup();
+              throw err;
+            });
 
-            // Resolve negative offset relative to the data chunk count
-            // (excluding the trailing EOF marker, if present)
+            // Resolve negative offset relative to the data chunk count: the
+            // rows before the first EOF marker. Rows after it (a retried
+            // terminal write) are ignored by `enqueue`, so they must not
+            // count here either.
             if (typeof offset === 'number' && offset < 0) {
-              const dataCount =
-                chunks.length > 0 && chunks[chunks.length - 1].eof
-                  ? chunks.length - 1
-                  : chunks.length;
+              const firstEof = chunks.findIndex((chunk) => chunk.eof);
+              const dataCount = firstEof === -1 ? chunks.length : firstEof;
               offset = Math.max(0, dataCount + offset);
             }
 
@@ -424,7 +653,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             buffer = null;
           },
           cancel() {
-            cleanups.forEach((fn) => void fn());
+            cleanup();
           },
         });
       },
@@ -441,6 +670,10 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     },
 
     async close() {
+      closed = true;
+      for (const abort of [...activeReaders]) {
+        abort();
+      }
       const sub = await listenSubscription.catch(() => undefined);
       if (sub) await sub.close();
     },

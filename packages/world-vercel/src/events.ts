@@ -31,7 +31,11 @@
  * the v3 path.
  */
 
-import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import {
+  HookForceClaimedError,
+  HookNotFoundError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type AnyEventRequest,
   applyAttributeChanges,
@@ -43,17 +47,26 @@ import {
   type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
-  EventSchema,
+  entityResolveData,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
+  mintedSpecVersion,
   type PaginatedResponse,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { withEventPostRetry } from './event-retry.js';
+import {
+  AttributeValidationError,
+  validateAttributeEventDataSize,
+} from '@workflow/world/attributes-validation';
+import {
+  AfterCommitError,
+  ReplayEventObserverError,
+  withEventPostRetry,
+} from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
@@ -63,6 +76,7 @@ import {
   getEventV4,
   getWorkflowRunEventsV4,
   type ListEventsV4Params,
+  VercelEventWireSchema,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
@@ -126,6 +140,8 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
+    /** `createHook({ experimental_force })`: take the token over if held. */
+    hookForce?: boolean;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -147,6 +163,16 @@ interface SplitEventData {
      * it without holding the run's symmetric key.
      */
     encryptionPublicKey?: string;
+    /**
+     * A dynamic run's serialized workflow VM code, inline on run_created (and
+     * on run_started for resilient start). Rides the meta rather than the
+     * frame body because the body slot already carries the run's `input`; the
+     * backend stores it behind a ref on the run and never decodes it.
+     */
+    dynamicWorkflowCode?: Uint8Array;
+    /** Ref key of dynamic workflow code uploaded ahead of the write, for
+     *  definitions too large to send inline. */
+    dynamicWorkflowCodeRef?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -185,6 +211,13 @@ type MetaSourceField =
   | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
+  | 'force'
+  // World-written on persisted rows (never sent by the SDK): the claimer's
+  // hook_created carries `forceClaimedFrom`, the victim's hook_disposed
+  // `forceClaimedBy`. Listed so the exhaustiveness guard knows they are
+  // accounted for; `splitEventDataForV4` never puts either on the wire.
+  | 'forceClaimedFrom'
+  | 'forceClaimedBy'
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
@@ -194,6 +227,8 @@ type MetaSourceField =
   | 'writer'
   | 'allowReservedAttributes'
   | 'encryptionPublicKey'
+  | 'dynamicWorkflowCode'
+  | 'dynamicWorkflowCodeRef'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -233,11 +268,18 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * become the v4 frame body and (b) the metadata fields that become the
  * CBOR-encoded meta block of the same frame.
  *
- * Exported for unit tests (the meta allowlist is the eventData wire
- * contract; see the warning on EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE in
- * @workflow/world).
+ * Exported for unit tests because the metadata allowlist is the eventData wire
+ * contract and must remain exhaustive with the @workflow/world event schemas.
  */
 export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
+  if (data.eventType === 'attr_set') {
+    try {
+      validateAttributeEventDataSize(data.eventData);
+    } catch (error) {
+      if (!(error instanceof AttributeValidationError)) throw error;
+      throw new WorkflowWorldError(error.message, { status: 400 });
+    }
+  }
   // Some event types in the AnyEventRequest discriminated union (e.g.
   // run_cancelled) have no eventData. Cast through unknown so this
   // helper can read it defensively without TS narrowing per branch.
@@ -297,6 +339,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.isSystem === 'boolean') {
     meta.hookIsSystem = eventData.isSystem;
   }
+  // hook_created only. `forceClaimedFrom` is the server's own annotation on
+  // the persisted row and is never part of a request.
+  if (eventData.force === true) {
+    meta.hookForce = true;
+  }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
   }
@@ -351,6 +398,16 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.encryptionPublicKey === 'string') {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
+  }
+  // Dynamic workflow code arrives one of two ways and never both: the bytes
+  // inline for a small definition, or a ref to an earlier upload for a large
+  // one. Both are metadata as far as the frame is concerned — the single body
+  // slot on run_created/run_started is the run's input.
+  if (eventData.dynamicWorkflowCode instanceof Uint8Array) {
+    meta.dynamicWorkflowCode = eventData.dynamicWorkflowCode;
+  }
+  if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
+    meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -445,7 +502,12 @@ export async function getWorkflowRunEvents(
   // remain on the returned events.
   const listParams: ListEventsV4Params = {
     ...pagination,
-    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
+    remoteRefBehavior:
+      resolveData === 'none'
+        ? 'lazy'
+        : resolveData === 'skip-step-inputs'
+          ? 'skip-step-inputs'
+          : 'resolve',
   };
 
   const result = await ('correlationId' in params
@@ -537,6 +599,13 @@ export async function createWorkflowRunEventBatch(
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
       payload,
       ...meta,
+      // The batch is one fenced allocation: the backend requires every frame
+      // to carry the same fence. Spread after `meta` so nothing derived from
+      // the event data can override it.
+      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+      ...(params?.expectedSeqInBand !== undefined
+        ? { expectedSeqInBand: params.expectedSeqInBand }
+        : {}),
     };
   });
 
@@ -567,7 +636,7 @@ export async function createWorkflowRunEventBatch(
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
     events[0].event.eventType,
-    { batchIdempotent: retryConvergent }
+    { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
   return {
@@ -616,6 +685,8 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           data.eventType === 'hook_received' &&
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
+        afterStepBody: params?.afterStepBody === true,
+        inBand: params?.inBand === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -638,6 +709,19 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     return result as EventResult<T['eventType']>;
   } catch (err) {
+    if (err instanceof ReplayEventObserverError) throw err.error;
+    if (err instanceof AfterCommitError) throw err.error;
+    // 409 hook-force-claimed on hook_received: the hook's token was taken
+    // over by another run and the server has already re-pointed it. Re-key
+    // with the token this write carried so `resumeHook()` can follow it.
+    if (HookForceClaimedError.is(err) && data.eventType === 'hook_received') {
+      const token = (data.eventData as { token?: unknown } | undefined)?.token;
+      throw new HookForceClaimedError(
+        typeof token === 'string' ? token : err.token,
+        err.claimedByRunId,
+        err.claimedByHookId
+      );
+    }
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&
@@ -662,7 +746,11 @@ async function createWorkflowRunEventInner(
   // of this on v1 routes, since the v4 protocol does not cover legacy runs.
   if (params?.v1Compat) {
     if (data.eventType === 'run_cancelled' && id) {
-      const run = await cancelWorkflowRunV1(id, params, config);
+      const run = await cancelWorkflowRunV1(
+        id,
+        { ...params, resolveData: entityResolveData(params.resolveData) },
+        config
+      );
       return { run: run as WorkflowRun };
     }
     if (data.eventType === 'run_created') {
@@ -684,7 +772,12 @@ async function createWorkflowRunEventInner(
       options: { method: 'POST' },
       data,
       config,
-      schema: EventSchema,
+      // Match the v4 sites: parse legacy event responses with the
+      // omitted-payload-tolerant wire schema. A `hook_received` response can
+      // omit the required `payload` key (e.g. a resume with an `undefined`
+      // payload the server never echoes back), which bare `EventSchema.parse`
+      // now rejects under Zod 4.5.
+      schema: VercelEventWireSchema,
     });
     return { event: wireResult };
   }
@@ -718,6 +811,11 @@ async function createWorkflowRunEventInner(
   const input = {
     runId: id,
     specVersion: data.specVersion ?? 2,
+    ...(data.eventType === 'run_started'
+      ? {
+          executorSpecVersion: config?.mintedSpecVersion ?? mintedSpecVersion(),
+        }
+      : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
     ...(params?.requestId ? { vercelId: params.requestId } : {}),
     ...(params?.computeInstanceId
@@ -728,6 +826,12 @@ async function createWorkflowRunEventInner(
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    // In-band writer fence. The backend refuses a stale in-band write with
+    // 412 `in-band-superseded` (InBandSupersededError).
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log
@@ -746,55 +850,34 @@ async function createWorkflowRunEventInner(
     // defense-in-depth when it recorded a 412 rejection for this correlation
     // id and no step entity exists.
     ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
+    // The event-log page this POST returns (a preload or a `sinceCursor`
+    // delta) may leave out step inputs; the created event and step entity
+    // follow `remoteRefBehavior` and never do.
+    ...(params?.resolveData === 'skip-step-inputs'
+      ? { eventsRemoteRefBehavior: 'skip-step-inputs' as const }
+      : {}),
     remoteRefBehavior,
     payload,
     ...meta,
   };
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
-    const result = await createWorkflowRunStartedEventV4(input, config);
-    const runCreated = result.events.find(
-      (event) => event.eventType === 'run_created'
+    const result = await createWorkflowRunStartedEventV4(
+      input,
+      config,
+      params?.replayEventObserver
     );
-    const runStarted = result.events.find(
-      (event) => event.eventType === 'run_started'
-    );
-    if (!runCreated) {
-      throw new Error(
-        'v4 createEvent: run_started stream is missing run_created'
+    const replayRun = reconstructRunFromReplayEvents(result.events);
+    if (!replayRun) {
+      throw new WorkflowWorldError(
+        'v4 createEvent: run_started stream is missing lifecycle events',
+        { code: 'SCHEMA_VALIDATION' }
       );
-    }
-    if (!runStarted) {
-      throw new Error(
-        'v4 createEvent: run_started stream is missing run_started'
-      );
-    }
-
-    let attributes = runCreated.eventData.attributes ?? {};
-    let updatedAt = runStarted.createdAt;
-    for (const event of result.events) {
-      if (event.eventType === 'attr_set') {
-        attributes = applyAttributeChanges(attributes, event.eventData.changes);
-        updatedAt = event.createdAt;
-      }
     }
 
     return {
-      event: runStarted,
-      run: {
-        runId: runCreated.runId,
-        status: 'running',
-        deploymentId: runCreated.eventData.deploymentId,
-        workflowName: runCreated.eventData.workflowName,
-        specVersion: runCreated.specVersion,
-        executionContext: runCreated.eventData.executionContext,
-        input: runCreated.eventData.input,
-        attributes,
-        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-        startedAt: runStarted.createdAt,
-        createdAt: runCreated.createdAt,
-        updatedAt,
-      },
+      event: replayRun.event,
+      run: replayRun.run,
       events: result.events,
       cursor: result.cursor,
       hasMore: result.hasMore,
@@ -819,7 +902,8 @@ async function createWorkflowRunEventInner(
     // an S3-backed hook payload the runtime would discard anyway.
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
-      config
+      config,
+      params.replayEventObserver
     );
     if (outcome.kind === 'materialized') {
       // Older server (or optimization declined): the write still succeeded
@@ -834,10 +918,10 @@ async function createWorkflowRunEventInner(
     // Unlike lifecycle streams, a preload missing run_created/run_started is
     // not fatal here: the write has already converged, so return the page
     // without a run and let the runtime take its safe fallback.
-    const run = reconstructRunFromReplayEvents(events);
+    const replayRun = reconstructRunFromReplayEvents(events);
     return {
       ...(canonicalEvent ? { event: canonicalEvent } : {}),
-      ...(run ? { run } : {}),
+      ...(replayRun ? { run: replayRun.run } : {}),
       events,
       cursor,
       hasMore,
@@ -856,20 +940,16 @@ async function createWorkflowRunEventInner(
 /**
  * Reconstruct the run entity from a streamed replay log: identity and input
  * from `run_created`, start time from `run_started`, later `attr_set` events
- * folded into `attributes`/`updatedAt`. Returns undefined when the log does
- * not contain both lifecycle events (the caller decides whether that is
- * fatal). The reconstructed status is always `running`: a terminal event
+ * folded into `attributes`/`updatedAt`. Returns undefined when reconstruction
+ * is incomplete so each caller can choose whether that is fatal. The
+ * reconstructed status is always `running`: a terminal event
  * committed concurrently still rides in the log itself, and the runtime's
  * replay-time terminal detection handles it.
  */
-function reconstructRunFromReplayEvents(
-  events: Event[]
-): (WorkflowRun & { startedAt: Date }) | undefined {
+function reconstructRunFromReplayEvents(events: Event[]) {
   const runCreated = events.find((event) => event.eventType === 'run_created');
   const runStarted = events.find((event) => event.eventType === 'run_started');
-  if (!runCreated || !runStarted) {
-    return undefined;
-  }
+  if (!runCreated || !runStarted) return;
 
   let attributes = runCreated.eventData.attributes ?? {};
   let updatedAt = runStarted.createdAt;
@@ -881,17 +961,20 @@ function reconstructRunFromReplayEvents(
   }
 
   return {
-    runId: runCreated.runId,
-    status: 'running',
-    deploymentId: runCreated.eventData.deploymentId,
-    workflowName: runCreated.eventData.workflowName,
-    specVersion: runCreated.specVersion,
-    executionContext: runCreated.eventData.executionContext,
-    input: runCreated.eventData.input,
-    attributes,
-    encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-    startedAt: runStarted.createdAt,
-    createdAt: runCreated.createdAt,
-    updatedAt,
+    event: runStarted,
+    run: {
+      runId: runCreated.runId,
+      status: 'running' as const,
+      deploymentId: runCreated.eventData.deploymentId,
+      workflowName: runCreated.eventData.workflowName,
+      specVersion: runCreated.specVersion,
+      executionContext: runCreated.eventData.executionContext,
+      input: runCreated.eventData.input,
+      attributes,
+      encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+      startedAt: runStarted.createdAt,
+      createdAt: runCreated.createdAt,
+      updatedAt,
+    },
   };
 }

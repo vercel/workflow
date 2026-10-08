@@ -140,6 +140,7 @@ type OnChatEnd = ({
  *
  * @template UI_MESSAGE - The type of UI messages being sent and received,
  *                        must extend the UIMessage interface from the AI SDK.
+ * @deprecated Use `WorkflowChatTransportOptions` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
   /**
@@ -216,6 +217,7 @@ export interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
  *                        must extend the UIMessage interface from the AI SDK.
  *
  * @implements {ChatTransport<UI_MESSAGE>}
+ * @deprecated Use `WorkflowChatTransport` from `@ai-sdk/workflow` for Workflow 5 applications. This transport remains supported for Workflow 4 maintenance applications.
  */
 export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   implements ChatTransport<UI_MESSAGE>

@@ -180,6 +180,40 @@ describe('fs utilities', () => {
     });
   });
 
+  describe('readJSON', () => {
+    it('retries transient EPERM read failures on Windows', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      try {
+        const freshFsModule = await import('./fs.js');
+        const filePath = path.join(testDir, 'locked.json');
+        await fs.writeFile(filePath, JSON.stringify({ id: 'locked' }));
+
+        const eperm = Object.assign(
+          new Error('EPERM: operation not permitted, readFile'),
+          { code: 'EPERM' }
+        );
+        const readFile = fs.readFile;
+        const readFileSpy = vi
+          .spyOn(fs, 'readFile')
+          .mockRejectedValueOnce(eperm)
+          .mockRejectedValueOnce(eperm)
+          .mockImplementation(readFile);
+
+        await expect(
+          freshFsModule.readJSON(filePath, z.object({ id: z.string() }))
+        ).resolves.toEqual({ id: 'locked' });
+        expect(readFileSpy).toHaveBeenCalledTimes(3);
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform);
+        }
+        vi.resetModules();
+      }
+    });
+  });
+
   describe('ensureDir', () => {
     it('does not repeat mkdir for a directory created by this process', async () => {
       clearCreatedFilesCache();

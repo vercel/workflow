@@ -11,11 +11,31 @@ summary: Build durable, resumable AI agents with AI SDK v7's WorkflowAgent.
 
 ## WorkflowAgent from AI SDK v7
 
-Use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agent work. It replaces `DurableAgent` and keeps the current agent pattern in the AI SDK package.
+Use AI SDK v7's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for durable agents in Workflow 5. It replaces `DurableAgent` and keeps the current agent pattern in the AI SDK package.
 
 - Import `WorkflowAgent` from `@ai-sdk/workflow` and run it inside a `"use workflow"` function.
+- Pass `"spacexai/grok-4.6"` as a plain model string so AI SDK routes requests through Vercel AI Gateway.
 - Stream `ModelCallStreamPart` chunks with `getWritable()`, then convert the run stream to UI message chunks with `createModelCallToUIChunkTransform()` in your route.
 - Mark tool `execute` functions with `"use step"` when they should run as durable workflow steps with retry and observability behavior.
+
+```typescript
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
+import { getWritable } from "workflow";
+
+export async function agentWorkflow(prompt: string) {
+  "use workflow";
+
+  const agent = new WorkflowAgent({
+    model: "spacexai/grok-4.6",
+    instructions: "You are a helpful assistant.",
+  });
+
+  return agent.stream({
+    messages: [{ role: "user", content: prompt }],
+    writable: getWritable<ModelCallStreamPart>(),
+  });
+}
+```
 
 <Callout type="warn">
 `DurableAgent` is deprecated and remains documented for existing code only. See the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent), or the [`DurableAgent` API reference](/docs/api-reference/workflow-ai/durable-agent) while migrating.

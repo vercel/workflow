@@ -199,7 +199,7 @@ async function weatherAgentWorkflow(userQuery: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       getWeather: {
         description: "Get current weather for a location",
@@ -244,7 +244,7 @@ async function multiToolAgentWorkflow(userQuery: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       getWeather: {
         description: "Get weather for a location",
@@ -289,7 +289,7 @@ async function multiTurnAgentWorkflow() {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       searchProducts: {
         description: "Search for products",
@@ -368,7 +368,7 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       scheduleTask: {
         description: "Pause the workflow for the specified number of seconds",
@@ -405,7 +405,7 @@ async function agentWithPrepareStep(userMessage: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "openai/gpt-4.1-mini", // Default model
+    model: "spacexai/grok-4.6", // Default model
     instructions: "You are a helpful assistant.",
   });
 
@@ -459,7 +459,7 @@ async function agentWithMessageQueue(initialMessage: string) {
   });
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     instructions: "You are a helpful assistant.",
   });
 
@@ -500,7 +500,7 @@ async function agentWithGenerationSettings() {
 
   // Set default generation settings in constructor
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     temperature: 0.7,
     maxOutputTokens: 2000,
     topP: 0.9,
@@ -548,7 +548,7 @@ async function multiStepAgent() {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       searchWeb: {
         description: "Search the web for information",
@@ -588,7 +588,7 @@ async function agentWithCallbacks() {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
   });
 
   await agent.stream({
@@ -630,7 +630,7 @@ async function agentWithStructuredOutput() {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
   });
 
   const result = await agent.stream({
@@ -665,7 +665,7 @@ async function agentWithToolChoice() {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       calculator: {
         description: "Perform calculations",
@@ -733,7 +733,7 @@ async function agentWithContext(userId: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       getUserData: {
         description: "Get user data",
@@ -771,7 +771,7 @@ async function agentWithUIMessages(userMessage: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     instructions: "You are a helpful assistant.",
   });
 
@@ -819,7 +819,7 @@ async function agentWithToolInspection(userMessage: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     tools: {
       checkOrderStatus: {
         description: "Check order status",
@@ -874,7 +874,7 @@ async function agentWithTimeout(userMessage: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
   });
 
   await agent.stream({

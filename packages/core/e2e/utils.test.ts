@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { dehydrateRunError } from '../src/serialization';
 import {
   createPerTestState,
+  describeRunError,
   getCollectedRunIds,
   getRecordedInfraEvents,
   hasStepSourceMaps,
@@ -244,5 +246,82 @@ describe('per-test state isolation', () => {
     expect(
       Object.fromEntries(entries.map((e) => [e.runId, e.testName]))
     ).toEqual({ wrun_a: 'test-a', wrun_b: 'test-b' });
+  });
+});
+
+describe('describeRunError', () => {
+  const RUN_ID = 'wrun_test';
+
+  test('reads the message out of world-vercel SerializedData bytes', async () => {
+    // What `runs.get()` actually returns on world-vercel: the bytes
+    // `dehydrateRunError` wrote, with no `.message` on them.
+    const message =
+      'Workflow replay diverged 4 times after 3 recovery replays; latest ' +
+      'divergent event was evnt_00000000000000000000000303. Last divergence: ' +
+      'Replay could not consume event: eventType=wait_created, ' +
+      'correlationId=wait_01M1C1YT7AQPWWDBJB3APX3C4D, ' +
+      'eventId=evnt_00000000000000000000000303.';
+    const wire = await dehydrateRunError(
+      new Error(message),
+      RUN_ID,
+      undefined,
+      []
+    );
+
+    // The shape the harness used to read straight off the run.
+    expect((wire as { message?: string }).message).toBeUndefined();
+
+    expect(await describeRunError(wire, RUN_ID)).toEqual({
+      errorName: 'Error',
+      errorMessage: message,
+    });
+  });
+
+  test('distinguishes two corruptions that share an errorCode', async () => {
+    // The reason the signature is worth hydrating at all: `errorCode` is
+    // `CORRUPTED_EVENT_LOG` for both of these.
+    const waitShape = await dehydrateRunError(
+      new Error('Replay could not consume event: eventType=wait_created'),
+      RUN_ID,
+      undefined,
+      []
+    );
+    const attrShape = await dehydrateRunError(
+      new Error('Replay finished without consuming event: eventType=attr_set'),
+      RUN_ID,
+      undefined,
+      []
+    );
+
+    const a = await describeRunError(waitShape, RUN_ID);
+    const b = await describeRunError(attrShape, RUN_ID);
+
+    expect(a.errorMessage).toContain('wait_created');
+    expect(b.errorMessage).toContain('attr_set');
+    expect(a.errorMessage).not.toEqual(b.errorMessage);
+  });
+
+  test('passes through an already-hydrated Error (local / postgres worlds)', async () => {
+    const err = new TypeError('already an Error');
+    expect(await describeRunError(err, RUN_ID)).toEqual({
+      errorName: 'TypeError',
+      errorMessage: 'already an Error',
+    });
+  });
+
+  test('passes through a legacy plain record', async () => {
+    expect(
+      await describeRunError({ name: 'Legacy', message: 'old shape' }, RUN_ID)
+    ).toEqual({ errorName: 'Legacy', errorMessage: 'old shape' });
+  });
+
+  test('yields no signature rather than throwing on an unreadable error', async () => {
+    // Encrypted without a key, or simply not a payload this build can read.
+    // The run still has to be reported.
+    await expect(
+      describeRunError(new Uint8Array([1, 2, 3, 4]), RUN_ID)
+    ).resolves.toEqual({});
+    await expect(describeRunError(undefined, RUN_ID)).resolves.toEqual({});
+    await expect(describeRunError(null, RUN_ID)).resolves.toEqual({});
   });
 });

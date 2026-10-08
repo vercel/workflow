@@ -23,6 +23,7 @@ keywords:
   - Event
   - cursor pagination
   - resolveData
+  - skip-step-inputs
   - run_cancelled
   - correlation ID
   - parseStepName
@@ -94,7 +95,7 @@ const result = await world.events.list({ runId, pagination: { cursor } }); // [!
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.pagination.limit` | `number` | Maximum events to return. When omitted, returns every remaining event up to the World's event ceiling. |
 | `params.pagination.sortOrder` | `"asc" \| "desc"` | Event order |
-| `params.resolveData` | `"all" \| "none"` | Include or omit event payload data |
+| `params.resolveData` | `"all" \| "none" \| "skip-step-inputs"` | Include or omit event payload data. `"skip-step-inputs"` is `"all"` without the `input` of `step_created` and `step_started` events, which replay does not read. |
 
 **Returns:** `{ data: Event[], cursor: string | null, hasMore: boolean }`
 
@@ -189,16 +190,48 @@ a normal return, not an error, and a missing run throws
 
 ```typescript lineNumbers
 const result = await world.runs.list({ // [!code highlight]
+  status: "running", // [!code highlight]
   pagination: { cursor },
 }); // [!code highlight]
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `params.workflowName` | `string` | Only return runs of this workflow |
+| `params.status` | `WorkflowRunStatus \| WorkflowRunStatus[]` | Only return runs in this status. Pass an array to match any of the listed statuses; an empty array matches no runs. `@workflow/world-vercel` accepts a single status only and throws `WorkflowWorldError` (`INVALID_ARGUMENT`) for an array |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
 **Returns:** `{ data: WorkflowRun[], cursor?: string }`
+
+The array form of `status` lets you express set filters without restating the
+status vocabulary. `@workflow/world` exports
+`TERMINAL_WORKFLOW_RUN_STATUSES` (`['completed', 'failed', 'cancelled']`) for
+that purpose:
+
+```typescript lineNumbers
+import { TERMINAL_WORKFLOW_RUN_STATUSES } from "@workflow/world";
+
+// Every run that has not reached a terminal status
+const inFlight = await world.runs.list({
+  status: ["pending", "running"],
+});
+
+// The complement, without hardcoding the list
+const finished = await world.runs.list({
+  status: [...TERMINAL_WORKFLOW_RUN_STATUSES],
+});
+```
+
+<Callout type="warn">
+  `status: []` matches **no** runs, mirroring SQL `IN ()`. To leave the filter
+  unset, omit the field entirely.
+
+  Support for the array form is per World. The Local and Postgres Worlds accept
+  it; the Vercel World's `/v2/runs` endpoint takes a single status today and
+  throws a `WorkflowWorldError` (`INVALID_ARGUMENT`) when given an array, rather
+  than silently filtering on something else.
+</Callout>
 
 <Callout type="warn">
   Observability and inspection usage of `world.runs.list()` is deprecated. Use
@@ -219,7 +252,7 @@ To cancel a batch in one call, a world may implement the optional `runs.cancelMa
 | Field | Type | Description |
 |-------|------|-------------|
 | `runId` | `string` | Unique run identifier |
-| `status` | `string` | `'running'`, `'completed'`, `'failed'`, `'cancelled'` |
+| `status` | `string` | `'pending'`, `'running'`, `'completed'`, `'failed'`, `'cancelled'` |
 | `workflowName` | `string` | Machine-readable workflow identifier |
 | `input` | `any` | Workflow input data (when `resolveData: 'all'`) |
 | `output` | `any` | Workflow output data (when `resolveData: 'all'`) |
@@ -356,6 +389,7 @@ const result = await world.hooks.list({ // [!code highlight]
 | `environment` | `string` | Deployment environment |
 | `metadata` | `object` | Custom metadata attached to the hook |
 | `isWebhook` | `boolean` | Whether this is a webhook-style hook |
+| `claimedFrom` | `{ runId: string; hookId: string } \| undefined` | Set when this hook took its token from another run with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). Names that run and its hook |
 
 ---
 
@@ -444,8 +478,10 @@ import { getWorld } from "workflow/runtime";
 
 const world = await getWorld();
 const hook = await world.hooks.getByToken(token); // [!code highlight]
-console.log(hook.runId, hook.metadata); // [!code highlight]
+console.log(hook.runId); // [!code highlight]
 ```
+
+The World-level `Hook` carries `metadata` as the raw serialized (and, on encrypting Worlds, encrypted) value, not the object the workflow passed to `createHook()`. To read the decoded value, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token), whose `hook.metadata` is a Promise that hydrates it on first access.
 
 ### List events for audit trail
 

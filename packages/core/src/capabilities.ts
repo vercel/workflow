@@ -30,21 +30,27 @@
  * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
  * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
  * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
- *   alongside gzip; they co-ship, so any run that can read one can read both.
+ *   alongside gzip. Unlike gzip, decoding zstd also depends on the runtime:
+ *   `node:zlib` only has it from Node.js 22.15 / 23.8. A run therefore only
+ *   counts as zstd-capable when its execution context records a `nodeVersion`
+ *   that has it (see {@link nodeVersionSupportsZstd}). Runs created before
+ *   that field existed get gzip, which every supported runtime decodes.
  * - `encp` (X25519 sealed-box encryption for cross-run writes): added in
  *   `5.0.0-beta.37`. Note that producers do **not** gate `encp` on this table:
  *   they gate on the presence of `encryptionPublicKey` on the target run,
  *   which a run only carries if the deployment that created it could also
  *   open `encp`. The entry exists so the capability set stays a complete,
  *   auditable description of a run's decoding ability.
- * - Lazy hook resume ("consumer re-ensures `hook_received` from `hookInput`"):
- *   deliberately NOT tracked here. Rather than predict a release cutoff, the
- *   run's creating deployment stamps an explicit `hookResumeInputVersion`
- *   execution-context marker; `resumeHook()` gates the parallel fast path on
- *   that marker (mirrored onto the hook's resumeContext by the server).
+ * - Hook-resume consumer protocol ("consumer re-ensures `hook_received` from
+ *   `hookInput`"): deliberately NOT tracked here. Rather than predict a
+ *   release cutoff, the run's creating deployment stamps an explicit
+ *   `hookResumeInputVersion` execution-context marker (mirrored onto the
+ *   hook's resumeContext by the server); older producers gate their lazy path
+ *   on that marker.
  */
 
 import semver from 'semver';
+import type { CompressionMode } from './serialization/compression.js';
 import {
   SerializationFormat,
   type SerializationFormatType,
@@ -87,7 +93,8 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   // bump to the next beta. A too-low cutoff makes new producers write
   // compressed payloads to consumers that cannot decompress them; too-high
   // merely delays the optimization (safe). gzip and zstd ship together, so
-  // they share a min version: a run that can read one can read both.
+  // they share a min version. zstd additionally requires the run's runtime to
+  // decode it; see `getRunCapabilities`.
   { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.18' },
   { format: SerializationFormat.ZSTD, minVersion: '5.0.0-beta.18' },
   // TODO(release): verify this matches the actual version that ships sealed-box
@@ -115,12 +122,13 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
   { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
-  // NOTE: lazy hook resume ("does the consumer re-ensure `hook_received` from
-  // the queue message's `hookInput`?") is intentionally NOT gated here. A
-  // version-compare against a predicted release cutoff is a guess; instead the
-  // run's creating deployment stamps an explicit `hookResumeInputVersion`
-  // marker into its execution context, which the server mirrors onto the hook's
-  // resumeContext. `resumeHook()` gates the parallel fast path on that marker.
+  // NOTE: the hook-resume consumer protocol ("does the consumer re-ensure
+  // `hook_received` from the queue message's `hookInput`?") is intentionally
+  // NOT gated here. A version-compare against a predicted release cutoff is a
+  // guess; instead the run's creating deployment stamps an explicit
+  // `hookResumeInputVersion` marker into its execution context, which the
+  // server mirrors onto the hook's resumeContext. Older producers gate their
+  // lazy path on that marker.
 ];
 
 /**
@@ -133,16 +141,60 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
 ]);
 
 /**
+ * Node.js versions whose `node:zlib` can decode zstd (`zstdDecompressSync`
+ * landed in 23.8.0 and was backported to 22.15.0).
+ */
+const ZSTD_NODE_RANGE = '^22.15.0 || >=23.8.0';
+
+/**
+ * Whether a run whose deployment runs this Node.js version can decode zstd
+ * payloads. `undefined` (runs created before the version was recorded, or a
+ * non-Node runtime) is treated as unable to.
+ */
+export function nodeVersionSupportsZstd(
+  nodeVersion: string | undefined
+): boolean {
+  if (typeof nodeVersion !== 'string' || !semver.valid(nodeVersion)) {
+    return false;
+  }
+  return semver.satisfies(nodeVersion, ZSTD_NODE_RANGE);
+}
+
+/**
+ * The Node.js version of the current process, as recorded on the runs it
+ * creates (`executionContext.nodeVersion`) and advertised in health-check
+ * responses. `undefined` on runtimes that are not Node.js: Bun and Deno
+ * expose `process.versions.node` for compatibility, but their `node:zlib`
+ * support does not follow that version, so they must not claim it.
+ */
+export function getCurrentNodeVersion(): string | undefined {
+  try {
+    const versions = (
+      globalThis as {
+        process?: { versions?: Record<string, string | undefined> };
+      }
+    ).process?.versions;
+    if (!versions || versions.bun || versions.deno) return undefined;
+    return typeof versions.node === 'string' ? versions.node : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Look up what serialization capabilities a workflow run supports based on
- * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`).
+ * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`)
+ * and the Node.js version of its deployment (from `executionContext.nodeVersion`).
  *
- * When the version is `undefined`, not a string, or not a valid semver string
- * (e.g. older runs that predate the field, or corrupted metadata),
+ * When the core version is `undefined`, not a string, or not a valid semver
+ * string (e.g. older runs that predate the field, or corrupted metadata),
  * we assume the most conservative capabilities (baseline formats only,
- * non-format capabilities all `false`).
+ * non-format capabilities all `false`). When the Node.js version is unknown,
+ * zstd is excluded.
  */
 export function getRunCapabilities(
-  workflowCoreVersion: string | undefined
+  workflowCoreVersion: string | undefined,
+  nodeVersion?: string
 ): RunCapabilities {
   if (!workflowCoreVersion || !semver.valid(workflowCoreVersion)) {
     return {
@@ -158,6 +210,9 @@ export function getRunCapabilities(
       formats.add(format);
     }
   }
+  if (!nodeVersionSupportsZstd(nodeVersion)) {
+    formats.delete(SerializationFormat.ZSTD);
+  }
 
   const result: RunCapabilities = {
     supportedFormats: formats,
@@ -171,4 +226,20 @@ export function getRunCapabilities(
   }
 
   return result;
+}
+
+/**
+ * The compression a write may apply for a target run with these
+ * capabilities: any codec when it decodes zstd, gzip only when it decodes
+ * just gzip, none otherwise. Callers still gate on the run's specVersion.
+ */
+export function getCompressionMode(
+  capabilities: RunCapabilities
+): CompressionMode {
+  if (!capabilities.supportedFormats.has(SerializationFormat.GZIP)) {
+    return false;
+  }
+  return capabilities.supportedFormats.has(SerializationFormat.ZSTD)
+    ? true
+    : 'gzip';
 }

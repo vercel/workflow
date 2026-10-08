@@ -41,9 +41,9 @@ One workflow run represents one full conversation. The workflow suspends between
 Because the conversation is one workflow run, it stays on the deployment that started it. If each turn should run on the latest deployment while preserving selected state or streams, see [Versioning](/docs/foundations/versioning) for the child-run continuation pattern.
 </Callout>
 
-<Tabs items={['Workflow', 'API Route', 'Client']}>
+<TabsWithChildren tabs={["Workflow","API Route","Client"]}>
 
-<Tab value="Workflow">
+<TabContent order={1}>
 
 ```typescript title="workflows/support.ts" lineNumbers
 import { streamText, stepCountIs } from "ai";
@@ -91,7 +91,7 @@ async function runTurn(messages: ModelMessage[]) {
   "use step";
 
   const result = streamText({
-    model: "anthropic/claude-haiku-4.5",
+    model: "spacexai/grok-4.6",
     system: "You are a customer support agent.",
     messages,
     tools: TOOLS,
@@ -129,9 +129,9 @@ export async function supportWorkflow(initialMessages: ModelMessage[]) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="API Route">
+<TabContent order={2}>
 
 One endpoint handles first turn, follow-ups, and the `/done` exit. The client sends `runId` in the body to distinguish first vs follow-up.
 
@@ -246,9 +246,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Client">
+<TabContent order={3}>
 
 Store the `runId` in a ref and pass it in the body of every follow-up. `WorkflowChatTransport` forwards it for you.
 
@@ -299,9 +299,9 @@ export function SupportChat() {
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 ## How it works
 

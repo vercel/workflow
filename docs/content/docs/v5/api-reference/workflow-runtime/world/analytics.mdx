@@ -2,7 +2,7 @@
 title: Analytics
 description: Metadata-only read APIs for runs, steps, events, hooks, waits, and attributes, backed by the observability pipeline.
 type: reference
-summary: "Interfaces: world.analytics.runs, .attributes, .steps, .events, .hooks, .waits. Metadata-only listings with plan-based lookback windows; filter runs by attribute key=value."
+summary: "Interfaces: world.analytics.runs, .attributes, .steps, .events, .hooks, .waits. Metadata-only listings with plan-based lookback windows; filter runs by attribute key=value. Page limits are 1000 run-scoped, 100 cross-run."
 prerequisites:
   - /docs/api-reference/workflow-runtime/get-world
 related:
@@ -13,7 +13,8 @@ keywords:
   - analytics.runs
   - analytics.attributes
   - attribute filter
-  - listValues
+  - getMany
+  - pagination limit
   - lookback window
   - observability-upgrade-required
   - pageInfo
@@ -22,9 +23,10 @@ keywords:
 
 `world.analytics` is an optional, read-only namespace for observability surfaces: dashboards, command-line interface (CLI) tools, and admin tools that list large numbers of runs without touching payload data.
 
-For observability and inspection listings, prefer this namespace over
-[`world.runs.list()`](/docs/api-reference/workflow-runtime/world/storage#runslist).
-The storage API remains available for operational and payload-bearing reads.
+Prefer this namespace for observability: listing, filtering, and inspecting
+workflow state. Use the [Storage](/docs/api-reference/workflow-runtime/world/storage)
+API for payload-bearing reads, and for anything operational that has to see the
+canonical, up-to-the-moment record.
 
 It differs from [Storage](/docs/api-reference/workflow-runtime/world/storage) in two ways:
 
@@ -108,19 +110,190 @@ for (const { key, runCount, lastSeenAt } of page.data) {
 
 ---
 
-## analytics.steps, analytics.events, analytics.hooks, analytics.waits
+## analytics.steps
 
-Run-scoped listings mirroring their [Storage](/docs/api-reference/workflow-runtime/world/storage) counterparts, minus payload data:
+Run-scoped step listings mirroring their [Storage](/docs/api-reference/workflow-runtime/world/storage) counterparts, minus payload data.
+
+### steps.list()
 
 ```typescript lineNumbers
-const steps = await world.analytics.steps.list({ runId });
-const events = await world.analytics.events.list({ runId, eventType: "step_failed" });
-const related = await world.analytics.events.listByCorrelationId({ runId, correlationId });
-const hooks = await world.analytics.hooks.list({ runId });
-const waits = await world.analytics.waits.list({ runId, status: "waiting" });
+const steps = await world.analytics.steps.list({
+  runId,
+  pagination: { limit: 200, sortOrder: "asc" },
+});
 ```
 
-Each namespace also has a `get()` for point lookups (`steps.get(runId, stepId)`, `events.get(runId, eventId)`, `hooks.get(hookId)`, `waits.get(runId, waitId)`). Hook listings never include the hook token. Resolve it separately through the runtime APIs if you need to deliver a payload.
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Required. The run to list steps for |
+| `params.pagination` | `PaginationOptions` | Cursor pagination, `limit` up to 1000 |
+
+**Returns:** `PaginatedResponse<AnalyticsStep>`. Each step includes `stepId`, `stepName`, `status`, `attempt`, lifecycle timestamps, `errorCode`, and the `computeInstanceId` of the latest attempt.
+
+### steps.get()
+
+```typescript lineNumbers
+const step = await world.analytics.steps.get(runId, stepId);
+```
+
+**Returns:** `AnalyticsStep`. A step id is only unique within its run, so both arguments are required.
+
+---
+
+## analytics.events
+
+### events.list()
+
+```typescript lineNumbers
+const events = await world.analytics.events.list({
+  runId,
+  eventType: "step_failed", // [!code highlight]
+  pagination: { limit: 1000 },
+});
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Required. The run to list events for |
+| `params.eventType` | `string` | One event type, for example `run_failed` or `step_retrying` |
+| `params.correlationId` | `string` | Narrow to one entity: a step, hook, wait, or attribute id |
+| `params.pagination` | `PaginationOptions` | Cursor pagination, `limit` up to 1000 |
+
+**Returns:** `PaginatedResponse<AnalyticsEvent>`. Each event includes `eventId`, `eventType`, `correlationId`, `stepName`, `createdAt`, and provenance fields (`region`, `requestId`, `computeInstanceId`).
+
+Pass a step id as `correlationId` to build that step's timeline: `step_created` through `step_completed`, `step_failed`, or `step_retrying`.
+
+### events.get()
+
+```typescript lineNumbers
+const event = await world.analytics.events.get(runId, eventId);
+```
+
+**Returns:** `AnalyticsEvent`.
+
+### events.getMany()
+
+Look up a bounded set of event ids in one run with a single request.
+
+```typescript lineNumbers
+const events = await world.analytics.events.getMany(runId, eventIds); // [!code highlight]
+```
+
+**Returns:** `AnalyticsEvent[]` — not paginated, and no `pageInfo`. Duplicate ids are looked up once, and ids with no analytics row yet are **omitted rather than erroring**, since ingestion can trail canonical storage. Compare the returned length against your input to detect that.
+
+---
+
+## analytics.hooks
+
+### hooks.list()
+
+```typescript lineNumbers
+const hooks = await world.analytics.hooks.list({ runId });
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Required. The run to list hooks for |
+| `params.pagination` | `PaginationOptions` | Cursor pagination, `limit` up to 100 |
+
+**Returns:** `PaginatedResponse<AnalyticsHook>`: `hookId`, `status` (`created`, `received`, `disposed`, or `conflict`), `receivedAt`, `disposedAt`, `isWebhook`, `isSystem`.
+
+### hooks.get()
+
+```typescript lineNumbers
+const hook = await world.analytics.hooks.get(hookId);
+```
+
+Unlike steps and waits, a hook id identifies one hook on its own, so no `runId` is needed. Pass `{ runId }` to scope the lookup when you already know it.
+
+<Callout>
+  Hook listings never include the hook token. Resolve it separately through the
+  runtime APIs if you need to deliver a payload.
+</Callout>
+
+---
+
+## analytics.waits
+
+### waits.list()
+
+```typescript lineNumbers
+const waits = await world.analytics.waits.list({
+  runId,
+  status: "waiting", // [!code highlight]
+});
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Required. The run to list waits for |
+| `params.status` | `string` | `waiting` or `completed` |
+| `params.pagination` | `PaginationOptions` | Cursor pagination, `limit` up to 1000 |
+
+**Returns:** `PaginatedResponse<AnalyticsWait>`: `waitId`, `status`, `resumeAt`, `completedAt`.
+
+### waits.get()
+
+```typescript lineNumbers
+const wait = await world.analytics.waits.get(runId, waitId);
+```
+
+**Returns:** `AnalyticsWait`. A wait id is only unique within its run, so both arguments are required.
+
+---
+
+## Limits and validation
+
+Arguments are validated in your process before a request goes out. An
+out-of-range or malformed argument throws a `RangeError` naming the bound it
+broke, rather than reaching the backend and coming back as a 400 — which
+matters because analytics is optional and callers commonly wrap it in a
+`try`/`catch`, where a rejected request is easy to mistake for "no data".
+
+### Page limits
+
+`pagination.limit` defaults to 40 everywhere. The maximum depends on whether
+the listing scans within one run or across runs:
+
+| Method | Max `limit` |
+|--------|-------------|
+| `steps.list()`, `events.list()`, `waits.list()` | 1000 |
+| `runs.list()`, `attributes.list()`, `hooks.list()` | 100 |
+
+`events.getMany()` is not paginated; it accepts 1 to 100 event ids per call.
+
+<Callout type="warn">
+  The two page caps differ by a factor of ten, and `hooks.list()` takes the
+  lower one despite being run-scoped. Reusing one page size across listings is
+  the most common way to trip this.
+</Callout>
+
+### Identifiers
+
+Every id is a prefix plus a ULID, and each is checked before the request:
+
+| Parameter | Shape |
+|-----------|-------|
+| `runId` | `wrun_` |
+| `stepId` | `step_` |
+| `eventId` | `evnt_` |
+| `hookId` | `hook_` |
+| `waitId` | `wait_` |
+| `correlationId` | `step_`, `hook_`, `wait_`, or `attr_` |
+
+Step, event, and wait ids are only unique **within** their run, so the methods that take them require a `runId` too. A hook id stands alone.
+
+### Time windows
+
+`startTime` and `endTime` must be supplied **together** and be parseable ISO 8601 timestamps with `startTime` no later than `endTime`. Passing one without the other throws: it used to be dropped silently, which turned a listing you meant to bound into a scan of the whole retention window that looked like a successful answer.
+
+### Attribute filters
+
+`runs.list({ attributes })` accepts 1 to 8 pairs. Keys are 1 to 256 characters; values are at most 256 UTF-8 bytes. Reserved `$`-prefixed keys are valid in a filter even though user code cannot write them.
+
+### Pagination
+
+`cursor` is an opaque token from the previous response; do not construct or parse one. Branch on `hasMore`, not on `cursor` being non-null, and do not change `sortOrder` mid-walk — the cursor encodes the sort position, so reversing it can skip or repeat rows.
 
 ---
 

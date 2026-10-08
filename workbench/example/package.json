@@ -17,12 +17,12 @@
     "esbuild": "catalog:"
   },
   "dependencies": {
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@opentelemetry/api": "^1.9.0",
     "@vercel/functions": "catalog:",
     "@vercel/otel": "^1.13.0",
     "workflow": "workspace:*",
-    "@workflow/ai": "workspace:*",
-    "ai": "catalog:",
+    "ai": "catalog:ai-sdk-v7",
     "lodash.chunk": "^4.2.0",
     "mixpart": "^0.0.4",
     "openai": "^6",

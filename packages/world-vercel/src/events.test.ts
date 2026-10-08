@@ -1,18 +1,36 @@
 import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
-import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
+import { WorkflowWorldError } from '@workflow/errors';
+import {
+  type AnyEventRequest,
+  type CreateEventParams,
+  EventSchema,
+  mintedSpecVersion,
+  SEALED_LOG_ENV_VAR,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+} from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
   splitEventDataForV4,
 } from './events.js';
+import {
+  resetSkipStepInputsSupportForTests,
+  SKIP_STEP_INPUTS_REPROBE_MS,
+} from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+import {
+  getWsEventsTransport,
+  resolveWsTransport,
+  toEventsWsUrl,
+} from './ws-transport.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 const STARTED_AT = new Date('2026-06-10T00:00:00.000Z');
@@ -61,7 +79,10 @@ function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
   return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
 }
 
-function runStartedResponse(events: Uint8Array[] = []): Buffer {
+function runStartedResponse(
+  events: Uint8Array[] = [],
+  hasMore = false
+): Buffer {
   return Buffer.concat([
     encodeFrame(
       {
@@ -90,10 +111,7 @@ function runStartedResponse(events: Uint8Array[] = []): Buffer {
       new Uint8Array()
     ),
     ...events,
-    encodeFrame(
-      { _end: 1, next: 'eid:evnt_1', hasMore: false },
-      new Uint8Array()
-    ),
+    encodeFrame({ _end: 1, next: 'eid:evnt_1', hasMore }, new Uint8Array()),
   ]);
 }
 
@@ -161,6 +179,49 @@ describe('createWorkflowRunEvent with v1Compat', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  // A `hook_received` resumed with a payload the legacy v1 server does not
+  // echo back (e.g. an `undefined` resume payload) comes back with an
+  // `eventData` that omits the required `payload` key. Under Zod 4.5 the bare
+  // `EventSchema` rejects a missing property, so this path must parse with the
+  // omitted-payload-tolerant wire schema (the same fix the v4 sites use), or
+  // hook resume breaks for legacy spec-1 runs.
+  it('parses a legacy hook_received response that omits payload', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v1/runs/wrun_legacy/events', method: 'POST' })
+      .reply(
+        200,
+        {
+          eventId: 'evnt_legacy',
+          runId: 'wrun_legacy',
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          specVersion: 1,
+          // payload key intentionally absent
+          eventData: {},
+        },
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_legacy',
+      {
+        eventType: 'hook_received',
+        correlationId: 'hook_1',
+        specVersion: 1,
+        eventData: { payload: undefined },
+      } as AnyEventRequest,
+      { v1Compat: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_legacy');
+    expect(result.event?.eventType).toBe('hook_received');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('rejects v1Compat without a runId for non-lifecycle events', async () => {
     await expect(
       createWorkflowRunEvent(
@@ -175,6 +236,90 @@ describe('createWorkflowRunEvent with v1Compat', () => {
         { token: 'test-token' }
       )
     ).rejects.toThrow(/requires a runId/);
+  });
+});
+
+/**
+ * `run_started` attests the spec version this SDK runs, separately from the
+ * `specVersion` it repeats from the queue message (the stamp of whoever called
+ * `start()`, possibly an older deployment). The backend raises a run stamped
+ * lower to this value.
+ */
+describe('createWorkflowRunEvent executorSpecVersion', () => {
+  async function postRunStartedAndCaptureMeta(
+    extraConfig: { mintedSpecVersion?: number } = {}
+  ): Promise<Record<string, unknown> | undefined> {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return runStartedResponse();
+        },
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent, ...extraConfig }
+    );
+    agent.assertNoPendingInterceptors();
+    return capturedMeta;
+  }
+
+  it("sends the version this SDK mints next to the caller's stamp", async () => {
+    const meta = await postRunStartedAndCaptureMeta();
+    expect(meta?.specVersion).toBe(SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT);
+    expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
+  });
+
+  it('attests the version the World declared at creation, not a later env read', async () => {
+    // `createWorld` records what it declared; flipping the kill switch
+    // in-process afterwards must not make run_started claim more than the
+    // runtime validated.
+    vi.stubEnv(SEALED_LOG_ENV_VAR, '1');
+    try {
+      const meta = await postRunStartedAndCaptureMeta({
+        mintedSpecVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      });
+      expect(meta?.executorSpecVersion).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('follows the sealed-log kill switch', async () => {
+    vi.stubEnv(SEALED_LOG_ENV_VAR, '0');
+    try {
+      const meta = await postRunStartedAndCaptureMeta();
+      expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
+      expect(meta?.executorSpecVersion).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -571,18 +716,20 @@ describe('splitEventDataForV4 attribute fields', () => {
   });
 
   it('carries initial run attributes on run_created', () => {
+    const input = new Uint8Array(8192);
     const { payload, meta } = splitEventDataForV4({
       eventType: 'run_created',
       specVersion: 4,
       eventData: {
         deploymentId: 'dpl_1',
         workflowName: 'wf',
-        input: new TextEncoder().encode('[]'),
+        input,
         attributes: { sourceAtStart: 'api' },
       },
     } as AnyEventRequest);
 
-    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(payload).toBe(input);
+    expect(meta.input).toBeUndefined();
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
     expect(meta.deploymentId).toBe('dpl_1');
     expect(meta.workflowName).toBe('wf');
@@ -608,6 +755,7 @@ describe('splitEventDataForV4 attribute fields', () => {
   it('lifts workflowName into the frame meta on outcome events (step_completed/step_created), keeping the payload in the body', () => {
     // The backend keys payload refs by workflow name; carrying it in the
     // frame meta lets the v4 POST handler skip the per-step run lookup.
+    const result = new Uint8Array(8192);
     const completed = splitEventDataForV4({
       eventType: 'step_completed',
       correlationId: 'step_1',
@@ -615,12 +763,12 @@ describe('splitEventDataForV4 attribute fields', () => {
       eventData: {
         stepName: 's',
         workflowName: 'wf',
-        result: new TextEncoder().encode('"ok"'),
+        result,
       },
     } as AnyEventRequest);
     expect(completed.meta.workflowName).toBe('wf');
     // The result still travels as the opaque body, not in meta.
-    expect(completed.payload).toBeInstanceOf(Uint8Array);
+    expect(completed.payload).toBe(result);
     expect(completed.meta.result).toBeUndefined();
 
     const created = splitEventDataForV4({
@@ -777,7 +925,153 @@ describe('splitEventDataForV4 attribute fields', () => {
   });
 });
 
+describe('attr_set eventData size limit', () => {
+  function attributeEvent(bytes: number) {
+    const padding = { key: 'padding', value: '' };
+    // Each value stays within 256 bytes; the aggregate JSON reaches the cap.
+    const eventData = {
+      changes: [
+        ...Array.from({ length: 28 }, (_, i) => ({
+          key: `key${i}`,
+          value: '\u00e9'.repeat(128),
+        })),
+        padding,
+      ],
+      writer: { type: 'step' as const, stepId: 'step_1', attempt: 2 },
+      allowReservedAttributes: true as const,
+    };
+    padding.value = 'x'.repeat(
+      bytes - Buffer.byteLength(JSON.stringify(eventData))
+    );
+    return {
+      eventType: 'attr_set' as const,
+      correlationId: 'attr_1',
+      specVersion: 4,
+      eventData,
+    } satisfies AnyEventRequest;
+  }
+
+  it('accepts exactly 8192 UTF-8 JSON bytes and rejects 8193 including writer metadata', () => {
+    const accepted = attributeEvent(8192);
+    expect(Buffer.byteLength(JSON.stringify(accepted.eventData))).toBe(8192);
+    expect(splitEventDataForV4(accepted)).toEqual({
+      payload: undefined,
+      meta: accepted.eventData,
+    });
+
+    const rejected = attributeEvent(8193);
+    expect(Buffer.byteLength(JSON.stringify(rejected.eventData))).toBe(8193);
+    expect(() => splitEventDataForV4(rejected)).toThrow(
+      expect.objectContaining({
+        name: 'WorkflowWorldError',
+        status: 400,
+        message: expect.stringContaining('received 8193 bytes'),
+      })
+    );
+  });
+
+  it.each([
+    'http',
+    'ws',
+  ])('rejects a direct oversized create before %s transport without retrying', async (transportKind) => {
+    vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', transportKind);
+    vi.useFakeTimers();
+    const retryTimer = vi.spyOn(globalThis, 'setTimeout');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response('Unexpected HTTP request', { status: 400 })
+      );
+    const config = { token: 'test-token' };
+    const transport = getWsEventsTransport(
+      toEventsWsUrl(`${ORIGIN}/api`, 'wrun_1'),
+      async () => ({ authorization: 'Bearer test-token' })
+    );
+    const requestSpy = vi
+      .spyOn(transport, 'request')
+      .mockRejectedValue(
+        new WorkflowWorldError('Unexpected WS request', { status: 400 })
+      );
+
+    try {
+      expect(resolveWsTransport('wrun_1', config)?.transport).toBe(transport);
+      const result = createWorkflowRunEvent(
+        'wrun_1',
+        attributeEvent(8193),
+        undefined,
+        config
+      ).catch((error) => error);
+      await vi.runAllTimersAsync();
+
+      const error = await result;
+      expect(error).toBeInstanceOf(WorkflowWorldError);
+      expect(error).toMatchObject({
+        status: 400,
+        message: expect.stringContaining('received 8193 bytes'),
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(requestSpy).not.toHaveBeenCalled();
+      expect(retryTimer).not.toHaveBeenCalled();
+    } finally {
+      transport.close('test cleanup');
+      requestSpy.mockRestore();
+      fetchSpy.mockRestore();
+      retryTimer.mockRestore();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('still parses persisted attr_set events larger than the write limit', () => {
+    const event = attributeEvent(8193);
+    expect(
+      EventSchema.parse({
+        ...event,
+        eventId: 'evnt_1',
+        runId: 'wrun_1',
+        createdAt: STARTED_AT,
+      }).eventData
+    ).toEqual(event.eventData);
+  });
+});
+
 describe('createWorkflowRunEvent response coercion', () => {
+  it('surfaces streamed event observer failures unchanged', async () => {
+    const agent = mockAgent();
+    const observerError = new WorkflowWorldError('observer failed', {
+      code: 'TRANSPORT',
+    });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, runStartedResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': STARTED_AT.toISOString(),
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+        {
+          replayEventObserver: () => {
+            throw observerError;
+          },
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toBe(observerError);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('accepts a current region-tagged run_created runId', async () => {
     const taggedRunId = `wrun_${encodeRunId(ulid(), REGION_IDS.sfo1)}`;
     const agent = mockAgent();
@@ -1046,6 +1340,52 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('classifies a run_started stream missing lifecycle events as a world schema error', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: STARTED_AT,
+              specVersion: 5,
+              eventData: {},
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      )
+    );
+
+    try {
+      await expect(
+        createWorkflowRunEvent(
+          'wrun_1',
+          { eventType: 'run_started', specVersion: 5 },
+          undefined,
+          { token: 'test-token' }
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'SCHEMA_VALIDATION',
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('threads the wait entity through to the EventResult', async () => {
     const agent = mockAgent();
     agent
@@ -1182,7 +1522,10 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
   }
 
@@ -1329,7 +1672,10 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
   }
 
@@ -1557,8 +1903,8 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     return out;
   }
 
-  function hookReplayStreamResponse(): Uint8Array {
-    return concatFrames([
+  function hookReplayFrames(): Uint8Array[] {
+    return [
       encodeFrame(
         {
           eventId: 'evnt_1',
@@ -1614,7 +1960,11 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         { _end: 1, next: 'eid:evnt_4', hasMore: false },
         new Uint8Array()
       ),
-    ]);
+    ];
+  }
+
+  function hookReplayStreamResponse(): Uint8Array {
+    return concatFrames(hookReplayFrames());
   }
 
   it('decodes a streamed replay log into event + reconstructed run + page', async () => {
@@ -1842,7 +2192,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('rejects a truncated preload stream (no end sentinel)', async () => {
+  it('continues a truncated preload after its last validated event', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1851,30 +2201,35 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
-      .reply(
-        200,
-        encodeFrame(
-          {
-            eventId: 'evnt_4',
-            runId: 'wrun_1',
-            eventType: 'hook_received',
-            correlationId: 'hook_1',
-            createdAt: new Date('2026-06-10T00:00:03.000Z'),
-            specVersion: 2,
-            resumeId: RESUME_ID,
-            eventData: { token: 'tok-preload' },
-          },
-          PAYLOAD
-        ),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-
-    await expect(
-      createWorkflowRunEvent('wrun_1', hookReceivedRequest(), preloadParams, {
-        token: 'test-token',
-        dispatcher: agent,
+      .reply(200, concatFrames(hookReplayFrames().slice(0, 2)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_4',
+          'x-wf-max-events': '10000',
+        },
+      });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: /\/api\/v4\/runs\/wrun_1\/events\?.*cursor=eid%3Aevnt_2/,
+        method: 'GET',
       })
-    ).rejects.toThrow(/end-of-stream sentinel/);
+      .reply(200, concatFrames(hookReplayFrames().slice(2)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.events).toHaveLength(4);
+    expect(result.maxEvents).toBe(10000);
     agent.assertNoPendingInterceptors();
   });
 
@@ -1927,6 +2282,317 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     // never opts into the frame response.
     expect(capturedAccept ?? '').not.toContain(V4_FRAME_CONTENT_TYPE);
     expect(result.event?.eventType).toBe('hook_received');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe("resolveData 'skip-step-inputs'", () => {
+  const headers = {
+    'content-type': V4_FRAME_CONTENT_TYPE,
+    'x-wf-event-id': 'evnt_1',
+    'x-wf-run-id': 'wrun_1',
+    'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+    'x-wf-max-events': '10000',
+  };
+
+  afterEach(() => resetSkipStepInputsSupportForTests());
+
+  // A server honoring it sends step_created with an empty body and no `input`
+  // in the frame meta; everything else about the event is intact.
+  const stepCreatedWithoutInput = encodeFrame(
+    {
+      eventId: 'evnt_2',
+      runId: 'wrun_1',
+      eventType: 'step_created',
+      correlationId: 'step_1',
+      createdAt: '2026-06-10T00:00:01.000Z',
+      specVersion: 2,
+      eventData: { stepName: 'step//add', workflowName: 'workflow' },
+    },
+    new Uint8Array()
+  );
+  const listBody = Buffer.concat([
+    stepCreatedWithoutInput,
+    encodeFrame(
+      { _end: 1, next: 'eid:evnt_2', hasMore: false },
+      new Uint8Array()
+    ),
+  ]);
+
+  it('lists with remoteRefBehavior=skip-step-inputs and accepts events without inputs', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
+      })
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.data).toHaveLength(1);
+    const event = result.data[0] as {
+      eventType: string;
+      correlationId?: string;
+      eventData: Record<string, unknown>;
+    };
+    expect(event.eventType).toBe('step_created');
+    expect(event.correlationId).toBe('step_1');
+    expect(event.eventData.stepName).toBe('step//add');
+    expect('input' in event.eventData).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('falls back to resolve, once, against a backend that rejects the value', async () => {
+    // An older backend validates remoteRefBehavior as resolve | lazy.
+    const agent = mockAgent();
+    const pool = agent.get(ORIGIN);
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
+      })
+      .reply(
+        400,
+        // Verbatim what workflow-server main (cf26719) answers.
+        {
+          success: false,
+          error: 'validation-error',
+          details: [
+            {
+              code: 'invalid_value',
+              values: ['resolve', 'lazy'],
+              path: ['remoteRefBehavior'],
+              message: 'Invalid option: expected one of "resolve"|"lazy"',
+            },
+          ],
+        },
+        { headers: { 'content-type': 'application/json' } }
+      );
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      })
+      .times(2);
+    const config = { token: 'test-token', dispatcher: agent };
+
+    const first = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      config
+    );
+    // Remembered: the next read goes straight to resolve.
+    const second = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      config
+    );
+
+    expect(first.data).toHaveLength(1);
+    expect(second.data).toHaveLength(1);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('probes the backend again once the remembered rejection expires', async () => {
+    const agent = mockAgent();
+    const pool = agent.get(ORIGIN);
+    const asked: string[] = [];
+    let upgraded = false;
+    pool
+      .intercept({
+        path: (path) => path.startsWith('/api/v4/runs/wrun_1/events?'),
+        method: 'GET',
+      })
+      .reply((opts) => {
+        const behavior =
+          new URL(opts.path, ORIGIN).searchParams.get('remoteRefBehavior') ??
+          '';
+        asked.push(behavior);
+        if (behavior === 'skip-step-inputs' && !upgraded) {
+          return {
+            statusCode: 400,
+            data: {
+              success: false,
+              error: 'validation-error',
+              details: [{ path: ['remoteRefBehavior'] }],
+            },
+            responseOptions: {
+              headers: { 'content-type': 'application/json' },
+            },
+          };
+        }
+        return {
+          statusCode: 200,
+          data: listBody,
+          responseOptions: {
+            headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+          },
+        };
+      })
+      .persist();
+    const config = { token: 'test-token', dispatcher: agent };
+    const read = () =>
+      getWorkflowRunEvents(
+        { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+        config
+      );
+    const now = vi.spyOn(Date, 'now');
+    try {
+      // An old instance rejects the value; the read falls back to resolve.
+      now.mockReturnValue(1_000_000);
+      await read();
+      // Within the window the backend isn't asked again.
+      now.mockReturnValue(1_000_000 + SKIP_STEP_INPUTS_REPROBE_MS - 1);
+      await read();
+      // Once it has passed, it is, and the upgraded backend accepts.
+      upgraded = true;
+      now.mockReturnValue(1_000_000 + SKIP_STEP_INPUTS_REPROBE_MS);
+      await read();
+    } finally {
+      now.mockRestore();
+    }
+    expect(asked).toEqual([
+      'skip-step-inputs',
+      'resolve',
+      'resolve',
+      'skip-step-inputs',
+    ]);
+  });
+
+  it('surfaces a 400 that was about something else, without remembering the backend', async () => {
+    const agent = mockAgent();
+    const pool = agent.get(ORIGIN);
+    const badCursor = {
+      success: false,
+      error: 'validation-error',
+      details: [{ path: ['cursor'], message: 'Invalid cursor' }],
+    };
+    for (const remoteRefBehavior of ['skip-step-inputs', 'resolve']) {
+      pool
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events',
+          method: 'GET',
+          query: { returnAll: 'true', remoteRefBehavior },
+        })
+        .reply(400, badCursor, {
+          headers: { 'content-type': 'application/json' },
+        });
+    }
+    // Not remembered: the next read still asks for skip-step-inputs.
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
+      })
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    const config = { token: 'test-token', dispatcher: agent };
+
+    await expect(
+      getWorkflowRunEvents(
+        { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+        config
+      )
+    ).rejects.toMatchObject({ status: 400, code: 'validation-error' });
+    const next = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      config
+    );
+
+    expect(next.data).toHaveLength(1);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('asks for it on the event-log page a create returns, and on the replay suffix', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    const pool = agent.get(ORIGIN);
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          // A partial replay log: the rest is fetched with a GET from its
+          // cursor, which must ask for the same omission.
+          return runStartedResponse([], true);
+        },
+        { headers }
+      );
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: {
+          returnAll: 'true',
+          cursor: 'eid:evnt_1',
+          remoteRefBehavior: 'skip-step-inputs',
+        },
+      })
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      { resolveData: 'skip-step-inputs' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventsRemoteRefBehavior).toBe('skip-step-inputs');
+    // The created entities keep their own resolution.
+    expect(capturedMeta?.remoteRefBehavior).toBe('resolve');
+    expect(result.events?.map((e) => e.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'step_created',
+    ]);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('leaves the event-log page alone when the caller does not ask', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return runStartedResponse();
+        },
+        { headers }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect('eventsRemoteRefBehavior' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });

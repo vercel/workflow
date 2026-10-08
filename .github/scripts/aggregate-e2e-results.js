@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { dimensionFor } = require('./generate-e2e-flake-history.js');
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -62,7 +63,7 @@ function findResultFiles(dir) {
     // trailing dot matters — the Python lane's report is
     // `e2e-conformance-python.json` and must keep matching.
     'e2e-conformance.',
-  ]);
+  ]).filter((file) => !file.endsWith('.flaky.json'));
 }
 
 // Find all e2e metadata JSON files
@@ -159,19 +160,34 @@ function loadFailures(dir) {
 // several jobs for one app is collapsed into a single entry with an
 // occurrence count so the section stays scannable.
 function loadFlaky(dir) {
-  // Map of `${app}\u0000${testName}` -> { app, testName, retryCount, occurrences }
+  // New sidecars pair 1:1 with exact result files; keep reading legacy names
+  // while artifacts from older branches can still reach the aggregator.
   const flaky = new Map();
-  const files = findJsonFiles(dir, 'e2e-flaky-');
+  const paired = findJsonFiles(dir, 'e2e-').filter((file) =>
+    file.endsWith('.flaky.json')
+  );
+  const legacy = findJsonFiles(dir, 'e2e-flaky-');
 
-  for (const file of files) {
-    const basename = path.basename(file, '.json');
-    const match = basename.match(/^e2e-flaky-(.+)-(?:vercel|local)$/);
-    const app = match ? match[1] : 'unknown';
+  for (const file of [...paired, ...legacy]) {
+    const basename = path.basename(file);
+    const pairedReport = basename.replace(/\.flaky\.json$/, '.json');
+    const dimension = basename.endsWith('.flaky.json')
+      ? dimensionFor(pairedReport)
+      : null;
+    const legacyMatch = path
+      .basename(file, '.json')
+      .match(/^e2e-flaky-(.+)-(?:vercel|local)$/);
+    const app = dimension?.app || legacyMatch?.[1] || 'unknown';
+    const lane = dimension
+      ? [dimension.lane, dimension.world, dimension.vm, dimension.variant]
+          .filter(Boolean)
+          .join(' / ')
+      : null;
     try {
       const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
       for (const entry of entries) {
         if (!entry.testName) continue;
-        const key = `${app}\u0000${entry.testName}`;
+        const key = `${lane || app}\u0000${entry.fullName || entry.testName}`;
         const existing = flaky.get(key);
         if (existing) {
           existing.occurrences++;
@@ -182,6 +198,7 @@ function loadFlaky(dir) {
         } else {
           flaky.set(key, {
             app,
+            lane,
             testName: entry.testName,
             retryCount: entry.retryCount || 1,
             occurrences: 1,
@@ -286,7 +303,8 @@ function renderFlakySection(flakyTests) {
   for (const test of sorted) {
     const jobs =
       test.occurrences > 1 ? ` — flaked in ${test.occurrences} jobs` : '';
-    console.log(`- \`${test.testName}\` (${test.app})${jobs}`);
+    const location = test.lane ? `${test.app} · ${test.lane}` : test.app;
+    console.log(`- \`${test.testName}\` (${location})${jobs}`);
   }
   console.log('');
   if (collapse) {

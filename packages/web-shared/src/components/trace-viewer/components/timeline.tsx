@@ -30,6 +30,7 @@ import {
   computeSpanSegments,
   getResourceClassNames,
   getSpanDurationMs,
+  isSpanCancelled,
   isSpanErrored,
 } from '../utils';
 import {
@@ -56,6 +57,7 @@ const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   waiting: 'bg-gray-200 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
   completed: 'bg-blue-200 border border-blue-500',
+  cancelled: 'bg-gray-500 border border-gray-700',
   failed: 'bg-red-200 border border-red-500',
   succeeded: 'bg-green-200 border border-green-500',
   sleeping: 'bg-gray-400 border border-gray-500',
@@ -451,10 +453,13 @@ const TimelineBar = memo(function TimelineBar({
     markers.length > 0 || offscreen.left !== null || offscreen.right !== null;
 
   const isErrored = isSpanErrored(span);
+  const isCancelled = isSpanCancelled(span);
   const colors = getResourceClassNames(span.resource);
   const fallbackClassName = isErrored
     ? (colors.errorClassName ?? 'border-red-500 bg-red-200')
-    : colors.className;
+    : isCancelled
+      ? 'border-gray-700 bg-gray-500'
+      : colors.className;
 
   const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =

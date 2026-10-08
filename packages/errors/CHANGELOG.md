@@ -1,5 +1,158 @@
 # @workflow/errors
 
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431)]:
+  - @workflow/world@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- Updated dependencies [[`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa)]:
+  - @workflow/world@5.0.1
+
+## 5.0.0
+
+### Major Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Initial v5 beta release
+
+- [#1851](https://github.com/vercel/workflow/pull/1851) [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Run and step errors are now serialized through the workflow serialization pipeline, preserving original class identity and cause chains on `WorkflowRunFailedError.cause`. Pre-upgrade failed runs in the `world-postgres` legacy `error` text column surface as `error: undefined` on read; the original payload is still readable directly from the `errorJson` column for manual inspection.
+
+### Minor Changes
+
+- [#3943](https://github.com/vercel/workflow/pull/3943) [`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate `world.analytics` arguments up front: an invalid id, an out-of-range page limit, an oversized attribute filter, or a half-open `startTime`/`endTime` window now throws a `WorkflowWorldError` with `code: 'INVALID_ARGUMENT'` and `field` set to the offending parameter, instead of failing the request. The message names the method, the parameter, and what it received. Adds `ANALYTICS_RUN_SCOPED_PAGE_LIMIT`, `ANALYTICS_PAGE_LIMIT` and `ANALYTICS_MAX_ATTRIBUTE_FILTERS`.
+  
+  Deprecate `analytics.events.listByCorrelationId()` in favour of `analytics.events.list({ runId, correlationId })`.
+  
+  Fix `analytics.attributes.list()` timestamps being shifted by the local UTC offset.
+
+- [#3145](https://github.com/vercel/workflow/pull/3145) [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Strengthen the event-creation precondition guard: replay-context writes now also send the number of loaded events, so a snapshot that is missing an event is rejected instead of committing a divergent event log, and a rejection restarts the replay in-process (consuming the events a world may attach to the rejection) rather than re-committing the rejected payload or re-invoking over the queue. `@workflow/world-local` and `@workflow/world-postgres` do not implement the check.
+
+- [#2266](https://github.com/vercel/workflow/pull/2266) [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an opt-in optimistic-concurrency guard for event creation (`WORKFLOW_PRECONDITION_GUARD=1`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a queue re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`.
+
+- [#2960](https://github.com/vercel/workflow/pull/2960) [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Re-route a queue delivery that reaches a deployment other than the one its run is pinned to, retry transient publishing failures through normal queue redelivery, and fail the run with the new `DEPLOYMENT_MISMATCH` error code once the recovery budget is spent.
+
+- [#4193](https://github.com/vercel/workflow/pull/4193) [`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `createHook({ experimental_force: true })` option, which takes a hook token over from the run that currently holds it instead of rejecting with `HookConflictError`. Previous runs awaiting the hook are rejected with `HookForceClaimedError` naming the run that took the token. See [`experimental_force` docs](https://workflow-sdk.dev/v5/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for details.
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+### Patch Changes
+
+- [#2012](https://github.com/vercel/workflow/pull/2012) [`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837) Thanks [@pranaygp](https://github.com/pranaygp)! - Expose the active run ID on hook token conflict errors.
+
+- [#2046](https://github.com/vercel/workflow/pull/2046) [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51) Thanks [@pranaygp](https://github.com/pranaygp)! - Report corrupted event logs with a distinct `CorruptedEventLogError` type and `CORRUPTED_EVENT_LOG` run error code.
+
+- [#1915](https://github.com/vercel/workflow/pull/1915) [`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Replace the `chalk` import in `@workflow/errors/ansi` with a tiny inline ANSI shim. `@workflow/errors/ansi` is reachable from the workflow-VM bundle (via `@workflow/core/workflow` → `context-errors` → `context-violation-error` → here), and `chalk` pulls in `supports-color`, which calls `require('os')` at module load — crashing every workflow with `ReferenceError: require is not defined` in the sandboxed VM.
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1849](https://github.com/vercel/workflow/pull/1849) [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd) Thanks [@pranaygp](https://github.com/pranaygp)! - Friendlier workflow error messages. New `SerializationError`, `WorkflowBuildError`, and structured context-violation classes (e.g. `NotInWorkflowContextError`) with actionable hints and docs links applied to user-facing throw sites; `FatalError.is()` recognizes any error with `fatal: true` so context violations and serialization failures now fail fast instead of burning retry attempts. Runtime logs are namespaced under `[workflow-sdk]` and gain `errorAttribution` (`user` vs `sdk`) plus class-aware hints
+
+- [#2946](https://github.com/vercel/workflow/pull/2946) [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The `WORKFLOW_PRECONDITION_GUARD` event-creation guard is now on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`.
+
+- [#1849](https://github.com/vercel/workflow/pull/1849) [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd) Thanks [@pranaygp](https://github.com/pranaygp)! - Replace `util.inspect`'s default object dump for runtime structured-log metadata with an opinionated, workflow-aware formatter. The runtime logger uses color-coded metadata blocks.
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- [#2212](https://github.com/vercel/workflow/pull/2212) [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1) Thanks [@pranaygp](https://github.com/pranaygp)! - Retry transient workflow replay divergence before classifying repeated divergence as a corrupted event log.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove the retired step route runtime and make queue health checks target the combined flow handler.
+
+- [#2145](https://github.com/vercel/workflow/pull/2145) [`8d0928b`](https://github.com/vercel/workflow/commit/8d0928b2a2ce61b6c05cb8930d29f176b3a83970) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Classify SDK-level AES-GCM encryption failures as `RUNTIME_ERROR` instead of `USER_ERROR` via a new `RuntimeDecryptionError`.
+
+- [#2060](https://github.com/vercel/workflow/pull/2060) [`1d3959e`](https://github.com/vercel/workflow/commit/1d3959eaa8db5866d08ad3970324c1b5dae73f7b) Thanks [@pranaygp](https://github.com/pranaygp)! - Record fatal world response contract failures as non-retryable workflow errors.
+
+- [#3479](https://github.com/vercel/workflow/pull/3479) [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Replay-context event writes now always report the log position they replayed from, and the `WORKFLOW_PRECONDITION_GUARD` flag is removed.
+
+- [#3410](https://github.com/vercel/workflow/pull/3410) [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Surface typed terminal errors when stream retention expires.
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+- Updated dependencies [[`f2be954`](https://github.com/vercel/workflow/commit/f2be954bb7fee078bc4b78118edaa157130fa362), [`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`ac41e7d`](https://github.com/vercel/workflow/commit/ac41e7d1d77d48d783ca49d01394dc325afd7ea2), [`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`1e6b1fd`](https://github.com/vercel/workflow/commit/1e6b1fdea2010c1f55b3e6fb5386d436c4406eb4), [`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6), [`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a), [`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`dc0be50`](https://github.com/vercel/workflow/commit/dc0be50618bd6a465e3f9768ee7427d282aa1fd7), [`8d47928`](https://github.com/vercel/workflow/commit/8d479283cabd9de84fa2542c4ff16f2697d16399), [`74dbf81`](https://github.com/vercel/workflow/commit/74dbf81d327b8574cca429b56757c7322a26b4ef), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`4a9d26b`](https://github.com/vercel/workflow/commit/4a9d26b1cb807a9e31489350b468db42a8c13ef3), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`ad71b58`](https://github.com/vercel/workflow/commit/ad71b58bba65e739fbafee0440ffff48878e7e51), [`8f68d35`](https://github.com/vercel/workflow/commit/8f68d3525ce3e420f4d16b9976c97a5598f91afd), [`ec57aff`](https://github.com/vercel/workflow/commit/ec57aff3be53c7404191de41b7a140d814235efa), [`6cc851c`](https://github.com/vercel/workflow/commit/6cc851c34210f7c74141500e4849e00173c2791e), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6), [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e), [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1), [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`a8db185`](https://github.com/vercel/workflow/commit/a8db185c3b19b3dab971f51aa076aead81ed26ea), [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3), [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`b124365`](https://github.com/vercel/workflow/commit/b124365e14b0c47a5c830c7009dd5bf0149d5a59), [`5f0b845`](https://github.com/vercel/workflow/commit/5f0b845211152b6f2860c78d0dd4dccc9d4f0d97), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734), [`a5e6f11`](https://github.com/vercel/workflow/commit/a5e6f1167aa07f36b49777d3c020282d11a0abf2), [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`2074f91`](https://github.com/vercel/workflow/commit/2074f91b86c43267549625fd89f597c7bedf44ca), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`c31e30c`](https://github.com/vercel/workflow/commit/c31e30caacab20c0d9c0df38349929ae1e0aebdf), [`9c1b3c8`](https://github.com/vercel/workflow/commit/9c1b3c86384181b673d41123d2eec0b987afc75a), [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`e7ef9d8`](https://github.com/vercel/workflow/commit/e7ef9d823bd6c962d9c0c62e50e4883848c270f9), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`439a495`](https://github.com/vercel/workflow/commit/439a495a715b9426ef4dbcf8d928a8fc50ffb040), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78), [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`ae8d6fe`](https://github.com/vercel/workflow/commit/ae8d6feeda0d1d31da8da70156d6e04ebb0487d0), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3), [`3f69666`](https://github.com/vercel/workflow/commit/3f696668bcc436cd4b3e29213ee1d9d12e2e5b01), [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`62ec537`](https://github.com/vercel/workflow/commit/62ec5372fb7dc0d8d088be0c55db35d14eea5b14), [`926a5e7`](https://github.com/vercel/workflow/commit/926a5e7c6a50c1e74f2e2cc37324caa0f6442d85), [`ab2e9b8`](https://github.com/vercel/workflow/commit/ab2e9b8d0740c457f80e05f05c1fd907bcf4f027), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`e00b1a5`](https://github.com/vercel/workflow/commit/e00b1a57ee8e4cc7b597e1bd23188efe23cc6235), [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`f76377b`](https://github.com/vercel/workflow/commit/f76377bf04239eccd8c85a6db19d0465e7bdb2ee), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352), [`0b956f6`](https://github.com/vercel/workflow/commit/0b956f65cb0ab30501c72e934fc8d4352c4c3ea2), [`2a3b11b`](https://github.com/vercel/workflow/commit/2a3b11bcb408f1aa071b0e37f0b2df614052acd1), [`2a446af`](https://github.com/vercel/workflow/commit/2a446af517dbb91ae959adade1d74ef0428a2b09), [`4017597`](https://github.com/vercel/workflow/commit/4017597a5f6a54da7ea3bf467c8c63b3bf3bc845), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`1933e29`](https://github.com/vercel/workflow/commit/1933e294cf938fb2314f45047033f8720ccf442b), [`712ed61`](https://github.com/vercel/workflow/commit/712ed61f0a37937c3990429508c582f3edbd4576), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`25c3df7`](https://github.com/vercel/workflow/commit/25c3df74f88726f9336ca20e6c48fd3366c40749), [`6786db9`](https://github.com/vercel/workflow/commit/6786db99538ef57c872d861ecfb28d99ae857d6d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`628795a`](https://github.com/vercel/workflow/commit/628795aa8729bef442c7a1583cf2f3d986e9e4fc), [`6b8efd5`](https://github.com/vercel/workflow/commit/6b8efd58ce4829648f410e483bf42935dc5dcd1e), [`03455a2`](https://github.com/vercel/workflow/commit/03455a2979663b0e1acfa0ebecba3c2b77187ae8), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`22349e9`](https://github.com/vercel/workflow/commit/22349e95fd85a112cbec3f425900b74bf5ccc77f), [`cc7f076`](https://github.com/vercel/workflow/commit/cc7f076528ca8ba6ee824628b82bee64fd5672a8), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef), [`d108ba3`](https://github.com/vercel/workflow/commit/d108ba32a76d516deadaa7264aec79412d862626), [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8), [`fe327e6`](https://github.com/vercel/workflow/commit/fe327e69e205417f864fc4109f6e8b79e92e141a), [`bb773e9`](https://github.com/vercel/workflow/commit/bb773e950786b15100a8058407cbfcba23a44ebc), [`9da2d76`](https://github.com/vercel/workflow/commit/9da2d762604c2b73eb39f07fc0b069aea643e18d), [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03), [`2ab7057`](https://github.com/vercel/workflow/commit/2ab70579542a359db818d771ece5a19cd8fdd399), [`72efc90`](https://github.com/vercel/workflow/commit/72efc90f286956e6cde25b814f9375a8ecbbff36), [`48e6bbf`](https://github.com/vercel/workflow/commit/48e6bbfcc37b7997c33eb1ea3c662d553bfc5d07), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa), [`7a46a81`](https://github.com/vercel/workflow/commit/7a46a81a53d91ddcff75b073b917a900f3cb956b)]:
+  - @workflow/world@5.0.0
+  - @workflow/utils@5.0.0
+
+## 5.0.0-beta.25
+
+### Patch Changes
+
+- Updated dependencies [[`9d72807`](https://github.com/vercel/workflow/commit/9d72807c07ad07e63c88eeb566d2423c873f982a), [`20e8440`](https://github.com/vercel/workflow/commit/20e8440f6ec31dbe3226c9e99b2a8c5d861c975e), [`ee1a09b`](https://github.com/vercel/workflow/commit/ee1a09b9c7c964147bb12bfe8603c6094b933cef)]:
+  - @workflow/world@5.0.0-beta.40
+
+## 5.0.0-beta.24
+
+### Patch Changes
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+- Updated dependencies [[`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd)]:
+  - @workflow/world@5.0.0-beta.39
+
+## 5.0.0-beta.23
+
+### Minor Changes
+
+- [#4193](https://github.com/vercel/workflow/pull/4193) [`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `createHook({ experimental_force: true })` option, which takes a hook token over from the run that currently holds it instead of rejecting with `HookConflictError`. Previous runs awaiting the hook are rejected with `HookForceClaimedError` naming the run that took the token. See [`experimental_force` docs](https://workflow-sdk.dev/v5/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for details.
+
+### Patch Changes
+
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734)]:
+  - @workflow/world@5.0.0-beta.38
+
+## 5.0.0-beta.22
+
+### Minor Changes
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+
+### Patch Changes
+
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+
+## 5.0.0-beta.21
+
+### Minor Changes
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+## 5.0.0-beta.20
+
+### Minor Changes
+
+- [#3943](https://github.com/vercel/workflow/pull/3943) [`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate `world.analytics` arguments up front: an invalid id, an out-of-range page limit, an oversized attribute filter, or a half-open `startTime`/`endTime` window now throws a `WorkflowWorldError` with `code: 'INVALID_ARGUMENT'` and `field` set to the offending parameter, instead of failing the request. The message names the method, the parameter, and what it received. Adds `ANALYTICS_RUN_SCOPED_PAGE_LIMIT`, `ANALYTICS_PAGE_LIMIT` and `ANALYTICS_MAX_ATTRIBUTE_FILTERS`.
+
+  Deprecate `analytics.events.listByCorrelationId()` in favour of `analytics.events.list({ runId, correlationId })`.
+
+  Fix `analytics.attributes.list()` timestamps being shifted by the local UTC offset.
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+## 5.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies [[`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e)]:
+  - @workflow/utils@5.0.0-beta.10
+
 ## 5.0.0-beta.18
 
 ### Patch Changes

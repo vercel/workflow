@@ -37,9 +37,7 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
         <h3 className="text-heading-20 sm:text-heading-24 lg:text-heading-32">
           {title}
         </h3>
-        <p className="text-lg text-muted-foreground sm:max-w-lg">
-          {description}
-        </p>
+        <p className="text-lg text-gray-900 sm:max-w-lg">{description}</p>
       </div>
       <div className="@container flex items-center justify-center overflow-hidden">
         {visual}
@@ -55,7 +53,7 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
         <h3 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           {title}
         </h3>
-        <p className="text-lg text-muted-foreground mt-4 sm:text-balance">
+        <p className="text-lg text-gray-900 mt-4 sm:text-balance">
           {description}
         </p>
       </div>

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { debugLog } from './debug-log.js';
 import { parseWindowsNetstatPortsForPid } from './get-port-internals.js';
 import { WORKFLOW_ROUTE_BASE } from './workflow-routes.js';
 
@@ -198,9 +199,12 @@ export async function getAllPorts(): Promise<number[]> {
         return [];
     }
   } catch (error) {
-    if (process.env.NODE_ENV === 'development') {
-      console.debug('[getAllPorts] Detection failed:', error);
-    }
+    // `DEBUG`, not `NODE_ENV`: development is exactly when port detection runs
+    // (the local world resolves the dev server's port on every start), so
+    // gating on it made the diagnostic unconditional for the only audience
+    // that reaches this code. Detection failing is recoverable — the caller
+    // falls through to its own resolution — so it is a debug line, not a warn.
+    debugLog('[getAllPorts] Detection failed:', error);
     return [];
   }
 }
@@ -294,11 +298,14 @@ export async function getWorkflowPort(
   // This handles cases where:
   // - Server hasn't started workflow routes yet
   // - Network issues during probing
-  if (process.env.NODE_ENV === 'development') {
-    console.debug(
-      '[getWorkflowPort] Probing failed, falling back to first port:',
-      ports[0]
-    );
-  }
+  //
+  // Debug-gated for the same reason as `getAllPorts` above: the first of those
+  // cases is an ordinary dev-server startup race that the fallback then
+  // resolves correctly, and `NODE_ENV=development` is the normal case here
+  // rather than the diagnostic one.
+  debugLog(
+    '[getWorkflowPort] Probing failed, falling back to first port:',
+    ports[0]
+  );
   return ports[0];
 }

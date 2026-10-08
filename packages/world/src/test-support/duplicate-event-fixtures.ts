@@ -165,6 +165,57 @@ export const DUPLICATE_EVENT_FIXTURES: readonly DuplicateEventFixture[] = [
     ignoredIndices: [],
   },
   {
+    name: 'second attribute write under one id',
+    why: 'A workflow-body attribute write resolves its id exactly once, so the second event under it is a straggler no consumer can take.',
+    events: [
+      { eventType: 'run_created' },
+      { eventType: 'run_started' },
+      { eventType: 'attr_set', entity: 'attr_a' },
+      { eventType: 'attr_set', entity: 'attr_a' },
+      { eventType: 'step_created', entity: 'step_b' },
+      { eventType: 'step_started', entity: 'step_b' },
+      { eventType: 'step_completed', entity: 'step_b' },
+    ],
+    ignoredIndices: [3],
+  },
+  {
+    name: 'attribute writes from step bodies',
+    why: 'A step-written attribute event names no entity, so several of them are several writes rather than repeats of one. Collapsing them would hide writes a run really made.',
+    events: [
+      { eventType: 'step_created', entity: 'step_a' },
+      { eventType: 'step_started', entity: 'step_a' },
+      { eventType: 'attr_set' },
+      { eventType: 'attr_set' },
+      { eventType: 'attr_set' },
+      { eventType: 'step_completed', entity: 'step_a' },
+    ],
+    ignoredIndices: [],
+  },
+  {
+    name: 'attribute writes from both sides of one run',
+    why: 'The two shapes coexist: only the id-bearing repeat is read past, and the entity-less writes around it are untouched.',
+    events: [
+      { eventType: 'run_created' },
+      { eventType: 'run_started' },
+      { eventType: 'attr_set' },
+      { eventType: 'attr_set', entity: 'attr_a' },
+      { eventType: 'attr_set', entity: 'attr_a' },
+      { eventType: 'attr_set' },
+      { eventType: 'step_created', entity: 'step_b' },
+    ],
+    ignoredIndices: [4],
+  },
+  {
+    name: 'two attribute writes at different body positions',
+    why: 'Each call draws its own id, so consecutive attribute events are only repeats when the ids match.',
+    events: [
+      { eventType: 'attr_set', entity: 'attr_a' },
+      { eventType: 'attr_set', entity: 'attr_b' },
+      { eventType: 'step_created', entity: 'step_c' },
+    ],
+    ignoredIndices: [],
+  },
+  {
     name: 'second start of the run',
     why: 'Run events carry no correlation id and share one bucket. Two replays can each write a start, and the run has one.',
     events: [

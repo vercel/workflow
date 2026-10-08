@@ -242,7 +242,9 @@ jobs:
           name: e2e-results-community-${{ inputs.world-id }}
           path: |
             e2e-community-${{ inputs.world-id }}-dev.json
+            e2e-community-${{ inputs.world-id }}-dev.flaky.json
             e2e-community-${{ inputs.world-id }}.json
+            e2e-community-${{ inputs.world-id }}.flaky.json
           retention-days: 7
           if-no-files-found: ignore
 

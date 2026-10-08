@@ -79,6 +79,10 @@ describe('world-local hook_received resume dedup', () => {
     // detect this write already landed in its preload and skip the re-ensure.
     expect(first.event.resumeId).toBe('resume_1');
     expect(second.event.resumeId).toBe('resume_1');
+    const listed = (await storage.events.list({ runId })).data.find(
+      (event) => event.eventId === first.event.eventId
+    );
+    expect(listed?.resumeId).toBe('resume_1');
   });
 
   it('keeps distinct resumes of a reusable hook as separate events', async () => {

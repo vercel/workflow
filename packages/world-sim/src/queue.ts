@@ -159,7 +159,20 @@ export function createSimQueue(opts: {
           queueName: ValidQueueName.parse(queueName),
           messageId: MessageId.parse(messageId),
         });
-        if (typeof result?.timeoutSeconds === 'number') {
+        if (
+          typeof body === 'object' &&
+          body !== null &&
+          'invoke' in body &&
+          body.invoke === true
+        ) {
+          return Response.json({ result });
+        }
+        if (
+          typeof result === 'object' &&
+          result !== null &&
+          'timeoutSeconds' in result &&
+          typeof result.timeoutSeconds === 'number'
+        ) {
           return Response.json({ timeoutSeconds: result.timeoutSeconds });
         }
         return Response.json({ ok: true });

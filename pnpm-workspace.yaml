@@ -12,7 +12,7 @@ catalog:
   "@types/node": 22.19.0
   "@vercel/functions": ^3.8.0
   "@vercel/oidc": 3.2.0
-  "@vercel/queue": 0.5.0
+  "@vercel/queue": 0.8.0
   "@vitest/coverage-v8": ^4.1.10
   "@vitest/runner": ^4.1.10
   ai: 6.0.116
@@ -22,12 +22,15 @@ catalog:
   semver: 7.7.4
   typescript: ^6.0.3
   ulid: ~3.0.1
-  undici: 7.29.0
+  undici: 7.30.0
   vitest: ^4.1.10
-  zod: ~4.3.6
+  zod: ~4.5.4
 
-onlyBuiltDependencies:
-  - esbuild
+catalogs:
+  ai-sdk-v7:
+    "@ai-sdk/react": 4.0.88
+    "@ai-sdk/workflow": 2.0.15
+    ai: 7.0.85
 
 overrides:
   # `@vercel/queue` accepts any `@vercel/oidc` in the 3.x line, and 3.3+ pulls in
@@ -43,15 +46,39 @@ overrides:
   # spans were silently dropped this way while core's flowed (#2900).
   '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
-  devalue: 5.9.0
+  devalue: 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
   # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
   # (arbitrary file read / .map disclosure via attacker-controlled
   # sourceMappingURL). Forces transitive pins (e.g. next.js's postcss@8.4.31)
   # onto a patched version.
   'postcss@<8.5.18': 8.5.22
+  # simple-git reaches the workspace only through `@nuxt/devtools`, which is
+  # still on the 3.x line (`^3.33.0` in 3.2.4, `^3.36.0` in the newest 3.x).
+  # Pull every copy onto 4.x; `patchedDependencies` below bridges the one 4.x
+  # incompatibility until devtools catches up.
+  simple-git: ^4.0.2
+
+patchedDependencies:
+  # simple-git 4 dropped its default export in favour of the named `simpleGit`,
+  # and `@nuxt/devtools` still does `import Git from 'simple-git'` to name
+  # build-analysis artifacts. That fails at link time rather than at the call
+  # site, so it takes down the whole devtools module — and with it `nuxt dev`
+  # and `@workflow/nuxt`'s `nuxt-module-build prepare`. The patch is a one-line
+  # rewrite to the named export, and can go once devtools depends on
+  # simple-git 4 itself; keying it to the exact version means an install fails
+  # loudly if devtools moves before that happens.
+  '@nuxt/devtools@3.2.4': patches/@nuxt__devtools@3.2.4.patch
 
 savePrefix: ""
+
+# Keep the lockfile single-document for tools such as Turborepo. CI installs
+# the exact packageManager pin through pnpm/setup.
+pmOnFail: ignore
+
+# pnpm 11 requires Node.js 22 or newer. This replaces the two project-local
+# engine-strict .npmrc files, which pnpm 11 no longer reads from repositories.
+engineStrict: true
 
 minimumReleaseAge: 2880
 
@@ -64,9 +91,38 @@ minimumReleaseAgeExclude:
   - '@esbuild/*'
   - '@sveltejs/load-config'
   - 'quickjs-wasi'
+  - 'devalue'
   # The CI canary lanes pin `next` to a fresh canary at install time
   # (see "Setup canary" in .github/workflows/tests.yml); canaries are
   # usually younger than the 48h gate, and next and its @next/* companion
   # packages (published in lockstep) are Vercel-published.
   - 'next'
   - '@next/*'
+  # CVE-2026-102989 (GHSA-qx66-fv34-fjm8): Vercel refuses to deploy
+  # @tanstack/react-start < 1.168.60. The fixed release train shipped on
+  # 2026-09-30; these exact versions can be dropped once they're older
+  # than the 48h gate.
+  - '@tanstack/react-router@1.170.41'
+  - '@tanstack/react-start@1.168.60'
+  - '@tanstack/react-start-client@1.168.39'
+  - '@tanstack/react-start-rsc@0.1.59'
+  - '@tanstack/react-start-server@1.167.46'
+  - '@tanstack/router-core@1.171.34'
+  - '@tanstack/router-generator@1.167.40'
+  - '@tanstack/router-plugin@1.168.42'
+  - '@tanstack/start-client-core@1.170.34'
+  - '@tanstack/start-plugin-core@1.171.49'
+  - '@tanstack/start-server-core@1.169.39'
+  - '@tanstack/start-storage-context@1.167.36'
+allowBuilds:
+  '@parcel/watcher': false
+  '@swc/core': false
+  '@tailwindcss/oxide': false
+  better-sqlite3: false
+  bun: false
+  cbor-extract: false
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  sharp: false
+  ssh2: false

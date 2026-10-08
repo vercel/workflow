@@ -25,6 +25,9 @@ import {
   type CreateEventParams,
   type CreateEventRequest,
   type Event,
+  HOOK_RESUME_DEDUP_VERSION,
+  HOOK_RESUME_INPUT_VERSION,
+  type Hook,
   SPEC_VERSION_CURRENT,
   slotToEventId,
   type WorkflowRun,
@@ -46,6 +49,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { createContext } from '../vm/index.js';
+import { resumeHook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -139,6 +143,12 @@ async function runResumeConsumerScenario(options: {
    */
   reEnsureRejection?: Error;
   /**
+   * Drive the queue message through the real (serial, durable-first)
+   * `resumeHook()` producer, then commit `hook_disposed` before delivering
+   * its wake to the consumer.
+   */
+  disposeAfterDurableResume?: boolean;
+  /**
    * When set, the queue message's hookInput carries the producer-stamped
    * pinned deployment id, activating the consumer's cheap pre-write
    * affinity check. Omitted by default so most scenarios double as
@@ -181,6 +191,26 @@ async function runResumeConsumerScenario(options: {
     startedAt,
     createdAt: startedAt,
     updatedAt: startedAt,
+  };
+  const hook: Hook = {
+    runId,
+    hookId: hookCorrelationId,
+    token: hookToken,
+    ownerId: 'owner_resume_consumer',
+    projectId: 'project_resume_consumer',
+    environment: 'production',
+    createdAt: startedAt,
+    specVersion: SPEC_VERSION_CURRENT,
+    resumeContext: {
+      deploymentId,
+      workflowName,
+      runSpecVersion: SPEC_VERSION_CURRENT,
+      workflowCoreVersion: '5.0.0',
+      hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    },
+    resumeCapabilities: {
+      hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION,
+    },
   };
 
   let eventIndex = 0;
@@ -244,12 +274,15 @@ async function runResumeConsumerScenario(options: {
 
   const createdEvents: CreateEventRequest[] = [];
   const createdParams: Array<CreateEventParams | undefined> = [];
+  let reEnsureRejection = options.reEnsureRejection;
 
-  const listEvents = vi.fn(async () => ({
-    data: [...durableEvents],
-    hasMore: false,
-    cursor: durableEvents.at(-1)?.eventId ?? null,
-  }));
+  const listEvents = vi.fn(async () => {
+    return {
+      data: [...durableEvents],
+      hasMore: false,
+      cursor: durableEvents.at(-1)?.eventId ?? null,
+    };
+  });
 
   const createEvent = vi.fn(
     async (
@@ -274,8 +307,8 @@ async function runResumeConsumerScenario(options: {
         // Simulate the write failing (terminal or transient) so the
         // consumer's error classification runs. Recorded in `createdEvents`
         // above, so the attempt is still observable to assertions.
-        if (options.reEnsureRejection !== undefined) {
-          throw options.reEnsureRejection;
+        if (reEnsureRejection !== undefined) {
+          throw reEnsureRejection;
         }
         // Converge on the producer's canonical event when it exists
         // (the (runId, resumeId) claim), otherwise persist ours with the
@@ -343,6 +376,7 @@ async function runResumeConsumerScenario(options: {
       capturedHandler = handler;
       return vi.fn();
     }),
+    hooks: { getByToken: vi.fn(async () => hook) },
     events: { list: listEvents, create: createEvent },
     runs: { get: runsGet },
     queue,
@@ -353,32 +387,49 @@ async function runResumeConsumerScenario(options: {
   await handler(new Request('http://localhost', { method: 'POST' }));
   expect(capturedHandler).toBeDefined();
 
-  // A continuation delivery carrying the resume's hookInput (no runInput, so
-  // turbo is off and the lazy hook fast path runs). Capture whether the
-  // handler rethrew: on a transient failure it must reject so the queue
+  let delivery: unknown = {
+    runId,
+    hookInput: {
+      hookId: hookCorrelationId,
+      resumeId,
+      token: hookToken,
+      payload: payloadBytes,
+      payloadDigest,
+      ...(options.hookDeploymentId !== undefined
+        ? { deploymentId: options.hookDeploymentId }
+        : {}),
+    },
+  };
+  let resumedHook: Hook | undefined;
+  if (options.disposeAfterDurableResume) {
+    resumedHook = await resumeHook(hookToken, { value: 'hook-wins' });
+    delivery = queue.mock.calls.at(-1)?.[1];
+
+    // The producer returned only after hook_received was durable. Commit
+    // disposal before delivering its payload-less wake: any hook_received
+    // write attempted from here on is refused, like the real server's
+    // disposal marker would refuse it.
+    reEnsureRejection = new HookNotFoundError(hookToken);
+    durableEvents.push(
+      event({
+        eventType: 'hook_disposed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: hookCorrelationId,
+        eventData: { token: hookToken },
+      })
+    );
+  }
+
+  // Deliver the continuation (no runInput, so turbo is off). Capture whether
+  // the handler rethrew: on a transient failure it must reject so the queue
   // redelivers; on a terminal one it resolves (consumes the message).
   let handlerError: unknown;
   try {
-    await capturedHandler?.(
-      {
-        runId,
-        hookInput: {
-          hookId: hookCorrelationId,
-          resumeId,
-          token: hookToken,
-          payload: payloadBytes,
-          payloadDigest,
-          ...(options.hookDeploymentId !== undefined
-            ? { deploymentId: options.hookDeploymentId }
-            : {}),
-        },
-      },
-      {
-        queueName: `__wkf_workflow_${workflowName}`,
-        messageId: 'msg_workflow',
-        attempt: 1,
-      }
-    );
+    await capturedHandler?.(delivery, {
+      queueName: `__wkf_workflow_${workflowName}`,
+      messageId: 'msg_workflow',
+      attempt: 1,
+    });
   } catch (err) {
     handlerError = err;
   }
@@ -405,6 +456,9 @@ async function runResumeConsumerScenario(options: {
     createEvent,
     runsGet,
     handlerError,
+    durableEvents,
+    queue,
+    resumedHook,
   };
 }
 
@@ -657,6 +711,32 @@ describe('lazy hook resume consumer preload', () => {
     expect(handlerError).toBeUndefined();
     // ...and replay never proceeded to complete the run.
     expect(runCompletedCreates).toHaveLength(0);
+  });
+
+  it('does not lose a resume when disposal commits after publish', async () => {
+    const {
+      durableEvents,
+      handlerError,
+      hookReceivedCreates,
+      queue,
+      resumedHook,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      disposeAfterDurableResume: true,
+    });
+
+    // resumeHook() returned only after hook_received was durable and the wake
+    // was accepted. Disposal may commit before the wake is consumed, but it
+    // cannot erase that event, and the delivery replays it from the log.
+    expect(resumedHook?.token).toBe('resume-consumer-token');
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(handlerError).toBeUndefined();
+
+    // Durability contract: a successful resume survives the queue gap.
+    expect(
+      durableEvents.filter((event) => event.eventType === 'hook_received')
+    ).toHaveLength(1);
   });
 
   it('rethrows for queue redelivery when the hoisted write hits a transient conflict', async () => {

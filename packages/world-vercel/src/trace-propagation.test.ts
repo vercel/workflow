@@ -53,6 +53,9 @@ vi.mock('ws', () => ({
     on() {
       return this;
     }
+    once() {
+      return this;
+    }
     send() {}
     close() {}
     terminate() {}
@@ -322,6 +325,125 @@ describe('streamer write trace propagation', () => {
     expect(traceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+  });
+});
+
+describe('snapshot requests trace propagation', () => {
+  it('injects traceparent on snapshots.load, propagating the active context to workflow-server', async () => {
+    const { encodeSnapshotEnvelope } = await import('@workflow/world');
+    const body = encodeSnapshotEnvelope(
+      { eventsCursor: 'evnt_1', createdAt: new Date() },
+      new Uint8Array([1, 2, 3])
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'application/octet-stream' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv(WORKFLOW_SERVER_URL_OVERRIDE, 'https://workflow-server.test');
+
+    const { createSnapshotsStorage } = await import('./snapshots.js');
+    const snapshots = createSnapshotsStorage({ token: 'test-token' });
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      const loaded = await snapshots.load('wrun_1');
+      expect(loaded?.data).toBeInstanceOf(Uint8Array);
+      span.end();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const calledInit = fetchMock.mock.calls[0][1];
+    const sent = new Headers(calledInit?.headers as HeadersInit);
+    // Without the explicit injection this header is absent — the snapshot
+    // path routes around makeRequest (raw undici / global fetch), which
+    // ambient auto-instrumentation does not reliably hook.
+    const traceparent = sent.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    expect(traceparent).toContain(traceId);
+  });
+
+  it('injects traceparent on snapshots.save (undici request path)', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    let capturedHeaders: Record<string, unknown> | undefined;
+    agent
+      .get('https://vercel-workflow.com')
+      .intercept({
+        path: '/api/v2/runs/wrun_1/snapshot',
+        method: 'PUT',
+      })
+      .reply(200, (opts) => {
+        capturedHeaders = opts.headers as Record<string, unknown>;
+        return 'ok';
+      });
+
+    const { createSnapshotsStorage } = await import('./snapshots.js');
+    const snapshots = createSnapshotsStorage({
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      await snapshots.save('wrun_1', new Uint8Array([1, 2, 3]), {
+        eventsCursor: 'evnt_1',
+        createdAt: new Date(),
+      });
+      span.end();
+    });
+
+    const headers = new Headers(
+      (capturedHeaders ?? {}) as Record<string, string>
+    );
+    const traceparent = headers.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    expect(traceparent).toContain(traceId);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('ws stream transport upgrade trace propagation', () => {
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', 'ws');
+  });
+
+  afterEach(() => {
+    wsUpgrades.length = 0;
+  });
+
+  it('injects traceparent from the stream connect span', async () => {
+    const { createStreamWriteSession } = await import('./ws-stream-session.js');
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      const session = createStreamWriteSession(
+        'wrun_1',
+        'user',
+        'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        { token: 'test-token' },
+        async (_chunks, _attributes, dispatched) => dispatched?.(),
+        async () => {}
+      );
+      await session.write(0, ['first']);
+      await session.write(1, ['second']);
+      await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+      span.end();
+    });
+
+    const traceparent = wsUpgrades[0]?.headers.traceparent;
+    expect(traceparent).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`));
+    expect(traceparent).not.toBe(`00-${traceId}-${spanId}-01`);
+    expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
   });
 });
 

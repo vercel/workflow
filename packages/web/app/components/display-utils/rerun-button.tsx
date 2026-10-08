@@ -1,10 +1,10 @@
-import { RotateCw } from 'lucide-react';
 import {
+  Button,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from '~/components/ui/tooltip';
-import { Button } from '../ui/button';
+} from '@workflow/web-shared';
+import { RotateCw } from 'lucide-react';
 
 interface RerunButtonProps {
   canRerun: boolean;
@@ -24,8 +24,8 @@ export function RerunButton({
       <TooltipTrigger asChild>
         <span>
           <Button
-            variant="outline"
-            size="sm"
+            variant="secondary"
+            size="small"
             onClick={onRerun}
             disabled={!canRerun || rerunning}
           >

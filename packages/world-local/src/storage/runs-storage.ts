@@ -195,8 +195,16 @@ export function createRunsStorage(
           ) {
             return false;
           }
-          if (params?.status && run.status !== params.status) {
-            return false;
+          if (params?.status !== undefined) {
+            const statuses = Array.isArray(params.status)
+              ? params.status
+              : [params.status];
+            // Empty array matches no runs (mirrors SQL `IN ()` semantics
+            // in world-postgres). Callers who want "unfiltered" must omit
+            // the field.
+            if (!statuses.includes(run.status)) {
+              return false;
+            }
           }
           return true;
         },
@@ -210,15 +218,10 @@ export function createRunsStorage(
         getId: (run) => run.runId,
       });
 
-      // If resolveData is "none", replace input/output with undefined
       if (resolveData === 'none') {
         return {
           ...result,
-          data: result.data.map((run) => ({
-            ...run,
-            input: undefined,
-            output: undefined,
-          })) as WorkflowRunWithoutData[],
+          data: result.data.map((run) => filterRunData(run, 'none')),
         };
       }
 

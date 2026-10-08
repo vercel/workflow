@@ -11,6 +11,10 @@ import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
+import { hydrateRunError } from '../src/serialization';
+import { getWorkbenchAppPath } from './workbench-path';
+
+export { getWorkbenchAppPath } from './workbench-path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -97,22 +101,6 @@ function splitArgs(raw: string): string[] {
   return value.split(/\s+/);
 }
 
-export function getWorkbenchAppPath(overrideAppName?: string): string {
-  const explicitWorkbenchPath = process.env.WORKBENCH_APP_PATH;
-  const appName = process.env.APP_NAME ?? overrideAppName;
-  if (
-    explicitWorkbenchPath &&
-    (!overrideAppName || !appName || overrideAppName === appName)
-  ) {
-    return path.resolve(explicitWorkbenchPath);
-  }
-
-  if (!appName) {
-    throw new Error('`APP_NAME` environment variable is not set');
-  }
-  return path.join(__dirname, '../../../workbench', appName);
-}
-
 export function isLocalDeployment(): boolean {
   const deploymentUrl = process.env.DEPLOYMENT_URL;
   if (!deploymentUrl) return false;
@@ -173,6 +161,22 @@ export interface ConformanceConfig {
    * test cannot leave a stale exemption behind that silently covers nothing.
    */
   unsupported?: Record<string, string>;
+  /**
+   * The highest spec version the app's runtime accepts. For `workbench/python`
+   * that is `SPEC_VERSION_MAX_SUPPORTED` in vercel-py's
+   * `src/vercel-workflow/vercel/workflow/_internal/world.py`, at the commit
+   * `workbench/python/uv.lock` pins.
+   *
+   * The harness starts runs as the deployment under test, so `start()` takes
+   * them for same-deployment starts and stamps this SDK's version. A runtime
+   * that accepts less rejects every such run, and it stays `pending`. Runs are
+   * stamped with the lower of the two instead (see
+   * {@link startAtTargetSpecVersion}). Keep it in step with the SDK pin: set
+   * too high, every run stays `pending` (see the hint in
+   * {@link warmDeployment}); set too low, runs are under-stamped and tests of
+   * newer features fail or skip.
+   */
+  maxSpecVersion?: number;
 }
 
 export const CONFORMANCE_CONFIG_FILENAME = 'e2e-conformance.json';
@@ -207,7 +211,7 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  const { language, fixtures, unsupported } = (parsed ??
+  const { language, fixtures, unsupported, maxSpecVersion } = (parsed ??
     {}) as Partial<ConformanceConfig>;
   if (typeof language !== 'string' || !Array.isArray(fixtures)) {
     throw new Error(
@@ -226,7 +230,16 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  conformanceConfigCache = { language, fixtures, unsupported };
+  if (
+    maxSpecVersion !== undefined &&
+    !(Number.isInteger(maxSpecVersion) && maxSpecVersion >= 1)
+  ) {
+    throw new Error(
+      `${configPath}: "maxSpecVersion" must be a positive integer`
+    );
+  }
+
+  conformanceConfigCache = { language, fixtures, unsupported, maxSpecVersion };
   return conformanceConfigCache;
 }
 
@@ -615,11 +628,13 @@ export const cliInspectJson = async (args: string) => {
 export const cliCancel = async (runId: string) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = splitArgs(getCliArgs());
+  // Use the shared CLI budget. Windows startup plus local-world filesystem
+  // contention can consume most of 10 seconds before cancellation runs; the
+  // shared 20-second default still leaves ample room inside the test timeout.
   const result = await awaitCommand(
     'node',
     ['./node_modules/workflow/bin/run.js', 'cancel', runId, ...cliArgs],
-    cliAppPath,
-    10_000
+    cliAppPath
   );
   return result;
 };
@@ -1078,6 +1093,45 @@ export async function waitForRunPickup(
 }
 
 /**
+ * `start()` stamped with the highest spec version the app's runtime accepts
+ * when that is lower than this process's (see
+ * {@link ConformanceConfig.maxSpecVersion}). An explicit `specVersion` still
+ * wins. Use it wherever the suite would call `start()` directly.
+ */
+export async function startAtTargetSpecVersion<T>(
+  ...args: Parameters<typeof runtimeStart<T>>
+): Promise<Run<T>> {
+  const target = getConformanceConfig()?.maxSpecVersion;
+  if (target === undefined) return runtimeStart<T>(...args);
+  const [workflow, argsOrOptions, maybeOptions] = args as unknown as [
+    Parameters<typeof runtimeStart<T>>[0],
+    unknown,
+    Record<string, unknown> | undefined,
+  ];
+  const optionsFirst =
+    argsOrOptions !== undefined && !Array.isArray(argsOrOptions);
+  const options = (optionsFirst ? argsOrOptions : maybeOptions) as
+    | Record<string, unknown>
+    | undefined;
+  if (options?.specVersion !== undefined) return runtimeStart<T>(...args);
+  const world =
+    (options?.world as { specVersion?: number } | undefined) ??
+    (await getWorld());
+  const local = world.specVersion;
+  if (local === undefined || target >= local) return runtimeStart<T>(...args);
+  const stamped = { ...options, specVersion: target };
+  return (
+    optionsFirst
+      ? runtimeStart<T>(workflow, stamped as never)
+      : runtimeStart<T>(
+          workflow,
+          (argsOrOptions ?? []) as never,
+          stamped as never
+        )
+  ) as Promise<Run<T>>;
+}
+
+/**
  * `start()` + `trackRun()` with a pickup watchdog.
  *
  * A run that is still `pending` after {@link PICKUP_BUDGET_MS} was never
@@ -1092,13 +1146,13 @@ export async function waitForRunPickup(
 export async function startTracked<T>(
   ...args: Parameters<typeof runtimeStart<T>>
 ): Promise<Run<T>> {
-  const run = await runtimeStart<T>(...args);
+  const run = await startAtTargetSpecVersion<T>(...args);
   trackRun(run);
   if (await waitForRunPickup(run)) {
     return run;
   }
 
-  const replacement = await runtimeStart<T>(...args);
+  const replacement = await startAtTargetSpecVersion<T>(...args);
   trackRun(replacement);
   recordInfraEvent({
     kind: 'run-pickup-stall',
@@ -1199,6 +1253,16 @@ export async function warmDeployment(
           `${totalBudgetMs}ms (${stalledProbeRunIds.length} abandoned); ` +
           `proceeding — the per-test pickup watchdog still guards`
       );
+      const maxSpecVersion = getConformanceConfig()?.maxSpecVersion;
+      if (maxSpecVersion !== undefined) {
+        // The failure this field exists to prevent looks exactly like a
+        // stalled queue, so name it where the stall is reported.
+        console.warn(
+          `[e2e] If the app's runtime rejects every run, check "maxSpecVersion" ` +
+            `(${maxSpecVersion}) in ${CONFORMANCE_CONFIG_FILENAME} against the ` +
+            `highest spec version its SDK accepts.`
+        );
+      }
       return;
     }
   }
@@ -1515,3 +1579,64 @@ export const cliInspectJsonUntil = async (
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 };
+
+/**
+ * The `name` / `message` of a failed run, from whatever shape the World
+ * returned for `run.error`.
+ *
+ * `errorCode` is a plaintext field and always readable, but it only says
+ * *which class* a run died of. Telling two `CORRUPTED_EVENT_LOG`s apart needs
+ * the divergence text, and on world-vercel that is not sitting on the run:
+ * `runs.get()` returns `error` as the `SerializedData` bytes
+ * `dehydrateRunError` wrote, and world-vercel's `deserializeError` is a
+ * pass-through cast, so `run.error.message` is `undefined` no matter what the
+ * run actually failed with. The CLI and the web UI read the text because they
+ * hydrate it themselves; a caller that does not, silently gets nothing.
+ *
+ * Hydration is therefore the caller's job, and this does it the same way,
+ * tolerating every shape a World may hand back:
+ *
+ * - `SerializedData` bytes (world-vercel, spec >= 2), hydrated here.
+ * - An already-hydrated `Error`, which is what the local and Postgres Worlds
+ *   produce and what the encrypted case degrades to.
+ * - A legacy plain `{ name, message }` record.
+ *
+ * Never throws and never rejects: this runs on the reporting path of a job
+ * whose whole purpose is to describe a failure, so an unreadable error must
+ * still yield a row. An unreadable one comes back `undefined`, which reads as
+ * "no signature" in the results JSON rather than as a passing run.
+ */
+export async function describeRunError(
+  error: unknown,
+  runId: string,
+  key?: Parameters<typeof hydrateRunError>[2]
+): Promise<{ errorName?: string; errorMessage?: string }> {
+  if (error == null) return {};
+
+  // Already an Error or a legacy `{name, message}` record.
+  const direct = error as { name?: unknown; message?: unknown };
+  if (typeof direct.message === 'string' || typeof direct.name === 'string') {
+    return {
+      errorName: typeof direct.name === 'string' ? direct.name : undefined,
+      errorMessage:
+        typeof direct.message === 'string' ? direct.message : undefined,
+    };
+  }
+
+  try {
+    const hydrated = (await hydrateRunError(error, runId, key)) as {
+      name?: unknown;
+      message?: unknown;
+    } | null;
+    if (hydrated == null) return {};
+    return {
+      errorName: typeof hydrated.name === 'string' ? hydrated.name : undefined,
+      errorMessage:
+        typeof hydrated.message === 'string' ? hydrated.message : undefined,
+    };
+  } catch {
+    // Encrypted without a key, a format this build cannot read, or plain
+    // corruption. The run still gets reported, just without a signature.
+    return {};
+  }
+}

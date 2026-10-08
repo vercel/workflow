@@ -1,5 +1,155 @@
 # @workflow/rollup
 
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1)]:
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/builders@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795)]:
+  - @workflow/builders@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- Updated dependencies [[`ff4a0fd`](https://github.com/vercel/workflow/commit/ff4a0fd155bfe32e1e8df977dec6fc9e4e71dde0), [`65ca6c8`](https://github.com/vercel/workflow/commit/65ca6c893e83ef623fba370416ce9b88e9064df4), [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270)]:
+  - @workflow/builders@5.0.1
+
+## 5.0.0
+
+### Major Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Initial v5 beta release
+
+- [#1662](https://github.com/vercel/workflow/pull/1662) [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `isWorkflowSdkFile` path-based serde exclusion. Serde discovery now uses AST-level verification via SWC detect mode across all integration paths (esbuild plugin, Next.js deferred builder, Next.js loader). This allows class definitions with serde symbols in SDK packages like `@workflow/core` to be discovered and bundled correctly.
+
+### Patch Changes
+
+- [#3891](https://github.com/vercel/workflow/pull/3891) [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Disable implicit input source map loading during workflow transforms to avoid false missing-map build errors for dependencies.
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1947](https://github.com/vercel/workflow/pull/1947) [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Externalize the optional `@opentelemetry/api` peer in the Rollup/Vite framework builds (SvelteKit, Nitro, Nuxt, Astro, Vite) only when it isn't installed, so a build no longer fails with "failed to resolve import '@opentelemetry/api'". When the peer is present it is bundled/resolved as before, so tracing keeps working — including in self-contained outputs like Nitro's `.output/server`.
+
+- [#1686](https://github.com/vercel/workflow/pull/1686) [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `client` transform mode from SWC plugin. The `client` and `step` modes were nearly identical — both preserved step function bodies, replaced workflow bodies with throw stubs, and emitted the same JSON manifest. The only differences were the step registration mechanism (simple property assignment vs. IIFE) and whether DCE ran. Step mode now absorbs all client-mode behaviors: hoisted variable references for object property steps (so `.stepId` is accessible), and dead code elimination. All integrations that previously used `mode: 'client'` now use `mode: 'step'`.
+
+- [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
+
+- [#3084](https://github.com/vercel/workflow/pull/3084) [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an opt-in WebSocket transport for event writes during step execution, enabled with `WORKFLOW_EVENTS_TRANSPORT=ws`. Defaults to HTTP; no behavior change unless explicitly enabled.
+- Updated dependencies [[`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0), [`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45), [`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707), [`dc0c0dc`](https://github.com/vercel/workflow/commit/dc0c0dce7f4ef1a0919d7ecc7efe076564871d0c), [`011d482`](https://github.com/vercel/workflow/commit/011d482808793e8deb0e8523a9c16af129490ee6), [`e0ec429`](https://github.com/vercel/workflow/commit/e0ec429bb3baa4b3cb96373149a78dd514ebfe18), [`ae5ee5b`](https://github.com/vercel/workflow/commit/ae5ee5ba2e68ca9850a5cb7b2b253388d06fdd8f), [`927b61a`](https://github.com/vercel/workflow/commit/927b61ab419e98c027c077af81273e73650cb94f), [`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f), [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d), [`cfe7570`](https://github.com/vercel/workflow/commit/cfe7570d67b585363644044f5ee9c9ea1fea1d24), [`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456), [`e436242`](https://github.com/vercel/workflow/commit/e4362421abf9c864c9c1064866ddfc16560649cb), [`88f5d21`](https://github.com/vercel/workflow/commit/88f5d214d48b15d3126943313ed03d48667e772c), [`f6772d9`](https://github.com/vercel/workflow/commit/f6772d95c81038bfa57aa14ea2cca20a07191475), [`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`372abba`](https://github.com/vercel/workflow/commit/372abba55fc6d3d9ba8f6926d38e05d7a6d99011), [`e788e3b`](https://github.com/vercel/workflow/commit/e788e3b41cce49335f4a7b5bf12907e30f2fb5f0), [`7615d99`](https://github.com/vercel/workflow/commit/7615d999f1f72a1d2cbe36ba414155140195d014), [`7440244`](https://github.com/vercel/workflow/commit/744024458f44044c045fab188d46837347c3a998), [`2ca34ac`](https://github.com/vercel/workflow/commit/2ca34ac69c5c201ef85a61fe3a10cc75ca3c22c4), [`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3), [`00a011d`](https://github.com/vercel/workflow/commit/00a011dee43b3ba7c399a97b9ed072cf4ce66816), [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357), [`bab8cdd`](https://github.com/vercel/workflow/commit/bab8cddf98e1d4ca897fbfc9cc1fb51a3333c695), [`b406a04`](https://github.com/vercel/workflow/commit/b406a04dfa86aae5d1482b71f18a8c7bfb1272ed), [`0d0bb01`](https://github.com/vercel/workflow/commit/0d0bb013d7073f964bb3aea7869e84ed762bf7a9), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`32a17b4`](https://github.com/vercel/workflow/commit/32a17b4033dea3d9fd496e77142c675b06f0e016), [`96e92c6`](https://github.com/vercel/workflow/commit/96e92c63702718c2beee0d42a0ed94534b48b2a1), [`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d), [`239031a`](https://github.com/vercel/workflow/commit/239031ad9e1d27942f8e30a59fd6fef254544fff), [`baba580`](https://github.com/vercel/workflow/commit/baba580794f636fa371d86634a2eac7bf367da12), [`7830169`](https://github.com/vercel/workflow/commit/78301695eae3641ec4235d2066eba48f7448c5be), [`da37349`](https://github.com/vercel/workflow/commit/da373493d211c09056f745332b18f55ef801da2b), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396), [`1d4f83a`](https://github.com/vercel/workflow/commit/1d4f83a29acc974fd4bbafe7a6ff64f8936219de), [`136bd35`](https://github.com/vercel/workflow/commit/136bd35a98a40a5dc55b2fbf838924c0af001ba7), [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af), [`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba), [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3), [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61), [`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`53ede30`](https://github.com/vercel/workflow/commit/53ede3079c19494c53e181917f26c2499a19e012), [`c48d27b`](https://github.com/vercel/workflow/commit/c48d27b4f83996e68d1a48eeeeebe4a58a045a61), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9), [`4ec7aca`](https://github.com/vercel/workflow/commit/4ec7acaa7196a6f2f5025a65f05d5bdaaf5705ba), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee), [`0c997ce`](https://github.com/vercel/workflow/commit/0c997ce571c9fb5d728d460d773040c1354d401e), [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8), [`49a50e8`](https://github.com/vercel/workflow/commit/49a50e83d94656e1df123df1f27258fa7f1d3216), [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727)]:
+  - @workflow/swc-plugin@5.0.0
+  - @workflow/builders@5.0.0
+
+## 5.0.0-beta.58
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.58
+
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.57
+
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.56
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- Updated dependencies [[`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d)]:
+  - @workflow/builders@5.0.0-beta.54
+
+## 5.0.0-beta.53
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.53
+
+## 5.0.0-beta.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.52
+
+## 5.0.0-beta.51
+
+### Patch Changes
+
+- [#3891](https://github.com/vercel/workflow/pull/3891) [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Disable implicit input source map loading during workflow transforms to avoid false missing-map build errors for dependencies.
+- Updated dependencies [[`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357)]:
+  - @workflow/swc-plugin@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.51
+
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies [[`ae5ee5b`](https://github.com/vercel/workflow/commit/ae5ee5ba2e68ca9850a5cb7b2b253388d06fdd8f)]:
+  - @workflow/swc-plugin@5.0.0-beta.6
+  - @workflow/builders@5.0.0-beta.49
+
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- Updated dependencies [[`88f5d21`](https://github.com/vercel/workflow/commit/88f5d214d48b15d3126943313ed03d48667e772c)]:
+  - @workflow/builders@5.0.0-beta.47
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f)]:
+  - @workflow/builders@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/builders@5.0.0-beta.45
+
 ## 5.0.0-beta.44
 
 ### Patch Changes

@@ -2,76 +2,134 @@ import { describe, expect, it } from 'vitest';
 import {
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
+  AttributeChangeSchema,
+  AttributeChangesSchema,
+  AttributeKeySchema,
   AttributeValidationError,
+  AttributeValueSchema,
   applyAttributeChanges,
   validateAttributeChanges,
-  validateAttributeKey,
-  validateAttributeValue,
 } from './attributes.js';
+import {
+  ATTRIBUTE_EVENT_DATA_MAX_BYTES,
+  type EventOfType,
+  validateAttributeEventDataSize,
+} from './index.js';
 
-describe('validateAttributeKey', () => {
+describe('validateAttributeEventDataSize', () => {
+  it.each([
+    ['envelope', 'key', ''],
+    ['long keys', 'k'.repeat(180), ''],
+    ['UTF-8 keys', '\u00e9'.repeat(90), ''],
+    ['UTF-8 values', 'key', '\u00e9'.repeat(64)],
+    ['JSON escapes', '\n"\\', '\n"\\'.repeat(12)],
+  ])('counts %s at the JSON byte boundary', (_label, key, value) => {
+    expect(ATTRIBUTE_EVENT_DATA_MAX_BYTES).toBe(8192);
+    const eventData = {
+      changes: Array.from({ length: 32 }, (_, i) => ({
+        key: `${i}${key}`,
+        value,
+      })),
+      writer: { type: 'workflow' },
+    } satisfies EventOfType<'attr_set'>['eventData'];
+    let remaining = 8192 - Buffer.byteLength(JSON.stringify(eventData));
+    for (const change of eventData.changes) {
+      const padding = Math.min(
+        remaining,
+        256 - Buffer.byteLength(change.value)
+      );
+      change.value += 'x'.repeat(padding);
+      remaining -= padding;
+    }
+    expect(remaining).toBe(0);
+    expect(Buffer.byteLength(JSON.stringify(eventData))).toBe(8192);
+    expect(() => validateAttributeChanges(eventData.changes)).not.toThrow();
+    expect(() => validateAttributeEventDataSize(eventData)).not.toThrow();
+
+    eventData.changes[0].key += 'x';
+    expect(Buffer.byteLength(JSON.stringify(eventData))).toBe(8193);
+    expect(() => validateAttributeChanges(eventData.changes)).not.toThrow();
+    expect(() => validateAttributeEventDataSize(eventData)).toThrow(
+      AttributeValidationError
+    );
+    expect(() => validateAttributeEventDataSize(eventData)).toThrow(
+      /8192.*8193.*Split/
+    );
+  });
+});
+
+describe('attribute schemas', () => {
   it('accepts a normal key', () => {
-    expect(validateAttributeKey('phase')).toBeNull();
+    expect(AttributeKeySchema.safeParse('phase').success).toBe(true);
   });
 
   it('rejects empty keys', () => {
-    expect(validateAttributeKey('')).toBeInstanceOf(AttributeValidationError);
+    expect(AttributeKeySchema.safeParse('').success).toBe(false);
   });
 
   it('rejects keys over the length cap', () => {
     expect(
-      validateAttributeKey('k'.repeat(ATTRIBUTE_KEY_MAX_LENGTH + 1))
-    ).toBeInstanceOf(AttributeValidationError);
+      AttributeKeySchema.safeParse('k'.repeat(ATTRIBUTE_KEY_MAX_LENGTH + 1))
+        .success
+    ).toBe(false);
   });
 
   it('accepts keys exactly at the length cap', () => {
     expect(
-      validateAttributeKey('k'.repeat(ATTRIBUTE_KEY_MAX_LENGTH))
-    ).toBeNull();
+      AttributeKeySchema.safeParse('k'.repeat(ATTRIBUTE_KEY_MAX_LENGTH)).success
+    ).toBe(true);
   });
 
-  it('rejects keys starting with the reserved prefix by default', () => {
-    expect(validateAttributeKey('$internal')).toBeInstanceOf(
-      AttributeValidationError
-    );
-  });
-
-  it('accepts reserved-prefix keys when allowReservedAttributes is set', () => {
-    expect(
-      validateAttributeKey('$internal', { allowReservedAttributes: true })
-    ).toBeNull();
-  });
-
-  it('still rejects reserved-prefix keys when allowReservedAttributes is explicitly false', () => {
-    expect(
-      validateAttributeKey('$internal', { allowReservedAttributes: false })
-    ).toBeInstanceOf(AttributeValidationError);
-  });
-});
-
-describe('validateAttributeValue', () => {
   it('accepts null (unset)', () => {
-    expect(validateAttributeValue(null)).toBeNull();
+    expect(AttributeValueSchema.safeParse(null).success).toBe(true);
   });
 
   it('accepts a normal string', () => {
-    expect(validateAttributeValue('hello')).toBeNull();
+    expect(AttributeValueSchema.safeParse('hello').success).toBe(true);
   });
 
   it('rejects values over the byte cap', () => {
-    expect(validateAttributeValue('a'.repeat(257))).toBeInstanceOf(
-      AttributeValidationError
-    );
+    expect(AttributeValueSchema.safeParse('a'.repeat(257)).success).toBe(false);
   });
 
   it('counts UTF-8 bytes, not characters', () => {
     // 4-byte UTF-8 emoji; 64 of them = 256 bytes exactly (at the cap)
     const at = '💥'.repeat(64);
-    expect(validateAttributeValue(at)).toBeNull();
+    expect(AttributeValueSchema.safeParse(at).success).toBe(true);
     const over = '💥'.repeat(65); // 260 bytes, over
-    expect(validateAttributeValue(over)).toBeInstanceOf(
-      AttributeValidationError
+    expect(AttributeValueSchema.safeParse(over).success).toBe(false);
+  });
+
+  it('validates complete changes and batches', () => {
+    expect(
+      AttributeChangeSchema.safeParse({ key: 'phase', value: 'running' })
+        .success
+    ).toBe(true);
+    expect(
+      AttributeChangeSchema.safeParse({ key: '', value: 'running' }).success
+    ).toBe(false);
+    expect(
+      AttributeChangesSchema.safeParse([
+        { key: 'phase', value: 'running' },
+        { key: 'phase', value: 'done' },
+      ]).success
+    ).toBe(false);
+  });
+
+  it('rejects batches over the per-run cap', () => {
+    const changes = Array.from(
+      { length: ATTRIBUTE_MAX_PER_RUN + 1 },
+      (_, i) => ({ key: `k${i}`, value: 'v' })
     );
+    expect(AttributeChangesSchema.safeParse(changes).success).toBe(false);
+  });
+
+  it('leaves reserved-key policy to the contextual validator', () => {
+    expect(
+      AttributeChangesSchema.safeParse([
+        { key: '$framework.kind', value: 'agent' },
+      ]).success
+    ).toBe(true);
   });
 });
 
@@ -102,6 +160,18 @@ describe('validateAttributeChanges', () => {
     expect(() =>
       validateAttributeChanges(changes, { existingKeys: ['preexisting'] })
     ).toThrow(AttributeValidationError);
+  });
+
+  it('does not let an unknown deletion offset a new attribute', () => {
+    const changes: Array<{ key: string; value: string | null }> = Array.from(
+      { length: ATTRIBUTE_MAX_PER_RUN + 1 },
+      (_, i) => ({ key: `k${i}`, value: 'v' })
+    );
+    changes.push({ key: 'not-known-to-exist', value: null });
+
+    expect(() => validateAttributeChanges(changes)).toThrow(
+      AttributeValidationError
+    );
   });
 
   it('does not count upserts on already-present keys against the cap', () => {

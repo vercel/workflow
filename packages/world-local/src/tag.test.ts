@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listJSONFiles, stripTag } from './fs.js';
 import { createStorage } from './storage.js';
@@ -8,6 +9,7 @@ import {
   createHook,
   createRun,
   createStep,
+  disposeHook,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -62,13 +64,13 @@ describe('File tagging', () => {
 
     it('should write event files with tag suffix', async () => {
       const storage = createStorage(testDir, 'vitest-0');
-      await createRun(storage, {
+      const run = await createRun(storage, {
         deploymentId: 'dep-1',
         workflowName: 'test-wf',
         input: new Uint8Array(),
       });
 
-      const eventsDir = path.join(testDir, 'events');
+      const eventsDir = path.join(testDir, 'events', run.runId);
       const files = await fs.readdir(eventsDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/\.vitest-0\.json$/);
@@ -88,7 +90,7 @@ describe('File tagging', () => {
         input: new Uint8Array(),
       });
 
-      const stepsDir = path.join(testDir, 'steps');
+      const stepsDir = path.join(testDir, 'steps', run.runId);
       const files = await fs.readdir(stepsDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/\.vitest-0\.json$/);
@@ -389,6 +391,81 @@ describe('File tagging', () => {
 
       await world.close?.();
     });
+
+    it("should delete only its own tag's lock files", async () => {
+      const { createWorld } = await import('./index.js');
+
+      const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
+      await world0.start?.();
+
+      for (const [world, hookId] of [
+        [world0, 'hook_0'],
+        [world1, 'hook_1'],
+      ] as const) {
+        const run = await createRun(world, {
+          deploymentId: 'dep-1',
+          workflowName: 'hook-wf',
+          input: new Uint8Array(),
+        });
+        await updateRun(world, run.runId, 'run_started');
+        await createHook(world, run.runId, {
+          hookId,
+          token: `token-${hookId}`,
+        });
+        await disposeHook(world, run.runId, hookId);
+      }
+
+      const hookLocksDir = path.join(testDir, '.locks', 'hooks');
+      expect((await fs.readdir(hookLocksDir)).sort()).toEqual([
+        'hook_0.disposed.vitest-0',
+        'hook_1.disposed.vitest-1',
+      ]);
+
+      await world0.clear();
+
+      expect(await fs.readdir(hookLocksDir)).toEqual([
+        'hook_1.disposed.vitest-1',
+      ]);
+
+      await world0.close?.();
+      await world1.close?.();
+    });
+
+    // Regression: clear() deleted all of `.locks`, so another vitest worker
+    // starting a test file reopened this worker's disposed hook, and the run
+    // recreating its token conflicted with itself (hook-token-reuse.test.ts).
+    it("should not reopen another tag's disposed hook", async () => {
+      const { createWorld } = await import('./index.js');
+
+      const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
+      await world0.start?.();
+
+      const run = await createRun(world1, {
+        deploymentId: 'dep-1',
+        workflowName: 'hook-wf',
+        input: new Uint8Array(),
+      });
+      await updateRun(world1, run.runId, 'run_started');
+      const token = 'reused-token';
+      await createHook(world1, run.runId, { hookId: 'hook_0', token });
+      await disposeHook(world1, run.runId, 'hook_0');
+
+      await world0.clear();
+
+      const result = await world1.events.create(run.runId, {
+        eventType: 'hook_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: 'hook_1',
+        eventData: { token },
+      });
+      expect(result.event?.eventType).toBe('hook_created');
+      expect(result.hook?.hookId).toBe('hook_1');
+
+      await world0.close?.();
+      await world1.close?.();
+    });
   });
 
   describe('untagged clear()', () => {
@@ -460,7 +537,11 @@ describe('File tagging', () => {
       const runsDir = path.join(testDir, 'runs');
       const eventsDir = path.join(testDir, 'events');
       const stepsDir = path.join(testDir, 'steps');
-      for (const dir of [runsDir, eventsDir, stepsDir]) {
+      for (const dir of [
+        runsDir,
+        path.join(eventsDir, run.runId),
+        path.join(stepsDir, run.runId),
+      ]) {
         const files = await fs.readdir(dir);
         for (const file of files) {
           expect(file).toMatch(/\.vitest-0\.json$/);

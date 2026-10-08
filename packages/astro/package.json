@@ -1,6 +1,6 @@
 {
   "name": "@workflow/astro",
-  "version": "5.0.0-beta.44",
+  "version": "5.0.3",
   "description": "Astro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -36,7 +36,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "astro": "7.0.6",
+    "astro": "7.2.10",
     "typescript": "catalog:"
   }
 }

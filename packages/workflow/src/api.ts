@@ -15,7 +15,14 @@ export type {
   WorkflowRun,
 } from '@workflow/core/runtime';
 export {
+  type RunCompletedHookParams,
+  type RunFailedHookParams,
+  registerLifecycleHooks,
+  type WorkflowLifecycleHooks,
+} from '@workflow/core/runtime/lifecycle-hooks';
+export {
   getHookByToken,
+  type Hook,
   type ResumedHook,
   resumeHook,
   resumeWebhook,
@@ -25,8 +32,12 @@ export {
   Run,
   type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
+  type WorkflowRunWritableStreamOptions,
 } from '@workflow/core/runtime/run';
 export {
+  type DynamicStartOptions,
+  type DynamicWorkflowOptions,
+  type DynamicWorkflowStepReference,
   type StartOptions,
   start,
 } from '@workflow/core/runtime/start';

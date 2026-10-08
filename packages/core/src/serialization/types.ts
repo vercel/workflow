@@ -72,6 +72,10 @@ export interface SerializableSpecial {
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
+  // A `DataView`, as base64 of the bytes it views. Not tagged `DataView`:
+  // that tag belongs to devalue's built-in encoding, which payloads written
+  // before this one still use. See `reducers/common.ts`.
+  DataViewBytes: string; // base64 string of the viewed bytes only
   Date: string; // ISO string
   DOMException: {
     message: string;
@@ -92,6 +96,14 @@ export interface SerializableSpecial {
     token: string;
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
+  };
+  HookForceClaimedError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    token: string;
+    claimedByRunId: string;
+    claimedByHookId?: string;
   };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
@@ -133,6 +145,13 @@ export interface SerializableSpecial {
     stack?: string;
     cause?: unknown;
     context?: RuntimeDecryptionErrorContext;
+  };
+  StreamError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    status?: number;
+    url?: string;
   };
   Request: {
     method: string;

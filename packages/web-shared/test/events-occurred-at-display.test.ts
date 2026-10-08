@@ -6,6 +6,24 @@ import { EventRow } from '../src/components/event-list-view.js';
 import { EventsList } from '../src/components/sidebar/events-list.js';
 
 describe('event occurredAt display', () => {
+  it('omits cancellation reasons from sidebar event details', () => {
+    const events = [
+      {
+        eventId: 'evnt_run_cancelled',
+        runId: 'wrun_cancelled_test',
+        eventType: 'run_cancelled',
+        createdAt: new Date('2026-09-18T00:00:00.000Z'),
+        specVersion: 2,
+        eventData: { cancelReason: 'stopped by operator' },
+      },
+    ] as Event[];
+
+    const markup = renderToStaticMarkup(createElement(EventsList, { events }));
+
+    expect(markup).toContain('run_cancelled');
+    expect(markup).not.toContain('stopped by operator');
+  });
+
   it('uses occurrence time as the created timestamp in detail panel rows by default', () => {
     const events = [
       {

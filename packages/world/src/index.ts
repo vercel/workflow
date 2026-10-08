@@ -1,6 +1,9 @@
 export type * from './analytics.js';
 export {
   ANALYTICS_EVENTS_GET_MANY_LIMIT,
+  ANALYTICS_MAX_ATTRIBUTE_FILTERS,
+  ANALYTICS_PAGE_LIMIT,
+  ANALYTICS_RUN_SCOPED_PAGE_LIMIT,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
@@ -10,19 +13,28 @@ export {
 } from './analytics.js';
 export type * from './attributes.js';
 export {
+  ATTRIBUTE_EVENT_DATA_MAX_BYTES,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
   AttributeChangeSchema,
   AttributeChangesSchema,
+  AttributeKeySchema,
   AttributeValidationError,
+  AttributeValueSchema,
   applyAttributeChanges,
   PARENT_RUN_ID_ATTRIBUTE,
+  purgesUserDataOnFinish,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
+  RETENTION_ATTRIBUTE,
+  RETENTION_DEFAULT,
+  RETENTION_ZERO,
+  type ResolvedRunRetention,
   ROOT_RUN_ID_ATTRIBUTE,
+  type RunRetention,
+  readRunRetention,
   validateAttributeChanges,
-  validateAttributeKey,
-  validateAttributeValue,
+  validateAttributeEventDataSize,
 } from './attributes.js';
 export {
   _resetEnvWarnCacheForTests,
@@ -36,8 +48,7 @@ export {
   BaseEventSchema,
   CHILD_ENTITY_CREATION_EVENT_TYPES,
   CreateEventSchema,
-  EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE,
-  EVENT_DATA_REF_FIELDS,
+  classifyEntityEvent,
   EventSchema,
   EventTypeSchema,
   entityEventClass,
@@ -56,9 +67,11 @@ export {
   isTerminalRunEventType,
   isTerminalStepEventType,
   isWaitEventType,
+  RUN_ENTITY_KEY,
   RUN_EVENT_TYPES,
   STEP_EVENT_TYPES,
   stripEventDataRefs,
+  TERMINAL_EVENT_CLASSES,
   TERMINAL_RUN_EVENT_TYPES,
   TERMINAL_STEP_EVENT_TYPES,
   TerminalRunEventTypeSchema,
@@ -68,10 +81,15 @@ export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,
   HOOK_RESUME_INPUT_VERSION,
+  HookClaimedFromSchema,
   HookResumeCapabilitiesSchema,
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+export type {
+  InvocationOutcome,
+  SerializedWorkflowError,
+} from './invocation.js';
 // The client this flag selects lives in `./node-http.js`, which is reachable
 // only by subpath: it imports node builtins statically, and this index is also
 // pulled into browser bundles.
@@ -120,6 +138,7 @@ export type {
   StreamInfoResponse,
 } from './shared.js';
 export {
+  entityResolveData,
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
@@ -134,8 +153,17 @@ export {
   requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';
+export type * from './snapshots.js';
+export {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
+  SNAPSHOT_FORMAT_VERSION,
+  SnapshotMetadataSchema,
+} from './snapshots.js';
 export type { SpecVersion } from './spec-version.js';
 export {
+  CAPABILITY_ONLY_SPEC_VERSIONS,
+  crossesStructuralSpecVersion,
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
@@ -147,8 +175,10 @@ export {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  STRUCTURAL_SPEC_VERSIONS,
 } from './spec-version.js';
 export type * from './steps.js';
 export {

@@ -75,14 +75,16 @@ export interface GuestCodeExecution {
 }
 
 /**
- * Mutable sink recording every workflow-code execution serialization could
- * not avoid. Pass via `CodecOptions.guestCodeStats`; consumers that retain
- * the VM across steps can use a non-empty `executions` array as a signal
- * that the VM state may have been perturbed by serialization.
+ * Mutable sink recording workflow-code execution serialization could not
+ * avoid. `executions` contains the first five samples and `totalExecutions`
+ * is the exact count.
  */
 export interface GuestCodeStats {
   executions: GuestCodeExecution[];
+  totalExecutions?: number;
 }
+
+export const GUEST_CODE_EXECUTION_SAMPLE_LIMIT = 5;
 
 // per-copy-ok: both are set and cleared by `withGuestCodeStats` around a single
 // synchronous call, so the sink is only ever read by the same copy that armed
@@ -152,6 +154,11 @@ export function recordGuestCode(
   detail?: string
 ): void {
   if (!activeStats) return;
+  activeStats.totalExecutions =
+    (activeStats.totalExecutions ?? activeStats.executions.length) + 1;
+  if (activeStats.executions.length >= GUEST_CODE_EXECUTION_SAMPLE_LIMIT) {
+    return;
+  }
   const execution: GuestCodeExecution = { kind };
   if (detail !== undefined) execution.detail = detail;
   activeStats.executions.push(execution);
@@ -238,6 +245,16 @@ const typedArrayByteLength = protoGetter<number>(
   'byteLength'
 );
 const typedArrayLength = protoGetter<number>(TypedArrayPrototype, 'length');
+// `%TypedArray%.prototype.set` copies by internal slots and, unlike `slice`,
+// never consults a species constructor.
+const typedArraySet = uncurryThis(
+  (TypedArrayPrototype as Uint8Array).set as (
+    this: Uint8Array,
+    source: ArrayLike<number>
+  ) => void
+);
+const HostArrayBuffer = ArrayBuffer;
+const HostUint8Array = Uint8Array;
 const dataViewBuffer = protoGetter<ArrayBufferLike>(
   DataView.prototype,
   'buffer'
@@ -432,13 +449,27 @@ export function urlSearchParamsToString(value: URLSearchParams): string {
 /**
  * Iterates a Headers instance through the captured host iterator, so the
  * iterator object, and its `next`, are host-realm.
+ *
+ * Some server runtimes hand out Headers look-alikes: objects that inherit
+ * from `Headers.prototype` and forward every method to a wrapped native
+ * instance (srvx, used by Nitro, does this for incoming request headers).
+ * They carry no native header state, so the host iterator rejects them with
+ * a TypeError on runtimes whose undici keeps that state in private fields
+ * (Node 24+). Those fall back to the object's own iterator, which runs
+ * non-intrinsic code and is recorded as such.
  */
 export function headersToEntries(value: Headers): [string, string][] {
   if (isProxy(value)) {
     recordProxy(value);
     return Array.from(value) as [string, string][];
   }
-  return [...headersIterator(value)] as [string, string][];
+  try {
+    return [...headersIterator(value)] as [string, string][];
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    recordGuestCode('method', 'Headers[Symbol.iterator]');
+    return Array.from(value) as [string, string][];
+  }
 }
 
 /**
@@ -631,14 +662,33 @@ export const hardenedStringifyOperations: Partial<StringifyOperations> = {
 
   viewInfo: (view: ArrayBufferView) => {
     const info = viewInfo(view);
+    // devalue only reads `length` for typed-array subviews; DataView
+    // subviews are encoded from `byteLength`.
+    const length = types.isDataView(view) ? 0 : typedArrayLength(view);
+    const bufferByteLength = types.isSharedArrayBuffer(info.buffer)
+      ? sharedArrayBufferByteLength(info.buffer)
+      : arrayBufferByteLength(info.buffer);
+    if (info.byteLength === bufferByteLength) {
+      return { ...info, length, bufferByteLength };
+    }
+    // Reached only for views the reducers did not claim (e.g. `Float16Array`,
+    // which no reducer set handles). devalue's built-in encoding emits the
+    // view's *whole* backing buffer plus offset/length, and a view onto
+    // Node's shared `Buffer` pool (`Buffer.allocUnsafe`, small `Buffer.from`)
+    // would put 8 KiB of unrelated, possibly sensitive allocations into the
+    // event log. Copy just the viewed bytes into a fresh buffer, so devalue
+    // encodes the compact `[tag, buffer]` form, which every reader accepts.
+    const copy = new HostArrayBuffer(info.byteLength);
+    typedArraySet(
+      new HostUint8Array(copy),
+      new HostUint8Array(info.buffer, info.byteOffset, info.byteLength)
+    );
     return {
-      ...info,
-      // devalue only reads `length` for typed-array subviews; DataView
-      // subviews are encoded from `byteLength`.
-      length: types.isDataView(view) ? 0 : typedArrayLength(view),
-      bufferByteLength: types.isSharedArrayBuffer(info.buffer)
-        ? sharedArrayBufferByteLength(info.buffer)
-        : arrayBufferByteLength(info.buffer),
+      buffer: copy,
+      byteOffset: 0,
+      byteLength: info.byteLength,
+      length,
+      bufferByteLength: info.byteLength,
     };
   },
 

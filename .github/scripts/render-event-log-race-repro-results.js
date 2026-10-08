@@ -283,6 +283,8 @@ function renderConfigScale(config) {
     config.blockedBranchAttempts
       ? `blocked-branch ${config.blockedBranchAttempts}`
       : '',
+    config.wakeLoopAttempts ? `wake-loop ${config.wakeLoopAttempts}` : '',
+    config.dagRunnerAttempts ? `dag-runner ${config.dagRunnerAttempts}` : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
     // comment still renders its own configuration rather than a blank line.
@@ -312,6 +314,12 @@ function renderConfigTiming(config) {
       ? `step ${config.stepDelayMs}±${config.stepDelayJitterMs ?? 0}ms`
       : '',
     config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
+    config.wakeLoopAttempts && config.wakeLoopHeartbeatMs
+      ? `heartbeat ${config.wakeLoopHeartbeatMs}ms`
+      : '',
+    config.dagRunnerAttempts && config.dagRunnerWidth
+      ? `dag ${config.dagRunnerNodes ?? '?'}x${config.dagRunnerWidth}`
+      : '',
     config.resumeBurstOffsetMs && config.blockedBranchAttempts
       ? `burst ${config.resumeBurstOffsetMs}+${config.resumeBurstJitterMs ?? 0}ms`
       : '',
@@ -342,6 +350,8 @@ function compactConfig(config = {}) {
     stepStormAttempts: config.stepStormAttempts,
     hookStormAttempts: config.hookStormAttempts,
     blockedBranchAttempts: config.blockedBranchAttempts,
+    wakeLoopAttempts: config.wakeLoopAttempts,
+    dagRunnerAttempts: config.dagRunnerAttempts,
     hookSleepAttempts: config.hookSleepAttempts,
     concurrency: config.concurrency,
     rounds: config.rounds,
@@ -357,6 +367,9 @@ function compactConfig(config = {}) {
     hookResumeStaggerMs: config.hookResumeStaggerMs,
     launchStaggerMs: config.launchStaggerMs,
     resumeBurstOffsetMs: config.resumeBurstOffsetMs,
+    wakeLoopHeartbeatMs: config.wakeLoopHeartbeatMs,
+    dagRunnerNodes: config.dagRunnerNodes,
+    dagRunnerWidth: config.dagRunnerWidth,
     resumeBurstJitterMs: config.resumeBurstJitterMs,
     blockedBranchWatchdogMs: config.blockedBranchWatchdogMs,
     runTimeoutMs: config.runTimeoutMs,

@@ -9,6 +9,14 @@ prerequisites:
 
 NestJS controller that handles the well-known workflow endpoints under `.well-known/workflow/v1`. It dynamically imports the generated workflow bundles and converts between Express/Fastify requests and the Web API `Request`/`Response` objects the workflow runtime expects. Both the Express and Fastify HTTP adapters are supported.
 
+The conversion preserves bytes in both directions. [`WorkflowModule`](/docs/api-reference/workflow-nest/workflow-module) keeps the application's body parsers off these routes, so the request body is normally read straight from the stream; a `req.rawBody` left by `{ rawBody: true }`, or a `Buffer`/string body left by a parser, is used when one is present. Responses are written as bytes, and every `set-cookie` value is kept. See [Request bodies and body parsers](/docs/getting-started/nestjs#request-bodies-and-body-parsers).
+
+Handlers take `@Res()` and write the response themselves, so an interceptor or exception filter cannot reshape it. That is deliberate: the queue and third-party webhook senders key off the exact status and body the workflow runtime produces.
+
+Guards do run, because NestJS runs them before the handler. A global guard that rejects unauthenticated requests rejects queue deliveries too; see [`isWorkflowRequest`](/docs/api-reference/workflow-nest/is-workflow-request).
+
+The controller is registered as `VERSION_NEUTRAL`, so `app.enableVersioning()` does not move these routes away from the paths the SDK generates URLs for. A global prefix does apply, and `WorkflowModule` adopts it automatically.
+
 [`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) registers this controller automatically. You only register it yourself if you are not using `WorkflowModule`.
 
 ## Usage
@@ -35,6 +43,8 @@ export class AppModule {}
 
 | Route | Method | Description |
 | --- | --- | --- |
-| `/.well-known/workflow/v1/flow` | `POST` | Executes workflow and step work items via the combined handler in `workflows.mjs` (step registrations are imported from `steps.mjs` first). |
+| `/.well-known/workflow/v1/flow` | `POST`, `GET`, `HEAD`, `OPTIONS` | Executes workflow and step work items via the combined handler in `workflows.mjs` (step registrations are imported from `steps.mjs` first). `HEAD` is what local port detection probes to identify a workflow server, so all four methods are served. |
 | `/.well-known/workflow/v1/webhook/:token` | Any | Forwards webhook requests to the handler in `webhook.mjs`. |
 | `/.well-known/workflow/v1/manifest.json` | `GET` | Serves the workflow manifest. Responds with `404` unless the `WORKFLOW_PUBLIC_MANIFEST=1` environment variable is set. |
+
+A route whose bundle cannot be loaded answers `503` with a message naming the missing file and the build command that produces it, rather than surfacing a raw `ERR_MODULE_NOT_FOUND`.

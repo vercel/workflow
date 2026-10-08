@@ -97,6 +97,11 @@ export function getCommonReducers(): Partial<Reducers> {
       value instanceof BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof BigUint64Array && viewToBase64(value),
+    // Claimed rather than left to devalue, which encodes a DataView as its
+    // whole backing ArrayBuffer plus offset/length. The tag is not `DataView`
+    // so that older payloads under that name keep reaching devalue's built-in
+    // branch with their bounds; see the host-side common.ts.
+    DataViewBytes: (value) => value instanceof DataView && viewToBase64(value),
     Date: (value) => {
       if (!(value instanceof Date)) return false;
       const valid = !Number.isNaN(value.getDate());
@@ -149,6 +154,23 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
+    // HookForceClaimedError carries the token and who took it; mirror the
+    // host-side common.ts reducer.
+    HookForceClaimedError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'HookForceClaimedError')
+        return false;
+      const reduced: SerializableSpecial['HookForceClaimedError'] = {
+        message: value.message,
+        stack: value.stack,
+        token: (value as any).token,
+        claimedByRunId: (value as any).claimedByRunId,
+      };
+      if ((value as any).claimedByHookId !== undefined) {
+        reduced.claimedByHookId = (value as any).claimedByHookId;
+      }
+      if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
     RangeError: makeNamedErrorSubclassReducer('RangeError'),
     ReferenceError: makeNamedErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra retryAfter; serialize as numeric
@@ -196,6 +218,16 @@ export function getCommonReducers(): Partial<Reducers> {
         reduced.context = context;
       }
       if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
+    StreamError: (value) => {
+      const base = makeNamedErrorSubclassReducer('StreamError')(value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['StreamError'] = { ...base };
+      const status = (value as any).status;
+      const url = (value as any).url;
+      if (typeof status === 'number') reduced.status = status;
+      if (typeof url === 'string') reduced.url = url;
       return reduced;
     },
     SyntaxError: makeNamedErrorSubclassReducer('SyntaxError'),
@@ -360,6 +392,7 @@ export function getCommonRevivers(): Partial<Revivers> {
       new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
+    DataViewBytes: (value: string) => new DataView(reviveArrayBuffer(value)),
     Date: (value) => new Date(value),
     DOMException: (value) => {
       const error = new DOMException(value.message, value.name);
@@ -417,6 +450,30 @@ export function getCommonRevivers(): Partial<Revivers> {
       if ('cause' in value) (error as any).cause = (value as any).cause;
       return error;
     },
+    HookForceClaimedError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//HookForceClaimedError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(
+          value.token,
+          value.claimedByRunId,
+          value.claimedByHookId
+        );
+      } else {
+        error = new Error(value.message);
+        error.name = 'HookForceClaimedError';
+        (error as any).token = value.token;
+        (error as any).claimedByRunId = value.claimedByRunId;
+        if (value.claimedByHookId !== undefined) {
+          (error as any).claimedByHookId = value.claimedByHookId;
+        }
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
     RangeError: makeNamedErrorSubclassReviver('RangeError'),
     ReferenceError: makeNamedErrorSubclassReviver('ReferenceError'),
     RetryableError: (value) => {
@@ -459,6 +516,27 @@ export function getCommonRevivers(): Partial<Revivers> {
           (error as any).context = value.context;
         }
         if ('cause' in value) (error as any).cause = (value as any).cause;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    StreamError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//StreamError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.message, {
+          ...('cause' in value ? { cause: value.cause } : {}),
+          status: value.status,
+          url: value.url,
+        });
+      } else {
+        error = new Error(value.message);
+        error.name = 'StreamError';
+        if ('cause' in value) (error as any).cause = value.cause;
+        if (value.status !== undefined) (error as any).status = value.status;
+        if (value.url !== undefined) (error as any).url = value.url;
       }
       if (value.stack !== undefined) error.stack = value.stack;
       return error;

@@ -1,9 +1,8 @@
 /**
- * E2E tests for DurableAgent workflows.
+ * E2E tests for WorkflowAgent workflows.
  *
- * Tests exercise DurableAgent through the full workflow runtime using mock
- * providers from @workflow/ai/test. Tests marked it.fails() correspond to
- * known API gaps that need implementation.
+ * Tests exercise AI SDK 7's WorkflowAgent through the full workflow runtime
+ * using a serializable mock provider.
  *
  * Run locally:
  *   1. cd workbench/nextjs-turbopack && pnpm dev
@@ -35,14 +34,9 @@ afterAll(() => {
   writeInfraSidecar();
 });
 
-// Next.js canary builds (16.2.0-canary.100+) have a regression where
-// @workflow/ai step files are missing from the step bundle, causing
-// "doStreamStep not found" errors. Skip agent tests on canary until fixed.
-const isCanary = process.env.NEXT_CANARY === '1';
-
-// DurableAgent tests are only supported on Next.js and SvelteKit deployments.
+// WorkflowAgent tests are only supported on Next.js and SvelteKit deployments.
 // Nitro-based BOA deployments use the V2 combined handler which needs
-// additional work for DurableAgent support on these frameworks.
+// additional work for WorkflowAgent support on these frameworks.
 const supportedApps = new Set([
   'nextjs-turbopack',
   'nextjs-webpack',
@@ -71,8 +65,8 @@ beforeEach((ctx) => {
 // Core agent tests
 // ============================================================================
 
-describe.skipIf(isCanary || isUnsupportedApp)(
-  'DurableAgent e2e',
+describe.skipIf(isUnsupportedApp)(
+  'WorkflowAgent e2e',
   { timeout: 120_000 },
   () => {
     describe('core', () => {
@@ -114,12 +108,12 @@ describe.skipIf(isCanary || isUnsupportedApp)(
     });
 
     // ==========================================================================
-    // onStepFinish callback tests
+    // onStepEnd callback tests
     // ==========================================================================
 
-    describe('onStepFinish', () => {
+    describe('onStepEnd', () => {
       it('fires constructor + stream callbacks in order with step data', async () => {
-        const run = await start(await agentE2e('agentOnStepFinishE2e'), []);
+        const run = await start(await agentE2e('agentOnStepEndE2e'), []);
         const rv = await run.returnValue;
 
         // Constructor callback fires first, then stream callback
@@ -136,12 +130,12 @@ describe.skipIf(isCanary || isUnsupportedApp)(
     });
 
     // ==========================================================================
-    // onFinish callback tests
+    // onEnd callback tests
     // ==========================================================================
 
-    describe('onFinish', () => {
+    describe('onEnd', () => {
       it('fires constructor + stream callbacks in order with event data', async () => {
-        const run = await start(await agentE2e('agentOnFinishE2e'), []);
+        const run = await start(await agentE2e('agentOnEndE2e'), []);
         const rv = await run.returnValue;
 
         expect(rv.callSources).toEqual(['constructor', 'method']);
@@ -212,52 +206,58 @@ describe.skipIf(isCanary || isUnsupportedApp)(
     });
 
     // ==========================================================================
-    // GAP tests — these fail until the feature is implemented
+    // Additional WorkflowAgent callbacks
     // ==========================================================================
 
-    describe('experimental_onStart (GAP)', () => {
-      it('completes but callbacks are not called (GAP)', async () => {
+    describe('experimental_onStart', () => {
+      it('fires constructor + stream callbacks in order', async () => {
         const run = await start(await agentE2e('agentOnStartE2e'), []);
         const rv = await run.returnValue;
-        // GAP: when implemented, should be ['constructor', 'method']
-        expect(rv.callSources).toEqual([]);
+        expect(rv.callSources).toEqual(['constructor', 'method']);
       });
     });
 
-    describe('experimental_onStepStart (GAP)', () => {
-      it('completes but callbacks are not called (GAP)', async () => {
+    describe('experimental_onStepStart', () => {
+      it('fires constructor + stream callbacks in order', async () => {
         const run = await start(await agentE2e('agentOnStepStartE2e'), []);
         const rv = await run.returnValue;
-        // GAP: when implemented, should be ['constructor', 'method']
-        expect(rv.callSources).toEqual([]);
+        expect(rv.callSources).toEqual(['constructor', 'method']);
       });
     });
 
-    describe('experimental_onToolCallStart (GAP)', () => {
-      it('completes but callbacks are not called (GAP)', async () => {
-        const run = await start(await agentE2e('agentOnToolCallStartE2e'), []);
+    describe('onToolExecutionStart', () => {
+      it('fires constructor + stream callbacks in order', async () => {
+        const run = await start(
+          await agentE2e('agentOnToolExecutionStartE2e'),
+          []
+        );
         const rv = await run.returnValue;
-        // GAP: when implemented, should be ['constructor', 'method']
-        expect(rv.calls).toEqual([]);
+        expect(rv.calls).toEqual(['constructor', 'method']);
       });
     });
 
-    describe('experimental_onToolCallFinish (GAP)', () => {
-      it('completes but callbacks are not called (GAP)', async () => {
-        const run = await start(await agentE2e('agentOnToolCallFinishE2e'), []);
+    describe('onToolExecutionEnd', () => {
+      it('fires constructor + stream callbacks with the tool result', async () => {
+        const run = await start(
+          await agentE2e('agentOnToolExecutionEndE2e'),
+          []
+        );
         const rv = await run.returnValue;
-        // GAP: when implemented, should be ['constructor', 'method']
-        expect(rv.calls).toEqual([]);
-        // GAP: capturedEvent should have tool result data
-        expect(rv.capturedEvent).toBeNull();
+        expect(rv.calls).toEqual(['constructor', 'method']);
+        expect(rv.capturedEvent).toMatchObject({
+          toolName: 'addNumbers',
+          success: true,
+          output: 3,
+        });
       });
     });
 
-    describe('prepareCall (GAP)', () => {
-      it('completes but prepareCall is not applied (GAP)', async () => {
+    describe('prepareCall', () => {
+      it('applies prepareCall before streaming', async () => {
         const run = await start(await agentE2e('agentPrepareCallE2e'), []);
         const rv = await run.returnValue;
         expect(rv.stepCount).toBe(1);
+        expect(rv.prepareCallCount).toBe(1);
       });
     });
 
@@ -294,7 +294,7 @@ describe.skipIf(isCanary || isUnsupportedApp)(
     // ==========================================================================
 
     describe('multimodal tool results', () => {
-      it('passes through LanguageModelV3ToolResultOutput from tools', async () => {
+      it('passes through LanguageModelV4ToolResultOutput from tools', async () => {
         const run = await start(
           await agentE2e('agentMultimodalToolResultE2e'),
           []
@@ -306,22 +306,17 @@ describe.skipIf(isCanary || isUnsupportedApp)(
     });
 
     // ==========================================================================
-    // GAP tests
+    // Tool approval
     // ==========================================================================
 
-    describe('tool approval (GAP)', () => {
-      it('completes but needsApproval is not checked (GAP)', async () => {
+    describe('tool approval', () => {
+      it('pauses before executing a tool that needs approval', async () => {
         const run = await start(await agentE2e('agentToolApprovalE2e'), []);
         const rv = await run.returnValue;
-        // GAP: when tool approval is implemented, the agent should pause
-        // with toolCallsCount=1 and toolResultsCount=0 (awaiting approval).
-        // Currently needsApproval is ignored, so the tool executes immediately.
-        // The workflow completes with both tool call and result.
-        expect(rv.stepCount).toBe(2);
-        // When implemented, these should be:
-        // expect(rv.toolCallsCount).toBe(1);
-        // expect(rv.toolResultsCount).toBe(0);
-        // expect(rv.firstToolCallName).toBe('riskyTool');
+        expect(rv.stepCount).toBe(1);
+        expect(rv.toolCallsCount).toBe(1);
+        expect(rv.toolResultsCount).toBe(0);
+        expect(rv.firstToolCallName).toBe('riskyTool');
       });
     });
   }

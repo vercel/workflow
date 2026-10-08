@@ -14,12 +14,14 @@ import type { TypedHook } from 'workflow';
 import * as z from 'zod';
 import type manifest from '../.well-known/workflow/v1/manifest.json';
 
-export const Control = z.object({
-  state: z.literal('listening'),
-  info: z.object({
-    port: z.number(),
-  }),
-});
+export const Control = z.compile(
+  z.object({
+    state: z.literal('listening'),
+    info: z.object({
+      port: z.number(),
+    }),
+  })
+);
 type Control = z.infer<typeof Control>;
 
 type Files = keyof typeof manifest.workflows;
@@ -121,7 +123,7 @@ export async function startServer(opts: {
   throw new Error('Server did not start correctly');
 }
 
-const Invoke = z.object({ runId: z.coerce.string() });
+const Invoke = z.compile(z.object({ runId: z.coerce.string() }));
 
 export function createFetcher(control: Control) {
   return {
@@ -150,21 +152,30 @@ export function createFetcher(control: Control) {
      * World can get wrong while every workflow still appears to work, right
      * up until a replay reads one (see `eventIds`).
      */
-    async getEvents(runId: string): Promise<
+    async getEvents(
+      runId: string,
+      resolveData?: string
+    ): Promise<
       {
         eventId: string;
         eventType: string;
         correlationId?: string;
+        /** sha256 of the event's payload field, or null when it has none. */
+        payloadDigest: string | null;
       }[]
     > {
+      const query = resolveData
+        ? `?resolveData=${encodeURIComponent(resolveData)}`
+        : '';
       const x = await fetch(
-        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events`
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events${query}`
       );
       const data = (await x.json()) as {
         events: {
           eventId: string;
           eventType: string;
           correlationId?: string;
+          payloadDigest: string | null;
         }[];
       };
       return data.events;

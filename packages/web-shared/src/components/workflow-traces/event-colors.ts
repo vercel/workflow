@@ -39,6 +39,17 @@ export function getEventColor(
     };
   }
 
+  // Cancellations - Gray
+  if (eventType === 'run_cancelled') {
+    return {
+      color: 'var(--ds-gray-700)',
+      background: 'var(--ds-gray-100)',
+      border: 'var(--ds-gray-500)',
+      text: 'var(--ds-gray-900)',
+      secondary: 'var(--ds-gray-700)',
+    };
+  }
+
   // Retries - Orange/Yellow
   if (eventType === 'step_retrying') {
     return {

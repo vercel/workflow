@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { serve } from '@hono/node-server';
+import {
+  type EventsResolveData,
+  getEventDataPayloadField,
+} from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
@@ -20,32 +25,56 @@ type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 type NonEmptyArray<T> = [T, ...T[]];
 
-const Invoke = z
-  .object({
-    file: z.enum(Object.keys(manifest.workflows) as NonEmptyArray<Files>),
-    workflow: z.string(),
-    args: z.unknown().array().default([]),
-  })
-  .transform((obj) => {
-    const file = obj.file as keyof typeof manifest.workflows;
-    const workflow = z
-      .enum(
-        Object.keys(manifest.workflows[file]) as NonEmptyArray<
-          Workflows<typeof file>
-        >
-      )
-      .parse(obj.workflow);
-    return {
-      args: obj.args,
-      workflow: manifest.workflows[file][workflow],
-    };
-  });
+const Invoke = z.compile(
+  z
+    .object({
+      file: z.enum(Object.keys(manifest.workflows) as NonEmptyArray<Files>),
+      workflow: z.string(),
+      args: z.unknown().array().default([]),
+    })
+    .transform((obj) => {
+      const file = obj.file as keyof typeof manifest.workflows;
+      const workflow = z
+        .compile(
+          z.enum(
+            Object.keys(manifest.workflows[file]) as NonEmptyArray<
+              Workflows<typeof file>
+            >
+          )
+        )
+        .parse(obj.workflow);
+      return {
+        args: obj.args,
+        workflow: manifest.workflows[file][workflow],
+      };
+    })
+);
 
 // Track flow handler invocations per run for testing inline execution
 // per-copy-ok: this file is a standalone test server entry (it calls `serve()`
 // below), so it runs as its own process with one module instance. There is no
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
+
+/**
+ * A digest of an event's payload field (its `input`, `result`, `output`, …),
+ * or null when the event carries none. Lets a test compare what two reads of
+ * the same log returned without shipping the payloads themselves.
+ */
+function payloadDigest(event: {
+  eventType: string;
+  eventData?: unknown;
+}): string | null {
+  const field = getEventDataPayloadField(event.eventType);
+  const eventData = event.eventData as Record<string, unknown> | undefined;
+  if (!field || !eventData || !(field in eventData)) return null;
+  const value = eventData[field];
+  const bytes =
+    value instanceof Uint8Array
+      ? value
+      : Buffer.from(JSON.stringify(value) ?? 'undefined');
+  return createHash('sha256').update(bytes).digest('hex');
+}
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
@@ -91,7 +120,8 @@ const app = new Hono()
     const hook = await getHookByToken(ctx.req.param('token'));
     const { runId } = await resumeHook(hook.token, {
       ...(await ctx.req.json()),
-      metadata: hook.metadata,
+      // `metadata` is a lazily-hydrated Promise; echo the resolved value.
+      metadata: await hook.metadata,
     });
     return ctx.json({ runId, hookId: hook.hookId });
   })
@@ -119,23 +149,29 @@ const app = new Hono()
   })
   .get('/runs/:runId/events', async (ctx) => {
     const runId = ctx.req.param('runId');
+    const resolveData = ctx.req.query('resolveData') as
+      | EventsResolveData
+      | undefined;
     const world = await getWorld();
     const allEvents: {
       eventId: string;
       eventType: string;
       correlationId?: string;
+      payloadDigest: string | null;
     }[] = [];
     let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
         runId,
         pagination: { sortOrder: 'asc', cursor },
+        ...(resolveData ? { resolveData } : {}),
       });
       for (const e of page.data) {
         allEvents.push({
           eventId: e.eventId,
           eventType: e.eventType,
           correlationId: e.correlationId,
+          payloadDigest: payloadDigest(e),
         });
       }
       if (!page.hasMore) break;

@@ -20,8 +20,12 @@ export interface NestBuilderOptions {
    */
   outDir?: string;
   /**
-   * Enable watch mode for development
-   * @default false
+   * Enable watch mode for development.
+   *
+   * @deprecated Not implemented. `createCombinedBundle` hands back live esbuild
+   * contexts in watch mode and this builder discards them, so nothing rebuilds
+   * and the contexts leak. The option is pinned off until watch is wired up;
+   * use `nest start --watch`, which re-runs the startup build.
    */
   watch?: boolean;
   /**
@@ -47,6 +51,11 @@ export interface NestBuilderOptions {
    * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  /**
+   * Route prefix the workflow endpoints are served under, stamped into the
+   * generated flow route so the runtime generates matching callback URLs.
+   */
+  basePath?: string;
 }
 
 export class NestLocalBuilder extends BaseBuilder {
@@ -63,10 +72,12 @@ export class NestLocalBuilder extends BaseBuilder {
     super({
       ...createBaseBuilderConfig({
         workingDir,
-        watch: options.watch ?? false,
+        // Pinned off: see the `watch` option's deprecation note.
+        watch: false,
         dirs,
         sourcemap: options.sourcemap,
       }),
+      basePath: options.basePath,
       // Use 'standalone' as base target - we handle the specific bundling ourselves
       buildTarget: 'standalone',
       stepsBundlePath: join(outDir, 'steps.mjs'),
@@ -95,6 +106,19 @@ export class NestLocalBuilder extends BaseBuilder {
       format: 'esm',
       bundleFinalOutput: false,
       externalizeNonSteps: true,
+      // The WorkflowController loads these bundles straight off disk with
+      // Node's ESM loader, with no bundler in between. An externalized local
+      // import therefore has to be something Node itself can resolve, and a
+      // plain `.ts` helper imported by a step is not: Node only runs
+      // TypeScript from 22.18 on, and its type stripping still rejects the
+      // enums, parameter properties and decorators a NestJS codebase is full
+      // of. Bundling those dependencies keeps the output loadable on every
+      // supported Node.
+      //
+      // CommonJS projects keep externalizing them, because
+      // `#rewriteStepsBundleForCjs` rewrites those imports to `require()` the
+      // compiled files in `distDir` — a path with its own CI coverage.
+      bundleTransitiveLocalStepDependencies: this.#moduleType !== 'commonjs',
     });
 
     // When the NestJS project compiles to CJS via SWC, the ESM steps bundle
@@ -154,12 +178,10 @@ export class NestLocalBuilder extends BaseBuilder {
       return;
     }
 
-    const requireShim = [
-      `import { createRequire as __bundled_createRequire } from 'node:module';`,
-      `const require = __bundled_createRequire(import.meta.url);`,
-      ``,
-    ].join('\n');
-
-    await writeFile(stepsPath, requireShim + rewritten);
+    // Write the rewritten bundle as-is. Do NOT prepend a `createRequire` shim:
+    // `require` is already declared by the ESM interop banner `createStepsBundle`
+    // emits, and a second declaration in the same module scope makes the bundle
+    // fail to parse (#3778). Covered by builder.test.ts.
+    await writeFile(stepsPath, rewritten);
   }
 }

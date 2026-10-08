@@ -10,8 +10,10 @@ import {
   peekFormatPrefix,
   SerializationFormat,
 } from '../serialization.js';
+import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import {
   appendUniqueEvents,
+  DYNAMIC_WORKFLOW_VERSION,
   findEventSlotGap,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -22,6 +24,7 @@ import {
   memoizeEncryptionKey,
   mergeReportedEvents,
   preconditionEventDelta,
+  queueMessages,
   SLOT_GAP_RECHECK_ATTEMPTS,
   settleEventSlotGap,
   slotSnapshotParams,
@@ -150,6 +153,32 @@ describe('getWorkflowQueueName', () => {
     );
   });
 
+  it('should allow parentheses for Next.js route groups', () => {
+    expect(
+      getWorkflowQueueName(
+        'workflow//./app/(marketing)/workflows/checkout.ts//processOrder'
+      )
+    ).toBe(
+      '__wkf_workflow_workflow//./app/(marketing)/workflows/checkout.ts//processOrder'
+    );
+  });
+
+  it('should allow square brackets for Next.js dynamic segments', () => {
+    expect(
+      getWorkflowQueueName(
+        'workflow//./app/[teamId]/workflows/sync.ts//syncTeam'
+      )
+    ).toBe(
+      '__wkf_workflow_workflow//./app/[teamId]/workflows/sync.ts//syncTeam'
+    );
+    expect(
+      getWorkflowQueueName('workflow//./app/[...slug]/workflows/x.ts//run')
+    ).toBe('__wkf_workflow_workflow//./app/[...slug]/workflows/x.ts//run');
+    expect(
+      getWorkflowQueueName('workflow//./app/[[...slug]]/workflows/x.ts//run')
+    ).toBe('__wkf_workflow_workflow//./app/[[...slug]]/workflows/x.ts//run');
+  });
+
   it('should throw for names containing spaces', () => {
     expect(() => getWorkflowQueueName('my workflow')).toThrow(
       'Invalid workflow name'
@@ -236,6 +265,26 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
   });
 
+  it('surfaces dynamicWorkflowVersion when present in the response', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: 1 })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBe(1);
+  });
+
+  it('omits malformed dynamicWorkflowVersion values', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: '1' })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBeUndefined();
+  });
+
   it('omits workflowCoreVersion when the response does not include the field', async () => {
     // Independent of specVersion — the field is omitted by any responder
     // running an older `@workflow/core` that predates the addition of
@@ -274,6 +323,24 @@ describe('healthCheck response parsing', () => {
 
     expect(result.healthy).toBe(true);
     expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('surfaces nodeVersion from the target and drops a non-string value', async () => {
+    const ok = await healthCheck(
+      makeWorldWithResponse(
+        JSON.stringify({ healthy: true, specVersion: 3, nodeVersion: '24.1.0' })
+      ),
+      { timeout: 1000 }
+    );
+    expect(ok.nodeVersion).toBe('24.1.0');
+
+    const bad = await healthCheck(
+      makeWorldWithResponse(
+        JSON.stringify({ healthy: true, specVersion: 3, nodeVersion: 24 })
+      ),
+      { timeout: 1000 }
+    );
+    expect(bad.nodeVersion).toBeUndefined();
   });
 
   it('surfaces hookResumeInputVersion from the target so the caller stamps the consumer value', async () => {
@@ -422,6 +489,7 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenCalledWith({
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -549,10 +617,12 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenNthCalledWith(1, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+      resolveData: 'skip-step-inputs',
     });
     expect(eventsListMock).toHaveBeenNthCalledWith(2, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -1015,6 +1085,19 @@ describe('health check run public key', () => {
     );
   });
 
+  it('reports the responding deployment Node.js version', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_node' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).nodeVersion).toBe(process.versions.node);
+  });
+
   it('omits the key when the probe names no run', async () => {
     // Probes issued by the CLI health command or the dashboard carry no
     // runId; they must not trigger key derivation at all.
@@ -1066,5 +1149,155 @@ describe('health check run public key', () => {
     expect(response.healthy).toBe(true);
     expect(response.encryptionPublicKey).toBeUndefined();
     expect(response.workflowCoreVersion).toBeDefined();
+  });
+});
+
+describe('health check dynamic workflow version', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function respond() {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue({
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+    } as any);
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_dynamic' },
+      'workflow'
+    );
+    return JSON.parse(write.mock.calls[0][2] as string);
+  }
+
+  it('omits dynamicWorkflowVersion when the deployment has not opted in', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+    const response = await respond();
+    expect(response.healthy).toBe(true);
+    expect(response).not.toHaveProperty('dynamicWorkflowVersion');
+  });
+
+  it('omits dynamicWorkflowVersion for a value other than 1 or true', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, 'false');
+    expect(await respond()).not.toHaveProperty('dynamicWorkflowVersion');
+  });
+
+  it('advertises dynamicWorkflowVersion when the deployment has opted in', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, 'true');
+    expect((await respond()).dynamicWorkflowVersion).toBe(
+      DYNAMIC_WORKFLOW_VERSION
+    );
+  });
+});
+
+describe('queueMessages', () => {
+  const entries = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      message: { runId: 'wrun_1', stepId: `step-${i}` },
+      opts: { idempotencyKey: `key-${i}` },
+    }));
+
+  const makeWorld = (over: Partial<World>) =>
+    ({
+      queue: vi.fn().mockResolvedValue({ messageId: null }),
+      ...over,
+    }) as unknown as World;
+
+  it('uses the World batch send when available', async () => {
+    const queueBatch = vi
+      .fn()
+      .mockResolvedValue([{ messageId: 'a' }, { messageId: 'b' }]);
+    const world = makeWorld({ queueBatch });
+
+    await queueMessages(world, '__wkf_workflow_t', entries(2));
+
+    expect(queueBatch).toHaveBeenCalledTimes(1);
+    expect(queueBatch.mock.calls[0][1]).toHaveLength(2);
+    expect(world.queue).not.toHaveBeenCalled();
+  });
+
+  it('falls back to single sends on a World with no batch support', async () => {
+    const world = makeWorld({});
+
+    await queueMessages(world, '__wkf_workflow_t', entries(3));
+
+    expect(world.queue).toHaveBeenCalledTimes(3);
+    // Each fallback send keeps its own key and payload.
+    expect(vi.mocked(world.queue).mock.calls.map((c) => c[2])).toEqual([
+      { idempotencyKey: 'key-0' },
+      { idempotencyKey: 'key-1' },
+      { idempotencyKey: 'key-2' },
+    ]);
+  });
+
+  it('rejects when any entry failed, naming the shortfall', async () => {
+    const queueBatch = vi
+      .fn()
+      .mockResolvedValue([
+        { messageId: 'a' },
+        { messageId: null, error: 'rate limited', retryable: true },
+      ]);
+    const world = makeWorld({ queueBatch });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(2))
+    ).rejects.toThrow(/Failed to publish 1 of 2/);
+  });
+
+  it('marks the rejection retryable only when a failed entry is', async () => {
+    const world = makeWorld({
+      queueBatch: vi
+        .fn()
+        .mockResolvedValue([
+          { messageId: null, error: 'bad request', retryable: false },
+        ]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(1))
+    ).rejects.toMatchObject({ retryable: false });
+  });
+
+  it('treats a deferred acceptance (null id, no error) as success', async () => {
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([{ messageId: null }]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(1))
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects when the World returns fewer results than messages', async () => {
+    // A short array says nothing about the messages it omits. Reading it as
+    // success would ack the delivery with those steps never dispatched, and
+    // the run would stall with no error recorded anywhere.
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([{ messageId: 'a' }]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(3))
+    ).rejects.toThrow(/returned 1 result\(s\) for 3 message\(s\)/);
+  });
+
+  it('marks a short-result rejection retryable', async () => {
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(2))
+    ).rejects.toMatchObject({ retryable: true });
+  });
+
+  it('does not touch the World for an empty message set', async () => {
+    const queueBatch = vi.fn();
+    const world = makeWorld({ queueBatch });
+
+    await queueMessages(world, '__wkf_workflow_t', []);
+
+    expect(queueBatch).not.toHaveBeenCalled();
+    expect(world.queue).not.toHaveBeenCalled();
   });
 });

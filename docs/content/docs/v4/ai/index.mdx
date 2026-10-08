@@ -57,56 +57,16 @@ cd workflow-examples/flight-booking-app
 
 <Step>
 
-### Set up API keys
+### Configure AI Gateway
 
-To connect to an LLM, set up an API key. You can use Vercel Gateway, which works with all providers at zero markup, or configure a custom provider.
-<Tabs items={['Gateway', 'Custom Provider']}>
+AI SDK uses [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) as its default global provider, so plain `"provider/model"` strings need no provider-specific package. Vercel deployments authenticate with OIDC automatically. For local development, link the project and pull a short-lived OIDC token:
 
-<Tab value="Gateway">
-
-Get a Gateway API key from the [Vercel Gateway](https://vercel.com/docs/ai-gateway/authentication) page.
-
-Then add it to your `.env.local` file:
-
-```bash title=".env.local" lineNumbers
-GATEWAY_API_KEY=...
+```bash
+vercel link
+vercel env pull .env.local
 ```
 
-</Tab>
-
-<Tab value="Custom Provider">
-
-This is an example of how to use the OpenAI provider for AI SDK. For details on other providers and more details, see the [AI SDK provider guide](https://ai-sdk.dev/providers/ai-sdk-providers).
-
-```package-install
-npm i @ai-sdk/openai
-```
-
-Set your OpenAI API key in your environment variables:
-
-```bash title=".env.local" lineNumbers
-OPENAI_API_KEY=...
-```
-
-Then modify your API endpoint to use the OpenAI provider:
-
-{/* @skip-typecheck: incomplete code sample */}
-```typescript title="app/api/chat/route.ts" lineNumbers
-// ...
-import { openai } from "@ai-sdk/openai"; // [!code highlight]
-
-export async function POST(req: Request) {
-  // ...
-  const agent = new Agent({
-    // This uses the OPENAI_API_KEY environment variable by default, but you
-    // can also pass { apiKey: string } as an option.
-    model: openai("gpt-5.1"), // [!code highlight]
-    // ...
-  });
-```
-
-</Tab>
-</Tabs>
+You can alternatively set `AI_GATEWAY_API_KEY` from the [AI Gateway authentication](https://vercel.com/docs/ai-gateway/authentication) page.
 </Step>
 
 <Step>
@@ -117,9 +77,9 @@ Run the app with `npm run dev` and open [http://localhost:3000](http://localhost
 
 The following sections break down the core code. You don't need to make changes yet.
 
-<Tabs items={['API Route', 'Tools', 'Client']}>
+<TabsWithChildren tabs={["API Route","Tools","Client"]}>
 
-<Tab value="API Route">
+<TabContent order={1}>
 
 Our API route calls [AI SDK's `ToolLoopAgent` class](https://ai-sdk.dev/docs/agents/overview), which encapsulates the LLM call, tool execution loop, and stopping conditions on top of [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
 
@@ -131,7 +91,7 @@ import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const agent = new ToolLoopAgent({ // [!code highlight]
-    model: "bedrock/claude-4-5-haiku-20251001-v1",
+    model: "spacexai/grok-4.6",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -143,9 +103,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Tools">
+<TabContent order={2}>
 
 Our tools are mostly mocked out for the sake of the example. We use AI SDK's `tool` function to define the tool, and pass it to the agent. In your own app, this might be any kind of tool call, like database queries, calls to external services, etc.
 
@@ -166,9 +126,9 @@ async function searchFlights({ from, to, date }: { from: string; to: string; dat
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Client">
+<TabContent order={3}>
 
 Our `ChatPage` component contains logic for displaying chat messages, but its core responsibility is managing input and output for the [`useChat` hook](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat#usechat) from AI SDK.
 
@@ -213,9 +173,9 @@ export default function ChatPage() {
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 </Step>
 
@@ -257,12 +217,10 @@ export default withWorkflow(nextConfig);
 
 Move the agent logic into a separate function, which will serve as our workflow definition.
 
-{/* @skip-typecheck: Shows two mutually exclusive model options */}
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow"; // [!code highlight]
 import { getWritable } from "workflow"; // [!code highlight]
-import { tools } from "@/ai/tools";
-import { openai } from "@ai-sdk/openai";
+import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "@/ai/tools";
 import { convertToModelMessages, type UIMessage } from "ai";
 
 export async function chatWorkflow(messages: UIMessage[]) {
@@ -271,13 +229,8 @@ export async function chatWorkflow(messages: UIMessage[]) {
   const writable = getWritable<ModelCallStreamPart>(); // [!code highlight]
 
   const agent = new WorkflowAgent({ // [!code highlight]
-
-    // If using AI Gateway, specify the model name as a string:
-    model: "bedrock/claude-4-5-haiku-20251001-v1", // [!code highlight]
-
-    // ELSE if using a custom provider, pass the provider call as an argument:
-    model: openai("gpt-5.1"), // [!code highlight]
-
+    // Plain model strings use Vercel AI Gateway.
+    model: "spacexai/grok-4.6", // [!code highlight]
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -403,7 +356,7 @@ This opens a local dashboard showing all workflow runs and their status, as well
 
 ## Next steps
 
-Now that you have a basic durable agent, it's a only a short step to add these additional features:
+Now that you have a basic durable agent, it's only a short step to add these additional features:
 
 <Cards>
   <Card title="Streaming Updates from Tools" href="/docs/ai/streaming-updates-from-tools">

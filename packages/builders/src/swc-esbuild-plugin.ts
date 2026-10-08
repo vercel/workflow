@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { promisify } from 'node:util';
-import { WorkflowBuildError } from '@workflow/errors';
 import enhancedResolveOrig from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
 import {
@@ -12,6 +11,11 @@ import {
   jsTsRegex,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import {
+  hashManifestSource,
+  type ManifestEntryLocation,
+  mergeWorkflowManifest,
+} from './manifest-ids.js';
 import { resolveModuleSpecifier } from './module-specifier.js';
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
@@ -115,84 +119,12 @@ function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
-type IdLocation = {
-  filePath: string;
-  name: string;
-};
-
-function formatIdLocation(location: IdLocation): string {
-  return `${location.filePath}#${location.name}`;
-}
-
-function assertUniqueManifestIds(
-  entriesByFile: WorkflowManifest['steps'] | WorkflowManifest['workflows'],
-  ids: Map<string, IdLocation>,
-  getId: (data: { stepId: string } | { workflowId: string }) => string,
-  label: 'step' | 'workflow'
-): void {
-  const entriesByFileList = Object.entries(entriesByFile || {}) as Array<
-    [string, Record<string, { stepId: string } | { workflowId: string }>]
-  >;
-  for (const [filePath, entries] of entriesByFileList) {
-    for (const [name, data] of Object.entries(entries)) {
-      const id = getId(data);
-      const existing = ids.get(id);
-      const current = { filePath, name };
-      if (
-        existing &&
-        (existing.filePath !== current.filePath ||
-          existing.name !== current.name)
-      ) {
-        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
-        const functionName = `${label} function`;
-        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
-        throw new WorkflowBuildError(
-          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
-          {
-            hint:
-              `${capitalizedLabel} IDs must be unique across a build. ` +
-              `If you own one of the colliding files, rename the ${functionName} or export ` +
-              `the package file through a unique package subpath. If the collision is in a ` +
-              `transitive dependency you don't control, file an issue with the upstream ` +
-              `package or pin to a non-colliding version.`,
-          }
-        );
-      }
-      ids.set(id, current);
-    }
-  }
-}
-
-function mergeWorkflowManifest(
-  target: WorkflowManifest,
-  incoming: WorkflowManifest,
-  stepIds: Map<string, IdLocation>,
-  workflowIds: Map<string, IdLocation>
-): void {
-  assertUniqueManifestIds(
-    incoming.steps,
-    stepIds,
-    (data) => (data as { stepId: string }).stepId,
-    'step'
-  );
-  assertUniqueManifestIds(
-    incoming.workflows,
-    workflowIds,
-    (data) => (data as { workflowId: string }).workflowId,
-    'workflow'
-  );
-
-  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
-  target.steps = Object.assign(target.steps || {}, incoming.steps);
-  target.classes = Object.assign(target.classes || {}, incoming.classes);
-}
-
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
   return {
     name: 'swc-workflow-plugin',
     setup(build) {
-      let stepIdsForCurrentBuild = new Map<string, IdLocation>();
-      let workflowIdsForCurrentBuild = new Map<string, IdLocation>();
+      let stepIdsForCurrentBuild = new Map<string, ManifestEntryLocation>();
+      let workflowIdsForCurrentBuild = new Map<string, ManifestEntryLocation>();
 
       build.onStart(() => {
         stepIdsForCurrentBuild = new Map();
@@ -529,11 +461,21 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest = {};
           }
 
+          // Fingerprint the source so equivalent duplicate copies of the
+          // same module (e.g. pnpm peer-dependency variants of one package
+          // version) can be deduplicated instead of failing the build with
+          // a duplicate-ID error.
+          const contentHash =
+            workflowManifest.steps || workflowManifest.workflows
+              ? hashManifestSource(normalizedSource)
+              : undefined;
+
           mergeWorkflowManifest(
             options.workflowManifest,
             workflowManifest,
             stepIdsForCurrentBuild,
-            workflowIdsForCurrentBuild
+            workflowIdsForCurrentBuild,
+            contentHash
           );
 
           await options.onAfterTransform?.({

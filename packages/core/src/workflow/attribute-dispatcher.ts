@@ -1,13 +1,14 @@
-import { ReplayDivergenceError } from '@workflow/errors';
+import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { AttributeChange } from '@workflow/world';
+import {
+  AttributeValidationError,
+  validateAttributeEventDataSize,
+} from '@workflow/world/attributes-validation';
 import { EventConsumerResult } from '../events-consumer.js';
+import type { AttributeInvocationQueueItem } from '../global.js';
 import {
-  type AttributeInvocationQueueItem,
-  WorkflowSuspension,
-} from '../global.js';
-import {
-  scheduleWhenIdle,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 
@@ -18,6 +19,25 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
   ): Promise<void> {
     const { promise, resolve } = withResolvers<void>();
     const correlationId = `attr_${ctx.generateUlid()}`;
+    try {
+      validateAttributeEventDataSize({
+        changes,
+        writer: { type: 'workflow' },
+        ...(options.allowReservedAttributes === true
+          ? { allowReservedAttributes: true }
+          : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof AttributeValidationError)) throw error;
+      // Preserve old local-world histories, but reject new writes now so a
+      // catch path runs before unrelated replay events (including races).
+      const persisted = ctx.eventsConsumer.events.some(
+        (event) =>
+          event.eventType === 'attr_set' &&
+          event.correlationId === correlationId
+      );
+      if (!persisted) throw new FatalError(error.message);
+    }
     const queueItem: AttributeInvocationQueueItem = {
       type: 'attribute',
       correlationId,
@@ -30,11 +50,7 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
 
     ctx.eventsConsumer.subscribe((event) => {
       if (!event) {
-        scheduleWhenIdle(ctx, () => {
-          ctx.onWorkflowError(
-            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-          );
-        });
+        scheduleWorkflowSuspension(ctx);
         return EventConsumerResult.NotConsumed;
       }
 

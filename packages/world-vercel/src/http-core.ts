@@ -17,12 +17,16 @@
  * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
-import type { Span } from '@opentelemetry/api';
+import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookForceClaimedError,
+  IN_BAND_SUPERSEDED_CODE,
+  InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
+  StreamError,
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -48,6 +52,7 @@ import {
   ServerPort,
   trace,
   UrlFull,
+  WorkflowEventSeqInBand,
   WorkflowHttpTransport,
 } from './telemetry.js';
 
@@ -59,6 +64,142 @@ import {
  * upstream timeout handlers (e.g. the replay timeout).
  */
 export const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * Transport codes that can surface after `fetch()` fails before returning a
+ * response. The outer error is usually `TypeError: fetch failed`; undici hangs
+ * the actionable code off its `cause`, so callers must inspect the chain.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_INFO',
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+export function getTransientTransportCode(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; current && depth < 8; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && TRANSIENT_TRANSPORT_ERROR_CODES.has(code)) {
+      return code;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/** Reject invalid URLs before dispatch, where a failure would be retryable. */
+export function validateHttpUrl(url: string): void {
+  const { protocol, username, password } = new URL(url);
+  // Both fetch and nodeHttpFetch can reject unsupported schemes without an
+  // error code, so describeTransportFailure cannot identify these faults.
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new TypeError(
+      `Unsupported URL protocol ${protocol}; expected http: or https:`
+    );
+  }
+  // Fetch rejects URL userinfo locally with a code-less TypeError. Keep that
+  // permanent configuration fault outside the transport classifier, and make
+  // the node:http and Fetch paths agree instead of allowing one to send it.
+  if (username || password) {
+    throw new TypeError(
+      'HTTP(S) URLs with embedded credentials are unsupported'
+    );
+  }
+}
+
+/**
+ * Codes that mean the request was never *formed*, as opposed to formed and
+ * then failed on the wire. `fetch()` reports a malformed URL, an invalid
+ * header name/value, or a bad argument as a rejected `TypeError` that is
+ * structurally identical to the `TypeError: fetch failed` it raises for a dead
+ * socket, and the node:http path throws Node's own `ERR_*`.
+ *
+ * These faults are permanent — every redelivery re-forms the same broken
+ * request — so they must keep propagating raw rather than being classified as
+ * a retryable transport failure, which would spend the run's whole delivery
+ * budget before failing it with a less specific error than it started with.
+ */
+const REQUEST_CONSTRUCTION_ERROR_CODES = new Set([
+  'ERR_INVALID_URL',
+  'ERR_INVALID_ARG_TYPE',
+  'ERR_INVALID_ARG_VALUE',
+  'ERR_INVALID_CHAR',
+  'ERR_INVALID_HTTP_TOKEN',
+  'ERR_HTTP_INVALID_HEADER_VALUE',
+  'ERR_UNESCAPED_CHARACTERS',
+  // Undici validates request options and headers during dispatch, after
+  // Fetch has constructed the Request (e.g. unsupported Expect headers).
+  'UND_ERR_INVALID_ARG',
+  'UND_ERR_NOT_SUPPORTED',
+]);
+
+/**
+ * Classify a rejection from `fetch()` / `nodeHttpFetch()`, calls that only
+ * settle once the response headers are in hand.
+ *
+ * A rejection leaves the request outcome unknown: it may have failed locally,
+ * or the backend may have applied it without a response reaching the caller.
+ * Preserve known request-construction faults; route other failures through
+ * the existing retry policies instead of attributing them to user code.
+ *
+ * {@link TRANSIENT_TRANSPORT_ERROR_CODES} alone could not hold that line,
+ * because it can only list failures someone has already seen. The ones it
+ * misses are not exotic: HTTP/2 session errors (`ERR_HTTP2_GOAWAY_SESSION` and
+ * friends — the shared events pool negotiates h2), TLS handshake failures,
+ * `ENETUNREACH` / `EHOSTUNREACH`, and the `AggregateError` a happy-eyeballs
+ * connect raises, which carries its codes on `errors[]` where a `cause` walk
+ * cannot see them. Each of those used to propagate raw, and a raw
+ * `TypeError: fetch failed` is indistinguishable from a user throw by the time
+ * it reaches `classifyRunError`: the run failed as `USER_ERROR`, attributing a
+ * backend outage to the customer, and the queue never redelivered it.
+ *
+ * Returns the most specific marker available to name the failure in the error
+ * message: the allowlisted code when there is one (so known failures keep
+ * reporting exactly what they reported before), otherwise the first `code` in
+ * the cause chain, otherwise the innermost error name. `undefined` means the
+ * request was never formed and the caller should rethrow as-is.
+ */
+export function describeTransportFailure(error: unknown): string | undefined {
+  const known = getTransientTransportCode(error);
+  if (known) return known;
+
+  let firstCode: string | undefined;
+  let innermostName: string | undefined;
+  let current = error;
+  for (let depth = 0; current && depth < 8; depth++) {
+    const { code, name, message } = current as {
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+    };
+    // Node Fetch enforces the Fetch Standard's port blocking after Request
+    // construction. Its `TypeError: fetch failed` wraps a code-less
+    // `Error: bad port`; retrying cannot make that URL acceptable. Preserve
+    // the original rejection without duplicating Fetch's blocked-port list.
+    if (name === 'Error' && message === 'bad port' && code === undefined) {
+      return undefined;
+    }
+    if (typeof code === 'string' && code) {
+      if (REQUEST_CONSTRUCTION_ERROR_CODES.has(code)) return undefined;
+      firstCode ??= code;
+    }
+    if (typeof name === 'string' && name) innermostName = name;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return firstCode ?? innermostName ?? 'unknown';
+}
 
 /**
  * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
@@ -211,13 +352,40 @@ export function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 /**
+ * Tag a client span with the World's in-band count when the write was refused
+ * by the in-band writer fence, so a split-brain refusal is visible in traces
+ * beyond the generic recorded exception.
+ */
+export function recordInBandRefusal(
+  span: Pick<Span, 'setAttributes'> | undefined,
+  error: unknown
+): void {
+  if (InBandSupersededError.is(error) && error.seqInBand !== undefined) {
+    span?.setAttributes(WorkflowEventSeqInBand(error.seqInBand));
+  }
+}
+
+/**
+ * A diagnostic counter from a 412 `in-band-superseded` body: kept only when it
+ * is a nonnegative safe integer, dropped otherwise.
+ */
+export function inBandCounter(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+/**
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
- *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
+ *   - 412 with code `in-band-superseded` → InBandSupersededError (the in-band
+ *     writer fence refused an orchestrator write; carries the backend's
+ *     counters for diagnostics)
+ *   - other 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot, the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing; see #1806 for what
@@ -246,6 +414,22 @@ export function errorForResponse(
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated, details } = opts;
+  if (status === 409 && code === 'hook-force-claimed') {
+    // A hook_received refused because the hook's token was taken over by
+    // another run (`experimental_force`). The server completed the transfer
+    // before answering, so a fresh by-token lookup names the claimer; the
+    // event layer re-keys this with the token and `resumeHook()` follows it.
+    const claimedBy =
+      details && typeof details === 'object'
+        ? (details as { claimedBy?: { runId?: unknown; hookId?: unknown } })
+            .claimedBy
+        : undefined;
+    return new HookForceClaimedError(
+      '',
+      typeof claimedBy?.runId === 'string' ? claimedBy.runId : 'unknown',
+      typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
+    );
+  }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) {
     if (code === 'stream-expired') {
@@ -273,6 +457,19 @@ export function errorForResponse(
       );
     }
     return new RunExpiredError(message);
+  }
+  if (status === 412 && code === IN_BAND_SUPERSEDED_CODE) {
+    // Distinct from the generic 412 precondition below: another orchestrator
+    // invocation of the run wrote in-band since this one loaded the log, and
+    // the caller must stop writing rather than reload and retry the write.
+    const counters =
+      details && typeof details === 'object'
+        ? (details as { seq?: unknown; seqInBand?: unknown })
+        : undefined;
+    return new InBandSupersededError(message, {
+      seq: inBandCounter(counters?.seq),
+      seqInBand: inBandCounter(counters?.seqInBand),
+    });
   }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });
@@ -394,7 +591,7 @@ export interface HttpClientSpanOptions {
    */
   spanName?: string;
   /** Extra attributes merged on top of the standard HTTP attributes. */
-  attributes?: Record<string, string | number | string[]>;
+  attributes?: Attributes;
 }
 
 /**
@@ -508,7 +705,20 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
    * worked. Lets a caller that owns a shared dispatcher retire it when its
    * connections stop delivering (see noteEventsTransportOutcome).
    */
-  onTransportOutcome?: (error?: unknown) => void;
+  onTransportOutcome?: (error?: unknown, response?: Response) => void;
+  /**
+   * Delay the successful transport outcome until the caller consumes the body.
+   * Non-2xx bodies consumed by `buildError` are still reported here.
+   */
+  deferTransportSuccessUntilBody?: boolean;
+  /**
+   * Called synchronously after the request promise is created, before awaiting
+   * its response. This observes local dispatch only; it does not imply that any
+   * bytes reached the origin. Must not throw.
+   */
+  onRequestDispatched?: () => void;
+  /** Error code used when the request itself fails before a response arrived. */
+  transportErrorCode?: 'TRANSPORT' | 'STREAM_ERROR';
 }
 
 /**
@@ -542,8 +752,12 @@ export async function instrumentedFetch(
     attributes,
     durationAttribute,
     onTransportOutcome,
+    deferTransportSuccessUntilBody = false,
+    onRequestDispatched,
+    transportErrorCode = 'TRANSPORT',
   } = opts;
   const label = logLabel ?? url;
+  validateHttpUrl(url);
 
   return withHttpClientSpan(
     { method, url, peerService, spanName, attributes },
@@ -566,21 +780,26 @@ export async function instrumentedFetch(
           ? AbortSignal.any([callerSignal, timeoutSignal])
           : (callerSignal ?? timeoutSignal);
 
+      // With no dispatcher to honor, `WORKFLOW_NODE_HTTP` takes the request
+      // off undici altogether rather than leaving it on the undici behind
+      // `fetch`. A dispatcher the caller supplied is an instruction to use
+      // undici, so it keeps the request on `fetch`.
+      //
+      // Resolved outside the try: the catch below reads everything it sees as
+      // a failure of the request on the wire, and picking an agent happens
+      // before there is one.
+      const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+      // Both transports issue the same span against the same URL, so this is
+      // the only thing that tells them apart in a trace.
+      span?.setAttributes({
+        ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+      });
+
       const start = Date.now();
       let response: Response;
       try {
-        // With no dispatcher to honor, `WORKFLOW_NODE_HTTP` takes the request
-        // off undici altogether rather than leaving it on the undici behind
-        // `fetch`. A dispatcher the caller supplied is an instruction to use
-        // undici, so it keeps the request on `fetch`.
-        const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
-        // Both transports issue the same span against the same URL, so this is
-        // the only thing that tells them apart in a trace.
-        span?.setAttributes({
-          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
-        });
-        response = nodeAgents
-          ? await nodeHttpFetch(url, {
+        const request = nodeAgents
+          ? nodeHttpFetch(url, {
               method,
               headers,
               body,
@@ -593,7 +812,7 @@ export async function instrumentedFetch(
               headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
               bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
             })
-          : await fetch(url, {
+          : fetch(url, {
               method,
               headers,
               body,
@@ -601,6 +820,8 @@ export async function instrumentedFetch(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
             } as any);
+        onRequestDispatched?.();
+        response = await request;
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
@@ -613,18 +834,49 @@ export async function instrumentedFetch(
           error instanceof Error &&
           (error.name === 'TimeoutError' || error.name === 'AbortError')
         ) {
-          const timeoutError = new WorkflowWorldError(
-            `${method} ${label} timed out after ${elapsed}ms`,
-            { url, cause: error }
-          );
-          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          const message = `${method} ${label} timed out after ${elapsed}ms`;
+          const errorCode =
+            transportErrorCode === 'STREAM_ERROR' ? 'STREAM_ERROR' : 'TIMEOUT';
+          const timeoutError =
+            errorCode === 'STREAM_ERROR'
+              ? new StreamError(message, { url, cause: error })
+              : new WorkflowWorldError(message, {
+                  url,
+                  code: errorCode,
+                  cause: error,
+                });
+          span?.setAttributes({ ...ErrorType(errorCode) });
           span?.recordException?.(timeoutError);
           throw timeoutError;
+        }
+        // Nothing below this point saw a response, so anything that is not a
+        // request-construction fault is a transport failure — including codes
+        // the allowlist has never seen. See describeTransportFailure.
+        const transportCode = describeTransportFailure(error);
+        if (transportCode) {
+          const message = `${method} ${label} transport failure after ${elapsed}ms (${transportCode})`;
+          const errorCode =
+            transportErrorCode === 'STREAM_ERROR'
+              ? 'STREAM_ERROR'
+              : 'TRANSPORT';
+          const transportError =
+            errorCode === 'STREAM_ERROR'
+              ? new StreamError(message, { url, cause: error })
+              : new WorkflowWorldError(message, {
+                  url,
+                  code: errorCode,
+                  cause: error,
+                });
+          span?.setAttributes({ ...ErrorType(errorCode) });
+          span?.recordException?.(transportError);
+          throw transportError;
         }
         throw error;
       }
       const ms = Date.now() - start;
-      onTransportOutcome?.();
+      if (response.ok && !deferTransportSuccessUntilBody) {
+        onTransportOutcome?.(undefined, response);
+      }
 
       httpLog(method, label, response, ms);
       recordClientSpanStatus(span, response.status);
@@ -633,11 +885,41 @@ export async function instrumentedFetch(
       if (!response.ok) {
         logCurlRepro(method, url, headers);
         if (buildError) {
-          const error = await buildError(response);
+          let error: Error;
+          try {
+            error = await buildError(response);
+          } catch (cause) {
+            const transportCode = getTransientTransportCode(cause);
+            if (transportCode) {
+              onTransportOutcome?.(cause, response);
+              const message = `${method} ${label} response body transport failure (${transportCode})`;
+              const mappedError =
+                transportErrorCode === 'STREAM_ERROR'
+                  ? new StreamError(message, { url, cause })
+                  : new WorkflowWorldError(message, {
+                      url,
+                      code: 'TRANSPORT',
+                      cause,
+                    });
+              span?.setAttributes({ ...ErrorType(transportErrorCode) });
+              span?.recordException?.(mappedError);
+              throw mappedError;
+            }
+            onTransportOutcome?.(undefined, response);
+            throw cause;
+          }
+          onTransportOutcome?.(undefined, response);
+          recordInBandRefusal(span, error);
           span?.recordException?.(error);
           throw error;
         }
-        const text = await response.text().catch(() => '');
+        let text = '';
+        try {
+          text = await response.text();
+          onTransportOutcome?.(undefined, response);
+        } catch (cause) {
+          onTransportOutcome?.(cause, response);
+        }
         const error = errorForResponse(
           response.status,
           `${method} ${label} -> HTTP ${response.status}: ${response.statusText}${

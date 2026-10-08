@@ -32,6 +32,12 @@ import {
   type DiscoveredEntries,
   fastDiscoverEntries,
 } from './fast-discovery.js';
+import { assertFlowBundleIsSandboxSafe } from './flow-bundle-safety.js';
+import {
+  hashManifestSource,
+  type ManifestEntryLocation,
+  mergeWorkflowManifest,
+} from './manifest-ids.js';
 import {
   getImportPath,
   resolveModuleSpecifier,
@@ -47,6 +53,18 @@ import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
+
+/**
+ * esbuild treats import attributes (`import data from './x.json' with
+ * { type: 'json' }`) as unsupported for the `es2022` target and drops them
+ * from the output. A JSON import that stays external is then rejected by
+ * Node's ESM loader with ERR_IMPORT_ATTRIBUTE_MISSING. Every Node.js version
+ * the SDK supports accepts the `with` keyword, so each bundle that Node loads
+ * directly opts in.
+ */
+const NODE_ESBUILD_SUPPORTED = {
+  'import-attributes': true,
+} as const;
 
 /**
  * Order the per-file manifest sections deterministically.
@@ -185,80 +203,17 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
   return file.replace(/\\/g, '/');
 }
 
-type ManifestEntryLocation = {
-  filePath: string;
-  name: string;
-};
-
 type CachedManifestTransform = {
   size: number;
   mtimeMs: number;
   manifest: WorkflowManifest;
+  /**
+   * Fingerprint of the source contents that produced `manifest`, used to
+   * deduplicate equivalent copies of the same module across files (see
+   * `mergeWorkflowManifest` in `manifest-ids.ts`).
+   */
+  contentHash: string;
 };
-
-function formatIdLocation(location: ManifestEntryLocation): string {
-  return `${location.filePath}#${location.name}`;
-}
-
-function assertUniqueManifestIds<TEntry>(
-  entriesByFile: Record<string, Record<string, TEntry>> | undefined,
-  ids: Map<string, ManifestEntryLocation>,
-  getId: (entry: TEntry) => string,
-  label: 'step' | 'workflow'
-): void {
-  for (const [filePath, entries] of Object.entries(entriesByFile || {})) {
-    for (const [name, data] of Object.entries(entries)) {
-      const id = getId(data);
-      const existing = ids.get(id);
-      const current = { filePath, name };
-      if (
-        existing &&
-        (existing.filePath !== current.filePath ||
-          existing.name !== current.name)
-      ) {
-        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
-        const functionName = `${label} function`;
-        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
-        throw new WorkflowBuildError(
-          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
-          {
-            hint:
-              `${capitalizedLabel} IDs must be unique across a build. ` +
-              `If you own one of the colliding files, rename the ${functionName} or export ` +
-              `the package file through a unique package subpath. If the collision is in a ` +
-              `transitive dependency you don't control, file an issue with the upstream ` +
-              `package or pin to a non-colliding version.`,
-          }
-        );
-      }
-      ids.set(id, current);
-    }
-  }
-}
-
-function mergeWorkflowManifest(
-  target: WorkflowManifest,
-  incoming: WorkflowManifest,
-  stepIds: Map<string, ManifestEntryLocation>,
-  workflowIds: Map<string, ManifestEntryLocation>
-): void {
-  assertUniqueManifestIds(
-    incoming.steps,
-    stepIds,
-    (data) => data.stepId,
-    'step'
-  );
-  assertUniqueManifestIds(
-    incoming.workflows,
-    workflowIds,
-    (data) => data.workflowId,
-    'workflow'
-  );
-
-  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
-  target.steps = Object.assign(target.steps || {}, incoming.steps);
-  target.classes = Object.assign(target.classes || {}, incoming.classes);
-}
 
 /**
  * Base class for workflow builders. Provides common build logic for transforming
@@ -363,10 +318,24 @@ export abstract class BaseBuilder {
    * for Node.js builtins (e.g. debug → require('tty')) break because esbuild's
    * CJS-to-ESM __require shim doesn't have access to a real require function.
    * This banner provides one via createRequire so bundled CJS code works in ESM.
+   *
+   * Likewise, esbuild leaves the CJS globals `__dirname`/`__filename` as free
+   * identifiers when inlining CJS modules into ESM output, so dependencies that
+   * reference them at module scope (e.g. google-gax, Prisma's runtime) crash
+   * with `ReferenceError: __dirname is not defined in ES module scope` before
+   * any workflow code runs. The banner defines them from `import.meta.url`,
+   * pointing at the bundle location (the function root at runtime).
    */
   private getEsmRequireBanner(format: string): string {
     if (format !== 'esm') return '';
-    return 'import { createRequire as __createRequire } from "node:module";\nvar require = __createRequire(import.meta.url);\n';
+    return (
+      'import { createRequire as __createRequire } from "node:module";\n' +
+      'import { fileURLToPath as __fileURLToPath } from "node:url";\n' +
+      'import { dirname as __pathDirname } from "node:path";\n' +
+      'var require = __createRequire(import.meta.url);\n' +
+      'var __filename = __fileURLToPath(import.meta.url);\n' +
+      'var __dirname = __pathDirname(__filename);\n'
+    );
   }
 
   /**
@@ -784,7 +753,7 @@ export abstract class BaseBuilder {
   private async getCachedManifestTransform(
     file: string,
     mode: 'workflow' | 'step'
-  ): Promise<WorkflowManifest> {
+  ): Promise<{ manifest: WorkflowManifest; contentHash: string }> {
     const stats = await stat(file);
     const cacheKey = `${mode}:${file}`;
     const cached = this.manifestTransformCache.get(cacheKey);
@@ -793,7 +762,7 @@ export abstract class BaseBuilder {
       cached.size === stats.size &&
       cached.mtimeMs === stats.mtimeMs
     ) {
-      return cached.manifest;
+      return { manifest: cached.manifest, contentHash: cached.contentHash };
     }
 
     const source = await readFile(file, 'utf8');
@@ -806,12 +775,14 @@ export abstract class BaseBuilder {
       this.transformProjectRoot,
       this.moduleSpecifierRoot
     );
+    const contentHash = hashManifestSource(source);
     this.manifestTransformCache.set(cacheKey, {
       size: stats.size,
       mtimeMs: stats.mtimeMs,
       manifest: workflowManifest,
+      contentHash,
     });
-    return workflowManifest;
+    return { manifest: workflowManifest, contentHash };
   }
 
   protected createRouteImportSpecifier(file: string, routeDir: string): string {
@@ -912,15 +883,14 @@ export const __steps_registered = true;
     const workflowIds = new Map<string, ManifestEntryLocation>();
     await Promise.all(
       manifestFiles.map(async (file) => {
-        const fileManifest = await this.getCachedManifestTransform(
-          file,
-          'step'
-        );
+        const { manifest: fileManifest, contentHash } =
+          await this.getCachedManifestTransform(file, 'step');
         mergeWorkflowManifest(
           workflowManifest,
           fileManifest,
           stepIds,
-          workflowIds
+          workflowIds,
+          contentHash
         );
       })
     );
@@ -964,10 +934,19 @@ export const __steps_registered = true;
     rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
     /**
-     * When true, skip the `createRequire` banner on the steps bundle.
-     * Used by `createCombinedBundle` with `bundleFinalOutput: true` where
-     * the outer esbuild pass provides its own banner, preventing the
+     * When true, skip the ESM interop banner on the steps bundle. Despite the
+     * name, that banner declares `require`, `__filename` *and* `__dirname`, so
+     * skipping it drops all three.
+     *
+     * Used by `createCombinedBundle` with `bundleFinalOutput: true`, where the
+     * outer esbuild pass provides its own banner, preventing the
      * `__createRequire` identifier from being declared twice after inlining.
+     *
+     * Do not reach for this to silence a duplicate `require` declaration
+     * introduced elsewhere (see #3778): it also removes the
+     * `__dirname`/`__filename` shim, reintroducing `ReferenceError: __dirname
+     * is not defined in ES module scope` for CJS dependencies that reference
+     * those at module scope.
      */
     skipEsmRequireBanner?: boolean;
   }): Promise<{
@@ -1172,6 +1151,7 @@ export const __steps_registered = true;
       platform: 'node',
       conditions: ['node'],
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       keepNames: true,
@@ -1239,10 +1219,8 @@ export const __steps_registered = true;
     await Promise.all(
       workflowOnlyFiles.map(async (workflowFile) => {
         try {
-          const fileManifest = await this.getCachedManifestTransform(
-            workflowFile,
-            'workflow'
-          );
+          const { manifest: fileManifest } =
+            await this.getCachedManifestTransform(workflowFile, 'workflow');
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
               workflowManifest.workflows || {},
@@ -1302,6 +1280,8 @@ export const __steps_registered = true;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     /** The raw workflow VM code (before wrapping with entrypoint) */
     interimBundleText?: string;
+    /** The initial workflow VM build graph. */
+    interimBundleMetafile?: esbuild.Metafile;
   }> {
     const discovered =
       discoveredEntries ??
@@ -1403,11 +1383,18 @@ export const __steps_registered = true;
       platform: 'neutral', // The platform is neither node nor browser
       mainFields: ['module', 'main'], // To support npm style imports
       conditions: ['workflow'], // Allow packages to export 'workflow' compliant versions
+      // No `supported: NODE_ESBUILD_SUPPORTED` here: this bundle runs in the
+      // workflow VM, which has no module loader, and it has no `external`, so
+      // every JSON import is inlined and no import attribute reaches the output.
       target: 'es2022',
       write: false,
       treeShaking: true,
       keepNames: true,
       minify: false,
+      // `assertFlowBundleIsSandboxSafe()` below and
+      // `createNodeModuleErrorPlugin()` (which sets this itself) both need the
+      // build graph to attribute externalized imports back to user code.
+      metafile: true,
       // Initialize the workflow registry at the beginning of the bundle
       // This must be in banner (not the virtual entry) because esbuild's bundling
       // can reorder code, and the .set() calls need the Map to exist first
@@ -1512,6 +1499,16 @@ export const __steps_registered = true;
         });
       }
 
+      // The VM this bundle runs in has no `require`, so any externalized
+      // import or unresolved `require()` left in the CJS output is a
+      // guaranteed `ReferenceError` at load time. Fail here instead of
+      // shipping a bundle that cannot start.
+      await assertFlowBundleIsSandboxSafe({
+        bundleText: interimBundle.outputFiles[0].text,
+        metafile: interimBundle.metafile,
+        warn: (message) => console.warn(chalk.yellow(message)),
+      });
+
       // Serde compliance warnings: check if workflow bundle has Node.js imports
       // alongside serde-registered classes (these will fail at runtime in the sandbox)
       if (
@@ -1607,10 +1604,14 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           format,
           platform: 'node',
           target: 'es2022',
+          supported: NODE_ESBUILD_SUPPORTED,
           write: true,
           keepNames: true,
           minify: false,
-          external: ['@aws-sdk/credential-provider-web-identity'],
+          external: [
+            '@aws-sdk/credential-provider-web-identity',
+            ...(this.config.externalPackages || []),
+          ],
         });
 
         this.logEsbuildMessages(
@@ -1636,9 +1637,14 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           interimBundleCtx,
           bundleFinal,
           interimBundleText,
+          interimBundleMetafile: interimBundle.metafile,
         };
       }
-      return { manifest: workflowManifest, interimBundleText };
+      return {
+        manifest: workflowManifest,
+        interimBundleText,
+        interimBundleMetafile: interimBundle.metafile,
+      };
     } catch (error) {
       shouldDisposeInterimBundleCtx = true;
       throw error;
@@ -1804,11 +1810,15 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         format,
         platform: 'node',
         target: 'es2022',
+        supported: NODE_ESBUILD_SUPPORTED,
         write: true,
         keepNames: true,
         minify: false,
         define: importMetaDefine,
-        external: ['@aws-sdk/credential-provider-web-identity'],
+        external: [
+          '@aws-sdk/credential-provider-web-identity',
+          ...(this.config.externalPackages || []),
+        ],
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
       this.logBaseBuilderInfo(
@@ -1976,6 +1986,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       platform: 'node',
       jsx: 'preserve',
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       external: ['@workflow/core'],
@@ -2083,6 +2094,7 @@ export const OPTIONS = handler;`;
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
+      supported: NODE_ESBUILD_SUPPORTED,
       write: true,
       treeShaking: true,
       keepNames: true,
@@ -2100,7 +2112,7 @@ export const OPTIONS = handler;`;
       sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages
-      external: [],
+      external: [...(this.config.externalPackages || [])],
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');
