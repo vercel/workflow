@@ -217,8 +217,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await setTimeout(delayMs, undefined, { signal: closeSignal });
       }
 
-      const token = semaphore.tryAcquire();
-      if (!token) {
+      const acquireSlot = async () => {
+        if (semaphore.tryAcquire()) return;
         // Debug-gated: this is the semaphore doing its job. A fan-out wider
         // than the limit queues behind it and every message still runs, so a
         // per-message warning turns a healthy wide run into a wall of output.
@@ -226,10 +226,25 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
         );
         await semaphore.acquire();
-      }
+      };
+      await acquireSlot();
+      let holdsSlot = true;
+      // A wake's delay and a retry's backoff are waited out without a slot,
+      // like a delaySeconds delay above: a waiting message must not hold a
+      // slot that the deliveries it is waiting on may need.
+      const waitWithoutSlot = async (ms: number) => {
+        semaphore.release();
+        holdsSlot = false;
+        await setTimeout(ms, undefined, { signal: closeSignal });
+        await acquireSlot();
+        holdsSlot = true;
+      };
       // Safety limit to prevent infinite loops in the local queue.
       // The actual max delivery enforcement happens in the workflow handler
       // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
+      // Only the iterations that can repeat at once spend it (failures and
+      // zero-delay wakes): a delayed wake can't hot-loop, and dropping it
+      // would lose a wakeup its handler asked for.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
       // Number of times the message has actually reached a handler (returned
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
@@ -313,7 +328,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 error: String(err),
               }
             );
-            await setTimeout(5000, undefined, { signal: closeSignal });
+            await waitWithoutSlot(5000);
             continue;
           }
 
@@ -329,9 +344,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     timeoutSeconds * 1000,
                     MAX_SAFE_TIMEOUT_MS
                   );
-                  await setTimeout(timeoutMs, undefined, {
-                    signal: closeSignal,
-                  });
+                  await waitWithoutSlot(timeoutMs);
+                  // A delayed wake doesn't spend the safety limit.
+                  loop--;
                 }
                 continue;
               }
@@ -354,7 +369,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
           // local dev linear 5s is sufficient: the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000, undefined, { signal: closeSignal });
+          await waitWithoutSlot(5000);
         }
 
         console.error(
@@ -367,7 +382,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
-        semaphore.release();
+        if (holdsSlot) semaphore.release();
       }
     })()
       .catch((err) => {

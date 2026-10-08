@@ -316,6 +316,212 @@ describe('queue timeout re-enqueue', () => {
   });
 });
 
+describe('what a handler can rely on (documented per World)', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  it('brings the same message back with attempt + 1 after a throw', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: { messageId: string; attempt: number }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, { messageId, attempt }) => {
+        seen.push({ messageId, attempt });
+        if (attempt === 1) throw new Error('not done');
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload
+    );
+
+    await vi.waitFor(() =>
+      expect(seen).toEqual([
+        { messageId, attempt: 1 },
+        { messageId, attempt: 2 },
+      ])
+    );
+  });
+
+  it('wakes the same message with attempt + 1 on { timeoutSeconds }', async () => {
+    const seen: { messageId: string; attempt: number }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, { messageId, attempt }) => {
+        seen.push({ messageId, attempt });
+        return attempt === 1 ? { timeoutSeconds: 5 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload
+    );
+
+    await vi.waitFor(() =>
+      expect(seen).toEqual([
+        { messageId, attempt: 1 },
+        { messageId, attempt: 2 },
+      ])
+    );
+  });
+});
+
+describe('a waiting delivery holds no queue slot', () => {
+  // WORKFLOW_LOCAL_QUEUE_CONCURRENCY is read when the module loads, so each
+  // test loads a fresh copy with one slot.
+  async function createOneSlotQueue() {
+    vi.stubEnv('WORKFLOW_LOCAL_QUEUE_CONCURRENCY', '1');
+    vi.resetModules();
+    const { createQueue: createQueueWithOneSlot } = await import('./queue');
+    const { setTimeout: sleep } = await import('node:timers/promises');
+    let wake!: () => void;
+    // The next wait (a wake's delay or a retry's backoff) lasts until wake().
+    vi.mocked(sleep).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          wake = () => resolve(undefined);
+        })
+    );
+    const queue = createQueueWithOneSlot({ baseUrl: 'http://localhost:3000' });
+    return { queue, sleep, wake: () => wake() };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  for (const [name, firstDelivery, waitMs] of [
+    ['a { timeoutSeconds } wake', async () => ({ timeoutSeconds: 60 }), 60_000],
+    [
+      'the backoff after a throw',
+      async () => {
+        throw new Error('not done');
+      },
+      5000,
+    ],
+  ] as const) {
+    it(`frees its slot while waiting out ${name}`, async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { queue: oneSlot, sleep, wake } = await createOneSlotQueue();
+      const seen: string[] = [];
+      try {
+        const handler = oneSlot.createQueueHandler(
+          '__wkf_workflow_',
+          async (message, meta) => {
+            const { runId } = message as { runId: string };
+            seen.push(`${runId}#${meta.attempt}`);
+            if (runId === 'run_waiting' && meta.attempt === 1) {
+              return firstDelivery();
+            }
+          }
+        );
+        oneSlot.registerHandler('__wkf_workflow_', handler);
+
+        await oneSlot.queue('__wkf_workflow_test' as any, {
+          runId: 'run_waiting',
+        });
+        await vi.waitFor(() => expect(seen).toEqual(['run_waiting#1']));
+        await vi.waitFor(() =>
+          expect(sleep).toHaveBeenCalledWith(waitMs, undefined, {
+            signal: expect.any(AbortSignal),
+          })
+        );
+
+        // The only slot is free while the first message waits.
+        await oneSlot.queue('__wkf_workflow_test' as any, {
+          runId: 'run_other',
+        });
+        await vi.waitFor(() =>
+          expect(seen).toEqual(['run_waiting#1', 'run_other#1'])
+        );
+
+        wake();
+        await vi.waitFor(() =>
+          expect(seen).toEqual([
+            'run_waiting#1',
+            'run_other#1',
+            'run_waiting#2',
+          ])
+        );
+      } finally {
+        await oneSlot.close();
+      }
+    });
+  }
+});
+
+describe('the local safety limit', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps waking a message past it when each wake has a delay', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    let deliveries = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        deliveries++;
+        return deliveries <= 300 ? { timeoutSeconds: 1 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+
+    // 256 iterations used to drop the message, delayed wakes included.
+    await vi.waitFor(() => expect(deliveries).toBe(301), { timeout: 10_000 });
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('still drops a message that wakes with no delay forever', async () => {
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    let deliveries = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        deliveries++;
+        return { timeoutSeconds: 0 };
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+
+    await vi.waitFor(() =>
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('exhausted safety limit (256 attempts)'),
+        expect.anything()
+      )
+    );
+    expect(deliveries).toBe(256);
+  });
+});
+
 describe('queue delaySeconds', () => {
   let localQueue: ReturnType<typeof createQueue>;
 
