@@ -3263,7 +3263,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
       // Step ids are `step_<ulid>`, so id order is creation order.
-      const sortOrder = params.pagination?.sortOrder ?? 'desc';
+      const sortOrder = params?.pagination?.sortOrder ?? 'desc';
       const orderFn = sortOrder === 'asc' ? asc : desc;
       const cursorFn = sortOrder === 'asc' ? gt : lt;
 
