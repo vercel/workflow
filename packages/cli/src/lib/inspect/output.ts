@@ -27,6 +27,7 @@ import {
   isExpiredRef,
 } from './hydration.js';
 import { resolveTimeWindow } from './time-window.js';
+import { resolveWorkflowNameFilter } from './workflow-name.js';
 
 /**
  * Create an EncryptionKeyResolver from a World instance.
@@ -709,6 +710,21 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     logger.warn(`--since/--until are ${ignoredBecause}.`);
   }
 
+  // The runs table shows a workflow's short name; the backends match the
+  // full one. A full name costs no request here.
+  let workflowName: string | undefined;
+  try {
+    workflowName = await resolveWorkflowNameFilter(world, opts.workflowName, {
+      useAnalytics,
+      timeWindow,
+    });
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+
   // Determine which props to show based on withData flag
   const baseProps = opts.withData
     ? WORKFLOW_RUN_LISTED_PROPS
@@ -756,7 +772,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     };
     if (useAnalytics && world.analytics) {
       const runs = await world.analytics.runs.list({
-        workflowName: opts.workflowName,
+        workflowName,
         status,
         ...(opts.attributes ? { attributes: opts.attributes } : {}),
         ...(timeWindow ?? {}),
@@ -772,7 +788,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       };
     }
     const runs = await world.runs.list({
-      workflowName: opts.workflowName,
+      workflowName,
       status,
       pagination,
       resolveData,
@@ -1751,11 +1767,24 @@ export const listAttributes = async (
 
   const timeWindow = resolveTimeWindow(opts);
 
+  let workflowName: string | undefined;
+  try {
+    workflowName = await resolveWorkflowNameFilter(world, opts.workflowName, {
+      useAnalytics: true,
+      timeWindow,
+    });
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+
   const fetchPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
     const page = await analytics.attributes.list({
-      workflowName: opts.workflowName,
+      workflowName,
       ...(timeWindow ?? {}),
       pagination: {
         cursor,

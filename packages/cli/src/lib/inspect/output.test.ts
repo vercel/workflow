@@ -903,16 +903,19 @@ describe('listAttributes', () => {
       .spyOn(process.stdout, 'write')
       .mockImplementation(() => true);
 
+    // A full name: a short one is resolved against recent runs first, which
+    // workflow-name.test.ts covers.
+    const workflowName = 'workflow//./src/workflows/order//orderWorkflow';
     await listAttributes(worldWith(list), {
       json: true,
-      workflowName: 'orderWorkflow',
+      workflowName,
       since: '7d',
       cursor: 'first',
       limit: 25,
     });
 
     const params = list.mock.calls[0][0];
-    expect(params.workflowName).toBe('orderWorkflow');
+    expect(params.workflowName).toBe(workflowName);
     expect(params.startTime).toBeDefined();
     expect(params.endTime).toBeDefined();
     expect(params.pagination).toMatchObject({ cursor: 'first', limit: 25 });
@@ -1450,5 +1453,41 @@ describe('showEvent', () => {
     expect(log.mock.calls.flat().join('\n')).toContain(
       `To view details for an event, use \`workflow inspect event <event-id> --runId=${RUN}\``
     );
+  });
+});
+
+describe('listRuns with a short workflow name', () => {
+  const FULL = 'workflow//./src/jobs/order//processOrder';
+
+  // The table shows `processOrder`; the backend matches only the full
+  // name, so `-n processOrder` listed nothing.
+  it('filters by the full name the short one resolves to', async () => {
+    const list = vi.fn(async (params: { workflowName?: string }) => ({
+      data: params.workflowName
+        ? []
+        : [{ runId: 'wrun_1', workflowName: FULL, status: 'completed' }],
+      cursor: null,
+      hasMore: false,
+    }));
+    const world = { runs: { list } } as unknown as World;
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    await listRuns(world, { json: true, workflowName: 'processOrder' });
+
+    expect(list.mock.calls.at(-1)?.[0].workflowName).toBe(FULL);
+  });
+
+  it('sends a full name as given, with no extra request', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValue({ data: [], cursor: null, hasMore: false });
+    const world = { runs: { list } } as unknown as World;
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await listRuns(world, { json: true, workflowName: FULL });
+
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list.mock.calls[0][0].workflowName).toBe(FULL);
   });
 });

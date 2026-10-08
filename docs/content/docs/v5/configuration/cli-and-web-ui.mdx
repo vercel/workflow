@@ -195,8 +195,8 @@ per flag.
 
 - Command: `workflow cancel`
 - Default: unset
-- Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs`, not the short function name.
-- Also filters `workflow inspect runs` and `workflow inspect attributes`.
+- Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs --json`, not the short function name.
+- Also filters `workflow inspect runs` and `workflow inspect attributes`. These also accept the short name the runs table shows, such as `processOrder`: it is looked up among the workflows of the 500 most recent runs (in the `--since` window when given) and replaced by the full name. A short name that more than one of those workflows share is rejected with the candidates, and one that none of them has is used as given.
 
 ### `--limit` (cancel)
 

@@ -135,7 +135,8 @@ export default class Inspect extends BaseCommand {
       helpValue: 'KEY=VALUE',
     }),
     workflowName: Flags.string({
-      description: 'workflow name to filter by (runs and attributes)',
+      description:
+        'workflow name to filter by, in full or the short name the runs table shows (runs and attributes)',
       required: false,
       char: 'n',
       aliases: ['workflow'],
