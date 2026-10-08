@@ -47,14 +47,15 @@ const MAX_QUEUE_SEND_BATCH = 100;
  *   for 8, 108 ms for 16 and 157 ms for 32. A queued branch cannot start
  *   before its message is delivered.
  * - More requests take longer to get out of one instance. From a chunk's
- *   commit to VQS accepting its messages, the median was about 60 ms at 4 or
- *   16 messages per request, but 150 ms at 2 and 220 ms at 1.
+ *   commit to VQS accepting its messages, the median was about 60 ms at 16
+ *   messages per request, 60-80 ms at 4, but 150 ms at 2 and 220 ms at 1.
  *
- * 4 is the smallest size that does not slow the publish: in one interleaved
- * sweep the last branch of the 64-branch fan-out started ~120 ms sooner (p50)
- * than with one request per 16-event chunk, while 2 and 1 per request were
- * no better and worse. Requests ride the queue client's own connection pool
- * (see `QUEUE_AGENT_CONNECTIONS` in `http-client.ts`).
+ * At 4 the earlier delivery outweighs the slower publish. Across four
+ * interleaved sweeps the last branch of the 64-branch fan-out started ~65 ms
+ * sooner at p50 and ~80 ms sooner at p75 than with one request per 16-event
+ * chunk, while 2 and 1 per request were no better and worse. Requests ride
+ * the queue client's own connection pool (see `QUEUE_AGENT_CONNECTIONS` in
+ * `http-client.ts`).
  *
  * Override with `WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE`.
  */
