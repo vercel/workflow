@@ -1,5 +1,13 @@
 # @workflow/rollup
 
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1)]:
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/builders@5.0.3
+
 ## 5.0.2
 
 ### Patch Changes
