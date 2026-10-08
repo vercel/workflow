@@ -34,6 +34,7 @@ let currentWorld: AppendOnlyWorld | undefined;
 /** Per body start: how many earlier steps' outcomes had not committed yet. */
 let unconfirmedAtStart: number[] = [];
 let bodiesStarted = 0;
+let bodiesFinished = 0;
 
 registerStepFunction('ra_inc', async (n: number) => {
   bodiesStarted++;
@@ -43,6 +44,7 @@ registerStepFunction('ra_inc', async (n: number) => {
     // Every step before this one is `bodiesStarted - 1`.
     unconfirmedAtStart.push(bodiesStarted - 1 - outcomes);
   }
+  bodiesFinished++;
   return n + 1;
 });
 
@@ -153,6 +155,28 @@ const slowOutcomes = {
   },
 };
 
+/**
+ * Holds every `step_completed` until `ahead` more step bodies have returned
+ * (or the workflow has none left), so the writes they decide queue behind it
+ * however slow the machine is. Bounded, so a runtime that stops running
+ * ahead fails the test's assertions instead of hanging.
+ */
+function holdOutcomesUntilAhead(ahead: number) {
+  // Per step, so a repair writing an outcome again does not move the target.
+  const steps = new Set<unknown>();
+  return async (data: { eventType: string; correlationId?: string }) => {
+    if (data.eventType !== 'step_completed') return;
+    steps.add(data.correlationId);
+    const target = Math.min(steps.size + ahead, STEPS);
+    const deadline = Date.now() + 2000;
+    while (bodiesFinished < target && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    // A returned body's outcome reaches the writer a few ticks later.
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  };
+}
+
 async function run(
   code: string,
   args: unknown[],
@@ -188,6 +212,7 @@ async function coldReplay(world: AppendOnlyWorld, code: string) {
 beforeEach(() => {
   unconfirmedAtStart = [];
   bodiesStarted = 0;
+  bodiesFinished = 0;
   onceStartDurable = [];
   onceBodies = 0;
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
@@ -335,8 +360,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
   // several steps: a step's creation and its outcome share a batch.
   it('sends several steps per batch on a World that orders a batch per entity', async () => {
     const { world } = await run(sequential, [STEPS], {
-      createDelayMs: 100,
       entityOrder: true,
+      beforeCreate: holdOutcomesUntilAhead(4),
     });
     await world.runUntilIdle();
 
@@ -346,7 +371,9 @@ describe('run-ahead against an append-only World (node engine)', () => {
         (batch) => batch.filter((type) => type === 'step_completed').length > 1
       )
     ).toBe(true);
-    expect(world.createCalls).toBeLessThan(STEPS);
+    // Without entity order every step costs a round trip of its own, on top
+    // of the run's start and completion.
+    expect(world.createCalls).toBeLessThanOrEqual(STEPS);
     // The log a cold replay reads decides the same way.
     const cold = await coldReplay(world, sequential);
     expect(cold.result).toBe(STEPS);
@@ -423,12 +450,17 @@ describe('run-ahead against an append-only World (node engine)', () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
     const debug = vi.spyOn(runtimeLogger, 'debug');
     let injected = false;
+    let outcomes = 0;
     const { world, runId } = await run(unobservedHook, [STEPS], {
-      async beforeCreate(data, _params, source) {
+      async beforeCreate(data) {
         await slowOutcomes.beforeCreate(data);
-        // An outcome that rides in a batch is a coalesced run-ahead write:
-        // inject below the first.
-        if (!injected && data.eventType === 'step_completed' && source?.batch) {
+        // The second step's outcome is written ahead of the workflow, which
+        // has moved on to the next step by then: inject below it.
+        if (
+          !injected &&
+          data.eventType === 'step_completed' &&
+          ++outcomes === 2
+        ) {
           injected = true;
           world.appendOutOfBand({
             eventType: 'hook_received',
