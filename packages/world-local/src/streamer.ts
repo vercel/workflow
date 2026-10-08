@@ -322,9 +322,11 @@ export function createStreamer(
     assertSafeEntityId('streamName', streamName);
     const cacheKey = `${runId}:${streamName}`;
     if (registeredStreams.has(cacheKey)) {
-      if (!verify || (await readRunStreams(runId)).includes(streamName)) {
-        return;
-      }
+      if (!verify) return;
+      // The re-check is best effort: a failed read says nothing about the
+      // name, and must not fail a close() that used to skip the index.
+      const listed = await readRunStreams(runId).catch(() => null);
+      if (listed === null || listed.includes(streamName)) return;
       registeredStreams.delete(cacheKey);
     }
 

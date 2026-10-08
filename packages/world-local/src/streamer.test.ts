@@ -1063,6 +1063,23 @@ describe('streamer', () => {
           'kept',
         ]);
       });
+
+      // The re-check is a repair. A close() of a registered stream never read
+      // the index before, so a failed read must not fail it now: the stream
+      // would never get its EOF and its readers would wait forever.
+      it('close() still closes a registered stream when the index cannot be read', async () => {
+        const { streamer, testDir } = await setupStreamer();
+        await streamer.streams.write(TEST_RUN_ID, 'stream', 'data');
+        await fs.writeFile(
+          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.json`),
+          '{not json'
+        );
+
+        await streamer.streams.close(TEST_RUN_ID, 'stream');
+
+        const chunks = await streamer.streams.getChunks(TEST_RUN_ID, 'stream');
+        expect(chunks.done).toBe(true);
+      });
     });
 
     describe('getChunks', () => {
