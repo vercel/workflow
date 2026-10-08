@@ -282,14 +282,16 @@ function toInspectOptions(flags: any): InspectCLIOptions {
   };
 }
 
-function normalizeResource(
+export function normalizeResource(
   value?: string
 ): 'run' | 'step' | 'stream' | 'event' | 'hook' | 'web' | 'sleep' | undefined {
   if (!value) return undefined;
   const v = value.toLowerCase();
   if (v.startsWith('r')) return 'run';
   if (v.startsWith('e')) return 'event';
-  if (v.startsWith('str')) return 'stream';
+  // `st` is the stream alias `args.resource.options` lists; it fell through
+  // to the `s` (step) arm below.
+  if (v === 'st' || v.startsWith('str')) return 'stream';
   if (v.startsWith('sl')) return 'sleep';
   if (v.startsWith('s')) return 'step';
   if (v.startsWith('h')) return 'hook';
