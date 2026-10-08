@@ -125,6 +125,18 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
+    /**
+     * The `jobPrefix` of the World that created the run: the prefix of the
+     * Graphile task whose runner claims the run's jobs. Startup recovery
+     * re-enqueues only the active runs stamped with its own prefix, so apps
+     * sharing a database do not drive each other's runs. Internal routing
+     * metadata, stripped from the run returned to callers.
+     *
+     * Null on runs created before this column existed, and on runs written by
+     * storage constructed without a World. Every World recovers those, as
+     * before.
+     */
+    jobPrefix: varchar('job_prefix'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -137,7 +149,7 @@ export const runs = schema.table(
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    > & { dynamicWorkflowCode?: SerializedData }
+    > & { dynamicWorkflowCode?: SerializedData; jobPrefix?: string }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );

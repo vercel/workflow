@@ -41,7 +41,7 @@ import {
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
-import type { PostgresWorldConfig } from './config.js';
+import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
@@ -259,8 +259,7 @@ export function createQueue(
   const generateMessageId = monotonicFactory();
 
   function getJobQueueName(): string {
-    const jobPrefix = config.jobPrefix || 'workflow_';
-    return `${jobPrefix}flows`;
+    return `${resolveJobPrefix(config)}flows`;
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;

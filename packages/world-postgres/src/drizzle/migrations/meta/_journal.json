@@ -183,6 +183,13 @@
       "when": 1789862400000,
       "tag": "0025_add_snapshots_table",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789948800000,
+      "tag": "0026_add_run_job_prefix",
+      "breakpoints": true
     }
   ]
 }
