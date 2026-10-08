@@ -663,6 +663,98 @@ describe('createQueue', () => {
       });
     });
 
+    describe('visibilityTimeoutSeconds', () => {
+      it('leaves the queue default in place when the option is omitted', () => {
+        mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined);
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined, {});
+
+        // The runtime's own routes pass no options, and must keep
+        // @vercel/queue's 300s default, so the key must be absent rather
+        // than present as `undefined`.
+        for (const [, options] of mockHandleCallback.mock.calls) {
+          expect(Object.keys(options)).toEqual(['retry']);
+        }
+      });
+
+      it('passes the handler visibility timeout to handleCallback', () => {
+        mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined, {
+          visibilityTimeoutSeconds: 30,
+        });
+
+        expect(mockHandleCallback).toHaveBeenCalledTimes(1);
+        expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
+          retry: expect.any(Function),
+          visibilityTimeoutSeconds: 30,
+        });
+      });
+
+      it('applies the visibility timeout per handler, not per World', () => {
+        mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined, {
+          visibilityTimeoutSeconds: 30,
+        });
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined);
+        queue.createQueueHandler('__wkf_workflow_', async () => undefined, {
+          visibilityTimeoutSeconds: 3600,
+        });
+
+        const calls = mockHandleCallback.mock.calls;
+        expect(calls).toHaveLength(3);
+        expect(calls[0][1].visibilityTimeoutSeconds).toBe(30);
+        expect(calls[1][1]).not.toHaveProperty('visibilityTimeoutSeconds');
+        expect(calls[2][1].visibilityTimeoutSeconds).toBe(3600);
+      });
+
+      it.each([
+        30, 31, 60, 300, 3600,
+      ])('accepts %s seconds', (visibilityTimeoutSeconds) => {
+        mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+
+        const queue = createQueue();
+        expect(() =>
+          queue.createQueueHandler('__wkf_workflow_', async () => undefined, {
+            visibilityTimeoutSeconds,
+          })
+        ).not.toThrow();
+        expect(
+          mockHandleCallback.mock.calls[0][1].visibilityTimeoutSeconds
+        ).toBe(visibilityTimeoutSeconds);
+      });
+
+      it.each([
+        0,
+        29,
+        3601,
+        30.5,
+        -30,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+      ])('rejects %s seconds when the handler is created', (visibilityTimeoutSeconds) => {
+        mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+
+        const queue = createQueue();
+        expect(() =>
+          queue.createQueueHandler('__wkf_workflow_', async () => undefined, {
+            visibilityTimeoutSeconds,
+          })
+        ).toThrow(RangeError);
+        expect(() =>
+          queue.createQueueHandler('__wkf_workflow_', async () => undefined, {
+            visibilityTimeoutSeconds,
+          })
+        ).toThrow(/integer between 30 and 3600/);
+        expect(mockHandleCallback).not.toHaveBeenCalled();
+      });
+    });
+
     it('should pass handler rejections to QueueClient', async () => {
       let capturedHandler: (
         message: unknown,

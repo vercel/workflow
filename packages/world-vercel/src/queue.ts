@@ -298,6 +298,32 @@ function getHandlerErrorRetryAfterSeconds(
 }
 
 /**
+ * Bounds for a handler's `visibilityTimeoutSeconds`. `@vercel/queue` silently
+ * raises anything below 30 to 30, and VQS answers a non-integer or a value
+ * above 3600 with a 400 on every lease renewal, which `@vercel/queue` treats
+ * as final: it stops renewing and only logs, so the lease then lapses under a
+ * live handler. Rejecting both when the handler is created turns either
+ * mistake into an error at route load instead.
+ */
+const MIN_VISIBILITY_TIMEOUT_SECONDS = 30;
+const MAX_VISIBILITY_TIMEOUT_SECONDS = 3600;
+
+function validateVisibilityTimeoutSeconds(
+  visibilityTimeoutSeconds: number
+): number {
+  if (
+    !Number.isInteger(visibilityTimeoutSeconds) ||
+    visibilityTimeoutSeconds < MIN_VISIBILITY_TIMEOUT_SECONDS ||
+    visibilityTimeoutSeconds > MAX_VISIBILITY_TIMEOUT_SECONDS
+  ) {
+    throw new RangeError(
+      `[world-vercel] createQueueHandler: visibilityTimeoutSeconds must be an integer between ${MIN_VISIBILITY_TIMEOUT_SECONDS} and ${MAX_VISIBILITY_TIMEOUT_SECONDS} (the range the Vercel queue accepts for a message lease), got ${visibilityTimeoutSeconds}`
+    );
+  }
+  return visibilityTimeoutSeconds;
+}
+
+/**
  * Default region used when no explicit override, no tagged run ID, and no
  * `VERCEL_REGION` env var are available. `iad1` preserves the historical
  * behavior from before per-message regional routing existed.
@@ -779,8 +805,17 @@ export function createQueue(config?: APIConfig): Queue {
 
   const createQueueHandler: Queue['createQueueHandler'] = (
     _prefix,
-    handler
+    handler,
+    options
   ) => {
+    // Per handler: the runtime's own routes pass nothing and keep
+    // @vercel/queue's 300s default, while a route that wants a dead handler
+    // redelivered sooner can ask for a shorter lease. Omitted means the key is
+    // left out, so the default stays @vercel/queue's to choose.
+    const visibilityTimeoutSeconds =
+      options?.visibilityTimeoutSeconds === undefined
+        ? undefined
+        : validateVisibilityTimeoutSeconds(options.visibilityTimeoutSeconds);
     const client = new QueueClient(clientOptions);
     const vqsHandler = client.handleCallback(
       async (message: unknown, metadata) => {
@@ -852,10 +887,19 @@ export function createQueue(config?: APIConfig): Queue {
         }
       },
       {
+        // The lease this delivery holds while the handler runs. @vercel/queue
+        // extends it by v seconds every min(60, max(10, v/5)) seconds; a
+        // handler that dies stops extending it, and the message becomes
+        // visible again when the last extension lapses. A delivery VQS pushed
+        // with its payload starts on the broker's own 300s lease until the
+        // first extension.
+        ...(visibilityTimeoutSeconds !== undefined && {
+          visibilityTimeoutSeconds,
+        }),
         // Without an explicit retry directive, @vercel/queue leaves failed
-        // handler messages invisible until the default 300s visibility timeout
-        // expires. Start retrying after 1s, then back off by delivery count
-        // with jitter so an outage or poison message cannot hot-loop or
+        // handler messages invisible until the visibility timeout (300s by
+        // default) expires. Start retrying after 1s, then back off by delivery
+        // count with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
         retry: (error, { messageId, deliveryCount }) => {
