@@ -4,6 +4,8 @@ import { createMdxComponents } from '@vercel/geistdocs/mdx';
 import type { MDXComponents } from 'mdx/types';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import { PerformanceExplainer } from '@/components/custom/performance/explainer';
+import { MetricVideo } from '@/components/custom/performance/metric-video';
 import { Details } from '@/components/geistdocs/details';
 import { PreviewInstallServer } from '@/components/preview-install-server';
 import { WorldTestingPerformance as WorldTestingPerformanceView } from '@/components/worlds/WorldTestingPerformance';
@@ -52,6 +54,8 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
     FluidComputeCallout,
     Badge,
     Details,
+    MetricVideo,
+    PerformanceExplainer,
     TSDoc,
     PreviewInstall: PreviewInstallServer,
     WorldTestingPerformance,

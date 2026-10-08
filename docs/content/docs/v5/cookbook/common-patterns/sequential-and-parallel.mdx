@@ -148,6 +148,14 @@ export async function birthdayWorkflow(
 - **Add a deadline to any race**: Pair the operation with `sleep("30s").then(() => "timeout" as const)` and check the discriminated result. See [Timeouts](/cookbook/common-patterns/timeouts).
 - **Mix steps and hooks in a race**: Wait for an external signal, a deadline, or a step result in the same `Promise.race`. The first promise to resolve wins.
 
+## Performance
+
+The fan-out benchmark measures how quickly a `Promise.all` over 64 steps gets going and finishes: from `start()` until the first branch and the slowest branch start, and from the slowest branch finishing until the code after `Promise.all` runs. The animation shows the branches starting close together and in no fixed order.
+
+<MetricVideo metric="fanout" />
+
+See [Fan-out](/docs/performance#fan-out-ttfs-ttls-join) on the Performance page for how it's measured and the latest results.
+
 ## Key APIs
 
 - [`"use workflow"`](/docs/foundations/workflows-and-steps): Marks the orchestrator function.

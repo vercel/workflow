@@ -27,6 +27,15 @@ npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-
 
 ### Faster and cheaper runs
 
+<Image
+  srcLight="/performance/v5.2.0/01-overview-light.png"
+  srcDark="/performance/v5.2.0/01-overview-dark.png"
+  alt="Dot plot of how many times faster v5.2.0 is than v4.8.12 at p75 on each benchmark, on a log scale. Every benchmark is faster or unchanged."
+  caption="At p75, v5.2.0 is as fast as or faster than v4.8.12 on every benchmark."
+  width={2016}
+  height={1444}
+/>
+
 The largest change in v5 has no API surface: the runtime does far less work per unit of progress. The time between calling `start()` and your first step body executing is now less than half of what it was in v4. This is made possible by many smaller optimizations:
 
 **A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes several steps inline per suspension, in parallel, and only uses the queue for a wait, a hook, or when the function approaches its timeout.
@@ -48,6 +57,28 @@ The largest change in v5 has no API surface: the runtime does far less work per 
 On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute costs by up to 80% for workflows made of many small steps, and storage cost by up to 70%, depending on the workload. Depending on your setup, you may see similar gains using self-hosted or third-party Worlds.
 
 How much work fits in one invocation now scales with the function's own limit: the inline budget is derived from the runtime deadline the World reports, so raising `maxDuration` widens it without configuration. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms).
+
+Benchmarks on Vercel compare v5.2.0 with v4.8.12:
+
+<Image
+  srcLight="/performance/v5.2.0/02-sequential-light.png"
+  srcDark="/performance/v5.2.0/02-sequential-dark.png"
+  alt="Three charts: v5.2.0 reaches the first step and moves between steps sooner than v4.8.12; through a 1,020-step run, step-to-step overhead on v4.8.12 grows toward the end while v5.2.0 stays flat; and v5.2.0 finishes all 1,020 steps several times sooner."
+  caption="Step-to-step overhead stays flat through a 1,020-step run on v5.2.0, while on v4.8.12 it grows with the event log."
+  width={2016}
+  height={2328}
+/>
+
+<Image
+  srcLight="/performance/v5.2.0/05-streams-light.png"
+  srcDark="/performance/v5.2.0/05-streams-dark.png"
+  alt="Three charts of a replayed agent stream: v5.2.0 delivers the response in about the recording's length while v4.8.12 takes about four times as long, v5.2.0 has a shorter chunk trip time, and no v5.2.0 run had a chunk delayed by over 1 s."
+  caption="v5.2.0 writes streams over a WebSocket by default and keeps pace with a recorded agent stream that v4.8.12 falls behind."
+  width={2016}
+  height={1628}
+/>
+
+See [Performance](/docs/performance) for how these benchmarks are measured, the full results, and their limits.
 
 ### Multi-region support
 
