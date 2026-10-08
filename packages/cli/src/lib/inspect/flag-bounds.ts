@@ -94,6 +94,26 @@ export function validateAttributeScope(
   return undefined;
 }
 
+/**
+ * Validate that a lookup scoped to a run names its run.
+ *
+ * Checked before backend setup, so the mistake costs no auth and project
+ * lookup and the message says what to add. `opensWebUi` marks `--url`/`--web`,
+ * whose deep links do not need the run.
+ */
+export function validateRunScope(
+  resource: string,
+  hasId: boolean,
+  hasRunId: boolean,
+  opensWebUi = false
+): string | undefined {
+  if (!hasId || hasRunId || opensWebUi) return undefined;
+  if (resource === 'stream') {
+    return "inspect stream needs --runId: a stream name is scoped to its run. Usage: `workflow inspect stream <stream-id> --runId=<run-id>`. List a run's streams with `workflow inspect streams --runId=<run-id>`.";
+  }
+  return undefined;
+}
+
 /** The listings `--all` pages through: the ones whose JSON is a bare array. */
 const ALL_RESOURCES = new Set(['step', 'event', 'sleep']);
 
@@ -175,6 +195,12 @@ export function validateInspectFlags(
       flags.hasId,
       Boolean(flags.all),
       Boolean(flags.interactive),
+      flags.opensWebUi
+    ) ??
+    validateRunScope(
+      flags.resource,
+      flags.hasId,
+      flags.runId !== undefined,
       flags.opensWebUi
     );
   if (error) return { error };

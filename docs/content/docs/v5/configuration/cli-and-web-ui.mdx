@@ -125,6 +125,7 @@ per flag.
 - Command: `workflow inspect`
 - Default: unset
 - Scopes the listing to one run. Required for `steps`, `events`, and `sleeps`; optional for `hooks`. Must be a run ID: `wrun_` followed by a 26-character ULID.
+- Also required to read one stream, `workflow inspect stream <stream-id> --runId=<run-id>`: a stream's name is scoped to its run.
 
 ### `--limit` (inspect)
 

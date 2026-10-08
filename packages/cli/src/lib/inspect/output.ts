@@ -551,12 +551,20 @@ const truncateIdToLastChars = (id: string, chars: number = 4): string => {
   return `...${id.substring(id.length - chars)}`;
 };
 
-const showInspectInfoBox = (resource: string) => {
+/**
+ * The command that reads one stream. A stream name is scoped to its run
+ * (`world.streams.get(runId, name)`), so `--runId` is part of it; the hint
+ * used to leave it out and the command it suggested failed.
+ */
+const streamCommand = (runId: string | undefined) =>
+  `workflow inspect stream <stream-id> --runId=${runId ?? '<run-id>'}`;
+
+const showInspectInfoBox = (resource: string, runId?: string) => {
   logger.info(
     `To view details for a ${resource}, use \`workflow inspect ${resource}\` <id>`
   );
   logger.info(
-    `To view the content of any stream, use \`workflow inspect stream <stream-id>\``
+    `To view the content of any stream, use \`${streamCommand(runId)}\``
   );
 };
 
@@ -988,7 +996,7 @@ export const listSteps = async (
     },
     displayPage: async (steps) => {
       logger.log(showTable(steps, props, opts));
-      showInspectInfoBox('step');
+      showInspectInfoBox('step', runId);
     },
   });
 };
@@ -1056,7 +1064,10 @@ export const showStream = async (
     );
   }
   if (!opts.runId) {
-    throw new Error('--run is required when showing a stream');
+    // The command rejects this before backend setup; kept for direct callers.
+    throw new Error(
+      `--runId is required when showing a stream. Usage: \`${streamCommand(undefined)}\``
+    );
   }
   const rawStream = await world.streams.get(opts.runId, streamId);
 
@@ -1143,6 +1154,11 @@ export const listStreamsByRunId = async (
       return;
     }
     logger.log(showTable(matchingStreams, ['runId', 'streamId']));
+    if (matchingStreams.length > 0) {
+      logger.info(
+        `To view the content of a stream, use \`${streamCommand(runId)}\``
+      );
+    }
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);
@@ -1269,7 +1285,7 @@ export const listEvents = async (
     },
     displayPage: async (events) => {
       logger.log(showTable(events, props, opts));
-      showInspectInfoBox('event');
+      showInspectInfoBox('event', runId);
     },
   });
 };
@@ -1348,7 +1364,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
     },
     displayPage: async (hooks) => {
       logger.log(showTable(hooks, HOOK_LISTED_PROPS, opts));
-      showInspectInfoBox('hook');
+      showInspectInfoBox('hook', runId);
     },
   });
 };

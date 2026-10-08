@@ -23,6 +23,7 @@ import {
   listRuns,
   listSleeps,
   listSteps,
+  listStreamsByRunId,
 } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
@@ -1302,5 +1303,62 @@ describe('paging the bare-array listings', () => {
         (w: { waitId: string }) => w.waitId
       )
     ).toEqual(['wait-1', 'wait-2']);
+  });
+});
+
+describe('stream hints', () => {
+  const RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
+
+  // `inspect stream <id>` needs the run; the hint used to suggest the bare
+  // form, which then failed with "--run is required".
+  it('puts the listed run into the steps table hint', async () => {
+    const world = {
+      analytics: {
+        steps: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ runId: RUN, stepId: 'step-1', status: 'completed' }],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `workflow inspect stream <stream-id> --runId=${RUN}`
+    );
+  });
+
+  it('prints the hint, with the run, under a streams table', async () => {
+    const world = {
+      streams: { list: vi.fn().mockResolvedValue(['strm_a', 'strm_b']) },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listStreamsByRunId(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `workflow inspect stream <stream-id> --runId=${RUN}`
+    );
+  });
+
+  it('keeps JSON stream listings free of hints', async () => {
+    const world = {
+      streams: { list: vi.fn().mockResolvedValue(['strm_a']) },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listStreamsByRunId(world, { runId: RUN, json: true });
+
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      { runId: RUN, streamId: 'strm_a' },
+    ]);
+    expect(log).not.toHaveBeenCalled();
   });
 });

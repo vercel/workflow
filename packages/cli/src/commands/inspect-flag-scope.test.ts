@@ -207,3 +207,24 @@ describe('inspect --all', () => {
     expect(state.setupCliWorld).toHaveBeenCalled();
   });
 });
+
+describe('inspect lookups scoped to a run', () => {
+  // Used to reach the backend first and then throw "--run is required".
+  it('rejects a stream ID without --runId before backend setup', async () => {
+    const message = await runInspect(['stream', 'strm_01K4BZQ5T2J8HXFM6WD3PN']);
+    expect(message).toContain('inspect stream needs --runId');
+    expect(message).toContain('--runId=<run-id>');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('lets a stream ID through with --runId', async () => {
+    const message = await runInspect([
+      'stream',
+      'strm_01K4BZQ5T2J8HXFM6WD3PN',
+      '--runId',
+      VALID_RUN,
+    ]);
+    expect(message).not.toContain('needs --runId');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});

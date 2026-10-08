@@ -5,6 +5,7 @@ import {
   validateInspectFlags,
   validateInspectLimit,
   validateInspectRunId,
+  validateRunScope,
 } from './flag-bounds.js';
 
 describe('validateInspectLimit', () => {
@@ -219,5 +220,25 @@ describe('validateAllScope', () => {
         all: true,
       })
     ).toEqual({ attributes: undefined });
+  });
+});
+
+describe('validateRunScope', () => {
+  it('rejects a stream ID without --runId', () => {
+    expect(validateRunScope('stream', true, false)).toContain(
+      'a stream name is scoped to its run'
+    );
+  });
+
+  it.each([
+    ['with --runId', 'stream', true, true, false],
+    ['for the streams listing', 'stream', false, false, false],
+    ['for a web deep link', 'stream', true, false, true],
+    ['for a hook ID', 'hook', true, false, false],
+    ['for a run ID', 'run', true, false, false],
+  ])('allows it %s', (_label, resource, hasId, hasRunId, opensWebUi) => {
+    expect(
+      validateRunScope(resource, hasId, hasRunId, opensWebUi)
+    ).toBeUndefined();
   });
 });
