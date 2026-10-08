@@ -250,7 +250,17 @@ function logStreamPurgeFailure(target: string, error: unknown): void {
   );
 }
 
-export function createStreamer(basedir: string, tag?: string): Streamer {
+export function createStreamer(
+  basedir: string,
+  tag?: string
+): Streamer & {
+  /**
+   * Forget which streams this instance has registered. `clear()` calls it
+   * after deleting the stream indexes, so a stream written again afterwards
+   * is registered again.
+   */
+  clearCache(): void;
+} {
   const tagSuffix = tag ? `.${tag}` : '';
   const streamEmitter = new EventEmitter<{
     [key: `chunk:${string}`]: [
@@ -393,6 +403,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
   }
 
   return {
+    clearCache() {
+      registeredStreams.clear();
+    },
+
     streams: {
       async write(
         _runId: string | Promise<string>,
