@@ -29,6 +29,16 @@ import { Cbor, type Cborized } from './cbor.js';
 
 export const schema = pgSchema('workflow');
 
+/**
+ * Every timestamp column is `timestamp with time zone`, so it stores an
+ * instant. With `timestamp without time zone`, `DEFAULT now()` stored the
+ * session's local wall time while drizzle read every value back as UTC, which
+ * put `createdAt` hours off on servers not running in UTC (migration 0026).
+ */
+function timestamptz(name: string) {
+  return timestamp(name, { withTimezone: true });
+}
+
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
 }
@@ -125,14 +135,14 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
+    updatedAt: timestamptz('updated_at')
       .defaultNow()
       .$onUpdateFn(() => new Date())
       .notNull(),
-    completedAt: timestamp('completed_at'),
-    startedAt: timestamp('started_at'),
-    expiredAt: timestamp('expired_at'),
+    completedAt: timestamptz('completed_at'),
+    startedAt: timestamptz('started_at'),
+    expiredAt: timestamptz('expired_at'),
   } satisfies DrizzlishOfType<
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
@@ -148,7 +158,7 @@ export const events = schema.table(
     eventId: varchar('id').notNull(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
     runId: varchar('run_id').notNull(),
     /** @deprecated */
     eventDataJson: jsonb('payload'),
@@ -233,14 +243,14 @@ export const steps = schema.table(
     error: Cbor<SerializedData>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
-    startedAt: timestamp('started_at'),
-    completedAt: timestamp('completed_at'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
+    startedAt: timestamptz('started_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
+    updatedAt: timestamptz('updated_at')
       .defaultNow()
       .$onUpdateFn(() => new Date())
       .notNull(),
-    retryAfter: timestamp('retry_after'),
+    retryAfter: timestamptz('retry_after'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
     Cborized<
@@ -262,10 +272,8 @@ export const hooks = schema.table(
     ownerId: varchar('owner_id').notNull(),
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    tokenRetentionUntil: timestamp('token_retention_until', {
-      withTimezone: true,
-    }),
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
+    tokenRetentionUntil: timestamptz('token_retention_until'),
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
@@ -294,10 +302,10 @@ export const waits = schema.table(
     waitId: varchar('wait_id').primaryKey(),
     runId: varchar('run_id').notNull(),
     status: waitStatus('status').notNull(),
-    resumeAt: timestamp('resume_at'),
-    completedAt: timestamp('completed_at'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
+    resumeAt: timestamptz('resume_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
+    updatedAt: timestamptz('updated_at')
       .defaultNow()
       .$onUpdateFn(() => new Date())
       .notNull(),
@@ -323,9 +331,9 @@ export const invocations = schema.table(
     fingerprint: varchar('fingerprint'),
     result: bytea('result'),
     resultVersion: integer('result_version').notNull().default(0),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    respondedAt: timestamp('responded_at'),
-    expiredAt: timestamp('expired_at'),
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
+    respondedAt: timestamptz('responded_at'),
+    expiredAt: timestamptz('expired_at'),
   },
   (tb) => [
     primaryKey({ columns: [tb.runId, tb.requestId] }),
@@ -350,7 +358,7 @@ export const snapshots = schema.table('workflow_snapshots', {
   runId: varchar('run_id').primaryKey(),
   data: bytea('data').notNull(),
   eventsCursor: varchar('events_cursor'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamptz('created_at').defaultNow().notNull(),
 });
 
 export const streams = schema.table(
@@ -360,7 +368,7 @@ export const streams = schema.table(
     streamId: varchar('stream_id').notNull(),
     runId: varchar('run_id'),
     chunkData: bytea('data').notNull(),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').defaultNow().notNull(),
     eof: boolean('eof').notNull(),
   },
   (tb) => [
