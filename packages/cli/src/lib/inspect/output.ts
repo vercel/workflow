@@ -53,6 +53,8 @@ function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
 
 import {
   type AnalyticsPageInfo,
+  fetchAllPages,
+  moreResultsMessage,
   type PageData,
   setupListPagination,
 } from './pagination.js';
@@ -469,6 +471,31 @@ const safeWorldFields = async (
   return safe;
 };
 
+/**
+ * JSON output for the listings that print a bare array (steps, events,
+ * sleeps). The array shape is a published contract, so the next page's
+ * cursor goes to stderr instead of into the output: without it a script
+ * could not get past the first page, since `--interactive` does not apply
+ * to `--json`.
+ */
+const showJsonArrayPage = <T>(page: PageData<T>) => {
+  showJson(page.data);
+  if (page.hasMore) {
+    logger.warn(moreResultsMessage(page, { supportsAll: true, json: true }));
+  }
+};
+
+/**
+ * Fetch the page `--cursor` names, or with `--all` every page from it on.
+ */
+const fetchListing = <T>(
+  fetchPage: (cursor: string | undefined) => Promise<PageData<T>>,
+  opts: InspectCLIOptions
+): Promise<PageData<T>> =>
+  opts.all
+    ? fetchAllPages(fetchPage, opts.cursor)
+    : fetchPage(opts.cursor || undefined);
+
 const showJsonPage = <T>(page: PageData<T>) => {
   showJson({
     data: page.data,
@@ -877,6 +904,11 @@ export const listSteps = async (
     ? STEP_LISTED_PROPS
     : STEP_LISTED_PROPS.filter((prop) => !STEP_IO_PROPS.includes(prop));
 
+  // The read path that served the first page. Every later page follows a
+  // cursor that path issued, so it must go back to the same one: when
+  // analytics had no rows yet and the first page came from storage, page two
+  // used to send that storage cursor to analytics.
+  let source: 'analytics' | 'storage' | undefined;
   const fetchStepsPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
@@ -886,7 +918,7 @@ export const listSteps = async (
       cursor,
       limit: opts.limit || DEFAULT_PAGE_SIZE,
     };
-    if (useAnalytics && world.analytics) {
+    if (source !== 'storage' && useAnalytics && world.analytics) {
       const steps = await world.analytics.steps.list({ runId, pagination });
       const page = {
         data: steps.data as unknown as Record<string, unknown>[],
@@ -894,13 +926,20 @@ export const listSteps = async (
         hasMore: steps.hasMore,
         pageInfo: getPageInfo(steps),
       };
-      if (cursor || page.data.length > 0 || page.hasMore) {
+      if (
+        source === 'analytics' ||
+        cursor ||
+        page.data.length > 0 ||
+        page.hasMore
+      ) {
+        source = 'analytics';
         return page;
       }
       logger.debug(
         `No analytics steps found for run ${runId}; falling back to storage`
       );
     }
+    source = 'storage';
     const stepChunks = await world.steps.list({
       runId,
       pagination,
@@ -914,14 +953,15 @@ export const listSteps = async (
       cursor: stepChunks.cursor,
       hasMore: stepChunks.hasMore,
       pageInfo: getPageInfo(stepChunks),
+      // A new invocation given this cursor would send it to analytics.
+      cursorReusable: !useAnalytics,
     };
   };
 
-  // For JSON output, fetch once and return
+  // For JSON output, fetch once (or every page with --all) and return
   if (opts.json) {
     try {
-      const page = await fetchStepsPage(opts.cursor);
-      showJson(page.data);
+      showJsonArrayPage(await fetchListing(fetchStepsPage, opts));
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -934,6 +974,8 @@ export const listSteps = async (
   await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
+    all: opts.all,
+    supportsAll: true,
     fetchPage: async (cursor) => {
       try {
         return await fetchStepsPage(cursor);
@@ -1138,6 +1180,9 @@ export const listEvents = async (
     ? EVENT_LISTED_PROPS
     : EVENT_LISTED_PROPS.filter((prop) => !EVENT_IO_PROPS.includes(prop));
 
+  // Pinned after the first page, as in listSteps: later pages follow that
+  // page's cursor and must go to the read path that issued it.
+  let source: 'analytics' | 'storage' | undefined;
   const fetchEventsPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
@@ -1147,7 +1192,7 @@ export const listEvents = async (
       cursor,
       limit: opts.limit || DEFAULT_PAGE_SIZE,
     };
-    if (useAnalytics && world.analytics) {
+    if (source !== 'storage' && useAnalytics && world.analytics) {
       const events = await world.analytics.events.list({
         runId,
         correlationId: correlationIdFilter,
@@ -1159,13 +1204,20 @@ export const listEvents = async (
         hasMore: events.hasMore,
         pageInfo: getPageInfo(events),
       };
-      if (cursor || page.data.length > 0 || page.hasMore) {
+      if (
+        source === 'analytics' ||
+        cursor ||
+        page.data.length > 0 ||
+        page.hasMore
+      ) {
+        source = 'analytics';
         return page;
       }
       logger.debug(
         `No analytics events found for run ${runId}; falling back to storage`
       );
     }
+    source = 'storage';
     const result = await world.events.list({
       runId,
       pagination,
@@ -1182,14 +1234,15 @@ export const listEvents = async (
       cursor: result.cursor,
       hasMore: result.hasMore,
       pageInfo: getPageInfo(result),
+      // A new invocation given this cursor would send it to analytics.
+      cursorReusable: !useAnalytics,
     };
   };
 
-  // For JSON output, fetch once and return
+  // For JSON output, fetch once (or every page with --all) and return
   if (opts.json) {
     try {
-      const page = await fetchEventsPage(opts.cursor);
-      showJson(page.data);
+      showJsonArrayPage(await fetchListing(fetchEventsPage, opts));
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1202,6 +1255,8 @@ export const listEvents = async (
   await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
+    all: opts.all,
+    supportsAll: true,
     fetchPage: async (cursor) => {
       try {
         return await fetchEventsPage(cursor);
@@ -1364,14 +1419,15 @@ const listSleepsViaAnalytics = async (
   };
 
   if (opts.json) {
-    const page = await fetchSleepsPage(opts.cursor);
-    showJson(page.data);
+    showJsonArrayPage(await fetchListing(fetchSleepsPage, opts));
     return;
   }
 
   await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
+    all: opts.all,
+    supportsAll: true,
     fetchPage: fetchSleepsPage,
     displayPage: async (waits) => {
       logger.log(
@@ -1443,20 +1499,27 @@ export const listSleeps = async (
   }
 
   try {
-    // Fetch all events for the run with resolveData='all' to get wait eventData
-    const events = await world.events.list({
-      runId: opts.runId,
-      pagination: {
-        sortOrder: opts.sort || 'desc',
-        limit: 1000,
-      },
-      resolveData: 'all',
-    });
+    // Fetch the run's events with resolveData='all' to get wait eventData:
+    // the first 1000, or with --all every one.
+    const runId = opts.runId;
+    const fetchEventsPage = (cursor: string | undefined) =>
+      world.events.list({
+        runId,
+        pagination: {
+          sortOrder: opts.sort || 'desc',
+          limit: 1000,
+          cursor,
+        },
+        resolveData: 'all',
+      });
+    const events = opts.all
+      ? await fetchAllPages(fetchEventsPage)
+      : await fetchEventsPage(undefined);
 
     // Show info message if there might be more sleeps
     if (events.hasMore) {
       logger.info(
-        'Warning: This run has more than 1000 events. Some sleeps might not be shown. Please use the web UI to ensure getting a complete list.'
+        'Warning: This run has more than 1000 events. Some sleeps might not be shown. Pass --all to read every event.'
       );
     }
 

@@ -64,6 +64,15 @@ describe('flag forwarding through the command', () => {
     });
   });
 
+  it('forwards --all to the events listing', async () => {
+    await runInspect(['events', '--runId', VALID_RUN, '--all', '--json']);
+
+    expect(state.listEvents.mock.calls[0][1]).toMatchObject({
+      all: true,
+      json: true,
+    });
+  });
+
   it('forwards --stepId to the events listing', async () => {
     await runInspect([
       'events',
@@ -113,6 +122,7 @@ describe('toInspectOptions', () => {
         decrypt: true,
         backend: 'vercel',
         interactive: true,
+        all: true,
       },
       { tenant: 'acme' }
     );
@@ -134,6 +144,7 @@ describe('toInspectOptions', () => {
       decrypt: true,
       backend: 'vercel',
       interactive: true,
+      all: true,
     });
   });
 });

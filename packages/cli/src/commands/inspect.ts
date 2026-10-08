@@ -36,6 +36,7 @@ export default class Inspect extends BaseCommand {
     '$ workflow inspect attributes',
     '$ workflow inspect runs --attribute tenant=acme --status failed',
     '$ workflow inspect events --step=step_01K5WAJZ8W367CV2RFKDSDNWB8',
+    '$ workflow inspect events --runId=wrun_01K5WAJZ8W367CV2RFKDSDNWB8 --json --all',
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect sleeps --runId=run_01K5WAJZ8W367CV2RFKDSDNWB8',
@@ -179,6 +180,14 @@ export default class Inspect extends BaseCommand {
       helpGroup: 'Display',
       helpLabel: '--decrypt',
     }),
+    all: Flags.boolean({
+      description:
+        'follow cursors to the last page and print every row (steps, events, and sleeps); --limit sets the page size',
+      required: false,
+      default: false,
+      helpGroup: 'Filtering',
+      helpLabel: '--all',
+    }),
     ...cliFlags,
     ...urlFlag,
   } as const;
@@ -211,6 +220,8 @@ export default class Inspect extends BaseCommand {
         opensWebUi:
           Boolean(flags.url) || Boolean(flags.web) || resource === 'web',
         withData: flags.withData,
+        all: flags.all,
+        interactive: flags.interactive,
       });
       if ('error' in bounded) {
         this.logError(bounded.error);
@@ -375,6 +386,7 @@ export function toInspectOptions(
     decrypt: flags.decrypt,
     backend: flags.backend,
     interactive: flags.interactive,
+    all: flags.all,
   };
 }
 

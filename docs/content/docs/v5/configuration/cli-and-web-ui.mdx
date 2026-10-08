@@ -107,7 +107,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 
 - Environment variable: none
 - Default: unset
-- Pagination cursor for list commands.
+- Pagination cursor for list commands. A `workflow inspect` listing that stops with more rows prints the next page's cursor: in its `--json` page object for `runs`, `hooks`, and `attributes`, and on stderr for `steps`, `events`, and `sleeps`, whose `--json` output is an array.
 
 ### `--interactive` / `-i`
 
@@ -130,7 +130,14 @@ per flag.
 
 - Command: `workflow inspect`
 - Default: `20`
-- Must be an integer between 1 and 100, the smallest page any inspect listing accepts. Larger pages are reachable by paging: pass `--cursor`, or `--interactive` to walk them.
+- Must be an integer between 1 and 100, the smallest page any inspect listing accepts. Larger pages are reachable by paging: pass `--cursor`, `--all` to read every page, or `--interactive` to walk them.
+
+### `--all`
+
+- Command: `workflow inspect steps`, `workflow inspect events`, `workflow inspect sleeps`
+- Default: disabled
+- Follows cursors to the last page and prints every row: one table, or with `--json` one array. `--limit` sets the size of each page it fetches and `--cursor` where it starts.
+- Cannot be combined with `--interactive`, an ID, or `--url`/`--web`. The `runs`, `hooks`, and `attributes` listings take `--cursor` instead: their `--json` output carries it.
 
 ### `--stepId` / `-s`
 

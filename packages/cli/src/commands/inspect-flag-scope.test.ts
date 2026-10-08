@@ -178,3 +178,32 @@ describe('inspect --attribute conflicts and syntax', () => {
     expect(state.setupCliWorld).not.toHaveBeenCalled();
   });
 });
+
+describe('inspect --all', () => {
+  it.each([
+    ['the runs listing', ['runs', '--all'], '--all pages through'],
+    ['the hooks listing', ['hooks', '--all'], '--all pages through'],
+    ['an ID', ['events', 'evnt_1', '--all'], 'names one item'],
+    [
+      '--interactive',
+      ['events', '--runId', VALID_RUN, '--all', '-i'],
+      'drop --interactive',
+    ],
+  ])('rejects it with %s before backend setup', async (_label, argv, expected) => {
+    expect(await runInspect(argv)).toContain(expected);
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('lets it through on the events listing', async () => {
+    const message = await runInspect([
+      'events',
+      '--runId',
+      VALID_RUN,
+      '--all',
+      '--backend',
+      'local',
+    ]);
+    expect(message).not.toContain('--all');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});

@@ -1069,3 +1069,238 @@ describe('listRuns attribute filtering', () => {
     warn.mockRestore();
   });
 });
+
+describe('paging the bare-array listings', () => {
+  const stepAt = (n: number) =>
+    ({
+      runId: 'run-1',
+      stepId: `step-${String(n).repeat(4)}`,
+      stepName: 'doWork',
+      status: 'completed',
+    }) as unknown as AnalyticsStep;
+
+  /** An analytics step listing serving `pages`, keyed by the cursor that reaches each. */
+  const analyticsSteps = (
+    pages: Record<string, { ids: number[]; cursor: string | null }>
+  ) =>
+    vi.fn(async ({ pagination }: { pagination: { cursor?: string } }) => {
+      const page = pages[pagination.cursor ?? ''];
+      if (!page) throw new Error(`unexpected cursor ${pagination.cursor}`);
+      return {
+        data: page.ids.map(stepAt),
+        cursor: page.cursor,
+        hasMore: page.cursor !== null,
+      };
+    });
+
+  const captureStdout = () =>
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+  it('prints every page of steps as one JSON array with --all', async () => {
+    const list = analyticsSteps({
+      '': { ids: [1, 2], cursor: 'c1' },
+      c1: { ids: [3, 4], cursor: 'c2' },
+      c2: { ids: [5], cursor: null },
+    });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const write = captureStdout();
+
+    await listSteps(world, { json: true, runId: 'run-1', all: true, limit: 2 });
+
+    expect(list.mock.calls.map(([p]) => p.pagination.cursor)).toEqual([
+      undefined,
+      'c1',
+      'c2',
+    ]);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse(String(write.mock.calls[0][0])).map(
+        (s: { stepId: string }) => s.stepId
+      )
+    ).toEqual([
+      'step-1111',
+      'step-2222',
+      'step-3333',
+      'step-4444',
+      'step-5555',
+    ]);
+  });
+
+  it('starts --all from --cursor', async () => {
+    const list = analyticsSteps({
+      c1: { ids: [3], cursor: 'c2' },
+      c2: { ids: [4], cursor: null },
+    });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const write = captureStdout();
+
+    await listSteps(world, {
+      json: true,
+      runId: 'run-1',
+      all: true,
+      cursor: 'c1',
+    });
+
+    expect(list.mock.calls[0][0].pagination.cursor).toBe('c1');
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toHaveLength(2);
+  });
+
+  // The array is a published shape (scripts iterate it), so the cursor goes
+  // to stderr; until now JSON output dropped it, and a run past one page could
+  // not be read in full.
+  it('reports the next cursor on stderr when a JSON page has more rows', async () => {
+    const list = analyticsSteps({ '': { ids: [1], cursor: 'next-page' } });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const write = captureStdout();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listSteps(world, { json: true, runId: 'run-1' });
+
+    expect(Array.isArray(JSON.parse(String(write.mock.calls[0][0])))).toBe(
+      true
+    );
+    expect(warn.mock.calls.flat().join(' ')).toContain(
+      '--cursor next-page for the next page or --all for every page'
+    );
+  });
+
+  it('prints no cursor hint for the last page', async () => {
+    const list = analyticsSteps({ '': { ids: [1], cursor: null } });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    captureStdout();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listSteps(world, { json: true, runId: 'run-1' });
+
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('More results');
+  });
+
+  it('names the cursor in the table hint', async () => {
+    const list = analyticsSteps({ '': { ids: [1], cursor: 'next-page' } });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: 'run-1' });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      '--cursor next-page for the next page, --all for every page, or --interactive (-i)'
+    );
+  });
+
+  it('prints every page of steps as one table with --all', async () => {
+    const list = analyticsSteps({
+      '': { ids: [1], cursor: 'c1' },
+      c1: { ids: [2], cursor: null },
+    });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: 'run-1', all: true });
+
+    // Narrow terminals truncate ids to their last four characters.
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain(String(1).repeat(4));
+    expect(output).toContain(String(2).repeat(4));
+    expect(output).not.toContain('More results');
+  });
+
+  // Analytics lags storage for a fresh run. The first page fell back to
+  // storage, and the second used to go to analytics with storage's cursor.
+  it('reads every page from storage once the first page fell back to it', async () => {
+    const event = (n: number) =>
+      ({
+        runId: 'run-1',
+        eventId: `evnt-${n}`,
+        eventType: 'step_completed',
+        correlationId: 'step-1',
+        createdAt: new Date('2026-06-30T00:00:02.000Z'),
+      }) as unknown as Event;
+    const analyticsList = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) =>
+        pagination.cursor
+          ? Promise.reject(new Error('analytics was sent a storage cursor'))
+          : { data: [], cursor: null, hasMore: false }
+    );
+    const storagePages: Record<
+      string,
+      { data: Event[]; cursor: string | null }
+    > = {
+      '': { data: [event(1)], cursor: 'storage-1' },
+      'storage-1': { data: [event(2)], cursor: null },
+    };
+    const storageList = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) => {
+        const page = storagePages[pagination.cursor ?? ''];
+        return { ...page, hasMore: page.cursor !== null };
+      }
+    );
+    const world = {
+      analytics: { events: { list: analyticsList } },
+      events: { list: storageList },
+    } as unknown as World;
+    const write = captureStdout();
+
+    await listEvents(world, { json: true, runId: 'run-1', all: true });
+
+    expect(analyticsList).toHaveBeenCalledTimes(1);
+    expect(storageList.mock.calls.map(([p]) => p.pagination.cursor)).toEqual([
+      undefined,
+      'storage-1',
+    ]);
+    expect(
+      JSON.parse(String(write.mock.calls[0][0])).map(
+        (e: { eventId: string }) => e.eventId
+      )
+    ).toEqual(['evnt-1', 'evnt-2']);
+  });
+
+  // `--cursor storage-1` on a new invocation would go to analytics, so the
+  // hint must not offer it.
+  it('does not offer a storage-fallback cursor for reuse', async () => {
+    const world = {
+      analytics: {
+        events: {
+          list: vi
+            .fn()
+            .mockResolvedValue({ data: [], cursor: null, hasMore: false }),
+        },
+      },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [{ runId: 'run-1', eventId: 'evnt-1' }],
+          cursor: 'storage-1',
+          hasMore: true,
+        }),
+      },
+    } as unknown as World;
+    captureStdout();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listEvents(world, { json: true, runId: 'run-1' });
+
+    const hint = warn.mock.calls.flat().join(' ');
+    expect(hint).toContain('--all for every page');
+    expect(hint).not.toContain('storage-1');
+  });
+
+  it('pages sleeps through analytics with --all', async () => {
+    const wait = (n: number) =>
+      ({ runId: 'run-1', waitId: `wait-${n}` }) as unknown as AnalyticsWait;
+    const list = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) =>
+        pagination.cursor
+          ? { data: [wait(2)], cursor: null, hasMore: false }
+          : { data: [wait(1)], cursor: 'w1', hasMore: true }
+    );
+    const world = { analytics: { waits: { list } } } as unknown as World;
+    const write = captureStdout();
+
+    await listSleeps(world, { json: true, runId: 'run-1', all: true });
+
+    expect(
+      JSON.parse(String(write.mock.calls[0][0])).map(
+        (w: { waitId: string }) => w.waitId
+      )
+    ).toEqual(['wait-1', 'wait-2']);
+  });
+});

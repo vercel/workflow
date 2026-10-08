@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  validateAllScope,
   validateAttributeScope,
   validateInspectFlags,
   validateInspectLimit,
@@ -154,5 +155,69 @@ describe('validateInspectFlags', () => {
     const result = validateInspectFlags({ ...base, ...flags });
     expect(result).toHaveProperty('error');
     expect((result as { error: string }).error).toContain(expected);
+  });
+});
+
+describe('validateAllScope', () => {
+  it('is undefined when the flag is absent', () => {
+    for (const resource of ['run', 'step', 'event', 'hook', 'web']) {
+      expect(validateAllScope(resource, false, false)).toBeUndefined();
+    }
+  });
+
+  it.each([
+    'step',
+    'event',
+    'sleep',
+  ])('allows it on the %s listing', (resource) => {
+    expect(validateAllScope(resource, false, true)).toBeUndefined();
+  });
+
+  // These listings already print their cursor in JSON. Accepting --all and
+  // reading one page would be a silent drop.
+  it.each([
+    'run',
+    'hook',
+    'attribute',
+    'stream',
+  ])('rejects it on %s', (resource) => {
+    expect(validateAllScope(resource, false, true)).toContain(
+      '--all pages through the steps, events, and sleeps listings'
+    );
+  });
+
+  it('rejects it alongside an ID', () => {
+    expect(validateAllScope('step', true, true)).toContain('names one item');
+  });
+
+  it('rejects it with --interactive', () => {
+    expect(validateAllScope('event', false, true, true)).toContain(
+      'drop --interactive'
+    );
+  });
+
+  it('rejects it when handing off to the web UI', () => {
+    expect(validateAllScope('event', false, true, false, true)).toContain(
+      'cannot be forwarded to the web UI'
+    );
+  });
+
+  it('is part of validateInspectFlags', () => {
+    expect(
+      validateInspectFlags({
+        resource: 'run',
+        hasId: false,
+        opensWebUi: false,
+        all: true,
+      })
+    ).toHaveProperty('error');
+    expect(
+      validateInspectFlags({
+        resource: 'event',
+        hasId: false,
+        opensWebUi: false,
+        all: true,
+      })
+    ).toEqual({ attributes: undefined });
   });
 });
