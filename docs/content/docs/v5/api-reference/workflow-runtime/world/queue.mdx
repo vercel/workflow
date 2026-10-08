@@ -104,7 +104,7 @@ A shorter lease has costs:
 
 - **Less tolerance for a stall.** The lease survives a failed renewal or a blocked event loop for roughly the lease minus one renewal interval, which is 20 seconds at `30`. A stall longer than that redelivers the message while the first callback is still running, so the callback must already be safe to run twice concurrently. The SDK's own handlers are.
 - **Renewal calls need room.** On the Vercel World, each renewal is bounded by [`WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_vercel_queue_timeout_ms), which defaults to 30 seconds. A single hung renewal at that default can outlast a 30-second lease. Use `60` or more, or lower the queue timeout, for handlers that run longer than a lease.
-- **Pushed deliveries start on the queue's lease.** On the Vercel World, a message the queue pushes together with its payload starts on the queue's own 300-second lease, and the handler's lease takes over at the client's first renewal, about 60 seconds in. The queue also schedules its first check for a lapsed lease from that original 300 seconds. A pushed delivery whose handler dies early is therefore still redelivered about 300 seconds after it started. The handler's lease applies in full to deliveries the handler claims itself, and from the queue's first lease check onward.
+- **Pushed deliveries start on the queue's lease.** On the Vercel World, a message the queue pushes together with its payload starts on the queue's own 300-second lease, and the handler's lease takes over at the client's first renewal, about 60 seconds in. A pushed delivery whose handler dies before that first renewal is still redelivered about 300 seconds after it started. After it, a dead handler is redelivered about one lease after its last renewal. Deliveries the handler claims itself hold the handler's lease from the start.
 
 #### Rescheduling across Worlds
 
@@ -112,7 +112,7 @@ When `callback` returns `{ timeoutSeconds }`, the World delivers the same payloa
 
 | World | Redelivered as | `meta.messageId` | `meta.attempt` |
 |-------|----------------|------------------|----------------|
-| Vercel | A new message, published before the current one is acknowledged. The delay is capped at one continuation hop (about 23 hours). Longer sleeps chain hops. | New | Starts again at `1` |
+| Vercel | A new message, published before the current one is acknowledged. The delay is capped at one continuation hop (about 23 hours): a longer `timeoutSeconds` is delivered after the cap, and the handler returns `{ timeoutSeconds }` again for the rest, as the SDK's workflow handler does. | New | Starts again at `1` |
 | Local, Postgres | The same message, after the delay | Unchanged | Incremented |
 
 Code that correlates deliveries by `meta.messageId`, or counts `meta.attempt`, across a `{ timeoutSeconds }` hop must not rely on either behavior.

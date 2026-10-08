@@ -649,7 +649,9 @@ export interface Queue {
    * `meta.messageId`, `attempt` back to 1, and a delay capped at one ~23 h
    * continuation hop). A handler that correlates deliveries by `messageId`,
    * or counts `attempt`, across a `{ timeoutSeconds }` hop must not rely on
-   * either behavior.
+   * either behavior. A World may deliver sooner than asked when the delay
+   * exceeds its cap, so a handler that needs the full delay returns
+   * `{ timeoutSeconds }` again for the remainder, as the runtime does.
    *
    * `options` are per handler, so one World can serve routes with different
    * leases; see {@link QueueHandlerOptions}. Implementations that take only
