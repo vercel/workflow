@@ -44,7 +44,6 @@ One step replays a recorded AI agent's token stream, 2,593 chunks over 52.4 s, i
 - **Workload**: Every step takes 1 KB of JSON in and out and does 100 ms of simulated work, which the overhead measurements exclude.
 - **Runs**: Each version runs every benchmark several times, and each result pools the samples from all of its runs. The run counts are listed with the latest results.
 - **Percentiles**: Each percentile pools every sample across a version's runs and uses the nearest-rank method. Half of the samples are at or below the p50 (the median), three quarters at or below the p75, and all but the slowest 1% at or below the p99. With 100 or fewer samples, a p99 is the slowest sample.
-- **p99 policy**: A p99 is reported where it changed by more than 5%. If the newer version is slower, it is reported only where the change reproduced in a second sweep.
 
 ### Limits
 
@@ -160,7 +159,7 @@ On the Vercel World, [`WORKFLOW_STREAMS_TRANSPORT`](/docs/configuration/worlds#w
 
 ### All results
 
-Every measured value from the latest results. Percentiles follow the [methodology](#methodology) above, including the p99 policy.
+Every measured value from the latest results. Percentiles follow the [methodology](#methodology) above.
 
 {/* generated:performance table */}
 
