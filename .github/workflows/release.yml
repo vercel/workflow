@@ -60,7 +60,7 @@ jobs:
       # changesets/action publishes only when no changesets are pending, so a
       # "Version Packages" PR merged without every pending changeset strands
       # the versions it bumped: every later run, re-runs included, sees the
-      # leftover changeset and only versions. main lost 5.2.0 this way when a
+      # leftover changeset and only versions. main stranded 5.2.0 this way when a
       # GitHub 502 kept its release PR from picking up a changeset, and a
       # queued run cancelled by a newer push (see `concurrency` above) strands
       # a release the same way with no outage at all. When this commit carries
