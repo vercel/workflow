@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
+  IN_BAND_SUPERSEDED_CODE,
   StreamError,
   ThrottleError,
   WorkflowWorldError,
@@ -66,9 +67,11 @@ import {
   errorForResponse,
   headersToRecord,
   httpLog,
+  inBandCounter,
   instrumentedFetch,
   parseRetryAfter,
   recordClientSpanStatus,
+  recordInBandRefusal,
   withHttpClientSpan,
 } from './http-core.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
@@ -79,6 +82,8 @@ import {
   StepLatencyOptimizations,
   StepStsoMs,
   WorkflowClientVersion,
+  WorkflowEventExpectedSeqInBand,
+  WorkflowEventInBand,
   WorkflowEventsTransport,
   WorkflowEventType,
   WorkflowStepStartMode,
@@ -363,6 +368,17 @@ interface CreateEventV4InputBase {
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
+  /**
+   * In-band writer fence: whether the run's orchestrator made this write. See
+   * `CreateEventParams.inBand` in @workflow/world.
+   */
+  inBand?: boolean;
+  /**
+   * The orchestrator's in-band position count, required with `inBand: true`.
+   * The backend allocates for the write only when this equals its own count,
+   * and otherwise answers 412 `in-band-superseded`.
+   */
+  expectedSeqInBand?: number;
   /** Content digest of the serialized resume payload. Forwarded alongside
    *  `resumeId` so the direct write and the queue re-ensure record an identical
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
@@ -684,7 +700,24 @@ function buildPostFrameMeta(
   if (input.viaStepDispatch !== undefined) {
     meta.viaStepDispatch = input.viaStepDispatch;
   }
+  if (input.inBand !== undefined) meta.inBand = input.inBand;
+  if (input.expectedSeqInBand !== undefined) {
+    meta.expectedSeqInBand = input.expectedSeqInBand;
+  }
   return meta;
+}
+
+/** Span attributes for a write's in-band fence; empty when it carries none. */
+function inBandFenceAttributes(input: {
+  inBand?: boolean;
+  expectedSeqInBand?: number;
+}): Record<string, boolean | number> {
+  return {
+    ...(input.inBand !== undefined ? WorkflowEventInBand(input.inBand) : {}),
+    ...(input.expectedSeqInBand !== undefined
+      ? WorkflowEventExpectedSeqInBand(input.expectedSeqInBand)
+      : {}),
+  };
 }
 
 /**
@@ -715,7 +748,12 @@ function errorFromV4Response(
     if (typeof record.code === 'string') code = record.code;
     // The server's generic error responder names the code `error`.
     else if (typeof record.error === 'string') code = record.error;
-    if (statusCode === 412) details = decodePreconditionDetails(record);
+    if (statusCode === 412) {
+      details =
+        code === IN_BAND_SUPERSEDED_CODE
+          ? decodeInBandSupersededDetails(record)
+          : decodePreconditionDetails(record);
+    }
     if (statusCode === 409 && code === 'hook-force-claimed') {
       details = { claimedBy: record.claimedBy };
     }
@@ -748,6 +786,25 @@ interface V4ErrorBody {
   claimedBy?: unknown;
   events?: unknown;
   cursor?: unknown;
+  /** 412 in-band-superseded: the backend's counters at the refusal. */
+  seq?: unknown;
+  seqInBand?: unknown;
+}
+
+/**
+ * Counters a 412 `in-band-superseded` body reports, for diagnostics only. A
+ * value that is not a nonnegative integer is dropped.
+ */
+function decodeInBandSupersededDetails(json: V4ErrorBody): {
+  seq?: number;
+  seqInBand?: number;
+} {
+  const seq = inBandCounter(json.seq);
+  const seqInBand = inBandCounter(json.seqInBand);
+  return {
+    ...(seq !== undefined ? { seq } : {}),
+    ...(seqInBand !== undefined ? { seqInBand } : {}),
+  };
 }
 
 /**
@@ -923,6 +980,7 @@ async function postWorkflowRunEventV4(
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...inBandFenceAttributes(input),
       ...(input.eventType === 'step_started'
         ? {
             ...WorkflowStepStartMode(
@@ -1231,6 +1289,8 @@ export async function createWorkflowRunEventsBatchV4(
     {
       ...WorkflowEventsTransport('http'),
       'workflow.batch.bytes': body.byteLength,
+      // Every frame of a batch carries the same fence.
+      ...inBandFenceAttributes(input.events[0]),
       ...(input.events.some((event) => event.eventType === 'step_started')
         ? {
             ...WorkflowStepStartMode(
@@ -1460,6 +1520,7 @@ async function postEventFrameOverWs(
         ...WorkflowEventsTransport('ws'),
         ...WorkflowEventType(input.eventType),
         ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...inBandFenceAttributes(input),
         ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
         ...(input.optimizations !== undefined
           ? StepLatencyOptimizations(input.optimizations)
@@ -1556,6 +1617,7 @@ async function postEventFrameOverWs(
           'createEvent',
           endpoint
         );
+        recordInBandRefusal(span, error);
         span?.recordException?.(error);
         throw error;
       }

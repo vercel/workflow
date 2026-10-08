@@ -999,6 +999,43 @@ export class PreconditionFailedError extends WorkflowWorldError {
   }
 }
 
+/** Error code a World uses for an {@link InBandSupersededError} refusal. */
+export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
+
+/**
+ * Thrown when a World refuses an in-band write (a write made by the run's
+ * orchestrator) because another orchestrator invocation of the same run has
+ * written in-band since this one loaded the log (HTTP 412,
+ * `in-band-superseded`).
+ *
+ * The in-band fence keeps a run to one orchestrator writer: the World counts
+ * the positions it allocated to in-band writes, and accepts an in-band write
+ * only when the writer's expected count matches. Nothing is written or
+ * allocated for a refused write.
+ *
+ * @property seq - The run's allocated position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only.
+ * @property seqInBand - The run's in-band position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only: a client must never
+ *   adopt it as its own count, since that would make it a writer without
+ *   having seen the events the count stands for.
+ */
+export class InBandSupersededError extends WorkflowWorldError {
+  readonly seq?: number;
+  readonly seqInBand?: number;
+
+  constructor(message: string, options?: { seq?: number; seqInBand?: number }) {
+    super(message, { status: 412, code: IN_BAND_SUPERSEDED_CODE });
+    this.name = 'InBandSupersededError';
+    this.seq = options?.seq;
+    this.seqInBand = options?.seqInBand;
+  }
+
+  static is(value: unknown): value is InBandSupersededError {
+    return isError(value) && value.name === 'InBandSupersededError';
+  }
+}
+
 /**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
