@@ -63,6 +63,12 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
 }
 
 export class LocalBuilder extends BaseBuilder {
+  // On a Vercel deploy, nitro's `functionRules` register both queue triggers
+  // on the flow route this builder generates (see `index.ts`).
+  protected override get registersStepQueueTrigger(): boolean {
+    return true;
+  }
+
   #outDir: string;
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');

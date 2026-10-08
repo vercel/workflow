@@ -1,9 +1,13 @@
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
-import { getWorkflowQueueTrigger } from './constants.js';
+import { getWorkflowQueueTriggers } from './constants.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
+  protected override get registersStepQueueTrigger(): boolean {
+    return true;
+  }
+
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
@@ -43,7 +47,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       // serves no purpose without maps.
       shouldAddSourcemapSupport: this.sourcemapsEnabled,
       maxDuration: 'max',
-      experimentalTriggers: [getWorkflowQueueTrigger()],
+      experimentalTriggers: getWorkflowQueueTriggers(),
       runtime: this.config.runtime,
     });
 

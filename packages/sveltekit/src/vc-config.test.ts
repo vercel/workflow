@@ -1,4 +1,7 @@
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  getWorkflowQueueTriggers,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { describe, expect, it } from 'vitest';
 
 import { stripWorkflowQueueTriggersFromConfig } from './vc-config.js';
@@ -46,5 +49,16 @@ describe('stripWorkflowQueueTriggersFromConfig', () => {
     };
 
     expect(stripWorkflowQueueTriggersFromConfig(config)).toBe(config);
+  });
+
+  // A shared catchall keeping the step trigger would register `__wkf_step_*`
+  // twice in one deployment.
+  it('removes the step trigger too', () => {
+    expect(
+      stripWorkflowQueueTriggersFromConfig({
+        runtime: 'nodejs',
+        experimentalTriggers: getWorkflowQueueTriggers(),
+      })
+    ).toEqual({ runtime: 'nodejs' });
   });
 });

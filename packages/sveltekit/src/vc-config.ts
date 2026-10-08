@@ -1,7 +1,13 @@
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  createWorkflowStepQueueTrigger,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import fs from 'fs-extra';
 
-const WORKFLOW_QUEUE_TOPICS = new Set([WORKFLOW_QUEUE_TRIGGER.topic]);
+const WORKFLOW_QUEUE_TOPICS = new Set([
+  WORKFLOW_QUEUE_TRIGGER.topic,
+  createWorkflowStepQueueTrigger().topic,
+]);
 
 function isWorkflowQueueTrigger(trigger: unknown) {
   if (typeof trigger !== 'object' || trigger === null) {
