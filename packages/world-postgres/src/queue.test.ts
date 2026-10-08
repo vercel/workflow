@@ -904,7 +904,12 @@ describe('postgres queue http execution', () => {
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
     pool.query.mockImplementation(async (sql: string, params?: unknown[]) =>
       sql.includes('unnest(')
-        ? { rows: (params?.[0] as string[]).map((id) => ({ id })) }
+        ? {
+            rows: (params?.[1] as string[]).map((worker, i) => ({
+              id: (params?.[0] as string[])[i],
+              worker,
+            })),
+          }
         : { rows: [{ exists: false }] }
     );
     const queue = createQueue(

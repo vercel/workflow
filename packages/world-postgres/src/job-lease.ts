@@ -66,7 +66,9 @@ export class JobLockLostError extends Error {
 
 // Refresh the lock of every job that is still held by the worker that claimed
 // it, and the lock of its named queue (invoke mode's per-run executor queue).
-// A job missing from the result is no longer ours.
+// A `(job, worker)` pair missing from the result no longer holds the lock. The
+// pair matters: after a release, another worker of this process can hold the
+// same job id while the stale holder is still running.
 const renewSql = (schema: string) => `WITH held AS (
   SELECT * FROM unnest($1::bigint[], $2::text[]) AS held(id, worker)
 ), renewed AS (
@@ -82,7 +84,7 @@ const renewSql = (schema: string) => `WITH held AS (
   WHERE job_queues.id = renewed.job_queue_id
     AND job_queues.locked_by = renewed.locked_by
 )
-SELECT id::text AS id FROM renewed`;
+SELECT id::text AS id, locked_by AS worker FROM renewed`;
 
 // Graphile Worker's own stale-lock reset (`resetLockedAt`), with a configurable
 // window and scoped to this World's task identifiers so that other
@@ -112,6 +114,13 @@ const sweepSql = (schema: string) => `WITH stale AS (
 SELECT id::text AS id FROM released`;
 
 type GraphileTask = (payload: unknown, helpers: unknown) => Promise<void>;
+type RenewedRow = { id: string; worker: string };
+
+// Node runs a timer whose delay does not fit in a signed 32-bit integer after
+// 1 ms, which would turn a very long stale window into a busy loop.
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+// Job ids are digits, so the separator cannot be ambiguous.
+const holder = (id: string, workerId: string) => `${id}:${workerId}`;
 
 interface HeldJob {
   id: string;
@@ -214,16 +223,16 @@ export function createJobLeases(
     if (jobs.length === 0) return;
     const sentAt = now();
     try {
-      const { rows } = await pool.query<{ id: string }>(renewQuery, [
+      const { rows } = await pool.query<RenewedRow>(renewQuery, [
         jobs.map((job) => job.id),
         jobs.map((job) => job.workerId),
       ]);
-      const renewed = new Set(rows.map((row) => row.id));
+      const renewed = new Set(rows.map((row) => holder(row.id, row.worker)));
       for (const job of jobs) {
         // A job released since the query was sent was acknowledged by Graphile
         // Worker (which deletes it); it was not lost.
         if (!held.has(job)) continue;
-        if (renewed.has(job.id)) job.confirmedAt = sentAt;
+        if (renewed.has(holder(job.id, job.workerId))) job.confirmedAt = sentAt;
         else markLost(job);
       }
       if (renewFailing) {
@@ -249,11 +258,11 @@ export function createJobLeases(
     // Renewals have not shown the lock to be ours recently (a slow pool or a
     // database outage), so show it now: a successful renewal also keeps the
     // job from being swept before Graphile Worker acknowledges it.
-    const { rows } = await pool.query<{ id: string }>(renewQuery, [
+    const { rows } = await pool.query<RenewedRow>(renewQuery, [
       [job.id],
       [job.workerId],
     ]);
-    if (!rows.some((row) => row.id === job.id)) {
+    if (!rows.some((row) => row.id === job.id && row.worker === job.workerId)) {
       markLost(job);
       throw new JobLockLostError(job.id, job.workerId);
     }
@@ -261,7 +270,10 @@ export function createJobLeases(
 
   function scheduleSweep() {
     if (stopped || sweepTimer || !sweepIdentifiers) return;
-    const delay = sweepIntervalMs * (0.8 + 0.4 * random());
+    const delay = Math.min(
+      MAX_TIMER_DELAY_MS,
+      sweepIntervalMs * (0.8 + 0.4 * random())
+    );
     sweepTimer = setTimeout(() => {
       sweepTimer = undefined;
       sweeping = sweep().finally(() => {

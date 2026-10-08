@@ -10,7 +10,7 @@ import {
 type Query = (
   sql: string,
   params?: unknown[]
-) => Promise<{ rows: Array<{ id: string }> }>;
+) => Promise<{ rows: Array<{ id: string; worker?: string }> }>;
 
 const isRenewal = (sql: string) => sql.includes('unnest(');
 const isSweep = (sql: string) => sql.includes('_private_tasks');
@@ -19,16 +19,19 @@ function job(id: string, worker = 'worker-a') {
   return { job: { id, locked_by: worker, attempts: 1 } };
 }
 
+/** The rows a renewal returns when every `(id, worker)` pair still holds its lock. */
+function renewedRows(params?: unknown[]) {
+  const [ids, workers] = params as [string[], string[]];
+  return { rows: ids.map((id, i) => ({ id, worker: workers[i] })) };
+}
+
 /** A pool whose renewals renew every job they are asked about. */
 function renewingPool(query?: Query) {
   return {
     query: vi.fn<Query>(
       query ??
         (async (sql, params) => {
-          if (isRenewal(sql))
-            return {
-              rows: (params?.[0] as string[]).map((id) => ({ id })),
-            };
+          if (isRenewal(sql)) return renewedRows(params);
           return { rows: [] };
         })
     ),
@@ -190,11 +193,46 @@ describe('createJobLeases', () => {
     await leases.stop();
   });
 
+  it('tells two holders of one job id apart, so the one that lost the lock still learns it', async () => {
+    // worker-a's renewals stalled past the window, the job was released, and
+    // another worker of this process (worker-b) claimed it again. The renewal
+    // statement only matches the worker that holds the lock now.
+    const pool = renewingPool(async (sql, params) => {
+      if (!isRenewal(sql)) return { rows: [] };
+      const { rows } = renewedRows(params);
+      return { rows: rows.filter((row) => row.worker === 'worker-b') };
+    });
+    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const stale = pendingTask();
+    const successor = pendingTask();
+    const wrapped = leases.wrap(async (payload) => {
+      await (payload === 'stale' ? stale.task() : successor.task());
+    });
+    const staleOutcome = wrapped('stale', job('7', 'worker-a')).catch(
+      (error: unknown) => error
+    );
+    const successorDelivery = wrapped('successor', job('7', 'worker-b'));
+
+    await advance(5_000);
+    expect(pool.query.mock.calls[0][1]).toEqual([
+      ['7', '7'],
+      ['worker-a', 'worker-b'],
+    ]);
+    stale.done.resolve();
+    expect(await staleOutcome).toMatchObject({
+      name: 'JobLockLostError',
+      workerId: 'worker-a',
+    });
+    successor.done.resolve();
+    await expect(successorDelivery).resolves.toBeUndefined();
+    await leases.stop();
+  });
+
   it('keeps the lock through a failed renewal', async () => {
     let fail = true;
     const pool = renewingPool(async (_sql, params) => {
       if (fail) throw new Error('connection terminated');
-      return { rows: (params?.[0] as string[]).map((id) => ({ id })) };
+      return renewedRows(params);
     });
     const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
     const { task, done } = pendingTask();
@@ -234,7 +272,7 @@ describe('createJobLeases', () => {
       renewals++;
       // The timer's renewal never gets a connection; the final one does.
       if (renewals === 1) return stalled.promise;
-      return { rows: (params?.[0] as string[]).map((id) => ({ id })) };
+      return renewedRows(params);
     });
     const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
     const { task, done } = pendingTask();
@@ -325,6 +363,29 @@ describe('createJobLeases', () => {
     await leases.stop();
     await advance(60_000);
     expect(pool.query).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps sweep and renewal delays within what setTimeout accepts for a very long window', async () => {
+    // Node runs a timer whose delay exceeds 2^31 - 1 ms after 1 ms instead.
+    const pool = renewingPool();
+    const leases = createJobLeases(pool as any, {
+      staleSeconds: 10_000_000,
+      now,
+      random: () => 1,
+    });
+    leases.startSweeper(['workflow_flows']);
+    const { task, done } = pendingTask();
+    const delivery = leases.wrap(task)('payload', job('7'));
+
+    await advance(1_000);
+    expect(pool.query).not.toHaveBeenCalled();
+    await advance(9_000);
+    // Only the renewal, capped at 10 seconds.
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    expect(isRenewal(pool.query.mock.calls[0][0])).toBe(true);
+    done.resolve();
+    await delivery;
+    await leases.stop();
   });
 
   it('lets holders renew after an outage before sweeping again', async () => {

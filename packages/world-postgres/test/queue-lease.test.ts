@@ -201,6 +201,45 @@ describe.skipIf(process.platform === 'win32')(
       expect(deliveries).toEqual([{ attempt: '1' }]);
     }, 30_000);
 
+    test("a delivery that lost its lock leaves the successor's job alone when it finishes", async () => {
+      const release = Promise.withResolvers<void>();
+      releaseHeldResponses = release.resolve;
+      respond = (response) => {
+        release.promise.then(() => response.end('{}'));
+      };
+      const queue = startQueue({});
+      await queue.start();
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
+        runId: 'wrun_lost_lock',
+      });
+      await expect
+        .poll(() => deliveries.length, { timeout: 5_000, interval: 50 })
+        .toBe(1);
+      const [claimed] = await jobRows();
+
+      // Another worker holds the job now, as after a release while this
+      // holder's renewals stalled. Its lock is fresh for the whole test.
+      await pool.query(
+        `UPDATE graphile_worker._private_jobs SET locked_by = 'worker-successor',
+           locked_at = now() + interval '1 hour' WHERE id = $1`,
+        [claimed.id]
+      );
+      // Let a renewal (every quarter window) find the lock gone.
+      await new Promise((resolve) =>
+        setTimeout(resolve, (STALE_SECONDS * 1000) / 2)
+      );
+      release.resolve();
+      // close() waits for the runner to finish the delivery.
+      await queue.close();
+
+      // Graphile Worker completes a job with a delete by id alone; failing is
+      // fenced on the holder. The successor's row must survive.
+      expect(await jobRows()).toMatchObject([
+        { id: claimed.id, attempts: 1, locked_by: 'worker-successor' },
+      ]);
+      expect(deliveries).toEqual([{ attempt: '1' }]);
+    }, 30_000);
+
     test("releases a dead executor's job and its per-run queue lock in invoke mode, and only this World's jobs", async () => {
       const runId = 'wrun_dead_executor';
       const transport = new JsonTransport();
