@@ -853,6 +853,58 @@ describe('listSleeps analytics degradation', () => {
     write.mockRestore();
   });
 
+  // --all fetches every analytics page before printing, so a later page
+  // failing still degrades to one complete answer from the event log rather
+  // than a partial array followed by a second one.
+  it('falls back once, printing nothing partial, when a later --all page fails', async () => {
+    const waitsList = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) => {
+        if (pagination.cursor) {
+          throw Object.assign(new Error('upstream unavailable'), {
+            status: 503,
+          });
+        }
+        return {
+          data: [{ runId: 'run-1', waitId: 'analytics-wait' }],
+          cursor: 'w1',
+          hasMore: true,
+        };
+      }
+    );
+    const world = {
+      analytics: { waits: { list: waitsList } },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              ...eventBase,
+              eventId: 'evnt-1',
+              eventType: 'wait_created',
+              correlationId: 'wait-1',
+              createdAt: new Date('2026-06-30T00:00:00.000Z'),
+              eventData: { resumeAt: new Date('2026-06-30T00:01:00.000Z') },
+            },
+          ],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listSleeps(world, { json: true, runId: 'run-1', all: true });
+
+    expect(waitsList).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledTimes(1);
+    const output = write.mock.calls.join('');
+    expect(output).toContain('wait-1');
+    expect(output).not.toContain('analytics-wait');
+    write.mockRestore();
+  });
+
   // Retrying an argument the World already rejected would only replace a
   // precise message with a slower failure.
   it('does not fall back when the argument was rejected', async () => {

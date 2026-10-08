@@ -1593,8 +1593,9 @@ export const listSleeps = async (
   //
   // Only a whole-listing failure reaches this catch, so the fallback cannot
   // reprint under a partial table: the non-interactive and JSON paths fetch
-  // exactly one page, and under `--interactive` pages after the first are
-  // fetched inside the keypress listener, whose rejection never lands here.
+  // exactly one page, or with `--all` every page before printing any, and
+  // under `--interactive` pages after the first are fetched inside the
+  // keypress listener, whose rejection never lands here.
   if (world.analytics) {
     try {
       await listSleepsViaAnalytics(world.analytics, opts);
