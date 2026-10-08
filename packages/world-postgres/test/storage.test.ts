@@ -1361,6 +1361,41 @@ describe('Storage (Postgres integration)', () => {
     });
   });
 
+  describe('hooks', () => {
+    describe('list', () => {
+      it('defaults to oldest first and honors sortOrder in both directions', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-hooks',
+          workflowName: 'hooks-workflow',
+          input: new Uint8Array(),
+        });
+        for (const hookId of ['hook-1', 'hook-2', 'hook-3']) {
+          await createHook(events, run.runId, {
+            hookId,
+            token: `${hookId}-token`,
+          });
+        }
+
+        const byDefault = await listPageIds(
+          (cursor) =>
+            hooks.list({ runId: run.runId, pagination: { limit: 2, cursor } }),
+          (h) => h.hookId
+        );
+        expect(byDefault).toEqual([['hook-1', 'hook-2'], ['hook-3']]);
+
+        const desc = await listPageIds(
+          (cursor) =>
+            hooks.list({
+              runId: run.runId,
+              pagination: { limit: 2, cursor, sortOrder: 'desc' },
+            }),
+          (h) => h.hookId
+        );
+        expect(desc).toEqual([['hook-3', 'hook-2'], ['hook-1']]);
+      });
+    });
+  });
+
   describe('events', () => {
     let testRunId: string;
 
