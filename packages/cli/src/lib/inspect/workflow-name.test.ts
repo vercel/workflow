@@ -9,20 +9,40 @@ const INVOICE = 'workflow//./src/jobs/invoice//sendInvoice';
 const runsNamed = (...names: string[]) =>
   names.map((workflowName, i) => ({ runId: `wrun_${i}`, workflowName }));
 
-/** A storage run listing that serves `pages` in order. */
+interface ListParams {
+  workflowName?: string;
+  pagination: { cursor?: string; limit?: number };
+}
+
+/**
+ * A storage run listing that serves `pages` in order, newest first. A
+ * `workflowName` filter matches across every page, as a backend's would.
+ */
 const storageWorld = (...pages: string[][]) => {
-  const list = vi.fn(
-    async ({ pagination }: { pagination: { cursor?: string } }) => {
-      const index = pagination.cursor ? Number(pagination.cursor) : 0;
-      const hasMore = index + 1 < pages.length;
+  const list = vi.fn(async ({ workflowName, pagination }: ListParams) => {
+    if (workflowName !== undefined) {
+      const named = runsNamed(...pages.flat()).filter(
+        (run) => run.workflowName === workflowName
+      );
+      const limit = pagination.limit ?? named.length;
       return {
-        data: runsNamed(...pages[index]),
-        cursor: hasMore ? String(index + 1) : null,
-        hasMore,
+        data: named.slice(0, limit),
+        cursor: null,
+        hasMore: named.length > limit,
       };
     }
-  );
-  return { world: { runs: { list } } as unknown as World, list };
+    const index = pagination.cursor ? Number(pagination.cursor) : 0;
+    const hasMore = index + 1 < pages.length;
+    return {
+      data: runsNamed(...pages[index]),
+      cursor: hasMore ? String(index + 1) : null,
+      hasMore,
+    };
+  });
+  /** The unfiltered listings: the short-name scan's pages. */
+  const scanCalls = () =>
+    list.mock.calls.filter(([params]) => params.workflowName === undefined);
+  return { world: { runs: { list } } as unknown as World, list, scanCalls };
 };
 
 const storage = { useAnalytics: false };
@@ -55,7 +75,13 @@ describe('resolveWorkflowNameFilter', () => {
     expect(
       await resolveWorkflowNameFilter(world, 'processOrder', storage)
     ).toBe(ORDER);
+    // First the exact-name lookup, then the scan of recent runs.
     expect(list.mock.calls[0][0]).toEqual({
+      workflowName: 'processOrder',
+      pagination: { limit: 1 },
+      resolveData: 'none',
+    });
+    expect(list.mock.calls[1][0]).toEqual({
       pagination: { sortOrder: 'desc', cursor: undefined, limit: 100 },
       resolveData: 'none',
     });
@@ -76,24 +102,24 @@ describe('resolveWorkflowNameFilter', () => {
   });
 
   it('finds a name past the first page', async () => {
-    const { world, list } = storageWorld([INVOICE], [INVOICE], [ORDER]);
+    const { world, scanCalls } = storageWorld([INVOICE], [INVOICE], [ORDER]);
     vi.spyOn(logger, 'info').mockImplementation(() => undefined);
 
     expect(
       await resolveWorkflowNameFilter(world, 'processOrder', storage)
     ).toBe(ORDER);
-    expect(list).toHaveBeenCalledTimes(3);
+    expect(scanCalls()).toHaveLength(3);
   });
 
   it('scans at most five pages', async () => {
-    const { world, list } = storageWorld(
+    const { world, scanCalls } = storageWorld(
       ...Array.from({ length: 8 }, () => [INVOICE])
     );
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
 
     await resolveWorkflowNameFilter(world, 'processOrder', storage);
 
-    expect(list).toHaveBeenCalledTimes(5);
+    expect(scanCalls()).toHaveLength(5);
   });
 
   // The same export under two module specifiers: guessing could list the
@@ -111,15 +137,53 @@ describe('resolveWorkflowNameFilter', () => {
   // exactly before; another workflow's short name must not take it over.
   it("keeps a value that is a recent run's exact workflow name", async () => {
     const legacy = 'processOrder';
-    const { world } = storageWorld([ORDER], [legacy]);
+    const { world, scanCalls } = storageWorld([ORDER], [legacy]);
     const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
 
     expect(await resolveWorkflowNameFilter(world, legacy, storage)).toBe(
       legacy
     );
+    expect(scanCalls()).toHaveLength(0);
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  // One run named exactly `processOrder`, then 501 newer runs of a workflow
+  // whose short name is `processOrder`: the exact run is past the 500 the
+  // scan reads, and must still keep the filter it matched before.
+  it('keeps an exact workflow name older than the scanned runs', async () => {
+    const legacy = 'processOrder';
+    const other = 'workflow//./other//processOrder';
+    const newer = Array.from({ length: 501 }, () => other);
+    const pages = Array.from({ length: 6 }, (_, i) =>
+      newer.slice(i * 100, (i + 1) * 100)
+    );
+    pages[5].push(legacy);
+    const { world, scanCalls } = storageWorld(...pages);
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    expect(await resolveWorkflowNameFilter(world, legacy, storage)).toBe(
+      legacy
+    );
+    expect(scanCalls()).toHaveLength(0);
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  // The exact lookup reads the name back rather than trusting a non-empty
+  // page, so a backend that dropped the filter still resolves the short name.
+  it('does not take an unfiltered page as an exact match', async () => {
+    const list = vi.fn().mockResolvedValue({
+      data: runsNamed(ORDER),
+      cursor: null,
+      hasMore: false,
+    });
+    const world = { runs: { list } } as unknown as World;
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    expect(
+      await resolveWorkflowNameFilter(world, 'processOrder', storage)
+    ).toBe(ORDER);
   });
 
   it('passes an unmatched name through and warns', async () => {
@@ -157,6 +221,11 @@ describe('resolveWorkflowNameFilter', () => {
         timeWindow,
       })
     ).toBe(ORDER);
+    expect(analyticsList).toHaveBeenCalledWith({
+      workflowName: 'processOrder',
+      ...timeWindow,
+      pagination: { limit: 1 },
+    });
     expect(analyticsList).toHaveBeenCalledWith({
       ...timeWindow,
       pagination: { sortOrder: 'desc', cursor: undefined, limit: 100 },
