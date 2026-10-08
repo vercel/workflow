@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
+import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
   EntityConflictError,
@@ -76,6 +77,10 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import {
+  EventLogPrefixCache,
+  isEventLogPrefixCacheEnabled,
+} from './runtime/event-log-prefix-cache.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -1197,6 +1202,64 @@ export function workflowEntrypoint(
                     }
                     replayPayloadCache?.prepareEvent(event);
                   };
+
+                  // Cross-invocation event-log prefix cache (see
+                  // runtime/event-log-prefix-cache.ts): offers the prefix the
+                  // previous invocation of this run on this process replayed
+                  // over, so the World fetches only the tail, and records this
+                  // invocation's prefix for the next one. Undefined (and every
+                  // use below a no-op) unless WORKFLOW_EVENT_LOG_PREFIX_CACHE
+                  // is on and the World declares eventLogPrefixPreload. An
+                  // honored offer hands this invocation the same log a full
+                  // load would have (the backend verifies the claim), so
+                  // nothing below can tell the two apart.
+                  const prefixCache =
+                    world.capabilities?.eventLogPrefixPreload === true &&
+                    isEventLogPrefixCacheEnabled()
+                      ? EventLogPrefixCache.shared()
+                      : undefined;
+                  // The model's StartInFirstLoad: only an invocation whose
+                  // first load (the preload it started from) held
+                  // run_started may fill. Decided once, by the first load.
+                  let prefixCacheFirstLoad: boolean | undefined;
+                  const notePrefixCacheFirstLoad = (
+                    events: readonly Event[] | undefined
+                  ): void => {
+                    prefixCacheFirstLoad ??= (events ?? []).some(
+                      (event) => event.eventType === 'run_started'
+                    );
+                  };
+                  // What a replay load from `source` offers, recorded on its
+                  // span. Only the two preloads can carry a prefix.
+                  const offerPrefix = (
+                    source: Attribute.WorkflowReplayLoadSource,
+                    loadSpan: Span | undefined
+                  ): Pick<CreateEventParams, 'preloadPrefix'> => {
+                    if (source !== 'run_started' && source !== 'hook_preload') {
+                      return {};
+                    }
+                    const preloadPrefix = prefixCache?.offer(runId);
+                    if (!preloadPrefix) return {};
+                    loadSpan?.setAttributes(
+                      Attribute.WorkflowReplayLoadPrefixOffered(
+                        preloadPrefix.events.length
+                      )
+                    );
+                    return { preloadPrefix };
+                  };
+                  // A run that is over will never claim its prefix again.
+                  const notePrefixCacheWrite = (eventType: string): void => {
+                    if (isTerminalRunEventType(eventType)) {
+                      prefixCache?.evict(runId);
+                    }
+                  };
+                  const fillPrefixCache = (events: readonly Event[]): void => {
+                    prefixCache?.fill(
+                      runId,
+                      events,
+                      prefixCacheFirstLoad === true
+                    );
+                  };
                   // Every write this loop makes carries the cursor of the log
                   // it was computed against, and folds a complete returned
                   // delta into that log.
@@ -1222,13 +1285,17 @@ export function workflowEntrypoint(
                     if (sinceCursor !== undefined) {
                       absorbCreateDelta(sinceCursor, result);
                     }
+                    notePrefixCacheWrite(data.eventType);
                     return result;
                   };
 
-                  const traceReplayLoad = <T extends { events?: Event[] }>(
+                  const traceReplayLoad = <
+                    T extends { events?: Event[]; preloadBase?: number },
+                  >(
                     source: Attribute.WorkflowReplayLoadSource,
                     load: (
-                      replayEventObserver: (event: Event) => void
+                      replayEventObserver: (event: Event) => void,
+                      prefix: Pick<CreateEventParams, 'preloadPrefix'>
                     ) => Promise<T>
                   ): Promise<T> =>
                     trace('workflow.replay.load', async (loadSpan) => {
@@ -1237,12 +1304,26 @@ export function workflowEntrypoint(
                         ...Attribute.WorkflowRunId(runId),
                         ...Attribute.WorkflowReplayLoadSource(source),
                       });
+                      const prefix = offerPrefix(source, loadSpan);
                       try {
                         const result = await load((event) => {
                           eventsCount++;
                           prepareReplayEvent(event);
+                        }, prefix).catch((error: unknown) => {
+                          // Whatever failed, the next invocation starts from a
+                          // full load: a claim must never be what keeps a run
+                          // failing.
+                          if (prefix.preloadPrefix) prefixCache?.evict(runId);
+                          throw error;
                         });
                         eventsCount = result.events?.length ?? eventsCount;
+                        loadSpan?.setAttributes(
+                          result.preloadBase === undefined
+                            ? {}
+                            : Attribute.WorkflowReplayLoadPrefixBase(
+                                result.preloadBase
+                              )
+                        );
                         return result;
                       } finally {
                         loadSpan?.setAttributes(
@@ -2460,7 +2541,7 @@ export function workflowEntrypoint(
                       });
                       const replayLoad = traceReplayLoad(
                         'hook_preload',
-                        (replayEventObserver) =>
+                        (replayEventObserver, prefix) =>
                           createEvent(
                             {
                               eventType: 'hook_received',
@@ -2479,6 +2560,7 @@ export function workflowEntrypoint(
                                 hookResumeInput.payloadDigest,
                               preloadEvents: true,
                               replayEventObserver,
+                              ...prefix,
                             }
                           )
                       );
@@ -2572,6 +2654,7 @@ export function workflowEntrypoint(
                           return;
                         }
                         workflowRun = result.run;
+                        notePrefixCacheFirstLoad(result.events);
                         startWorkflowCompile(workflowRun);
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above. This
@@ -2789,10 +2872,11 @@ export function workflowEntrypoint(
                         });
                         const replayLoad = traceReplayLoad(
                           'run_started',
-                          (replayEventObserver) =>
+                          (replayEventObserver, prefix) =>
                             createEvent(runStartedEvent, {
                               requestId,
                               replayEventObserver,
+                              ...prefix,
                             })
                         );
                         try {
@@ -2809,6 +2893,7 @@ export function workflowEntrypoint(
                         }
                         const result = await replayLoad;
                         workflowRun = result.run;
+                        notePrefixCacheFirstLoad(result.events);
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above.
                         runStartedReceivedAtMs = Date.now();
@@ -2836,6 +2921,7 @@ export function workflowEntrypoint(
                         });
 
                         if (result.run.status !== 'running') {
+                          prefixCache?.evict(runId);
                           runtimeLogger.info(
                             'Workflow already completed or failed, skipping',
                             {
@@ -3367,6 +3453,7 @@ export function workflowEntrypoint(
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
                       if (hasRecordedTerminalRunEvent(eventLog.events, runId)) {
+                        prefixCache?.evict(runId);
                         return;
                       }
 
@@ -3519,6 +3606,7 @@ export function workflowEntrypoint(
                           type: 'ready',
                         };
                         if (settled.gap !== undefined) {
+                          prefixCache?.evict(runId);
                           throw new CorruptedEventLogError(
                             `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
                           );
@@ -3531,8 +3619,15 @@ export function workflowEntrypoint(
                       // replay. Once the event log records that outcome, this
                       // delivery is done.
                       if (hasRecordedTerminalRunEvent(eventLog.events, runId)) {
+                        prefixCache?.evict(runId);
                         return;
                       }
+
+                      // The log this turn is about to replay over is settled
+                      // and assembled from World loads only: the fill the
+                      // prefix cache's rules allow. Recorded every turn so
+                      // the next invocation claims everything this one saw.
+                      fillPrefixCache(eventLog.events);
 
                       // Event-limit guard: fail a runaway run once its log
                       // reaches the server-supplied ceiling (undefined ⇒ no
