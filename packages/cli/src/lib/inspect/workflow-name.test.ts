@@ -107,6 +107,21 @@ describe('resolveWorkflowNameFilter', () => {
     ).rejects.toThrow(`names 2 workflows in recent runs: ${ORDER}, ${other}`);
   });
 
+  // A run whose workflowName the parser does not recognize was matched
+  // exactly before; another workflow's short name must not take it over.
+  it("keeps a value that is a recent run's exact workflow name", async () => {
+    const legacy = 'processOrder';
+    const { world } = storageWorld([ORDER], [legacy]);
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    expect(await resolveWorkflowNameFilter(world, legacy, storage)).toBe(
+      legacy
+    );
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('passes an unmatched name through and warns', async () => {
     const { world } = storageWorld([INVOICE]);
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);

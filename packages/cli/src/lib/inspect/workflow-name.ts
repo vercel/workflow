@@ -34,6 +34,9 @@ export interface ResolveWorkflowNameOptions {
  * A full name passes through with no extra request. Anything else is
  * matched against the short and function names of the most recent runs'
  * workflows, read the way the listing reads them:
+ * - a run's workflow is named exactly the value (a full name the parser does
+ *   not recognize, such as one written outside the SDK): the value is used
+ *   as given, as before, even if another workflow's short name matches it;
  * - one workflow matches: its full name is used, and the resolution logged;
  * - several match (the same export in two modules, or under two dynamic
  *   workflow names): throws with the candidates, since either answer could
@@ -51,8 +54,15 @@ export async function resolveWorkflowNameFilter(
     return workflowName;
   }
 
-  const candidates = await findWorkflowNames(world, workflowName, options);
+  const { exact, candidates } = await findWorkflowNames(
+    world,
+    workflowName,
+    options
+  );
 
+  if (exact) {
+    return workflowName;
+  }
   if (candidates.length === 1) {
     logger.info(
       `Filtering by workflow ${candidates[0]}, the one recent workflow named ${JSON.stringify(workflowName)}.`
@@ -78,27 +88,37 @@ const matchesShortName = (name: string, value: string): boolean => {
   );
 };
 
+/** One page of the most recent runs, on the read path the listing uses. */
+const listRecentRuns = (
+  world: World,
+  cursor: string | undefined,
+  { useAnalytics, timeWindow }: ResolveWorkflowNameOptions
+) => {
+  const pagination = {
+    sortOrder: 'desc' as const,
+    cursor,
+    limit: SCAN_PAGE_SIZE,
+  };
+  return useAnalytics && world.analytics
+    ? world.analytics.runs.list({ ...(timeWindow ?? {}), pagination })
+    : world.runs.list({ pagination, resolveData: 'none' });
+};
+
 async function findWorkflowNames(
   world: World,
   value: string,
-  { useAnalytics, timeWindow }: ResolveWorkflowNameOptions
-): Promise<string[]> {
+  options: ResolveWorkflowNameOptions
+): Promise<{ exact: boolean; candidates: string[] }> {
   const found = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < SCAN_MAX_PAGES; page++) {
-    const pagination = {
-      sortOrder: 'desc' as const,
-      cursor,
-      limit: SCAN_PAGE_SIZE,
-    };
-    const runs =
-      useAnalytics && world.analytics
-        ? await world.analytics.runs.list({
-            ...(timeWindow ?? {}),
-            pagination,
-          })
-        : await world.runs.list({ pagination, resolveData: 'none' });
+    const runs = await listRecentRuns(world, cursor, options);
     for (const run of runs.data) {
+      // The value already filtered these runs before short names were
+      // resolved; rewriting it to another workflow would list the wrong runs.
+      if (run.workflowName === value) {
+        return { exact: true, candidates: [] };
+      }
       if (matchesShortName(run.workflowName, value)) {
         found.add(run.workflowName);
       }
@@ -106,5 +126,5 @@ async function findWorkflowNames(
     if (!runs.hasMore || !runs.cursor) break;
     cursor = runs.cursor;
   }
-  return [...found].sort();
+  return { exact: false, candidates: [...found].sort() };
 }
