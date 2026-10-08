@@ -3,6 +3,7 @@ import {
   RUN_ERROR_CODES,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type {
   CreateEventParams,
   CreateEventRequest,
@@ -10,6 +11,7 @@ import type {
   EventLogSnapshot,
   EventResult,
   HealthCheckPayload,
+  QueueOptions,
   RunDispatchContext,
   ValidQueueName,
   WorkflowRun,
@@ -1374,12 +1376,53 @@ function markQueueSendFailure(err: unknown): never {
 /**
  * Queues a message to the specified queue with tracing.
  */
+/**
+ * Whether this process's build registered the step-execution queue trigger
+ * (`stepTopic` on `workflowEntrypoint()`). Set by the entrypoint. On
+ * `globalThis` (see `globalSingleton`): it is a fact about the build, and a
+ * second copy of this module must not read a stale `false`.
+ */
+const stepTopicState = globalSingleton(
+  '@workflow/core//sharedStepTopic',
+  1,
+  () => ({ enabled: false })
+);
+
+/** Records whether the build registered the step-execution queue trigger. */
+export function setSharedStepTopic(enabled: boolean): void {
+  stepTopicState.enabled = enabled;
+}
+
+/**
+ * The options a send carries: a background step's execution message (a
+ * payload with a `stepId`) is marked `stepTopic` when the build registered
+ * the step-execution trigger, so a World with a shared step topic may use it.
+ */
+function withStepTopic(
+  message: unknown,
+  opts: QueueOptions | undefined
+): QueueOptions | undefined {
+  if (
+    !stepTopicState.enabled ||
+    typeof message !== 'object' ||
+    message === null ||
+    typeof (message as { stepId?: unknown }).stepId !== 'string'
+  ) {
+    return opts;
+  }
+  return { ...opts, stepTopic: true };
+}
+
 export async function queueMessage(
   world: World,
   ...args: Parameters<typeof world.queue>
 ) {
-  const queueName = args[0];
-  await queueMessageTraced(world, queueName, args).catch(markQueueSendFailure);
+  const [queueName, message, opts] = args;
+  await queueMessageTraced(world, queueName, [
+    queueName,
+    message,
+    withStepTopic(message, opts),
+  ]).catch(markQueueSendFailure);
 }
 
 async function queueMessageTraced(
@@ -1432,9 +1475,14 @@ export async function queueMessages(
   }[]
 ): Promise<void> {
   if (messages.length === 0) return;
-  await queueMessagesTraced(world, queueName, messages).catch(
-    markQueueSendFailure
-  );
+  await queueMessagesTraced(
+    world,
+    queueName,
+    messages.map((entry) => ({
+      ...entry,
+      opts: withStepTopic(entry.message, entry.opts),
+    }))
+  ).catch(markQueueSendFailure);
 }
 
 async function queueMessagesTraced(

@@ -101,6 +101,7 @@ import {
   rootRunIdFrom,
   runDispatchContext,
   type SlotSnapshotParams,
+  setSharedStepTopic,
   settleEventSlotGap,
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
@@ -840,9 +841,17 @@ export function workflowEntrypoint(
     namespace?: string;
     routeModuleBodyStartedAt?: number;
     basePath?: string;
+    /**
+     * The build registered the step-execution queue trigger on this route
+     * (written by the framework integration; see `getWorkflowQueueTriggers`
+     * in `@workflow/builders`). Background step messages then carry
+     * `stepTopic`, and a World with a shared step topic sends them there.
+     */
+    stepTopic?: boolean;
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
+  setSharedStepTopic(options?.stepTopic === true);
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);

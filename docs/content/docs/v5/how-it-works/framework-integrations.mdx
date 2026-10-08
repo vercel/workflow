@@ -206,18 +206,18 @@ Your integration can expose physical files, virtual modules, or framework-native
 
 ## Vercel queue configuration
 
-On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTrigger()` handles the optional queue namespace and sets `maxConcurrency: 1`, which keeps each run to one orchestrator invocation at a time.
+On Vercel, configure the flow function as the sole queue consumer. `getWorkflowQueueTriggers()` returns its two triggers and handles the optional queue namespace. The flow trigger sets `maxConcurrency: 1`, which keeps each run to one orchestrator invocation at a time. The step trigger consumes background step messages and sets no limit.
 
 ```typescript
-import { getWorkflowQueueTrigger } from "@workflow/builders";
+import { getWorkflowQueueTriggers } from "@workflow/builders";
 
 const flowConfig = {
   maxDuration: "max",
-  experimentalTriggers: [getWorkflowQueueTrigger()],
+  experimentalTriggers: getWorkflowQueueTriggers(),
 };
 ```
 
-The generated trigger listens to one topic family:
+The generated triggers listen to two topic families:
 
 ```json title=".vc-config.json (excerpt)"
 {
@@ -229,14 +229,23 @@ The generated trigger listens to one topic family:
       "retryAfterSeconds": 5,
       "initialDelaySeconds": 0,
       "maxConcurrency": 1
+    },
+    {
+      "type": "queue/v2beta",
+      "topic": "__wkf_step_*",
+      "consumer": "default",
+      "retryAfterSeconds": 5,
+      "initialDelaySeconds": 0
     }
   ]
 }
 ```
 
-Both orchestration messages and step messages use this topic family. A step message is distinguished by its payload, not by a second topic or function.
+Orchestrator messages use the `__wkf_workflow_*` family, one topic per run. Background step messages use `__wkf_step_*`, one topic per workflow, so a fan-out's step messages are published in one request. Both reach the same flow function, which tells them apart by payload.
 
-If you construct the trigger yourself, add `maxConcurrency: 1` to it. The Vercel World sends each run's orchestrator messages to a per-run topic, and VQS applies the limit per topic, so without it a run's orchestrator deliveries are not serialized.
+The runtime only sends step messages to `__wkf_step_*` when the generated flow route says the build registered that trigger. A builder extending `BaseBuilder` reports it by overriding `registersStepQueueTrigger` to return `true`; the default is `false`, and step messages then use per-step topics under `__wkf_workflow_*`. Only return `true` once your integration registers both triggers.
+
+If you construct the triggers yourself, add `maxConcurrency: 1` to the flow trigger and none to the step trigger. The Vercel World sends each run's orchestrator messages to a per-run topic, and VQS applies the limit per topic, so without it a run's orchestrator deliveries are not serialized. A limit on the step trigger would serialize every step of the workflow.
 
 ## Security
 

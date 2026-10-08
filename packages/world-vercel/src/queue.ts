@@ -515,10 +515,10 @@ function getHeadersFromPayload(
  *
  * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
  *   per-run topic: at most one replay per run at a time.
- * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId`; they
- *   ride the flow topic in the combined handler model) get a per-step topic
- *   so steps keep full parallelism across a run; only redeliveries of the
- *   same step serialize.
+ * - Background step executions (`WorkflowInvokePayload` WITH a `stepId`) go
+ *   to the shared step topic when {@link usesSharedStepTopic}, and otherwise
+ *   get a per-step topic under the flow trigger, so steps keep full
+ *   parallelism across a run either way.
  * - Health checks get a per-probe topic (their correlation id) so concurrent
  *   probes never queue behind one shared `…_health_check` slot.
  *
@@ -534,9 +534,33 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
+/**
+ * Whether a background step's execution message goes to the shared step
+ * topic (`__wkf_step_<workflowName>`, consumed by the flow function's step
+ * trigger with no concurrency limit) instead of a per-step topic under the
+ * flow trigger. A whole fan-out's step messages then share one topic, so a
+ * batched send is one request rather than one per step.
+ *
+ * Only when the sending build registered the step trigger (`opts.stepTopic`)
+ * and the message stays on this deployment: a deployment's code, and so its
+ * triggers, never change, but a message routed to another deployment (a
+ * deployment-affinity re-route) may land on one built before the step
+ * trigger existed, which only consumes the flow topic. The per-step topic is
+ * consumed by every deployment. `WORKFLOW_SHARED_STEP_TOPIC=0` turns it off.
+ */
+function usesSharedStepTopic(opts: QueueOptions | undefined): boolean {
+  if (opts?.stepTopic !== true) return false;
+  if (process.env.WORKFLOW_SHARED_STEP_TOPIC === '0') return false;
+  return (
+    opts.deploymentId === undefined ||
+    opts.deploymentId === process.env.VERCEL_DEPLOYMENT_ID
+  );
+}
+
 function getPhysicalQueueName(
   queueName: ValidQueueName,
-  payload: QueuePayload
+  payload: QueuePayload,
+  opts?: QueueOptions
 ): string {
   if (!FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
@@ -549,8 +573,12 @@ function getPhysicalQueueName(
     return `${queueName}_${payload.correlationId}`;
   }
   if ('runId' in payload && typeof payload.runId === 'string') {
-    // Inline step execution: full parallelism via a per-step topic.
     if ('stepId' in payload && typeof payload.stepId === 'string') {
+      // Background step execution: the shared step topic, or full
+      // parallelism via a per-step topic under the flow trigger.
+      if (usesSharedStepTopic(opts)) {
+        return queueName.replace('wkf_workflow_', 'wkf_step_');
+      }
       return `${queueName}_${payload.runId}_${payload.stepId}`;
     }
     // Orchestrator delivery: one at a time per run.
@@ -626,7 +654,7 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const topic = getPhysicalQueueName(queueName, payload).replace(
+    const topic = getPhysicalQueueName(queueName, payload, opts).replace(
       /[^A-Za-z0-9-_]/g,
       '-'
     );

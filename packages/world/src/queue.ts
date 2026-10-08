@@ -592,6 +592,14 @@ export interface QueueOptions {
    * (the pre-regional-routing behavior).
    */
   region?: string;
+  /**
+   * Set by the runtime on a background step's execution message when the
+   * sending deployment's build registered the step-execution queue trigger
+   * (`stepTopic` on `workflowEntrypoint()`, written by the framework
+   * integration). A World with a per-step physical topic layout may then send
+   * the message to a shared step topic instead. Worlds without one ignore it.
+   */
+  stepTopic?: boolean;
 }
 
 /**
