@@ -338,6 +338,18 @@ Graphile Worker responds automatically when the application is asked to shut dow
 
 Closing the world stops new queue claims and waits for active jobs. After Graphile Worker's grace period, a pending workflow HTTP request is aborted. Graphile Worker unlocks that same row through its normal failure handling. The already-claimed delivery consumes a Graphile attempt and is retried only if its attempt budget remains; a one-attempt or final-attempt job is not retried. The shutdown handler does not insert a successor row. Because a client abort does not prove the server handler stopped, workflow and step handlers must tolerate at-least-once execution.
 
+### Pausing claims
+
+Every process that runs a Postgres World against the same database claims from the same queue. When one of them should stop taking new work without shutting down — for example a blue-green revision that no longer receives traffic but still has streams and steps to finish — call `world.pauseClaims()`:
+
+```ts
+await world.pauseClaims(); // stop claiming; jobs already running finish
+// ... later, if this process should take work again:
+await world.resumeClaims();
+```
+
+A paused world stops Graphile Worker's runner gracefully: jobs already running finish and are recorded as usual. Enqueueing, streams and storage keep working, and neither `world.start()` nor an enqueue starts another runner until `resumeClaims()`. `pauseClaims()` resolves once the runner has begun stopping; `world.close()` waits for the jobs it still had. `resumeClaims()` starts only the runner and does not repeat the active-run recovery that `world.start()` performs. A world can be paused before `start()`, so that it never claims until resumed.
+
 ## How it works
 
 The Postgres World uses PostgreSQL as a durable backend:
