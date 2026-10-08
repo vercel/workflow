@@ -107,11 +107,9 @@ Through a 1,020-step run, step-to-step overhead on v4.8.12 grows from 622 ms in 
 
 {/* generated:performance fanout */}
 
-At p75, v5.2.0 starts the first of 64 branches in 360 ms against 478 ms on v4.8.12, then starts the slowest branch at 996 ms against 972 ms and joins in 448 ms against 464 ms. At p99, the slowest branch starts later on v5.2.0: 3,557 ms against 1,324 ms on v4.8.12, a gap that reproduced in a second sweep.
+At p75, v5.2.0 starts the first of 64 branches in 360 ms against 478 ms on v4.8.12, then starts the slowest branch at about the same time (996 ms against 972 ms) and joins in 448 ms against 464 ms.
 
 {/* end generated:performance fanout */}
-
-Work to start a fan-out's queued branches sooner is in progress.
 
 <Image
   srcLight="/performance/v5.2.0/03-fanout-light.png"
@@ -125,16 +123,16 @@ Work to start a fan-out's queued branches sooner is in progress.
 
 {/* generated:performance resume */}
 
-At p75, a workflow waiting on a hook resumes in 425 ms on v5.2.0 against 699 ms on v4.8.12, and in 820 ms against 1,128 ms at p99.
+At p75, a workflow waiting on a hook resumes in 425 ms on v5.2.0 against 699 ms on v4.8.12.
 
 {/* end generated:performance resume */}
 
 <Image
   srcLight="/performance/v5.2.0/04-resume-light.png"
   srcDark="/performance/v5.2.0/04-resume-dark.png"
-  alt="Dumbbell chart of time to resume after 1 s idle at p50, p75, and p99, comparing the two versions. The full values are in the results table below."
+  alt="Dumbbell chart of time to resume after 1 s idle at p50 and p75, comparing the two versions. The full values are in the results table below."
   width={2016}
-  height={804}
+  height={700}
 />
 
 ### Streams
@@ -172,21 +170,16 @@ Every measured value from the latest results. Percentiles follow the [methodolog
 | Step-to-step overhead, p99 | 777 ms | 327 ms | 2.4× faster | 40 gaps |
 | **Long run, 1,020 steps, 5 runs** | | | | |
 | Step overhead, steps 1 to 20, p75 | 622 ms | 110 ms | 5.7× faster | 95 gaps |
-| Step overhead, steps 1 to 20, p99 | 949 ms | 882 ms | 1.1× faster | 95 gaps |
 | Step overhead, steps 101 to 120, p75 | 719 ms | 74 ms | 9.7× faster | 95 gaps |
 | Step overhead, steps 1,001 to 1,020, p75 | 1,748 ms | 70 ms | 25.0× faster | 95 gaps |
-| Step overhead, steps 1,001 to 1,020, p99 | 33,701 ms | 434 ms | 77.7× faster | 95 gaps |
 | Whole run, median wall time | 21.0 min | 3.0 min | 7.0× faster | 5 runs |
 | **Fan-out, 64 parallel branches, 25 runs** | | | | |
 | First branch starts, p75 | 478 ms | 360 ms | 1.3× faster | 25 runs |
-| First branch starts, p99 | 960 ms | 523 ms | 1.8× faster | 25 runs |
 | Slowest branch to start, p75 | 972 ms | 996 ms | No change | 25 runs |
-| Slowest branch to start, p99 | 1,324 ms | 3,557 ms | 2.7× slower | 25 runs |
 | Join, p75 | 464 ms | 448 ms | No change | 25 runs |
 | **Resume after 1 s idle, 25 runs of 5 resumes** | | | | |
 | Time to resume, p50 | 619 ms | 383 ms | 1.6× faster | 125 resumes |
 | Time to resume, p75 | 699 ms | 425 ms | 1.6× faster | 125 resumes |
-| Time to resume, p99 | 1,128 ms | 820 ms | 1.4× faster | 125 resumes |
 | **Agent stream, 52.4 s recording, 10 runs** | | | | |
 | Delivery, median wall time | 226.1 s | 53.5 s | 4.2× faster | 10 runs |
 | Chunk trip time, p75 | 172 ms | 102 ms | 1.7× faster | 25,930 chunks |

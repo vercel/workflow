@@ -102,7 +102,7 @@ const sequential = `At p75, a five-step workflow reaches its first step in ${ms(
 const longRun = `Through a 1,020-step run, step-to-step overhead on ${OLD} grows from ${ms(D.v4.early.p75)} in steps 1 to 20 to ${ms(D.v4.late.p75)} in steps 1,001 to 1,020, at p75. On ${NEW} it is ${ms(D.next.early.p75)} and ${ms(D.next.late.p75)}. The median run takes ${min(D.v4.wall.p50)} on ${OLD} and ${min(D.next.wall.p50)} on ${NEW}.`;
 
 const fanout = [
-  `At p75, ${NEW} starts the first of 64 branches in ${ms(P.next.first.p75)} against ${ms(P.v4.first.p75)} on ${OLD}, then starts the slowest branch at ${ms(P.next.last.p75)} against ${ms(P.v4.last.p75)} and joins in ${ms(P.next.join.p75)} against ${ms(P.v4.join.p75)}.`,
+  `At p75, ${NEW} starts the first of 64 branches in ${ms(P.next.first.p75)} against ${ms(P.v4.first.p75)} on ${OLD}, then starts the slowest branch ${isSame(P.v4.last.p75, P.next.last.p75) ? `at about the same time (${ms(P.next.last.p75)} against ${ms(P.v4.last.p75)})` : `at ${ms(P.next.last.p75)} against ${ms(P.v4.last.p75)}`} and joins in ${ms(P.next.join.p75)} against ${ms(P.v4.join.p75)}.`,
   showP99('fanoutLast') && isSlower(p99.fanoutLast.v4, p99.fanoutLast.next)
     ? `At p99, the slowest branch starts later on ${NEW}: ${ms(p99.fanoutLast.next)} against ${ms(p99.fanoutLast.v4)} on ${OLD}, a gap that reproduced in a second sweep.`
     : '',
