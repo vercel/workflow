@@ -44,6 +44,7 @@ import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
+import { createJobLeases, resolveJobLockStaleSeconds } from './job-lease.js';
 import { MessageData } from './message.js';
 
 /**
@@ -105,8 +106,10 @@ const graphileLogger = createGraphileLogger();
  * the workflow body inline, so response headers arrive only once that work is
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
- * same steps). Crash recovery is covered by Graphile releasing the job when
- * the worker dies, plus `reenqueueActiveRuns` on start.
+ * same steps). Crash recovery does not need one: a running delivery renews its
+ * job lock, and a job whose lock goes unrenewed for `jobLockStaleSeconds`
+ * (because its process died) is released for redelivery by any other process
+ * (see `job-lease.ts`), plus `reenqueueActiveRuns` on start.
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
@@ -264,6 +267,9 @@ export function createQueue(
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const jobLeases = createJobLeases(pool, {
+    staleSeconds: resolveJobLockStaleSeconds(config.jobLockStaleSeconds),
+  });
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
@@ -968,9 +974,13 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    taskList[getJobQueueName()] = jobLeases.wrap(
+      createTaskHandler(workflowPrefix)
+    );
     if (invocations)
-      taskList[executorTask()] = createTaskHandler(workflowPrefix, true);
+      taskList[executorTask()] = jobLeases.wrap(
+        createTaskHandler(workflowPrefix, true)
+      );
 
     runner = await run({
       pgPool: pool,
@@ -991,6 +1001,10 @@ export function createQueue(
       pollInterval: config.pollInterval ?? 500, // per worker; LISTEN/NOTIFY only wakes idle workers early
       taskList,
     });
+    // Graphile Worker only resets locks older than 4 hours. Release this
+    // World's jobs (including invoke mode's executor jobs and their per-run
+    // queue locks) whose holders stopped renewing them.
+    jobLeases.startSweeper([getJobQueueName(), executorTask()]);
   }
 
   return {
@@ -1023,6 +1037,9 @@ export function createQueue(
         await activeRunner.promise.catch(() => {});
         runner = null;
       }
+      // After the runner, whose active deliveries keep renewing while it
+      // drains them.
+      await jobLeases.stop();
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;
