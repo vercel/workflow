@@ -294,7 +294,7 @@ Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to tur
 
 Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
 
-Turn it on once every process runs a version that supports it. Processes on an earlier version don't renew their locks, so an upgraded process would redeliver any of their deliveries that run longer than the window, and when the earlier-version process finishes such a delivery, its acknowledgement isn't fenced on the lock holder and can delete the redelivered job's row.
+It's off by default because of rolling upgrades. Processes on an earlier version don't renew their locks, so an upgraded process would redeliver any of their deliveries that run longer than the window, and when the earlier-version process finishes such a delivery, its acknowledgement isn't fenced on the lock holder and can delete the redelivered job's row. So turn it on only once every process that shares the database runs a version that includes `jobLockStaleSeconds`, and set the same value on all of them.
 
 ### Experimental synchronous invocation
 

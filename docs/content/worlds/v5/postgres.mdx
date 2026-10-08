@@ -294,7 +294,11 @@ Seconds a running delivery's job lock may go unrenewed before another process re
 
 When set, a running delivery renews its lock every quarter of this window, and at least every 10 seconds. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows (about 45 seconds at `30`), instead of after Graphile Worker's fixed 4 hour stale-lock reset or the next restart.
 
-Use the same value on every process that shares the database, and keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a pool connection. A delivery whose renewals stall past the window is redelivered while it still runs. Turn it on once every process runs a version that supports it: processes on an earlier version don't renew, so an upgraded process would redeliver any of their deliveries that run longer than the window, and the earlier-version process's acknowledgement, which isn't fenced on the lock holder, can then delete the redelivered job's row.
+Use the same value on every process that shares the database, and keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a pool connection. A delivery whose renewals stall past the window is redelivered while it still runs.
+
+It's off by default because of rolling upgrades. A process on an earlier version doesn't renew its locks, so a process that has this on would redeliver any of that process's deliveries that run longer than the window. When the earlier-version process then finishes such a delivery, its acknowledgement, which isn't fenced on the lock holder, can delete the redelivered job's row, and the redelivery loses its retry.
+
+To turn it on, set `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockStaleSeconds: 30`) on every process that shares the database, once all of them run a version that includes this option.
 
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 

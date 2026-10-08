@@ -181,7 +181,8 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. When set, a running delivery renews its lock, so this bounds how long the job of a process that died stays locked.
 - `30` is a good value when more than one process shares the database. Use the same value on every process, and keep it well above the longest a process can block its event loop.
 - `0` leaves recovery to Graphile Worker's fixed 4 hour reset and to restarts.
-- Turn it on once every process runs a version that supports it: processes on an earlier version don't renew their locks.
+- Off by default because of rolling upgrades. A process on an earlier version neither renews its locks nor fences its acknowledgement on the lock holder, so while it shares the database with a process that has this on, its deliveries that run longer than the window are redelivered, and finishing one can delete the redelivered job.
+- To turn it on, set the same value on every process that shares the database once all of them run a version that includes this option. See [Postgres World: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](/worlds/postgres#workflow_postgres_job_lock_stale_seconds).
 
 ### `maxPoolSize`
 

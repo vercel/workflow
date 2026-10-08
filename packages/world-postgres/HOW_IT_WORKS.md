@@ -62,6 +62,8 @@ When `jobLockStaleSeconds` is set (it is `0`, off, by default), the queue renews
 
 A renewal that no longer finds its job means the job was released for redelivery. The delivery then fails instead of completing when it finishes: Graphile Worker completes a job with a delete that is not fenced on the lock holder, so completing could delete a successor's row, whereas failing is fenced and changes nothing. If no renewal has shown the lock to be held within half the window, the delivery renews once more before it completes. After a failed renewal or release (a database outage), a process's next release only checks that the database is back, so that holders can renew before their jobs are released.
 
+It's off by default because of rolling upgrades: a process on an earlier version neither renews its locks nor fences its acknowledgement, so turning this on while such a process shares the database could delete the redelivered job of one of its long deliveries. The README's [Crash recovery](./README.md#crash-recovery) section covers turning it on.
+
 ## Shutdown
 
 `world.close()` first stops Graphile Worker from claiming new jobs, then waits for active jobs before closing the streamer and any internally owned pool.
