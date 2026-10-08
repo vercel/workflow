@@ -49,6 +49,8 @@ On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute 
 
 How much work fits in one invocation now scales with the function's own limit: the inline budget is derived from the runtime deadline the World reports, so raising `maxDuration` widens it without configuration. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms).
 
+For measured start, step, fan-out, resume, and stream latencies of v5.2.0 against v4.8.12 on Vercel, see [Performance](/docs/performance).
+
 ### Multi-region support
 
 Workflow run IDs are now tagged with the compute region they were created in, or the region specified when calling `start()`. Worlds can use this to pin execution to that region.

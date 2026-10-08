@@ -66,6 +66,10 @@ export async function fetchUserData(userId: string) {
 }
 ```
 
+<MetricVideo metric="fanout">
+  How the [fan-out](/docs/performance#fan-out) benchmark times a 64-branch `Promise.all`: from `start()` until the first branch and the slowest branch start, and from the slowest branch finishing until the code after `Promise.all` runs.
+</MetricVideo>
+
 ### Race with `Promise.race`
 
 `Promise.race` resolves as soon as the first promise settles. Since [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) return promises, they compose naturally. For example, waiting for a webhook callback with a deadline:

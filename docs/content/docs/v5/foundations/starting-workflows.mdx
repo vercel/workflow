@@ -42,6 +42,10 @@ export async function POST(request: Request) {
 
 **Learn more**: [`start()` API reference](/docs/api-reference/workflow-api/start)
 
+<MetricVideo metric="ttfs">
+  How the [time to first step](/docs/performance#steps-and-long-runs) benchmark times `start()`: from the call until the first line of the workflow's first step runs.
+</MetricVideo>
+
 <Callout type="info">
 For parent-child workflow patterns, see [Workflow Composition](/cookbook/common-patterns/workflow-composition). For long-lived workflows that intentionally hand off to newer deployments with `deploymentId: "latest"`, see [Versioning](/docs/foundations/versioning).
 </Callout>

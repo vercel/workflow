@@ -58,6 +58,10 @@ export async function POST() {
 
 When a client makes a request to this endpoint, they'll receive each message as it's written, without waiting for the workflow to complete.
 
+<MetricVideo metric="stream">
+  How the [chunk trip time](/docs/performance#streams) benchmark times a stream: one step writes a recorded agent stream while another step reads it, and each chunk is timed from write to read.
+</MetricVideo>
+
 ### Avoiding function timeouts after client disconnects
 
 On Vercel, `run.readable` and `run.getReadable()` reconnect to Workflow's stream storage while the workflow is still running. By default, a client disconnect does not terminate the Vercel Function serving the stream. If a user closes the page or stops the request, the function can therefore keep reconnecting until it reaches its maximum duration and fails with `FUNCTION_INVOCATION_TIMEOUT`.
