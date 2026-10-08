@@ -1873,12 +1873,14 @@ export async function handleSuspension({
           if (stepEntries.length === 0) return;
           const traceCarrier = await getStepDispatchTraceCarrier();
           // One batched publish per chunk instead of one round trip per step.
-          // The publishes are the fan-out's serialization point: they ride the
-          // shared 8-connection HTTP/1.1 agent (see `getQueueDispatcher` in
-          // world-vercel), and the caller awaits all of them before running
-          // the first inline step body, so N round trips land directly on
-          // time-to-first-step. `queueMessages` falls back to concurrent
-          // single sends on a World with no batch support.
+          // It does not hold up the inline bodies (a caller that opted into
+          // `allowDeferredBatchWork` runs them off the pair chunk while this
+          // rides `deferredBatchWork`), but it is the last hop before the
+          // chunk's queued branches can start anywhere, and a batched
+          // publish's latency grows with its message count: one reason
+          // MAX_BATCH_FANOUT_EVENTS is no larger than it is.
+          // `queueMessages` falls back to concurrent single sends on a World
+          // with no batch support.
           await queueMessages(
             world,
             // biome-ignore lint/style/noNonNullAssertion: publishEagerSteps implies presence
