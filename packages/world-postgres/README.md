@@ -273,6 +273,11 @@ session time zone, pass it to the migration, for example with
 `?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the connection
 string.
 
+On a server outside UTC, stop the previous version's workers, run the
+migration, then start the upgraded app. Older versions read the converted
+columns shifted by the server's UTC offset, which can skip or stretch step
+retry backoffs.
+
 ### Data retention
 
 Postgres World does not yet perform general workflow-run cleanup. After a
