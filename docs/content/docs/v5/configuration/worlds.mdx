@@ -174,6 +174,14 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
 - Prevents Graphile Worker's default handler from terminating the process before the application's remaining cleanup finishes.
 
+### `jobLockStaleSeconds`
+
+- Environment variable: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
+- Default: `300`
+- Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. A running delivery renews its lock, so this bounds how long the job of a process that died stays locked.
+- Use the same value on every process that shares the database, and keep it well above the longest a process can block its event loop.
+- `0` turns renewal and the release of stale locks off, which leaves recovery to Graphile Worker's fixed 4 hour reset and to restarts.
+
 ### `maxPoolSize`
 
 - Environment variable: `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
