@@ -19,6 +19,7 @@ import {
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
+import { QUEUE_JOURNAL_DIR } from './queue-journal.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
@@ -94,7 +95,7 @@ async function clearTaggedLocks(basedir: string, tag: string): Promise<void> {
  * @param args.dataDir - Directory for storing workflow data (default: `.workflow-data/`)
  * @param args.port - Port override for queue transport (default: auto-detected)
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
- * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
+ * @param args.recoverActiveRuns - Whether `start()` should deliver again the queue messages a dead process was delivering and re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
  * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
  *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
@@ -109,7 +110,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
-  const queue = createQueue(mergedConfig);
+  const { redeliverOrphans, ...queue } = createQueue(mergedConfig);
   const { clearCache: clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
@@ -163,6 +164,11 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             fileIdFilter,
           })) as typeof storage.runs.list,
       };
+      // First the messages a dead process was delivering, each with its own
+      // messageId: the runtime recovers a step left running under a message
+      // only when that same message comes back. The re-enqueue of active runs
+      // after it is the backstop for runs no journaled message covers.
+      await redeliverOrphans();
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {
@@ -223,6 +229,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           'hooks/by-run',
           'waits',
           'streams/runs',
+          QUEUE_JOURNAL_DIR,
         ];
         await settleAll(
           entityDirs.map(async (dir) => {

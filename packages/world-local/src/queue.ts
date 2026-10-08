@@ -19,9 +19,14 @@ import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
-import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
+import {
+  resolveBaseUrl,
+  resolveDirectBaseUrl,
+  resolveRecoverActiveRuns,
+} from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+import { createQueueJournal, type JournalEntry } from './queue-journal.js';
 
 /**
  * JSON transport that preserves Uint8Array values using the same
@@ -119,7 +124,70 @@ export type LocalQueue = Queue & {
   close(): Promise<void>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
+  /**
+   * Deliver again every journaled message whose process died before it
+   * finished, with its own messageId and a higher attempt. Called by the
+   * World's `start()`; a no-op when the queue keeps no journal.
+   */
+  redeliverOrphans(): Promise<void>;
 };
+
+/** A message the delivery loop is about to start on. */
+interface PendingMessage {
+  queueName: ValidQueueName;
+  messageId: MessageId;
+  body: Buffer;
+  headers: Record<string, string> | undefined;
+  idempotencyKey: string | undefined;
+  /** The attempt its first delivery carries. */
+  attempt: number;
+  /** How long to wait before its first delivery. */
+  delayMs: number;
+  /** For logs. */
+  runId: string | undefined;
+  stepId: string | undefined;
+}
+
+/**
+ * A journaled message, ready for the delivery loop, or `undefined` for an
+ * entry this version can't deliver.
+ */
+function fromJournal(entry: JournalEntry): PendingMessage | undefined {
+  const queueName = ValidQueueName.safeParse(entry.queueName);
+  const messageId = MessageId.safeParse(entry.messageId);
+  if (!queueName.success || !messageId.success) return undefined;
+  let message: unknown;
+  try {
+    message = JSON.parse(entry.body, jsonReviver);
+  } catch {
+    return undefined;
+  }
+  return {
+    queueName: queueName.data,
+    messageId: messageId.data,
+    body: Buffer.from(entry.body, 'utf-8'),
+    headers: entry.headers,
+    idempotencyKey: entry.idempotencyKey,
+    attempt: entry.attempt,
+    delayMs: Math.min(
+      Math.max(0, entry.dueAt - Date.now()),
+      MAX_SAFE_TIMEOUT_MS
+    ),
+    ...messageIds(message),
+  };
+}
+
+/** The `runId` and `stepId` a workflow message carries, for logs. */
+function messageIds(message: unknown): {
+  runId: string | undefined;
+  stepId: string | undefined;
+} {
+  const msg = (message ?? {}) as Record<string, unknown>;
+  return {
+    runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    stepId: typeof msg.stepId === 'string' ? msg.stepId : undefined,
+  };
+}
 
 const DETACHED_ARRAYBUFFER_ERROR =
   'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
@@ -177,31 +245,62 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
   const directHandlers = new Map<string, DirectHandler>();
 
-  const queue: Queue['queue'] = async (queueName, message, opts) => {
+  // The journal of messages this queue has accepted and not finished, so a
+  // later start() can deliver again the ones a dead process was holding. Kept
+  // only when start() recovers active runs, and only under a data directory.
+  const journal =
+    config.dataDir && resolveRecoverActiveRuns(config)
+      ? createQueueJournal(config.dataDir, config.tag)
+      : undefined;
+  let journalErrorLogged = false;
+  // Best effort: a journal that can't be written costs crash recovery of the
+  // in-flight message (start() still re-enqueues its run), never the delivery.
+  const updateJournal = async (
+    update: (j: NonNullable<typeof journal>) => Promise<void>
+  ) => {
+    if (!journal) return;
+    try {
+      await update(journal);
+    } catch (error) {
+      if (journalErrorLogged) return;
+      journalErrorLogged = true;
+      console.warn(
+        '[world-local] Could not update the queue journal. A crash may lose in-flight messages until start() re-enqueues their runs.',
+        error
+      );
+    }
+  };
+  const recordInJournal = (
+    m: PendingMessage,
+    next: { attempt: number; dueAt: number }
+  ) =>
+    updateJournal((j) =>
+      j.record({
+        messageId: m.messageId,
+        queueName: m.queueName,
+        body: m.body.toString('utf-8'),
+        ...(m.headers && { headers: m.headers }),
+        ...(m.idempotencyKey && { idempotencyKey: m.idempotencyKey }),
+        ...next,
+      })
+    );
+
+  /**
+   * Run one message's delivery loop until it is acknowledged or dropped, or
+   * the queue closes. A closed queue leaves the message in the journal for
+   * the next start().
+   */
+  const deliver = (pending: PendingMessage): void => {
+    const { queueName, messageId, body, runId, stepId } = pending;
+    const { prefix } = parseQueueName(queueName);
     const cleanup = [] as (() => void)[];
 
-    if (opts?.idempotencyKey) {
-      const existing = inflightMessages.get(opts.idempotencyKey);
-      if (existing) {
-        return { messageId: existing };
-      }
-    }
-
-    const body = transport.serialize(message);
-    const { prefix } = parseQueueName(queueName);
-    const messageId = MessageId.parse(`msg_${generateId()}`);
-
-    // Extract identifiers from the message for structured logging.
-    // Combined workflow messages carry `runId` and may include `stepId`.
-    const msg = message as Record<string, unknown>;
-    const runId = (msg.runId ?? undefined) as string | undefined;
-    const stepId = (msg.stepId ?? undefined) as string | undefined;
-
-    if (opts?.idempotencyKey) {
-      const key = opts.idempotencyKey;
-      inflightMessages.set(key, messageId);
+    if (pending.idempotencyKey) {
+      const key = pending.idempotencyKey;
       cleanup.push(() => {
-        inflightMessages.delete(key);
+        if (inflightMessages.get(key) === messageId) {
+          inflightMessages.delete(key);
+        }
       });
     }
 
@@ -212,9 +311,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // free to process other (immediate) messages until this one is ready.
       // VQS-side queues honor delaySeconds at the broker, so this brings
       // world-local in line with production behavior.
-      if (opts?.delaySeconds && opts.delaySeconds > 0) {
-        const delayMs = Math.min(opts.delaySeconds * 1000, MAX_SAFE_TIMEOUT_MS);
-        await setTimeout(delayMs, undefined, { signal: closeSignal });
+      if (pending.delayMs > 0) {
+        await setTimeout(pending.delayMs, undefined, { signal: closeSignal });
       }
 
       const acquireSlot = async () => {
@@ -251,12 +349,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // not the loop counter, is the attempt the handler sees via
       // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
       // Failures before response headers do not advance this; body failures do,
-      // because the handler has already accepted that delivery.
-      let delivery = 0;
+      // because the handler has already accepted that delivery. A message
+      // redelivered after a crash starts past the attempts it already used.
+      let delivery = pending.attempt - 1;
       try {
         for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           const headers: Record<string, string> = {
-            ...opts?.headers,
+            ...pending.headers,
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
@@ -339,11 +438,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
                 // When this fires early, the handler recalculates remaining time from
                 // persistent state and returns another timeoutSeconds if needed.
-                if (timeoutSeconds > 0) {
-                  const timeoutMs = Math.min(
-                    timeoutSeconds * 1000,
-                    MAX_SAFE_TIMEOUT_MS
-                  );
+                const timeoutMs = Math.min(
+                  timeoutSeconds * 1000,
+                  MAX_SAFE_TIMEOUT_MS
+                );
+                // A wake is this same message again: journal its next attempt.
+                await recordInJournal(pending, {
+                  attempt: delivery + 1,
+                  dueAt: Date.now() + timeoutMs,
+                });
+                if (timeoutMs > 0) {
                   await waitWithoutSlot(timeoutMs);
                   // A delayed wake doesn't spend the safety limit.
                   loop--;
@@ -369,6 +473,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
           // local dev linear 5s is sufficient: the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
+          await recordInJournal(pending, {
+            attempt: delivery + 1,
+            dueAt: Date.now() + 5000,
+          });
           await waitWithoutSlot(5000);
         }
 
@@ -410,13 +518,79 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         }
       })
-      .finally(() => {
+      .finally(async () => {
         for (const fn of cleanup) {
           fn();
         }
+        // Acknowledged or dropped. A message the queue's close() interrupted
+        // isn't finished, so it stays journaled for the next start().
+        if (!closeSignal.aborted) {
+          await updateJournal((j) => j.remove(messageId));
+        }
       });
+  };
 
-    return { messageId };
+  const holdIdempotencyKey = (pending: PendingMessage) => {
+    if (pending.idempotencyKey) {
+      inflightMessages.set(pending.idempotencyKey, pending.messageId);
+    }
+  };
+
+  const queue: Queue['queue'] = async (queueName, message, opts) => {
+    if (opts?.idempotencyKey) {
+      const existing = inflightMessages.get(opts.idempotencyKey);
+      if (existing) {
+        return { messageId: existing };
+      }
+    }
+
+    const pending: PendingMessage = {
+      queueName,
+      messageId: MessageId.parse(`msg_${generateId()}`),
+      body: transport.serialize(message),
+      headers: opts?.headers,
+      idempotencyKey: opts?.idempotencyKey,
+      attempt: 1,
+      delayMs:
+        opts?.delaySeconds && opts.delaySeconds > 0
+          ? Math.min(opts.delaySeconds * 1000, MAX_SAFE_TIMEOUT_MS)
+          : 0,
+      // Extract identifiers from the message for structured logging.
+      // Combined workflow messages carry `runId` and may include `stepId`.
+      ...messageIds(message),
+    };
+    // Before the journal write, so a concurrent queue() with the same key
+    // returns this message instead of sending a second one.
+    holdIdempotencyKey(pending);
+    // Journaled before queue() resolves, so a message it accepted survives a
+    // crash of this process.
+    await recordInJournal(pending, {
+      attempt: 1,
+      dueAt: Date.now() + pending.delayMs,
+    });
+    deliver(pending);
+    return { messageId: pending.messageId };
+  };
+
+  const redeliverOrphans = async () => {
+    if (!journal) return;
+    let entries: JournalEntry[] = [];
+    await updateJournal(async (j) => {
+      entries = await j.claimOrphans();
+    });
+    let redelivered = 0;
+    for (const entry of entries) {
+      const pending = fromJournal(entry);
+      if (!pending) continue;
+      holdIdempotencyKey(pending);
+      deliver(pending);
+      redelivered++;
+    }
+    if (redelivered > 0) {
+      debugLog(
+        `[world-local] Redelivering ${redelivered} message(s) whose process stopped before they finished`
+      );
+    }
   };
 
   const HeaderParser = z.compile(
@@ -499,6 +673,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
     },
+    redeliverOrphans,
     async close() {
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)
       // may close the queue more than once.
