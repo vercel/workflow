@@ -84,7 +84,12 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
-Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
+Whether `start()` recovers the work a previous process left unfinished. Default: `true`. With it on:
+
+- `start()` delivers again every queue message whose process died before the message finished, with the same message ID and a higher attempt, so the runtime can resume a step that was running under it straight away. For this, once `start()` has run, the queue journals each message it accepts under the data directory until the message is acknowledged.
+- `start()` then re-enqueues pending and running runs found in the data directory.
+
+Set to `0` or `false` to skip both and leave stale runs untouched. With it off, or in a process that never calls `start()`, the queue keeps no journal.
 
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
@@ -121,11 +126,13 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 Each run's event and step files are stored in their own directory (`events/<runId>/`, `steps/<runId>/`). A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
 
+`queue/` holds one file per queue message that hasn't been acknowledged yet, naming the process delivering it (see [`WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`](#workflow_local_recover_active_runs)).
+
 ## Limitations
 
 The Local World is designed for development, not production:
 
-- **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
+- **Single-process queue**: Messages are delivered by the process that accepted them. If that process dies, its messages are delivered again only when the next process calls `start()`, and only while [`WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`](#workflow_local_recover_active_runs) is on.
 - **Filesystem storage**: Data is stored in local JSON files.
 - **Single instance**: The Local World cannot handle distributed deployments.
 - **No authentication**: The Local World is suitable only for local development.
