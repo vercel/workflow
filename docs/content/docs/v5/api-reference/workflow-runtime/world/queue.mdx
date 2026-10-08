@@ -81,7 +81,7 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 
 #### What the callback can rely on
 
-The callback needs `meta.messageId`, `meta.attempt` and its own result, and nothing about how the World holds a delivery. Every World gives it three rules:
+The callback needs `meta.messageId`, `meta.attempt` and its own result, and nothing about how the World holds a delivery. A World gives it three rules. Every bundled World keeps the first and the third; the table below shows how each one keeps the second, and where it falls short today:
 
 - **A throw brings the same message back.** The World calls the callback again with the same `meta.messageId` and an incremented `meta.attempt`, after its retry backoff and up to its retry limit.
 - **A crash brings the same message back.** While the callback runs, the World keeps its message from other handlers, and renews whatever holds the delivery (a visibility timeout, a job lock) itself. If the process running the callback dies, the World delivers the same message again with an incremented `meta.attempt`. The table below shows how long that takes.
@@ -90,7 +90,7 @@ The callback needs `meta.messageId`, `meta.attempt` and its own result, and noth
 | World | Throw | Crash | Wake (`{ timeoutSeconds }`) |
 |-------|-------|-------|-----------------------------|
 | Vercel | Same message, after a backoff that starts at 5 seconds and doubles per delivery up to 15 minutes. A thrown error's numeric `retryAfter` is a lower bound. | Same message, once its visibility timeout lapses: about 300 seconds after the delivery started or the queue client last renewed it (every 60 seconds while the callback runs). | A new message, whose `meta.attempt` starts at 1. A delay is capped at about 23 hours per wake. |
-| Postgres | Same message, after Graphile Worker's exponential backoff. | Same message, once Graphile Worker resets the job's lock, 4 hours after the job was claimed. A restart's `start()` re-enqueues each active run sooner, as a new message. | Same `meta.messageId`, and `meta.attempt` starts again at 1. |
+| Postgres | Same message, after Graphile Worker's exponential backoff. | Same message, once Graphile Worker resets the job's lock, 4 hours after the job was claimed. The lock isn't renewed, so a callback still running then can be delivered again while it runs. A restart's `start()` re-enqueues each active run sooner, as a new message. | Same `meta.messageId`, and `meta.attempt` starts again at 1. |
 | Local | Same message, after 5 seconds. | Not kept. The queue is held in memory, so a crash loses the delivery, and the next `start()` re-enqueues each active run as a new message. | Same message, and `meta.attempt` is incremented. |
 
 Work that an earlier delivery recorded under this `messageId` and left open is this delivery's to recover: a callback never returns with work open, so that delivery threw or died. It may still be running if the World only lost its hold on it, for example after a stalled renewal or a frozen process, so the recovery must be fenced. `meta.attempt > 1` only says this isn't the message's first delivery. The runtime's inline step ownership works this way:

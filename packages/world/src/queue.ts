@@ -610,17 +610,17 @@ export interface Queue {
    *
    * A handler relies on `meta.messageId`, `meta.attempt` and its own result,
    * and on nothing else about how the World holds a delivery (a renewed
-   * visibility timeout, a job lock, the process that runs it). Every World
+   * visibility timeout, a job lock, the process that runs it). A World
    * gives a handler three rules:
    *
    * - **A throw brings the same message back.** A rejected handler is called
    *   again with the same `meta.messageId` and `meta.attempt` incremented,
    *   after the World's retry backoff and up to its retry limit.
    * - **A crash brings the same message back.** While a handler runs, the
-   *   World keeps its message from every other handler and renews whatever
-   *   holds the delivery without the handler's help. If the process running
-   *   the handler dies, or the World loses its hold on the delivery, the
-   *   World SHOULD deliver the same message again, with `meta.attempt`
+   *   World SHOULD keep its message from every other handler, renewing
+   *   whatever holds the delivery without the handler's help. If the process
+   *   running the handler dies, or the World loses its hold on the delivery,
+   *   the World SHOULD deliver the same message again, with `meta.attempt`
    *   incremented, within a bound it documents.
    * - **A return means done.** The delivery is acknowledged. An ordinary
    *   result of `{ timeoutSeconds: n }` also schedules a wake: the World
