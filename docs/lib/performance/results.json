@@ -16,7 +16,7 @@
   "workloads": {
     "timing": {
       "v4": {
-        "label": "v4 stable · 4.8.12",
+        "label": "workflow@4.8.12",
         "sdk": "4.8.12",
         "runs": 10,
         "ttfs": {
@@ -33,8 +33,8 @@
         }
       },
       "next": {
-        "label": "main · e6bd692 · 5.1.0-e6bd692",
-        "sdk": "5.1.0-e6bd692",
+        "label": "workflow@5.2.0",
+        "sdk": "5.2.0",
         "runs": 10,
         "ttfs": {
           "n": 10,
@@ -52,7 +52,7 @@
     },
     "deep": {
       "v4": {
-        "label": "v4 stable · 4.8.12",
+        "label": "workflow@4.8.12",
         "sdk": "4.8.12",
         "runs": 5,
         "early": {
@@ -81,8 +81,8 @@
         }
       },
       "next": {
-        "label": "main · e6bd692 · 5.1.0-e6bd692",
-        "sdk": "5.1.0-e6bd692",
+        "label": "workflow@5.2.0",
+        "sdk": "5.2.0",
         "runs": 5,
         "early": {
           "n": 95,
@@ -112,7 +112,7 @@
     },
     "parallel": {
       "v4": {
-        "label": "v4 stable · 4.8.12",
+        "label": "workflow@4.8.12",
         "sdk": "4.8.12",
         "runs": 25,
         "first": {
@@ -135,8 +135,8 @@
         }
       },
       "next": {
-        "label": "main · e6bd692 · 5.1.0-e6bd692",
-        "sdk": "5.1.0-e6bd692",
+        "label": "workflow@5.2.0",
+        "sdk": "5.2.0",
         "runs": 25,
         "first": {
           "n": 25,
@@ -160,7 +160,7 @@
     },
     "resume": {
       "v4": {
-        "label": "v4 stable · 4.8.12",
+        "label": "workflow@4.8.12",
         "sdk": "4.8.12",
         "runs": 25,
         "ttr": {
@@ -171,8 +171,8 @@
         }
       },
       "next": {
-        "label": "main · e6bd692 · 5.1.0-e6bd692",
-        "sdk": "5.1.0-e6bd692",
+        "label": "workflow@5.2.0",
+        "sdk": "5.2.0",
         "runs": 25,
         "ttr": {
           "n": 125,
@@ -184,7 +184,7 @@
     },
     "stream": {
       "v4": {
-        "label": "v4 stable · 4.8.12",
+        "label": "workflow@4.8.12",
         "sdk": "4.8.12",
         "runs": 10,
         "ctt": {
@@ -203,8 +203,8 @@
         "stalledRuns": 6
       },
       "next": {
-        "label": "main · e6bd692 · 5.1.0-e6bd692",
-        "sdk": "5.1.0-e6bd692",
+        "label": "workflow@5.2.0",
+        "sdk": "5.2.0",
         "runs": 10,
         "ctt": {
           "n": 25930,
