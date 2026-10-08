@@ -999,6 +999,9 @@ export class PreconditionFailedError extends WorkflowWorldError {
   }
 }
 
+/** Error code a World uses for an {@link InBandSupersededError} refusal. */
+export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
+
 /**
  * Thrown when a World refuses an in-band write (a write made by the run's
  * orchestrator) because another orchestrator invocation of the same run has
@@ -1019,9 +1022,6 @@ export class PreconditionFailedError extends WorkflowWorldError {
  *   adopt it as its own count, since that would make it a writer without
  *   having seen the events the count stands for.
  */
-/** Error code a World uses for an {@link InBandSupersededError} refusal. */
-export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
-
 export class InBandSupersededError extends WorkflowWorldError {
   readonly seq?: number;
   readonly seqInBand?: number;

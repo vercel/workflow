@@ -11,6 +11,8 @@
 
 import {
   EntityConflictError,
+  InBandSupersededError,
+  PreconditionFailedError,
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -487,6 +489,29 @@ describe('retry is owned by the shared policy, not the adapter', () => {
     await expect(
       createWorkflowRunEventV4(input, { token: 'test-token' })
     ).rejects.toThrow();
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a 412 in-band-superseded reply to InBandSupersededError with the counters', async () => {
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'error', status: 412 },
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          error: 'in-band-superseded',
+          message: 'superseded',
+          seq: 9,
+          seqInBand: 4,
+        })
+      ),
+    });
+
+    const err = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    }).catch((e: unknown) => e);
+
+    expect(InBandSupersededError.is(err)).toBe(true);
+    expect(PreconditionFailedError.is(err)).toBe(false);
+    expect(err).toMatchObject({ seq: 9, seqInBand: 4 });
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
 

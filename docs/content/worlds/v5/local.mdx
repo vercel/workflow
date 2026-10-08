@@ -117,6 +117,10 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 `createWorld()` also accepts `tag`, which scopes local storage files to a suffix. It is mainly used by test harnesses that share one `.workflow-data` directory.
 
+## Data directory layout
+
+Each run's event and step files are stored in their own directory (`events/<runId>/`, `steps/<runId>/`). A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
+
 ## Limitations
 
 The Local World is designed for development, not production:

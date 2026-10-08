@@ -14,6 +14,7 @@ import {
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
+  settleAll,
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -27,6 +28,7 @@ export { UnwritableDataDirError } from './build-target-mismatch.js';
 // Re-export init types and utilities for consumers
 export {
   DataDirAccessError,
+  DataDirLayoutError,
   DataDirVersionError,
   ensureDataDir,
   initDataDir,
@@ -42,6 +44,48 @@ export type LocalWorld = World & {
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };
+
+/**
+ * Delete one tag's lock files: dispose locks, terminal markers, create
+ * claims and staged hook events, all named `.locks/<kind>/<id>.<state>.<tag>`.
+ *
+ * `.locks` is shared by every tag, and a lock is the durable record that its
+ * hook or entity is closed, so a tagged `clear()` must leave other tags' locks
+ * alone. Vitest workers each clear under their own tag when a test file
+ * starts, while other workers' runs are in flight: deleting a disposed hook's
+ * lock there makes it look live to the token claim rebuild, and the run that
+ * recreates its token then conflicts with its own disposed hook.
+ */
+async function clearTaggedLocks(basedir: string, tag: string): Promise<void> {
+  const locksDir = path.join(basedir, '.locks');
+  let lockKindEntries: import('node:fs').Dirent[];
+  try {
+    lockKindEntries = await fs.readdir(locksDir, { withFileTypes: true });
+  } catch {
+    lockKindEntries = [];
+  }
+  await settleAll(
+    lockKindEntries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
+        const lockKindDir = path.join(locksDir, entry.name);
+        const lockNames = await fs
+          .readdir(lockKindDir)
+          .catch(() => [] as string[]);
+        await settleAll(
+          lockNames
+            .filter((name) => name.endsWith(`.${tag}`))
+            .map((name) =>
+              // Recursive: a run's staged hook events are a directory.
+              fs.rm(path.join(lockKindDir, name), {
+                recursive: true,
+                force: true,
+              })
+            )
+        );
+      })
+  );
+}
 
 /**
  * Creates a local world instance that combines queue, storage, and streamer functionalities.
@@ -148,7 +192,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         const hooksDir = path.join(basedir, 'hooks');
         const taggedHookFiles = await listTaggedFiles(hooksDir, tag);
         const { HookSchema } = await import('@workflow/world');
-        await Promise.all(
+        await settleAll(
           taggedHookFiles.map(async (hookFile) => {
             const hook = await readJSON(
               path.join(hooksDir, hookFile),
@@ -170,24 +214,39 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           })
         );
 
-        // Delete tagged entity files across all directories
+        // Delete tagged entity files across all directories. Steps and
+        // events live one directory per run, so walk only this tag's runs
+        // (found from `runs/*.<tag>.json`) rather than every run the shared
+        // data directory holds.
+        const runScopedDirs = (
+          await listTaggedFiles(path.join(basedir, 'runs'), tag)
+        ).flatMap((file) => {
+          const runId = file.slice(0, -`.${tag}.json`.length);
+          return [path.join('steps', runId), path.join('events', runId)];
+        });
         const entityDirs = [
           'runs',
-          'steps',
-          'events',
+          ...runScopedDirs,
           'hooks',
           'hooks/by-run',
           'waits',
           'streams/runs',
         ];
-        await Promise.all(
+        await settleAll(
           entityDirs.map(async (dir) => {
             const fullDir = path.join(basedir, dir);
             const files = await listTaggedFiles(fullDir, tag);
-            await Promise.all(
+            await settleAll(
               files.map((f) => deleteJSON(path.join(fullDir, f)))
             );
           })
+        );
+        // Drop the run directories that clearing left empty. `rmdir` refuses
+        // a non-empty one, so another tag's (or untagged) files keep theirs.
+        await settleAll(
+          runScopedDirs.map((dir) =>
+            fs.rmdir(path.join(basedir, dir)).catch(() => {})
+          )
         );
         // Delete tagged hook-index entries (nested per-key directories)
         for (const indexDir of ['token-index', 'id-index']) {
@@ -200,22 +259,19 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           } catch {
             keyDirEntries = [];
           }
-          await Promise.all(
+          await settleAll(
             keyDirEntries
               .filter((entry) => entry.isDirectory())
               .map(async (entry) => {
                 const keyDir = path.join(fullIndexDir, entry.name);
                 const taggedEntryFiles = await listTaggedFiles(keyDir, tag);
-                await Promise.all(
+                await settleAll(
                   taggedEntryFiles.map((f) => deleteJSON(path.join(keyDir, f)))
                 );
               })
           );
         }
-        // Clean up lock files used for atomic terminal-state guards
-        await fs
-          .rm(path.join(basedir, '.locks'), { recursive: true, force: true })
-          .catch(() => {});
+        await clearTaggedLocks(basedir, tag);
         // Delete tagged stream chunks (.{tag}.bin files). Chunks are sharded
         // one directory per stream (streams/chunks/<streamName>/<chunkId>.{tag}.bin),
         // so iterate each per-stream directory: the top-level chunks dir now
@@ -230,7 +286,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         } catch {
           streamDirEntries = [];
         }
-        await Promise.all(
+        await settleAll(
           streamDirEntries
             .filter((entry) => entry.isDirectory())
             .map(async (entry) => {
@@ -240,7 +296,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
                 tag,
                 '.bin'
               );
-              await Promise.all(
+              await settleAll(
                 taggedBinFiles.map((f) =>
                   fs.unlink(path.join(streamChunkDir, f)).catch(() => {})
                 )

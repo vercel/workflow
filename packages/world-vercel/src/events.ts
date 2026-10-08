@@ -637,6 +637,13 @@ export async function createWorkflowRunEventBatch(
       ...(fence?.eventCount !== undefined ? { maxSlot: fence.eventCount } : {}),
       payload,
       ...meta,
+      // The batch is one fenced allocation: the backend requires every frame
+      // to carry the same fence. Spread after `meta` so nothing derived from
+      // the event data can override it.
+      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+      ...(params?.expectedSeqInBand !== undefined
+        ? { expectedSeqInBand: params.expectedSeqInBand }
+        : {}),
     };
   });
 
@@ -667,7 +674,7 @@ export async function createWorkflowRunEventBatch(
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
     events[0].event.eventType,
-    { batchIdempotent: retryConvergent }
+    { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
   // A fenced batch is allocated in one step, so a refusal refuses every event
@@ -740,6 +747,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
         afterStepBody: params?.afterStepBody === true,
+        inBand: params?.inBand === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -879,6 +887,12 @@ async function createWorkflowRunEventInner(
       ? { expectedSeqInBand: params.expectedSeqInBand }
       : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    // In-band writer fence. The backend refuses a stale in-band write with
+    // 412 `in-band-superseded` (InBandSupersededError).
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log
