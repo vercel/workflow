@@ -106,7 +106,7 @@ A shorter lease has costs:
 - **Renewal calls need room.** On the Vercel World, each renewal is bounded by [`WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_vercel_queue_timeout_ms), which defaults to 30 seconds. A single hung renewal at that default can outlast a 30-second lease. Use `60` or more, or lower the queue timeout, for handlers that run longer than a lease.
 - **Pushed deliveries start on the queue's lease.** On the Vercel World, a message the queue pushes together with its payload starts on the queue's own 300-second lease, and the handler's lease takes over at the client's first renewal, about 60 seconds in. The queue also schedules its first check for a lapsed lease from that original 300 seconds. A pushed delivery whose handler dies early is therefore still redelivered about 300 seconds after it started. The handler's lease applies in full to deliveries the handler claims itself, and from the queue's first lease check onward.
 
-#### `{ timeoutSeconds }` across Worlds
+#### Rescheduling across Worlds
 
 When `callback` returns `{ timeoutSeconds }`, the World delivers the same payload again after that many seconds. How it does that differs:
 

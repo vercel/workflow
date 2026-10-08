@@ -294,7 +294,7 @@ interface Queue {
 - **A delivery is held by something else** (the process that runs it, a database row lock): ignore it.
 - **Your World delegates to another World's queue** that leases deliveries: pass `options` through.
 
-### Rescheduling with `{ timeoutSeconds }`
+### Rescheduling a delivery
 
 When an ordinary (non-`invoke`) handler result is `{ timeoutSeconds }`, deliver the same payload again after that many seconds, and do not lose that wakeup if the process dies between scheduling it and acknowledging the current delivery. The bundled Worlds differ in how they redeliver:
 
