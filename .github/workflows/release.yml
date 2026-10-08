@@ -69,8 +69,9 @@ jobs:
       # changesets are pending. Under that rule a "Version Packages" PR merged
       # without every pending changeset strands its versions: every later run,
       # re-runs included, sees the leftover changeset and only versions. 5.2.0
-      # was lost this way when the run that should have added #4733's changeset
-      # to #4687 died on a GitHub 502 and #4687 was merged stale. A queued run
+      # was stranded this way when the run that should have added #4733's
+      # changeset to #4687 died on a GitHub 502 and #4687 was merged stale. It
+      # was published by dispatching this workflow on #4687's head. A queued run
       # cancelled by a newer push (see `concurrency` above) strands a release
       # the same way with no outage at all. So the registry decides whether to
       # publish, and the release PR is still refreshed in the same run.
