@@ -106,10 +106,12 @@ const graphileLogger = createGraphileLogger();
  * the workflow body inline, so response headers arrive only once that work is
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
- * same steps). Crash recovery does not need one: a running delivery renews its
- * job lock, and a job whose lock goes unrenewed for `jobLockStaleSeconds`
- * (because its process died) is released for redelivery by any other process
- * (see `job-lease.ts`), plus `reenqueueActiveRuns` on start.
+ * same steps). Crash recovery does not need one: `reenqueueActiveRuns`
+ * re-enqueues active runs on start, and with `jobLockStaleSeconds` set a
+ * running delivery renews its job lock and any other process releases a job
+ * whose lock goes unrenewed (because its process died) for redelivery (see
+ * `job-lease.ts`). Without it, Graphile Worker resets a dead worker's lock
+ * only after 4 hours.
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;

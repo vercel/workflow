@@ -50,9 +50,9 @@ describe('resolveJobLockStaleSeconds', () => {
     vi.restoreAllMocks();
   });
 
-  it('defaults to 300 seconds', () => {
-    expect(resolveJobLockStaleSeconds()).toBe(300);
-    expect(DEFAULT_JOB_LOCK_STALE_SECONDS).toBe(300);
+  it('defaults to 0 (off)', () => {
+    expect(resolveJobLockStaleSeconds()).toBe(0);
+    expect(DEFAULT_JOB_LOCK_STALE_SECONDS).toBe(0);
   });
 
   it('reads WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS, where 0 disables', () => {
@@ -68,11 +68,11 @@ describe('resolveJobLockStaleSeconds', () => {
     expect(resolveJobLockStaleSeconds(0)).toBe(0);
   });
 
-  it('warns and falls back to the default for an invalid environment value', () => {
+  it('warns and falls back to the default (off) for an invalid environment value', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     for (const raw of ['-1', '0.5', 'soon']) {
       process.env[JOB_LOCK_STALE_SECONDS_ENV] = raw;
-      expect(resolveJobLockStaleSeconds()).toBe(300);
+      expect(resolveJobLockStaleSeconds()).toBe(0);
     }
     expect(warn).toHaveBeenCalledTimes(3);
   });

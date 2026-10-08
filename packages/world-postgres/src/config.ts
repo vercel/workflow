@@ -25,7 +25,9 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    * timers (a blocked event loop) or getting a pool connection. `0` turns
    * renewal and the release of stale locks off, which leaves recovery to
    * Graphile Worker's fixed 4 hour reset and to restarts.
-   * Defaults to WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS, then 300.
+   * Defaults to WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS, then `0` (off).
+   * 30 is a good value when more than one process shares the database; turn
+   * it on once every process runs a version that renews its locks.
    */
   jobLockStaleSeconds?: number;
   /**

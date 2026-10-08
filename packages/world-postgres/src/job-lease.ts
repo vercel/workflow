@@ -2,10 +2,15 @@ import type { Pool } from 'pg';
 
 /**
  * Seconds a claimed Graphile job's lock may go unrenewed before another
- * process releases it for redelivery. Matches the visibility window a queue
- * message has on Vercel Queues.
+ * process releases it for redelivery. Off (`0`) by default: during a rolling
+ * upgrade, a process on an earlier version neither renews its locks nor fences
+ * its acknowledgement, so if an upgraded process released one of its long
+ * deliveries, the old holder's unfenced `completeJob` could delete the
+ * successor's row when it finished. Deployments with more than one process
+ * should turn it on (30 seconds is a good value) once every process runs a
+ * version that renews.
  */
-export const DEFAULT_JOB_LOCK_STALE_SECONDS = 300;
+export const DEFAULT_JOB_LOCK_STALE_SECONDS = 0;
 export const JOB_LOCK_STALE_SECONDS_ENV =
   'WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS';
 
@@ -31,7 +36,7 @@ export function resolveJobLockStaleSeconds(configured?: number): number {
   const parsed = Number(raw);
   if (!isValidStaleSeconds(parsed)) {
     console.warn(
-      `[world-postgres] Ignoring ${JOB_LOCK_STALE_SECONDS_ENV}=${JSON.stringify(raw)}: expected 0 (disabled) or a number of seconds of at least 1. Using ${DEFAULT_JOB_LOCK_STALE_SECONDS}.`
+      `[world-postgres] Ignoring ${JOB_LOCK_STALE_SECONDS_ENV}=${JSON.stringify(raw)}: expected 0 (disabled) or a number of seconds of at least 1. Using ${DEFAULT_JOB_LOCK_STALE_SECONDS} (disabled).`
     );
     return DEFAULT_JOB_LOCK_STALE_SECONDS;
   }
