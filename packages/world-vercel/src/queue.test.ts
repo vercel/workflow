@@ -1520,7 +1520,6 @@ describe('queueBatch', () => {
   });
   afterEach(() => {
     delete process.env.VERCEL_DEPLOYMENT_ID;
-    delete process.env.WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE;
     mockSendBatch.mockReset();
   });
 
@@ -1575,42 +1574,6 @@ describe('queueBatch', () => {
     expect(results.map((r) => r.messageId)).toEqual(
       Array.from({ length: 10 }, (_, i) => `m-key-${i}`)
     );
-  });
-
-  it('sends one request per message when WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE=1', async () => {
-    process.env.WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE = '1';
-    mockSendBatch.mockImplementation(echoSent);
-    const queue = createQueue();
-    assert(queue.queueBatch);
-
-    const results = await queue.queueBatch('__wkf_workflow_test', entries(3));
-
-    const calls = mockSendBatch.mock.calls as [string, unknown[]][];
-    expect(calls.map(([, messages]) => messages.length)).toEqual([1, 1, 1]);
-    expect(results.map((r) => r.messageId)).toEqual([
-      'm-key-0',
-      'm-key-1',
-      'm-key-2',
-    ]);
-  });
-
-  it('clamps WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE to the 100-message VQS cap', async () => {
-    process.env.WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE = '1000';
-    mockSendBatch.mockImplementation(echoSent);
-    const queue = createQueue();
-    assert(queue.queueBatch);
-
-    const results = await queue.queueBatch('__wkf_workflow_test', entries(140));
-
-    expect(mockSendBatch).toHaveBeenCalledTimes(2);
-    expect(mockSendBatch.mock.calls[0][1]).toHaveLength(100);
-    expect(mockSendBatch.mock.calls[1][1]).toHaveLength(40);
-    // The split must not be observable in the returned order.
-    expect(results).toHaveLength(140);
-    expect(results[0].messageId).toBe('m-key-0');
-    expect(results[99].messageId).toBe('m-key-99');
-    expect(results[100].messageId).toBe('m-key-100');
-    expect(results[139].messageId).toBe('m-key-139');
   });
 
   it('lets every request settle before rejecting with the first failure', async () => {

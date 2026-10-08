@@ -3,7 +3,6 @@ import type { Transport } from '@vercel/queue';
 import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
 import { globalSingleton } from '@workflow/utils';
 import {
-  envNumber,
   MessageId,
   parseQueueName,
   type Queue,
@@ -26,16 +25,10 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js';
 
 /**
- * Most messages one `experimental_sendBatch` request may carry. VQS caps a
- * batch at 100 and rejects the whole request above it, so this is the API's
- * ceiling, and the upper clamp on {@link getQueueSendBatchSize}.
- */
-const MAX_QUEUE_SEND_BATCH = 100;
-
-/**
  * Messages per `experimental_sendBatch` request when `queueBatch` publishes a
  * fan-out. `queueBatch` splits larger inputs into requests of this size and
- * sends them concurrently.
+ * sends them concurrently. VQS rejects a whole request above 100 messages, so
+ * this must stay at or below 100.
  *
  * This is a latency setting, not a limit, and it trades two costs measured on
  * durabench production fan-outs (Vercel World, iad1, 64 one-step branches,
@@ -56,18 +49,8 @@ const MAX_QUEUE_SEND_BATCH = 100;
  * chunk, while 2 and 1 per request were no better and worse. Requests ride
  * the queue client's own connection pool (see `QUEUE_AGENT_CONNECTIONS` in
  * `http-client.ts`).
- *
- * Override with `WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE`.
  */
 export const QUEUE_SEND_BATCH_SIZE = 4;
-
-/** Effective messages per batch-send request, read per call so tests can override it. */
-export const getQueueSendBatchSize = (): number =>
-  envNumber('WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE', QUEUE_SEND_BATCH_SIZE, {
-    integer: true,
-    min: 1,
-    max: MAX_QUEUE_SEND_BATCH,
-  });
 
 /**
  * Mirrors `@vercel/queue`'s own kill switch. `queueBatch` injects trace
@@ -748,8 +731,8 @@ export function createQueue(config?: APIConfig): Queue {
     // Group by the routing dimensions a single VQS request cannot span. In
     // the case this exists for — one run's fan-out to one logical queue —
     // every message lands in one group, which is then sent as concurrent
-    // requests of `getQueueSendBatchSize()` messages each (see
-    // QUEUE_SEND_BATCH_SIZE for why small requests). Mixed input still
+    // requests of QUEUE_SEND_BATCH_SIZE messages each (see its comment for
+    // why small requests). Mixed input still
     // works, it just costs at least one request per distinct route.
     //
     // `topic` is one of those dimensions, which makes this a no-op under
@@ -793,7 +776,7 @@ export function createQueue(config?: APIConfig): Queue {
       groups.set(key, group);
     }
 
-    const batchSize = getQueueSendBatchSize();
+    const batchSize = QUEUE_SEND_BATCH_SIZE;
     const requests: Promise<void>[] = [];
     for (const { route, entries } of groups.values()) {
       const client = clientFor(route);

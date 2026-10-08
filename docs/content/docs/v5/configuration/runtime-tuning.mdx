@@ -340,13 +340,6 @@ A `dispatcher` passed to `createVercelWorld()` still wins over this variable. Th
 - Clamped to `[1, 1024]`.
 - Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.
 
-### `WORKFLOW_VERCEL_QUEUE_SEND_BATCH_SIZE`
-
-- Default: `4`
-- Most messages one batched publish request to the queue service carries. When the runtime publishes a wide `Promise.all` fan-out, the Vercel World splits it into requests of this size and sends them concurrently.
-- Clamped to `[1, 100]`. 100 is the queue service's own per-request limit.
-- A latency setting that balances two costs. The queue service delivers a request's messages later the more messages the request carried: in production, about 45 ms after the request was accepted for 4 messages per request, 105 ms for 16 and 155 ms for 32. But more requests also take longer to leave one instance: four messages per request delayed the fan-out's publish by up to 20 ms, and one or two per request by 90 to 160 ms. A queued branch can't start before its message arrives, and 4 is where the two balanced in production.
-
 ## Queue namespace
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
