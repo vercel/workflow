@@ -1011,8 +1011,14 @@ describe('workflow arguments', () => {
       await writer.close();
       await Promise.all(ops);
 
-      expect(runsGet).toHaveBeenCalledWith('wrun_parent');
-      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(parentRun);
+      // Metadata only: the lookup needs the owner's deploymentId, not its
+      // payloads (#4645).
+      expect(runsGet).toHaveBeenCalledWith('wrun_parent', {
+        resolveData: 'none',
+      });
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_parent', {
+        deploymentId: parentRun.deploymentId,
+      });
     } finally {
       vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
     }
