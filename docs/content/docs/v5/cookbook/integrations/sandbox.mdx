@@ -173,6 +173,9 @@ export async function sandboxSessionWorkflow() {
   // Create the hook once, outside the loop: reusing the same token from inside // [!code highlight]
   // the loop would throw HookConflictError. // [!code highlight]
   const hook = commandHook.create({ token: workflowRunId });
+  // Keep one pending command across iterations, so a command that arrives // [!code highlight]
+  // while a timer branch runs still reaches the next wait. // [!code highlight]
+  let nextCommand = hook.then((p) => p.command); // [!code highlight]
 
   const startedAt = Date.now();
 
@@ -207,8 +210,9 @@ export async function sandboxSessionWorkflow() {
       if (hibernated && snapshot) {
         // While hibernated, the VM is already stopped. Wait for the next
         // command: no idle timer, no compute cost.
-        const payload = await hook;
-        if (payload.command === "/destroy") { destroyed = true; break; }
+        const command = await nextCommand;
+        nextCommand = hook.then((p) => p.command);
+        if (command === "/destroy") { destroyed = true; break; }
 
         await emit({ type: "status", state: "resuming", at: Date.now() });
         sandbox = await Sandbox.create({ // [!code highlight]
@@ -225,7 +229,7 @@ export async function sandboxSessionWorkflow() {
         });
 
         counter += 1;
-        await runCommandAndStream(sandbox, `cmd-${counter}`, payload.command);
+        await runCommandAndStream(sandbox, `cmd-${counter}`, command);
         lastActivityAt = Date.now();
         await emit({ type: "activity", at: lastActivityAt });
         continue;
@@ -238,7 +242,7 @@ export async function sandboxSessionWorkflow() {
       const sleepMs = Math.max(0, wakeAt - Date.now());
 
       const outcome = await Promise.race([ // [!code highlight]
-        hook.then((p) => ({ type: "command" as const, command: p.command })),
+        nextCommand.then((command) => ({ type: "command" as const, command })),
         sleep(`${sleepMs}ms`).then(() => ({ type: "timer" as const })),
       ]);
 
@@ -275,6 +279,7 @@ export async function sandboxSessionWorkflow() {
         continue;
       }
 
+      nextCommand = hook.then((p) => p.command);
       if (outcome.command === "/destroy") { destroyed = true; break; }
 
       counter += 1;
@@ -519,7 +524,9 @@ The sample treats a missing or stale `runId` as a request for a new session. For
 
 ### Keep the hook outside the loop
 
-Each iteration's `hook.then(...)` attaches a listener to the same hook instance. Creating a new hook per iteration with the same token throws `HookConflictError`. One hook, one token (`workflowRunId`), reused every iteration.
+Creating a new hook per iteration with the same token throws `HookConflictError`. One hook, one token (`workflowRunId`), reused every iteration.
+
+Race the same pending `nextCommand` promise until it resolves, and only then call `hook.then()` again. A `hook.then()` left behind by a race the timer won still takes the next command, so a fresh `hook.then()` per race would miss a command sent while the workflow snapshots or refreshes the sandbox. See [Waiting with a timeout](/docs/foundations/hooks#waiting-with-a-timeout).
 
 ## Key APIs
 
