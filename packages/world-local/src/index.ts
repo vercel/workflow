@@ -110,7 +110,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
-  const { redeliverOrphans, ...queue } = createQueue(mergedConfig);
+  const { recoverDeliveries, ...queue } = createQueue(mergedConfig);
   const { clearCache: clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
@@ -166,9 +166,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       };
       // First the messages a dead process was delivering, each with its own
       // messageId: the runtime recovers a step left running under a message
-      // only when that same message comes back. The re-enqueue of active runs
-      // after it is the backstop for runs no journaled message covers.
-      await redeliverOrphans();
+      // only when that same message comes back. This also starts journaling
+      // this process's messages. The re-enqueue of active runs after it is
+      // the backstop for runs no journaled message covers.
+      await recoverDeliveries();
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {

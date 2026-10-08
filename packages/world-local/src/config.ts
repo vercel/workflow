@@ -22,9 +22,9 @@ export type Config = {
   /**
    * Whether start() should recover the work a previous process left
    * unfinished: deliver again the queue messages it was delivering (the queue
-   * journals each message under `dataDir` for this), then re-enqueue
-   * pending/running runs from storage. With it off, the queue keeps no
-   * journal. Defaults to true; the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
+   * journals each message under `dataDir` for this, once start() has run),
+   * then re-enqueue pending/running runs from storage. With it off, the
+   * queue keeps no journal. Defaults to true; the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
    * environment variable is used as a fallback when this option is unset.
    * Test harnesses that always start from a clean slate can disable recovery
    * to avoid replaying stale runs.

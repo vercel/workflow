@@ -156,6 +156,7 @@ describe('the local queue journal', () => {
 
   it('journals a message from queue() until it is acknowledged', async () => {
     const queue = newQueue();
+    await queue.recoverDeliveries();
     const handler = recordingHandler(queue);
     handler.holdDeliveries();
 
@@ -179,6 +180,7 @@ describe('the local queue journal', () => {
 
   it('journals a wake as the same message with its next attempt', async () => {
     const queue = newQueue();
+    await queue.recoverDeliveries();
     let calls = 0;
     let release!: () => void;
     queue.registerHandler(
@@ -209,6 +211,7 @@ describe('the local queue journal', () => {
 
   it('keeps a message journaled when the queue closes during its delivery', async () => {
     const queue = newQueue();
+    await queue.recoverDeliveries();
     const handler = recordingHandler(queue);
     handler.holdDeliveries();
 
@@ -226,13 +229,25 @@ describe('the local queue journal', () => {
     expect(await journalFiles()).toEqual([`${messageId}.json`]);
   });
 
+  it('journals nothing until start() turns recovery on', async () => {
+    const queue = newQueue();
+    const handler = recordingHandler(queue);
+    handler.holdDeliveries();
+
+    await queue.queue('__wkf_workflow_test' as any, workflowPayload);
+    await vi.waitFor(() => expect(handler.seen).toHaveLength(1));
+
+    expect(await journalFiles()).toEqual([]);
+    handler.releaseAll();
+  });
+
   it("redelivers a dead process's message with its own messageId and the next attempt", async () => {
     const messageId = 'msg_01JORPHANDUE0000000000000';
     await writeOrphan({ messageId, attempt: 1, dueAt: Date.now() - 1000 });
 
     const queue = newQueue();
     const handler = recordingHandler(queue);
-    await queue.redeliverOrphans();
+    await queue.recoverDeliveries();
 
     // The dead process may have reached the handler with attempt 1 already.
     await vi.waitFor(() =>
@@ -249,7 +264,7 @@ describe('the local queue journal', () => {
 
     const queue = newQueue();
     const handler = recordingHandler(queue);
-    await queue.redeliverOrphans();
+    await queue.recoverDeliveries();
 
     await vi.waitFor(() =>
       expect(handler.seen).toEqual([{ messageId, attempt: 3 }])
@@ -276,7 +291,7 @@ describe('the local queue journal', () => {
 
     const queue = newQueue();
     const handler = recordingHandler(queue);
-    await queue.redeliverOrphans();
+    await queue.recoverDeliveries();
     await settle();
 
     expect(handler.seen).toEqual([]);
@@ -291,7 +306,7 @@ describe('the local queue journal', () => {
     const second = newQueue();
     const a = recordingHandler(first);
     const b = recordingHandler(second);
-    await Promise.all([first.redeliverOrphans(), second.redeliverOrphans()]);
+    await Promise.all([first.recoverDeliveries(), second.recoverDeliveries()]);
 
     await vi.waitFor(() =>
       expect([...a.seen, ...b.seen]).toEqual([{ messageId, attempt: 2 }])
@@ -305,13 +320,13 @@ describe('the local queue journal', () => {
 
     const untagged = newQueue();
     const untaggedHandler = recordingHandler(untagged);
-    await untagged.redeliverOrphans();
+    await untagged.recoverDeliveries();
     await settle();
     expect(untaggedHandler.seen).toEqual([]);
 
     const tagged = newQueue({ tag: 'vitest-1' });
     const taggedHandler = recordingHandler(tagged);
-    await tagged.redeliverOrphans();
+    await tagged.recoverDeliveries();
     await vi.waitFor(() =>
       expect(taggedHandler.seen).toEqual([{ messageId, attempt: 2 }])
     );
@@ -324,7 +339,7 @@ describe('the local queue journal', () => {
     const queue = newQueue({ recover: false });
     const handler = recordingHandler(queue);
     await queue.queue('__wkf_workflow_test' as any, workflowPayload);
-    await queue.redeliverOrphans();
+    await queue.recoverDeliveries();
 
     await vi.waitFor(() => expect(handler.seen).toHaveLength(1));
     // Only the orphan written above; the delivered message was never journaled.
@@ -402,6 +417,7 @@ describe('the local World and its queue journal', () => {
 
   it("a tagged clear() forgets that tag's journaled messages", async () => {
     const world = createWorld({ dataDir, tag: 'vitest-9' });
+    await world.start();
     let release!: () => void;
     world.registerHandler(
       '__wkf_workflow_',

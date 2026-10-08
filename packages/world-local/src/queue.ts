@@ -125,11 +125,13 @@ export type LocalQueue = Queue & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
   /**
-   * Deliver again every journaled message whose process died before it
-   * finished, with its own messageId and a higher attempt. Called by the
-   * World's `start()`; a no-op when the queue keeps no journal.
+   * Start journaling this queue's messages, and deliver again every
+   * journaled message whose process died before it finished, with its own
+   * messageId and a higher attempt. Called by the World's `start()`: a
+   * process that never starts recovery journals nothing. A no-op when
+   * recovery is off or there is no data directory.
    */
-  redeliverOrphans(): Promise<void>;
+  recoverDeliveries(): Promise<void>;
 };
 
 /** A message the delivery loop is about to start on. */
@@ -247,18 +249,21 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
   // The journal of messages this queue has accepted and not finished, so a
   // later start() can deliver again the ones a dead process was holding. Kept
-  // only when start() recovers active runs, and only under a data directory.
+  // only when start() recovers active runs, only under a data directory, and
+  // only once this World's own start() has run: an app that never calls
+  // start() has nothing that would read it.
   const journal =
     config.dataDir && resolveRecoverActiveRuns(config)
       ? createQueueJournal(config.dataDir, config.tag)
       : undefined;
+  let journaling = false;
   let journalErrorLogged = false;
   // Best effort: a journal that can't be written costs crash recovery of the
   // in-flight message (start() still re-enqueues its run), never the delivery.
   const updateJournal = async (
     update: (j: NonNullable<typeof journal>) => Promise<void>
   ) => {
-    if (!journal) return;
+    if (!journal || !journaling) return;
     try {
       await update(journal);
     } catch (error) {
@@ -572,8 +577,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     return { messageId: pending.messageId };
   };
 
-  const redeliverOrphans = async () => {
+  const recoverDeliveries = async () => {
     if (!journal) return;
+    journaling = true;
     let entries: JournalEntry[] = [];
     await updateJournal(async (j) => {
       entries = await j.claimOrphans();
@@ -673,7 +679,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
     },
-    redeliverOrphans,
+    recoverDeliveries,
     async close() {
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)
       // may close the queue more than once.
