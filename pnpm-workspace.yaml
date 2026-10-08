@@ -56,6 +56,14 @@ onlyBuiltDependencies:
   - esbuild
 
 overrides:
+  # Single @opentelemetry/api instance workspace-wide: with two resolved
+  # copies (1.9.0 + 1.9.1), the copy that registers the tracer provider and
+  # the copy a package imports can differ, and the API's global-registration
+  # version check then hands the importer a noop tracer (#2900). It also
+  # splits `next` into one copy per otel version, whose `NextConfig` types
+  # are incompatible as of next 16.3, breaking `withWorkflow()` typechecks
+  # in the workbenches.
+  '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
   devalue: 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
