@@ -31,6 +31,17 @@ import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js
 const MAX_QUEUE_SEND_BATCH = 100;
 
 /**
+ * Messages per request, sent concurrently, for a group on the shared step
+ * topic. VQS handles the messages of one batch request in sequence, so one
+ * request for a whole fan-out finishes late: measured on Vercel (2026-10-08,
+ * a 97-step fan-out), one 97-message request took ~900 ms at p50, against
+ * ~140 ms for each of 97 concurrent one-message requests on per-step topics.
+ * Small concurrent chunks keep the request count low and the publish as
+ * short as one small batch.
+ */
+export const SHARED_STEP_TOPIC_SEND_BATCH = 8;
+
+/**
  * Mirrors `@vercel/queue`'s own kill switch. `queueBatch` injects trace
  * context itself (see below), so without this check `off` would still
  * disable it on the single send and not on the batched one.
@@ -515,10 +526,10 @@ function getHeadersFromPayload(
  *
  * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
  *   per-run topic: at most one replay per run at a time.
- * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId`; they
- *   ride the flow topic in the combined handler model) get a per-step topic
- *   so steps keep full parallelism across a run; only redeliveries of the
- *   same step serialize.
+ * - Background step executions (`WorkflowInvokePayload` WITH a `stepId`) go
+ *   to the shared step topic when {@link usesSharedStepTopic}, and otherwise
+ *   get a per-step topic under the flow trigger, so steps keep full
+ *   parallelism across a run either way.
  * - Health checks get a per-probe topic (their correlation id) so concurrent
  *   probes never queue behind one shared `…_health_check` slot.
  *
@@ -534,9 +545,36 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
+/** The shared step topic {@link getPhysicalQueueName} gives a step message. */
+const STEP_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_step_/;
+
+/**
+ * Whether a background step's execution message goes to the shared step
+ * topic (`__wkf_step_<workflowName>`, consumed by the flow function's step
+ * trigger with no concurrency limit) instead of a per-step topic under the
+ * flow trigger. A whole fan-out's step messages then share one topic, so a
+ * batched send is one request rather than one per step.
+ *
+ * Only when the sending build registered the step trigger (`opts.stepTopic`)
+ * and the message stays on this deployment: a deployment's code, and so its
+ * triggers, never change, but a message routed to another deployment (a
+ * deployment-affinity re-route) may land on one built before the step
+ * trigger existed, which only consumes the flow topic. The per-step topic is
+ * consumed by every deployment. `WORKFLOW_SHARED_STEP_TOPIC=0` turns it off.
+ */
+function usesSharedStepTopic(opts: QueueOptions | undefined): boolean {
+  if (opts?.stepTopic !== true) return false;
+  if (process.env.WORKFLOW_SHARED_STEP_TOPIC === '0') return false;
+  return (
+    opts.deploymentId === undefined ||
+    opts.deploymentId === process.env.VERCEL_DEPLOYMENT_ID
+  );
+}
+
 function getPhysicalQueueName(
   queueName: ValidQueueName,
-  payload: QueuePayload
+  payload: QueuePayload,
+  opts?: QueueOptions
 ): string {
   if (!FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
@@ -549,8 +587,12 @@ function getPhysicalQueueName(
     return `${queueName}_${payload.correlationId}`;
   }
   if ('runId' in payload && typeof payload.runId === 'string') {
-    // Inline step execution: full parallelism via a per-step topic.
     if ('stepId' in payload && typeof payload.stepId === 'string') {
+      // Background step execution: the shared step topic, or full
+      // parallelism via a per-step topic under the flow trigger.
+      if (usesSharedStepTopic(opts)) {
+        return queueName.replace('wkf_workflow_', 'wkf_step_');
+      }
       return `${queueName}_${payload.runId}_${payload.stepId}`;
     }
     // Orchestrator delivery: one at a time per run.
@@ -626,7 +668,7 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const topic = getPhysicalQueueName(queueName, payload).replace(
+    const topic = getPhysicalQueueName(queueName, payload, opts).replace(
       /[^A-Za-z0-9-_]/g,
       '-'
     );
@@ -745,15 +787,16 @@ export function createQueue(config?: APIConfig): Queue {
     // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
     // 503). No caller on this path classifies that error today, so nothing
     // changes behaviorally; worth knowing before one starts.
+    type BatchEntry = {
+      index: number;
+      topic: string;
+      message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
+    };
     const groups = new Map<
       string,
       {
         route: { region: string; deploymentId: string; useCbor: boolean };
-        entries: {
-          index: number;
-          topic: string;
-          message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
-        }[];
+        entries: BatchEntry[];
       }
     >();
     for (const [index, entry] of messages.entries()) {
@@ -777,23 +820,45 @@ export function createQueue(config?: APIConfig): Queue {
       groups.set(key, group);
     }
 
+    const sendChunk = async (client: QueueClient, chunk: BatchEntry[]) => {
+      const sent = await client.experimental_sendBatch(
+        // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
+        chunk[0]!.topic,
+        chunk.map((entry) => entry.message)
+      );
+      for (const [position, entry] of chunk.entries()) {
+        results[entry.index] = toBatchResult(sent[position]);
+      }
+    };
     await Promise.all(
       [...groups.values()].map(async ({ route, entries }) => {
         const client = clientFor(route);
+        // The shared step topic: concurrent small chunks (see
+        // SHARED_STEP_TOPIC_SEND_BATCH). Other topics: sequential chunks of
+        // the API's maximum, in order.
+        if (entries[0] && STEP_TOPIC_PATTERN.test(entries[0].topic)) {
+          const chunks = [];
+          for (
+            let offset = 0;
+            offset < entries.length;
+            offset += SHARED_STEP_TOPIC_SEND_BATCH
+          ) {
+            chunks.push(
+              entries.slice(offset, offset + SHARED_STEP_TOPIC_SEND_BATCH)
+            );
+          }
+          await Promise.all(chunks.map((chunk) => sendChunk(client, chunk)));
+          return;
+        }
         for (
           let offset = 0;
           offset < entries.length;
           offset += MAX_QUEUE_SEND_BATCH
         ) {
-          const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
-          const sent = await client.experimental_sendBatch(
-            // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
-            chunk[0]!.topic,
-            chunk.map((entry) => entry.message)
+          await sendChunk(
+            client,
+            entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH)
           );
-          for (const [position, entry] of chunk.entries()) {
-            results[entry.index] = toBatchResult(sent[position]);
-          }
         }
       })
     );

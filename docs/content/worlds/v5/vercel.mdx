@@ -214,7 +214,7 @@ Custom workflow-server URL for direct runtime requests, or for the proxy to forw
 
 ### One orchestrator at a time per run
 
-The Vercel World always delivers **at most one orchestrator (flow) invocation at a time per workflow run**. Each run's orchestrator messages go to their own queue topic, and the flow trigger that `getWorkflowQueueTrigger()` from `@workflow/builders` generates carries `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes a run's orchestrator deliveries one at a time. A step's execution message goes to its own per-step topic, so a run's queued steps still run in parallel.
+The Vercel World always delivers **at most one orchestrator (flow) invocation at a time per workflow run**. Each run's orchestrator messages go to their own queue topic, and the flow trigger that `getWorkflowQueueTrigger()` from `@workflow/builders` generates carries `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes a run's orchestrator deliveries one at a time. A background step's execution message goes to a shared step topic with no concurrency limit (`__wkf_step_*`, registered by `getWorkflowQueueTriggers()`), so a run's queued steps still run in parallel and a fan-out's step messages are published in one request. A build that does not register the step trigger, or a message re-routed to another deployment, uses a per-step topic under the flow trigger instead. Set `WORKFLOW_SHARED_STEP_TOPIC=0` to always use per-step topics.
 
 This is a frequency mechanism, not the guarantee. The world-vercel backend fences the orchestrator's writes (the in-band writer fence), so even if two orchestrator invocations of one run overlap (for example one whose event loop stalled past its queue lease), only one of them can keep writing. The superseded one stops and lets its queue message be delivered again.
 
@@ -369,6 +369,11 @@ Workflow handler functions on Vercel are not accessible through public endpoints
     {
       "type": "queue/v2beta",
       "topic": "__wkf_workflow_*",
+      "consumer": "default",
+    },
+    {
+      "type": "queue/v2beta",
+      "topic": "__wkf_step_*",
       "consumer": "default",
     }
   ]

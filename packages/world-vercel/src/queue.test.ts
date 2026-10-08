@@ -77,6 +77,7 @@ import {
   createQueue,
   recordStepExecution,
   resolveMessageLifetime,
+  SHARED_STEP_TOPIC_SEND_BATCH,
 } from './queue.js';
 import { getHttpUrl } from './utils.js';
 
@@ -1422,6 +1423,138 @@ describe('queueBatch', () => {
       `__wkf_workflow_test_${RUN}_step-1`,
       `__wkf_workflow_test_${RUN}_step-2`,
     ]);
+  });
+
+  // A build that registered the step trigger: the whole fan-out shares one
+  // topic, so it goes out in one request.
+  it('sends a fan-out to the shared step topic in one request when the build registered it', async () => {
+    mockSendBatch.mockResolvedValue(
+      Array.from({ length: 3 }, (_, i) => sent(`m${i}`))
+    );
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    await queue.queueBatch(
+      '__wkf_workflow_test',
+      Array.from({ length: 3 }, (_, i) => ({
+        message: { runId: RUN, stepId: `step-${i}`, stepName: 'myStep' },
+        opts: { idempotencyKey: `step-${i}`, stepTopic: true },
+      }))
+    );
+
+    expect(mockSendBatch).toHaveBeenCalledTimes(1);
+    const [topic, messages] = mockSendBatch.mock.calls[0];
+    expect(topic).toBe('__wkf_step_test');
+    expect(messages).toHaveLength(3);
+    // The wrapper keeps the logical queue name for handler dispatch.
+    expect(messages[0].payload.queueName).toBe('__wkf_workflow_test');
+  });
+
+  // VQS handles one batch request's messages in sequence, so a large fan-out
+  // goes out as concurrent small requests.
+  it('splits a large fan-out on the shared step topic into concurrent small requests', async () => {
+    const n = SHARED_STEP_TOPIC_SEND_BATCH * 3 + 1;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mockSendBatch.mockImplementation(
+      async (_topic: string, messages: unknown[]) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return messages.map((_, i) => sent(`m${i}`));
+      }
+    );
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    const results = await queue.queueBatch(
+      '__wkf_workflow_test',
+      Array.from({ length: n }, (_, i) => ({
+        message: { runId: RUN, stepId: `step-${i}`, stepName: 'myStep' },
+        opts: { idempotencyKey: `step-${i}`, stepTopic: true },
+      }))
+    );
+
+    expect(mockSendBatch).toHaveBeenCalledTimes(4);
+    expect(
+      mockSendBatch.mock.calls.every(
+        ([topic, messages]) =>
+          topic === '__wkf_step_test' &&
+          messages.length <= SHARED_STEP_TOPIC_SEND_BATCH
+      )
+    ).toBe(true);
+    expect(maxInFlight).toBe(4);
+    expect(results).toHaveLength(n);
+    expect(results.every((r) => r.error === undefined)).toBe(true);
+  });
+
+  it('keeps per-step topics for a message routed to another deployment', async () => {
+    mockSendBatch.mockResolvedValue([sent('m')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    await queue.queueBatch('__wkf_workflow_test', [
+      {
+        message: { runId: RUN, stepId: 'step-0', stepName: 'myStep' },
+        opts: {
+          idempotencyKey: 'step-0',
+          stepTopic: true,
+          deploymentId: 'dpl_other',
+        },
+      },
+    ]);
+
+    expect(mockSendBatch.mock.calls[0][0]).toBe(
+      `__wkf_workflow_test_${RUN}_step-0`
+    );
+  });
+
+  it('keeps per-step topics when WORKFLOW_SHARED_STEP_TOPIC=0', async () => {
+    vi.stubEnv('WORKFLOW_SHARED_STEP_TOPIC', '0');
+    mockSendBatch.mockResolvedValue([sent('m')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    await queue.queueBatch('__wkf_workflow_test', [
+      {
+        message: { runId: RUN, stepId: 'step-0', stepName: 'myStep' },
+        opts: { idempotencyKey: 'step-0', stepTopic: true },
+      },
+    ]);
+
+    expect(mockSendBatch.mock.calls[0][0]).toBe(
+      `__wkf_workflow_test_${RUN}_step-0`
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it('scopes the shared step topic to the queue namespace', async () => {
+    mockSendBatch.mockResolvedValue([sent('m')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    await queue.queueBatch('__eve_wkf_workflow_test', [
+      {
+        message: { runId: RUN, stepId: 'step-0', stepName: 'myStep' },
+        opts: { idempotencyKey: 'step-0', stepTopic: true },
+      },
+    ]);
+
+    expect(mockSendBatch.mock.calls[0][0]).toBe('__eve_wkf_step_test');
+  });
+
+  // Orchestrator messages keep their per-run topic.
+  it('ignores stepTopic on a message without a stepId', async () => {
+    mockSendBatch.mockResolvedValue([sent('m')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    await queue.queueBatch('__wkf_workflow_test', [
+      { message: { runId: RUN }, opts: { stepTopic: true } },
+    ]);
+
+    expect(mockSendBatch.mock.calls[0][0]).toBe(`__wkf_workflow_test_${RUN}`);
   });
 
   it('publishes a whole fan-out in one request and preserves input order', async () => {
