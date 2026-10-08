@@ -6,7 +6,7 @@
     "parallel": "psweep-1791476422703-9569fb31-d1e8-48bf-ba82-f6bed79156ac",
     "resume": "psweep-1791476423540-e78e73a1-d12e-47b5-b953-cedc152b7058",
     "stream": "psweep-1791476424353-29711688-4944-4ad4-8778-537e953572fd",
-    "deepV4": "psweep-1791433828454-071509e8-8c89-4fcc-847f-361bab5e3332 + 3 single-run fills"
+    "deepV4": "psweep-1791476422109-0f632aa9-49d5-4691-bf0a-283f64a2645c + psweep-1791482460295-164acfc5-051a-4aad-b6ea-36651f2a1008 + psweep-1791483789233-05de0371-18d2-40ac-a295-13f3a42f3a12 + psweep-1791485057690-1b84984e-b9d9-4d13-80f6-c71b3b1f313a + psweep-1791486385104-2432ace7-ccdc-42e3-926c-3258e5c619a2"
   },
   "workloads": {
     "timing": {
@@ -52,27 +52,27 @@
         "runs": 5,
         "early": {
           "n": 95,
-          "p50": 538,
-          "p75": 585,
-          "p99": 718
+          "p50": 559,
+          "p75": 622,
+          "p99": 949
         },
         "mid": {
           "n": 95,
-          "p50": 606,
-          "p75": 643,
-          "p99": 27208
+          "p50": 642,
+          "p75": 719,
+          "p99": 1077
         },
         "late": {
           "n": 95,
-          "p50": 1511,
-          "p75": 1628,
-          "p99": 2008
+          "p50": 1611,
+          "p75": 1748,
+          "p99": 33701
         },
         "wall": {
           "n": 5,
-          "p50": 1179634,
-          "p75": 1193110,
-          "p99": 1196140
+          "p50": 1262649,
+          "p75": 1310721,
+          "p99": 1316902
         }
       },
       "next": {
@@ -219,6 +219,6 @@
     }
   },
   "notes": [
-    "The exception is the 1,020-step benchmark on v4, whose five runs ran earlier the same day, from 04:30 to 06:13 UTC, with the same configuration."
+    "The exception is the 1,020-step benchmark on v4: one of its five runs ran alongside v5.2.0's, and the other four ran on their own afterwards, the same day with the same configuration."
   ]
 }

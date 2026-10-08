@@ -14,7 +14,7 @@ These benchmarks run the same workflows on Workflow SDK v5.2.0 and v4.8.12, depl
 
 {/* generated:performance headline */}
 
-At p75, v5.2.0 is as fast as or faster than v4.8.12 on every benchmark. The largest change is in long runs: 1,000 steps into a run, v5.2.0 adds 70 ms between steps where v4.8.12 adds 1,628 ms.
+At p75, v5.2.0 is as fast as or faster than v4.8.12 on every benchmark. The largest change is in long runs: 1,000 steps into a run, v5.2.0 adds 70 ms between steps where v4.8.12 adds 1,748 ms.
 
 {/* end generated:performance headline */}
 
@@ -54,14 +54,14 @@ A 1,020-step workflow measures whether that overhead grows with the run. On v4.8
 
 {/* generated:performance long-run */}
 
-Through a 1,020-step run, step-to-step overhead on v4.8.12 grows from 585 ms in steps 1 to 20 to 1,628 ms in steps 1,001 to 1,020, at p75. On v5.2.0 it is 110 ms and 70 ms. The median run takes 19.7 min on v4.8.12 and 3.0 min on v5.2.0.
+Through a 1,020-step run, step-to-step overhead on v4.8.12 grows from 622 ms in steps 1 to 20 to 1,748 ms in steps 1,001 to 1,020, at p75. On v5.2.0 it is 110 ms and 70 ms. The median run takes 21.0 min on v4.8.12 and 3.0 min on v5.2.0.
 
 {/* end generated:performance long-run */}
 
 <Image
   srcLight="/performance/02-sequential-light.png"
   srcDark="/performance/02-sequential-dark.png"
-  alt="Three charts. A five-step workflow: v5.2.0 is faster than v4.8.12 for time to first step and step-to-step overhead, at p75 and in the slowest samples. Step-to-step overhead through a 1,020-step run, on a log scale: v4.8.12 grows from the first steps to the last at p75 while v5.2.0 stays flat. Time to finish all 1,020 steps: v5.2.0 finishes several times sooner. All values are in the results table below."
+  alt="Three charts. A five-step workflow: v5.2.0 is faster than v4.8.12 for time to first step and step-to-step overhead, at p75 and in the slowest samples. Step-to-step overhead through a 1,020-step run, on a log scale: at p75 and p99, v4.8.12 grows toward the end of the run while v5.2.0 stays at or below where it started. Time to finish all 1,020 steps: v5.2.0 finishes several times sooner. All values are in the results table below."
   width={2016}
   height={2328}
 />
@@ -140,11 +140,12 @@ Percentiles are nearest-rank over every pooled sample. With 100 or fewer samples
 | Step-to-step overhead, p75 | 618 ms | 109 ms | 5.7× faster | 40 gaps |
 | Step-to-step overhead, p99 | 777 ms | 327 ms | 2.4× faster | 40 gaps |
 | **Long run, 1,020 steps, 5 runs** | | | | |
-| Step overhead, steps 1 to 20, p75 | 585 ms | 110 ms | 5.3× faster | 95 gaps |
-| Step overhead, steps 101 to 120, p75 | 643 ms | 74 ms | 8.7× faster | 95 gaps |
-| Step overhead, steps 1,001 to 1,020, p75 | 1,628 ms | 70 ms | 23.3× faster | 95 gaps |
-| Step overhead, steps 1,001 to 1,020, p99 | 2,008 ms | 434 ms | 4.6× faster | 95 gaps |
-| Whole run, median wall time | 19.7 min | 3.0 min | 6.5× faster | 5 runs |
+| Step overhead, steps 1 to 20, p75 | 622 ms | 110 ms | 5.7× faster | 95 gaps |
+| Step overhead, steps 1 to 20, p99 | 949 ms | 882 ms | 1.1× faster | 95 gaps |
+| Step overhead, steps 101 to 120, p75 | 719 ms | 74 ms | 9.7× faster | 95 gaps |
+| Step overhead, steps 1,001 to 1,020, p75 | 1,748 ms | 70 ms | 25.0× faster | 95 gaps |
+| Step overhead, steps 1,001 to 1,020, p99 | 33,701 ms | 434 ms | 77.7× faster | 95 gaps |
+| Whole run, median wall time | 21.0 min | 3.0 min | 7.0× faster | 5 runs |
 | **Fan-out, 64 parallel branches, 25 runs** | | | | |
 | First branch starts, p75 | 478 ms | 360 ms | 1.3× faster | 25 runs |
 | First branch starts, p99 | 960 ms | 523 ms | 1.8× faster | 25 runs |
@@ -172,5 +173,5 @@ Percentiles are nearest-rank over every pooled sample. With 100 or fewer samples
 ### Limits
 
 - The benchmarks ran in one region, against one World. Other regions, Worlds, and workloads will see different numbers.
-- The benchmarks for both versions ran at the same time and shared the platform. {/* generated:performance notes */}The exception is the 1,020-step benchmark on v4, whose five runs ran earlier the same day, from 04:30 to 06:13 UTC, with the same configuration.{/* end generated:performance notes */}
+- The benchmarks for both versions ran at the same time and shared the platform. {/* generated:performance notes */}The exception is the 1,020-step benchmark on v4: one of its five runs ran alongside v5.2.0's, and the other four ran on their own afterwards, the same day with the same configuration.{/* end generated:performance notes */}
 - The explainers on this page are schematic: they show where each clock starts and stops, not real timings.

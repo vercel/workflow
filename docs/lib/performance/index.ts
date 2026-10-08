@@ -45,10 +45,9 @@ const { timing, deep, parallel, resume, stream } = metrics.workloads;
 /**
  * p99 policy: a p99 is reported when it changed by more than 5% and, if v5.2.0 is slower,
  * the regression reproduced in a second sweep. The earlier sweep of main at de8d985
- * (2026-10-08) is the reference: the last fan-out branch had 2 of 25 runs above v4's p99
+ * (2026-10-08) is the reference: the slowest fan-out branch had 2 of 25 runs above v4's p99
  * in both sweeps, so it is reported. The fan-out join (1,472 ms against 712 ms here, 650 ms
- * against 637 ms before) and steps 1 to 20 of the long run (one slow gap in one run each
- * time, at different steps) did not reproduce, so their p99s are left out.
+ * against 637 ms before) did not reproduce, so its p99 is left out.
  */
 const reproducibleP99Regressions = new Set<P99Key>(['fanoutLast']);
 
