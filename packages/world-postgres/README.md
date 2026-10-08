@@ -255,6 +255,24 @@ import * as schema from '@workflow/world-postgres/schema';
 
 Make sure your PostgreSQL database is accessible and the user has sufficient permissions to create tables and manage jobs.
 
+### Timestamps and time zones
+
+Every timestamp column is `timestamp with time zone`, so values are correct
+whatever time zone the server or session runs in. Earlier versions used
+`timestamp without time zone`: on a server outside UTC, `createdAt` came back
+off by the server's UTC offset (for example 7 hours early on
+`America/Los_Angeles`).
+
+Migration 0026 converts the columns. On a server in UTC it only changes the
+catalog, without rewriting tables. Otherwise it also rewrites every
+`created_at` row (and `updated_at` on rows never updated) from the server's
+local time to the correct instant, holding the tables' locks until it
+finishes. It assumes those values were written in the time zone of the
+session that runs the migration. If your application's pool set a different
+session time zone, pass it to the migration, for example with
+`?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the connection
+string.
+
 ### Data retention
 
 Postgres World does not yet perform general workflow-run cleanup. After a
