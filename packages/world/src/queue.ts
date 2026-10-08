@@ -533,6 +533,36 @@ export interface InvokeOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Per-handler options for {@link Queue.createQueueHandler}.
+ *
+ * Every field is optional, and an omitted field means the World's default,
+ * so a caller that passes nothing (the runtime's own routes) is unaffected.
+ */
+export interface QueueHandlerOptions {
+  /**
+   * The lease, in seconds, that a delivery holds while this handler runs.
+   *
+   * A World whose deliveries are held by a renewable lease (a visibility
+   * timeout) SHOULD use this value as that lease and renew it while the
+   * handler is running. A handler that dies without responding is then
+   * redelivered about this long after the lease was last renewed, rather
+   * than after the World's default. A shorter lease recovers a dead handler
+   * sooner but tolerates a shorter stall (an event-loop block, a failed
+   * renewal) before the message is redelivered while the first handler is
+   * still running, so the handler must already be safe to run concurrently
+   * with itself.
+   *
+   * A World whose deliveries are held by something else (the process, a row
+   * lock) MAY ignore it. A World MAY reject a value outside the range its
+   * queue supports.
+   *
+   * `@workflow/world-vercel` defaults to 300 and accepts an integer in
+   * [30, 3600].
+   */
+  visibilityTimeoutSeconds?: number;
+}
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
 
@@ -611,6 +641,22 @@ export interface Queue {
    * With `invoke: true`, the return value is response data delivered by World.
    * Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
    *
+   * `{ timeoutSeconds }` asks for the same payload to be delivered again after
+   * that many seconds; how is World-specific. `@workflow/world-local` and
+   * `@workflow/world-postgres` redeliver the same message (same
+   * `meta.messageId`, `attempt` incremented), while `@workflow/world-vercel`
+   * publishes a new message before acknowledging the current one (a new
+   * `meta.messageId`, `attempt` back to 1, and a delay capped at one ~23 h
+   * continuation hop). A handler that correlates deliveries by `messageId`,
+   * or counts `attempt`, across a `{ timeoutSeconds }` hop must not rely on
+   * either behavior.
+   *
+   * `options` are per handler, so one World can serve routes with different
+   * leases; see {@link QueueHandlerOptions}. Implementations that take only
+   * `(queueNamePrefix, handler)` still satisfy this interface. A World that
+   * delegates to another World's queue, and that queue leases deliveries,
+   * should pass `options` through.
+   *
    * `meta.messageId` SHOULD be stable across redeliveries of the same message
    * (one ID per enqueued message, reused on every delivery attempt). The
    * runtime's inline step ownership uses it as a liveness lease: the lazy
@@ -631,6 +677,7 @@ export interface Queue {
         messageId: MessageId;
         requestId?: string;
       }
-    ) => Promise<unknown>
+    ) => Promise<unknown>,
+    options?: QueueHandlerOptions
   ): (req: Request) => Promise<Response>;
 }
