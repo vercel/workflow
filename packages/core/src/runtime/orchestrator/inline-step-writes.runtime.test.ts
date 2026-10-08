@@ -1,4 +1,4 @@
-import { ThrottleError } from '@workflow/errors';
+import { ThrottleError, WorkflowWorldError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,8 +29,11 @@ let failuresLeft = 0;
 let bodyEntered = withResolvers<void>();
 let bodyGate = withResolvers<void>();
 
+/** Called at the start of every `iw_a` body. */
+let onStepA: (() => void) | undefined;
 registerStepFunction('iw_a', async () => {
   count('iw_a');
+  onStepA?.();
   return 1;
 });
 registerStepFunction('iw_b', async () => {
@@ -373,4 +376,99 @@ describe.each([
       Math.max(...world.batches.map((batch) => batch.length))
     ).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
   });
+
+  // The inline steps ride the first creation batch, so their bodies start
+  // once it commits instead of after every batch of the fan-out.
+  it.skipIf(engine !== 'node')(
+    'starts a wide fan-out once its first creation batch committed',
+    async () => {
+      const bodyStarted = withResolvers<void>();
+      onStepA = () => bodyStarted.resolve();
+      let heldBatches = 0;
+      let releasedByBody = 0;
+      let timedOut = false;
+      let current: AppendOnlyWorld | undefined;
+      try {
+        const { world } = await setupOrchestratorRun(
+          fanOutWorkflow,
+          [FAN_OUT],
+          {
+            // Holds every later creation batch until a body started, or
+            // for 2s if none does.
+            async beforeCreate(data, _params, source) {
+              if (
+                timedOut ||
+                !source?.batch ||
+                data.eventType !== 'step_created' ||
+                (current?.batches.length ?? 0) < 2
+              ) {
+                return;
+              }
+              heldBatches++;
+              const byBody = await Promise.race([
+                bodyStarted.promise.then(() => true),
+                new Promise<boolean>((resolve) =>
+                  setTimeout(() => resolve(false), 2000)
+                ),
+              ]);
+              if (byBody) releasedByBody++;
+              else timedOut = true;
+            },
+          },
+          engine
+        );
+        current = world;
+        vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+        await world.runUntilIdle(4 * FAN_OUT);
+
+        expect(await runResult(world)).toBe(FAN_OUT);
+        expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
+      } finally {
+        onStepA = undefined;
+      }
+      expect(heldBatches).toBeGreaterThan(0);
+      expect(releasedByBody).toBe(heldBatches);
+    }
+  );
+
+  // A later creation batch the World refuses fails the delivery even though
+  // the inline steps already ran; its redelivery creates what is missing,
+  // and no step is created or run twice.
+  it.skipIf(engine !== 'node')(
+    'redelivers a wide fan-out whose later creation batch was refused',
+    async () => {
+      let batchedCreations = 0;
+      let refused = false;
+      const { world } = await setupOrchestratorRun(
+        fanOutWorkflow,
+        [FAN_OUT],
+        {
+          beforeCreate(data, _params, source) {
+            if (
+              !refused &&
+              source?.batch &&
+              data.eventType === 'step_created' &&
+              ++batchedCreations === MAX_BATCH_EVENTS
+            ) {
+              refused = true;
+              throw new WorkflowWorldError('unavailable', { status: 503 });
+            }
+          },
+        },
+        engine
+      );
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+      await world.deliver(world.held[0]!).catch(() => {});
+      await world.runUntilIdle(4 * FAN_OUT);
+
+      expect(refused).toBe(true);
+      expect(await runResult(world)).toBe(FAN_OUT);
+      const created = eventsOf(world, 'step_created').map(
+        (e) => e.correlationId
+      );
+      expect(new Set(created).size).toBe(FAN_OUT);
+      expect(created).toHaveLength(FAN_OUT);
+      expect(calls.iw_a).toBe(FAN_OUT);
+    }
+  );
 });

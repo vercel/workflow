@@ -122,6 +122,17 @@ export interface StepWaitCreationPlan {
   events: readonly CreateEventRequest[];
   /** Writes the events. See {@link createStepsAndWaits}. */
   commit(): Promise<StepWaitCreationResult>;
+  /**
+   * Writes the events as {@link commit} does, and resolves `first` as soon
+   * as the first batch committed: with the steps that batch created, which
+   * include every inline step (they come first in {@link events}). `rest`
+   * resolves with the steps the later batches created, once they committed.
+   * For a plan with no waits and no step that failed to serialize.
+   */
+  commitInChunks(): {
+    first: Promise<StepWaitCreationResult>;
+    rest: Promise<StepWaitCreationResult>;
+  };
 }
 
 export interface StepWaitCreationParams {
@@ -282,6 +293,103 @@ export async function planStepsAndWaits(
         serializationBlockerCount,
         serializationBlockers,
       }),
+    commitInChunks: () =>
+      commitPlanInChunks(
+        params,
+        events,
+        createdSteps,
+        serializationBlockerCount
+      ),
+  };
+}
+
+function commitPlanInChunks(
+  params: StepWaitCreationParams,
+  events: CreateEventRequest[],
+  createdSteps: Omit<CreatedStep, 'event'>[],
+  serializationBlockerCount: number
+): {
+  first: Promise<StepWaitCreationResult>;
+  rest: Promise<StepWaitCreationResult>;
+} {
+  const postSentAtMs = Date.now();
+  const resultOf = (
+    written: { committed: Event[]; refusedStarts: Map<string, Error> },
+    steps: Omit<CreatedStep, 'event'>[]
+  ): StepWaitCreationResult => ({
+    ...stepResults(steps, written, postSentAtMs, Date.now()),
+    failedStepCorrelationIds: new Set(),
+    serializationBlockerCount,
+    serializationBlockers: [],
+  });
+  let resolveFirst!: (result: StepWaitCreationResult) => void;
+  const firstBatch = new Promise<StepWaitCreationResult>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const rest = writeAll(params, events, (written) =>
+    resolveFirst(resultOf(written, createdSteps))
+  ).then(async (written) => {
+    // Without a batch the writes went out one at a time: all of them are
+    // the first.
+    resolveFirst(resultOf(written, createdSteps));
+    const reported = new Set(
+      (await firstBatch).createdSteps.map((step) => step.correlationId)
+    );
+    return resultOf(
+      written,
+      createdSteps.filter((step) => !reported.has(step.correlationId))
+    );
+  });
+  // A first batch that fails rejects both.
+  const first = Promise.race([firstBatch, rest.then(() => firstBatch)]);
+  first.catch(() => {});
+  rest.catch(() => {});
+  return { first, rest };
+}
+
+/**
+ * Each of `steps` whose `step_created` is among `written`, with its batched
+ * `step_started` or that start's refusal.
+ */
+function stepResults(
+  steps: Omit<CreatedStep, 'event'>[],
+  written: { committed: Event[]; refusedStarts: Map<string, Error> },
+  postSentAtMs: number,
+  completedAtMs: number
+): { createdSteps: CreatedStep[]; createdWaits: Event[] } {
+  const stepEvents = new Map<string, Event>();
+  const startEvents = new Map<string, Event>();
+  const createdWaits: Event[] = [];
+  for (const event of written.committed) {
+    if (event.eventType === 'step_created' && event.correlationId) {
+      stepEvents.set(event.correlationId, event);
+    } else if (event.eventType === 'step_started' && event.correlationId) {
+      startEvents.set(event.correlationId, event);
+    } else if (event.eventType === 'wait_created') {
+      createdWaits.push(event);
+    }
+  }
+  return {
+    createdSteps: steps.flatMap((step) => {
+      const event = stepEvents.get(step.correlationId);
+      if (!event) return [];
+      // A start counts only behind its own creation: a batch item that
+      // failed leaves the step created and not started, and the executor
+      // then writes the start itself.
+      const started = startEvents.get(step.correlationId);
+      const startRefusal = written.refusedStarts.get(step.correlationId);
+      return [
+        {
+          ...step,
+          event,
+          ...(started
+            ? { started: { event: started, postSentAtMs, completedAtMs } }
+            : {}),
+          ...(startRefusal ? { startRefusal } : {}),
+        },
+      ];
+    }),
+    createdWaits,
   };
 }
 
@@ -300,20 +408,8 @@ async function commitPlan(
 ): Promise<StepWaitCreationResult> {
   const failedStepCorrelationIds = new Set<string>();
   const postSentAtMs = Date.now();
-  const { committed, refusedStarts } = await writeAll(params, events);
+  const written = await writeAll(params, events);
   const completedAtMs = Date.now();
-  const stepEvents = new Map<string, Event>();
-  const startEvents = new Map<string, Event>();
-  const createdWaits: Event[] = [];
-  for (const event of committed) {
-    if (event.eventType === 'step_created' && event.correlationId) {
-      stepEvents.set(event.correlationId, event);
-    } else if (event.eventType === 'step_started' && event.correlationId) {
-      startEvents.set(event.correlationId, event);
-    } else if (event.eventType === 'wait_created') {
-      createdWaits.push(event);
-    }
-  }
 
   for (const entry of prepared) {
     if (!('error' in entry)) continue;
@@ -322,27 +418,8 @@ async function commitPlan(
   }
 
   return {
-    createdSteps: createdSteps.flatMap((step) => {
-      const event = stepEvents.get(step.correlationId);
-      if (!event) return [];
-      // A start counts only behind its own creation: a batch item that
-      // failed leaves the step created and not started, and the executor
-      // then writes the start itself.
-      const started = startEvents.get(step.correlationId);
-      const startRefusal = refusedStarts.get(step.correlationId);
-      return [
-        {
-          ...step,
-          event,
-          ...(started
-            ? { started: { event: started, postSentAtMs, completedAtMs } }
-            : {}),
-          ...(startRefusal ? { startRefusal } : {}),
-        },
-      ];
-    }),
+    ...stepResults(createdSteps, written, postSentAtMs, completedAtMs),
     failedStepCorrelationIds,
-    createdWaits,
     serializationBlockerCount: stats.serializationBlockerCount,
     serializationBlockers: stats.serializationBlockers,
   };
@@ -361,7 +438,12 @@ async function writeAll(
       reportIncomplete?: boolean;
     }) => void;
   },
-  events: CreateEventRequest[]
+  events: CreateEventRequest[],
+  /** Called once the first batch committed, with what it committed. */
+  onFirstBatch?: (written: {
+    committed: Event[];
+    refusedStarts: Map<string, Error>;
+  }) => void
 ): Promise<{ committed: Event[]; refusedStarts: Map<string, Error> }> {
   const refusedStarts = new Map<string, Error>();
   if (events.length === 0) return { committed: [], refusedStarts };
@@ -434,6 +516,13 @@ async function writeAll(
           throw new WorkflowWorldError(message, { status: result.status });
         }
       });
+      if (onFirstBatch) {
+        onFirstBatch({
+          committed: [...committed],
+          refusedStarts: new Map(refusedStarts),
+        });
+        onFirstBatch = undefined;
+      }
     }
     return { committed, refusedStarts };
   }

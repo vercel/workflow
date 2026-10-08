@@ -2247,6 +2247,9 @@ export function workflowEntrypoint(
                     // Turbo: creation commits still in flight while the bodies
                     // they create run (see `optimisticCreation`).
                     const creationsInFlight = new Set<Promise<unknown>>();
+                    // Why a fan-out's later creation batches failed. The
+                    // delivery fails with it, so its redelivery writes them.
+                    let trailingCreationFailure: unknown;
                     // The longest backoff of the inline starts this delivery
                     // had refused for load. Once every body has settled the
                     // delivery defers the run by it.
@@ -2344,11 +2347,19 @@ export function workflowEntrypoint(
                       while (inFlight.size > 0) {
                         await Promise.allSettled([...inFlight.values()]);
                       }
+                      // A fan-out's later creation batches and their step
+                      // messages go out before the delivery ends.
+                      while (creationsInFlight.size > 0) {
+                        await Promise.allSettled([...creationsInFlight]);
+                      }
                       // Speculative outcome writes settle before the delivery
                       // ends, whichever way it ends.
                       await settleRunAhead();
                       liveFeed?.stop();
                       liveFeed = undefined;
+                      if (trailingCreationFailure !== undefined) {
+                        throw trailingCreationFailure;
+                      }
                     };
 
                     /**
@@ -3718,6 +3729,52 @@ export function workflowEntrypoint(
                           serializationBlockers: [],
                         };
                         newInline = plan.steps;
+                      } else if (
+                        writer.supportsBatch &&
+                        plan.events.length > MAX_BATCH_EVENTS &&
+                        plan.failedCount === 0 &&
+                        plan.waitCount === 0
+                      ) {
+                        // A fan-out larger than one batch: the inline steps
+                        // ride the first batch and start once it commits;
+                        // the later batches commit behind it, and each
+                        // enqueues the background steps it created. No pass
+                        // decides before they commit (see
+                        // `creationsInFlight`).
+                        const chunks = plan.commitInChunks();
+                        created = await chunks.first;
+                        deferAbsorbs = true;
+                        newInline = created.createdSteps.filter(
+                          (step) => step.inline
+                        );
+                        const trailing = chunks.rest.then((rest) =>
+                          enqueueStepMessages(
+                            run,
+                            rest.createdSteps.flatMap((step) =>
+                              step.inline
+                                ? []
+                                : [
+                                    {
+                                      correlationId: step.correlationId,
+                                      stepName: step.stepName,
+                                      stepCreatedEventId: step.event.eventId,
+                                      input: step.input,
+                                    },
+                                  ]
+                            )
+                          )
+                        );
+                        const inFlightCreation = trailing.then(
+                          () => {},
+                          (error: unknown) => {
+                            trailingCreationFailure ??= error;
+                            notifyProgress();
+                          }
+                        );
+                        creationsInFlight.add(inFlightCreation);
+                        void inFlightCreation.then(() =>
+                          creationsInFlight.delete(inFlightCreation)
+                        );
                       } else {
                         created = await plan.commit();
                         newInline = created.createdSteps.filter(
@@ -3888,7 +3945,15 @@ export function workflowEntrypoint(
                       }
 
                       // Suspend: nothing to run here. Arm the timers this
-                      // delivery owns and acknowledge.
+                      // delivery owns and acknowledge, once every creation
+                      // committed.
+                      while (creationsInFlight.size > 0) {
+                        await Promise.allSettled([...creationsInFlight]);
+                      }
+                      if (trailingCreationFailure !== undefined) {
+                        throw trailingCreationFailure;
+                      }
+                      flushPending();
                       const wroteSomething =
                         created.createdSteps.length > 0 ||
                         created.createdWaits.length > 0 ||
@@ -4136,6 +4201,9 @@ export function workflowEntrypoint(
                         // would create those steps again.
                         while (creationsInFlight.size > 0) {
                           await Promise.allSettled([...creationsInFlight]);
+                        }
+                        if (trailingCreationFailure !== undefined) {
+                          throw trailingCreationFailure;
                         }
                       } finally {
                         replayBudget.resume();
