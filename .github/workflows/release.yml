@@ -57,6 +57,36 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      # changesets/action publishes only when no changesets are pending, so a
+      # "Version Packages" PR merged without every pending changeset strands
+      # the versions it bumped: every later run, re-runs included, sees the
+      # leftover changeset and only versions. main lost 5.2.0 this way when a
+      # GitHub 502 kept its release PR from picking up a changeset, and a
+      # queued run cancelled by a newer push (see `concurrency` above) strands
+      # a release the same way with no outage at all. When this commit carries
+      # versions that never shipped, the pending changesets are set aside so
+      # the action below publishes them, and the last two steps put them back
+      # and refresh the release PR. A registry error in the check must not
+      # block an ordinary release.
+      - name: Find versions on this commit that are not on npm
+        id: unpublished
+        continue-on-error: true
+        run: node scripts/find-unpublished-versions.mjs
+
+      - name: Set pending changesets aside
+        id: set-aside
+        if: steps.unpublished.outputs.missing != ''
+        env:
+          MISSING: ${{ steps.unpublished.outputs.missing }}
+        run: |
+          pending=$(find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md')
+          if [ -z "$pending" ]; then
+            exit 0
+          fi
+          echo "::warning::Changesets are pending, but these versions on this commit were never published. Publishing them now: $MISSING"
+          rm $pending
+          echo "pending=true" >> "$GITHUB_OUTPUT"
+
       - name: Create Release Pull Request or Publish to npm
         id: changesets
         uses: changesets/action@v1
@@ -119,8 +149,13 @@ jobs:
               --prerelease=$PRERELEASE
           fi
 
+      # A broken Slack token must not turn a successful release red: the Aug 26
+      # and Aug 31 releases published every package and still failed here
+      # (`token_expired`, then `invalid_auth`), and 4.8.13 did again on Oct 8.
+      # Surface it as a warning instead.
       - name: Post release notes to Slack
         if: steps.changesets.outputs.published == 'true'
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_RELEASE_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
@@ -133,3 +168,27 @@ jobs:
 
           # Post to Slack via chat.postMessage (payload is chunked to Slack limits)
           node scripts/generate-release-slack-payload.mjs --post
+
+      # `git reset` brings the changesets set aside above back. It also drops
+      # the publish's build output, which the action would otherwise commit to
+      # the release PR along with everything else that differs from this
+      # commit. The release-notes steps above read the CHANGELOGs `changeset
+      # version` rewrites, so this runs after them. It runs even when an
+      # earlier step failed, so a failed publish does not also leave the
+      # release PR behind stable.
+      - name: Restore the pending changesets
+        id: restore
+        if: ${{ !cancelled() && steps.set-aside.outputs.pending == 'true' }}
+        run: git reset --hard HEAD && git clean -fd
+
+      - name: Create or update the release pull request
+        if: ${{ !cancelled() && steps.restore.outcome == 'success' }}
+        uses: changesets/action@v1
+        with:
+          version: pnpm ci:version
+          publish: pnpm ci:publish
+          createGithubReleases: false
+          setupGitUser: false
+          commitMode: github-api
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
