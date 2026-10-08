@@ -71,11 +71,27 @@ function expectSameInstant(actual: Date | null | undefined, expected: Date) {
   expect(Math.abs(ms - expected.getTime())).toBeLessThanOrEqual(1);
 }
 
+/**
+ * `pool.end()` resolves before its connections finish closing, so stopping
+ * the container can still send "terminating connection due to administrator
+ * command" (57P01) to a closing client. The pool re-emits that on itself, and
+ * with no listener it becomes an uncaught exception that fails the run. Any
+ * other error is still thrown.
+ */
+function ignoreShutdownErrors(pool: Pool): Pool {
+  pool.on('error', (error: Error & { code?: string }) => {
+    if (error.code !== '57P01') throw error;
+  });
+  return pool;
+}
+
 async function runMigrations(
   connectionString: string,
   options: { migrationsFolder?: string; pool?: PoolConfig } = {}
 ) {
-  const pool = new Pool({ connectionString, max: 1, ...options.pool });
+  const pool = ignoreShutdownErrors(
+    new Pool({ connectionString, max: 1, ...options.pool })
+  );
   try {
     // Same table and schema names as the `bootstrap` CLI (src/cli.ts).
     await migrate(drizzleClient(pool), {
@@ -132,14 +148,18 @@ if (process.platform === 'win32') {
     }
 
     function openPool(connectionString: string, config: PoolConfig = {}) {
-      const pool = new Pool({ connectionString, max: 2, ...config });
+      const pool = ignoreShutdownErrors(
+        new Pool({ connectionString, max: 2, ...config })
+      );
       pools.push(pool);
       return pool;
     }
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
-      admin = new Pool({ connectionString: container.getConnectionUri() });
+      admin = ignoreShutdownErrors(
+        new Pool({ connectionString: container.getConnectionUri() })
+      );
       naiveMigrations = naiveMigrationsFolder();
     }, 120_000);
 
