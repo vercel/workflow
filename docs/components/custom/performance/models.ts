@@ -1,12 +1,11 @@
 // One model per benchmark metric: the code a run executes, where its clock starts and stops,
 // and a schematic timeline. Ported from the durabench explainer builder
-// (research/v5-launch/vbg/explainers/build.mjs) so the docs explainer, the release figures,
-// and the animations in public/performance/explainers draw the same thing.
+// (research/v5-launch/vbg/explainers/build.mjs) so the docs explainer and the animations in
+// public/performance/explainers draw the same thing. Results are left out: the explainer
+// shows how each metric is measured, and the latest numbers live on the page.
 //
 // Time runs from 0 to 100 in schematic units. `at` on a code line lists the ranges during
 // which that line is the one running, which drives the playhead highlight.
-import { metrics } from '@/lib/performance';
-
 export type TimeRange = [from: number, to: number];
 
 export type CodeLine = {
@@ -48,8 +47,6 @@ export type Bracket = {
   guides: [from: number, to: number];
 };
 
-export type MetricResult = { label: string; v4: number; next: number };
-
 export type MetricModel = {
   id: 'ttfs' | 'stso' | 'fanout' | 'resume' | 'stream';
   name: string;
@@ -60,12 +57,8 @@ export type MetricModel = {
   lanes: string[];
   items: TimelineItem[];
   brackets: Bracket[];
-  /** p75 results, v4.8.12 against v5.2.0. */
-  results: MetricResult[];
   note?: string;
 };
-
-const { timing, deep, parallel, resume, stream } = metrics.workloads;
 
 /** Stream chunks as [written at, trip time] on the schematic clock. */
 const CHUNKS: [number, number][] = [
@@ -146,13 +139,6 @@ export const models: MetricModel[] = [
     brackets: [
       { from: 4, to: 52, row: 0, label: 'Time to first step', guides: [0, 2] },
     ],
-    results: [
-      {
-        label: 'Time to first step',
-        v4: timing.v4.ttfs.p75,
-        next: timing.next.ttfs.p75,
-      },
-    ],
   },
   {
     id: 'stso',
@@ -215,18 +201,6 @@ export const models: MetricModel[] = [
     brackets: [
       { from: 28, to: 40, row: 0, label: 'Overhead', guides: [1, 2] },
       { from: 64, to: 74, row: 0, label: 'Overhead', guides: [2, 3] },
-    ],
-    results: [
-      {
-        label: '5-step run',
-        v4: timing.v4.stso.p75,
-        next: timing.next.stso.p75,
-      },
-      {
-        label: 'Steps 1,001 to 1,020 of a 1,020-step run',
-        v4: deep.v4.late.p75,
-        next: deep.next.late.p75,
-      },
     ],
     note: 'The long-run benchmark measures the same gap at steps 1 to 20, 101 to 120, and 1,001 to 1,020 of one 1,020-step run.',
   },
@@ -309,19 +283,6 @@ export const models: MetricModel[] = [
       { from: 2, to: 22, row: 1, label: 'First branch (TTFS)', guides: [0, 2] },
       { from: 70, to: 80, row: 1, label: 'Join', guides: [4, 7] },
     ],
-    results: [
-      {
-        label: 'First branch starts',
-        v4: parallel.v4.first.p75,
-        next: parallel.next.first.p75,
-      },
-      {
-        label: 'Slowest branch to start',
-        v4: parallel.v4.last.p75,
-        next: parallel.next.last.p75,
-      },
-      { label: 'Join', v4: parallel.v4.join.p75, next: parallel.next.join.p75 },
-    ],
     note: 'Branches start close together and in no fixed order. Each branch does 100 ms of simulated work.',
   },
   {
@@ -372,13 +333,6 @@ export const models: MetricModel[] = [
     brackets: [
       { from: 62, to: 80, row: 0, label: 'Time to resume', guides: [1, 2] },
     ],
-    results: [
-      {
-        label: 'Time to resume',
-        v4: resume.v4.ttr.p75,
-        next: resume.next.ttr.p75,
-      },
-    ],
   },
   {
     id: 'stream',
@@ -424,13 +378,6 @@ export const models: MetricModel[] = [
     ]),
     brackets: [
       { from: 20, to: 26, row: 0, label: 'Chunk trip time', guides: [0, 1] },
-    ],
-    results: [
-      {
-        label: 'Chunk trip time',
-        v4: stream.v4.ctt.p75,
-        next: stream.next.ctt.p75,
-      },
     ],
     note: "Both clocks are read inside the same deployment's steps.",
   },

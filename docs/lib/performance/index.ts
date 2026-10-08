@@ -1,17 +1,35 @@
-// Benchmark results shown on /docs/performance.
+// The latest benchmark results shown on /docs/performance.
 //
-// `v5.2.0.json` is the durabench export for the v5.2.0 release, copied as is. Its `v4` lane
-// is workflow@4.8.12 and its `next` lane is vercel/workflow main at e6bd692, whose code is
-// the v5.2.0 release (the release commit only bumps versions and changelogs).
+// `results.json` is the durabench export for the latest comparison, copied as is. Its `v4`
+// lane is the older version and its `next` lane the newer one; `versions` names the release
+// each lane stands for and `measuredOn` is the date of the sweeps.
 //
-// To refresh the page, replace the JSON and run `pnpm --filter docs generate:performance`,
-// which rewrites the generated regions of content/docs/v5/performance.mdx. The explainer
-// component reads the JSON directly.
-import metrics from './v5.2.0.json';
+// To publish new results: replace `results.json`, copy the release figures into
+// public/performance/v<next version>/, and run `pnpm --filter docs generate:performance`.
+// That rewrites the generated regions of content/docs/v5/performance.mdx, including the
+// figure paths. The explainer animations carry no results and don't change.
+import metrics from './results.json';
 
 export { metrics };
 
-export const versions = { v4: 'v4.8.12', next: 'v5.2.0' } as const;
+/** Display names of the two versions compared, such as `v5.2.0`. */
+export const versions = {
+  v4: `v${metrics.versions.v4}`,
+  next: `v${metrics.versions.next}`,
+} as const;
+
+/** The date the latest results were measured, such as "October 8, 2026". */
+export const measuredOn = new Date(
+  `${metrics.measuredOn}T12:00:00Z`
+).toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  timeZone: 'UTC',
+});
+
+/** Where the release figures for the latest results live under public/. */
+export const figuresPath = `/performance/${versions.next}`;
 
 /** The recorded agent stream the streaming benchmark replays. */
 export const recording = { chunks: 2593, ms: 52_377 } as const;
@@ -43,11 +61,11 @@ export const change = (v4: number, next: number) => {
 const { timing, deep, parallel, resume, stream } = metrics.workloads;
 
 /**
- * p99 policy: a p99 is reported when it changed by more than 5% and, if v5.2.0 is slower,
- * the regression reproduced in a second sweep. The earlier sweep of main at de8d985
- * (2026-10-08) is the reference: the slowest fan-out branch had 2 of 25 runs above v4's p99
- * in both sweeps, so it is reported. The fan-out join (1,472 ms against 712 ms here, 650 ms
- * against 637 ms before) did not reproduce, so its p99 is left out.
+ * p99 policy: a p99 is reported when it changed by more than 5% and, if the newer version is
+ * slower, the regression reproduced in a second sweep. For the latest results the reference
+ * is an earlier sweep the same day (2026-10-08): the slowest fan-out branch had 2 of 25 runs
+ * above the older version's p99 in both sweeps, so it is reported. The fan-out join (1,472 ms
+ * against 712 ms here, 650 ms against 637 ms before) did not reproduce, so its p99 is left out.
  */
 const reproducibleP99Regressions = new Set<P99Key>(['fanoutLast']);
 

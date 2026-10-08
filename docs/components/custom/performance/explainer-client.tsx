@@ -15,7 +15,6 @@ import {
   useRef,
   useState,
 } from 'react';
-import { ms, versions } from '@/lib/performance';
 import { cn } from '@/lib/utils';
 import { type MetricModel, models, modelTitle } from './models';
 import { Timeline } from './timeline';
@@ -273,17 +272,6 @@ export const PerformanceExplainerClient = ({
           </Fragment>
         ))}
       </CodeBlock>
-
-      <dl className="m-0 grid grid-cols-1 gap-x-6 gap-y-1 text-copy-14 sm:grid-cols-[max-content_minmax(0,1fr)]">
-        {model.results.map((r) => (
-          <Fragment key={r.label}>
-            <dt className="font-medium text-gray-1000">{r.label}, p75</dt>
-            <dd className="m-0 mb-2 text-gray-900 sm:mb-0">
-              {ms(r.next)} on {versions.next}, {ms(r.v4)} on {versions.v4}
-            </dd>
-          </Fragment>
-        ))}
-      </dl>
 
       <figcaption className="flex flex-col gap-1 text-copy-13 text-gray-900">
         {model.note ? <span>{model.note}</span> : null}

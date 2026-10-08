@@ -85,10 +85,6 @@ The key points:
 - You need the hook's `token` to resume it, but knowing the token does not authorize the caller. Check who is calling before `resumeHook()`; see [Security](#security)
 - The workflow will resume execution right where it left off
 
-<MetricVideo metric="resume">
-  How the [time to resume](/docs/performance#resuming-a-workflow) benchmark times a resume: from your app calling `resumeHook()` until the first line of the workflow's next step runs.
-</MetricVideo>
-
 ### Checking for token conflicts
 
 Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` for that:
@@ -673,6 +669,14 @@ for await (const event of hook) {
 ```
 
 This pattern allows a single workflow instance to handle multiple events over time, maintaining state between events.
+
+## Performance
+
+Time to resume (TTR) measures how quickly a workflow that is waiting on a hook continues once your app calls `resumeHook()`: the clock starts at that call and stops when the first line of the workflow's next step runs. The animation shows where it starts and stops in a run.
+
+<MetricVideo metric="resume" />
+
+See [Time to resume](/docs/performance#time-to-resume-ttr) on the Performance page for how it's measured and the latest results.
 
 ## Related documentation
 

@@ -9,14 +9,17 @@
  * A region is the Markdown between `{/* generated:performance <name> *\/}` and
  * `{/* end generated:performance <name> *\/}`. Prose outside the regions is not touched. A
  * region written on a single line is filled inline; any other region gets its own blocks.
+ * The release figures' paths are pointed at the folder for the latest results, too.
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   change,
   count,
+  figuresPath,
   isSame,
   isSlower,
+  measuredOn,
   metrics,
   min,
   ms,
@@ -283,20 +286,28 @@ const table = [
 
 // --- Methodology ----------------------------------------------------------------------
 
-const runsPerVersion = `Per version, ${T.next.runs} runs of the sequential workflow, ${S.next.runs} of the agent stream, ${P.next.runs} of the fan-out, ${R.next.runs} of the resume benchmark, and ${D.next.runs} of the 1,020-step run.`;
+const runsPerVersion = `Each version ran the sequential workflow ${T.next.runs} times, the agent stream ${S.next.runs} times, the fan-out ${P.next.runs} times, the resume benchmark ${R.next.runs} times, and the 1,020-step run ${D.next.runs} times.`;
 
-const notes = metrics.notes.join(' ');
+// --- Latest results ---------------------------------------------------------------------
+
+const latest = `**Latest results:** Workflow SDK ${NEW} compared with ${OLD}, measured ${measuredOn}. We run these benchmarks regularly and publish updated results here.`;
+
+const caveats = [
+  'Both versions ran at the same time and shared the platform.',
+  ...metrics.notes,
+  runsPerVersion,
+].join(' ');
 
 const regions: Record<string, string> = {
+  latest,
   headline,
+  caveats,
   sequential,
   'long-run': longRun,
   fanout,
   resume,
   streams,
   table,
-  runs: runsPerVersion,
-  notes,
 };
 
 // --- Rewrite --------------------------------------------------------------------------
@@ -320,6 +331,12 @@ for (const [name, body] of Object.entries(regions)) {
     inline ? `${start}${body}${end}` : `${start}\n\n${body}\n\n${end}`
   );
 }
+
+// Point the release figures at the latest results' folder.
+after = after.replace(
+  /(src(?:Light|Dark)=")\/performance\/v[^/"]+\//g,
+  `$1${figuresPath}/`
+);
 
 if (process.argv.includes('--check')) {
   if (after !== before) {

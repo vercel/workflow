@@ -42,10 +42,6 @@ export async function POST(request: Request) {
 
 **Learn more**: [`start()` API reference](/docs/api-reference/workflow-api/start)
 
-<MetricVideo metric="ttfs">
-  How the [time to first step](/docs/performance#steps-and-long-runs) benchmark times `start()`: from the call until the first line of the workflow's first step runs.
-</MetricVideo>
-
 <Callout type="info">
 For parent-child workflow patterns, see [Workflow Composition](/cookbook/common-patterns/workflow-composition). For long-lived workflows that intentionally hand off to newer deployments with `deploymentId: "latest"`, see [Versioning](/docs/foundations/versioning).
 </Callout>
@@ -292,6 +288,14 @@ export async function syncDashboard() {
 #### Starting against the latest deployment
 
 By default a chained run starts on the same deployment as its parent. For workflows that chain over long periods, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) so the next run picks up new code. [Versioning](/docs/foundations/versioning#self-upgrading-workflows) covers this pattern in full, including how the serialized state acts as the migration boundary between versions.
+
+## Performance
+
+Time to first step (TTFS) measures how long a new run takes to get going: from your app calling `start()` until the first line of the workflow's first step runs. The animation shows the run being created, the workflow running up to its first step, and that step starting.
+
+<MetricVideo metric="ttfs" />
+
+See [Time to first step](/docs/performance#time-to-first-step-ttfs) on the Performance page for how it's measured and the latest results.
 
 ## Next steps
 

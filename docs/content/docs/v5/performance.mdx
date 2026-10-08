@@ -1,8 +1,8 @@
 ---
 title: Performance
-description: Benchmarks of Workflow SDK v5.2.0 against v4.8.12 on Vercel, and how each one is measured.
+description: How we measure the Workflow SDK runtime's performance, the metrics we track, and the latest results.
 type: reference
-summary: See how quickly v5.2.0 starts runs, moves between steps, fans out, resumes, and streams compared with v4.
+summary: The benchmarks we run on the Workflow SDK runtime, how each one is measured, and the latest results.
 related:
   - /docs/whats-new
   - /docs/how-it-works/event-sourcing
@@ -10,7 +10,57 @@ related:
   - /docs/foundations/streaming
 ---
 
-These benchmarks run the same workflows on Workflow SDK v5.2.0 and v4.8.12, deployed to Vercel, and time the runtime at each point where a workflow waits on it: starting a run, moving from one step to the next, fanning out, resuming from a hook, and delivering a stream. [Methodology](#methodology) covers the setup and its limits.
+We benchmark the Workflow SDK runtime on Vercel at each point where a workflow waits on it: starting a run, moving from one step to the next, fanning out, resuming from a hook, and delivering a stream. This page explains what each benchmark measures and how, and then shows the [latest results](#latest-results), which compare a new release with an earlier one.
+
+## What we measure
+
+Each benchmark starts a clock at one line of code and stops it at another. The work inside a step is not counted, so the numbers measure the runtime itself. Choose a metric below, then play or scrub through a run to see when its clock runs.
+
+<PerformanceExplainer />
+
+### Time to first step (TTFS)
+
+How long it takes from your app calling [`start()`](/docs/api-reference/workflow-api/start) until the first line of the workflow's first step runs. This covers creating and queuing the run, running the workflow code up to its first step, and starting that step. It is measured on a five-step workflow. See [Steps and long runs](#steps-and-long-runs) for the latest results.
+
+### Step-to-step overhead (STSO)
+
+How long it takes from one step finishing until the next step starts: recording the step's result, resuming the workflow, and starting the next step. It is measured on the same five-step workflow, and at steps 1 to 20, 101 to 120, and 1,001 to 1,020 of a 1,020-step workflow, which shows whether the overhead grows as the run's [event log](/docs/how-it-works/event-sourcing) grows. See [Steps and long runs](#steps-and-long-runs) for the latest results.
+
+### Fan-out (TTFS, TTLS, join)
+
+A workflow starts 64 one-step branches at once with `Promise.all`. The runtime queues the branches in batches, so they start close together and in no fixed order. The first branch (TTFS) and the slowest branch to start, or time to last step (TTLS), are timed from `start()` until that branch's first line runs. The join is timed from the slowest branch finishing until the code after `Promise.all` runs. See [Fan-out](#fan-out) for the latest results.
+
+### Time to resume (TTR)
+
+A workflow creates a [hook](/docs/foundations/hooks) and waits on it for 1 s, the way an agent waits for a person's approval, and then your app calls `resumeHook()`. Time to resume runs from that call until the first line of the workflow's next step runs. Each run resumes five times. See [Resuming a workflow](#resuming-a-workflow) for the latest results.
+
+### Chunk trip time (CTT)
+
+One step replays a recorded AI agent's token stream, 2,593 chunks over 52.4 s, in real time to a [namespaced stream](/docs/foundations/streaming#namespaced-streams) with [`getWritable()`](/docs/api-reference/workflow/get-writable), and a second step in the same run reads it with `getRun(runId).getReadable()`. Chunk trip time runs from the writer writing a chunk until the reader receives it. The same benchmark records how long the whole response takes to reach the reader and how many runs had a chunk delayed by over 1 s. See [Streams](#streams) for the latest results.
+
+## Methodology
+
+- **Platform**: Each version runs the same benchmark app on Vercel production in `iad1`, against the managed [Vercel World](/worlds/vercel), on its own deployment. The versions are measured at the same time. Before measuring, each deployment runs two short workflows and one fan-out that are not counted.
+- **Workload**: Every step takes 1 KB of JSON in and out and does 100 ms of simulated work, which the overhead measurements exclude.
+- **Runs**: Each version runs every benchmark several times, and each result pools the samples from all of its runs. The run counts are listed with the latest results.
+- **Percentiles**: Each percentile pools every sample across a version's runs and uses the nearest-rank method. Half of the samples are at or below the p50 (the median), three quarters at or below the p75, and all but the slowest 1% at or below the p99. With 100 or fewer samples, a p99 is the slowest sample.
+- **p99 policy**: A p99 is reported where it changed by more than 5%. If the newer version is slower, it is reported only where the change reproduced in a second sweep.
+
+### Limits
+
+- The benchmarks run in one region, against one World. Other regions, Worlds, and workloads will see different numbers.
+- The versions share the platform while they are measured. Any exception is noted with the results.
+- The explainer and the animations are schematic: they show where each clock starts and stops, not real timings.
+
+## Latest results
+
+<Callout type="info">
+{/* generated:performance latest */}
+
+**Latest results:** Workflow SDK v5.2.0 compared with v4.8.12, measured October 8, 2026. We run these benchmarks regularly and publish updated results here.
+
+{/* end generated:performance latest */}
+</Callout>
 
 {/* generated:performance headline */}
 
@@ -18,39 +68,27 @@ At p75, v5.2.0 is as fast as or faster than v4.8.12 on every benchmark. The larg
 
 {/* end generated:performance headline */}
 
+{/* generated:performance caveats */}
+
+Both versions ran at the same time and shared the platform. The exception is the 1,020-step benchmark on v4: one of its five runs ran alongside v5.2.0's, and the other four ran on their own afterwards, the same day with the same configuration. Each version ran the sequential workflow 10 times, the agent stream 10 times, the fan-out 25 times, the resume benchmark 25 times, and the 1,020-step run 5 times.
+
+{/* end generated:performance caveats */}
+
 <Image
-  srcLight="/performance/01-overview-light.png"
-  srcDark="/performance/01-overview-dark.png"
-  alt="Dot plot of how many times faster v5.2.0 is than v4.8.12 at p75 on each benchmark, on a log scale. Every benchmark is faster or unchanged; the fan-out join and the slowest fan-out branch to start are unchanged. All values are in the results table below."
+  srcLight="/performance/v5.2.0/01-overview-light.png"
+  srcDark="/performance/v5.2.0/01-overview-dark.png"
+  alt="Dot plot of how many times faster the newer version is than the older one at p75 on each benchmark, on a log scale. The full values are in the results table below."
   width={2016}
   height={1444}
 />
 
-## What each benchmark measures
-
-Each benchmark starts a clock at one line of code and stops it at another. The work a step does is not counted, so the numbers measure the runtime itself.
-
-- **Time to first step (TTFS)**: from your app calling [`start()`](/docs/api-reference/workflow-api/start) until the first line of the workflow's first step runs.
-- **Step-to-step overhead (STSO)**: from one step finishing until the next step starts. This covers recording the step's result, resuming the workflow, and starting the next step.
-- **Fan-out**: a workflow starts 64 steps at once with `Promise.all`. The first branch (TTFS) and the slowest branch to start, or time to last step (TTLS), are timed from `start()` until that branch's first line runs. The join is timed from the slowest branch finishing until the code after `Promise.all` runs.
-- **Time to resume (TTR)**: a workflow waits on a [hook](/docs/foundations/hooks) for 1 s, then your app calls `resumeHook()`. TTR runs until the first line of the next step runs.
-- **Chunk trip time (CTT)**: one step replays a recorded AI agent's token stream while another step reads it. CTT runs from the writer writing a chunk until the reader receives it.
-
-Results are percentiles over every sample: half of the samples are at or below the p50 (the median), three quarters at or below the p75, and all but the slowest 1% at or below the p99.
-
-<PerformanceExplainer />
-
-## Steps and long runs
-
-A five-step workflow measures how quickly a run reaches its first step and how much time the runtime adds between steps.
+### Steps and long runs
 
 {/* generated:performance sequential */}
 
 At p75, a five-step workflow reaches its first step in 172 ms on v5.2.0 and 418 ms on v4.8.12, and v5.2.0 adds 109 ms between steps where v4.8.12 adds 618 ms.
 
 {/* end generated:performance sequential */}
-
-A 1,020-step workflow measures whether that overhead grows with the run. On v4.8.12 it does, because each step resumes the workflow by replaying a longer [event log](/docs/how-it-works/event-sourcing). v5.2.0 avoids most of that replay: among other changes, it keeps the workflow's VM alive across steps that run in the same invocation and applies only the new events. See [What's new in v5](/docs/whats-new#faster-and-cheaper-runs).
 
 {/* generated:performance long-run */}
 
@@ -59,16 +97,14 @@ Through a 1,020-step run, step-to-step overhead on v4.8.12 grows from 622 ms in 
 {/* end generated:performance long-run */}
 
 <Image
-  srcLight="/performance/02-sequential-light.png"
-  srcDark="/performance/02-sequential-dark.png"
-  alt="Three charts. A five-step workflow: v5.2.0 is faster than v4.8.12 for time to first step and step-to-step overhead, at p75 and in the slowest samples. Step-to-step overhead through a 1,020-step run, on a log scale: at p75 and p99, v4.8.12 grows toward the end of the run while v5.2.0 stays at or below where it started. Time to finish all 1,020 steps: v5.2.0 finishes several times sooner. All values are in the results table below."
+  srcLight="/performance/v5.2.0/02-sequential-light.png"
+  srcDark="/performance/v5.2.0/02-sequential-dark.png"
+  alt="Three charts comparing the two versions: time to first step and step-to-step overhead for a five-step workflow, step-to-step overhead through a 1,020-step run on a log scale at p75 and p99, and the time to finish all 1,020 steps. The full values are in the results table below."
   width={2016}
   height={2328}
 />
 
-## Fan-out
-
-A fan-out starts 64 one-step branches with `Promise.all`, then waits for all of them. The runtime queues the branches in batches, so they start close together and in no fixed order.
+### Fan-out
 
 {/* generated:performance fanout */}
 
@@ -79,16 +115,14 @@ At p75, v5.2.0 starts the first of 64 branches in 360 ms against 478 ms on v4.8.
 Work to start a fan-out's queued branches sooner is in progress.
 
 <Image
-  srcLight="/performance/03-fanout-light.png"
-  srcDark="/performance/03-fanout-dark.png"
-  alt="Dumbbell chart of a 64-branch fan-out at p75, v5.2.0 against v4.8.12: the first branch starts sooner on v5.2.0, and the slowest branch to start and the join are unchanged. All values are in the results table below."
+  srcLight="/performance/v5.2.0/03-fanout-light.png"
+  srcDark="/performance/v5.2.0/03-fanout-dark.png"
+  alt="Dumbbell chart of a 64-branch fan-out at p75, comparing the two versions for the first branch to start, the slowest branch to start, and the join. The full values are in the results table below."
   width={2016}
   height={804}
 />
 
-## Resuming a workflow
-
-A workflow creates a [hook](/docs/foundations/hooks) and waits on it for 1 s, the way an agent waits for a person's approval, and then your app resumes it. Each run resumes five times.
+### Resuming a workflow
 
 {/* generated:performance resume */}
 
@@ -97,16 +131,14 @@ At p75, a workflow waiting on a hook resumes in 425 ms on v5.2.0 against 699 ms 
 {/* end generated:performance resume */}
 
 <Image
-  srcLight="/performance/04-resume-light.png"
-  srcDark="/performance/04-resume-dark.png"
-  alt="Dumbbell chart of time to resume after 1 s idle, v5.2.0 against v4.8.12: v5.2.0 resumes sooner at p50, p75, and p99. All values are in the results table below."
+  srcLight="/performance/v5.2.0/04-resume-light.png"
+  srcDark="/performance/v5.2.0/04-resume-dark.png"
+  alt="Dumbbell chart of time to resume after 1 s idle at p50, p75, and p99, comparing the two versions. The full values are in the results table below."
   width={2016}
   height={804}
 />
 
-## Streams
-
-One step replays a recorded AI agent's token stream in real time to a [namespaced stream](/docs/foundations/streaming#namespaced-streams) with [`getWritable()`](/docs/api-reference/workflow/get-writable), and a second step in the same run reads it with `getRun(runId).getReadable()`.
+### Streams
 
 {/* generated:performance streams */}
 
@@ -119,16 +151,16 @@ At p75, a chunk reaches the reader in 102 ms on v5.2.0 against 172 ms on v4.8.12
 On the Vercel World, [`WORKFLOW_STREAMS_TRANSPORT`](/docs/configuration/worlds#workflow_streams_transport) sets the transport for stream writes.
 
 <Image
-  srcLight="/performance/05-streams-light.png"
-  srcDark="/performance/05-streams-dark.png"
-  alt="Three charts of a replayed agent stream. Time to deliver the response: v4.8.12 takes about four times the recording's length, while v5.2.0 keeps pace with it. Chunk trip time at p50 and p75: v5.2.0 is faster. Runs with a chunk delayed by over 1 s: 6 of 10 on v4.8.12 and none on v5.2.0. All values are in the results table below."
+  srcLight="/performance/v5.2.0/05-streams-light.png"
+  srcDark="/performance/v5.2.0/05-streams-dark.png"
+  alt="Three charts of a replayed agent stream comparing the two versions: the time to deliver the whole response against the recording's length, chunk trip time at p50 and p75, and the number of runs with a chunk delayed by over 1 s. The full values are in the results table below."
   width={2016}
   height={1628}
 />
 
-## All results
+### All results
 
-Percentiles are nearest-rank over every pooled sample. With 100 or fewer samples, a p99 is the slowest sample. A p99 is listed where it changed by more than 5% and, if v5.2.0 is slower, where the change reproduced in a second sweep.
+Every measured value from the latest results. Percentiles follow the [methodology](#methodology) above, including the p99 policy.
 
 {/* generated:performance table */}
 
@@ -161,17 +193,3 @@ Percentiles are nearest-rank over every pooled sample. With 100 or fewer samples
 | Chunk trip time, p75 | 172 ms | 102 ms | 1.7× faster | 25,930 chunks |
 
 {/* end generated:performance table */}
-
-## Methodology
-
-- **Platform**: Both versions ran the same benchmark app on Vercel production in `iad1`, against the managed [Vercel World](/worlds/vercel), each on its own deployment. Before measuring, each deployment ran two short workflows and one fan-out that were not counted.
-- **Workload**: Every step takes 1 KB of JSON in and out and does 100 ms of simulated work, which the overhead measurements exclude.
-- **Runs**: {/* generated:performance runs */}Per version, 10 runs of the sequential workflow, 10 of the agent stream, 25 of the fan-out, 25 of the resume benchmark, and 5 of the 1,020-step run.{/* end generated:performance runs */}
-- **Percentiles**: Each percentile pools every sample across a version's runs and uses the nearest-rank method.
-- **Versions**: v4.8.12 is the published `workflow@4.8.12`. v5.2.0 was measured from `main` at `e6bd692`, whose code is the v5.2.0 release: the release commit only changes version numbers and changelogs.
-
-### Limits
-
-- The benchmarks ran in one region, against one World. Other regions, Worlds, and workloads will see different numbers.
-- The benchmarks for both versions ran at the same time and shared the platform. {/* generated:performance notes */}The exception is the 1,020-step benchmark on v4: one of its five runs ran alongside v5.2.0's, and the other four ran on their own afterwards, the same day with the same configuration.{/* end generated:performance notes */}
-- The explainers on this page are schematic: they show where each clock starts and stops, not real timings.

@@ -1,5 +1,10 @@
 {
   "convention": "nearest-rank, index ceil(p/100*n)-1, pooled across runs",
+  "versions": {
+    "v4": "4.8.12",
+    "next": "5.2.0"
+  },
+  "measuredOn": "2026-10-08",
   "sources": {
     "timing": "psweep-1791476421652-1ade1787-e257-4d18-9daf-b41ddc0c47e4",
     "deep": "psweep-1791476422109-0f632aa9-49d5-4691-bf0a-283f64a2645c",
