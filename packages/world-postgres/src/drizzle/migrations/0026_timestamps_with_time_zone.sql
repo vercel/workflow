@@ -25,6 +25,11 @@
 -- `workflow_invocations.expired_at` mixes `now()` with JavaScript dates and is
 -- only ever checked for NULL, so its values are left as they are. Snapshot
 -- `created_at` is always written from JavaScript.
+--
+-- The repair must run once: applied again it would move the repaired values
+-- by the offset a second time. The drizzle migrator takes no lock, so two
+-- `bootstrap` processes started together can both apply this migration. Lock
+-- the tables first, then skip everything if the columns are already converted.
 DO $$
 DECLARE
   session_zone text := current_setting('TimeZone');
@@ -33,6 +38,24 @@ DECLARE
     current_setting('TimeZone')
   );
 BEGIN
+  LOCK TABLE
+    "workflow"."workflow_runs",
+    "workflow"."workflow_events",
+    "workflow"."workflow_steps",
+    "workflow"."workflow_hooks",
+    "workflow"."workflow_waits",
+    "workflow"."workflow_invocations",
+    "workflow"."workflow_snapshots",
+    "workflow"."workflow_stream_chunks"
+  IN ACCESS EXCLUSIVE MODE;
+  IF (
+    SELECT atttypid FROM pg_attribute
+    WHERE attrelid = '"workflow"."workflow_runs"'::regclass
+      AND attname = 'created_at'
+  ) = 'timestamptz'::regtype THEN
+    RETURN;
+  END IF;
+
   PERFORM set_config('TimeZone', 'UTC', true);
 
   ALTER TABLE "workflow"."workflow_runs"

@@ -470,6 +470,39 @@ if (process.platform === 'win32') {
         await expectRepaired(pool, legacy);
       }, 60_000);
 
+      it('repairs once when two bootstrap processes migrate at the same time', async () => {
+        const url = await createDatabase(
+          'upgrade_concurrent',
+          'America/Los_Angeles'
+        );
+        await runMigrations(url, { migrationsFolder: naiveMigrations });
+        const legacy = await writeLegacyRows(openPool(url));
+
+        // The drizzle migrator takes no lock, so both can apply 0026.
+        await Promise.all([runMigrations(url), runMigrations(url)]);
+
+        await expectRepaired(openPool(url), legacy);
+      }, 60_000);
+
+      it('changes nothing when 0026 runs again on a converted database', async () => {
+        const url = await createDatabase(
+          'upgrade_reapplied',
+          'America/Los_Angeles'
+        );
+        await runMigrations(url, { migrationsFolder: naiveMigrations });
+        const legacy = await writeLegacyRows(openPool(url));
+        await runMigrations(url);
+
+        await openPool(url).query(
+          readFileSync(
+            join(MIGRATIONS, '0026_timestamps_with_time_zone.sql'),
+            'utf8'
+          )
+        );
+
+        await expectRepaired(openPool(url), legacy);
+      }, 60_000);
+
       it('honors workflow.legacy_timezone when the app wrote in another session time zone', async () => {
         const url = await createDatabase('upgrade_session_tokyo');
         await runMigrations(url, { migrationsFolder: naiveMigrations });
