@@ -105,7 +105,7 @@ export async function getNextBuilderEager(
 
   const {
     BaseBuilder: BaseBuilderClass,
-    getWorkflowQueueTrigger,
+    getWorkflowQueueTriggers,
     detectWorkflowPatterns,
     parentHasChild,
     writeFileIfChanged,
@@ -117,6 +117,11 @@ export async function getNextBuilderEager(
       pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
       distDir: string;
     };
+
+    // `writeFunctionsConfig` registers both queue triggers.
+    protected override get registersStepQueueTrigger(): boolean {
+      return true;
+    }
 
     async build() {
       if (this.config.watch) {
@@ -815,14 +820,14 @@ export async function getNextBuilderEager(
         return;
       }
 
-      // V2 combined config: single trigger handles both workflow and step execution.
-      // The step route no longer needs its own trigger since steps are executed
-      // inline by the combined handler or queued back to __wkf_workflow_* with stepId.
+      // The combined flow function consumes both topics: orchestrator
+      // messages on per-run `__wkf_workflow_*` topics, and background step
+      // messages on the shared `__wkf_step_*` topic.
       const generatedConfig = {
         version: '0',
         workflows: {
           maxDuration: 'max',
-          experimentalTriggers: [getWorkflowQueueTrigger()],
+          experimentalTriggers: getWorkflowQueueTriggers(),
         },
       };
 

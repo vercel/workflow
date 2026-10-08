@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { getWorkflowQueueTrigger } from '@workflow/builders';
+import { getWorkflowQueueTriggers } from '@workflow/builders';
 import fs from 'fs-extra';
 
 import { stripWorkflowQueueTriggers } from './vc-config.js';
@@ -16,7 +16,7 @@ process.on('beforeExit', () => {
       file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
       config: {
         maxDuration: 'max',
-        experimentalTriggers: [getWorkflowQueueTrigger()],
+        experimentalTriggers: getWorkflowQueueTriggers(),
       },
     },
   ]) {

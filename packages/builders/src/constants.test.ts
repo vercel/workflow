@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  createWorkflowStepQueueTrigger,
   getWorkflowQueueTrigger,
+  getWorkflowQueueTriggers,
   isSequentialReplaysEnabled,
 } from './constants.js';
 
@@ -98,5 +100,50 @@ describe('createWorkflowEntrypointOptionsCode', () => {
     ).toBe(
       ', { namespace: "custom", basePath: "/v2", routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt }'
     );
+  });
+});
+
+describe('createWorkflowStepQueueTrigger', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('uses the step topic and sets no concurrency limit', () => {
+    const trigger = createWorkflowStepQueueTrigger();
+    expect(trigger.topic).toBe('__wkf_step_*');
+    expect(trigger).not.toHaveProperty('maxConcurrency');
+  });
+
+  it('scopes the step topic to a namespace', () => {
+    expect(createWorkflowStepQueueTrigger({ namespace: 'custom' }).topic).toBe(
+      '__custom_wkf_step_*'
+    );
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'envns');
+    expect(createWorkflowStepQueueTrigger().topic).toBe('__envns_wkf_step_*');
+  });
+
+  // The flow trigger matches `__wkf_workflow_*`, so a step topic under it
+  // would be serialized by the flow trigger's limit.
+  it('never overlaps the flow trigger', () => {
+    const flow = getWorkflowQueueTrigger().topic.replace(/\*$/, '');
+    expect(createWorkflowStepQueueTrigger().topic.startsWith(flow)).toBe(false);
+  });
+});
+
+describe('getWorkflowQueueTriggers', () => {
+  it('returns the flow trigger and the step trigger', () => {
+    expect(getWorkflowQueueTriggers({ namespace: 'custom' })).toEqual([
+      getWorkflowQueueTrigger({ namespace: 'custom' }),
+      createWorkflowStepQueueTrigger({ namespace: 'custom' }),
+    ]);
+  });
+});
+
+describe('createWorkflowEntrypointOptionsCode stepTopic', () => {
+  it('inlines stepTopic only when the build registers the step trigger', () => {
+    expect(createWorkflowEntrypointOptionsCode({ stepTopic: true })).toBe(
+      ', { stepTopic: true }'
+    );
+    expect(createWorkflowEntrypointOptionsCode({ stepTopic: false })).toBe('');
   });
 });

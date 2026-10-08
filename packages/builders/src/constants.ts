@@ -4,7 +4,7 @@ function resolveQueueNamespace(namespace?: string): string | undefined {
   return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
 }
 
-function getQueueTopicPrefix(namespace?: string) {
+function getQueueTopicPrefix(namespace?: string, kind = 'workflow') {
   if (namespace !== undefined) {
     if (!QUEUE_NAMESPACE_PATTERN.test(namespace)) {
       throw new Error(
@@ -12,10 +12,10 @@ function getQueueTopicPrefix(namespace?: string) {
       );
     }
 
-    return `__${namespace}_wkf_workflow_`;
+    return `__${namespace}_wkf_${kind}_`;
   }
 
-  return '__wkf_workflow_';
+  return `__wkf_${kind}_`;
 }
 
 /**
@@ -48,6 +48,36 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
 }
 
 /**
+ * Creates the queue trigger for background step-execution messages
+ * (`__wkf_step_*`, or `__<namespace>_wkf_step_*`).
+ *
+ * `@workflow/world-vercel` sends a step's execution message to one shared
+ * step topic per workflow instead of a per-step physical topic under the flow
+ * trigger, so a fan-out's step messages go out in one batched request. The
+ * trigger sets no `maxConcurrency`: a step has one message for its whole life
+ * (retried in place, deduplicated by its idempotency key), so nothing on it
+ * needs serializing, and a limit would serialize every step of the workflow.
+ *
+ * Register it on the same flow function as {@link getWorkflowQueueTrigger},
+ * which handles both orchestration and step messages. The runtime only sends
+ * to this topic when the generated route says the build registered it (see
+ * {@link createWorkflowEntrypointOptionsCode}'s `stepTopic`).
+ */
+export function createWorkflowStepQueueTrigger(options?: {
+  namespace?: string;
+}) {
+  const namespace = resolveQueueNamespace(options?.namespace);
+
+  return {
+    type: 'queue/v2beta' as const,
+    topic: `${getQueueTopicPrefix(namespace, 'step')}*`,
+    consumer: 'default',
+    retryAfterSeconds: 5,
+    initialDelaySeconds: 0,
+  };
+}
+
+/**
  * Creates the optional second argument for generated `workflowEntrypoint()`
  * calls. The namespace is resolved while building so generated route files do
  * not need `WORKFLOW_QUEUE_NAMESPACE` at runtime.
@@ -57,6 +87,12 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   basePath?: string;
   /** Raw code identifier/expression emitted into generated route files, not data. */
   routeModuleBodyStartedAt?: string;
+  /**
+   * The build registers the step-execution trigger
+   * ({@link getWorkflowQueueTriggers}) on the flow function, so the runtime
+   * may send step messages to the shared step topic.
+   */
+  stepTopic?: boolean;
 }) {
   const namespace = resolveQueueNamespace(options?.namespace);
   const fields: string[] = [];
@@ -69,6 +105,10 @@ export function createWorkflowEntrypointOptionsCode(options?: {
 
   if (options?.basePath !== undefined) {
     fields.push(`basePath: ${JSON.stringify(options.basePath)}`);
+  }
+
+  if (options?.stepTopic) {
+    fields.push('stepTopic: true');
   }
 
   if (options?.routeModuleBodyStartedAt) {
@@ -131,4 +171,18 @@ export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
     ...createWorkflowQueueTrigger(options),
     maxConcurrency: 1,
   };
+}
+
+/**
+ * Every queue trigger the flow function registers on Vercel: the flow trigger
+ * ({@link getWorkflowQueueTrigger}) and the step-execution trigger
+ * ({@link createWorkflowStepQueueTrigger}). A builder that registers both
+ * reports it through `BaseBuilder.registersStepQueueTrigger`, which turns on
+ * the shared step topic in the generated route.
+ */
+export function getWorkflowQueueTriggers(options?: { namespace?: string }) {
+  return [
+    getWorkflowQueueTrigger(options),
+    createWorkflowStepQueueTrigger(options),
+  ];
 }

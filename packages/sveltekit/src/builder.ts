@@ -18,6 +18,12 @@ const SVELTEKIT_VIRTUAL_MODULES = [
 ];
 
 export class SvelteKitBuilder extends BaseBuilder {
+  // On a Vercel deploy, `index.ts` registers both queue triggers on the flow
+  // function this builder generates.
+  protected override get registersStepQueueTrigger(): boolean {
+    return true;
+  }
+
   #routesDir: string;
 
   constructor(config: Partial<SvelteKitConfig> & { routesDir?: string } = {}) {

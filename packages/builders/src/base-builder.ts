@@ -232,6 +232,18 @@ export abstract class BaseBuilder {
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
 
+  /**
+   * Whether this builder registers the step-execution queue trigger
+   * (`getWorkflowQueueTriggers()` in `@workflow/builders`) on the flow function
+   * when it deploys to Vercel. When it does, the generated route lets the
+   * runtime send step messages to the shared step topic; otherwise they keep
+   * per-step topics under the flow trigger. A builder that writes its own
+   * trigger config must register both triggers before returning `true`.
+   */
+  protected get registersStepQueueTrigger(): boolean {
+    return false;
+  }
+
   constructor(config: WorkflowConfig) {
     this.config = config;
   }
@@ -1552,6 +1564,7 @@ export const __steps_registered = true;
         {
           basePath: this.config.basePath,
           routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+          stepTopic: this.registersStepQueueTrigger,
         }
       );
 
@@ -1767,6 +1780,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
       basePath: this.config.basePath,
       routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+      stepTopic: this.registersStepQueueTrigger,
     });
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
@@ -1847,6 +1861,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         {
           basePath: this.config.basePath,
           routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+          stepTopic: this.registersStepQueueTrigger,
         }
       );
       const code = `// biome-ignore-all lint: generated file
