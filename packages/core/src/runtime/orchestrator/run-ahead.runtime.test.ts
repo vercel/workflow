@@ -505,9 +505,12 @@ describe('run-ahead against an append-only World (node engine)', () => {
   it('leaves no outcome without its creation when a cancellation displaces a speculative write', async () => {
     const debug = vi.spyOn(runtimeLogger, 'debug');
     let injected = false;
+    // Outcomes are held until the next body returned, so the next writes
+    // queue behind them and coalesce however slow the machine is.
+    const holdOutcome = holdOutcomesUntilAhead(1);
     const { world, runId } = await run(sequential, [STEPS], {
       async beforeCreate(data, _params, source) {
-        await slowOutcomes.beforeCreate(data);
+        if (!injected) await holdOutcome(data);
         if (!injected && data.eventType === 'step_completed' && source?.batch) {
           injected = true;
           world.appendOutOfBand({
