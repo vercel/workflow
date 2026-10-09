@@ -108,13 +108,17 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     tag
   );
+  const { clearCache: clearStreamerCache, ...streamer } = createStreamer(
+    mergedConfig.dataDir,
+    tag
+  );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
-      ...createStreamer(mergedConfig.dataDir, tag),
+      ...streamer,
       ...(mergedConfig.streamFlushIntervalMs !== undefined && {
         streamFlushIntervalMs: mergedConfig.streamFlushIntervalMs,
       }),
@@ -226,6 +230,8 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
       }
+      // The stream indexes are gone, so forget which streams were registered.
+      clearStreamerCache();
     },
   };
 }

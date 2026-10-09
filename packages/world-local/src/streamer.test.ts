@@ -861,6 +861,143 @@ describe('streamer', () => {
       });
     });
 
+    // A run's stream names live in one file, `streams/runs/<runId>.json`.
+    // Registering a name is a read-modify-write of that file, so two streams
+    // of one run that first write at the same time each read the old list
+    // and the second rename drops the first name.
+    describe('concurrent stream registration', () => {
+      const names = (prefix: string, count: number) =>
+        Array.from({ length: count }, (_, i) => `${prefix}-${i}`);
+
+      it('keeps every name when many streams of a run first write at once', async () => {
+        const { streamer } = await setupStreamer();
+        const streamNames = names('stream', 20);
+
+        await Promise.all(
+          streamNames.map((name) =>
+            streamer.writeToStream(name, TEST_RUN_ID, 'data')
+          )
+        );
+
+        expect((await streamer.listStreamsByRunId(TEST_RUN_ID)).sort()).toEqual(
+          [...streamNames].sort()
+        );
+      });
+
+      it('keeps every name across write, writeMulti and close', async () => {
+        const { streamer } = await setupStreamer();
+
+        await Promise.all([
+          streamer.writeToStream('written-0', TEST_RUN_ID, 'a'),
+          streamer.writeToStreamMulti!('multi-0', TEST_RUN_ID, ['a', 'b']),
+          streamer.closeStream('closed-0', TEST_RUN_ID),
+          streamer.writeToStream('written-1', TEST_RUN_ID, 'a'),
+          streamer.writeToStreamMulti!('multi-1', TEST_RUN_ID, ['a', 'b']),
+          streamer.closeStream('closed-1', TEST_RUN_ID),
+        ]);
+
+        expect((await streamer.listStreamsByRunId(TEST_RUN_ID)).sort()).toEqual(
+          [
+            'closed-0',
+            'closed-1',
+            'multi-0',
+            'multi-1',
+            'written-0',
+            'written-1',
+          ]
+        );
+      });
+
+      // Two streamers on one data directory share no memory, so this is the
+      // same race as two processes writing one `.workflow-data`.
+      it.each([
+        { label: 'untagged', tag: undefined },
+        { label: 'tagged', tag: 'vitest-x' },
+      ])('keeps every name when two streamers share the data directory ($label)', async ({
+        tag,
+      }) => {
+        const { testDir } = await setupStreamer();
+        const first = createStreamer(testDir, tag);
+        const second = createStreamer(testDir, tag);
+
+        for (let i = 0; i < 10; i++) {
+          const runId = `wrun_shared${i}`;
+          const firstNames = names('first', 3);
+          const secondNames = names('second', 3);
+          await Promise.all([
+            ...firstNames.map((name) => first.writeToStream(name, runId, 'a')),
+            ...secondNames.map((name) =>
+              second.writeToStream(name, runId, 'b')
+            ),
+          ]);
+
+          expect((await first.listStreamsByRunId(runId)).sort()).toEqual(
+            [...firstNames, ...secondNames].sort()
+          );
+        }
+      });
+
+      it('takes over the lock of a writer that crashed holding it', async () => {
+        const { streamer, testDir } = await setupStreamer();
+        const lockDir = path.join(
+          testDir,
+          'streams',
+          'runs',
+          `${TEST_RUN_ID}.json.lock`
+        );
+        await fs.mkdir(lockDir, { recursive: true });
+        const longAgo = new Date(Date.now() - 60_000);
+        await fs.utimes(lockDir, longAgo, longAgo);
+
+        const startedAt = Date.now();
+        await streamer.writeToStream('after-crash', TEST_RUN_ID, 'data');
+
+        expect(Date.now() - startedAt).toBeLessThan(5_000);
+        expect(await streamer.listStreamsByRunId(TEST_RUN_ID)).toEqual([
+          'after-crash',
+        ]);
+        await expect(fs.stat(lockDir)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      });
+
+      // A world-local from before this fix, writing the same data directory,
+      // still registers without the lock and can drop a name this streamer
+      // already wrote. Closing the stream puts it back.
+      it('close() restores a name that another writer dropped', async () => {
+        const { streamer, testDir } = await setupStreamer();
+        await streamer.writeToStream('kept', TEST_RUN_ID, 'data');
+        await streamer.writeToStream('dropped', TEST_RUN_ID, 'data');
+
+        await fs.writeFile(
+          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.json`),
+          JSON.stringify({ streams: ['kept'] })
+        );
+        await streamer.closeStream('dropped', TEST_RUN_ID);
+
+        expect((await streamer.listStreamsByRunId(TEST_RUN_ID)).sort()).toEqual(
+          ['dropped', 'kept']
+        );
+      });
+
+      // The re-check is a repair. A close() of a registered stream never read
+      // the index before, so a failed read must not fail it now: the stream
+      // would never get its EOF and its readers would wait forever.
+      it('close() still closes a registered stream when the index cannot be read', async () => {
+        const { streamer, testDir } = await setupStreamer();
+        await streamer.writeToStream('stream', TEST_RUN_ID, 'data');
+        await fs.writeFile(
+          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.json`),
+          '{not json'
+        );
+
+        await streamer.closeStream('stream', TEST_RUN_ID);
+
+        const chunks = await streamer.getStreamChunks('stream', TEST_RUN_ID);
+        expect(chunks.done).toBe(true);
+      });
+    });
+
     describe('getStreamChunks', () => {
       it('should paginate through all chunks', async () => {
         const { streamer } = await setupStreamer();
