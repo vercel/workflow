@@ -44,37 +44,145 @@ class Rc<T extends { drop(): void }> {
 }
 
 /**
+ * Delay between attempts to re-establish a `LISTEN` connection after it
+ * dropped (database restart, failover, `pg_terminate_backend`).
+ */
+export const LISTEN_RECONNECT_DELAY_MS = 1_000;
+
+/**
+ * Upper bound on a single reconnect attempt when the pool sets no
+ * `connectionTimeoutMillis`. `pg` defaults to no timeout, so a connect into a
+ * network partition would otherwise stall the reconnect loop indefinitely.
+ */
+const LISTEN_RECONNECT_CONNECT_TIMEOUT_MS = 10_000;
+
+export interface ListenChannelOptions {
+  /**
+   * Runs after a dropped connection has been replaced and `LISTEN` is active
+   * again. A `NOTIFY` sent while no connection listened is lost, so callers
+   * that cannot tolerate a missed notification re-read their state here.
+   */
+  onReconnect?: () => void;
+}
+
+/**
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
  * from the pool's connection options. `channel` must be a trusted identifier.
+ *
+ * A failure to establish the first connection rejects. Once subscribed, a
+ * dropped connection is replaced every {@link LISTEN_RECONNECT_DELAY_MS} until
+ * `LISTEN` succeeds again or the subscription is closed.
  */
 export const listenChannel = async (
   pool: Pool,
   channel: string,
-  onPayload: (payload: string) => Promise<void>
+  onPayload: (payload: string) => Promise<void>,
+  options: ListenChannelOptions = {}
 ): Promise<{ close: () => Promise<void> }> => {
-  const client = new Client(pool.options);
-
-  try {
-    await client.connect();
-    await client.query(`LISTEN ${channel}`);
-  } catch (err) {
-    await client.end().catch(() => {});
-    throw err;
-  }
+  let closed = false;
+  let current: Client | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  // Set while the subscription is down, so the drop and the recovery each
+  // log once per outage rather than once per failed attempt.
+  let degraded = false;
 
   const onNotification = (msg: { payload?: string | undefined }) => {
     onPayload(msg.payload ?? '').catch(() => {});
   };
 
-  client.on('notification', onNotification);
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      void reconnect();
+    }, LISTEN_RECONNECT_DELAY_MS);
+  };
+
+  const dropped = (client: Client) => {
+    // `pg` emits both `error` and `end` for one drop, and a replaced client
+    // can still emit late; only the active client's first signal counts.
+    if (current !== client) return;
+    current = undefined;
+    client.removeListener('notification', onNotification);
+    void client.end().catch(() => {});
+    if (closed) return;
+    if (!degraded) {
+      degraded = true;
+      console.warn(
+        `[world-postgres] LISTEN ${channel} connection lost; reconnecting`
+      );
+    }
+    scheduleReconnect();
+  };
+
+  const subscribe = async (connectionTimeoutMillis?: number) => {
+    const client = new Client(
+      connectionTimeoutMillis
+        ? { ...pool.options, connectionTimeoutMillis }
+        : pool.options
+    );
+    // Without an `error` listener, a server-side disconnect is rethrown by
+    // the EventEmitter as an uncaught exception and ends the process. Keep it
+    // attached after the client is retired: `pg` can still emit while the
+    // connection unwinds.
+    client.on('error', () => dropped(client));
+    client.on('end', () => dropped(client));
+    try {
+      await client.connect();
+      await client.query(`LISTEN ${channel}`);
+    } catch (err) {
+      await client.end().catch(() => {});
+      throw err;
+    }
+    if (closed) {
+      // `close()` ran while this client was connecting.
+      await client.end().catch(() => {});
+      return false;
+    }
+    client.on('notification', onNotification);
+    current = client;
+    return true;
+  };
+
+  const reconnect = async () => {
+    if (closed) return;
+    let subscribed: boolean;
+    try {
+      subscribed = await subscribe(
+        pool.options.connectionTimeoutMillis ||
+          LISTEN_RECONNECT_CONNECT_TIMEOUT_MS
+      );
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    if (!subscribed) return;
+    degraded = false;
+    console.warn(`[world-postgres] LISTEN ${channel} connection restored`);
+    try {
+      options.onReconnect?.();
+    } catch {
+      // A failing callback must not take the restored subscription down.
+    }
+  };
+
+  await subscribe();
 
   return {
     close: async () => {
+      closed = true;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      const client = current;
+      current = undefined;
+      if (!client) return;
       client.removeListener('notification', onNotification);
       try {
         await client.query(`UNLISTEN ${channel}`);
+      } catch {
+        // Ending the connection drops its subscriptions anyway.
       } finally {
-        await client.end();
+        await client.end().catch(() => {});
       }
     },
   };
@@ -116,31 +224,73 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
-  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
-    const parsed = StreamPublishMessage.parse(JSON.parse(msg));
+  const listenSubscription = listenChannel(
+    pool,
+    STREAM_TOPIC,
+    async (msg) => {
+      const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
-    const key = `strm:${parsed.streamId}` as const;
-    if (!events.listenerCount(key)) {
-      return;
-    }
+      const key = `strm:${parsed.streamId}` as const;
+      if (!events.listenerCount(key)) {
+        return;
+      }
 
-    const resource = getMutex(key);
-    await resource.mutex.andThen(async () => {
-      const [value] = await drizzle
-        .select({ eof: streams.eof, data: streams.chunkData })
-        .from(streams)
-        .where(
-          and(
-            eq(streams.streamId, parsed.streamId),
-            eq(streams.chunkId, parsed.chunkId)
+      const resource = getMutex(key);
+      await resource.mutex.andThen(async () => {
+        const [value] = await drizzle
+          .select({ eof: streams.eof, data: streams.chunkData })
+          .from(streams)
+          .where(
+            and(
+              eq(streams.streamId, parsed.streamId),
+              eq(streams.chunkId, parsed.chunkId)
+            )
           )
-        )
-        .limit(1);
-      if (!value) return;
-      const { data, eof } = value;
-      events.emit(key, { id: parsed.chunkId, data, eof });
-    });
-  });
+          .limit(1);
+        if (!value) return;
+        const { data, eof } = value;
+        events.emit(key, { id: parsed.chunkId, data, eof });
+      });
+    },
+    { onReconnect: () => replayActiveStreams() }
+  );
+
+  // Notifications sent while the LISTEN connection was down are lost, and a
+  // reader would then miss those chunks or wait forever for a lost EOF. After
+  // a reconnect, re-emit the persisted chunks of every stream that still has
+  // a reader. Readers skip chunk ids at or below the last one they delivered,
+  // so the replay only surfaces what they missed.
+  const replayActiveStreams = () => {
+    for (const key of events.eventNames()) {
+      if (events.listenerCount(key)) void replayStream(key);
+    }
+  };
+
+  const replayStream = async (key: `strm:${string}`) => {
+    const resource = getMutex(key);
+    try {
+      await resource.mutex.andThen(async () => {
+        if (closed || !events.listenerCount(key)) return;
+        const chunks = await loadPersistedChunks(key.slice('strm:'.length));
+        for (const chunk of chunks) {
+          if (!events.listenerCount(key)) break;
+          events.emit(key, chunk);
+        }
+      });
+    } catch {
+      // The database is likely still recovering. Retry while a reader waits;
+      // the stream name is not logged since it can carry user data.
+      if (closed || !events.listenerCount(key)) return;
+      console.warn(
+        '[world-postgres] Stream re-read after LISTEN reconnect failed; retrying'
+      );
+      setTimeout(() => {
+        if (!closed && events.listenerCount(key)) void replayStream(key);
+      }, LISTEN_RECONNECT_DELAY_MS);
+    } finally {
+      resource[Symbol.dispose]();
+    }
+  };
 
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
