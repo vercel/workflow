@@ -1,5 +1,21 @@
 # @workflow/web
 
+## 5.0.3
+
+### Patch Changes
+
+- [#4736](https://github.com/vercel/workflow/pull/4736) [`28cb70d`](https://github.com/vercel/workflow/commit/28cb70da502b8051d955fda981502c509c93c714) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Upgrade `react-router` and `@react-router/*` to 7.18.4 to address CVE-2026-34077 and GHSA-qwww-vcr4-c8h2
+- Updated dependencies [[`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2)]:
+  - @workflow/world-local@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- [#4291](https://github.com/vercel/workflow/pull/4291) [`d7217a8`](https://github.com/vercel/workflow/commit/d7217a8fc0fb57eed91835c7bd58d9c292551ba9) Thanks [@mitul-s](https://github.com/mitul-s)! - De-duplicate separate shadcn button implementations between `@workflow/web-shared` and `@workflow/web`
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4)]:
+  - @workflow/world-local@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

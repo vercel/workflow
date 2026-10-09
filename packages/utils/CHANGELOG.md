@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4651](https://github.com/vercel/workflow/pull/4651) [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13) Thanks [@pranaygp](https://github.com/pranaygp)! - `sleep()`, `RetryableError`'s `retryAfter`, and a hook's `experimental_minRetention` now throw on an Invalid Date, or on a duration that ends past the latest time a `Date` can hold, instead of sending the Invalid Date to the World.
+
 ## 5.0.0
 
 ### Major Changes

@@ -110,18 +110,29 @@ export function isWsEventsTransportStrict(): boolean {
 }
 
 /**
- * Advertise the experimental v1 stream-write protocol only when explicitly
- * requested. This is a client capability signal, not an entitlement: the
- * server authoritatively accepts or declines every upgrade, and a decline
- * falls back directly to the HTTP stream writer.
+ * Stream writes use the `workflow-stream-ws/v1` session unless
+ * `WORKFLOW_STREAMS_TRANSPORT=http`. Matched like the events gate above:
+ * trimmed and case-insensitive, and `http` is the only value that opts out, so
+ * an unrecognized value (including an explicit `ws`) takes the default rather
+ * than quietly pinning a deployment to HTTP.
  *
- * HTTP is the compatibility path and the default. Unlike the default-on events
- * gate above, this opt-in is exact-match: a typo must fail toward HTTP rather
- * than unexpectedly enabling an experimental transport. This deliberately has
- * no package-version or tenant-policy heuristic; rollout policy belongs to the
- * server. v1 is `/websockets/v1`, independently versioned from REST v2/v4 and
- * persisted workflow spec versions.
+ * This is a client capability signal, not an entitlement: the server
+ * authoritatively accepts or declines every upgrade, and a decline falls back
+ * directly to the HTTP stream writer for that writer's lifetime. Rollout policy
+ * (which tenants may upgrade) belongs to the server, so there is deliberately no
+ * package-version or tenant heuristic here. v1 is `/websockets/v1`,
+ * independently versioned from REST v2/v4 and persisted workflow spec versions.
+ *
+ * There is no per-workflow override like
+ * `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`: a stream writer is created
+ * from a run ID and stream name alone, and the World has no workflow name for
+ * it. External `Run#getWritable()` writers run outside any queue delivery, so
+ * nothing in this package could supply one.
+ *
+ * Read on every call, like the events gate.
  */
 export function isWsStreamsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_STREAMS_TRANSPORT === 'ws';
+  return (
+    process.env.WORKFLOW_STREAMS_TRANSPORT?.trim().toLowerCase() !== 'http'
+  );
 }

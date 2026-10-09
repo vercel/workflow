@@ -1,5 +1,28 @@
 # @workflow/world-local
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4718](https://github.com/vercel/workflow/pull/4718) [`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf) Thanks [@ruiconti](https://github.com/ruiconti)! - Store event and step files in one directory per run for faster reads. Local run data written by earlier releases is deleted on upgrade.
+
+### Patch Changes
+
+- [#4742](https://github.com/vercel/workflow/pull/4742) [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2) Thanks [@pranaygp](https://github.com/pranaygp)! - Make a tagged `clear()` delete only its own tag's lock files, so it no longer reopens another tag's disposed hooks mid-run.
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431)]:
+  - @workflow/world@5.0.3
+  - @workflow/errors@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- [#4636](https://github.com/vercel/workflow/pull/4636) [`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Prevent duplicate hook creation events when a retry publishes before the original token-claim owner.
+- Updated dependencies [[`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

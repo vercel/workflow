@@ -1,5 +1,23 @@
 import { Command } from '@oclif/core';
-import { getWorld } from '@workflow/core/runtime';
+
+/**
+ * Whether a command in this process created (or started creating) a World.
+ * These are the process-wide cache keys `getWorld()` and `setWorld()` from
+ * `@workflow/core/runtime` use, read here without importing the runtime.
+ *
+ * Because this module does not import the runtime, a command that needs a
+ * World must import `@workflow/core/runtime` itself (usually through
+ * `setupCliWorld()`). With the published oclif manifest only the invoked
+ * command's modules are loaded, so it cannot rely on another command having
+ * loaded the runtime, as it can in a checkout without a manifest.
+ */
+function hasCachedWorld(): boolean {
+  const cache = globalThis as Record<symbol, unknown>;
+  return (
+    cache[Symbol.for('@workflow/world//cache')] !== undefined ||
+    cache[Symbol.for('@workflow/world//cachePromise')] !== undefined
+  );
+}
 
 async function flushStream(stream: NodeJS.WriteStream): Promise<void> {
   if (
@@ -34,15 +52,22 @@ export abstract class BaseCommand extends Command {
    * Called by oclif after `run()` completes (or throws).
    * Closes the cached World instance so the process can exit cleanly
    * without relying on `process.exit()`.
+   *
+   * Commands that never touch a World (like `build`) skip this entirely:
+   * the runtime is imported only when there is a World to close, instead of
+   * loading it (and creating a World) just to close it again.
    */
   async finally(err: Error | undefined): Promise<void> {
-    try {
-      const world = await getWorld();
-      await world.close?.();
-    } catch (closeErr) {
-      this.warn(
-        `Failed to close world: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`
-      );
+    if (hasCachedWorld()) {
+      try {
+        const { getWorld } = await import('@workflow/core/runtime');
+        const world = await getWorld();
+        await world.close?.();
+      } catch (closeErr) {
+        this.warn(
+          `Failed to close world: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`
+        );
+      }
     }
     await super.finally(err);
     // Force exit. World.close() cleaned up database connections and HTTP

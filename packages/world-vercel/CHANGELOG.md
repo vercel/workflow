@@ -1,5 +1,38 @@
 # @workflow/world-vercel
 
+## 5.2.0
+
+### Minor Changes
+
+- [#4722](https://github.com/vercel/workflow/pull/4722) [`d0f6b91`](https://github.com/vercel/workflow/commit/d0f6b9140841f548663c29f8adaaa21ae5dec09b) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Stream writes now upgrade to WebSocket by default; set `WORKFLOW_STREAMS_TRANSPORT=http` to opt out.
+
+### Patch Changes
+
+- [#4712](https://github.com/vercel/workflow/pull/4712) [`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Reduce redundant schema compilation by compiling final event schemas only and reusing compiled v4 event-response and paginated response schemas.
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431)]:
+  - @workflow/world@5.0.3
+  - @workflow/errors@5.0.3
+
+## 5.1.0
+
+### Minor Changes
+
+- [#4589](https://github.com/vercel/workflow/pull/4589) [`9ca188a`](https://github.com/vercel/workflow/commit/9ca188a1e9ec229af92bf82f4ead511ca3a626f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Default the events transport to WebSockets. Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out.
+
+### Patch Changes
+
+- [#4333](https://github.com/vercel/workflow/pull/4333) [`a6c455a`](https://github.com/vercel/workflow/commit/a6c455a09c622e184f518764109fa455eb718699) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade `@vercel/queue` to 0.6.0 so queue callbacks for messages that are already claimed or processed (409 / 410) respond 200 instead of logging `Queue callback error` and returning 500
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Wait out a throttled (429) write recording a step body's outcome until the invocation's deadline instead of 30 seconds, and resend a throttled event-log read from its cursor instead of restarting it.
+
+- [#4605](https://github.com/vercel/workflow/pull/4605) [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Release drained stream writer sockets without closing the shared stream, preserve handle reuse over HTTP, and dispose transports when public writable streams abort. Propagate source failures to readers of flushable stream pipes.
+
+- [#4648](https://github.com/vercel/workflow/pull/4648) [`81eac1d`](https://github.com/vercel/workflow/commit/81eac1db2c237a5135ef4d2d0b66cd95c74057f0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade `@vercel/queue` to 0.8.0 so throttled queue sends honor the server's `Retry-After` and queue errors carry clean messages
+- Updated dependencies [[`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

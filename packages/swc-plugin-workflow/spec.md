@@ -25,7 +25,7 @@ All modes emit a JSON manifest comment at the top of the file containing metadat
 
 The manifest includes:
 - **`workflows`**: Map of workflow function names to their `workflowId`
-- **`steps`**: Map of step function names to their `stepId`
+- **`steps`**: Map of step function names to their `stepId`. Steps hoisted out of an enclosing function (nested steps and object property steps inside a workflow) are keyed by their namespaced name, i.e. the identifier part of the `stepId` (e.g. `myWorkflow/innerStep`), so same-named nested steps in different workflows each get their own entry
 - **`classes`**: Map of class names with custom serialization to their `classId`
 
 This manifest is used by bundlers and the runtime to discover and register workflows, steps, and serializable classes.
@@ -182,7 +182,7 @@ export async function example(a, b) {
 
 Output:
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"innerStep":{"stepId":"step//./input//innerStep"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"example/innerStep":{"stepId":"step//./input//example/innerStep"}}}}*/;
 async function example$innerStep(x, y) {
     return x + y;
 }
@@ -196,6 +196,61 @@ example.workflowId = "workflow//./input//example";
     __wf_fn.stepId = __wf_id;
 })(example$innerStep, "step//./input//example/innerStep");
 ```
+
+#### Same-named steps in different block scopes
+
+Two nested steps with the same local name in different block scopes of one enclosing function are distinct functions. The first one (in source order) keeps the plain name; each later one gets a `~N` suffix in its step ID (`N` = 1, 2, ...). The same applies to object property steps on same-named objects (e.g. `helpers.act` in two branches), and nested steps and object property steps share a namespace (a step nested in a function `helpers` and a step property on an object `helpers` are both `helpers/act`).
+
+Step mode's assignment is authoritative. Workflow mode doesn't see every step that step mode does (steps nested in a step body are only visible to step mode), so it first runs step mode over a copy of the module and reuses the name step mode assigned to each step's source span. This keeps both modes from giving the same ID to different function bodies.
+
+`~N` is the generated collision suffix. Explicitly written names are reserved before suffixes are assigned, so adding a duplicate earlier in the file cannot rename an existing quoted object step such as `"act~1"`. Each duplicate takes the smallest `~N` that is neither already claimed nor explicitly reserved in the same namespace. Unrelated names elsewhere in the file don't affect it.
+
+| Claim order | Assigned names |
+|---|---|
+| `act`, `act`, `act~1` | `act`, `act~2`, `act~1` |
+| `act~1`, `act`, `act` | `act~1`, `act`, `act~2` |
+| `act~1` only | `act~1` |
+
+Step IDs keep the raw names (including `~` and any other characters in a property key), while hoisted bindings and workflow-mode getter proxies are generated as valid JS identifiers: `~` becomes `$`, any other character not allowed in an identifier becomes `_`, and a binding that would redeclare another hoisted step or a module-level name gets a further `$N` suffix. So keys `act~1`, `act_1` and `act-1` on one object get bindings `obj$act$1`, `obj$act_1` and `obj$act_1$1`, while property names in the output are unchanged. Likewise a nested step `helpers$act` and an object property step `helpers.act` in the same workflow are hoisted as `example$helpers$act` and `example$helpers$act$1`.
+
+Nested steps are namespaced by their nearest enclosing named function in both modes, including steps nested in plain helper functions (e.g. `wrapper/fn`).
+
+Input:
+```javascript
+export async function example(op) {
+  "use workflow";
+  if (op === "a") {
+    const act = async () => {
+      "use step";
+      return "a";
+    };
+    return await act();
+  } else {
+    const act = async () => {
+      "use step";
+      return "b";
+    };
+    return await act();
+  }
+}
+```
+
+Output (step mode, registration IIFEs abbreviated):
+```javascript
+var example$act = async ()=>"a";
+(function(__wf_fn, __wf_id) { /* ... */ })(example$act, "step//./input//example/act");
+var example$act$1 = async ()=>"b";
+(function(__wf_fn, __wf_id) { /* ... */ })(example$act$1, "step//./input//example/act~1");
+```
+
+In workflow mode, each branch keeps its local `act` binding, pointing at its own step ID:
+```javascript
+const act = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//example/act");
+// ...
+const act = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//example/act~1");
+```
+
+A module-level declaration that shares a nested step's name (e.g. `const act = 1` next to a workflow's nested step `act`) is left unchanged in workflow mode and isn't listed as a step in the manifest.
 
 ### Steps in nested object properties
 

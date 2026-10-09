@@ -289,15 +289,43 @@ export function isBatchTransitionsEnabled(): boolean {
 
 /**
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
- * Mirrors the server's transaction budgets with a comfortable margin: each
- * fan-out event costs 2 transaction items server-side (entity + event row)
- * against the 100-item DynamoDB cap, and inline payloads count against a
- * 768 KB byte budget, so 32 events stays well under both, and a fan-out larger
- * than this commits in successive batches (split batches lose
- * cross-batch atomicity, which is exactly today's per-event-write crash
- * surface, and every batch still converges on retry via per-event 409s).
+ * The server's transaction budgets are the hard limit: each fan-out event
+ * costs 2 transaction items server-side (entity + event row) against the
+ * 100-item DynamoDB cap, and inline payloads count against a 768 KB byte
+ * budget. A fan-out larger than this commits in successive batches, all in
+ * flight at once (split batches lose cross-batch atomicity, which is exactly
+ * the per-event-write crash surface, and every batch still converges on retry
+ * via per-event 409s).
+ *
+ * Within the budget the value is a latency trade, measured on durabench
+ * production sweeps (Vercel World, iad1, `Promise.all` of N one-step branches,
+ * 100 ms of work and 1 KB JSON each, 2026-10-07, every candidate built off the
+ * same commit and interleaved in one sweep):
+ *
+ * - A queued (non-inline) branch's message is published only once the chunk
+ *   carrying its `step_created` commits, then goes out in that chunk's
+ *   batched publish, and both hops slow down as the chunk grows. Smaller
+ *   chunks start the queued branches sooner: at 64 branches the queued
+ *   branches' median `step_started` moved from ~570 ms after `run_started` at
+ *   32 to ~460 ms at 16, and the last branch's first line from 967 to 875 ms
+ *   (p50, 45 runs each); at 128 branches, from 4,059 to 3,855 ms (20 runs).
+ * - More chunks are more concurrent `createBatch` requests per run, and the
+ *   inline branches' pair chunk is one of them. From about 16 concurrent
+ *   chunks the first (inline) branch slows down: at 128 branches 8 per chunk
+ *   cost it ~120 ms, and at 256 branches 4, 8 and 12 per chunk cost it ~470,
+ *   ~120 and ~140 ms. At 16 a 256-branch fan-out is 16 plain chunks, at the
+ *   edge of that (+~100 ms, not significant over 20 runs); at 24 and 32 it
+ *   is flat.
+ *
+ * 16 is the largest value with a clear last-branch gain at 64 and 128
+ * branches and no first-branch or join regression there; an 8-branch fan-out
+ * fits one chunk either way. It also keeps the default inline pairs (two rows
+ * per inline step, `MAX_INLINE_STEPS` = 3) in one chunk. A
+ * `WORKFLOW_MAX_INLINE_STEPS` above 8 spills the pairs into more than one pair
+ * chunk; they commit concurrently and all of them gate the inline bodies, so
+ * that degrades latency, not correctness.
  */
-export const MAX_BATCH_FANOUT_EVENTS = 32;
+export const MAX_BATCH_FANOUT_EVENTS = 16;
 
 /**
  * Optional client-side override for the server-supplied per-run event ceiling.

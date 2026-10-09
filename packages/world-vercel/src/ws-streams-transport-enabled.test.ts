@@ -7,14 +7,18 @@ afterEach(() => {
 
 describe('isWsStreamsTransportEnabled', () => {
   it.each([
-    [undefined, false],
-    ['', false],
+    [undefined, true],
+    ['', true],
+    ['ws', true],
+    ['WS', true],
+    ['ws ', true],
+    ['websocket', true],
+    ['htp', true],
     ['http', false],
     ['HTTP', false],
-    ['ws ', false],
-    ['WS', false],
-    ['ws', true],
-  ])('advertises v1 only for the exact ws value: %j', (value, expected) => {
+    [' Http ', false],
+    ['http\n', false],
+  ])('uses WS unless the value is http: %j', (value, expected) => {
     if (value === undefined) {
       delete process.env.WORKFLOW_STREAMS_TRANSPORT;
     } else {

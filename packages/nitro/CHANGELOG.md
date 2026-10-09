@@ -1,5 +1,28 @@
 # @workflow/nitro
 
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc), [`28cb70d`](https://github.com/vercel/workflow/commit/28cb70da502b8051d955fda981502c509c93c714)]:
+  - @workflow/core@5.2.0
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/web@5.0.3
+  - @workflow/builders@5.0.3
+  - @workflow/rollup@5.0.3
+  - @workflow/vite@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4), [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117), [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b), [`d7217a8`](https://github.com/vercel/workflow/commit/d7217a8fc0fb57eed91835c7bd58d9c292551ba9), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/core@5.1.0
+  - @workflow/builders@5.0.2
+  - @workflow/web@5.0.2
+  - @workflow/rollup@5.0.2
+  - @workflow/vite@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

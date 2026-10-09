@@ -337,7 +337,7 @@ async function runTurn(holderRunId: string, turn: number) {
 Pass `{ namespace: "name" }` to target a [namespaced stream](#namespaced-streams). The writable can also be forwarded through `start()` and into steps.
 
 <Callout type="warn">
-Contributors should call `releaseLock()`, which flushes pending writes. Calling `close()` closes the shared stream for every writer.
+Contributors should call `releaseLock()`, which flushes pending writes. Calling `close()` closes the shared stream for every writer. Calling `abort()` keeps the chunks already written and leaves the shared stream open.
 </Callout>
 
 The API grants append access, not read access or additional authorization. The owning run controls the stream's lifecycle, and writes to an unknown run fail.
@@ -634,6 +634,14 @@ export async function streamErrorWorkflow() {
 <Callout type="info">
 Stream errors don't trigger automatic retries for the producer step. Design your stream consumers to handle errors. Because the stream is already in an errored state, retrying the consumer won't help. Use `FatalError` to fail the workflow immediately.
 </Callout>
+
+## Performance
+
+Chunk trip time (CTT) measures how quickly a chunk written to a stream reaches its reader: the clock starts when one step writes the chunk and stops when another step receives it. The animation shows a writer step replaying a recorded agent stream and a reader step receiving each chunk.
+
+<MetricVideo metric="stream" />
+
+See [Chunk trip time](/docs/performance#chunk-trip-time-ctt) on the Performance page for how it's measured and the latest results.
 
 ## Related documentation
 

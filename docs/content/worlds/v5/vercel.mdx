@@ -242,13 +242,23 @@ Maximum stream chunks written in one Vercel World request. Larger batches are sp
 
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
-Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_STREAMS_TRANSPORT=ws` to attempt `workflow-stream-ws/v1`. The server authoritatively accepts or declines every upgrade; a decline goes directly to HTTP for that writer lifetime. Reads remain HTTP and demand-driven.
+Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`) instead of one HTTP request per write group. Default: `ws`.
 
-This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
+Set `WORKFLOW_STREAMS_TRANSPORT=http` to opt out. That value is matched case-insensitively and ignoring surrounding whitespace; any other value, including unset, empty, or `ws`, uses the WebSocket. Stream reads always use HTTP.
 
-Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. A throttled (429) write or close did not apply, so the writer retries it after the server's `Retry-After`, as the HTTP writer does, on the socket if it stays open (or its replacement, after a drain) and otherwise over HTTP. Past 30 seconds of cumulative wait, the write moves to HTTP, whose own 429 retry applies. A close that fails with a 5xx is retried over HTTP, since close is idempotent.
+The setting is ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy, which does not forward a WebSocket upgrade, so stream writes stay on HTTP.
 
-Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
+The client only offers the upgrade. The server accepts or declines each one, and a writer whose upgrade is declined or fails writes over HTTP for the rest of its lifetime. This setting does not decide which tenants may upgrade and does not infer server support from package versions. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
+
+A writer's first write group always goes over HTTP, and so does its second. The socket starts opening in the background once the second group's request is sent, and later groups keep going over HTTP until it opens, so no write waits for the upgrade. A writer that closes after one or two groups never uses the socket. If the socket has not opened within 10 seconds, or the upgrade fails or is declined, the writer stays on HTTP.
+
+Writes and close requests execute serially, so a write never overtakes an earlier one on the other transport. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. A throttled (429) write or close did not apply, so the writer retries it after the server's `Retry-After`, as the HTTP writer does, on the socket if it stays open (or its replacement, after a drain) and otherwise over HTTP. Past 30 seconds of cumulative wait, the write moves to HTTP, whose own 429 retry applies. A close that fails with a 5xx is retried over HTTP, since close is idempotent.
+
+Once a released writer's writes drain, its socket closes without closing the shared stream, and later writes through that same handle go over HTTP. Writers acquired with `getWritable()` inside a step release their socket when the step completes. External `getRun(runId).getWritable()` handles release it on the first `releaseLock()` after pending writes drain, so hold the writer lock for the whole burst to keep writing over the socket.
+
+Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. If the new socket is not open within 250 ms, the writer continues over HTTP. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
+
+The server sends WebSocket pings to keep an idle socket open, and the client must answer them. The `ws` library the Vercel World uses answers pings automatically, so there is nothing to configure.
 
 Each stream WebSocket message is at most [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#workflow_ws_max_message_bytes) bytes. A write group larger than the limit is sent as several ordered write requests. A single chunk too large for one message is written over HTTP instead, as are the rest of its writer's writes.
 

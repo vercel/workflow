@@ -1,5 +1,34 @@
 # @workflow/cli
 
+## 5.0.3
+
+### Patch Changes
+
+- [#4376](https://github.com/vercel/workflow/pull/4376) [`2036247`](https://github.com/vercel/workflow/commit/203624721d76f0e01be3e62ce352483185ca0543) Thanks [@withkarann](https://github.com/withkarann)! - Ship an oclif command manifest so the CLI loads only the command being run, and skip loading the runtime on exit when no World was created. `workflow --version` starts in about 50 ms instead of 650 ms.
+- Updated dependencies [[`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc), [`28cb70d`](https://github.com/vercel/workflow/commit/28cb70da502b8051d955fda981502c509c93c714), [`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2), [`d0f6b91`](https://github.com/vercel/workflow/commit/d0f6b9140841f548663c29f8adaaa21ae5dec09b)]:
+  - @workflow/core@5.2.0
+  - @workflow/world-vercel@5.2.0
+  - @workflow/world@5.0.3
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/web@5.0.3
+  - @workflow/world-local@5.1.0
+  - @workflow/builders@5.0.3
+  - @workflow/errors@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4), [`9ca188a`](https://github.com/vercel/workflow/commit/9ca188a1e9ec229af92bf82f4ead511ca3a626f2), [`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4), [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`a6c455a`](https://github.com/vercel/workflow/commit/a6c455a09c622e184f518764109fa455eb718699), [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117), [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b), [`d7217a8`](https://github.com/vercel/workflow/commit/d7217a8fc0fb57eed91835c7bd58d9c292551ba9), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6), [`81eac1d`](https://github.com/vercel/workflow/commit/81eac1db2c237a5135ef4d2d0b66cd95c74057f0), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/world-local@5.0.2
+  - @workflow/world-vercel@5.1.0
+  - @workflow/core@5.1.0
+  - @workflow/builders@5.0.2
+  - @workflow/utils@5.0.1
+  - @workflow/web@5.0.2
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes
