@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
 
 /**
@@ -22,6 +23,10 @@ const BASE_URL = rawBaseUrl
   : `http://${HOST}:${PORT}`;
 const USE_REMOTE = Boolean(rawBaseUrl);
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
+const NEXT_CLI = fileURLToPath(
+  new URL('../node_modules/next/dist/bin/next', import.meta.url)
+);
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -153,6 +158,101 @@ const assertHtmlMeta = async (path, expectedOgImagePath) => {
   }
 };
 
+/**
+ * The unprefixed world routes must serve the current version (no " · v4"
+ * title marker, indexable) and the /v4 routes the maintenance version
+ * (" · v4" marker, noindex). Guards against the version passed by the route
+ * files drifting out of sync with the version semantics in
+ * components/worlds/world-detail-page.tsx.
+ */
+const assertWorldVersionMarkers = async (path, { maintenance }) => {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: await getTrustedSourcesHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const html = await res.text();
+  const title = html.match(/<title>([^<]*)<\/title>/i)?.[1] ?? '';
+  const hasV4Marker = title.includes('· v4');
+  if (maintenance && !hasV4Marker) {
+    throw new Error(`${path} title was "${title}", expected a " · v4" marker`);
+  }
+  if (!maintenance && hasV4Marker) {
+    throw new Error(
+      `${path} title was "${title}", expected the current version (no " · v4" marker)`
+    );
+  }
+  const hasNoindex =
+    /<meta[^>]+name=["']robots["'][^>]+content=["'][^"']*noindex/i.test(html);
+  if (maintenance && !hasNoindex) {
+    throw new Error(`${path} is missing the robots noindex meta tag`);
+  }
+  if (!maintenance && hasNoindex) {
+    throw new Error(`${path} is unexpectedly noindexed`);
+  }
+};
+
+/**
+ * Community worlds have no versioned content; their canonical page must serve
+ * directly. A version mismatch in the world routes turns them into
+ * self-redirect loops, so assert a plain 200 with no redirect.
+ */
+const assertServesDirectly = async (path) => {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    redirect: 'manual',
+    headers: await getTrustedSourcesHeaders(),
+  });
+  if (res.status !== 200) {
+    const location = res.headers.get('location');
+    throw new Error(
+      `${path} returned ${res.status}${location ? ` -> ${location}` : ''}`
+    );
+  }
+};
+
+const assertTextResponse = async (
+  path,
+  contentType,
+  expectedText,
+  headers = {}
+) => {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: { ...(await getTrustedSourcesHeaders()), ...headers },
+  });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const actualContentType = res.headers.get('content-type') || '';
+  if (!actualContentType.includes(contentType)) {
+    throw new Error(`${path} content-type was ${actualContentType}`);
+  }
+  const text = await res.text();
+  if (!text.includes(expectedText)) {
+    throw new Error(`${path} did not contain ${JSON.stringify(expectedText)}`);
+  }
+};
+
+const assertChangelogData = async () => {
+  const path = '/changelog/data/2';
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: await getTrustedSourcesHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const result = await res.json();
+  if (!Array.isArray(result.entries) || result.entries.length === 0) {
+    throw new Error(`${path} did not return changelog entries`);
+  }
+  if (
+    !Number.isInteger(result.total) ||
+    result.total <= result.entries.length
+  ) {
+    throw new Error(`${path} returned an invalid changelog total`);
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
@@ -211,12 +311,67 @@ const checks = [
     run: () => assertHtmlMeta('/worlds/building-a-world', '/og/worlds'),
   },
   {
-    name: 'HTML meta - worlds upgrading-to-v5 (v5)',
-    run: () => assertHtmlMeta('/v5/worlds/upgrading-to-v5', '/og/worlds'),
+    name: 'HTML meta - worlds upgrading-to-v5',
+    run: () => assertHtmlMeta('/worlds/upgrading-to-v5', '/og/worlds'),
   },
   {
-    name: 'HTML meta - world vercel (v5)',
-    run: () => assertHtmlMeta('/v5/worlds/vercel', '/og/worlds/vercel'),
+    name: 'HTML meta - world vercel (v4)',
+    run: () => assertHtmlMeta('/v4/worlds/vercel', '/og/worlds/vercel'),
+  },
+  {
+    name: 'World version markers - vercel (current)',
+    run: () =>
+      assertWorldVersionMarkers('/worlds/vercel', { maintenance: false }),
+  },
+  {
+    name: 'World version markers - vercel (v4)',
+    run: () =>
+      assertWorldVersionMarkers('/v4/worlds/vercel', { maintenance: true }),
+  },
+  {
+    name: 'Community world serves directly - turso',
+    run: () => assertServesDirectly('/worlds/turso'),
+  },
+  {
+    name: 'Changelog HTML',
+    run: () =>
+      assertTextResponse('/changelog', 'text/html', 'Workflow SDK Changelog'),
+  },
+  {
+    name: 'Changelog Markdown',
+    run: () =>
+      assertTextResponse(
+        '/changelog.md',
+        'text/markdown',
+        '# Workflow SDK Changelog'
+      ),
+  },
+  {
+    name: 'Changelog paginated HTML',
+    run: () => assertTextResponse('/changelog/page/2', 'text/html', 'Page 2'),
+  },
+  {
+    name: 'Changelog paginated Markdown negotiation',
+    run: () =>
+      assertTextResponse(
+        '/changelog/page/2',
+        'text/markdown',
+        '# Workflow SDK Changelog - Page 2',
+        { Accept: 'text/markdown' }
+      ),
+  },
+  {
+    name: 'Changelog pagination data',
+    run: assertChangelogData,
+  },
+  {
+    name: 'WebMCP discovery',
+    run: () =>
+      assertTextResponse(
+        '/api/mcp?webmcp-script',
+        'text/javascript',
+        'search_docs'
+      ),
   },
   {
     name: 'OG docs page image',
@@ -283,7 +438,9 @@ const run = async () => {
   let cleanup = async () => {};
 
   if (!USE_REMOTE) {
-    child = spawn('pnpm', ['-C', 'docs', 'start'], {
+    child = spawn(process.execPath, [NEXT_CLI, 'start'], {
+      cwd: DOCS_DIR,
+      detached: process.platform !== 'win32',
       env: {
         ...process.env,
         PORT,
@@ -296,14 +453,26 @@ const run = async () => {
     stopServer = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      child.kill('SIGTERM');
-      await Promise.race([
-        new Promise((resolve) => child.once('exit', resolve)),
-        wait(5_000),
-      ]);
-      if (!child.killed) {
-        child.kill('SIGKILL');
-      }
+      const hasExited = () =>
+        child.exitCode !== null || child.signalCode !== null;
+      const kill = (signal) => {
+        if (hasExited()) return;
+        try {
+          if (process.platform === 'win32') {
+            child.kill(signal);
+          } else {
+            process.kill(-child.pid, signal);
+          }
+        } catch (error) {
+          // The process group already exited; nothing left to stop.
+          if (error?.code !== 'ESRCH') throw error;
+        }
+      };
+      if (hasExited()) return;
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      kill('SIGTERM');
+      await Promise.race([exited, wait(5_000)]);
+      kill('SIGKILL');
     };
 
     cleanup = async () => {

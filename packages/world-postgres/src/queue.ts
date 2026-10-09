@@ -137,8 +137,20 @@ export function getDeliveryTimeouts() {
   };
 }
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
-// Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
-const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
+// Core records MAX_DELIVERIES_EXCEEDED on delivery 49 (MAX_QUEUE_DELIVERIES +
+// 1). Past that delivery, core only retries its terminal write, and it throws
+// on a transient failure (429 / 5xx / transport) so the queue redelivers
+// rather than acking and leaving the run `running`. Those redeliveries need
+// attempts left on the job: with a cap of exactly 49, the first post-ceiling
+// throw would retire the job and strand the run anyway. Graphile's retry
+// backoff is exp(min(attempts, 10)) seconds, so each extra attempt waits ~6h
+// and 24 of them keep retrying the terminal write for ~6 days.
+// Mirrors `MAX_QUEUE_DELIVERIES + 1` in @workflow/core (runtime/constants.ts),
+// which this package does not depend on. Keep the two in sync.
+const CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT = 49;
+const POST_CEILING_RETRY_ATTEMPTS = 24;
+const MAX_GRAPHILE_JOB_ATTEMPTS =
+  CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT + POST_CEILING_RETRY_ATTEMPTS;
 const EXECUTOR_JOB_HEADER = 'x-workflow-postgres-executor-job';
 const EXECUTOR_WORKER_HEADER = 'x-workflow-postgres-executor-worker';
 const EXECUTOR_ATTEMPT_HEADER = 'x-workflow-postgres-executor-attempt';
@@ -372,10 +384,6 @@ export function createQueue(
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
-  const inflightWorkflowRuns = new Map<
-    string,
-    Promise<'completed' | 'rescheduled'>
-  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let runnerStart: RunnerStart | null = null;
@@ -844,7 +852,6 @@ export function createQueue(
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
       const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
-      const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
       const orchestration = invocations ? executorInput(body) : undefined;
       let executorDelivery: ExecutorDelivery | undefined;
       if (orchestration) {
@@ -882,10 +889,6 @@ export function createQueue(
           attempt: graphileHelpers.data.job.attempts,
         });
       }
-      const workflowRunSerializationKey =
-        workflowInvoke.success && !workflowInvoke.data.stepId
-          ? `workflow:${workflowInvoke.data.runId}`
-          : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await executeMessageOverHttp({
           queueName,
@@ -928,28 +931,8 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        if (workflowRunSerializationKey) {
-          // Preserve step fan-out while preventing two workflow replays from
-          // mutating the same run's event log at the same time.
-          const previous = inflightWorkflowRuns.get(
-            workflowRunSerializationKey
-          );
-          const execution = (previous ?? Promise.resolve())
-            .catch(() => {})
-            .then(() => executeTask())
-            .finally(() => {
-              if (
-                inflightWorkflowRuns.get(workflowRunSerializationKey) ===
-                execution
-              ) {
-                inflightWorkflowRuns.delete(workflowRunSerializationKey);
-              }
-            });
-          inflightWorkflowRuns.set(workflowRunSerializationKey, execution);
-          await execution;
-          return;
-        }
-
+        // A delivery can hold an inline step until another wake aborts it.
+        // Run-level exclusion here would also exclude that required wake.
         await executeTask();
         return;
       }
@@ -1005,7 +988,7 @@ export function createQueue(
       ...(config.applicationManagedShutdown === true && {
         noHandleSignals: true,
       }),
-      pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
+      pollInterval: config.pollInterval ?? 500, // per worker; LISTEN/NOTIFY only wakes idle workers early
       taskList,
     });
   }

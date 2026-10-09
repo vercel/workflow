@@ -14,9 +14,19 @@ import {
 import type { Plugin } from 'vite';
 import type { VitestPluginContext } from 'vitest/node';
 import {
+  getActiveWorkflowTestOptions,
   resolveWorkflowTestOptions,
+  setActiveWorkflowTestOptions,
   WORKFLOW_VITEST_OPTIONS_KEY,
 } from './options.js';
+import { checkWorkflowVersionSkew } from './version-check.js';
+import {
+  readWorkflowRefs,
+  selectWorkflowRef,
+  type WorkflowRef,
+} from './workflow-refs.js';
+
+export type { WorkflowRef } from './workflow-refs.js';
 
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
@@ -41,12 +51,14 @@ class VitestBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
+    const flowOutfile = join(this.#outDir, 'combined.mjs');
+
     // V2: Build combined bundle that includes both step registrations
     // and workflow entrypoint in a single handler.
-    await this.createCombinedBundle({
+    const result = await this.createCombinedBundle({
       inputFiles,
       stepsOutfile: join(this.#outDir, '__step_registrations.mjs'),
-      flowOutfile: join(this.#outDir, 'combined.mjs'),
+      flowOutfile,
       format: 'esm',
       bundleFinalOutput: false,
       externalizeNonSteps: true,
@@ -57,6 +69,17 @@ class VitestBuilder extends BaseBuilder {
       // type stripping (and not at all on older Node versions).
       bundleTransitiveLocalStepDependencies: true,
     });
+
+    // Emit the same manifest.json every other builder writes, next to the
+    // bundles. `getWorkflowRef()` reads it so tests can name a workflow
+    // instead of hand-writing the compiler-generated id.
+    if (result?.manifest) {
+      await this.createManifest({
+        workflowBundlePath: flowOutfile,
+        manifestDir: this.#outDir,
+        manifest: result.manifest,
+      });
+    }
   }
 }
 
@@ -134,14 +157,18 @@ export function workflow(options?: WorkflowTestOptions): Plugin[] {
  * Build workflow bundles for testing. Run this in vitest globalSetup.
  * This builds the workflow and step bundles to disk so they can be
  * imported by the test workers.
+ *
+ * Also checks that `@workflow/vitest` and the app under test agree on a
+ * Workflow SDK version. globalSetup runs once per Vitest run, so the report
+ * is produced once rather than once per worker.
  */
 export async function buildWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
-  const { cwd, dataDir, outDir } = resolveWorkflowTestOptions(
-    options,
-    process.cwd()
-  );
+  const resolved = resolveWorkflowTestOptions(options, process.cwd());
+  const { cwd, dataDir, outDir } = resolved;
+  setActiveWorkflowTestOptions(resolved);
+  checkWorkflowVersionSkew({ cwd });
   const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
   // Pre-create the shared data directory so workers don't race on mkdir
@@ -167,10 +194,9 @@ export async function setupWorkflowTests(
     world = undefined;
   }
 
-  const { dataDir, outDir } = resolveWorkflowTestOptions(
-    options,
-    process.cwd()
-  );
+  const resolved = resolveWorkflowTestOptions(options, process.cwd());
+  const { dataDir, outDir } = resolved;
+  setActiveWorkflowTestOptions(resolved);
 
   // Lazy-load bundles on first dispatch instead of eagerly at setup time.
   // Eager native import() during setupFiles loads step dependencies into
@@ -229,6 +255,46 @@ export async function teardownWorkflowTests(): Promise<void> {
   setWorld(undefined);
   await world?.close?.();
   world = undefined;
+}
+
+/**
+ * Every workflow the test build compiled, read from the manifest written next
+ * to the test bundles.
+ *
+ * Useful for asserting on what a build produced, and for building error
+ * messages when a lookup misses.
+ *
+ * @example
+ * ```ts
+ * expect(listWorkflowRefs().map((ref) => ref.name)).toContain("approvalWorkflow");
+ * ```
+ */
+export function listWorkflowRefs(): WorkflowRef[] {
+  return readWorkflowRefs(getActiveWorkflowTestOptions().outDir);
+}
+
+/**
+ * Look up a workflow in the test build by name, in the shape `start()` takes.
+ *
+ * Importing the workflow function is still the better option when a test can
+ * do it, because it keeps the argument and return types. Use this when it
+ * cannot: the workflow lives in a module the test does not import, or the test
+ * drives runs by name. Either way it beats hand-writing the generated id.
+ *
+ * `query` is an exported workflow name (`"approvalWorkflow"`), or a
+ * file-qualified name when one name appears in several files
+ * (`"workflows/approval.ts#approvalWorkflow"`, matched by path suffix).
+ *
+ * @throws If the manifest is missing, nothing matches, or the name is
+ * ambiguous. The error lists the workflows the build does contain.
+ *
+ * @example
+ * ```ts
+ * const run = await start(getWorkflowRef("approvalWorkflow"), ["doc-1"]);
+ * ```
+ */
+export function getWorkflowRef(query: string): WorkflowRef {
+  return selectWorkflowRef(listWorkflowRefs(), query);
 }
 
 export interface WaitOptions {

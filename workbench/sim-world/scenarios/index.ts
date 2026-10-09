@@ -53,6 +53,7 @@ import { scenario as staleReadStepCountForkFenced } from './stale-read-step-coun
 import { scenario as stepRetriesTwice } from './step-retries-twice.ts';
 import { scenario as stepVsStepFork } from './step-vs-step-fork.ts';
 import { scenario as stepVsStepForkFenced } from './step-vs-step-fork-fenced.ts';
+import { scenario as stepVsTimerEarlySettlement } from './step-vs-timer-early-settlement.ts';
 import { scenario as unclaimedPayloadUnderFork } from './unclaimed-payload-under-fork.ts';
 import { scenario as writersIndependentStepBodies } from './writers-independent-step-bodies.ts';
 import { scenario as writersScriptedTempo } from './writers-scripted-tempo.ts';
@@ -82,6 +83,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
   deadlineHookWins,
   deadlineExpires,
+  stepVsTimerEarlySettlement,
 
   // -------------------------------------------------------------------------
   // Termination properties.

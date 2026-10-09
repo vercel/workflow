@@ -11,9 +11,23 @@ import ms from 'ms';
  *
  * @param param - The duration parameter (StringValue, Date, or number of milliseconds)
  * @returns A Date object representing when the duration should elapse
- * @throws {Error} If the parameter is invalid or cannot be parsed
+ * @throws {Error} If the parameter is invalid or cannot be parsed, or the
+ *   resulting time is not a valid date (an Invalid Date, or a duration that
+ *   lands past the largest time a Date can hold)
  */
 export function parseDurationToDate(param: StringValue | Date | number): Date {
+  const date = durationToDate(param);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(
+      typeof param === 'object'
+        ? 'Invalid date: the Date object does not hold a valid time.'
+        : `Invalid duration: ${JSON.stringify(param)} ends past the latest time a Date can represent.`
+    );
+  }
+  return date;
+}
+
+function durationToDate(param: StringValue | Date | number): Date {
   if (typeof param === 'string') {
     const durationMs = ms(param);
     if (typeof durationMs !== 'number' || durationMs < 0) {

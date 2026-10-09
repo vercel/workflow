@@ -1,4 +1,8 @@
-import { EntityConflictError, StreamError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  StreamError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
@@ -10,7 +14,9 @@ import {
 } from '@workflow/world';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
+import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import { isSingleOwnerRun } from './single-owner.js';
 import { start } from './start.js';
 
@@ -88,6 +94,18 @@ export async function recreateRunFromExisting(
 ): Promise<string> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
+    // A dynamic run's workflow function is not in the deployment's bundle;
+    // it lives on the run, encrypted under that run's key. Starting a new run
+    // by workflow name alone would create one with the dynamic id and no code
+    // behind it, which no delivery could ever execute. Carrying the code
+    // over means decrypting it and re-encrypting under the new run's key,
+    // which this path does not do yet, so refuse rather than create a run
+    // that fails on its first delivery.
+    if (readDynamicWorkflowMetadata(run.executionContext)) {
+      throw new WorkflowRuntimeError(
+        `Run ${runId} is a dynamic workflow run; re-running it is not supported. Start it again from its source with start(source, args, { experimental_dynamic }).`
+      );
+    }
     const rawKey = await world.getEncryptionKeyForRun?.(run);
     const encryptionKey = rawKey
       ? await deriveRunPayloadKeys(rawKey)
@@ -100,9 +118,17 @@ export async function recreateRunFromExisting(
         globalThis
       )
     );
-    const specVersion =
-      options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;
     const deploymentId = options.deploymentId ?? run.deploymentId;
+    // The source run's spec version describes the deployment that executed
+    // it, so it is only a valid default for a replay on that same
+    // deployment. When the replay is redirected elsewhere, leave it unset
+    // and let `start()` resolve the target's version from its capability
+    // probe, instead of pinning the replay to the old deployment's.
+    const specVersion =
+      options.specVersion ??
+      (deploymentId === run.deploymentId
+        ? (run.specVersion ?? SPEC_VERSION_LEGACY)
+        : undefined);
 
     const newRun = await start(
       { workflowId: run.workflowName },
@@ -150,7 +176,10 @@ export async function cancelRun(
       });
       return;
     }
-    const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
+    const specVersion = specVersionForRunWrite(
+      run.specVersion,
+      SPEC_VERSION_LEGACY
+    );
     const compatMode = isLegacySpecVersion(specVersion);
     const eventRequest = {
       eventType: 'run_cancelled' as const,
@@ -298,7 +327,10 @@ export async function reenqueueRun(
       },
       {
         deploymentId: run.deploymentId,
-        specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+        specVersion: specVersionForRunWrite(
+          run.specVersion,
+          SPEC_VERSION_LEGACY
+        ),
       }
     );
   } catch (err) {
@@ -368,7 +400,7 @@ export async function wakeUpRun(
         : {
             eventType: 'wait_completed' as const,
             correlationId: waitEvent.correlationId,
-            specVersion: run.specVersion,
+            specVersion: specVersionForRunWrite(run.specVersion),
             eventData: {
               resumeAt: waitEvent.eventData.resumeAt,
             },
@@ -393,7 +425,10 @@ export async function wakeUpRun(
         },
         {
           deploymentId: run.deploymentId,
-          specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+          specVersion: specVersionForRunWrite(
+            run.specVersion,
+            SPEC_VERSION_LEGACY
+          ),
         }
       );
     }

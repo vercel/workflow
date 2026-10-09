@@ -21,6 +21,9 @@ import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookForceClaimedError,
+  IN_BAND_SUPERSEDED_CODE,
+  InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
   StreamError,
@@ -49,6 +52,7 @@ import {
   ServerPort,
   trace,
   UrlFull,
+  WorkflowEventSeqInBand,
   WorkflowHttpTransport,
 } from './telemetry.js';
 
@@ -348,13 +352,40 @@ export function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 /**
+ * Tag a client span with the World's in-band count when the write was refused
+ * by the in-band writer fence, so a split-brain refusal is visible in traces
+ * beyond the generic recorded exception.
+ */
+export function recordInBandRefusal(
+  span: Pick<Span, 'setAttributes'> | undefined,
+  error: unknown
+): void {
+  if (InBandSupersededError.is(error) && error.seqInBand !== undefined) {
+    span?.setAttributes(WorkflowEventSeqInBand(error.seqInBand));
+  }
+}
+
+/**
+ * A diagnostic counter from a 412 `in-band-superseded` body: kept only when it
+ * is a nonnegative safe integer, dropped otherwise.
+ */
+export function inBandCounter(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+/**
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
- *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
+ *   - 412 with code `in-band-superseded` → InBandSupersededError (the in-band
+ *     writer fence refused an orchestrator write; carries the backend's
+ *     counters for diagnostics)
+ *   - other 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot, the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing; see #1806 for what
@@ -383,6 +414,22 @@ export function errorForResponse(
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated, details } = opts;
+  if (status === 409 && code === 'hook-force-claimed') {
+    // A hook_received refused because the hook's token was taken over by
+    // another run (`experimental_force`). The server completed the transfer
+    // before answering, so a fresh by-token lookup names the claimer; the
+    // event layer re-keys this with the token and `resumeHook()` follows it.
+    const claimedBy =
+      details && typeof details === 'object'
+        ? (details as { claimedBy?: { runId?: unknown; hookId?: unknown } })
+            .claimedBy
+        : undefined;
+    return new HookForceClaimedError(
+      '',
+      typeof claimedBy?.runId === 'string' ? claimedBy.runId : 'unknown',
+      typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
+    );
+  }
   if (status === 409) {
     const error = new EntityConflictError(message);
     // Preserve the server's machine-readable reason (e.g. `slot-conflict`).
@@ -415,6 +462,19 @@ export function errorForResponse(
       );
     }
     return new RunExpiredError(message);
+  }
+  if (status === 412 && code === IN_BAND_SUPERSEDED_CODE) {
+    // Distinct from the generic 412 precondition below: another orchestrator
+    // invocation of the run wrote in-band since this one loaded the log, and
+    // the caller must stop writing rather than reload and retry the write.
+    const counters =
+      details && typeof details === 'object'
+        ? (details as { seq?: unknown; seqInBand?: unknown })
+        : undefined;
+    return new InBandSupersededError(message, {
+      seq: inBandCounter(counters?.seq),
+      seqInBand: inBandCounter(counters?.seqInBand),
+    });
   }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });
@@ -854,6 +914,7 @@ export async function instrumentedFetch(
             throw cause;
           }
           onTransportOutcome?.(undefined, response);
+          recordInBandRefusal(span, error);
           span?.recordException?.(error);
           throw error;
         }

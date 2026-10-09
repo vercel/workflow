@@ -20,6 +20,11 @@ import { runtimeLogger } from '../logger.js';
 // backend outage; conversely, spanning the full 24h window would require a
 // substantially higher cap here, not a higher per-hop ceiling, since VQS
 // clamps every hop at 900s.)
+//
+// world-postgres sizes its Graphile job attempt cap from this value
+// (`CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT` = this + 1, plus headroom for
+// post-ceiling redeliveries of the terminal write). Update it there too if
+// this changes.
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**
@@ -266,9 +271,10 @@ export function isResilientStepDispatchEnabled(): boolean {
  * `world.events.createBatch` call (one durable write, per-event outcomes)
  * instead of one write per event. Only engages when the World implements the
  * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
- * no resilient step dispatch. Everything else keeps the single-event path
- * byte-for-byte.
+ * (specVersion >= 6) AND the suspension carries no attribute writes and no
+ * resilient step dispatch. Hook writes in the same suspension go through the
+ * single-event path concurrently with the batch. Everything else keeps the
+ * single-event path byte-for-byte.
  *
  * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
  * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the
@@ -283,15 +289,43 @@ export function isBatchTransitionsEnabled(): boolean {
 
 /**
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
- * Mirrors the server's transaction budgets with a comfortable margin: each
- * fan-out event costs 2 transaction items server-side (entity + event row)
- * against the 100-item DynamoDB cap, and inline payloads count against a
- * 768 KB byte budget, so 32 events stays well under both, and a fan-out larger
- * than this commits in successive batches (split batches lose
- * cross-batch atomicity, which is exactly today's per-event-write crash
- * surface, and every batch still converges on retry via per-event 409s).
+ * The server's transaction budgets are the hard limit: each fan-out event
+ * costs 2 transaction items server-side (entity + event row) against the
+ * 100-item DynamoDB cap, and inline payloads count against a 768 KB byte
+ * budget. A fan-out larger than this commits in successive batches, all in
+ * flight at once (split batches lose cross-batch atomicity, which is exactly
+ * the per-event-write crash surface, and every batch still converges on retry
+ * via per-event 409s).
+ *
+ * Within the budget the value is a latency trade, measured on durabench
+ * production sweeps (Vercel World, iad1, `Promise.all` of N one-step branches,
+ * 100 ms of work and 1 KB JSON each, 2026-10-07, every candidate built off the
+ * same commit and interleaved in one sweep):
+ *
+ * - A queued (non-inline) branch's message is published only once the chunk
+ *   carrying its `step_created` commits, then goes out in that chunk's
+ *   batched publish, and both hops slow down as the chunk grows. Smaller
+ *   chunks start the queued branches sooner: at 64 branches the queued
+ *   branches' median `step_started` moved from ~570 ms after `run_started` at
+ *   32 to ~460 ms at 16, and the last branch's first line from 967 to 875 ms
+ *   (p50, 45 runs each); at 128 branches, from 4,059 to 3,855 ms (20 runs).
+ * - More chunks are more concurrent `createBatch` requests per run, and the
+ *   inline branches' pair chunk is one of them. From about 16 concurrent
+ *   chunks the first (inline) branch slows down: at 128 branches 8 per chunk
+ *   cost it ~120 ms, and at 256 branches 4, 8 and 12 per chunk cost it ~470,
+ *   ~120 and ~140 ms. At 16 a 256-branch fan-out is 16 plain chunks, at the
+ *   edge of that (+~100 ms, not significant over 20 runs); at 24 and 32 it
+ *   is flat.
+ *
+ * 16 is the largest value with a clear last-branch gain at 64 and 128
+ * branches and no first-branch or join regression there; an 8-branch fan-out
+ * fits one chunk either way. It also keeps the default inline pairs (two rows
+ * per inline step, `MAX_INLINE_STEPS` = 3) in one chunk. A
+ * `WORKFLOW_MAX_INLINE_STEPS` above 8 spills the pairs into more than one pair
+ * chunk; they commit concurrently and all of them gate the inline bodies, so
+ * that degrades latency, not correctness.
  */
-export const MAX_BATCH_FANOUT_EVENTS = 32;
+export const MAX_BATCH_FANOUT_EVENTS = 16;
 
 /**
  * Optional client-side override for the server-supplied per-run event ceiling.
@@ -418,6 +452,27 @@ export function isVmRetentionEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
+/** Environment variable that opts a deployment into dynamic workflows. */
+export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
+
+/**
+ * Whether this deployment executes dynamic workflows (default OFF).
+ *
+ * Dynamic source runs with the full privileges of the deployment's functions,
+ * so a deployment must opt in before it starts a dynamic run, advertises
+ * dynamic support in its health check, or executes stored dynamic code on a
+ * delivery. Only `1` or `true` (case-insensitive) enables it; any other value
+ * leaves it off.
+ *
+ * Reads `process.env.WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` on every call so
+ * the deployment's runtime environment decides, not the build.
+ */
+export function isDynamicWorkflowsEnabled(): boolean {
+  const raw = process.env[DYNAMIC_WORKFLOWS_ENV];
+  if (raw === undefined) return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
 /**
  * Whether inline step ownership is enabled (default ON). When on, the lazy
  * `step_started` that creates an inline step records the owning queue
@@ -500,6 +555,61 @@ export function getReplayDivergenceMaxRetries(): number {
     'WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES',
     REPLAY_DIVERGENCE_MAX_RETRIES,
     { integer: true }
+  );
+}
+
+// A pending wait suppresses the per-step inline event delta only if it can
+// fire while this invocation is still scheduling inline batches: its
+// `resumeAt` must fall before the end of the invocation's inline window
+// (`invocationStartTime + noInlineReplayAfterMs`, the budget the replay loop
+// stops scheduling batches at; see `getMaxInlineDurationMs`) plus this skew
+// allowance. A wait due later than that cannot have its timer write a
+// `wait_completed` before this invocation hands the run off. Nothing disposes
+// a wait, so without this a `sleep('24h')` that lost a `Promise.race` against
+// a hook would hold every later step boundary of the run on the fetch path.
+//
+// The window is the inline budget, not the platform deadline: that budget is
+// `WORKFLOW_V2_TIMEOUT_MS` when set, otherwise a tier derived from the
+// function's deadline that tops out at 10 minutes. Raising the function's
+// duration alone therefore widens the window only up to that tier; the env
+// var is what takes it further.
+//
+// What the allowance has to cover, all of it seconds at most:
+//   - clocks that are not this process's: the wait timer's queue may deliver
+//     a continuation early (`NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS` tolerates 2s
+//     of that), and the host that writes `wait_completed` has its own offset;
+//   - the inline-window check sits at the top of the loop, so the last batch
+//     an invocation schedules can start one replay pass plus a claim round
+//     trip after the window nominally closes.
+// 30s covers both with an order of magnitude to spare.
+//
+// The bound is a statement about the wait's own timer, not about every writer.
+// `run.wakeUp()` (public API, and the dashboard's "cancel sleeps" action)
+// completes pending waits regardless of `resumeAt`. A completion it lands
+// after a step's terminal write is absent from that write's delta; the runtime
+// therefore re-reads the log before parking on a wait over a delta-extended
+// log (see `eventLogFromInlineDelta` in runtime.ts), so the completion is
+// acted on then rather than when the wait's own timer would have fired. Turbo's
+// forced optimistic start does not use this window at all: any open wait keeps
+// it off, because a wake `run.wakeUp()` enqueues is a peer that can race a
+// forced body for its claim, and a body executed twice is not repairable the
+// way a delayed wake is.
+export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
+
+/**
+ * Effective skew allowance added to the invocation's inline window when
+ * deciding whether a pending wait can fire during it. Override via
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`. Must be a finite integer: a value such
+ * as `31536000000` (one year) restores the unconditional gating of any
+ * pending wait, while `Infinity` is rejected and falls back to the default.
+ */
+export function getOpenWaitClockSkewMs(): number {
+  return envNumber(
+    'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
+    OPEN_WAIT_CLOCK_SKEW_MS,
+    {
+      integer: true,
+    }
   );
 }
 

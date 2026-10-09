@@ -7,12 +7,15 @@
  * up this log tomorrow, would it reconstruct the same run?
  *
  * The check is a cold start with the answer withheld. Take the finished log,
- * drop its terminal `run_*` event, load the rest into an empty world as
- * durable history, and deliver one queue message. The real runtime (the same
- * `workflowEntrypoint` a deployment serves) replays the workflow from the log
- * and must re-derive the event we removed, with the same output. No step body
- * re-executes (every `step_completed` is in the log, so the step consumer
- * resolves from it), so anything the replay produces came from the log alone.
+ * load the causal prefix preceding its terminal `run_*` event into an empty
+ * world, and deliver one queue message. Events recorded after termination are
+ * excluded: they cannot affect the answer already committed, and retaining
+ * them while removing the earlier terminal event would create an artificial
+ * slot hole. The real runtime (the same `workflowEntrypoint` a deployment
+ * serves) replays the workflow from that prefix and must re-derive the terminal
+ * event with the same output. Step bodies whose results are in the causal
+ * prefix do not re-execute, so anything the replay produces came from the log
+ * alone.
  *
  * Three ways it can fail, and all three are the same bug class:
  *
@@ -53,19 +56,16 @@ export interface ReplayCheckResult {
   deliveries: number;
 }
 
-/** Events after the terminal one (a step closing out post-cancellation). */
+/** Split the causal prefix from the terminal event it produced. */
 function splitAtTerminal(events: readonly Event[]): {
   history: Event[];
   terminal: Event | undefined;
-  trailing: Event[];
 } {
   const index = events.findIndex((e) => isTerminalRunEventType(e.eventType));
-  if (index === -1)
-    return { history: [...events], terminal: undefined, trailing: [] };
+  if (index === -1) return { history: [...events], terminal: undefined };
   return {
     history: events.slice(0, index),
     terminal: events[index],
-    trailing: events.slice(index + 1),
   };
 }
 
@@ -100,17 +100,16 @@ export async function verifyReplay(
   const add = (rule: string, message: string, eventId?: string) =>
     violations.push({ rule, message, runId, eventId });
 
-  const { history, terminal, trailing } = splitAtTerminal(events);
+  const { history, terminal } = splitAtTerminal(events);
   if (!terminal) {
     return { violations, regenerated: [], deliveries: 0 };
   }
 
-  // A step that closed out after the run terminated cannot be re-derived by a
-  // replay, since it was driven by an inline body that already ran, not by the
-  // log.
-  // Seed those as history too so the replay sees the same durable state a
-  // fresh process would.
-  const seeded = [...history, ...trailing];
+  // Replay the prefix that caused termination. Events written after the
+  // terminal event are causally later and cannot affect the answer the run
+  // already recorded. Seeding them while withholding the earlier terminal
+  // event also creates an artificial slot hole exactly where that event was.
+  const seeded = history;
 
   // The replay must happen at the instant the run ended, not whenever the
   // scenario happened to finish draining its queue. Replaying later is not

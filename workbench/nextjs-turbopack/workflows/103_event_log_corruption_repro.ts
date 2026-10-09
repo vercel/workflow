@@ -818,3 +818,291 @@ export async function wakeLoopReproWorkflow(
 
   return { runId, cycles, freshWakes, staleWakes, heartbeats, ledger };
 }
+
+// ---------------------------------------------------------------------------
+// dag-runner
+// ---------------------------------------------------------------------------
+
+interface DagRunnerInput {
+  token: string;
+  /** Nodes in the DAG. Every node runs the same four-step chain. */
+  nodes?: number;
+  /** Ready-set width: how many nodes are in flight at once. Above the inline
+   *  step limit (3), so part of every wave is dispatched to the queue while
+   *  the rest runs inline in the orchestrator invocation. */
+  width?: number;
+  /** Base duration of the node's evaluate step, the long step of the chain. */
+  evaluateMs?: number;
+  /** Deterministic per-node spread added to `evaluateMs`, so sibling
+   *  completions land a few milliseconds to a few seconds apart. */
+  evaluateJitterMs?: number;
+  /** Duration of the three short bookkeeping steps. */
+  shortStepMs?: number;
+  /** Every Nth node is a worker node: after its evaluate it binds a hook,
+   *  awaits `hook.getConflict()`, enqueues the worker and waits for the
+   *  worker's callback (raced against a watchdog). 0 disables. */
+  workerEvery?: number;
+  /** Worker nodes: how long to wait for the callback before giving up. */
+  workerWatchdogMs?: number;
+  /** Sequential steps before the DAG, each followed by a bound hook, the way
+   *  a runner registers itself before it starts scheduling. */
+  preludeBinds?: number;
+}
+
+interface DagNodeRecord {
+  node: number;
+  worker: boolean;
+  callback: 'received' | 'watchdog' | 'none';
+  order: number;
+}
+
+interface DagRunnerResult {
+  runId: string;
+  nodes: number;
+  width: number;
+  ledger: DagNodeRecord[];
+  bindsConfirmed: number;
+}
+
+interface WorkerCallbackPayload {
+  node: number;
+  sentAt: number;
+}
+
+const DAG_WATCHDOG = Symbol.for('event-log-corruption-repro:dag-watchdog');
+
+async function claimNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, claimedAt: Date.now() };
+}
+
+async function evaluateNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+  worker: boolean;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    node: input.node,
+    needsWorker: input.worker,
+    evaluatedAt: Date.now(),
+  };
+}
+
+async function enqueueWorkerStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, enqueuedAt: Date.now() };
+}
+
+async function finishNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+  callback: DagNodeRecord['callback'];
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, finishedAt: Date.now() };
+}
+
+async function transitionNodeStep(input: {
+  runId: string;
+  node: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, node: input.node, transitionedAt: Date.now() };
+}
+
+async function preludeStep(input: {
+  runId: string;
+  index: number;
+  delayMs: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return { runId: input.runId, index: input.index, at: Date.now() };
+}
+
+function normalizeDagRunner(input: DagRunnerInput) {
+  return {
+    nodes: input.nodes ?? 12,
+    // Clamped: a width of 0 would leave the scheduler racing an empty set,
+    // which never settles, and the run would sit until the harness gave up.
+    width: Math.max(1, input.width ?? 5),
+    evaluateMs: input.evaluateMs ?? 1500,
+    evaluateJitterMs: input.evaluateJitterMs ?? 2500,
+    shortStepMs: input.shortStepMs ?? 150,
+    workerEvery: input.workerEvery ?? 3,
+    workerWatchdogMs: input.workerWatchdogMs ?? 6000,
+    preludeBinds: input.preludeBinds ?? 2,
+  };
+}
+
+/**
+ * The DAG-runner shape: a ready-set scheduler keeps `width` nodes in flight
+ * and refills a slot as soon as any in-flight node settles (`Promise.race`),
+ * every node running the same `claim -> evaluate -> finish -> transition`
+ * chain of short steps around one long one. Taken from a production runner
+ * that corrupted 90% of its runs on the day it shipped, with no concurrent
+ * writer involved: one orchestrator invocation wrote the whole log, and then
+ * fresh replays of that log diverged four times in six seconds.
+ *
+ * Three things distinguish it from the storms above:
+ *
+ *  - **Nothing outside the run races it.** Sibling steps complete a few
+ *    milliseconds apart because they are siblings, not because a driver aims
+ *    them; the concurrency is the scheduler's own.
+ *  - **The width exceeds the inline step limit**, so every wave is a mix of
+ *    steps run inline by the orchestrator (whose completions it observes on
+ *    its own next replay pass) and steps dispatched to the queue (whose
+ *    completions wake fresh invocations).
+ *  - **Worker nodes bind a hook mid-fan-out** and await `hook.getConflict()`
+ *    before enqueueing the worker and waiting for its callback. A
+ *    `getConflict()` awaiter changes how the runtime handles the suspension
+ *    it lands in: nothing in that batch runs inline, every sibling step is
+ *    dispatched, and the run is handed back through the queue to resume over
+ *    the committed `hook_created`. That is the suspension the production run
+ *    died on.
+ *
+ * The prelude reproduces the runner's registration: sequential steps each
+ * followed by a bound hook, so the run crosses several such boundaries
+ * before the DAG starts.
+ */
+export async function dagRunnerReproWorkflow(
+  input: DagRunnerInput
+): Promise<DagRunnerResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const config = normalizeDagRunner(input);
+  const runId = metadata.workflowRunId;
+  const ledger: DagNodeRecord[] = [];
+  const hooks: { dispose(): void }[] = [];
+  let bindsConfirmed = 0;
+  let order = 0;
+
+  const bind = async (name: string) => {
+    const hook = createHook<WorkerCallbackPayload>({
+      token: `${input.token}:${name}`,
+    });
+    hooks.push(hook);
+    const conflict = await hook.getConflict();
+    if (conflict === null) bindsConfirmed += 1;
+    // Wrapped: a hook is a thenable, and returning it bare from an async
+    // function would make the caller's `await` read its first payload.
+    return { hook };
+  };
+
+  // Deterministic spread of the long step, so sibling completions land at
+  // different offsets: some milliseconds apart, some seconds.
+  const evaluateDelay = (node: number) =>
+    config.evaluateMs +
+    Math.floor(((node * 7) % 10) * (config.evaluateJitterMs / 10));
+
+  const runNode = async (node: number): Promise<DagNodeRecord> => {
+    // Which nodes are workers. The harness's driver applies the same
+    // predicate to know which hooks to answer, and its ledger validator
+    // derives the expected bind count from it (`workerNodes` and
+    // `validateDagRunnerReturn` in event-log-race-repro.test.ts); change all
+    // three together.
+    const worker =
+      config.workerEvery > 0 &&
+      node % config.workerEvery === config.workerEvery - 1;
+    await claimNodeStep({ runId, node, delayMs: config.shortStepMs });
+    const evaluated = await evaluateNodeStep({
+      runId,
+      node,
+      delayMs: evaluateDelay(node),
+      worker,
+    });
+    let callback: DagNodeRecord['callback'] = 'none';
+    if (evaluated.needsWorker) {
+      // The bind: a hook whose registration the node waits on before it
+      // enqueues the worker, while its siblings keep launching steps.
+      const { hook } = await bind(`node:${node}`);
+      await enqueueWorkerStep({ runId, node, delayMs: config.shortStepMs });
+      const iterator = hook[Symbol.asyncIterator]();
+      const winner = await Promise.race([
+        iterator.next().then(() => 'received' as const),
+        sleep(config.workerWatchdogMs).then(() => DAG_WATCHDOG),
+      ]);
+      callback = winner === DAG_WATCHDOG ? 'watchdog' : 'received';
+    }
+    await finishNodeStep({
+      runId,
+      node,
+      delayMs: config.shortStepMs,
+      callback,
+    });
+    await transitionNodeStep({ runId, node, delayMs: config.shortStepMs });
+    order += 1;
+    return { node, worker, callback, order };
+  };
+
+  try {
+    for (let index = 0; index < config.preludeBinds; index += 1) {
+      await preludeStep({ runId, index, delayMs: config.shortStepMs });
+      await bind(`prelude:${index}`);
+    }
+
+    // Ready-set scheduler: keep `width` nodes in flight, refill on any
+    // settlement. `Promise.race` over the in-flight set is what makes the
+    // scheduler's next launch depend on which sibling settled first. Each
+    // node records itself as it settles; the race is only the wake signal,
+    // since two nodes settling in one turn both leave the set but only one
+    // of them is the race's value.
+    const inFlight = new Map<number, Promise<void>>();
+    let next = 0;
+    while (next < config.nodes || inFlight.size > 0) {
+      while (next < config.nodes && inFlight.size < config.width) {
+        const node = next;
+        next += 1;
+        inFlight.set(
+          node,
+          runNode(node).then((record) => {
+            inFlight.delete(node);
+            ledger.push(record);
+          })
+        );
+      }
+      await Promise.race(inFlight.values());
+    }
+  } finally {
+    for (const hook of hooks) hook.dispose();
+  }
+
+  return {
+    runId,
+    nodes: config.nodes,
+    width: config.width,
+    ledger,
+    bindsConfirmed,
+  };
+}

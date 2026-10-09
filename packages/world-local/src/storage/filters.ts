@@ -10,7 +10,8 @@ export { stripEventDataRefs } from '@workflow/world';
 
 /**
  * Filter run data based on resolveData setting.
- * When resolveData is 'none', strips input/output to reduce payload size.
+ * When resolveData is 'none', strips input/output and a dynamic run's stored
+ * workflow code.
  */
 export function filterRunData(
   run: WorkflowRun,
@@ -29,8 +30,9 @@ export function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
+    const { dynamicWorkflowCode: _dynamicWorkflowCode, ...rest } = run;
     return {
-      ...run,
+      ...rest,
       input: undefined,
       output: undefined,
     } as WorkflowRunWithoutData;

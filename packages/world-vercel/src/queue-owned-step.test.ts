@@ -42,6 +42,7 @@ vi.mock('./invocation.js', () => ({
 vi.mock('./ws-transport.js', () => ({ openWsChannel: mocks.open }));
 vi.mock('./ws-transport-enabled.js', () => ({
   isWsEventsTransportEnabled: () => true,
+  isWsEventsTransportEnabledForWorkflow: () => true,
 }));
 
 import { ValidQueueName } from '@workflow/world';

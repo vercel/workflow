@@ -28,12 +28,7 @@ import { WorkflowWorldError } from '@workflow/errors';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { decode as decodeCbor } from 'cbor-x';
 import { WebSocket } from 'ws';
-import {
-  type DecodedFrame,
-  decodeFrame,
-  decodeFrames,
-  encodeFrame,
-} from './frames.js';
+import { type DecodedFrame, decodeFrame, encodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -53,13 +48,21 @@ import {
   WS_CLIENT_FLAGS,
   WS_FLAGS_HEADER,
   WsPartAssembler,
+  WsPartProtocolError,
   wsMaxMessageBytes,
 } from './ws-parts.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import {
+  isWsEventsTransportEnabled,
+  isWsEventsTransportEnabledForWorkflow,
+} from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
   body: Uint8Array;
+  /** Messages the request went out as: 1, or its part count when split. */
+  requestParts?: number;
+  /** Messages the reply arrived as: 1, or its part count when split. */
+  replyParts?: number;
 }
 
 /**
@@ -170,48 +173,6 @@ function isSplittableReply(reqId: unknown): reqId is number {
   );
 }
 
-/**
- * Send one encoded frame: whole when it fits the message limit, otherwise as
- * parts, back to back, with `cb` called once after the last (or on the first
- * failure, including a frame too large even for parts).
- */
-function sendFrame(
-  ws: WebSocket,
-  frame: Uint8Array,
-  cb: (err?: Error) => void
-): void {
-  let messages: Uint8Array[];
-  try {
-    messages = splitEncodedFrame(frame, wsMaxMessageBytes());
-  } catch (err) {
-    cb(err as Error);
-    return;
-  }
-  if (messages.length === 1) {
-    ws.send(frame, cb);
-    return;
-  }
-  let failed = false;
-  for (const [index, message] of messages.entries())
-    ws.send(message, (err) => {
-      if (failed) return;
-      if (err) {
-        failed = true;
-        cb(err);
-      } else if (index === messages.length - 1) cb();
-    });
-}
-
-async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
-  const source = (async function* () {
-    yield raw;
-  })();
-  for await (const frame of decodeFrames(source)) {
-    return frame;
-  }
-  throw new Error('ws-transport: received an empty/unframed message');
-}
-
 /** Pull the `{ "message": string }` JSON an `error` frame carries as its body,
  *  falling back to the raw text if it isn't shaped that way. */
 function errorFrameMessage(body: Uint8Array): string {
@@ -267,8 +228,16 @@ class WsEventsTransport {
    *  receives the reqId to embed in the meta before framing. */
   async request(
     buildFrame: (reqId: number) => Uint8Array,
-    onSent?: () => void,
-    generation?: number
+    options: {
+      /** Called with the number of messages the frame goes out as, before
+       *  the first is sent, so a caller can record it even if no reply comes. */
+      onMessages?: (count: number) => void;
+      /** Called once the whole frame (every part) has been sent. */
+      onSent?: () => void;
+      /** The connection the frame was positioned for (eventsync); a frame is
+       *  never handed to a successor connection. */
+      generation?: number;
+    } = {}
   ): Promise<WsFrameReply> {
     if (this.closed) {
       // Unreachable through `resolveWsTransport`, which only hands back a
@@ -280,6 +249,7 @@ class WsEventsTransport {
       );
     }
     const conn = await this.ensureConnected();
+    const { generation } = options;
     if (generation !== undefined && conn.generation !== generation)
       // Never hand a frame positioned for a broken connection to its successor.
       throw new WsTransportError(
@@ -292,10 +262,14 @@ class WsEventsTransport {
       frame = withMeta(frame, { attach: conn.attach });
       conn.attach = undefined;
     }
+    // A frame over the message limit goes out as several messages; see
+    // `ws-parts.ts`.
+    const messages = splitEncodedFrame(frame, wsMaxMessageBytes());
+    options.onMessages?.(messages.length);
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await new Promise<WsFrameReply>((resolve, reject) => {
+      const reply = await new Promise<WsFrameReply>((resolve, reject) => {
         conn.pending.set(reqId, { resolve, reject });
         // Deliberately the same knob the HTTP path uses. Without it, a reply
         // that never arrives for a reason the error/close handling doesn't
@@ -319,9 +293,10 @@ class WsEventsTransport {
           );
         }, timeoutMs);
         deadline.unref?.();
-        sendFrame(conn.ws, frame, (err) => {
+        let sent = 0;
+        const onSent = (err?: Error) => {
           if (!err) {
-            onSent?.();
+            if (++sent === messages.length) options.onSent?.();
             return;
           }
           // `ws.send()` does not throw when the socket isn't OPEN; it
@@ -336,8 +311,12 @@ class WsEventsTransport {
               )
             );
           }
-        });
+        };
+        // Back to back, in order: nothing else can be queued on the socket
+        // between them because `send` only enqueues.
+        for (const message of messages) conn.ws.send(message, onSent);
       });
+      return { ...reply, requestParts: messages.length };
     } finally {
       if (deadline !== undefined) clearTimeout(deadline);
     }
@@ -501,6 +480,10 @@ class WsEventsTransport {
     // This client rebuilds replies sent as parts (`ws-parts.ts`).
     headers[WS_FLAGS_HEADER] = WS_CLIENT_FLAGS.join(',');
 
+    // Tells the server this client rebuilds split replies. Without it the
+    // server sends every reply whole, which is what older clients expect.
+    headers[WS_FLAGS_HEADER] = WS_CLIENT_FLAGS.join(', ');
+
     return headers;
   }
 
@@ -558,6 +541,8 @@ class WsEventsTransport {
         let attach: Uint8Array | undefined;
         let implicit: Record<string, unknown> | undefined;
         let syncChain: Promise<void> = Promise.resolve();
+        /** Frames queued on `syncChain` and not handled yet. */
+        let chained = 0;
         let syncing:
           | {
               history(body: Uint8Array): Promise<void>;
@@ -620,11 +605,25 @@ class WsEventsTransport {
               headers,
             });
           ws.binaryType = 'nodebuffer';
+          const pending = new Map<number, PendingRequest>();
           conn = {
             ws,
-            parts: new WsPartAssembler({ splittable: isSplittableReply }),
             nextReqId: 1,
-            pending: new Map(),
+            pending,
+            // A split reply for a request that already settled (its deadline
+            // or a send error) is read through, not buffered. Eventsync's
+            // catch-up pushes (`reqId: -1`) are wanted while it runs.
+            parts: new WsPartAssembler({
+              splittable: isSplittableReply,
+              wanted: (reqId) =>
+                reqId === -1 ? syncing !== undefined : pending.has(reqId),
+              onDiscarded: (reqId) =>
+                console.error(
+                  `world-vercel: ws events transport received a split reply ` +
+                    `for unknown reqId ${reqId} from ${this.wsUrl} (already ` +
+                    `settled); dropping it.`
+                ),
+            }),
             generation: ++this.generation,
           };
           if (after !== undefined) {
@@ -771,38 +770,26 @@ class WsEventsTransport {
           });
 
         ws.on('message', (raw: Buffer) => {
-          // Rebuild a frame sent as parts before anything reads it.
-          let bytes: Uint8Array;
-          try {
-            const message = new Uint8Array(raw);
-            const frame = decodeFrame(message);
-            const whole = conn.parts.accept(frame);
-            if (!whole) return;
-            bytes =
-              whole === frame ? message : encodeFrame(whole.meta, whole.body);
-          } catch (err) {
-            // Unreadable framing, or a part the protocol does not allow: the
-            // socket can't be trusted, so it goes, loudly.
-            const detail =
-              `could not decode a ${raw.byteLength}-byte frame from ` +
-              `${this.wsUrl}: ${describeError(err)}`;
-            console.error(`world-vercel: ws events transport ${detail}`);
-            this.failConnection(
-              conn,
-              `workflow-server events WS transport ${detail}`
-            );
+          const message = new Uint8Array(raw);
+          if (!syncing && chained === 0) {
+            this.handleMessage(conn, message);
             return;
           }
-          if (!syncing) {
-            void this.handleMessage(conn, bytes);
-            return;
-          }
+          // During catch-up, and until every frame queued behind it is
+          // handled, frames go through one chain in arrival order. Each is
+          // rebuilt (when sent as parts) before anything reads it.
+          const read = this.readMessage(conn, message);
+          if (!read) return;
           const sync = syncing;
-          // Catch-up frames are applied strictly in arrival order.
+          chained++;
           syncChain = syncChain
-            .then(() => decodeOneFrame(bytes))
-            .then(async (frame) => {
-              if (syncing !== sync) return;
+            .then(async () => {
+              const frame = read.frame;
+              // Catch-up is over: an ordinary reply or push.
+              if (!sync || syncing !== sync) {
+                this.dispatchMessage(conn, frame, read.parts);
+                return;
+              }
               if (frame.meta.type === 'history')
                 return sync.history(frame.body);
               if (frame.meta.type === 'synced') {
@@ -822,7 +809,7 @@ class WsEventsTransport {
               );
             })
             .catch((err: unknown) => {
-              if (syncing !== sync) return;
+              if (!sync || syncing !== sync) return;
               syncing = undefined;
               reject(
                 err instanceof WsTransportError
@@ -833,6 +820,9 @@ class WsEventsTransport {
                     )
               );
               ws.close();
+            })
+            .finally(() => {
+              chained--;
             });
         });
 
@@ -934,13 +924,26 @@ class WsEventsTransport {
     this.reconnectTimer = timer;
   }
 
-  private async handleMessage(
+  /** Synchronous so parts of a split reply are always assembled in arrival
+   *  order. */
+  private handleMessage(conn: Connection, raw: Uint8Array): void {
+    const read = this.readMessage(conn, raw);
+    if (read) this.dispatchMessage(conn, read.frame, read.parts);
+  }
+
+  /**
+   * Decode one message and feed it to the connection's part assembler: the
+   * complete frame with the number of messages it arrived as, or `undefined`
+   * while a split frame is still arriving, or after an unreadable frame or a
+   * part-protocol error has failed the connection.
+   */
+  private readMessage(
     conn: Connection,
     raw: Uint8Array
-  ): Promise<void> {
-    let decoded: DecodedFrame;
+  ): { frame: DecodedFrame; parts: number } | undefined {
+    let message: DecodedFrame;
     try {
-      decoded = await decodeOneFrame(raw);
+      message = decodeFrame(raw);
     } catch (err) {
       // Uncorrelatable, and it says the framing on this socket is no longer
       // trustworthy, so the connection goes rather than leaving its waiters
@@ -956,6 +959,17 @@ class WsEventsTransport {
       return;
     }
 
+    // A part of a reply that is still arriving, or a protocol error that
+    // already failed the connection, reads as undefined.
+    return this.assemble(conn, message);
+  }
+
+  /** Handle one complete frame: a reply to its request, or a server push. */
+  private dispatchMessage(
+    conn: Connection,
+    decoded: DecodedFrame,
+    replyParts: number
+  ): void {
     if (decoded.meta.type === 'drain') {
       // Unsolicited server push, no reqId. Informational on its own: the
       // `close` that follows is what triggers the reconnect and consumes the
@@ -1023,7 +1037,40 @@ class WsEventsTransport {
       return;
     }
     conn.pending.delete(reqId);
-    pending.resolve({ meta: decoded.meta, body: decoded.body });
+    pending.resolve({ meta: decoded.meta, body: decoded.body, replyParts });
+  }
+
+  /**
+   * Feed one decoded message to the connection's part assembler. Returns the
+   * complete frame with the number of messages it arrived as, or `undefined`
+   * while a split frame is still arriving. A part that breaks the protocol
+   * leaves the rest of the stream unmatchable, the same as an undecodable
+   * frame, so it fails the connection and also returns `undefined`.
+   */
+  private assemble(
+    conn: Connection,
+    message: DecodedFrame
+  ): { frame: DecodedFrame; parts: number } | undefined {
+    let frame: DecodedFrame | undefined;
+    try {
+      frame = conn.parts.accept(message);
+    } catch (err) {
+      const detail =
+        err instanceof WsPartProtocolError
+          ? `received a split reply from ${this.wsUrl} that breaks the part protocol: ${err.message}`
+          : `could not assemble a split reply from ${this.wsUrl}: ${describeError(err)}`;
+      console.error(`world-vercel: ws events transport ${detail}`);
+      this.failConnection(
+        conn,
+        `workflow-server events WS transport ${detail}`
+      );
+      return undefined;
+    }
+    if (frame === undefined) return undefined;
+    const { type, partCount } = message.meta;
+    const parts =
+      type === 'part' && typeof partCount === 'number' ? partCount : 1;
+    return { frame, parts };
   }
 
   private failAllPending(conn: Connection, err: unknown): void {
@@ -1334,9 +1381,26 @@ export type WsChannelLease = (() => void) & {
 export function openWsChannel(
   runId: string,
   config?: APIConfig,
-  options?: { catchUp?: EventsyncCatchUpOptions<unknown> }
+  options: {
+    /**
+     * The run's workflow name. Lets a workflow listed in
+     * `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS` open a channel on a
+     * deployment pinned to `WORKFLOW_EVENTS_TRANSPORT=http`; without it such a
+     * deployment opens none.
+     */
+    workflowName?: string;
+    /** Eventsync: the single-owner runner's write session for this run. */
+    catchUp?: EventsyncCatchUpOptions<unknown>;
+  } = {}
 ): WsChannelLease | undefined {
-  if (!isWsEventsTransportEnabled()) return undefined;
+  // A single-owner run is written only through eventsync, whatever the
+  // events-transport setting; other channels follow it.
+  if (
+    !options.catchUp &&
+    !isWsEventsTransportEnabledForWorkflow(options.workflowName)
+  ) {
+    return undefined;
+  }
   const resolved = resolveChannelUrl(runId, config);
   if (!resolved) return undefined;
   if (!wsState.loggedWsInUse) {
@@ -1358,7 +1422,7 @@ export function openWsChannel(
     return headersToRecord(headers);
   });
   // Set before the first connect so even the initial upgrade carries `after`.
-  if (options?.catchUp) transport.enableCatchUp(options.catchUp);
+  if (options.catchUp) transport.enableCatchUp(options.catchUp);
   transport.open();
 
   let released = false;
@@ -1375,8 +1439,7 @@ export function openWsChannel(
         const reply = await transport.request(
           (reqId) =>
             encodeFrame({ reqId, type: 'flush', through }, new Uint8Array()),
-          undefined,
-          generation
+          { generation }
         );
         if (
           reply.meta.type !== 'flush_ack' ||

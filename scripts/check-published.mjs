@@ -19,14 +19,14 @@
  * so a gap keeps failing the job until it is closed.
  *
  * Manifests are read from the commit (`git show HEAD:...`), never from the
- * working tree. When changesets are pending, the Release job's changesets step
- * takes its *version* branch: `pnpm ci:version` rewrites every package.json in
- * the runner's working tree to the next version and opens the "Version
- * Packages" PR without publishing anything. A working-tree read then asks npm
- * for a version that is not supposed to exist yet, burns the whole retry budget
- * and reports a healthy release as broken -- on every push between a version
- * bump being proposed and its release PR merging. Reading the commit keeps the
- * check honest in that window: it still verifies the versions this commit
+ * working tree. When changesets are pending, the Release job's version step
+ * runs `pnpm ci:version`, which rewrites every package.json in the runner's
+ * working tree to the next version and opens the "Version Packages" PR. A
+ * working-tree read after it asks npm for a version that is not supposed to
+ * exist yet, burns the whole retry budget and reports a healthy release as
+ * broken -- on every push between a version bump being proposed and its release
+ * PR merging. The job runs that step last, but reading the commit keeps the
+ * check honest whatever the order: it still verifies the versions this commit
  * actually claims, so a genuine half-shipped release stays red.
  *
  * npm does not commit a publish synchronously: `pnpm publish` exits 0 once the
@@ -90,7 +90,16 @@ function distTagForBranch() {
   const explicit = argValue('--tag');
   if (explicit) return explicit;
   const pre = readJsonAtRef('.changeset/pre.json');
-  if (pre?.mode === 'pre' && pre.tag) return pre.tag;
+  // `pre.json` existing at all means the versions on this commit are still
+  // pre-release versions carrying its tag -- in `exit` mode just as much as in
+  // `pre` mode. Exiting pre mode does not bump anything: the manifests stay at
+  // 5.0.0-beta.N, published under `beta`, until the "Version Packages" PR runs
+  // `changeset version`, which writes the GA versions and deletes `pre.json` in
+  // the same commit. Reading `latest` in exit mode therefore asserts that
+  // `latest` points at a beta, which it does not, and fails every push to the
+  // branch for the whole window between the `pre exit` merge and the GA
+  // publish -- burning the full retry budget each time.
+  if (pre?.tag) return pre.tag;
   return 'latest';
 }
 

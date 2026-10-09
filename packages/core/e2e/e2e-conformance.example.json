@@ -13,9 +13,13 @@
     "",
     "\"unsupported\" (optional): tests to skip by exact name, mapped to the reason,",
     "for behaviour the app's runtime does not implement even though the fixture",
-    "is ported."
+    "is ported.",
+    "",
+    "\"maxSpecVersion\" (optional): the highest spec version the app's runtime",
+    "accepts. Runs the suite starts are stamped no higher; raise it with the SDK pin."
   ],
   "language": "python",
+  "maxSpecVersion": 7,
   "fixtures": [
     "addTenWorkflow",
     "sleepingWorkflow",

@@ -150,6 +150,17 @@ export interface WorkflowOrchestratorContext {
    * Using Map instead of Array for O(1) lookup/delete operations.
    */
   invocationsQueue: Map<string, QueueItem>;
+  /**
+   * Per open hook, a probe for whether workflow code is currently waiting on
+   * its next payload (an `await hook`, a pending `for await` iteration, or a
+   * `.then` on it). Registered by `createHook` and dropped once the hook can
+   * receive nothing more. Snapshotted into
+   * {@link WorkflowSuspension.observedHookIds} when a suspension is raised.
+   *
+   * Optional so older/out-of-tree contexts (and lightweight test harnesses)
+   * degrade to "every open hook is observed".
+   */
+  hookPayloadAwaiters?: Map<string, () => boolean>;
   onWorkflowError: (error: Error) => void;
   /**
    * Mints the ULID body of a correlation id. Every entity a replay creates
@@ -185,10 +196,10 @@ export interface WorkflowOrchestratorContext {
   /**
    * Ordered registry of in-flight "branch-deciding" deliveries: the
    * resolutions a workflow typically `Promise.race`s on, or awaits from
-   * independent concurrent branches: hook payloads (`hook_received`), wait
-   * completions (`wait_completed`), and step results (`step_completed` /
-   * `step_failed`). Keyed by the delivery's position (index) in the consumed
-   * event log.
+   * independent concurrent branches: hook payloads (`hook_received`), hook
+   * registration outcomes (`hook_created` / `hook_conflict`), wait completions
+   * (`wait_completed`), and step results (`step_completed` / `step_failed`).
+   * Keyed by the delivery's position (index) in the consumed event log.
    *
    * The problem: each of these resolutions reaches workflow code after a
    * different, workload-dependent number of microtask hops. A buffered hook
@@ -220,6 +231,29 @@ export interface WorkflowOrchestratorContext {
    * that do not initialize it degrade gracefully to the previous behavior.
    */
   pendingDeliveryBarriers?: Map<number, DeliveryBarrierEntry>;
+  /**
+   * Advance the workflow's deterministic clock (`Date.now()` inside the VM)
+   * to `at`, never backwards. Called by {@link registerDeliveryBarrier} when a
+   * branch-deciding delivery is handed to the workflow, so the clock a
+   * cascade observes is the timestamp of the delivery that woke it.
+   *
+   * The clock is NOT advanced when an event is merely consumed. The
+   * `EventsConsumer` walks ahead of delivery: within one drain window it
+   * consumes every event whose consumer exists, so a `hook_received` for a
+   * hook the workflow has not read, or a `wait_completed` the body is still
+   * hops away from observing, is consumed while an earlier delivery is
+   * still parked on its barrier. Advancing the clock at consumption let those
+   * later timestamps leak into the earlier delivery's cascade, and the value
+   * `Date.now()` returned at a body position then depended on how much log
+   * the replay had loaded: the execution that wrote the log saw the
+   * heartbeat's time, a later replay holding one more payload saw the
+   * payload's. A workflow whose control flow reads the clock (an idle loop
+   * budgeted by `Date.now()`, a deadline) then drew different ordinals in
+   * different replays and died `CORRUPTED_EVENT_LOG`.
+   *
+   * Optional so older/out-of-tree contexts degrade gracefully.
+   */
+  advanceClock?: (at: number) => void;
   /**
    * Invocation-scoped cache of prepared serialized payloads and immutable final
    * values. Prepared bytes survive fresh replay VMs; object graphs do not.
@@ -654,11 +688,39 @@ export function registerDeliveryBarrier(
   ctx: WorkflowOrchestratorContext,
   eventIndex: number | undefined,
   kind: DeliveryKind,
-  options: { armed?: boolean } = {}
+  options: {
+    armed?: boolean;
+    /**
+     * The delivered event's `createdAt`. On `markDelivered` the workflow
+     * clock advances to it (see {@link WorkflowOrchestratorContext.advanceClock}),
+     * so `Date.now()` in the cascade this delivery wakes reads the delivery's
+     * own time, whatever the consumer walk has read ahead of it. Required so
+     * that a new delivery site cannot forget the clock: a delivery that does
+     * not move it leaves the cascade it wakes reading a stale time.
+     */
+    deliveredAt: number;
+  }
 ): DeliveryBarrier {
+  // Idempotent like the handle it backs; `advanceClock` never moves backwards,
+  // so a repeat is a no-op either way.
+  let deliveredToWorkflow = false;
+  const deliver = () => {
+    if (deliveredToWorkflow) {
+      return false;
+    }
+    deliveredToWorkflow = true;
+    ctx.advanceClock?.(options.deliveredAt);
+    return true;
+  };
+
   const barriers = ctx.pendingDeliveryBarriers;
   if (!barriers || eventIndex === undefined) {
-    return { markDelivered: () => {}, arm: () => {} };
+    return {
+      markDelivered: () => {
+        deliver();
+      },
+      arm: () => {},
+    };
   }
 
   const install = (armed: boolean): DeliveryBarrierEntry => {
@@ -699,14 +761,12 @@ export function registerDeliveryBarrier(
   };
 
   let entry = install(options.armed ?? true);
-  let deliveredToWorkflow = false;
 
   return {
     markDelivered: () => {
-      if (deliveredToWorkflow) {
+      if (!deliver()) {
         return;
       }
-      deliveredToWorkflow = true;
       entry.retire();
     },
     arm: () => {
@@ -973,8 +1033,19 @@ export function scheduleWorkflowSuspension(
   const generation = ctx.suspensionGeneration;
   scheduleWhenIdle(ctx, () => {
     if (generation !== ctx.suspensionGeneration) return;
-    ctx.onWorkflowError(
-      new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+    const suspension = new WorkflowSuspension(
+      ctx.invocationsQueue,
+      ctx.globalThis
     );
+    // Taken at idle, the same instant the queue is: the awaiters that are
+    // pending now are exactly the ones this suspension's outcome depends on.
+    if (ctx.hookPayloadAwaiters) {
+      const observed = new Set<string>();
+      for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+        if (isAwaited()) observed.add(correlationId);
+      }
+      suspension.observedHookIds = observed;
+    }
+    ctx.onWorkflowError(suspension);
   });
 }

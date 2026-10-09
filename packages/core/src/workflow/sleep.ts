@@ -96,7 +96,9 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         //    ordered first. Then mark this wait delivered to release the later
         //    deliveries gated on it.
         const eventIndex = ctx.eventsConsumer.eventIndex;
-        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait');
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait', {
+          deliveredAt: +event.createdAt,
+        });
         // The deferral is captured HERE, while consuming the event, and not
         // after the queue tail below: same reasoning as step.ts. An earlier
         // step or hook whose hydration slot sits in that tail has usually

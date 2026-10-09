@@ -1,0 +1,757 @@
+import { runInNewContext } from 'node:vm';
+import { FatalError, WorkflowRunFailedError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  captureWaitUntil,
+  flushDispatches,
+  waitUntilPromises,
+} from '../../test-utils/lifecycle-hooks.js';
+import { runtimeLogger } from '../logger.js';
+import {
+  dehydrateRunError,
+  encodeWithFormatPrefix,
+  hydrateRunError,
+  SerializationFormat,
+} from '../serialization.js';
+import { contextStorage, type StepContext } from '../step/context-storage.js';
+import * as telemetry from '../telemetry.js';
+import { getWorldLazy } from './get-world-lazy.js';
+import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+  registerLifecycleHooks,
+  type WorkflowLifecycleHooks,
+} from './lifecycle-hooks.js';
+import { Run } from './run.js';
+import * as waitUntil from './wait-until.js';
+
+vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
+vi.mock('./get-world-lazy.js', () => ({ getWorldLazy: vi.fn() }));
+vi.mock(import('../serialization.js'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    dehydrateRunError: vi.fn(actual.dehydrateRunError),
+    hydrateRunError: vi.fn(actual.hydrateRunError),
+  };
+});
+
+const workflowName = 'workflow//./workflows/test//testWorkflow';
+
+async function dispatchFailure(runId: string, cause: unknown) {
+  const bytes = await dehydrateRunError(cause, runId, undefined);
+  dispatchRunFailedHooks(runId, workflowName, bytes, undefined, 'USER_ERROR');
+  return bytes;
+}
+
+vi.mock('@vercel/functions', () => ({
+  waitUntil: captureWaitUntil,
+}));
+
+describe('lifecycle hooks', () => {
+  const unregisters: Array<() => void> = [];
+
+  const register = (hooks: WorkflowLifecycleHooks) => {
+    const unregister = registerLifecycleHooks(hooks);
+    unregisters.push(unregister);
+    return unregister;
+  };
+
+  beforeEach(() => {
+    waitUntilPromises.length = 0;
+    vi.clearAllMocks();
+    vi.spyOn(waitUntil, 'safeWaitUntil');
+  });
+
+  afterEach(() => {
+    for (const unregister of unregisters) {
+      unregister();
+    }
+    unregisters.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  it('invokes onRunCompleted with a lazily-hydrated Run instance', async () => {
+    const onRunCompleted = vi.fn();
+    register({ onRunCompleted });
+
+    dispatchRunCompletedHooks('wrun_completed_1', workflowName);
+    await flushDispatches();
+
+    expect(onRunCompleted).toHaveBeenCalledTimes(1);
+    const { run } = onRunCompleted.mock.calls[0][0];
+    expect(run).toBeInstanceOf(Run);
+    expect(run.runId).toBe('wrun_completed_1');
+    expect(onRunCompleted.mock.calls[0][0].workflowName).toBe(workflowName);
+  });
+
+  it('invokes onRunFailed with the Run and a WorkflowRunFailedError carrying errorCode and cause', async () => {
+    const onRunFailed = vi.fn();
+    register({ onRunFailed });
+
+    const cause = new Error('workflow exploded');
+    await dispatchFailure('wrun_failed_1', cause);
+    await flushDispatches();
+
+    expect(onRunFailed).toHaveBeenCalledTimes(1);
+    const { run, error } = onRunFailed.mock.calls[0][0];
+    expect(run).toBeInstanceOf(Run);
+    expect(run.runId).toBe('wrun_failed_1');
+    expect(WorkflowRunFailedError.is(error)).toBe(true);
+    expect(error.runId).toBe('wrun_failed_1');
+    expect(error.errorCode).toBe('USER_ERROR');
+    expect(onRunFailed.mock.calls[0][0].workflowName).toBe(workflowName);
+    // The cause is the round-tripped (dehydrate → hydrate) value, not the
+    // original reference: handlers always see the host-realm hydrated shape.
+    expect(error.cause).toBeInstanceOf(Error);
+    expect(error.cause).not.toBe(cause);
+    expect((error.cause as Error).message).toBe('workflow exploded');
+    expect(error.message).toContain('workflow exploded');
+  });
+
+  it('hydrates a VM-realm thrown error into a host-realm Error for handlers', async () => {
+    const onRunFailed = vi.fn();
+    register({ onRunFailed });
+
+    // Simulate a workflow-VM thrown error: a real native error from another
+    // realm, for which host `instanceof Error` is false.
+    const vmError = runInNewContext(
+      'const e = new Error("vm exploded"); e.name = "FatalError"; e'
+    );
+    expect(vmError instanceof Error).toBe(false);
+
+    await dispatchFailure('wrun_vm_realm', vmError);
+    await flushDispatches();
+
+    const { error } = onRunFailed.mock.calls[0][0];
+    expect(error.cause).toBeInstanceOf(Error);
+    expect((error.cause as Error).name).toBe('FatalError');
+    expect((error.cause as Error).message).toBe('vm exploded');
+  });
+
+  it('does not schedule any work when no hooks are registered', async () => {
+    dispatchRunCompletedHooks('wrun_none', workflowName);
+    dispatchRunFailedHooks(
+      'wrun_none',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
+    expect(waitUntil.safeWaitUntil).not.toHaveBeenCalled();
+    expect(waitUntilPromises).toHaveLength(0);
+    expect(hydrateRunError).not.toHaveBeenCalled();
+  });
+
+  it('invokes multiple registrations in registration order', async () => {
+    const order: string[] = [];
+    register({ onRunCompleted: () => void order.push('first') });
+    register({
+      onRunCompleted: async () => {
+        // Async handler: the next handler must still wait for it.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push('second');
+      },
+    });
+    register({ onRunCompleted: () => void order.push('third') });
+
+    dispatchRunCompletedHooks('wrun_order', workflowName);
+    await flushDispatches();
+
+    expect(order).toEqual(['first', 'second', 'third']);
+  });
+
+  it('swallows a throwing handler and still runs later handlers', async () => {
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    const syncError = new TypeError('sync handler boom');
+    const asyncError = new Error('async handler boom');
+    const later = vi.fn();
+    register({
+      onRunFailed: () => {
+        throw syncError;
+      },
+    });
+    register({
+      onRunFailed: async () => {
+        throw asyncError;
+      },
+    });
+    register({ onRunFailed: later });
+
+    await dispatchFailure('wrun_boom', new Error('cause'));
+    await flushDispatches();
+
+    expect(waitUntilPromises).toHaveLength(1);
+    await expect(waitUntilPromises[0]).resolves.toBeUndefined();
+    expect(later).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(2);
+    for (const thrown of [syncError, asyncError]) {
+      expect(log).toHaveBeenCalledWith(
+        'Workflow lifecycle onRunFailed handler threw',
+        {
+          workflowRunId: 'wrun_boom',
+          workflowName,
+          errorName: thrown.name,
+          errorMessage: thrown.message,
+          errorStack: thrown.stack,
+        }
+      );
+    }
+    expect(log).not.toHaveBeenCalledWith(
+      'Workflow lifecycle onRunFailed dispatch failed',
+      expect.anything()
+    );
+  });
+
+  it('unregister removes the hooks', async () => {
+    const onRunCompleted = vi.fn();
+    const unregister = registerLifecycleHooks({ onRunCompleted });
+    unregister();
+
+    dispatchRunCompletedHooks('wrun_unregistered', workflowName);
+    expect(waitUntil.safeWaitUntil).not.toHaveBeenCalled();
+    expect(onRunCompleted).not.toHaveBeenCalled();
+    expect(waitUntilPromises).toHaveLength(0);
+  });
+
+  it.each([
+    'onRunCompleted',
+    'onRunFailed',
+  ] as const)('isolates a throwing %s property getter and still calls later registrations', async (event) => {
+    const failure = new Error('hook getter failed');
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    register(
+      Object.defineProperty({}, event, {
+        get: () => {
+          throw failure;
+        },
+      })
+    );
+    const later = vi.fn();
+    register({ [event]: later });
+
+    expect(() => {
+      if (event === 'onRunCompleted') {
+        dispatchRunCompletedHooks('wrun_getter', workflowName);
+      } else {
+        dispatchRunFailedHooks(
+          'wrun_getter',
+          workflowName,
+          undefined,
+          undefined,
+          'USER_ERROR'
+        );
+      }
+    }).not.toThrow();
+    await flushDispatches();
+    expect(later).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(
+      `Workflow lifecycle ${event} handler property access threw`,
+      expect.objectContaining({ errorMessage: failure.message })
+    );
+  });
+
+  it.each([
+    'log sink',
+    'error accessor',
+  ])('still runs later handlers when the %s throws during error reporting', async (source) => {
+    const failure = new Error('handler failed');
+    if (source === 'log sink') {
+      vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {
+        throw new Error('sink failed');
+      });
+    } else {
+      Object.defineProperty(failure, 'name', {
+        get: () => {
+          throw new Error('accessor failed');
+        },
+      });
+    }
+    register({
+      onRunCompleted: () => {
+        throw failure;
+      },
+    });
+    const later = vi.fn();
+    register({ onRunCompleted: later });
+    dispatchRunCompletedHooks('wrun_reporting_failure', workflowName);
+    await flushDispatches();
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs a cross-realm handler failure with consistent name, message and stack', async () => {
+    const failure = runInNewContext('new TypeError("handler failed")');
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    register({
+      onRunCompleted: () => {
+        throw failure;
+      },
+    });
+    dispatchRunCompletedHooks('wrun_cross_realm_handler', workflowName);
+    await flushDispatches();
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      {
+        workflowRunId: 'wrun_cross_realm_handler',
+        workflowName,
+        errorName: 'TypeError',
+        errorMessage: 'handler failed',
+        errorStack: failure.stack,
+      }
+    );
+  });
+
+  it('does not throw into the terminal writer when scheduling fails synchronously', () => {
+    const failure = new Error('tracing unavailable');
+    vi.spyOn(telemetry, 'trace').mockImplementationOnce(() => {
+      throw failure;
+    });
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    register({ onRunCompleted: vi.fn() });
+    expect(() =>
+      dispatchRunCompletedHooks('wrun_schedule_failure', workflowName)
+    ).not.toThrow();
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunCompleted dispatch failed',
+      expect.objectContaining({ errorMessage: failure.message })
+    );
+  });
+
+  it('rejects registration inside a step without accumulating a handler', () => {
+    const handler = vi.fn();
+    expect(() =>
+      contextStorage.run({} as StepContext, () =>
+        registerLifecycleHooks({ onRunCompleted: handler })
+      )
+    ).toThrow('at host startup, not inside a step function');
+    dispatchRunCompletedHooks('wrun_step_registration', workflowName);
+    expect(waitUntil.safeWaitUntil).not.toHaveBeenCalled();
+  });
+
+  it('logs unreadable error fields independently and still invokes later handlers', async () => {
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    const hostile = {
+      toString() {
+        throw new Error('unprintable');
+      },
+    };
+    const partlyReadable = new Error('readable message');
+    Object.defineProperty(partlyReadable, 'stack', {
+      get() {
+        throw new Error('no stack');
+      },
+    });
+    register({
+      onRunCompleted() {
+        throw hostile;
+      },
+    });
+    register({
+      onRunCompleted() {
+        throw partlyReadable;
+      },
+    });
+    const later = vi.fn();
+    register({ onRunCompleted: later });
+    dispatchRunCompletedHooks('wrun_hostile_error', workflowName);
+    await flushDispatches();
+    expect(later).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      expect.objectContaining({
+        errorName: 'Error',
+        errorMessage: '[unavailable error message]',
+        errorStack: '',
+      })
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunCompleted handler threw',
+      expect.objectContaining({
+        errorName: 'Error',
+        errorMessage: 'readable message',
+        errorStack: '',
+      })
+    );
+  });
+
+  it('correlates the lifecycle span and records isolated reporting failures', async () => {
+    const span = { addEvent: vi.fn() };
+    vi.spyOn(telemetry, 'trace').mockImplementationOnce(
+      async (_name, ...args) => {
+        await Promise.resolve();
+        const fn = typeof args[0] === 'function' ? args[0] : args[1];
+        return fn?.(span as any);
+      }
+    );
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    vi.mocked(hydrateRunError).mockRejectedValueOnce(
+      new Error('missing error class')
+    );
+    register({
+      onRunFailed() {
+        throw new Error('reporter failed');
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_span',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(telemetry.trace).toHaveBeenCalledWith(
+      'workflow.lifecycle.onRunFailed',
+      {
+        attributes: {
+          'workflow.run.id': 'wrun_span',
+          'workflow.name': workflowName,
+        },
+      },
+      expect.any(Function)
+    );
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'workflow.lifecycle.failure',
+      expect.objectContaining({
+        phase: 'error hydration failed',
+        'exception.message': 'missing error class',
+      })
+    );
+    expect(span.addEvent).toHaveBeenCalledWith(
+      'workflow.lifecycle.failure',
+      expect.objectContaining({
+        phase: 'handler threw',
+        'exception.message': 'reporter failed',
+      })
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Workflow lifecycle onRunFailed error hydration failed',
+      expect.objectContaining({ errorMessage: 'missing error class' })
+    );
+  });
+
+  it('non-Error thrown values round-trip through WorkflowRunFailedError.cause', async () => {
+    const onRunFailed = vi.fn();
+    register({ onRunFailed });
+
+    const thrown = { kind: 'business-rule-violation', code: 'LOCKED' };
+    await dispatchFailure('wrun_nonerror', thrown);
+    await flushDispatches();
+
+    const { error } = onRunFailed.mock.calls[0][0];
+    // Structural clone via the serialization round-trip, not coerced to an
+    // Error.
+    expect(error.cause).not.toBeInstanceOf(Error);
+    expect(error.cause).toEqual(thrown);
+  });
+
+  it('hydrates the persisted encrypted error once, off the writer path, without serializing it again', async () => {
+    const runId = 'wrun_persisted_error';
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    const original = new FatalError('persisted message');
+    original.cause = new Error('persisted cause');
+    const bytes = await dehydrateRunError(original, runId, key);
+    original.message = 'not persisted';
+    vi.mocked(dehydrateRunError).mockClear();
+    const span = vi.spyOn(telemetry, 'trace');
+    const onRunFailed = vi.fn();
+    register({ onRunFailed });
+
+    dispatchRunFailedHooks(runId, workflowName, bytes, key, 'USER_ERROR');
+    expect(hydrateRunError).not.toHaveBeenCalled();
+    expect(onRunFailed).not.toHaveBeenCalled();
+    await flushDispatches();
+
+    expect(dehydrateRunError).not.toHaveBeenCalled();
+    expect(hydrateRunError).toHaveBeenCalledTimes(1);
+    expect(hydrateRunError).toHaveBeenCalledWith(
+      bytes,
+      runId,
+      key,
+      expect.any(Array),
+      globalThis,
+      undefined,
+      { lazyStreams: true, liveAbortSignals: false }
+    );
+    expect(span).toHaveBeenCalledWith(
+      'workflow.lifecycle.onRunFailed',
+      {
+        attributes: { 'workflow.run.id': runId, 'workflow.name': workflowName },
+      },
+      expect.any(Function)
+    );
+    const { error } = onRunFailed.mock.calls[0][0];
+    expect(FatalError.is(error.cause)).toBe(true);
+    expect(error.cause).not.toBe(original);
+    expect(error.cause.message).toBe('persisted message');
+    expect(error.cause.cause.message).toBe('persisted cause');
+  });
+
+  it.each([
+    new Uint8Array([1]),
+    encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["Instance",1],{"classId":2,"data":3},"vm-only-error-class",{}]'
+      )
+    ),
+  ])('reports the same fallback as run.returnValue when stored error hydration fails (%#)', async (bytes) => {
+    const onRunFailed = vi.fn();
+    register({ onRunFailed });
+    dispatchRunFailedHooks(
+      'wrun_invalid_error',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(onRunFailed).toHaveBeenCalledTimes(1);
+    const { error } = onRunFailed.mock.calls[0][0];
+    expect(WorkflowRunFailedError.is(error)).toBe(true);
+    expect(error.errorCode).toBe('USER_ERROR');
+    expect(error.cause).toEqual(
+      new Error('Failed to hydrate workflow run error')
+    );
+  });
+
+  it('keeps a persisted stream cause inert until the handler consumes it', async () => {
+    const get = vi.fn(
+      async () =>
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('failure details'));
+            controller.close();
+          },
+        })
+    );
+    vi.mocked(getWorldLazy).mockResolvedValue({ streams: { get } } as any);
+    const bytes = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["ReadableStream",1],{"name":2,"type":3},"error-body","bytes"]'
+      )
+    );
+    let consumed: string | undefined;
+    register({
+      async onRunFailed({ error }) {
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(get).not.toHaveBeenCalled();
+        consumed = await new Response(error.cause as ReadableStream).text();
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_stream_error',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+
+    expect(consumed).toBe('failure details');
+    expect(get).toHaveBeenCalledExactlyOnceWith(
+      'wrun_stream_error',
+      'error-body',
+      undefined
+    );
+  });
+
+  it('does not prepare failure parameters for completion-only registrations', async () => {
+    register({ onRunCompleted: vi.fn() });
+    dispatchRunFailedHooks(
+      'wrun_unobserved_failure',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
+    expect(waitUntil.safeWaitUntil).not.toHaveBeenCalled();
+    expect(hydrateRunError).not.toHaveBeenCalled();
+    expect(waitUntilPromises).toHaveLength(0);
+  });
+
+  it('keeps a readable pipe alive after its handler returns until the reader is released', async () => {
+    const get = vi.fn().mockResolvedValue(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('first'));
+        },
+      })
+    );
+    vi.mocked(getWorldLazy).mockResolvedValue({ streams: { get } } as any);
+    const bytes = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["ReadableStream",1],{"name":2,"type":3},"error-body","bytes"]'
+      )
+    );
+    let reader!: ReadableStreamDefaultReader;
+    let stream!: ReadableStream;
+    const returned = withResolvers<void>();
+    register({
+      async onRunFailed({ error }) {
+        stream = error.cause as ReadableStream;
+        reader = stream.getReader();
+        expect((await reader.read()).done).toBe(false);
+        returned.resolve();
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_reader_lifetime',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await returned.promise;
+    await vi.waitFor(() => expect(waitUntilPromises).toHaveLength(1));
+    const settled = vi.fn();
+    void waitUntilPromises[0].then(settled);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).not.toHaveBeenCalled();
+    reader.releaseLock();
+    await flushDispatches();
+    expect(settled).toHaveBeenCalledOnce();
+    await stream.cancel();
+  });
+
+  it('settles the stream drain when a handler cancels a pending read', async () => {
+    const cancel = vi.fn();
+    const get = vi.fn().mockResolvedValue(new ReadableStream({ cancel }));
+    vi.mocked(getWorldLazy).mockResolvedValue({ streams: { get } } as any);
+    const bytes = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["ReadableStream",1],{"name":2,"type":3},"error-body","bytes"]'
+      )
+    );
+    const finished = vi.fn();
+    register({
+      async onRunFailed({ error }) {
+        const reader = (error.cause as ReadableStream).getReader();
+        const reading = reader.read();
+        await vi.waitFor(() => expect(get).toHaveBeenCalledOnce());
+        try {
+          await reader.cancel('enough diagnostics');
+          await expect(reading).resolves.toEqual({
+            value: undefined,
+            done: true,
+          });
+        } finally {
+          reader.releaseLock();
+        }
+        finished();
+      },
+    });
+    dispatchRunFailedHooks(
+      'wrun_cancel_read',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await flushDispatches();
+    expect(finished).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  });
+
+  it.each([
+    false,
+    true,
+  ])('waits for a forwarded writable to flush after its handler returns (throws: %s)', async (throws) => {
+    const persisted = withResolvers<void>();
+    const write = vi.fn(() => persisted.promise);
+    vi.mocked(getWorldLazy).mockResolvedValue({ streams: { write } } as any);
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    const bytes = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(
+        '[["WritableStream",1],{"name":2},"error-output"]'
+      )
+    );
+    const returned = withResolvers<void>();
+    register({
+      async onRunFailed({ error }) {
+        const writer = (error.cause as WritableStream).getWriter();
+        await writer.write('failure details');
+        writer.releaseLock();
+        returned.resolve();
+        if (throws) throw new Error('reporting failed after writing');
+      },
+    });
+    const later = vi.fn();
+    register({ onRunFailed: later });
+    dispatchRunFailedHooks(
+      'wrun_writer_lifetime',
+      workflowName,
+      bytes,
+      undefined,
+      'USER_ERROR'
+    );
+    await returned.promise;
+    await vi.waitFor(() => {
+      expect(write).toHaveBeenCalledOnce();
+      expect(later).toHaveBeenCalledOnce();
+      expect(waitUntilPromises).toHaveLength(1);
+    });
+    const settled = vi.fn();
+    void waitUntilPromises[0].then(settled);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).not.toHaveBeenCalled();
+    persisted.resolve();
+    await flushDispatches();
+    expect(settled).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledTimes(throws ? 1 : 0);
+  });
+
+  it('drains every stream operation, including later additions, when hydration and one pipe fail', async () => {
+    const first = withResolvers<void>();
+    const last = withResolvers<void>();
+    const failed = Promise.reject(new Error('pipe failed'));
+    void failed.catch(() => {});
+    let pendingOps!: Promise<void>[];
+    vi.mocked(hydrateRunError).mockImplementationOnce(
+      async (_error, _runId, _key, ops) => {
+        pendingOps = ops!;
+        pendingOps.push(failed, first.promise);
+        throw new Error('partially hydrated payload');
+      }
+    );
+    const log = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    const handler = vi.fn();
+    register({ onRunFailed: handler });
+    dispatchRunFailedHooks(
+      'wrun_partial_hydration',
+      workflowName,
+      undefined,
+      undefined,
+      'USER_ERROR'
+    );
+    await vi.waitFor(() => {
+      expect(handler).toHaveBeenCalledOnce();
+      expect(waitUntilPromises).toHaveLength(1);
+    });
+    const settled = vi.fn();
+    void waitUntilPromises[0].then(settled);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).not.toHaveBeenCalled();
+    pendingOps.push(last.promise);
+    first.resolve();
+    await vi.waitFor(() =>
+      expect(log).toHaveBeenCalledWith(
+        'Workflow lifecycle onRunFailed stream operation failed',
+        expect.objectContaining({ errorMessage: 'pipe failed' })
+      )
+    );
+    expect(settled).not.toHaveBeenCalled();
+    last.resolve();
+    await flushDispatches();
+    expect(settled).toHaveBeenCalledOnce();
+  });
+});

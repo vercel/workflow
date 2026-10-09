@@ -172,7 +172,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // for why the deferral is captured here, at event-consumption time,
           // and awaited off the serial queue.
           const eventIndex = ctx.eventsConsumer.eventIndex;
-          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step', {
+            deliveredAt: +event.createdAt,
+          });
           let rejection: unknown;
           const earlierDelivered = awaitEarlierDeliveries(
             ctx,
@@ -281,7 +283,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           const completedEventId = event.eventId;
           const serializedResult = event.eventData.result;
           const eventIndex = ctx.eventsConsumer.eventIndex;
-          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step', {
+            deliveredAt: +event.createdAt,
+          });
           let outcome:
             | { ok: true; value: Result }
             | { ok: false; error: unknown };

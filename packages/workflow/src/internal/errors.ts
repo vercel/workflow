@@ -1,7 +1,9 @@
 export {
   EntityConflictError,
   HookConflictError,
+  HookForceClaimedError,
   HookNotFoundError,
+  InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
   RunNotSupportedError,

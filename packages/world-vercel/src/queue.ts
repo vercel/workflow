@@ -5,6 +5,7 @@ import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
 import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
+  parseQueueName,
   type Queue,
   type QueueBatchResult,
   type QueueOptions,
@@ -35,7 +36,7 @@ import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js';
 
 /**
  * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
@@ -166,14 +167,51 @@ class DualTransport implements Transport<unknown> {
   }
 }
 
-// per-copy-ok: both ends of this store live in the same `createQueueHandler`
-// closure: the `run()` wrapper and the `getStore()` read always come from the
-// same module copy, so the context never has to cross a copy boundary.
-const requestIdStorage = new AsyncLocalStorage<{
+interface QueueInvocationContext {
+  collectStepIds: boolean;
   requestId?: string;
-  affinity: string | null;
-  deployment: string | null;
-}>();
+  stepIds: Set<string>;
+  /** Routing headers this delivery arrived with (invocation diagnostics). */
+  affinity?: string | null;
+  deployment?: string | null;
+}
+
+// per-copy-ok: the route wrapper and the World hook exported from this module
+// share the same module copy through the World instance, so the context never
+// has to cross a copy boundary.
+const invocationStorage = new AsyncLocalStorage<QueueInvocationContext>();
+
+const WORKFLOW_STEP_IDS_HEADER = 'x-vercel-internal-workflow-step-ids';
+// Keep the response header and downstream request-log cardinality bounded.
+const MAX_WORKFLOW_STEP_IDS = 10;
+
+export function recordStepExecution(stepId: string): void {
+  const invocation = invocationStorage.getStore();
+  if (
+    invocation?.collectStepIds &&
+    invocation.stepIds.size < MAX_WORKFLOW_STEP_IDS
+  ) {
+    invocation.stepIds.add(stepId);
+  }
+}
+
+function attachStepIds(
+  response: Response,
+  invocation: QueueInvocationContext
+): Response {
+  if (invocation.stepIds.size === 0) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set(
+    WORKFLOW_STEP_IDS_HEADER,
+    JSON.stringify(Array.from(invocation.stepIds))
+  );
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
 
 function orchestrationRunId(payload: QueuePayload): string | undefined {
   return 'runId' in payload &&
@@ -238,7 +276,31 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
-function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
+function getErrorRetryAfterSeconds(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  // Read structurally rather than with instanceof: errors can cross VM and
+  // bundled-module realms before they reach the queue callback. This covers
+  // ThrottleError, TooEarlyError, and retryable WorkflowWorldError variants
+  // without coupling the final retry boundary to their constructors.
+  const retryAfter = (error as { retryAfter?: unknown }).retryAfter;
+  if (
+    typeof retryAfter !== 'number' ||
+    !Number.isFinite(retryAfter) ||
+    retryAfter <= 0
+  ) {
+    return undefined;
+  }
+
+  // VQS ultimately schedules through SQS, whose per-hop delay ceiling is 900s.
+  // Round upward so a fractional server delay is never retried early.
+  return Math.min(Math.ceil(retryAfter), HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS);
+}
+
+function getHandlerErrorRetryAfterSeconds(
+  error: unknown,
+  deliveryCount: number
+): number {
   const backoffSeconds = Math.min(
     Math.max(HANDLER_ERROR_RETRY_AFTER_SECONDS, 2 ** (deliveryCount - 1)),
     HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS
@@ -247,9 +309,16 @@ function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
     Math.random() *
       (Math.ceil(backoffSeconds * HANDLER_ERROR_RETRY_JITTER_RATIO) + 1)
   );
-  return Math.max(
+  const jitteredBackoffSeconds = Math.max(
     HANDLER_ERROR_RETRY_AFTER_SECONDS,
     backoffSeconds - jitterSeconds
+  );
+
+  // Jitter only the delivery-count backoff. Applying it after this max could
+  // turn Retry-After: 120 into an earlier retry, defeating server load shed.
+  return Math.max(
+    jitteredBackoffSeconds,
+    getErrorRetryAfterSeconds(error) ?? HANDLER_ERROR_RETRY_AFTER_SECONDS
   );
 }
 
@@ -277,6 +346,19 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
 }
 
 /**
+ * The workflow name a queue name carries: every message for a run, workflow
+ * and step alike, goes to `__wkf_workflow_<workflowName>` (with an optional
+ * namespace prefix). `undefined` for a name that isn't a workflow topic.
+ */
+function getWorkflowNameFromQueueName(queueName: string): string | undefined {
+  try {
+    return parseQueueName(queueName as ValidQueueName).id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Bind this run's events channel to one invocation of the flow route. This is
  * the only pair of calls that opens one: nothing else in the SDK does, so every
  * other writer (`start()` writing `run_created` from an arbitrary request
@@ -287,6 +369,7 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
  */
 const wsEventsChannelForInvocation = (
   runId: string | undefined,
+  workflowName: string | undefined,
   config: APIConfig | undefined
 ) => {
   /** This invocation's release, once the open has resolved one. */
@@ -301,9 +384,13 @@ const wsEventsChannelForInvocation = (
      * the claim it is releasing.
      */
     open(): void {
-      if (!runId || !isWsEventsTransportEnabled()) return;
+      if (!runId || !isWsEventsTransportEnabledForWorkflow(workflowName)) {
+        return;
+      }
       claim = import('./ws-transport.js')
-        .then(({ openWsChannel }) => openWsChannel(runId, config))
+        .then(({ openWsChannel }) =>
+          openWsChannel(runId, config, { workflowName })
+        )
         .catch(() => undefined);
     },
     /**
@@ -744,14 +831,25 @@ export function createQueue(config?: APIConfig): Queue {
           payload.input.type === 'step_execute'
           ? undefined
           : getRunIdFromPayload(payload),
+        getWorkflowNameFromQueueName(metadata.queueName),
         config
       );
       wsEvents.open();
 
       try {
-        const result = await handler(payload, {
-          ...metadata,
-        });
+        // Step IDs this delivery executes are reported on the queue route's
+        // response; a step-only delivery reports none.
+        const invocation = invocationStorage.getStore();
+        const collectStepIds = !(
+          'stepId' in payload && typeof payload.stepId === 'string'
+        );
+        const callHandler = () => handler(payload, { ...metadata });
+        const result = await (invocation
+          ? invocationStorage.run(
+              { ...invocation, collectStepIds },
+              callHandler
+            )
+          : callHandler());
 
         if (
           !('invoke' in payload && payload.invoke === true) &&
@@ -800,7 +898,7 @@ export function createQueue(config?: APIConfig): Queue {
     const vqsHandler = client.handleCallback(
       async (message: unknown, metadata) => {
         if (!message || !metadata) return;
-        const context = requestIdStorage.getStore();
+        const context = invocationStorage.getStore();
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
 
@@ -897,7 +995,10 @@ export function createQueue(config?: APIConfig): Queue {
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
         retry: (error, { messageId, deliveryCount }) => {
-          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(
+            error,
+            deliveryCount
+          );
           console.error(
             `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
             error
@@ -923,14 +1024,17 @@ export function createQueue(config?: APIConfig): Queue {
       }
       const rawId = req.headers.get('x-vercel-id');
       const requestId = rawId?.trim() || undefined;
-      return requestIdStorage.run(
-        {
-          requestId,
-          affinity: req.headers.get(AFFINITY_HEADER),
-          deployment: req.headers.get(DEPLOYMENT_HEADER),
-        },
-        () => vqsHandler(req)
+      const invocation: QueueInvocationContext = {
+        collectStepIds: false,
+        requestId,
+        stepIds: new Set(),
+        affinity: req.headers.get(AFFINITY_HEADER),
+        deployment: req.headers.get(DEPLOYMENT_HEADER),
+      };
+      const response = await invocationStorage.run(invocation, () =>
+        vqsHandler(req)
       );
+      return attachStepIds(response, invocation);
     };
   };
 

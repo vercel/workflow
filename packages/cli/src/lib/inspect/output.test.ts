@@ -23,6 +23,9 @@ import {
   listRuns,
   listSleeps,
   listSteps,
+  listStreamsByRunId,
+  showEvent,
+  showStep,
 } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
@@ -850,6 +853,58 @@ describe('listSleeps analytics degradation', () => {
     write.mockRestore();
   });
 
+  // --all fetches every analytics page before printing, so a later page
+  // failing still degrades to one complete answer from the event log rather
+  // than a partial array followed by a second one.
+  it('falls back once, printing nothing partial, when a later --all page fails', async () => {
+    const waitsList = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) => {
+        if (pagination.cursor) {
+          throw Object.assign(new Error('upstream unavailable'), {
+            status: 503,
+          });
+        }
+        return {
+          data: [{ runId: 'run-1', waitId: 'analytics-wait' }],
+          cursor: 'w1',
+          hasMore: true,
+        };
+      }
+    );
+    const world = {
+      analytics: { waits: { list: waitsList } },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              ...eventBase,
+              eventId: 'evnt-1',
+              eventType: 'wait_created',
+              correlationId: 'wait-1',
+              createdAt: new Date('2026-06-30T00:00:00.000Z'),
+              eventData: { resumeAt: new Date('2026-06-30T00:01:00.000Z') },
+            },
+          ],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listSleeps(world, { json: true, runId: 'run-1', all: true });
+
+    expect(waitsList).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledTimes(1);
+    const output = write.mock.calls.join('');
+    expect(output).toContain('wait-1');
+    expect(output).not.toContain('analytics-wait');
+    write.mockRestore();
+  });
+
   // Retrying an argument the World already rejected would only replace a
   // precise message with a slower failure.
   it('does not fall back when the argument was rejected', async () => {
@@ -901,16 +956,19 @@ describe('listAttributes', () => {
       .spyOn(process.stdout, 'write')
       .mockImplementation(() => true);
 
+    // A full name: a short one is resolved against recent runs first, which
+    // workflow-name.test.ts covers.
+    const workflowName = 'workflow//./src/workflows/order//orderWorkflow';
     await listAttributes(worldWith(list), {
       json: true,
-      workflowName: 'orderWorkflow',
+      workflowName,
       since: '7d',
       cursor: 'first',
       limit: 25,
     });
 
     const params = list.mock.calls[0][0];
-    expect(params.workflowName).toBe('orderWorkflow');
+    expect(params.workflowName).toBe(workflowName);
     expect(params.startTime).toBeDefined();
     expect(params.endTime).toBeDefined();
     expect(params.pagination).toMatchObject({ cursor: 'first', limit: 25 });
@@ -1067,5 +1125,483 @@ describe('listRuns attribute filtering', () => {
       '--attribute is ignored with --withData'
     );
     warn.mockRestore();
+  });
+});
+
+describe('paging the bare-array listings', () => {
+  const stepAt = (n: number) =>
+    ({
+      runId: 'run-1',
+      stepId: `step-${String(n).repeat(4)}`,
+      stepName: 'doWork',
+      status: 'completed',
+    }) as unknown as AnalyticsStep;
+
+  /** An analytics step listing serving `pages`, keyed by the cursor that reaches each. */
+  const analyticsSteps = (
+    pages: Record<string, { ids: number[]; cursor: string | null }>
+  ) =>
+    vi.fn(async ({ pagination }: { pagination: { cursor?: string } }) => {
+      const page = pages[pagination.cursor ?? ''];
+      if (!page) throw new Error(`unexpected cursor ${pagination.cursor}`);
+      return {
+        data: page.ids.map(stepAt),
+        cursor: page.cursor,
+        hasMore: page.cursor !== null,
+      };
+    });
+
+  const captureStdout = () =>
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+  it('prints every page of steps as one JSON array with --all', async () => {
+    const list = analyticsSteps({
+      '': { ids: [1, 2], cursor: 'c1' },
+      c1: { ids: [3, 4], cursor: 'c2' },
+      c2: { ids: [5], cursor: null },
+    });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const write = captureStdout();
+
+    await listSteps(world, { json: true, runId: 'run-1', all: true, limit: 2 });
+
+    expect(list.mock.calls.map(([p]) => p.pagination.cursor)).toEqual([
+      undefined,
+      'c1',
+      'c2',
+    ]);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse(String(write.mock.calls[0][0])).map(
+        (s: { stepId: string }) => s.stepId
+      )
+    ).toEqual([
+      'step-1111',
+      'step-2222',
+      'step-3333',
+      'step-4444',
+      'step-5555',
+    ]);
+  });
+
+  it('starts --all from --cursor', async () => {
+    const list = analyticsSteps({
+      c1: { ids: [3], cursor: 'c2' },
+      c2: { ids: [4], cursor: null },
+    });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const write = captureStdout();
+
+    await listSteps(world, {
+      json: true,
+      runId: 'run-1',
+      all: true,
+      cursor: 'c1',
+    });
+
+    expect(list.mock.calls[0][0].pagination.cursor).toBe('c1');
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toHaveLength(2);
+  });
+
+  // The array is a published shape (scripts iterate it), so the cursor goes
+  // to stderr; until now JSON output dropped it, and a run past one page could
+  // not be read in full.
+  it('reports the next cursor on stderr when a JSON page has more rows', async () => {
+    const list = analyticsSteps({ '': { ids: [1], cursor: 'next-page' } });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const write = captureStdout();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listSteps(world, { json: true, runId: 'run-1' });
+
+    expect(Array.isArray(JSON.parse(String(write.mock.calls[0][0])))).toBe(
+      true
+    );
+    expect(warn.mock.calls.flat().join(' ')).toContain(
+      '--cursor next-page for the next page or --all for every page'
+    );
+  });
+
+  it('prints no cursor hint for the last page', async () => {
+    const list = analyticsSteps({ '': { ids: [1], cursor: null } });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    captureStdout();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listSteps(world, { json: true, runId: 'run-1' });
+
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('More results');
+  });
+
+  it('names the cursor in the table hint', async () => {
+    const list = analyticsSteps({ '': { ids: [1], cursor: 'next-page' } });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: 'run-1' });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      '--cursor next-page for the next page, --all for every page, or --interactive (-i)'
+    );
+  });
+
+  it('prints every page of steps as one table with --all', async () => {
+    const list = analyticsSteps({
+      '': { ids: [1], cursor: 'c1' },
+      c1: { ids: [2], cursor: null },
+    });
+    const world = { analytics: { steps: { list } } } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: 'run-1', all: true });
+
+    // Narrow terminals truncate ids to their last four characters.
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain(String(1).repeat(4));
+    expect(output).toContain(String(2).repeat(4));
+    expect(output).not.toContain('More results');
+  });
+
+  // Analytics lags storage for a fresh run. The first page fell back to
+  // storage, and the second used to go to analytics with storage's cursor.
+  it('reads every page from storage once the first page fell back to it', async () => {
+    const event = (n: number) =>
+      ({
+        runId: 'run-1',
+        eventId: `evnt-${n}`,
+        eventType: 'step_completed',
+        correlationId: 'step-1',
+        createdAt: new Date('2026-06-30T00:00:02.000Z'),
+      }) as unknown as Event;
+    const analyticsList = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) =>
+        pagination.cursor
+          ? Promise.reject(new Error('analytics was sent a storage cursor'))
+          : { data: [], cursor: null, hasMore: false }
+    );
+    const storagePages: Record<
+      string,
+      { data: Event[]; cursor: string | null }
+    > = {
+      '': { data: [event(1)], cursor: 'storage-1' },
+      'storage-1': { data: [event(2)], cursor: null },
+    };
+    const storageList = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) => {
+        const page = storagePages[pagination.cursor ?? ''];
+        return { ...page, hasMore: page.cursor !== null };
+      }
+    );
+    const world = {
+      analytics: { events: { list: analyticsList } },
+      events: { list: storageList },
+    } as unknown as World;
+    const write = captureStdout();
+
+    await listEvents(world, { json: true, runId: 'run-1', all: true });
+
+    expect(analyticsList).toHaveBeenCalledTimes(1);
+    expect(storageList.mock.calls.map(([p]) => p.pagination.cursor)).toEqual([
+      undefined,
+      'storage-1',
+    ]);
+    expect(
+      JSON.parse(String(write.mock.calls[0][0])).map(
+        (e: { eventId: string }) => e.eventId
+      )
+    ).toEqual(['evnt-1', 'evnt-2']);
+  });
+
+  // `--cursor storage-1` on a new invocation would go to analytics, so the
+  // hint must not offer it.
+  it('does not offer a storage-fallback cursor for reuse', async () => {
+    const world = {
+      analytics: {
+        events: {
+          list: vi
+            .fn()
+            .mockResolvedValue({ data: [], cursor: null, hasMore: false }),
+        },
+      },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [{ runId: 'run-1', eventId: 'evnt-1' }],
+          cursor: 'storage-1',
+          hasMore: true,
+        }),
+      },
+    } as unknown as World;
+    captureStdout();
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await listEvents(world, { json: true, runId: 'run-1' });
+
+    const hint = warn.mock.calls.flat().join(' ');
+    expect(hint).toContain('--all for every page');
+    expect(hint).not.toContain('storage-1');
+  });
+
+  it('pages sleeps through analytics with --all', async () => {
+    const wait = (n: number) =>
+      ({ runId: 'run-1', waitId: `wait-${n}` }) as unknown as AnalyticsWait;
+    const list = vi.fn(
+      async ({ pagination }: { pagination: { cursor?: string } }) =>
+        pagination.cursor
+          ? { data: [wait(2)], cursor: null, hasMore: false }
+          : { data: [wait(1)], cursor: 'w1', hasMore: true }
+    );
+    const world = { analytics: { waits: { list } } } as unknown as World;
+    const write = captureStdout();
+
+    await listSleeps(world, { json: true, runId: 'run-1', all: true });
+
+    expect(
+      JSON.parse(String(write.mock.calls[0][0])).map(
+        (w: { waitId: string }) => w.waitId
+      )
+    ).toEqual(['wait-1', 'wait-2']);
+  });
+});
+
+describe('stream hints', () => {
+  const RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
+
+  // `inspect stream <id>` needs the run; the hint used to suggest the bare
+  // form, which then failed with "--run is required".
+  it('puts the listed run into the steps table hint', async () => {
+    const world = {
+      analytics: {
+        steps: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ runId: RUN, stepId: 'step-1', status: 'completed' }],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `workflow inspect stream <stream-id> --runId=${RUN}`
+    );
+  });
+
+  it('prints the hint, with the run, under a streams table', async () => {
+    const world = {
+      streams: { list: vi.fn().mockResolvedValue(['strm_a', 'strm_b']) },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listStreamsByRunId(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `workflow inspect stream <stream-id> --runId=${RUN}`
+    );
+  });
+
+  it('keeps JSON stream listings free of hints', async () => {
+    const world = {
+      streams: { list: vi.fn().mockResolvedValue(['strm_a']) },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listStreamsByRunId(world, { runId: RUN, json: true });
+
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual([
+      { runId: RUN, streamId: 'strm_a' },
+    ]);
+    expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe('showEvent', () => {
+  const RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
+  const EVENT = 'evnt_00000000000000000000000003';
+
+  it('reads the event from its run and prints it as JSON', async () => {
+    const event = {
+      runId: RUN,
+      eventId: EVENT,
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      createdAt: new Date('2026-06-30T00:00:02.000Z'),
+    };
+    const world = {
+      events: { get: vi.fn().mockResolvedValue(event) },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await showEvent(world, EVENT, { runId: RUN, json: true });
+
+    expect(world.events.get).toHaveBeenCalledWith(RUN, EVENT, {
+      resolveData: 'all',
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual({
+      ...event,
+      createdAt: '2026-06-30T00:00:02.000Z',
+    });
+  });
+
+  it('reports a missing event and exits non-zero', async () => {
+    const world = {
+      events: {
+        get: vi
+          .fn()
+          .mockRejectedValue(
+            Object.assign(new Error('Event not found'), { status: 404 })
+          ),
+      },
+    } as unknown as World;
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((
+      code: number
+    ) => {
+      throw new Error(`exit ${code}`);
+    }) as never);
+
+    await expect(showEvent(world, EVENT, { runId: RUN })).rejects.toThrow(
+      'exit 1'
+    );
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error.mock.calls.flat().join(' ')).toContain('Event not found');
+  });
+
+  it('needs the run', async () => {
+    const world = { events: { get: vi.fn() } } as unknown as World;
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+    await showEvent(world, EVENT, {});
+
+    expect(world.events.get).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  // The hint used to suggest `inspect event <id>`, which the command rejected.
+  it('is what the events table hint suggests', async () => {
+    const world = {
+      analytics: {
+        events: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ runId: RUN, eventId: EVENT, eventType: 'run_created' }],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listEvents(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `To view details for an event, use \`workflow inspect event <event-id> --runId=${RUN}\``
+    );
+  });
+});
+
+describe('listRuns with a short workflow name', () => {
+  const FULL = 'workflow//./src/jobs/order//processOrder';
+
+  // The table shows `processOrder`; the backend matches only the full
+  // name, so `-n processOrder` listed nothing.
+  it('filters by the full name the short one resolves to', async () => {
+    const list = vi.fn(async (params: { workflowName?: string }) => ({
+      data: params.workflowName
+        ? []
+        : [{ runId: 'wrun_1', workflowName: FULL, status: 'completed' }],
+      cursor: null,
+      hasMore: false,
+    }));
+    const world = { runs: { list } } as unknown as World;
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    await listRuns(world, { json: true, workflowName: 'processOrder' });
+
+    expect(list.mock.calls.at(-1)?.[0].workflowName).toBe(FULL);
+  });
+
+  it('sends a full name as given, with no extra request', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValue({ data: [], cursor: null, hasMore: false });
+    const world = { runs: { list } } as unknown as World;
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await listRuns(world, { json: true, workflowName: FULL });
+
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list.mock.calls[0][0].workflowName).toBe(FULL);
+  });
+});
+
+describe('showStep', () => {
+  const RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
+
+  it('reads the step from the run it was given', async () => {
+    const step = { runId: RUN, stepId: 'step_1', status: 'completed' };
+    const world = {
+      runs: { list: vi.fn() },
+      steps: { get: vi.fn().mockResolvedValue(step) },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await showStep(world, 'step_1', { runId: RUN, json: true });
+
+    expect(world.steps.get).toHaveBeenCalledWith(RUN, 'step_1', {
+      resolveData: 'all',
+    });
+    expect(JSON.parse(String(write.mock.calls[0][0]))).toEqual(step);
+  });
+
+  // It used to look the step up in the most recent run, which is another
+  // run's whenever this one is not the newest.
+  it('never guesses the latest run', async () => {
+    const world = {
+      runs: { list: vi.fn() },
+      steps: { get: vi.fn() },
+    } as unknown as World;
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await showStep(world, 'step_1', {});
+
+    expect(world.runs.list).not.toHaveBeenCalled();
+    expect(world.steps.get).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  it('is what the steps table hint suggests', async () => {
+    const world = {
+      analytics: {
+        steps: {
+          list: vi.fn().mockResolvedValue({
+            data: [{ runId: RUN, stepId: 'step_1', status: 'completed' }],
+            cursor: null,
+            hasMore: false,
+          }),
+        },
+      },
+    } as unknown as World;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await listSteps(world, { runId: RUN });
+
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      `To view details for a step, use \`workflow inspect step <step-id> --runId=${RUN}\``
+    );
   });
 });

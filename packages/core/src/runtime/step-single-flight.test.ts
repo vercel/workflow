@@ -1,5 +1,5 @@
 import { withResolvers } from '@workflow/utils';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 
@@ -7,6 +7,45 @@ const RUN = 'wrun_00000000000000000000000000';
 const STEP = 'step_00000000000000000000000000';
 
 describe('runStepSingleFlight', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    { logLevel: undefined, debug: '', expected: 'warn' },
+    { logLevel: 'debug', debug: '', expected: undefined },
+    { logLevel: 'debug', debug: 'workflow:runtime:debug', expected: 'debug' },
+  ] as const)('logs contention at $logLevel with DEBUG=$debug', async ({
+    logLevel,
+    debug,
+    expected,
+  }) => {
+    vi.stubEnv('DEBUG', debug);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const debugLog = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const { promise, resolve } = withResolvers<StepExecutionResult>();
+    const execute = vi.fn(() => promise);
+    const winner = runStepSingleFlight(RUN, STEP, execute, logLevel);
+    const contender = runStepSingleFlight(RUN, STEP, execute, logLevel);
+
+    resolve({ type: 'completed' });
+    await expect(winner).resolves.toEqual({ type: 'completed' });
+    await expect(contender).resolves.toEqual({ type: 'skipped' });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledTimes(expected === 'warn' ? 1 : 0);
+    expect(debugLog).toHaveBeenCalledTimes(expected === 'debug' ? 1 : 0);
+    if (expected === 'warn') {
+      expect(warn.mock.calls[0][0]).toContain(RUN);
+      expect(warn.mock.calls[0][0]).toContain(STEP);
+    } else if (expected === 'debug') {
+      expect(debugLog).toHaveBeenCalledWith(
+        expect.stringContaining('Step execution already in flight'),
+        { workflowRunId: RUN, stepId: STEP }
+      );
+    }
+  });
+
   it('executes when nothing is in flight and returns the result', async () => {
     let calls = 0;
     const result = await runStepSingleFlight(RUN, STEP, async () => {
@@ -17,15 +56,23 @@ describe('runStepSingleFlight', () => {
     expect(calls).toBe(1);
   });
 
-  it('a concurrent second caller does not execute and skips only after the winner settles', async () => {
+  it.each([
+    undefined,
+    'debug',
+  ] as const)('a concurrent second caller waits for settlement (log level %s)', async (logLevel) => {
     const { promise, resolve } = withResolvers<StepExecutionResult>();
     let loserCalls = 0;
 
-    const winner = runStepSingleFlight(RUN, STEP, () => promise);
-    const loser = runStepSingleFlight(RUN, STEP, async () => {
-      loserCalls++;
-      return { type: 'completed' };
-    });
+    const winner = runStepSingleFlight(RUN, STEP, () => promise, logLevel);
+    const loser = runStepSingleFlight(
+      RUN,
+      STEP,
+      async () => {
+        loserCalls++;
+        return { type: 'completed' };
+      },
+      logLevel
+    );
 
     // The loser must not resolve (ack) before the winner settles — an early
     // ack could orphan the step if the process crashed mid-winner.
@@ -43,12 +90,20 @@ describe('runStepSingleFlight', () => {
     expect(loserCalls).toBe(0);
   });
 
-  it('a loser skips (not throws) when the winner rejects', async () => {
+  it.each([
+    undefined,
+    'debug',
+  ] as const)('a loser skips when the winner rejects (log level %s)', async (logLevel) => {
     const { promise, reject } = withResolvers<StepExecutionResult>();
-    const winner = runStepSingleFlight(RUN, STEP, () => promise);
-    const loser = runStepSingleFlight(RUN, STEP, async () => ({
-      type: 'completed',
-    }));
+    const winner = runStepSingleFlight(RUN, STEP, () => promise, logLevel);
+    const loser = runStepSingleFlight(
+      RUN,
+      STEP,
+      async () => ({
+        type: 'completed',
+      }),
+      logLevel
+    );
 
     reject(new Error('transient world error'));
     await expect(winner).rejects.toThrow('transient world error');

@@ -1,7 +1,7 @@
 import { DurableAgent } from '@workflow/ai/agent';
-/**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//./input//wflow"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//stepWrapperReturnArrowFunction/_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//arrowWrapperReturnArrowFunction/_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//wflow/_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//wflow/_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//wflow/_anonymousStep4"},"f":{"stepId":"step//./input//arrowWrapperReturnNamedFunction/f"},"fn":{"stepId":"step//./input//fn"},"namedStepWithClosureVars":{"stepId":"step//./input//wflow/namedStepWithClosureVars"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//./input//wflow"}}},"steps":{"input.js":{"arrowWrapperReturnArrowFunction/_anonymousStep1":{"stepId":"step//./input//arrowWrapperReturnArrowFunction/_anonymousStep1"},"arrowWrapperReturnArrowFunctionVar/fn":{"stepId":"step//./input//arrowWrapperReturnArrowFunctionVar/fn"},"arrowWrapperReturnNamedFunction/f":{"stepId":"step//./input//arrowWrapperReturnNamedFunction/f"},"arrowWrapperReturnNamedFunctionVar/fn":{"stepId":"step//./input//arrowWrapperReturnNamedFunctionVar/fn"},"stepWrapperReturnArrowFunction/_anonymousStep0":{"stepId":"step//./input//stepWrapperReturnArrowFunction/_anonymousStep0"},"stepWrapperReturnArrowFunctionVar/fn":{"stepId":"step//./input//stepWrapperReturnArrowFunctionVar/fn"},"stepWrapperReturnNamedFunction/f":{"stepId":"step//./input//stepWrapperReturnNamedFunction/f"},"stepWrapperReturnNamedFunctionVar/fn":{"stepId":"step//./input//stepWrapperReturnNamedFunctionVar/fn"},"wflow/_anonymousStep2":{"stepId":"step//./input//wflow/_anonymousStep2"},"wflow/_anonymousStep3":{"stepId":"step//./input//wflow/_anonymousStep3"},"wflow/_anonymousStep4":{"stepId":"step//./input//wflow/_anonymousStep4"},"wflow/namedStepWithClosureVars":{"stepId":"step//./input//wflow/namedStepWithClosureVars"}}}}*/;
 function stepWrapperReturnArrowFunctionVar(a, b, c) {
-    const fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//fn", ()=>({
+    const fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//stepWrapperReturnArrowFunctionVar/fn", ()=>({
             a,
             b,
             c
@@ -23,7 +23,7 @@ function stepWrapperReturnArrowFunction(a, b, c) {
         }));
 }
 function stepWrapperReturnNamedFunctionVar(a, b, c) {
-    var fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//fn", ()=>({
+    var fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//stepWrapperReturnNamedFunctionVar/fn", ()=>({
             a,
             b,
             c
@@ -31,7 +31,7 @@ function stepWrapperReturnNamedFunctionVar(a, b, c) {
     return fn;
 }
 const arrowWrapperReturnArrowFunctionVar = (a, b, c)=>{
-    const fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//fn", ()=>({
+    const fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//arrowWrapperReturnArrowFunctionVar/fn", ()=>({
             a,
             b,
             c
@@ -53,7 +53,7 @@ const arrowWrapperReturnArrowFunction = (a, b, c)=>{
         }));
 };
 const arrowWrapperReturnNamedFunctionVar = (a, b, c)=>{
-    var fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//fn", ()=>({
+    var fn = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//arrowWrapperReturnNamedFunctionVar/fn", ()=>({
             a,
             b,
             c

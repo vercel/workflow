@@ -24,9 +24,11 @@ workbench/vitest/
 │   ├── hooks.ts           # Workflow with createHook() for external data
 │   └── webhook.ts         # Workflow with createWebhook() for HTTP payloads
 ├── test/
-│   └── workflow.test.ts   # Integration tests for all workflow types
+│   ├── workflow.test.ts      # Integration tests for all workflow types
+│   ├── workflow-refs.test.ts # Looking workflows up by name from the manifest
+│   └── mock.test.ts          # What vi.mock() does and does not reach
 ├── vitest.config.ts       # Vitest config with workflow() plugin
-├── MOCKING.md             # Analysis of mocking limitations
+├── MOCKING.md             # How vi.mock() behaves under the plugin, and why
 └── package.json
 ```
 
@@ -37,3 +39,5 @@ workbench/vitest/
 - **Multi-sleep workflow**: Targeted `wakeUp()` with correlation IDs
 - **Hook workflow**: `waitForHook()` → `resumeHook()` with approval/rejection
 - **Webhook workflow**: `waitForHook()` → `resumeWebhook()` with Request payload
+- **Workflow references**: `getWorkflowRef()` / `listWorkflowRefs()` read from the test build's manifest
+- **Mocking**: `vi.mock()` reaching (and not reaching) step and workflow code, see [MOCKING.md](./MOCKING.md)

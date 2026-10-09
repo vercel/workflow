@@ -70,6 +70,15 @@ on:
       wake_loop_fresh_ratio:
         description: 'wake-loop: share of wakes that carry work (a stale wake emits no step, a fresh one emits four)'
         required: false
+      dag_runner_attempts:
+        description: 'Number of dag-runner runs (a ready-set scheduler whose worker nodes bind a hook mid-fan-out; the run supplies its own concurrency)'
+        required: false
+      dag_runner_width:
+        description: 'dag-runner: nodes in flight at once. Keep it above the inline step limit (3) so waves mix inline and dispatched steps'
+        required: false
+      dag_runner_worker_every:
+        description: 'dag-runner: every Nth node binds a hook (awaiting getConflict) and waits for a worker callback; 0 disables'
+        required: false
       poke_interval_ms:
         description: 'step-storm: cadence of out-of-band resumes to the never-read poke hook'
         required: false
@@ -105,8 +114,6 @@ jobs:
     # `event-log-race-repro-comment` below.
     permissions:
       contents: read
-      deployments: read
-      statuses: read
       id-token: write
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -127,14 +134,12 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
-      - name: Wait for Vercel deployment
-        id: waitForDeployment
-        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+      - name: Resolve Vercel deployment
+        id: deployment
+        uses: ./.github/actions/resolve-vercel-deployment
         with:
-          project-slug: example-nextjs-workflow-turbopack
-          timeout: 1000
-          check-interval: 15
-          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
 
       - name: Run event log race repro
         id: repro
@@ -142,15 +147,15 @@ jobs:
         run: pnpm run test:e2e:event-log-race-repro --reporter=default
         env:
           NODE_OPTIONS: "--enable-source-maps"
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
           APP_NAME: nextjs-turbopack
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: example-nextjs-workflow-turbopack
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ steps.deployment.outputs.environment == 'preview' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           # Deliberately unguarded pass-through: on a `pull_request` event every
           # `inputs.*` is empty, and the harness reads an empty variable as unset
           # and falls back to its own default. See the note on the inputs above.
@@ -171,6 +176,9 @@ jobs:
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS: ${{ inputs.wake_loop_attempts }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS: ${{ inputs.wake_loop_heartbeat_ms }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO: ${{ inputs.wake_loop_fresh_ratio }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_ATTEMPTS: ${{ inputs.dag_runner_attempts }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WIDTH: ${{ inputs.dag_runner_width }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_EVERY: ${{ inputs.dag_runner_worker_every }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
@@ -282,6 +290,9 @@ jobs:
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS: ${{ inputs.wake_loop_attempts }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS: ${{ inputs.wake_loop_heartbeat_ms }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO: ${{ inputs.wake_loop_fresh_ratio }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_ATTEMPTS: ${{ inputs.dag_runner_attempts }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WIDTH: ${{ inputs.dag_runner_width }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_EVERY: ${{ inputs.dag_runner_worker_every }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}

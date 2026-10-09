@@ -336,130 +336,54 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('serializes workflow queue execution for the same runId', async () => {
-    let resolveFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      resolveFirstRequestStarted = resolve;
-    });
-    let resolveReleaseFirstRequest!: () => void;
-    const releaseFirstRequest = new Promise<void>((resolve) => {
-      resolveReleaseFirstRequest = resolve;
-    });
+  it.each([
+    undefined,
+    'custom',
+  ])('delivers a wake while the same run is awaiting an inline step (namespace: %s)', async (namespace) => {
+    const firstRequestStarted = Promise.withResolvers<void>();
+    const releaseFirstRequest = Promise.withResolvers<void>();
     let requestCount = 0;
-    let activeRequests = 0;
-    let maxActiveRequests = 0;
     const server = await startWorkflowHttpServer([], 0, undefined, async () => {
       requestCount += 1;
-      activeRequests += 1;
-      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
-
       if (requestCount === 1) {
-        resolveFirstRequestStarted();
-        await releaseFirstRequest;
+        firstRequestStarted.resolve();
+        await releaseFirstRequest.promise;
       }
-
-      activeRequests -= 1;
-    });
-    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = {
-        runId: 'wrun_01ABC',
-      };
-      const firstExecution = task(
-        buildMessageData('__wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABC'),
-        }),
-        {} as any
-      );
-      const secondExecution = task(
-        buildMessageData('__wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABD'),
-        }),
-        {} as any
-      );
-
-      await firstRequestStarted;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(requestCount).toBe(1);
-      expect(maxActiveRequests).toBe(1);
-
-      resolveReleaseFirstRequest();
-      await Promise.all([firstExecution, secondExecution]);
-
-      expect(requestCount).toBe(2);
-      expect(maxActiveRequests).toBe(1);
-    } finally {
-      resolveReleaseFirstRequest();
-    }
-  });
-
-  it('serializes namespaced workflow queue execution for the same runId', async () => {
-    let resolveFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      resolveFirstRequestStarted = resolve;
-    });
-    let resolveReleaseFirstRequest!: () => void;
-    const releaseFirstRequest = new Promise<void>((resolve) => {
-      resolveReleaseFirstRequest = resolve;
-    });
-    let requestCount = 0;
-    let activeRequests = 0;
-    let maxActiveRequests = 0;
-    const server = await startWorkflowHttpServer([], 0, undefined, async () => {
-      requestCount += 1;
-      activeRequests += 1;
-      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
-
-      if (requestCount === 1) {
-        resolveFirstRequestStarted();
-        await releaseFirstRequest;
-      }
-
-      activeRequests -= 1;
     });
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue(
-      { connectionString: 'postgres://test', namespace: 'custom' },
+      { connectionString: 'postgres://test', namespace },
       pool
     );
+    await queue.start();
+    const task = getTaskHandler('workflow_flows');
+    const queueName = namespace
+      ? `__${namespace}_wkf_workflow_test-workflow`
+      : '__wkf_workflow_test-workflow';
+    const payload = { runId: 'wrun_01ABC' };
+    const firstExecution = task(
+      buildMessageData(queueName, payload, {
+        messageId: MessageId.parse('msg_01ABC'),
+      }),
+      {}
+    );
+    let wakeExecution: Promise<void> | undefined;
     try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = {
-        runId: 'wrun_01ABC',
-      };
-      const firstExecution = task(
-        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABC'),
-        }),
-        {} as any
-      );
-      const secondExecution = task(
-        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
+      await firstRequestStarted.promise;
+      // A wake must reach the runtime before the inline step completes:
+      // it may be the hook resumption that aborts that very step.
+      wakeExecution = task(
+        buildMessageData(queueName, payload, {
           messageId: MessageId.parse('msg_01ABD'),
         }),
-        {} as any
+        {}
       );
-
-      await firstRequestStarted;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(requestCount).toBe(1);
-      expect(maxActiveRequests).toBe(1);
-
-      resolveReleaseFirstRequest();
-      await Promise.all([firstExecution, secondExecution]);
-
-      expect(requestCount).toBe(2);
-      expect(maxActiveRequests).toBe(1);
+      await expect.poll(() => requestCount, { timeout: 1_000 }).toBe(2);
+      await wakeExecution;
     } finally {
-      resolveReleaseFirstRequest();
+      releaseFirstRequest.resolve();
+      await Promise.all([firstExecution, wakeExecution]);
     }
   });
 
@@ -562,13 +486,33 @@ describe('postgres queue http execution', () => {
         }),
         expect.objectContaining({
           jobKey: 'step_01ABC',
-          maxAttempts: 49,
+          maxAttempts: 73,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         })
       );
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('defaults pollInterval to 500ms and honors an override from config', async () => {
+    const defaultQueue = buildQueue(
+      { connectionString: 'postgres://test' },
+      pool
+    );
+    await defaultQueue.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ pollInterval: 500 })
+    );
+
+    const overriddenQueue = buildQueue(
+      { connectionString: 'postgres://test', pollInterval: 2000 },
+      pool
+    );
+    await overriddenQueue.start();
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ pollInterval: 2000 })
+    );
   });
 
   it('uses per-run executor queues without serializing step jobs when invoke is enabled', async () => {
@@ -646,6 +590,36 @@ describe('postgres queue http execution', () => {
           jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
           maxAttempts: 6,
         })
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('keeps post-ceiling headroom when transferring a job on the default cap', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    const fetchMock = vi
+      .spyOn(nodeHttp, 'nodeHttpFetch')
+      .mockResolvedValue(Response.json({ ok: true }));
+    try {
+      const payload = buildMessageData('__wkf_workflow_example', {
+        runId: 'run_a',
+      });
+      // Delivery 49 is where core records MAX_DELIVERIES_EXCEEDED. A job with
+      // no stored cap takes the default, so the transferred job must still
+      // have attempts left for core's post-ceiling redeliveries (73 - 49 + 1).
+      await getTaskHandler('workflow_flows')(payload, {
+        job: { attempts: 49 },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_flows_executor',
+        expect.objectContaining({ attempt: 49, attemptOffset: 48 }),
+        expect.objectContaining({ maxAttempts: 25 })
       );
     } finally {
       fetchMock.mockRestore();
@@ -919,9 +893,22 @@ describe('postgres queue http execution', () => {
       }),
       expect.objectContaining({
         jobKey: 'step_01ABC',
-        maxAttempts: 49,
+        maxAttempts: 73,
       })
     );
+  });
+
+  it('leaves job attempts for redeliveries past core max deliveries', async () => {
+    // Core records MAX_DELIVERIES_EXCEEDED on delivery 49 and throws when that
+    // terminal write fails transiently. The job must still have attempts left
+    // for the redelivery, or the run is stranded `running`.
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await queue.queue('__wkf_workflow_example', { runId: 'run_01ABC' });
+
+    const [, , options] = vi.mocked(workerUtilsMock.addJob).mock.calls[0];
+    expect(options?.maxAttempts).toBeGreaterThan(49);
   });
 });
 

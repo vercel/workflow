@@ -5,7 +5,6 @@ import {
   WorkflowDeploymentMismatchError,
 } from '@workflow/errors';
 import {
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
@@ -14,6 +13,8 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
+import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 
 /** Cap on the re-route backoff, in seconds. */
 const MAX_REROUTE_DELAY_SECONDS = 8;
@@ -117,6 +118,7 @@ export interface ReenqueueArgs {
 export async function guardDeploymentAffinity({
   world,
   run,
+  workflowName,
   requestId,
   retryCount = 0,
   reenqueue,
@@ -125,6 +127,7 @@ export async function guardDeploymentAffinity({
 }: {
   world: World;
   run: Pick<WorkflowRun, 'runId' | 'deploymentId' | 'specVersion'>;
+  workflowName: string;
   requestId?: string;
   /** `deploymentMismatchRetryCount` from the incoming message, if any. */
   retryCount?: number;
@@ -190,23 +193,24 @@ export async function guardDeploymentAffinity({
       { recoveryAttempts, cause }
     );
 
+    let dehydratedError: Uint8Array;
     try {
+      // Unencrypted: the pinned deployment's key may no longer be available.
+      dehydratedError = await dehydrateRunError(
+        error,
+        run.runId,
+        undefined,
+        undefined,
+        (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+      );
       await world.events.create(
         run.runId,
         {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          // Written by a deployment that is, by definition, not the run's own.
+          specVersion: specVersionForRunWrite(run.specVersion),
           eventData: {
-            // Unencrypted (undefined key): see the note on
-            // `guardDeploymentAffinity`. dehydrate/hydrate are self-describing,
-            // so this reads back without a key.
-            error: await dehydrateRunError(
-              error,
-              run.runId,
-              undefined,
-              undefined,
-              (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
-            ),
+            error: dehydratedError,
             errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
           },
         },
@@ -222,7 +226,15 @@ export async function guardDeploymentAffinity({
       ) {
         throw failError;
       }
+      return result('failed', run.deploymentId, recoveryAttempts);
     }
+    dispatchRunFailedHooks(
+      run.runId,
+      workflowName,
+      dehydratedError,
+      undefined,
+      RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
+    );
     return result('failed', run.deploymentId, recoveryAttempts);
   };
 

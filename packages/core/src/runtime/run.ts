@@ -8,7 +8,6 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
-import { SPEC_VERSION_CURRENT } from '@workflow/world/spec-version';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -23,6 +22,7 @@ import {
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
   type StopSleepOptions,
@@ -290,24 +290,25 @@ export class Run<TResult> {
   async cancel(options?: CancelRunOptions): Promise<void> {
     'use step';
     const world = await this.#lazyWorldPromise;
+    // The caller is often not the run's executor, so stamp the run's version.
+    const run = await world.runs.get(this.runId, { resolveData: 'none' });
+    // A single-owner run is cancelled by its owner.
     if (
       process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
       world.capabilities?.invoke &&
-      world.invoke
+      world.invoke &&
+      isSingleOwnerRun(run)
     ) {
-      const run = await world.runs.get(this.runId, { resolveData: 'none' });
-      if (isSingleOwnerRun(run)) {
-        await world.invoke(this.runId, {
-          type: 'run_cancel',
-          version: 1,
-          cancelReason: options?.cancelReason,
-        });
-        return;
-      }
+      await world.invoke(this.runId, {
+        type: 'run_cancel',
+        version: 1,
+        cancelReason: options?.cancelReason,
+      });
+      return;
     }
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: specVersionForRunWrite(run.specVersion),
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
@@ -359,7 +360,9 @@ export class Run<TResult> {
   get workflowName(): Promise<string> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.workflowName)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.workflowName)
     );
   }
 
@@ -369,7 +372,9 @@ export class Run<TResult> {
   get createdAt(): Promise<Date> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.createdAt)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.createdAt)
     );
   }
 
@@ -380,7 +385,9 @@ export class Run<TResult> {
   get startedAt(): Promise<Date | undefined> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.startedAt)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.startedAt)
     );
   }
 
@@ -391,7 +398,9 @@ export class Run<TResult> {
   get completedAt(): Promise<Date | undefined> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.completedAt)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.completedAt)
     );
   }
 

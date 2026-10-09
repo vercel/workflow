@@ -1,75 +1,94 @@
-# Why `vi.mock()` doesn't work in workflow integration tests
+# `vi.mock()` under the `workflow()` Vitest plugin
 
 ## Summary
 
-`vi.mock()` cannot intercept imports inside step functions when using the `workflow()` Vitest plugin. This limitation applies to both first-party code (your own modules) and third-party npm packages. Step dependencies are inlined into a prebuilt bundle at build time, bypassing Vitest's module system. To mock step dependencies, use unit tests instead.
+Steps do not execute from your test file's module graph. They execute from the
+bundles `buildWorkflowTests()` writes to `.workflow-vitest/`, and workflow
+bodies execute from a code string inside the QuickJS VM. What `vi.mock()` can
+reach follows from that:
 
-**Confirmed:** A test in `test/mock.test.ts` verifies that mocking the `ms` npm package via `vi.mock('ms', ...)` does not take effect. The step calls the real `ms()` function, not the mock.
+| You mock                                                      | Step code sees the mock | Workflow body sees the mock |
+| ------------------------------------------------------------- | ----------------------- | --------------------------- |
+| an npm package imported by a step file                          | yes\*                   | no                          |
+| an npm package imported by a local module a step file imports   | yes\*                   | no                          |
+| a project-local module imported by a step file                  | no                      | no                          |
+| a step function called directly, with no `workflow()` plugin    | yes (plain Vitest)      | n/a                         |
 
-## Root causes
+\* Only when the generated bundles are loaded through Vitest's module runner.
+See [When the npm cases do not hold](#when-the-npm-cases-do-not-hold).
 
-Three layers of isolation prevent `vi.mock()` from working:
+`test/mock.test.ts` pins every row.
 
-### 1. Dependencies are inlined into the step bundle
+## Why
 
-The step bundle (`steps.mjs`) is built by esbuild with `bundle: true`. Even though `externalizeNonSteps: true` is set, user code imported by step files is inlined directly into the bundle.
+### The build externalizes npm packages and inlines local modules
 
-This happens because the builder's enhanced-resolve (`packages/builders/src/swc-esbuild-plugin.ts`) silently falls back to bundling when it can't resolve `.js` to `.ts` imports. The `onResolve` hook's catch block (line 135) returns `null` on resolution failure, letting esbuild handle and bundle the file.
+`buildWorkflowTests()` builds `.workflow-vitest/combined.mjs` (workflow
+entrypoint plus step registrations) with esbuild. Project-local imports are
+bundled inline on purpose: the output is loaded by Node, which cannot import a
+raw `.ts` specifier (vercel/workflow#2289). npm packages stay as real `import`
+statements in the bundle, and an npm import inside an inlined local module is
+hoisted into the bundle's own imports.
 
-For example, if `workflows/notification.ts` (a step file) imports `../lib/email.ts`, the enhanced resolver tries to resolve `../lib/email.js` and fails (because the actual file is `email.ts`). The error is swallowed, esbuild resolves it via its own `resolveExtensions` config, and the dependency gets inlined.
+So `workflows/utils.ts` disappears into the bundle — there is no module left
+for `vi.mock("../workflows/utils.js")` to replace — while the `ms` it imports
+is still resolved at runtime, and that resolution can be intercepted.
 
-### 2. Bundle bypasses Vitest's module system
+### The step registry is last-write-wins, and the bundle writes last
 
-`setupWorkflowTests` loads the step bundle via:
+Both your test file (compiled in step mode by the plugin's transform) and the
+generated bundle register step implementations in the same `globalThis` map,
+keyed `Symbol.for("@workflow/core//registeredSteps")`. The bundle is imported
+lazily on the first dispatch, after your test module has been evaluated, so its
+registrations replace the ones the test graph installed. That is why step
+behavior follows the bundle rather than the function you imported in the test.
 
-```typescript
-const stepsModule = await import(/* @vite-ignore */ join(outDir, 'steps.mjs'));
+### Workflow bodies have no module system
+
+A `"use workflow"` body is compiled to a code string and evaluated in the
+QuickJS VM. There is no module registry in there, so no mocking mechanism can
+apply. It is also why the runtime rule is "side effects belong in steps": if
+something needs mocking, it belongs in a step.
+
+## When the npm cases do not hold
+
+The bundle is loaded with a dynamic `import()` from inside `@workflow/vitest`.
+Whether `vi.mock()` reaches it depends on how Vitest loaded the plugin itself:
+
+- **Plugin processed by Vitest's module runner** — a workspace link (this
+  workbench) or an explicit `server.deps.inline`. Vitest rewrites the dynamic
+  import, the bundle resolves through Vitest, and mocks of its external imports
+  apply.
+- **Plugin loaded natively** — an ordinary `node_modules` install, where Vitest
+  externalizes it. Node resolves the bundle's imports and the step gets the
+  real package.
+
+Verified by running this workbench's `test/mock.test.ts` from a `pnpm deploy`
+copy, where `@workflow/vitest` sits in `node_modules` instead of being linked:
+both npm-mock cases fail there and pass here.
+
+An app that wants the behavior this workbench gets can ask for it:
+
+```ts
+// vitest.integration.config.ts
+export default defineConfig({
+  plugins: [workflow()],
+  test: {
+    server: { deps: { inline: [/@workflow\/vitest/] } },
+  },
+});
 ```
 
-The `@vite-ignore` comment tells Vite not to process this dynamic import. The module is loaded through Node.js's native module system, completely bypassing Vitest's transform pipeline and module registry. `vi.mock()` only intercepts imports that go through Vitest's module system.
+The cost is that the generated bundle goes through Vite's transform pipeline in
+every worker. Until the plugin decides this for you, treat step-level mocking
+as something to opt into rather than something to rely on.
 
-### 3. Timing: setup runs before mocks take effect
+## Patterns that work in any install
 
-`setupFiles` execute before test files. `vi.mock()` calls are hoisted to the top of the test file, but by that point the step bundle and all its dependencies have already been loaded by the setup file. Even if the first two issues were fixed, the mock would be registered too late.
-
-## Why the architecture works this way
-
-A single workflow file can contain both `"use workflow"` and `"use step"` functions. The SWC plugin processes each file in one mode:
-
-- **client mode** (Vitest transform via `workflowTransformPlugin`): both workflow and step functions become stubs. Test files get function references with `.workflowId` for `start()`.
-- **step mode** (esbuild bundle): step functions retain their real implementations. The SWC transform emits an inline IIFE that stores each function in a `globalThis` registry; workflow functions become stubs.
-- **workflow mode** (esbuild bundle): workflow functions are bundled as code strings for the VM. Step functions become stubs.
-
-The same source file must be compiled twice in different modes: once for the test file (client mode) and once for execution (step mode). This requires separate build artifacts that can't share Vitest's module graph.
-
-## What would need to change
-
-To enable `vi.mock()` for step dependencies, three things need to change:
-
-### Fix 1: Proper externalization of user code
-
-**File:** `packages/builders/src/swc-esbuild-plugin.ts`
-
-The enhanced-resolve silently swallows errors for `.js` → `.ts` resolution. Fix the `onResolve` hook's catch block to retry with TypeScript extensions, or configure enhanced-resolve with `extensionAlias` mapping `.js` → `[.ts, .tsx, .js]`. This would keep user imports as `import` statements in the output instead of inlining them.
-
-### Fix 2: Load step bundle through Vitest's module system
-
-**File:** `packages/vitest/src/index.ts`
-
-Remove `@vite-ignore` from the step bundle import so Vitest processes it and can intercept module resolution. This may require registering the steps.mjs path as a Vitest alias so the dynamic import path resolves through Vitest's pipeline.
-
-### Fix 3: Defer step bundle loading
-
-**File:** `packages/vitest/src/index.ts`
-
-Move step bundle loading from `setupFiles` (which runs before test files) to lazy initialization on first step invocation. This way, `vi.mock()` from the test file will have already been registered when the step bundle and its dependencies are first imported.
-
-The workflow bundle does **not** need these changes. It runs inside a sandboxed VM where module mocking is architecturally impossible, and workflow functions should not have side effects that need mocking.
-
-## Workarounds
-
-Until these changes are made:
-
-1. **Unit test steps directly**: Import step functions without the workflow plugin. `vi.mock()` works normally because there's no prebuilt bundle. `"use step"` is a no-op without the compiler.
-2. **Dependency injection**: Pass dependencies as step arguments instead of importing them at the module level.
-3. **Hook-based patterns**: Use hooks to inject test data into the workflow at runtime rather than mocking the source of that data.
+1. **Unit test the step directly.** Import the function without the
+   `workflow()` plugin: `"use step"` is a no-op without the compiler, so it is
+   an ordinary async function and `vi.mock()` behaves normally.
+2. **Pass the dependency in.** A step that takes its collaborator as an
+   argument is controlled by the caller, with no module interception involved.
+3. **Feed data through hooks.** Use `createHook()` and resume it from the test
+   with the values you want instead of mocking the source of those values.

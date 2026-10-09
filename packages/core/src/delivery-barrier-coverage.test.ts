@@ -644,9 +644,9 @@ describe('delivery-barrier idle reachability', () => {
     // it. The wait and the step get the unconditional chain their real call
     // sites attach at event-consumption time, as the INVARIANT on
     // `registerDeliveryBarrier` requires of any armed barrier.
-    registerDeliveryBarrier(ctx, 0, 'hook', { armed: false });
-    const wait = registerDeliveryBarrier(ctx, 1, 'wait');
-    const step = registerDeliveryBarrier(ctx, 2, 'step');
+    registerDeliveryBarrier(ctx, 0, 'hook', { armed: false, deliveredAt: 0 });
+    const wait = registerDeliveryBarrier(ctx, 1, 'wait', { deliveredAt: 0 });
+    const step = registerDeliveryBarrier(ctx, 2, 'step', { deliveredAt: 0 });
     const chains = [
       awaitEarlierDeliveries(ctx, 1, 'wait').then(() => {
         order.push('wait');
@@ -682,7 +682,7 @@ describe('delivery-barrier idle reachability', () => {
     // queue slots have released `pendingDeliveries` and their detached
     // `resolve()` calls have not run yet.
     for (let index = 0; index < 3; index++) {
-      registerDeliveryBarrier(ctx, index, 'step');
+      registerDeliveryBarrier(ctx, index, 'step', { deliveredAt: 0 });
     }
 
     expect(await reachesIdle(ctx)).toBe(false);

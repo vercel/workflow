@@ -1,8 +1,4 @@
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import { useServerConfig } from '~/lib/world-config-context';
 
 type ServerConfigValue = ReturnType<typeof useServerConfig>['serverConfig'];

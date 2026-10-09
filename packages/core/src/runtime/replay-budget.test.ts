@@ -1,23 +1,41 @@
+import { FatalError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  captureWaitUntil,
+  flushDispatches,
+  waitUntilPromises,
+} from '../../test-utils/lifecycle-hooks.js';
 import { runtimeLogger } from '../logger.js';
+import { dehydrateRunError, hydrateRunError } from '../serialization.js';
+import { registerLifecycleHooks } from './lifecycle-hooks.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
   ReplayTimeoutRetryError,
 } from './replay-budget.js';
+import * as waitUntil from './wait-until.js';
 import { getWorld } from './world.js';
 
 vi.mock('./world.js', () => ({
   getWorld: vi.fn(),
 }));
 
-vi.mock('../serialization.js', () => ({
-  dehydrateRunError: vi.fn(async () => new Uint8Array([1, 2, 3])),
-}));
+// Spy on serialization without replacing the bytes lifecycle hooks hydrate.
+vi.mock(import('../serialization.js'), async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    dehydrateRunError: vi.fn(original.dehydrateRunError),
+  };
+});
 
 vi.mock('./helpers.js', () => ({
   memoizeEncryptionKey: () => async () => undefined,
+}));
+
+vi.mock('@vercel/functions', () => ({
+  waitUntil: captureWaitUntil,
 }));
 
 describe('ReplayBudget', () => {
@@ -237,5 +255,71 @@ describe('handleReplayBudgetExhausted', () => {
     ).rejects.toBe(writeError);
 
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('fires onRunFailed lifecycle hooks after the terminal write lands, and not on write failure', async () => {
+    const schedule = vi.spyOn(waitUntil, 'safeWaitUntil');
+    const onRunFailed = vi.fn();
+    const unregister = registerLifecycleHooks({ onRunFailed });
+    try {
+      // Write failure: no dispatch.
+      mockEventsCreate.mockRejectedValueOnce(new Error('storage unavailable'));
+      vi.mocked(getWorld).mockResolvedValue(makeMockWorld());
+      await expect(
+        handleReplayBudgetExhausted({
+          runId: 'wrun_test',
+          workflowName: 'wf',
+          requestId: 'req_test',
+          attempt: 4,
+          limitMs: 240_000,
+        })
+      ).rejects.toThrow('storage unavailable');
+      // Observe the synchronous scheduling boundary, not a timed absence of
+      // the eventual @vercel/functions dynamic-import handoff.
+      expect(schedule).not.toHaveBeenCalled();
+      expect(waitUntilPromises).toHaveLength(0);
+      expect(onRunFailed).not.toHaveBeenCalled();
+
+      // Successful write: dispatch with the Run and classified error.
+      vi.mocked(dehydrateRunError).mockClear();
+      await handleReplayBudgetExhausted({
+        runId: 'wrun_test',
+        workflowName: 'wf',
+        requestId: 'req_test',
+        attempt: 4,
+        limitMs: 240_000,
+      });
+      await flushDispatches();
+
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(onRunFailed).toHaveBeenCalledTimes(1);
+      const { run, workflowName, error } = onRunFailed.mock.calls[0][0];
+      expect(run.runId).toBe('wrun_test');
+      expect(workflowName).toBe('wf');
+      expect(error.errorCode).toBe('REPLAY_TIMEOUT');
+      expect(error.cause).toBeInstanceOf(FatalError);
+      expect((error.cause as Error).message).toContain(
+        'exceeded maximum duration'
+      );
+      expect(dehydrateRunError).toHaveBeenCalledTimes(1);
+      const [originalError, runId, encryptionKey] =
+        vi.mocked(dehydrateRunError).mock.calls[0];
+      expect(error.cause).not.toBe(originalError);
+      const persistedError = mockEventsCreate.mock.calls[1][1].eventData.error;
+      expect(persistedError).toBe(
+        await vi.mocked(dehydrateRunError).mock.results[0].value
+      );
+      const revived = await hydrateRunError(
+        persistedError,
+        runId,
+        encryptionKey
+      );
+      expect(revived).toBeInstanceOf(FatalError);
+      expect(error.cause).toEqual(revived);
+      expect(error.cause).not.toBe(revived);
+    } finally {
+      unregister();
+      waitUntilPromises.length = 0;
+    }
   });
 });

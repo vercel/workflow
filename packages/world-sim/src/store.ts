@@ -31,6 +31,7 @@ import {
   type CreateEventParams,
   type Event,
   type EventResult,
+  entityResolveData,
   type Hook,
   type HookResumeContext,
   isChildEntityCreationEvent,
@@ -421,6 +422,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       ...(typeof ctx.workflowCoreVersion === 'string'
         ? { workflowCoreVersion: ctx.workflowCoreVersion }
         : {}),
+      ...(typeof ctx.nodeVersion === 'string'
+        ? { nodeVersion: ctx.nodeVersion }
+        : {}),
       ...(ctx.traceCarrier && typeof ctx.traceCarrier === 'object'
         ? {
             traceCarrier: ctx.traceCarrier as HookResumeContext['traceCarrier'],
@@ -701,7 +705,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     const internal = params as
       | (CreateEventParams & SimCreateParams)
       | undefined;
-    const resolveData: ResolveData = params?.resolveData ?? 'all';
+    const resolveData: ResolveData = entityResolveData(
+      params?.resolveData ?? 'all'
+    );
     const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
     let runId: string;

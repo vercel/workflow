@@ -8,11 +8,13 @@ import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
+  assertNotSymlinkedRunDir,
   deleteJSON,
   hasTag,
   isUntagged,
   readJSON,
   resolveWithinBase,
+  runEntityDir,
   stripTag,
   ulidToDate,
   withWindowsRetry,
@@ -39,6 +41,54 @@ export function hookDisposeLockPath(
 ): string {
   const name = tag ? `${hookId}.disposed.${tag}` : `${hookId}.disposed`;
   return resolveWithinBase(basedir, '.locks', 'hooks', name);
+}
+
+/**
+ * What a hook's dispose lock says about who disposed it. The lock's content
+ * is empty for the run's own disposal and a JSON `{ forceClaimedBy }` when
+ * another run took the hook's token (`createHook({ experimental_force })`):
+ * the takeover writes the lock as its first durable step, so a
+ * `hook_received` refused by it can be answered as a redirect to the new
+ * owner rather than the final "not found" a disposal earns. Same tag
+ * visibility as {@link isHookDisposalCommitted}.
+ */
+export async function readHookDisposeLock(
+  basedir: string,
+  hookId: string,
+  tag?: string
+): Promise<
+  | { committed: false }
+  | { committed: true; forceClaimedBy?: { runId: string; hookId: string } }
+> {
+  const candidates = [hookDisposeLockPath(basedir, hookId)];
+  if (tag) {
+    candidates.push(hookDisposeLockPath(basedir, hookId, tag));
+  }
+  for (const lockPath of candidates) {
+    let content: string;
+    try {
+      content = await fs.readFile(lockPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (content.trim() === '') return { committed: true };
+    try {
+      const parsed = JSON.parse(content) as {
+        forceClaimedBy?: { runId?: unknown; hookId?: unknown };
+      };
+      const by = parsed.forceClaimedBy;
+      if (by && typeof by.runId === 'string' && typeof by.hookId === 'string') {
+        return {
+          committed: true,
+          forceClaimedBy: { runId: by.runId, hookId: by.hookId },
+        };
+      }
+    } catch {
+      // Not JSON: an older lock with unexpected content. Still a disposal.
+    }
+    return { committed: true };
+  }
+  return { committed: false };
 }
 
 /**
@@ -287,11 +337,10 @@ export interface RunEventIdScan {
 }
 
 /**
- * Scans the events directory for one run's ids, honoring tag visibility.
+ * Scans one run's events directory for its ids, honoring tag visibility.
  *
- * O(all event files), like every other directory-walking read in this
- * backend. Callers that run it per write memoize the result and use the
- * publish itself to detect when the memo has fallen behind.
+ * O(the run's event files). Callers that run it per write memoize the result
+ * and use the publish itself to detect when the memo has fallen behind.
  */
 export async function scanRunEventIds(
   basedir: string,
@@ -300,7 +349,9 @@ export async function scanRunEventIds(
 ): Promise<RunEventIdScan> {
   let files: string[] = [];
   try {
-    files = await fs.readdir(path.join(basedir, 'events'));
+    const eventsDir = path.join(basedir, runEntityDir('events', runId));
+    await assertNotSymlinkedRunDir(eventsDir);
+    files = await fs.readdir(eventsDir);
   } catch (error) {
     // Only ENOENT ("no events directory yet") means there is provably
     // nothing visible. Any other failure would silently report an empty run,
@@ -358,6 +409,18 @@ export const HookTokenClaimSchema = z.compile(
     // canonical hook_created event before concurrent retries publish it.
     eventId: z.string().optional(),
     tokenRetentionUntil: z.coerce.date().optional(),
+    // Set when this claim took the token from another run
+    // (`experimental_force`), so a retry that adopts the claim can still
+    // report — and wake — the run it came from.
+    claimedFrom: z
+      .object({
+        runId: z.string(),
+        hookId: z.string(),
+        workflowName: z.string().optional(),
+        deploymentId: z.string().optional(),
+        runSpecVersion: z.number().optional(),
+      })
+      .optional(),
   })
 );
 

@@ -172,6 +172,35 @@ describe('resumeHook durable resume', () => {
     expect(attributes['workflow.hook.resume_strategy']).toBe('sequential');
   });
 
+  it("stamps hook_received with the run's spec version when it is older", async () => {
+    // The runtime executing the run reads this event; one built against a
+    // lower spec version (an older deployment, or another SDK) rejects an
+    // event stamped above what it supports.
+    const hook = {
+      ...baseHook,
+      resumeContext: { ...currentContext, runSpecVersion: 2 },
+    } satisfies Hook;
+    const { createEvent } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(createEvent.mock.calls[0][1]).toMatchObject({
+      eventType: 'hook_received',
+      specVersion: 2,
+    });
+  });
+
+  it("stamps hook_received with this SDK's spec version for a current run", async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { createEvent } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(createEvent.mock.calls[0][1]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
   it('uses invoke only when advertised and leaves event persistence to the executor', async () => {
     const hook = { ...baseHook, resumeContext: currentContext };
     const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
