@@ -1,5 +1,9 @@
 import { createServer, type Server } from 'node:http';
-import { createSecureServer, type Http2SecureServer } from 'node:http2';
+import {
+  createSecureServer,
+  type Http2SecureServer,
+  constants as http2Constants,
+} from 'node:http2';
 import {
   type AddressInfo,
   connect,
@@ -42,6 +46,7 @@ import {
   getStreamAgentOptions,
   getStreamCloseDispatcher,
   getStreamDispatcher,
+  h2MultiplexInterceptor,
   isRecyclableTransportError,
   MAX_RETRIES,
   noteEventsTransportOutcome,
@@ -688,6 +693,222 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   });
 });
 
+// undici dispatches a streamed request body on HTTP/2 only once the connection
+// has no stream in flight, and stops its whole queue behind it until then. The
+// multiplexing interceptor re-buffers small bodies to avoid that, so the
+// production shape that still hit it was a body too large to re-buffer (a
+// multi-MiB run input or event batch) on a connection that never drained.
+describe('events dispatcher on a busy HTTP/2 connection', () => {
+  const LARGE_BODY_BYTES = 2 * 1024 * 1024;
+  const LOOPBACK = { connect: { rejectUnauthorized: false } };
+
+  let server: Http2SecureServer;
+  let origin: string;
+  let seen: Array<{ path: string; httpVersion: string; bytes: number }>;
+  let releaseHold: (() => void) | undefined;
+  let holdArrived: Promise<void>;
+  let resetAttempts: number;
+
+  beforeAll(async () => {
+    // allowHTTP1 so one origin serves both the h2 stream and the h1 fallback.
+    server = createSecureServer({
+      key: TEST_KEY,
+      cert: TEST_CERT,
+      allowHTTP1: true,
+    });
+    server.on('sessionError', () => undefined);
+    server.on('clientError', () => undefined);
+    server.on('request', (req, res) => {
+      req.stream?.on('error', () => undefined);
+      const path = String(req.url);
+      let bytes = 0;
+      req.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+      });
+      req.on('end', () => {
+        seen.push({ path, httpVersion: req.httpVersion, bytes });
+        if (path === '/hold') {
+          holdArrivedResolve();
+          releaseHold = () => {
+            res.writeHead(200);
+            res.end('held');
+          };
+          return;
+        }
+        // The edge's per-stream reset on a busy connection. `/reset-once`
+        // answers the retry; `/reset-always` never does.
+        if (
+          (path === '/reset-once' && ++resetAttempts === 1) ||
+          path === '/reset-always'
+        ) {
+          if (path === '/reset-always') resetAttempts++;
+          req.stream.close(http2Constants.NGHTTP2_ENHANCE_YOUR_CALM);
+          return;
+        }
+        res.writeHead(200);
+        res.end(path);
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    origin = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  let holdArrivedResolve: () => void;
+  beforeEach(() => {
+    seen = [];
+    releaseHold = undefined;
+    resetAttempts = 0;
+    holdArrived = new Promise<void>((resolve) => {
+      holdArrivedResolve = resolve;
+    });
+  });
+
+  /**
+   * Opens a GET that the origin holds, so the H2 connection never drains.
+   * Resolves once the origin has it, to a wrapper (not the response promise
+   * itself, which an async return would await).
+   */
+  async function holdStreamOpen(dispatcher: unknown) {
+    const held = fetch(`${origin}/hold`, {
+      dispatcher,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    } as any).then((r) => r.text());
+    await holdArrived;
+    return { held };
+  }
+
+  function postLarge(dispatcher: unknown) {
+    return fetch(`${origin}/large`, {
+      method: 'POST',
+      body: new Uint8Array(LARGE_BODY_BYTES),
+      dispatcher,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+    } as any).then((r) => r.text());
+  }
+
+  /** Resolves to 'settled' or 'pending' after `ms`. */
+  function stateAfter(promise: Promise<unknown>, ms: number) {
+    return Promise.race([
+      promise.then(() => 'settled' as const),
+      new Promise<'pending'>((resolve) => {
+        setTimeout(() => resolve('pending'), ms);
+      }),
+    ]);
+  }
+
+  // Establishes the premise with the interceptor alone (no fallback): the
+  // large POST cannot start while the held stream is in flight.
+  it('queues behind an in-flight H2 stream without the fallback (the failure this fixes)', async () => {
+    const agent = new Agent({ ...getEventsAgentOptions(), ...LOOPBACK });
+    const dispatcher = agent.compose(h2MultiplexInterceptor);
+    try {
+      const { held } = await holdStreamOpen(dispatcher);
+      const large = postLarge(dispatcher);
+      expect(await stateAfter(large, 1_000)).toBe('pending');
+      expect(seen.map((s) => s.path)).toEqual(['/hold']);
+
+      releaseHold?.();
+      expect(await held).toBe('held');
+      expect(await large).toBe('/large');
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('sends it over HTTP/1.1 so it does not wait for the H2 connection to drain', async () => {
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      const { held } = await holdStreamOpen(agent);
+      const large = postLarge(agent);
+      expect(await stateAfter(large, 5_000)).toBe('settled');
+      expect(await large).toBe('/large');
+      expect(seen).toContainEqual({
+        path: '/large',
+        httpVersion: '1.1',
+        bytes: LARGE_BODY_BYTES,
+      });
+
+      releaseHold?.();
+      expect(await held).toBe('held');
+      expect(seen).toContainEqual({
+        path: '/hold',
+        httpVersion: '2.0',
+        bytes: 0,
+      });
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('retries an event-log read whose stream the peer reset', async () => {
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      const response = await fetch(`${origin}/reset-once`, {
+        dispatcher: agent,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+      } as any);
+      expect(await response.text()).toBe('/reset-once');
+      expect(resetAttempts).toBe(2);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  // undici before 7.30.0 retired the wrong request when an H2 stream failed out
+  // of order, leaving a phantom "running" slot on the connection for good
+  // (nodejs/undici#5410, #5569). A streamed body then never dispatched on that
+  // connection again, since it waits for zero running streams. Pins the undici
+  // version this package depends on.
+  it('leaves no phantom running stream after a peer reset', async () => {
+    const agent = new Agent({ ...getEventsAgentOptions(), ...LOOPBACK });
+    try {
+      await (
+        await fetch(`${origin}/warm`, {
+          dispatcher: agent,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any)
+      ).text();
+      await expect(
+        fetch(`${origin}/reset-always`, {
+          dispatcher: agent,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any)
+      ).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(agent.stats[origin]?.running).toBe(0);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  // An event write may already have committed when its stream is reset, so it
+  // must surface the error rather than be replayed.
+  it('does not retry an event write whose stream the peer reset', async () => {
+    const agent = createEventsDispatcher(LOOPBACK);
+    try {
+      await expect(
+        fetch(`${origin}/reset-always`, {
+          method: 'POST',
+          body: 'x',
+          dispatcher: agent,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        } as any)
+      ).rejects.toThrow();
+      expect(resetAttempts).toBe(1);
+    } finally {
+      await agent.close();
+    }
+  });
+});
+
 // The transport fault this whole mechanism exists for: an HTTP/2 session whose
 // TCP connection stays established while no bytes cross it. undici keeps such a
 // session in service — on a stream timeout it deliberately does not destroy the
@@ -950,7 +1171,14 @@ describe('dispatcher recycling accounting', () => {
   // and an abort is the caller's own doing.
   it('counts only transport failures a rebuild can fix', () => {
     expect(isRecyclableTransportError(h2StreamTimeout())).toBe(true);
-    for (const code of ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+    for (const code of [
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_BODY_TIMEOUT',
+      'ERR_HTTP2_GOAWAY_SESSION',
+      'ERR_HTTP2_INVALID_SESSION',
+      'ERR_HTTP2_SESSION_ERROR',
+      'ERR_HTTP2_STREAM_ERROR',
+    ]) {
       expect(
         isRecyclableTransportError(Object.assign(new Error(code), { code }))
       ).toBe(true);
@@ -961,6 +1189,8 @@ describe('dispatcher recycling accounting', () => {
       'ENOTFOUND',
       'ECONNREFUSED',
       'CERT_HAS_EXPIRED',
+      'ERR_HTTP2_INVALID_HEADER_VALUE',
+      'ERR_HTTP2_STREAM_CANCEL',
     ]) {
       expect(
         isRecyclableTransportError(Object.assign(new Error(code), { code }))

@@ -290,6 +290,110 @@ describe('createReconnectingFramedStream', () => {
     expect(cancelSpy).toHaveBeenCalled();
   });
 
+  it('does not reconnect when canceled during completion verification', async () => {
+    const infoStarted = Promise.withResolvers<void>();
+    const infoGate = Promise.withResolvers<void>();
+    const { world, calls } = makeWorldWithScriptedStreams(
+      {
+        0: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(1) },
+            { kind: 'close' },
+          ]),
+      },
+      async () => {
+        infoStarted.resolve();
+        await infoGate.promise;
+        return { tailIndex: 0, done: false };
+      }
+    );
+    setWorld(world);
+
+    const reader = createReconnectingFramedStream(RUN_ID, 's', 0).getReader();
+    expect((await reader.read()).value).toEqual(payloadFrame(1));
+    const pendingRead = reader.read();
+    await infoStarted.promise;
+
+    await reader.cancel('client abort');
+    infoGate.resolve();
+    await pendingRead;
+
+    expect(calls).toEqual([0]);
+  });
+
+  it('cancels a reconnect source acquired after the consumer cancels', async () => {
+    const reconnectStarted = Promise.withResolvers<void>();
+    const reconnectGate = Promise.withResolvers<void>();
+    const cancelSpy = vi.fn();
+    let connections = 0;
+    const readFromStream = vi.fn(async () => {
+      connections++;
+      if (connections === 1) {
+        return scriptedStream([
+          { kind: 'value', value: payloadFrame(1) },
+          { kind: 'error', err: new Error('connection dropped') },
+        ]);
+      }
+      reconnectStarted.resolve();
+      await reconnectGate.promise;
+      return new ReadableStream<Uint8Array>({
+        async pull() {
+          await new Promise(() => {});
+        },
+        cancel(reason) {
+          cancelSpy(reason);
+        },
+      });
+    });
+    const world = { readFromStream } as unknown as World;
+    setWorld(world);
+
+    const reader = createReconnectingFramedStream(RUN_ID, 's', 0).getReader();
+    expect((await reader.read()).value).toEqual(payloadFrame(1));
+    const pendingRead = reader.read();
+    await reconnectStarted.promise;
+
+    await reader.cancel('client abort');
+    reconnectGate.resolve();
+    await pendingRead;
+
+    await vi.waitFor(() => {
+      expect(cancelSpy).toHaveBeenCalledWith('client abort');
+    });
+    expect(readFromStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops retrying when a pending reconnect rejects after cancellation', async () => {
+    const reconnectStarted = Promise.withResolvers<void>();
+    const reconnectGate = Promise.withResolvers<void>();
+    let connections = 0;
+    const readFromStream = vi.fn(async () => {
+      connections++;
+      if (connections === 1) {
+        return scriptedStream([
+          { kind: 'value', value: payloadFrame(1) },
+          { kind: 'error', err: new Error('connection dropped') },
+        ]);
+      }
+      reconnectStarted.resolve();
+      await reconnectGate.promise;
+      throw new Error('reconnect failed');
+    });
+    const world = { readFromStream } as unknown as World;
+    setWorld(world);
+
+    const reader = createReconnectingFramedStream(RUN_ID, 's', 0).getReader();
+    expect((await reader.read()).value).toEqual(payloadFrame(1));
+    const pendingRead = reader.read();
+    await reconnectStarted.promise;
+
+    await reader.cancel('client abort');
+    reconnectGate.resolve();
+    await pendingRead;
+
+    expect(readFromStream).toHaveBeenCalledTimes(2);
+  });
+
   it('emits every complete frame packed into a single read', async () => {
     // One transport read carrying three back-to-back frames must surface as
     // three separate downstream chunks — exercises the inner drain loop.

@@ -488,4 +488,192 @@ describe('v4 transport reports failures to the events recycler', () => {
 
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
+
+  it.each([
+    'pre-header',
+    'post-header',
+  ])('keeps %s HTTP/2 session failures retryable and rebuilds the shared pool', async (phase) => {
+    const now = Date.now();
+    // The preceding tests rebuilt the process-global pool as late as
+    // `now + 60_000`; stay clear of its anti-thrash cooldown.
+    vi.spyOn(Date, 'now').mockReturnValue(
+      now + (phase === 'pre-header' ? 100_000 : 120_000)
+    );
+    const error = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('Session received GOAWAY'), {
+        code: 'ERR_HTTP2_GOAWAY_SESSION',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockImplementation(async () => {
+        if (phase === 'pre-header') throw error;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(error);
+            },
+          }),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        );
+      });
+
+    // A completed response resets any failure streak from earlier requests
+    // that used this process-wide pool, even when the HTTP status is an error.
+    await expect(
+      getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+    ).rejects.toMatchObject({ status: 404 });
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      const rejection = await getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token' }
+      ).catch((cause: unknown) => cause);
+      expect(rejection).toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'TRANSPORT',
+      });
+      expect(rejection).toHaveProperty('cause', error);
+      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
+        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+      }
+    }
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+});
+
+/**
+ * A rejection from `fetch` means no response was produced, which is a
+ * transport failure regardless of what the cause chain says. Left raw, a
+ * `TypeError: fetch failed` reaches the runtime as an ordinary throw:
+ * `classifyRunError` reads it as USER_ERROR and the queue never redelivers
+ * the run, so a backend blip fails the run and blames customer code.
+ */
+describe('v4 transport wraps pre-response failures the allowlist misses', () => {
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('maps a bare `TypeError: fetch failed` to a TRANSPORT failure', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new TypeError('fetch failed')
+    );
+
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: {} }
+    ).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+    });
+    expect(rejection.message).toContain('transport failure');
+  });
+
+  it('rejects a credential-bearing backend URL without dispatch or retry', async () => {
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://user:password@127.0.0.1');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token' }
+    ).catch((error: unknown) => error);
+
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      message: 'HTTP(S) URLs with embedded credentials are unsupported',
+    });
+    expect(WorkflowWorldError.is(rejection)).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves unsupported headers from the backend configuration as non-retryable', async () => {
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://127.0.0.1:12345');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      {
+        token: 'test-token',
+        headers: { Expect: '100-continue' },
+      }
+    ).catch((error: unknown) => error);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      cause: { code: 'UND_ERR_NOT_SUPPORTED' },
+    });
+    expect(WorkflowWorldError.is(rejection)).toBe(false);
+  });
+
+  it('maps an unrecognized post-header write failure to a TRANSPORT failure', async () => {
+    const sessionFailure = Object.assign(
+      new Error('The session has been destroyed'),
+      { code: 'ERR_HTTP2_GOAWAY_SESSION' }
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(sessionFailure);
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      )
+    );
+
+    const rejection = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'step_completed',
+        specVersion: 6,
+        correlationId: 'step_1',
+      },
+      { token: 'test-token', dispatcher: {} }
+    ).catch((error: unknown) => error);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+      cause: sessionFailure,
+    });
+  });
+
+  it('rethrows a request-construction fault unchanged', async () => {
+    const constructionFault = Object.assign(
+      new TypeError('Failed to parse URL from nonsense'),
+      {
+        cause: Object.assign(new TypeError('Invalid URL'), {
+          code: 'ERR_INVALID_URL',
+        }),
+      }
+    );
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(constructionFault);
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: {} }
+      )
+    ).rejects.toBe(constructionFault);
+  });
 });

@@ -710,15 +710,23 @@ export function createReconnectingFramedStream(
   let reconnectCount = 0;
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let canceled = false;
+  let cancelReason: unknown;
   let buffer = new Uint8Array(0);
 
-  async function connect(): Promise<void> {
+  async function connect(): Promise<boolean> {
+    if (canceled) return false;
     const world = getWorld();
     const effectiveStartIndex = reconnectSupported
       ? currentStartIndex + consumedFrames
       : startIndex;
     const stream = await world.readFromStream(name, effectiveStartIndex);
+    if (canceled) {
+      await stream.cancel(cancelReason).catch(() => {});
+      return false;
+    }
     reader = stream.getReader();
+    return true;
   }
 
   /**
@@ -739,11 +747,13 @@ export function createReconnectingFramedStream(
     }
   }
 
-  async function reconnect(): Promise<void> {
+  async function reconnect(): Promise<boolean> {
+    if (canceled) return false;
     if (reader) {
       await reader.cancel().catch(() => {});
       reader = undefined;
     }
+    if (canceled) return false;
     // Advance the resume position past the frames already delivered, then
     // drop any partial-frame bytes — the reopened connection re-sends from a
     // frame boundary at the new index.
@@ -771,9 +781,10 @@ export function createReconnectingFramedStream(
         );
       }
       try {
-        await connect();
-        return;
+        if (!(await connect())) return false;
+        return true;
       } catch {
+        if (canceled) return false;
         // Reopen failed transiently; loop to retry, counting against the
         // budget so a server that never recovers still terminates the stream.
       }
@@ -782,14 +793,16 @@ export function createReconnectingFramedStream(
 
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
+      if (canceled) return;
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything — we
       // keep reading rather than returning empty-handed.
       for (;;) {
         if (!reader) {
           try {
-            await connect();
+            if (!(await connect())) return;
           } catch (err) {
+            if (canceled) return;
             controller.error(err);
             return;
           }
@@ -800,12 +813,13 @@ export function createReconnectingFramedStream(
           // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
           result = await reader!.read();
         } catch (err) {
+          if (canceled) return;
           if (!reconnectSupported) {
             controller.error(err);
             return;
           }
           try {
-            await reconnect();
+            if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
             return;
@@ -813,6 +827,7 @@ export function createReconnectingFramedStream(
           continue;
         }
 
+        if (canceled) return;
         if (result.done || !result.value) {
           reader = undefined;
           // A clean EOF is only trustworthy if the stream is actually
@@ -822,9 +837,12 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body — both
           // would otherwise be silently read as a shorter, complete stream.
-          if (reconnectSupported && !(await isVerifiedComplete())) {
+          const verifiedComplete =
+            !reconnectSupported || (await isVerifiedComplete());
+          if (canceled) return;
+          if (!verifiedComplete) {
             try {
-              await reconnect();
+              if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
               return;
@@ -873,12 +891,15 @@ export function createReconnectingFramedStream(
         // Only partial bytes — read more.
       }
     },
-    cancel: async () => {
-      if (reader) {
-        await reader.cancel().catch((err) => {
+    cancel: async (reason) => {
+      canceled = true;
+      cancelReason = reason;
+      const currentReader = reader;
+      reader = undefined;
+      if (currentReader) {
+        await currentReader.cancel(reason).catch((err) => {
           console.warn('Error closing ReadableStream reader:', err);
         });
-        reader = undefined;
       }
     },
   });
@@ -1031,6 +1052,10 @@ export interface SerializableSpecial {
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
+  // A `DataView`, as base64 of the bytes it views. Not tagged `DataView`:
+  // that tag belongs to devalue's built-in encoding, which payloads written
+  // before this one still use. See `getCommonReducers()`.
+  DataViewBytes: string; // base64 string of the viewed bytes only
   Date: string; // ISO string
   DOMException: {
     message: string;
@@ -1165,6 +1190,24 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof global.BigUint64Array && viewToBase64(value),
+    // Claims `DataView` for the same reason every typed array is claimed:
+    // devalue's built-in `DataView` encoding emits the *whole* backing
+    // ArrayBuffer plus the view's offset and length. For a view onto Node's
+    // shared `Buffer` pool (`Buffer.allocUnsafe`, and `Buffer.from` below
+    // `Buffer.poolSize >>> 1`) that whole buffer is 8 KiB of unrelated
+    // allocations, so a four-byte view would persist bytes the workflow
+    // never handed us into the run's event log. Base64 of the viewed range
+    // keeps the payload to the bytes the view actually spans.
+    //
+    // The tag deliberately is *not* `DataView`. devalue skips its built-in
+    // branch for any tag that has a custom reviver, so registering one under
+    // that name would strip the bounds off `["DataView", buf, offset, length]`
+    // tuples already in event logs — the o11y UI and CLI read those with
+    // current code, and would render the whole pooled slab this reducer
+    // exists to keep out. Under a distinct tag the built-in branch stays
+    // reachable and those payloads still revive with their bounds.
+    DataViewBytes: (value) =>
+      value instanceof global.DataView && viewToBase64(value),
     // Class and Instance are intentionally placed before Error so that
     // custom Error subclasses with WORKFLOW_SERIALIZE take precedence
     // over the generic Error serialization (devalue uses first-match-wins).
@@ -1641,6 +1684,12 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       const ab = reviveArrayBuffer(value);
       return new global.BigUint64Array(ab);
     },
+    // No `DataView` reviver: see the `DataViewBytes` reducer. Older payloads
+    // tagged `DataView` must keep reaching devalue's built-in branch.
+    DataViewBytes: (value: string) => {
+      const ab = reviveArrayBuffer(value);
+      return new global.DataView(ab);
+    },
     Date: (value) => new global.Date(value),
     DOMException: (value) => {
       const error = new global.DOMException(value.message, value.name);
@@ -1756,6 +1805,33 @@ async function getForwardedWritableEncryptionKey(
     ? await world.getEncryptionKeyForRun(runId, { deploymentId })
     : await world.getEncryptionKeyForRun(await world.runs.get(runId));
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
+}
+
+/**
+ * Defer a forwarded writable's key lookup until the first chunk is written.
+ *
+ * Calling {@link getForwardedWritableEncryptionKey} starts the lookup, and the
+ * only consumer of the promise it returns is the serialize transform, which
+ * awaits it on the first write. Handing the reviver that promise directly
+ * therefore leaves a rejection unobserved on every forwarded writable nobody
+ * writes to — and its slow path (`runs.get` for a descriptor from an older
+ * deployment) is exactly the kind of request that times out. Node kills the
+ * process for an unhandled rejection, so a stream the caller never touched
+ * could take down an unrelated invocation.
+ *
+ * This is the resolver form {@link EncryptionKeyParam} documents: the lookup
+ * runs at most once, starts only when a write needs the key, and a failure
+ * rejects the write that asked for it.
+ */
+function lazyForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined
+): () => Promise<CryptoKey | undefined> {
+  let keyPromise: Promise<CryptoKey | undefined> | undefined;
+  return () => {
+    keyPromise ??= getForwardedWritableEncryptionKey(runId, deploymentId);
+    return keyPromise;
+  };
 }
 
 /**
@@ -1876,7 +1952,7 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+          : lazyForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -2233,12 +2309,13 @@ function getStepRevivers(
       // Cross-run case (parent → child via `start()`): the descriptor
       // carries the original `runId` and `name`. Open a server writable
       // against the original `(runId, name)` and resolve THAT run's key
-      // for encryption. The resolution is async but doesn't need to
-      // block reviver return — `getSerializeStream` accepts the
-      // `Promise<CryptoKey | undefined>` directly and awaits it lazily
-      // on the first chunk written. The key is imported encrypt-only
-      // so the receiving run can never decrypt anything else on the
-      // owning run's stream — it can only contribute new writes.
+      // for encryption. The lookup does not start until the first chunk
+      // is written — `getSerializeStream` accepts an `EncryptionKeyParam`
+      // resolver and calls it on demand, so a failed lookup errors the
+      // stream that needed the key instead of leaving an unobserved
+      // rejection behind. The key is imported encrypt-only so the
+      // receiving run can never decrypt anything else on the owning
+      // run's stream — it can only contribute new writes.
       const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
       const targetDeploymentId =
         typeof value.deploymentId === 'string'
@@ -2249,7 +2326,7 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+          : lazyForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),

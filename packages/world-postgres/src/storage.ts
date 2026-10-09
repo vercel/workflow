@@ -129,18 +129,22 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
     list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
+      // Run ids are ULIDs, so id order is creation order.
+      const sortOrder = params?.pagination?.sortOrder ?? 'desc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
 
       const all = await drizzle
         .select()
         .from(runs)
         .where(
           and(
-            map(fromCursor, (c) => lt(runs.runId, c)),
+            map(fromCursor, (c) => cursorFn(runs.runId, c)),
             map(params?.workflowName, (wf) => eq(runs.workflowName, wf)),
             map(params?.status, (wf) => eq(runs.status, wf))
           )
         )
-        .orderBy(desc(runs.runId))
+        .orderBy(orderFn(runs.runId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;
@@ -328,6 +332,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     async create(runId, data, params): Promise<EventResult> {
       let eventId: string | undefined;
       const getEventId = () => (eventId ??= `wevt_${ulid()}`);
+      // Populated by the branches below that write their own event log entry in
+      // the same transaction as the guarded entity mutation (run_created,
+      // step_started, hook_disposed, hook_received); the shared insert further
+      // down is skipped when this is already set.
+      let value: { createdAt: Date } | undefined;
 
       // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;
@@ -415,25 +424,31 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // Create run + run_created event atomically. The
             // transaction ensures we never have an orphaned run
             // without its run_created event.
-            const [inserted] = await drizzle
-              .insert(Schema.runs)
-              .values({
-                runId: effectiveRunId,
-                deploymentId: runInputData.deploymentId,
-                workflowName: runInputData.workflowName,
-                specVersion: effectiveSpecVersion,
-                input: runInputData.input as SerializedContent,
-                executionContext: runInputData.executionContext as
-                  | SerializedContent
-                  | undefined,
-                status: 'pending',
-              })
-              .onConflictDoNothing()
-              .returning();
+            const { deploymentId, workflowName } = runInputData;
+            const createdRun = await drizzle.transaction(async (tx) => {
+              const [inserted] = await tx
+                .insert(Schema.runs)
+                .values({
+                  runId: effectiveRunId,
+                  deploymentId,
+                  workflowName,
+                  specVersion: effectiveSpecVersion,
+                  input: runInputData.input as SerializedContent,
+                  executionContext: runInputData.executionContext as
+                    | SerializedContent
+                    | undefined,
+                  status: 'pending',
+                })
+                .onConflictDoNothing()
+                .returning();
 
-            if (inserted) {
+              if (!inserted) {
+                return undefined;
+              }
+              // This synthetic run_created is the run's first event, so it
+              // has to become visible together with the run row itself.
               const runCreatedEventId = `wevt_${ulid()}`;
-              await drizzle.insert(events).values({
+              await tx.insert(events).values({
                 runId: effectiveRunId,
                 eventId: runCreatedEventId,
                 eventType: 'run_created',
@@ -445,8 +460,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 },
                 specVersion: effectiveSpecVersion,
               });
-            }
-            const createdRun = inserted;
+              return inserted;
+            });
 
             if (createdRun) {
               currentRun = {
@@ -650,33 +665,56 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           input: any[];
           executionContext?: Record<string, any>;
         };
-        const [runValue] = await drizzle
-          .insert(Schema.runs)
-          .values({
-            runId: effectiveRunId,
-            deploymentId: eventData.deploymentId,
-            workflowName: eventData.workflowName,
-            // Propagate specVersion from the event to the run entity
-            specVersion: effectiveSpecVersion,
-            input: eventData.input as SerializedContent,
-            executionContext: eventData.executionContext as
-              | SerializedContent
-              | undefined,
-            status: 'pending',
-          })
-          .onConflictDoNothing()
-          .returning();
-        // No row back means the run already exists: the resilient start path
-        // (run_started on a non-existent run) won a TOCTOU race and created
-        // it. Surface the conflict rather than returning `{ run: undefined }`
-        // — start() already treats EntityConflictError as benign, and falling
-        // through would append a duplicate run_created event to the log.
-        if (!runValue) {
-          throw new EntityConflictError(
-            `Workflow run "${effectiveRunId}" already exists`
-          );
-        }
-        run = deserializeRunError(compact(runValue));
+        // The run row and its run_created event have to become visible
+        // together: committed separately, a crash between the two writes
+        // leaves a run with no first event, which no replay can reconstruct.
+        const created = await drizzle.transaction(async (tx) => {
+          const [runValue] = await tx
+            .insert(Schema.runs)
+            .values({
+              runId: effectiveRunId,
+              deploymentId: eventData.deploymentId,
+              workflowName: eventData.workflowName,
+              // Propagate specVersion from the event to the run entity
+              specVersion: effectiveSpecVersion,
+              input: eventData.input as SerializedContent,
+              executionContext: eventData.executionContext as
+                | SerializedContent
+                | undefined,
+              status: 'pending',
+            })
+            .onConflictDoNothing()
+            .returning();
+          // No row back means the run already exists: the resilient start path
+          // (run_started on a non-existent run) won a TOCTOU race and created
+          // it. Surface the conflict rather than returning `{ run: undefined }`
+          // — start() already treats EntityConflictError as benign, and falling
+          // through would append a duplicate run_created event to the log.
+          if (!runValue) {
+            throw new EntityConflictError(
+              `Workflow run "${effectiveRunId}" already exists`
+            );
+          }
+          const [eventValue] = await tx
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId: getEventId(),
+              correlationId: data.correlationId,
+              eventType: 'run_created',
+              eventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: events.createdAt });
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `Workflow run "${effectiveRunId}" already exists`
+            );
+          }
+          return { runValue, eventValue };
+        });
+        value = created.eventValue;
+        run = deserializeRunError(compact(created.runValue));
       }
 
       // Handle run_started event: update run status
@@ -871,12 +909,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           : 'eventData' in data
             ? data.eventData
             : undefined;
-
-      // Populated by the branches below that write their own event log entry in
-      // the same transaction as the guarded entity mutation (step_started,
-      // hook_disposed, hook_received); the shared insert further down is
-      // skipped when this is already set.
-      let value: { createdAt: Date } | undefined;
 
       // Handle step_started event: increment attempt and set the step to
       // running, then write the matching event log entry in the same
@@ -1825,6 +1857,10 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
     list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
+      // Step ids are `step_<ulid>`, so id order is creation order.
+      const sortOrder = params?.pagination?.sortOrder ?? 'desc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
 
       const all = await drizzle
         .select()
@@ -1832,10 +1868,10 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
         .where(
           and(
             eq(steps.runId, params.runId),
-            map(fromCursor, (c) => lt(steps.stepId, c))
+            map(fromCursor, (c) => cursorFn(steps.stepId, c))
           )
         )
-        .orderBy(desc(steps.stepId))
+        .orderBy(orderFn(steps.stepId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;

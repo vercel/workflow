@@ -117,4 +117,101 @@ describe('step source registration', () => {
     expect(generated).toContain('import "../src/serde.ts";');
     expect(Object.keys(manifest.classes ?? {})).toContain('src/serde.ts');
   });
+
+  /**
+   * pnpm materializes the same package version once per peer-dependency
+   * resolution (e.g. `.pnpm/step-pkg@1.0.0_peer-a@1.0.0/...` and
+   * `.pnpm/step-pkg@1.0.0_peer-b@2.0.0/...`), with byte-identical files.
+   * Both copies generate the same canonical step ID.
+   */
+  function writePnpmVirtualInstance(
+    peerSuffix: string,
+    stepSource: string
+  ): string {
+    const pkgDir = join(
+      testRoot,
+      'node_modules',
+      '.pnpm',
+      `step-pkg@1.0.0_${peerSuffix}`,
+      'node_modules',
+      'step-pkg'
+    );
+    writeFile(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({
+        name: 'step-pkg',
+        version: '1.0.0',
+        exports: { '.': './index.js' },
+      })
+    );
+    const stepFile = join(pkgDir, 'index.js');
+    writeFile(stepFile, stepSource);
+    return stepFile;
+  }
+
+  it('deduplicates identical pnpm peer-variant package copies', async () => {
+    const stepSource = `export async function runPackagedStep() {
+  'use step';
+  return 1;
+}
+`;
+    const copyA = writePnpmVirtualInstance('peer-a@1.0.0', stepSource);
+    const copyB = writePnpmVirtualInstance('peer-b@2.0.0', stepSource);
+    const outfile = join(testRoot, '.workflow', 'steps.js');
+    mkdirSync(dirname(outfile), { recursive: true });
+
+    const discoveredEntries: DiscoveredEntries = {
+      discoveredSteps: new Set([copyA, copyB]),
+      discoveredWorkflows: new Set(),
+      discoveredSerdeFiles: new Set(),
+    };
+
+    const { manifest } = await createBuilder(
+      testRoot
+    ).createSourceStepRegistrations([copyA, copyB], outfile, discoveredEntries);
+
+    // Both copies land in the manifest under the same canonical step ID.
+    const stepEntries = Object.values(manifest.steps ?? {});
+    expect(stepEntries).toHaveLength(2);
+    for (const entries of stepEntries) {
+      expect(entries.runPackagedStep.stepId).toBe(
+        'step//step-pkg@1.0.0//runPackagedStep'
+      );
+    }
+  });
+
+  it('still rejects pnpm-style package copies whose implementations differ', async () => {
+    const copyA = writePnpmVirtualInstance(
+      'peer-a@1.0.0',
+      `export async function runPackagedStep() {
+  'use step';
+  return 1;
+}
+`
+    );
+    const copyB = writePnpmVirtualInstance(
+      'peer-b@2.0.0',
+      `export async function runPackagedStep() {
+  'use step';
+  return 2;
+}
+`
+    );
+    const outfile = join(testRoot, '.workflow', 'steps.js');
+    mkdirSync(dirname(outfile), { recursive: true });
+
+    const discoveredEntries: DiscoveredEntries = {
+      discoveredSteps: new Set([copyA, copyB]),
+      discoveredWorkflows: new Set(),
+      discoveredSerdeFiles: new Set(),
+    };
+
+    await expect(
+      createBuilder(testRoot).createSourceStepRegistrations(
+        [copyA, copyB],
+        outfile,
+        discoveredEntries
+      )
+    ).rejects.toThrow(/Duplicate workflow step ID/);
+  });
 });

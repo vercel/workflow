@@ -20,7 +20,7 @@ catalog:
   semver: 7.7.4
   typescript: ^6.0.3
   ulid: ~3.0.1
-  undici: 7.28.0
+  undici: 7.30.0
   vitest: ^4.1.10
   zod: ~4.3.6
 
@@ -34,13 +34,38 @@ minimumReleaseAgeExclude:
   - esbuild
   - '@esbuild/*'
   - '@sveltejs/load-config'
+  - devalue
+  # CVE-2026-102989 (GHSA-qx66-fv34-fjm8): Vercel refuses to deploy
+  # @tanstack/react-start < 1.168.60. The fixed release train shipped on
+  # 2026-09-30; these exact versions can be dropped once they're older
+  # than the 48h gate.
+  - '@tanstack/react-router@1.170.41'
+  - '@tanstack/react-start@1.168.60'
+  - '@tanstack/react-start-client@1.168.39'
+  - '@tanstack/react-start-rsc@0.1.59'
+  - '@tanstack/react-start-server@1.167.46'
+  - '@tanstack/router-core@1.171.34'
+  - '@tanstack/router-generator@1.167.40'
+  - '@tanstack/router-plugin@1.168.42'
+  - '@tanstack/start-client-core@1.170.34'
+  - '@tanstack/start-plugin-core@1.171.49'
+  - '@tanstack/start-server-core@1.169.39'
+  - '@tanstack/start-storage-context@1.167.36'
 
 onlyBuiltDependencies:
   - esbuild
 
 overrides:
+  # Single @opentelemetry/api instance workspace-wide: with two resolved
+  # copies (1.9.0 + 1.9.1), the copy that registers the tracer provider and
+  # the copy a package imports can differ, and the API's global-registration
+  # version check then hands the importer a noop tracer (#2900). It also
+  # splits `next` into one copy per otel version, whose `NextConfig` types
+  # are incompatible as of next 16.3, breaking `withWorkflow()` typechecks
+  # in the workbenches.
+  '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
-  devalue: 5.8.1
+  devalue: 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
   # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
   # (arbitrary file read / .map disclosure via attacker-controlled

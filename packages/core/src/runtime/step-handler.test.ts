@@ -1,4 +1,9 @@
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RunExpiredError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted so these are available in mock factories
@@ -574,7 +579,9 @@ describe('step-handler max deliveries', () => {
     );
   });
 
-  it('should consume message silently when step_failed fails with EntityConflictError', async () => {
+  it('should re-queue the workflow when step_failed fails with EntityConflictError', async () => {
+    // The step may have been failed by this message's own earlier delivery,
+    // whose workflow re-queue then failed: wake the workflow regardless.
     mockEventsCreate.mockRejectedValue(
       new EntityConflictError('Step already completed')
     );
@@ -586,6 +593,73 @@ describe('step-handler max deliveries', () => {
 
     expect(result).toBeUndefined();
     expect(mockStepFn).not.toHaveBeenCalled();
+    expect(mockQueueMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('should consume message silently when the run has already finished', async () => {
+    mockEventsCreate.mockRejectedValue(new RunExpiredError('Run completed'));
+
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES + 1,
+    });
+
+    expect(result).toBeUndefined();
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'ThrottleError (429)',
+      new ThrottleError('rate limited', { retryAfter: 5 }),
+    ],
+    [
+      'WorkflowWorldError (5xx)',
+      new WorkflowWorldError('server error', { status: 503 }),
+    ],
+  ])('should throw (not strand the run) when step_failed hits a transient %s', async (_label, transientError) => {
+    // Regression: acking on any step_failed failure left the step `running`
+    // and the run with no message left to drive it.
+    mockEventsCreate.mockRejectedValue(transientError);
+
+    await expect(
+      capturedHandler(createMessage(), {
+        ...createMetadata('myStep'),
+        attempt: MAX_QUEUE_DELIVERIES + 1,
+      })
+    ).rejects.toBe(transientError);
+    expect(mockStepFn).not.toHaveBeenCalled();
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+
+  it('should throw when re-queueing the workflow fails', async () => {
+    const sendError = new Error('queue send failed');
+    mockQueueMessage.mockRejectedValue(sendError);
+
+    await expect(
+      capturedHandler(createMessage(), {
+        ...createMetadata('myStep'),
+        attempt: MAX_QUEUE_DELIVERIES + 1,
+      })
+    ).rejects.toBe(sendError);
+  });
+
+  it('should consume the message on a definitive step_failed rejection', async () => {
+    mockEventsCreate.mockRejectedValue(
+      new WorkflowWorldError('bad request', { status: 400 })
+    );
+
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES + 1,
+    });
+
+    expect(result).toBeUndefined();
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(mockRuntimeLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to mark step as failed'),
+      expect.anything()
+    );
   });
 
   it('should not trigger max deliveries check when under limit', async () => {
