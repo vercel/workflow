@@ -26,11 +26,12 @@ import {
   it,
   vi,
 } from 'vitest';
-import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import { decodeFrame, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { noteOwnerAffinity } from './run-affinity.js';
 import { createStorage } from './storage.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
+import { encodeWsFrameMessages } from './ws-parts.js';
 import {
   getWsEventsTransport,
   isWsEventsTransportEnabled,
@@ -383,6 +384,58 @@ describe('owner event writer', () => {
         expect(socket.sent).toHaveLength(0);
         expect(fetch).not.toHaveBeenCalled();
       } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('rebuilds a catch-up event the server sent as parts under reqId -1', () =>
+    withEventsync(async () => {
+      const previous = process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
+      process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(2 * 1024 * 1024);
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const socket = await nextSocket();
+        expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+        socket.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        const input = new Uint8Array(3 * 1024 * 1024).fill(5);
+        const body = encodeFrame(
+          {
+            eventId: slotId(1),
+            runId: 'wrun_test',
+            eventType: 'run_created',
+            createdAt: created,
+            specVersion: 6,
+            eventData: { deploymentId: 'dpl', workflowName: 'wf' },
+          },
+          input
+        );
+        // The server's catch-up push, split as parts under reqId -1.
+        const parts = encodeWsFrameMessages(
+          { reqId: 0, type: 'history', eventCount: 1 },
+          body,
+          2 * 1024 * 1024
+        ).map((message) => {
+          const { meta, body: piece } = decodeFrame(message);
+          return encodeFrame({ ...meta, reqId: -1 }, piece);
+        });
+        expect(parts.length).toBe(2);
+        for (const part of parts) socket.deliver(part);
+        socket.deliver(
+          encodeFrame({ reqId: -1, type: 'synced', head: 1 }, EMPTY)
+        );
+        const result = await loaded;
+        expect(result.head).toBe(1);
+        const received = (result.events[0].eventData as { input: Uint8Array })
+          .input;
+        expect(received.byteLength).toBe(input.byteLength);
+        expect(Buffer.from(received).equals(Buffer.from(input))).toBe(true);
+      } finally {
+        if (previous === undefined)
+          delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
+        else process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = previous;
         await writer.dispose();
       }
     }));

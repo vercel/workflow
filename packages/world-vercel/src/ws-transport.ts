@@ -28,7 +28,12 @@ import { WorkflowWorldError } from '@workflow/errors';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { decode as decodeCbor } from 'cbor-x';
 import { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
+import {
+  type DecodedFrame,
+  decodeFrame,
+  decodeFrames,
+  encodeFrame,
+} from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -43,6 +48,13 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
+import {
+  splitEncodedFrame,
+  WS_CLIENT_FLAGS,
+  WS_FLAGS_HEADER,
+  WsPartAssembler,
+  wsMaxMessageBytes,
+} from './ws-parts.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
@@ -110,6 +122,8 @@ interface PendingRequest {
  */
 interface Connection {
   ws: WebSocket;
+  /** Rebuilds replies (and eventsync catch-up pushes) sent as parts. */
+  parts: WsPartAssembler;
   nextReqId: number;
   pending: Map<number, PendingRequest>;
   generation: number;
@@ -141,6 +155,48 @@ function readAuthorization(headers: Record<string, string>): string | null {
     if (key.toLowerCase() === 'authorization') return value;
   }
   return null;
+}
+
+/** Eventsync's catch-up pushes (`reqId: -1`) may arrive as parts too. */
+function isSplittableReply(reqId: unknown): reqId is number {
+  return (
+    typeof reqId === 'number' &&
+    Number.isSafeInteger(reqId) &&
+    (reqId >= 0 || reqId === -1)
+  );
+}
+
+/**
+ * Send one encoded frame: whole when it fits the message limit, otherwise as
+ * parts, back to back, with `cb` called once after the last (or on the first
+ * failure, including a frame too large even for parts).
+ */
+function sendFrame(
+  ws: WebSocket,
+  frame: Uint8Array,
+  cb: (err?: Error) => void
+): void {
+  let messages: Uint8Array[];
+  try {
+    messages = splitEncodedFrame(frame, wsMaxMessageBytes());
+  } catch (err) {
+    cb(err as Error);
+    return;
+  }
+  if (messages.length === 1) {
+    ws.send(frame, cb);
+    return;
+  }
+  let failed = false;
+  messages.forEach((message, index) =>
+    ws.send(message, (err) => {
+      if (failed) return;
+      if (err) {
+        failed = true;
+        cb(err);
+      } else if (index === messages.length - 1) cb();
+    })
+  );
 }
 
 async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
@@ -260,7 +316,7 @@ class WsEventsTransport {
           );
         }, timeoutMs);
         deadline.unref?.();
-        conn.ws.send(frame, (err) => {
+        sendFrame(conn.ws, frame, (err) => {
           if (!err) {
             onSent?.();
             return;
@@ -439,6 +495,8 @@ class WsEventsTransport {
     carrier.forEach((value, key) => {
       headers[key] = value;
     });
+    // This client rebuilds replies sent as parts (`ws-parts.ts`).
+    headers[WS_FLAGS_HEADER] = WS_CLIENT_FLAGS.join(',');
 
     return headers;
   }
@@ -569,6 +627,7 @@ class WsEventsTransport {
           ws.binaryType = 'nodebuffer';
           conn = {
             ws,
+            parts: new WsPartAssembler({ splittable: isSplittableReply }),
             nextReqId: 1,
             pending: new Map(),
             generation: ++this.generation,
@@ -677,12 +736,33 @@ class WsEventsTransport {
         if (!pooled) ws.on('open', onOpen);
 
         ws.on('message', (raw: Buffer) => {
+          // Rebuild a frame sent as parts before anything reads it.
+          let bytes: Uint8Array;
+          try {
+            const message = new Uint8Array(raw);
+            const frame = decodeFrame(message);
+            const whole = conn.parts.accept(frame);
+            if (!whole) return;
+            bytes =
+              whole === frame ? message : encodeFrame(whole.meta, whole.body);
+          } catch (err) {
+            // Unreadable framing, or a part the protocol does not allow: the
+            // socket can't be trusted, so it goes, loudly.
+            const detail =
+              `could not decode a ${raw.byteLength}-byte frame from ` +
+              `${this.wsUrl}: ${describeError(err)}`;
+            console.error(`world-vercel: ws events transport ${detail}`);
+            this.failConnection(
+              conn,
+              `workflow-server events WS transport ${detail}`
+            );
+            return;
+          }
           if (!syncing) {
-            void this.handleMessage(conn, new Uint8Array(raw));
+            void this.handleMessage(conn, bytes);
             return;
           }
           const sync = syncing;
-          const bytes = new Uint8Array(raw);
           // Catch-up frames are applied strictly in arrival order.
           syncChain = syncChain
             .then(() => decodeOneFrame(bytes))
@@ -1146,7 +1226,10 @@ async function openPooledSocket(
   let ws: WebSocket;
   try {
     ws = new WebSocket(url, {
-      headers: await getHeaders({ forceRefresh: false }),
+      headers: {
+        ...(await getHeaders({ forceRefresh: false })),
+        [WS_FLAGS_HEADER]: WS_CLIENT_FLAGS.join(','),
+      },
     });
   } catch {
     opened();
