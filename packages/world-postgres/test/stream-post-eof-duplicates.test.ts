@@ -1,10 +1,10 @@
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createStreamer } from '../src/streamer.js';
+import { TestPool } from './pool.js';
 
 /**
  * A producer that retries a terminal write (lost ACK, overlapping attempts)
@@ -21,7 +21,7 @@ describe('Postgres stream reads after a retried terminal write', () => {
   }
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let streamer: ReturnType<typeof createStreamer>;
 
   beforeAll(async () => {
@@ -36,7 +36,7 @@ describe('Postgres stream reads after a retried terminal write', () => {
       env: process.env,
     });
 
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
     const drizzle = createClient(pool);
     streamer = createStreamer(pool, drizzle);
   }, 120_000);
