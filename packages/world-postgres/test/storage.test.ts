@@ -23,6 +23,7 @@ import {
   createRunsStorage,
   createStepsStorage,
 } from '../src/storage.js';
+import { TestPool } from './pool.js';
 
 // Helper types for events storage
 type EventsStorage = ReturnType<typeof createEventsStorage>;
@@ -178,7 +179,7 @@ describe('Storage (Postgres integration)', () => {
     });
 
     // Initialize database clients and storage
-    pool = new Pool({ connectionString: dbUrl, max: 1 });
+    pool = new TestPool({ connectionString: dbUrl, max: 1 });
     drizzle = createClient(pool);
     runs = createRunsStorage(drizzle);
     steps = createStepsStorage(drizzle);
