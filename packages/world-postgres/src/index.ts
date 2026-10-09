@@ -60,14 +60,9 @@ export function createWorld(
 ): World & { start(): Promise<void> } {
   const maxPoolSize =
     config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
-  const pool =
-    config.pool ||
-    new Pool({
-      connectionString: config.connectionString || getDefaultConnectionString(),
-      ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
-    });
   let closing = false;
-  if (pool !== config.pool) handleConnectionErrors(pool, () => closing);
+  const pool =
+    config.pool || createOwnedPool(config, maxPoolSize, () => closing);
 
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
@@ -116,6 +111,32 @@ export function createWorld(
       }
     },
   };
+}
+
+/**
+ * The pool the World creates when the caller passes none.
+ *
+ * It listens for connection errors on the pool and on every client it
+ * connects (see `handleConnectionErrors`): a database restart or
+ * `pg_terminate_backend` emits `error` on an idle client, which pg-pool
+ * re-emits on the pool, and on a checked-out client, which pg-pool does not
+ * listen on at all. With no listener either is an uncaught exception.
+ * Graphile Worker listens only while the queue runs, and `pool.end()`
+ * resolves before its idle clients have closed, so without this a backend
+ * terminated during or after `close()` ends the process. The dropped client
+ * leaves the pool, and the next query opens a new one.
+ */
+function createOwnedPool(
+  config: PostgresWorldConfig,
+  maxPoolSize: number | undefined,
+  isClosing: () => boolean
+): Pool {
+  const pool = new Pool({
+    connectionString: config.connectionString || getDefaultConnectionString(),
+    ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
+  });
+  handleConnectionErrors(pool, isClosing);
+  return pool;
 }
 
 // Re-export schema for users who want to extend or inspect the database schema

@@ -2,4 +2,4 @@
 "@workflow/world-postgres": patch
 ---
 
-Keep a dropped connection in the World's own `pg` pool from ending the process.
+Keep a checked-out client in the World's own `pg` pool from ending the process when the database drops its connection.

@@ -697,20 +697,24 @@ export function createRunsStorage(
     list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
+      // Run ids are ULIDs, so id order is creation order.
+      const sortOrder = params?.pagination?.sortOrder ?? 'desc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
 
       const all = await drizzle
         .select()
         .from(runs)
         .where(
           and(
-            map(fromCursor, (c) => lt(runs.runId, c)),
+            map(fromCursor, (c) => cursorFn(runs.runId, c)),
             map(params?.workflowName, (wf) => eq(runs.workflowName, wf)),
             map(params?.status, (s) =>
               Array.isArray(s) ? inArray(runs.status, s) : eq(runs.status, s)
             )
           )
         )
-        .orderBy(desc(runs.runId))
+        .orderBy(orderFn(runs.runId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;
@@ -3258,6 +3262,10 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
     list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
+      // Step ids are `step_<ulid>`, so id order is creation order.
+      const sortOrder = params?.pagination?.sortOrder ?? 'desc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
 
       const all = await drizzle
         .select()
@@ -3265,10 +3273,10 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
         .where(
           and(
             eq(steps.runId, params.runId),
-            map(fromCursor, (c) => lt(steps.stepId, c))
+            map(fromCursor, (c) => cursorFn(steps.stepId, c))
           )
         )
-        .orderBy(desc(steps.stepId))
+        .orderBy(orderFn(steps.stepId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;
