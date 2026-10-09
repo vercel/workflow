@@ -2,6 +2,10 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+The CI benchmark suite in `e2e/benchmark.test.ts` measures time to first step,
+fan-out, and sequential-step overhead. Streaming delivery performance is
+measured in durabench; stream correctness remains covered by unit and E2E tests.
+
 Steps wait for released stream writers to drain before recording completion,
 then release idle transport resources when the World supports it. Reacquiring
 the same writable remains supported. Aborting a public writable drains its
@@ -47,3 +51,6 @@ Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
 The callback's `waitUntil` scope also drains background operations for streams
 hydrated from the persisted failure, including when a handler throws.
+Register in the workflow executor's host startup, never from workflow or step
+code. Framework-specific support, hot-reload behavior, and stream cleanup are
+documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks).

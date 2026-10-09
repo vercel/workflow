@@ -189,7 +189,7 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
   if (output) {
     return (
       <div className="border rounded-lg p-4">
-        <p className="text-sm text-muted-foreground">{output}</p>
+        <p className="text-sm text-gray-900">{output}</p>
       </div>
     );
   }
@@ -211,7 +211,7 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
     <div className="border rounded-lg p-4 space-y-4">
       <div className="space-y-2">
         <p className="font-medium">Approve this booking?</p>
-        <div className="text-sm text-muted-foreground">
+        <div className="text-sm text-gray-900">
           {input && (
             <div className="space-y-2">
               <div>Flight: {input.flightNumber}</div>

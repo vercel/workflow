@@ -2,10 +2,12 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD,
   getSnapshotThreshold,
   getSnapshotThresholdForHandler,
   getSnapshotThresholdFromEnv,
   getWorkflowVmFromEnv,
+  isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
   useQuickJSVm,
   WORKFLOW_VMS,
@@ -166,8 +168,23 @@ describe('getSnapshotThreshold', () => {
     delete process.env.WORKFLOW_SNAPSHOT_THRESHOLD;
   });
 
-  it('defaults to 0 (disabled)', () => {
+  it('defaults to DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD (1000)', () => {
+    expect(DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD).toBe(1000);
+    expect(getSnapshotThreshold(makeRun())).toBe(1000);
+    expect(isSnapshotThresholdConfigured(makeRun())).toBe(false);
+  });
+
+  it('WORKFLOW_SNAPSHOT_THRESHOLD=0 explicitly opts out', () => {
+    process.env.WORKFLOW_SNAPSHOT_THRESHOLD = '0';
     expect(getSnapshotThreshold(makeRun())).toBe(0);
+    expect(isSnapshotThresholdConfigured(makeRun())).toBe(true);
+  });
+
+  it('treats a stamped policy as configured', () => {
+    expect(
+      isSnapshotThresholdConfigured(makeRun({ snapshotThreshold: 0 }))
+    ).toBe(true);
+    expect(getSnapshotThreshold(makeRun({ snapshotThreshold: 0 }))).toBe(0);
   });
 
   it('reads the env var when the run has no stamped policy', () => {

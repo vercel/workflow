@@ -170,8 +170,11 @@ describe('instrumentedFetch URL validation', () => {
   it.each([
     ['TRANSPORT', { Expect: '100-continue' }, 'UND_ERR_NOT_SUPPORTED'],
     ['STREAM_ERROR', { Expect: '100-continue' }, 'UND_ERR_NOT_SUPPORTED'],
-    ['TRANSPORT', { Connection: 'invalid' }, 'UND_ERR_INVALID_ARG'],
-    ['STREAM_ERROR', { Connection: 'invalid' }, 'UND_ERR_INVALID_ARG'],
+    // Undici rejects Transfer-Encoding during dispatch on every supported
+    // Node line. (It stopped rejecting `Connection: invalid` in 7.29 / Node
+    // 24.21, which then fails at connect time instead.)
+    ['TRANSPORT', { 'Transfer-Encoding': 'chunked' }, 'UND_ERR_INVALID_ARG'],
+    ['STREAM_ERROR', { 'Transfer-Encoding': 'chunked' }, 'UND_ERR_INVALID_ARG'],
   ] as const)('preserves %s request-validation errors for %j', async (transportErrorCode, headers, code) => {
     vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     const fetchSpy = vi.spyOn(globalThis, 'fetch');

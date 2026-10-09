@@ -239,14 +239,15 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_SNAPSHOT_THRESHOLD`
 
-- Default: `0` (disabled)
-- Values: non-negative integer
+- Default: `1000` when the QuickJS engine is selected
+- Values: non-negative integer. `0` disables snapshotting.
 - Experimental. Only used by the QuickJS engine (`WORKFLOW_VM=quickjs`), and only with a World that provides snapshot storage (world-local, world-postgres, and world-vercel do).
-- When set above `0`, the runtime persists a **VM-memory snapshot** at a suspension once at least this many events have been processed since the last snapshot. Subsequent invocations restore the VM from the snapshot and replay only the events recorded since, instead of re-executing the workflow from the top against the full event log.
+- When above `0`, the runtime persists a **VM-memory snapshot** at a suspension once at least this many events have been processed since the last snapshot. Subsequent invocations restore the VM from the snapshot and replay only the events recorded since, instead of re-executing the workflow from the top against the full event log.
 - Short-lived runs below the threshold never pay the snapshot cost; long-running or unbounded runs stop scaling their resume cost with total event-log length. `1` snapshots at every qualifying suspension.
 - Choosing a value: a restore costs roughly the same regardless of log length (tens of milliseconds to decompress and restore the heap, plus fetching the snapshot), while a full replay grows with the log (tens of milliseconds at a few hundred events, seconds at several thousand). Restoring starts to pay off at a few hundred events, so values in the hundreds suit most long-running workflows. Very low values mostly add snapshot saves to runs that replay quickly anyway.
 - Snapshots are an optimization, not a source of truth: the event log remains authoritative, and a missing, corrupt, oversized, or incompatible snapshot automatically falls back to a full replay. Snapshots over 32 MB uncompressed are not saved.
-- Like `WORKFLOW_VM`, the policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with. `start()` rejects an invalid value. An invalid value on the workflow handler disables snapshotting with a warning.
+- Set `0` to opt out and always replay the full event log.
+- Like `WORKFLOW_VM`, an explicitly set policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with. Runs without a stamped policy use the handler's value, or the default. `start()` rejects an invalid value. An invalid value on the workflow handler disables snapshotting with a warning.
 - A snapshot can only be restored by the exact QuickJS engine build that captured it. On Vercel, runs keep executing on the deployment they started on, so deploys don't affect in-flight snapshots. If your deployment serves in-flight runs from new code (for example, a self-hosted rolling update), an upgrade that changes the embedded engine makes every in-flight run fall back to a full replay at its next resume, all at once, before re-snapshotting at its next qualifying suspension. Plan for that one-time replay load when upgrading.
 
 What a snapshot contains, and how it is protected:

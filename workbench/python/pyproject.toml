@@ -9,7 +9,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-vercel-workflow = { git = "https://github.com/vercel/vercel-py", branch = "main", subdirectory = "src/vercel-workflow" }
+# TEMPORARY: matching per-run layout in vercel-py; revert to vercel/vercel-py main before merge.
+vercel-workflow = { git = "https://github.com/ruiconti/vercel-py", branch = "rui/local-world-per-run-dirs-on-cc65153", subdirectory = "src/vercel-workflow" }
 
 [tool.vercel]
 entrypoint = "app:app"

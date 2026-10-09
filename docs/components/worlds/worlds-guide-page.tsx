@@ -86,7 +86,10 @@ export async function WorldsGuidePage({
 
   // Content links are authored against the raw /docs/... and /worlds/... URL
   // spaces; on the maintenance route they are rewritten into the /v4 view.
-  const RelativeLink = createRelativeLink(source, page);
+  const RelativeLink = createRelativeLink(
+    source as unknown as Parameters<typeof createRelativeLink>[0],
+    page
+  );
   const VersionedLink = (props: ComponentProps<'a'>) => (
     <RelativeLink
       {...props}
@@ -104,7 +107,7 @@ export async function WorldsGuidePage({
               <h1 className="text-heading-40 sm:text-heading-48">
                 {page.data.title}
               </h1>
-              <p className="mt-4 max-w-2xl text-muted-foreground sm:text-lg">
+              <p className="mt-4 max-w-2xl text-gray-900 sm:text-lg">
                 {page.data.description}
               </p>
             </div>
