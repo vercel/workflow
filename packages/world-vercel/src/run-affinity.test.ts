@@ -1,67 +1,72 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invocationAffinity } from './invocation.js';
 import {
-  affinityCellSize,
-  affinityForRoutingKey,
+  affinityForMarker,
   forgetRunAffinity,
   freshRunAffinity,
   noteOwnerAffinity,
   ownerAffinity,
   recordRunAffinity,
+  singleOwnerMarker,
 } from './run-affinity.js';
 
 afterEach(() => {
   vi.useRealTimers();
-  vi.unstubAllEnvs();
 });
 
 describe('run affinity', () => {
-  it('records server-reported cells and defaults to the run ID', () => {
-    recordRunAffinity('wrun_a', 'cell-iad1-abc123-3');
-    recordRunAffinity('wrun_b', undefined);
-    expect(freshRunAffinity('wrun_a')).toBe('cell-iad1-abc123-3');
+  it("records a single-owner run's placement and defaults to the run ID", () => {
+    recordRunAffinity('wrun_a', '{"vercelAffinity":"cell-3"}', 'dpl_a');
+    recordRunAffinity('wrun_b', undefined, 'dpl_a');
+    recordRunAffinity('wrun_c', '{}', 'dpl_a');
+    expect(freshRunAffinity('wrun_a')).toBe('cell-3.dpl_a');
     expect(freshRunAffinity('wrun_b')).toBe('wrun_b');
+    expect(freshRunAffinity('wrun_c')).toBe('wrun_c');
     forgetRunAffinity('wrun_a');
     expect(freshRunAffinity('wrun_a')).toBeUndefined();
   });
 
   it('does not reuse a mapping past its freshness window', () => {
     vi.useFakeTimers();
-    recordRunAffinity('wrun_c', 'cell-iad1-abc123-0');
+    recordRunAffinity('wrun_c', '{"vercelAffinity":"cell-0"}', 'dpl_a');
     vi.advanceTimersByTime(61_000);
     expect(freshRunAffinity('wrun_c')).toBeUndefined();
   });
 
   it('remembers the affinity an owner was invoked under', () => {
-    noteOwnerAffinity('wrun_d', 'cell-iad1-abc123-1');
-    expect(ownerAffinity('wrun_d')).toBe('cell-iad1-abc123-1');
+    noteOwnerAffinity('wrun_d', 'cell-1.dpl_a');
+    expect(ownerAffinity('wrun_d')).toBe('cell-1.dpl_a');
     // The owner labels and routes its own run with it when it has no
-    // fresher server mapping.
-    expect(invocationAffinity('wrun_d')).toBe('cell-iad1-abc123-1');
+    // fresher mapping.
+    expect(invocationAffinity('wrun_d')).toBe('cell-1.dpl_a');
   });
 
-  it('reads the requested cell size from the environment', () => {
-    vi.stubEnv('WORKFLOW_AFFINITY_CELL_SIZE', '10');
-    expect(affinityCellSize()).toBe(10);
-    for (const value of ['', '0', '1.5', '1001', 'ten']) {
-      vi.stubEnv('WORKFLOW_AFFINITY_CELL_SIZE', value);
-      expect(affinityCellSize()).toBeUndefined();
-    }
+  it('reads the marker from run attributes', () => {
+    expect(
+      singleOwnerMarker({ $experimentalSingleOwner: '{}', team: 'a' })
+    ).toBe('{}');
+    expect(singleOwnerMarker({ team: 'a' })).toBeUndefined();
+    expect(singleOwnerMarker(undefined)).toBeUndefined();
   });
 });
 
-describe('routing keys', () => {
-  it('scopes a shared key by the run deployment', () => {
-    expect(affinityForRoutingKey('wrun_1', 'cell-0', 'dpl_a')).toBe(
-      'cell-0.dpl_a'
-    );
-    expect(affinityForRoutingKey('wrun_2', 'cell-0', 'dpl_b')).toBe(
-      'cell-0.dpl_b'
-    );
+describe('placement', () => {
+  it('scopes a shared affinity by the run deployment', () => {
+    expect(
+      affinityForMarker('wrun_1', '{"vercelAffinity":"cell-0"}', 'dpl_a')
+    ).toBe('cell-0.dpl_a');
+    expect(
+      affinityForMarker('wrun_2', '{"vercelAffinity":"cell-0"}', 'dpl_b')
+    ).toBe('cell-0.dpl_b');
   });
 
-  it('routes a run by itself without a key, or with its own ID', () => {
-    expect(affinityForRoutingKey('wrun_1', undefined, 'dpl_a')).toBe('wrun_1');
-    expect(affinityForRoutingKey('wrun_1', 'wrun_1', 'dpl_a')).toBe('wrun_1');
+  it('routes a run by itself when its marker names no affinity, or names the run', () => {
+    for (const marker of [
+      '{}',
+      '{"vercelAffinity":""}',
+      '{"vercelAffinity":"wrun_1"}',
+      'not json',
+    ])
+      expect(affinityForMarker('wrun_1', marker, 'dpl_a')).toBe('wrun_1');
   });
 });

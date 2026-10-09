@@ -5,6 +5,7 @@ import {
   EntityConflictError,
   PreconditionFailedError,
   RUN_ERROR_CODES,
+  WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -54,6 +55,7 @@ import {
 } from './owned-step.js';
 import { isRetryableOwnerDelivery } from './owner-delivery.js';
 import { reduceStep, runFromCreation } from './owner-state.js';
+import { isSingleOwnerRun } from './single-owner.js';
 import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
 import { useQuickJSVm } from './vm-mode.js';
@@ -104,24 +106,12 @@ function yieldToEventLoop() {
   );
 }
 
-/**
- * An event's data as the owner compares it with its acknowledgement. A run's
- * routing (`run_created`'s `routingKey`, which the backend records in its own
- * form) is not run data, so it is left out.
- */
+/** An event's data as the owner compares it with its acknowledgement. */
 function comparableEventData(event: {
   eventType: string;
   eventData?: unknown;
 }) {
-  if (event.eventType !== 'run_created' || !event.eventData)
-    return event.eventData;
-  const {
-    routingKey: _routingKey,
-    affinityId: _affinityId,
-    affinityCellSize: _affinityCellSize,
-    ...data
-  } = event.eventData as Record<string, unknown>;
-  return data;
+  return event.eventData;
 }
 
 /** The top-level keys two event data objects disagree on (diagnostics). */
@@ -969,9 +959,6 @@ export class RetainedRunner {
         ...(input.allowReservedAttributes
           ? { allowReservedAttributes: true as const }
           : {}),
-        // Recorded even when the run is routed by itself, so the backend
-        // keeps the routing this start used instead of choosing its own.
-        ...(input.routingKey ? { routingKey: input.routingKey } : {}),
       },
     } as unknown as CreateEventRequest);
     if (!result.event)
@@ -982,8 +969,8 @@ export class RetainedRunner {
   private async validateRun() {
     if (!this.runState)
       throw new InputRejected('Run not found', { status: 404 });
-    if (this.runState!.executionContext?.retainedRunnerVersion !== 1)
-      throw new InputRejected('Run was not created for retained execution', {
+    if (!isSingleOwnerRun(this.runState))
+      throw new InputRejected('Run is not a single-owner run', {
         status: 409,
       });
     if (useQuickJSVm(this.runState!))
@@ -2354,8 +2341,12 @@ export class RetainedRunner {
           this.signal?.();
           return;
         }
+        // A single-owner run on a backend with write sessions is written only
+        // by its owner's writer. A backend without them has no other writer
+        // to avoid, so its terminal failure takes the ordinary write.
         const ownerJournal =
-          this.runState?.executionContext?.ownerJournalVersion === 1;
+          isSingleOwnerRun(this.runState) &&
+          this.backend.events.createWriteSession !== undefined;
         // Preserve the legacy terminal-write path for older runs. Journal owners
         // instead use their existing writer, which rejects permanently if its
         // sequence or persistence outcome is uncertain.
@@ -2490,12 +2481,66 @@ export function withRetainedRunner(
       registries.set(world, owners);
     }
     const registry = owners;
+    // This deployment hosts single-owner runs; every other run keeps the
+    // existing handler (`single-owner.ts`).
+    const fallback = withRunInputs(world)(legacy);
+    const unowned = globalSingleton(
+      '@workflow/core//notSingleOwner',
+      1,
+      () => new Map<string, true>()
+    );
+    const singleOwner = async (input: {
+      runId: string;
+      invoke?: unknown;
+      input?: unknown;
+      runInput?: { attributes?: Record<string, unknown> };
+    }) => {
+      if (registry.has(input.runId)) return true;
+      if (unowned.has(input.runId)) return false;
+      // A start carries the run's attributes; anything else reads the run.
+      const startInput =
+        input.invoke &&
+        input.input &&
+        typeof input.input === 'object' &&
+        (input.input as { type?: unknown }).type === 'run_start'
+          ? (input.input as { runInput?: { attributes?: unknown } }).runInput
+          : input.runInput;
+      let marked: boolean;
+      if (startInput)
+        marked = isSingleOwnerRun(
+          startInput as { attributes?: Record<string, unknown> }
+        );
+      else {
+        const run = await world.runs
+          .get(input.runId, { resolveData: 'none' })
+          .catch((error: unknown) => {
+            // A run that does not exist yet is its owner's to create.
+            if (
+              WorkflowRunNotFoundError.is(error) ||
+              (WorkflowWorldError.is(error) && error.status === 404)
+            )
+              return undefined;
+            throw error;
+          });
+        marked = !run || isSingleOwnerRun(run);
+      }
+      if (!marked) {
+        unowned.set(input.runId, true);
+        if (unowned.size > 10_000)
+          unowned.delete(unowned.keys().next().value as string);
+      }
+      return marked;
+    };
     return async (message, metadata) => {
       if (isOwnedStepMessage(message))
         return executeOwnedStep(world, message, metadata);
       if (HealthCheckPayloadSchema.safeParse(message).success)
         return legacy(message, metadata);
       const input = WorkflowInvokePayloadSchema.parse(message);
+      // Only single-owner runs are invoked; a queue delivery for any other
+      // run takes the existing path.
+      if (!input.invoke && !(await singleOwner(input)))
+        return fallback(message, metadata);
       let owner = registry.get(input.runId);
       if (!owner) {
         if (registry.size >= 64)

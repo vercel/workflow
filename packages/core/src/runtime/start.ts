@@ -43,6 +43,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { QueuedStepPolicySchema } from './owned-step.js';
 import { Run } from './run.js';
+import { isSingleOwnerRun } from './single-owner.js';
 import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
@@ -196,13 +197,6 @@ export interface StartOptionsBase {
     mode: 'queued' | 'hybrid';
     attemptTimeoutMs?: number;
   };
-
-  /**
-   * Opaque co-location key for a retained run's owner (see the World's
-   * `InvokeOptions.routingKey`): runs started with the same key share an
-   * executor where the World supports it. Defaults to the run itself.
-   */
-  experimental_routingKey?: string;
 
   /**
    * With an invoke-first start, wait for `run_created` to be durable before
@@ -661,32 +655,31 @@ export async function start<TArgs extends unknown[], TResult>(
       // getWorkflowVmFromEnv().
       const workflowVm = getWorkflowVmFromEnv();
 
-      const stepExecution = opts.experimental_stepExecution
-        ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
-        : undefined;
+      // A single-owner run (`single-owner.ts`) is the caller's choice, made
+      // with its marker attribute. It needs a deployment that hosts the
+      // single-owner runner and a World that can invoke its owner: the run is
+      // stored for its owner alone, so it must never be written another way.
+      const singleOwner = isSingleOwnerRun({ attributes: runAttributes });
       if (
-        stepExecution &&
+        singleOwner &&
         (process.env.WORKFLOW_RETAINED_RUNNER !== '1' ||
           !world.capabilities?.invoke ||
           !world.invoke ||
           deploymentId !== currentDeploymentId)
       )
         throw new WorkflowRuntimeError(
-          'Queued step execution requires a local-target retained owner with invoke'
+          'A single-owner run requires a local-target deployment with the single-owner runner (WORKFLOW_RETAINED_RUNNER=1) and an invoke-capable World'
+        );
+      const stepExecution = opts.experimental_stepExecution
+        ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
+        : undefined;
+      if (stepExecution && !singleOwner)
+        throw new WorkflowRuntimeError(
+          'Queued step execution requires a single-owner run'
         );
 
       const executionContext = {
         ...(stepExecution ? { stepExecution } : {}),
-        ...(process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
-        world.capabilities?.invoke &&
-        deploymentId === currentDeploymentId
-          ? {
-              retainedRunnerVersion: 1,
-              ...(process.env.WORKFLOW_OWNER_JOURNAL === '1'
-                ? { ownerJournalVersion: 1 }
-                : {}),
-            }
-          : {}),
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
@@ -716,11 +709,10 @@ export async function start<TArgs extends unknown[], TResult>(
       // falls back to the create-first path below, where an existing run is a
       // benign conflict.
       if (
-        executionContext.retainedRunnerVersion === 1 &&
+        singleOwner &&
         process.env.WORKFLOW_INVOKE_FIRST_START === '1' &&
         world.invoke
       ) {
-        const routingKey = opts.experimental_routingKey ?? runId;
         try {
           await world.invoke(
             runId,
@@ -742,13 +734,11 @@ export async function start<TArgs extends unknown[], TResult>(
                   ? { environment: creatorEnvironment }
                   : {}),
                 ...attributeSeed,
-                routingKey,
               },
             },
             {
               idempotencyKey: `run-start:${runId}`,
               target: { deploymentId, workflowName },
-              routingKey,
             }
           );
           safeWaitUntil(Promise.all(ops), (err) => {
@@ -792,12 +782,6 @@ export async function start<TArgs extends unknown[], TResult>(
             executionContext,
             ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
             ...attributeSeed,
-            // An invoke-first start routes the run by its key (or by itself);
-            // a fallback creation records the same routing.
-            ...(opts.experimental_routingKey ||
-            process.env.WORKFLOW_INVOKE_FIRST_START === '1'
-              ? { routingKey: opts.experimental_routingKey ?? runId }
-              : {}),
           },
         },
         { v1Compat }
@@ -863,7 +847,7 @@ export async function start<TArgs extends unknown[], TResult>(
       };
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         creation,
-        executionContext.retainedRunnerVersion === 1
+        singleOwner
           ? creation.then(startOwner, (error: unknown) =>
               // The run already exists (an earlier start created it): its
               // owner still has to be started.

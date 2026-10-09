@@ -155,18 +155,18 @@ afterEach(() => {
 
 describe('direct Vercel invocation', () => {
   it('reuses native hook routing context without fetching the run again', async () => {
-    // The hook lookup that produced this context also reported the run's
-    // current affinity.
-    recordRunAffinity(runId, 'cell-iad1-abc123-0');
+    // The hook lookup that produced this context also carried the run's
+    // single-owner placement.
+    recordRunAffinity(runId, '{"vercelAffinity":"cell-0"}', 'dpl_hook');
     const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
       expect(new Headers(init.headers).get(DEPLOYMENT_HEADER)).toBe('dpl_hook');
       expect(new Headers(init.headers).get(AFFINITY_HEADER)).toBe(
-        'cell-iad1-abc123-0'
+        'cell-0.dpl_hook'
       );
       expect(decode(Buffer.from(init.body as Uint8Array))).toMatchObject({
         deploymentId: 'dpl_hook',
         queueName: '__wkf_workflow_from_hook',
-        affinityId: 'cell-iad1-abc123-0',
+        affinityId: 'cell-0.dpl_hook',
       });
       return new Response(encode({ ok: true, value: 'ok' }), {
         headers: { [INVOCATION_HEADER]: '1' },
@@ -198,7 +198,7 @@ describe('direct Vercel invocation', () => {
     expect(mocks.run).toHaveBeenCalledTimes(1);
   });
   it('forgets the mapping when the owner reports it superseded', async () => {
-    recordRunAffinity(runId, 'cell-iad1-abc123-0');
+    recordRunAffinity(runId, '{"vercelAffinity":"cell-0"}', 'dpl_pinned');
     vi.stubGlobal(
       'fetch',
       vi.fn(
@@ -356,8 +356,15 @@ describe('direct Vercel invocation', () => {
     expect(mocks.vqsRequest).not.toHaveBeenCalled();
   });
 
-  it('forwards retained-runner queue wakes to the affinitized HTTP endpoint', async () => {
+  it("forwards a single-owner run's queue wakes to the affinitized HTTP endpoint", async () => {
     vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    mocks.run.mockResolvedValue({
+      runId,
+      deploymentId: 'dpl_pinned',
+      workflowName: 'example',
+      status: 'running',
+      attributes: { $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}' },
+    });
     const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
       expect(new Headers(init.headers).get(AFFINITY_HEADER)).toBe(
         invocationAffinity(runId)
@@ -389,6 +396,29 @@ describe('direct Vercel invocation', () => {
     );
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("handles any other run's queue wake here, without forwarding it", async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const handler = vi.fn();
+    const receive = createQueue(config).createQueueHandler(
+      '__wkf_workflow_',
+      handler
+    );
+    await receive(
+      new Request(endpoint.replace('/invoke', '/flow'), {
+        method: 'POST',
+        body: encode({
+          payload: { runId },
+          queueName: '__wkf_workflow_example',
+          deploymentId: 'dpl_pinned',
+        }),
+      })
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it('does not retry retained-runner persistence operations', async () => {

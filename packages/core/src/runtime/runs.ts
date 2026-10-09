@@ -11,6 +11,7 @@ import {
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { isSingleOwnerRun } from './single-owner.js';
 import { start } from './start.js';
 
 export interface RecreateRunOptions {
@@ -140,7 +141,7 @@ export async function cancelRun(
       process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
       world.capabilities?.invoke &&
       world.invoke &&
-      run.executionContext?.retainedRunnerVersion === 1
+      isSingleOwnerRun(run)
     ) {
       await world.invoke(runId, {
         type: 'run_cancel',

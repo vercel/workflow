@@ -29,6 +29,7 @@ import {
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
+import { isSingleOwnerRun } from './single-owner.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
 const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
@@ -295,7 +296,7 @@ export class Run<TResult> {
       world.invoke
     ) {
       const run = await world.runs.get(this.runId, { resolveData: 'none' });
-      if (run.executionContext?.retainedRunnerVersion === 1) {
+      if (isSingleOwnerRun(run)) {
         await world.invoke(this.runId, {
           type: 'run_cancel',
           version: 1,

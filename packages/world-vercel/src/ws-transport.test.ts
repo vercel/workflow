@@ -44,27 +44,14 @@ import {
 
 type Listener = (...args: unknown[]) => void;
 
-it('selects canonical eventsync only on explicit opt-in', () => {
-  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
-  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test/experimental_eventsync'
-  );
-  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
-  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test'
-  );
-});
-
-it.each([
-  '1',
-  '',
-])('uses one wire contract regardless of new-run storage opt-in %s', (mode) => {
-  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
-  vi.stubEnv('WORKFLOW_OWNER_JOURNAL', mode);
-  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test/experimental_eventsync'
-  );
-  vi.stubEnv('WORKFLOW_OWNER_JOURNAL', '');
+it('uses one events WebSocket URL per run, whatever the transport setting', () => {
+  // An eventsync connection is chosen per connection (the single-owner
+  // runner's write session), not by process configuration.
+  for (const mode of ['eventsync', 'ws', ''])
+    vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', mode),
+      expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+        'wss://example.test/api/websockets/v1/runs/wrun_test'
+      );
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
 });
 
@@ -492,38 +479,72 @@ describe('owner event writer', () => {
       }
     }));
 
-  it('states the owner affinity and treats a rejection as superseded', () =>
+  it('stops as superseded when its catch-up shows the run placed elsewhere, and runs where it is placed', () =>
     withEventsync(async () => {
-      noteOwnerAffinity('wrun_test', 'cell-iad1-abc123-0');
-      const writer = createStorage({ token: 'test-token' }).events
-        .createWriteSession!('wrun_test');
-      try {
-        const socket = await nextSocket();
-        socket.open();
-        const loaded = writer.catchUp!();
-        void loaded.catch(() => {});
-        await tick();
-        expect(attachOf(socket)).toMatchObject({
-          affinity: 'cell-iad1-abc123-0',
-        });
-        socket.deliver(
+      const runCreated = (attributes?: Record<string, string>) =>
+        encodeFrame(
+          { reqId: -1, type: 'history', eventCount: 1 },
           encodeFrame(
-            { reqId: -1, type: 'error', status: 409 },
-            new TextEncoder().encode(
-              JSON.stringify({
-                code: 'affinity-mismatch',
-                message: 'affinity-mismatch',
-              })
-            )
+            {
+              eventId: slotId(1),
+              runId: 'wrun_test',
+              eventType: 'run_created',
+              createdAt: created,
+              specVersion: 6,
+              eventData: {
+                deploymentId: 'dpl',
+                workflowName: 'wf',
+                ...(attributes ? { attributes } : {}),
+              },
+            },
+            Uint8Array.of(9)
           )
         );
-        const error = await loaded.catch((cause: unknown) => cause);
-        expect((error as Error).message).toMatch(/owner affinity/);
-        expect(((error as Error).cause as { code?: string }).code).toBe(
-          'OWNER_SUPERSEDED'
-        );
+      const synced = encodeFrame({ reqId: -1, type: 'synced', head: 1 }, EMPTY);
+      const marker = {
+        $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}',
+      };
+      try {
+        // Invoked under cell-0, but the run is routed by itself.
+        noteOwnerAffinity('wrun_test', 'cell-0.dpl');
+        const misplaced = createStorage({ token: 'test-token' }).events
+          .createWriteSession!('wrun_test');
+        try {
+          const socket = await nextSocket();
+          socket.open();
+          const loaded = misplaced.catchUp!();
+          void loaded.catch(() => {});
+          await tick();
+          // The server is not told the affinity; the owner checks it.
+          expect(attachOf(socket)).not.toHaveProperty('affinity');
+          socket.deliver(runCreated());
+          socket.deliver(synced);
+          const error = await loaded.catch((cause: unknown) => cause);
+          expect((error as Error).message).toMatch(/another owner/);
+          expect(((error as Error).cause as { code?: string }).code).toBe(
+            'OWNER_SUPERSEDED'
+          );
+        } finally {
+          await misplaced.dispose();
+        }
+        // Invoked under the affinity the run's marker places it on.
+        const placed = createStorage({ token: 'test-token' }).events
+          .createWriteSession!('wrun_test');
+        try {
+          const socket = await nextSocket();
+          socket.open();
+          const loaded = placed.catchUp!();
+          await tick();
+          socket.deliver(runCreated(marker));
+          socket.deliver(synced);
+          expect((await loaded).head).toBe(1);
+        } finally {
+          await placed.dispose();
+        }
       } finally {
-        await writer.dispose();
+        // The owner affinity is process state; later tests own the run by
+        // its ID.
+        noteOwnerAffinity('wrun_test', 'wrun_test');
       }
     }));
 
@@ -953,88 +974,6 @@ describe('owner event writer', () => {
       if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
       else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
     }
-  });
-
-  it('joins an opening channel, reuses it for hook/step writes, and releases it exactly once', async () => {
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockRejectedValue(new Error('Unexpected HTTP fallback'));
-    const writer = createStorage({ token: 'test-token' }).events
-      .createWriteSession!('wrun_test');
-    expect(writer).not.toBeInstanceOf(Promise);
-    const socket = await nextSocket();
-    const events: CreateEventRequest[] = [
-      {
-        eventType: 'hook_received',
-        specVersion: 6,
-        correlationId: 'hook_test',
-        eventData: { token: 'test', payload: new Uint8Array([1]) },
-      },
-      {
-        eventType: 'step_created',
-        specVersion: 6,
-        correlationId: 'step_test',
-        eventData: { stepName: 'test', input: new Uint8Array([1]) },
-      },
-      { eventType: 'step_started', specVersion: 6, correlationId: 'step_test' },
-      {
-        eventType: 'step_completed',
-        specVersion: 6,
-        correlationId: 'step_test',
-        eventData: { result: new Uint8Array([2]) },
-      },
-    ];
-    for (const [index, event] of events.entries()) {
-      const pending = writer.create(event);
-      if (index === 0) {
-        await tick();
-        expect(socket.sent).toHaveLength(0);
-        expect(fetchSpy).not.toHaveBeenCalled();
-        socket.open();
-      }
-      await tick();
-      expect(sockets).toHaveLength(1);
-      expect(socket.sent).toHaveLength(index + 1);
-      const now = new Date();
-      socket.deliver(
-        ackFrame(
-          index + 1,
-          201,
-          encode({
-            event: {
-              ...event,
-              eventId: `evnt_${String(index + 1).padStart(26, '0')}`,
-              runId: 'wrun_test',
-              createdAt: now,
-            },
-            ...(event.eventType === 'step_started'
-              ? {
-                  step: {
-                    runId: 'wrun_test',
-                    stepId: 'step_test',
-                    stepName: 'test',
-                    status: 'running',
-                    attempt: 1,
-                    createdAt: now,
-                    updatedAt: now,
-                    startedAt: now,
-                    specVersion: 6,
-                  },
-                }
-              : {}),
-          })
-        )
-      );
-      await tick();
-      await expect(pending).resolves.toMatchObject({
-        event: { eventType: event.eventType },
-      });
-    }
-    expect(fetchSpy).not.toHaveBeenCalled();
-    await writer.dispose();
-    await writer.dispose();
-    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
-    await expect(writer.create(events[0])).rejects.toThrow('disposed');
   });
 
   it('does not silently send HTTP after a failed owner-channel handshake', async () => {

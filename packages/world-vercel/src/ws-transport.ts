@@ -102,8 +102,12 @@ export interface EventsyncCatchUpOptions<E> {
   position(): number;
   /** Decode one `history` frame body (a v4 event-frame sequence). */
   decode(body: Uint8Array): Promise<E[]>;
-  /** The affinity this owner was invoked under, verified by the server. */
-  affinity?(): string | undefined;
+  /**
+   * Check a complete catch-up before the connection is used (for example,
+   * that this process owns the run). Throwing stops the owner: the connection
+   * fails permanently, as superseded.
+   */
+  verify?(events: E[], after: number): void;
   /** The owner is creating this run: its log is known to be empty, so a
    * pre-opened socket is assigned by the `run_created` frame itself. */
   fresh?(): boolean;
@@ -188,15 +192,14 @@ function sendFrame(
     return;
   }
   let failed = false;
-  messages.forEach((message, index) =>
+  for (const [index, message] of messages.entries())
     ws.send(message, (err) => {
       if (failed) return;
       if (err) {
         failed = true;
         cb(err);
       } else if (index === messages.length - 1) cb();
-    })
-  );
+    });
 }
 
 async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
@@ -604,9 +607,6 @@ class WsEventsTransport {
                 type: 'attach',
                 runId: unassigned.runId,
                 after,
-                ...(this.catchUpOptions?.affinity?.()
-                  ? { affinity: this.catchUpOptions.affinity() }
-                  : {}),
               },
               new Uint8Array()
             );
@@ -654,6 +654,24 @@ class WsEventsTransport {
                     );
                   // An implicit attach already holds its (empty) catch-up.
                   if (implicit) return;
+                  try {
+                    catchUp.verify?.(events, after);
+                  } catch (cause) {
+                    // This process is not the run's owner: it stops without
+                    // writing, and the caller retries at the right owner.
+                    throw new WsTransportError(
+                      'Eventsync catch-up shows another owner for the run',
+                      {
+                        permanent: true,
+                        cause: new WorkflowWorldError(
+                          cause instanceof Error
+                            ? cause.message
+                            : 'Run is routed to a different affinity',
+                          { status: 503, code: 'OWNER_SUPERSEDED' }
+                        ),
+                      }
+                    );
+                  }
                   conn.catchUp = {
                     after,
                     head,
@@ -794,23 +812,6 @@ class WsEventsTransport {
                 return;
               }
               if (frame.meta.type === 'drain') return;
-              if (
-                frame.meta.type === 'error' &&
-                errorFrameMessage(frame.body) === 'affinity-mismatch'
-              )
-                // This process is not the run's owner under the server's
-                // current mapping: it must stop without writing, and the
-                // caller retries at the right owner.
-                throw new WsTransportError(
-                  'workflow-server eventsync rejected the owner affinity',
-                  {
-                    permanent: true,
-                    cause: new WorkflowWorldError(
-                      'Run is routed to a different affinity',
-                      { status: 503, code: 'OWNER_SUPERSEDED' }
-                    ),
-                  }
-                );
               throw new WsTransportError(
                 `workflow-server eventsync catch-up failed: ${
                   frame.meta.type === 'error'
@@ -1145,7 +1146,6 @@ export function resetWsEventsTransportsForTest(): void {
  * serves one run and is closed on release, and taking one opens a replacement.
  */
 function eventsyncPoolSize(): number {
-  if (process.env.WORKFLOW_EVENTS_TRANSPORT !== 'eventsync') return 0;
   const size = Number(process.env.WORKFLOW_EVENTSYNC_POOL ?? 0);
   return Number.isSafeInteger(size) && size > 0 ? Math.min(size, 32) : 0;
 }
@@ -1154,9 +1154,7 @@ function unassignedEventsyncUrl(
   wsUrl: string
 ): { url: string; runId: string } | undefined {
   const url = new URL(wsUrl);
-  const match = url.pathname.match(
-    /^(.*)\/runs\/([^/]+)\/experimental_eventsync$/
-  );
+  const match = url.pathname.match(/^(.*)\/runs\/([^/]+)$/);
   if (!match) return undefined;
   url.pathname = `${match[1]}/experimental_eventsync`;
   url.search = '';
@@ -1271,9 +1269,6 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
-  if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
-    url.pathname += '/experimental_eventsync';
-  }
   return url.toString();
 }
 

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   open: vi.fn(async () => () => {}),
   execute: vi.fn(async (_runId, work) => work()),
+  singleOwner: vi.fn(async () => true),
   callback: undefined as
     | undefined
     | ((message: unknown, metadata: unknown) => Promise<unknown>),
@@ -28,6 +29,9 @@ vi.mock('./invocation.js', () => ({
   INVOCATION_HEADER: 'x-workflow-invoke-version',
   invocationAffinity: (id: string) => id,
   invocationConfig: () => ({ endpoint: 'https://example.invalid/invoke' }),
+  isSingleOwnerRun: mocks.singleOwner,
+  startInputAttributes: (input: { runInput?: { attributes?: unknown } }) =>
+    input?.runInput?.attributes,
   createInvoker: (_config: unknown, kind: string) =>
     kind === 'wake' ? mocks.wake : mocks.invoke,
   createDirectInvocationHandler: () => ({
@@ -82,7 +86,7 @@ it('delivers an owner-managed step to the worker without forwarding a wake or op
   expect(mocks.open).not.toHaveBeenCalled();
 });
 
-it('still forwards orchestration wakes to the one run owner', async () => {
+it("still forwards a single-owner run's orchestration wakes to its one owner", async () => {
   vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
   const handler = vi.fn();
   createQueue().createQueueHandler('__wkf_workflow_', handler);
@@ -99,5 +103,23 @@ it('still forwards orchestration wakes to the one run owner', async () => {
     { runId: 'run' },
     { idempotencyKey: 'wake' }
   );
+  expect(mocks.singleOwner).toHaveBeenCalledWith('run', undefined);
   expect(handler).not.toHaveBeenCalled();
+});
+
+it("handles any other run's orchestration wake here", async () => {
+  vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+  mocks.singleOwner.mockResolvedValueOnce(false);
+  const handler = vi.fn();
+  createQueue().createQueueHandler('__wkf_workflow_', handler);
+  await mocks.callback!(
+    {
+      queueName: '__wkf_workflow_test',
+      deploymentId: 'test',
+      payload: { runId: 'run' },
+    },
+    { messageId: 'wake', deliveryCount: 1 }
+  );
+  expect(mocks.wake).not.toHaveBeenCalled();
+  expect(handler).toHaveBeenCalledOnce();
 });

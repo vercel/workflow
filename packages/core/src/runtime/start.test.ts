@@ -36,6 +36,12 @@ import type { WorkflowFunction } from './start.js';
 import { _resetLatestNoOpWarnForTests, start } from './start.js';
 import { setWorld } from './world.js';
 
+/** A single-owner run's start options (`single-owner.ts`). */
+const SINGLE_OWNER_START = {
+  attributes: { $experimentalSingleOwner: '{}' },
+  allowReservedAttributes: true,
+};
+
 // Mock @vercel/functions
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn(),
@@ -49,7 +55,7 @@ vi.mock('../telemetry.js', () => ({
 }));
 
 describe('start', () => {
-  it('commits retained-runner creation before starting its owner through invoke', async () => {
+  it('commits a single-owner run before starting its owner through invoke', async () => {
     vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const entered = Promise.withResolvers<void>();
     const committed = Promise.withResolvers<unknown>();
@@ -71,12 +77,21 @@ describe('start', () => {
       const workflow = Object.assign(async () => 'result', {
         workflowId: 'retained-test',
       });
-      const starting = start(workflow, []);
+      const starting = start(workflow, [], SINGLE_OWNER_START);
       await entered.promise;
       expect(invoke).not.toHaveBeenCalled();
-      expect(create.mock.calls[0][1]).toMatchObject({
-        eventData: { executionContext: { retainedRunnerVersion: 1 } },
-      });
+      // The marker is the run's own attribute; nothing else marks the run.
+      const event = create.mock.calls[0][1] as {
+        eventData: Record<string, any>;
+      };
+      expect(event.eventData.attributes).toMatchObject(
+        SINGLE_OWNER_START.attributes
+      );
+      expect(event.eventData.allowReservedAttributes).toBe(true);
+      expect(event.eventData.executionContext).not.toHaveProperty(
+        'retainedRunnerVersion'
+      );
+      expect(event.eventData).not.toHaveProperty('routingKey');
       const runId = create.mock.calls[0][0];
       committed.resolve({ run: { runId, status: 'pending' } });
       await starting;
@@ -114,7 +129,7 @@ describe('start', () => {
       const workflow = Object.assign(async () => 'result', {
         workflowId: 'retained-test',
       });
-      await start(workflow, []);
+      await start(workflow, [], SINGLE_OWNER_START);
       expect(invoke).toHaveBeenCalledTimes(1);
       expect(queue).toHaveBeenCalledTimes(1);
       expect(queue.mock.calls[0][1]).toMatchObject({
@@ -123,6 +138,58 @@ describe('start', () => {
     } finally {
       setWorld(undefined);
       vi.unstubAllEnvs();
+    }
+  });
+
+  it('starts a run without the marker as before, on a deployment that hosts single-owner runs', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const create = vi.fn(async (runId: string | null) => ({
+      run: { runId, status: 'pending' },
+    }));
+    const queue = vi.fn().mockResolvedValue(undefined);
+    const invoke = vi.fn();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { invoke: true },
+      invoke,
+      getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+      events: { create },
+      queue,
+    });
+    try {
+      const workflow = Object.assign(async () => 'result', {
+        workflowId: 'ordinary-test',
+      });
+      await start(workflow, []);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(queue).toHaveBeenCalledTimes(1);
+    } finally {
+      setWorld(undefined);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses a single-owner run where the deployment cannot host it', async () => {
+    const create = vi.fn();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { invoke: true },
+      invoke: vi.fn(),
+      getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+      events: { create },
+      queue: vi.fn(),
+    });
+    try {
+      const workflow = Object.assign(async () => 'result', {
+        workflowId: 'single-owner-test',
+      });
+      // WORKFLOW_RETAINED_RUNNER is unset.
+      await expect(start(workflow, [], SINGLE_OWNER_START)).rejects.toThrow(
+        /single-owner run requires/
+      );
+      expect(create).not.toHaveBeenCalled();
+    } finally {
+      setWorld(undefined);
     }
   });
 

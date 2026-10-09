@@ -1,21 +1,25 @@
 import { globalSingleton } from '@workflow/utils';
 
 /**
- * Routing affinity for runs (experimental shared cells).
+ * Routing affinity for single-owner runs.
  *
- * workflow-server owns the mapping from a run to the affinity ID its
- * invocations are routed with: the run ID itself, or a shared cell that
- * several runs of one deployment are packed into. Callers never compute or
- * persist it. They use an ID taken from a recent server response for the run
- * (run creation, run read or hook lookup) and forget it quickly, so a moved
- * run is picked up from the next fresh response. The owner states the ID it
- * was invoked under on its eventsync handshake, where the server verifies it.
+ * A caller places a single-owner run with the value of its marker attribute,
+ * `$experimentalSingleOwner`: a JSON object whose optional `vercelAffinity`
+ * names the owner several runs of one deployment share (for example
+ * `{"vercelAffinity":"cell-0"}`). Without one, the run is routed by itself.
+ * The affinity ID is scoped by the run's deployment, so the same name from two
+ * deployments never selects the same executor.
+ *
+ * The marker travels with the run (its attributes, its start input, and a
+ * hook's resume context), so a process learns a run's affinity from the
+ * response or input it already has, and keeps it briefly.
  */
 
-/** How long a server-provided mapping may be reused without a fresh read. */
+export const SINGLE_OWNER_ATTRIBUTE = '$experimentalSingleOwner';
+
+/** How long a learned mapping may be reused without a fresh read. */
 const FRESH_MS = 60_000;
 const MAX_ENTRIES = 10_000;
-const MAX_CELL_SIZE = 1000;
 
 interface Entry {
   affinityId: string;
@@ -24,7 +28,7 @@ interface Entry {
 
 const routing = globalSingleton(
   '@workflow/world-vercel//runAffinity',
-  1,
+  2,
   () => new Map<string, Entry>()
 );
 
@@ -43,43 +47,54 @@ function remember(map: Map<string, unknown>, key: string, value: unknown) {
   }
 }
 
-/**
- * Cell size requested for new runs, from `WORKFLOW_AFFINITY_CELL_SIZE`.
- * Unset or invalid means per-run affinity (no cell).
- */
-export function affinityCellSize(): number | undefined {
-  const raw = process.env.WORKFLOW_AFFINITY_CELL_SIZE?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return undefined;
-  const size = Number(raw);
-  return size >= 1 && size <= MAX_CELL_SIZE ? size : undefined;
+/** The marker's value, when these attributes carry one. */
+export function singleOwnerMarker(
+  attributes: Record<string, unknown> | undefined | null
+): string | undefined {
+  const value = attributes?.[SINGLE_OWNER_ATTRIBUTE];
+  return typeof value === 'string' ? value : undefined;
 }
 
-/** Record the affinity a server response reported for a run. A response
- * without one is from a server (or run) without cells: per-run affinity. */
-export function recordRunAffinity(runId: string, affinityId?: unknown): void {
+/**
+ * The affinity ID a single-owner run is routed with, from its marker value and
+ * its deployment: `<vercelAffinity>.<deploymentId>`, or the run ID when the
+ * marker names no affinity (or does not parse).
+ */
+export function affinityForMarker(
+  runId: string,
+  marker: string,
+  deploymentId: string | undefined
+): string {
+  let name: unknown;
+  try {
+    name = (JSON.parse(marker) as { vercelAffinity?: unknown })?.vercelAffinity;
+  } catch {
+    name = undefined;
+  }
+  if (typeof name !== 'string' || !name || name === runId) return runId;
+  return deploymentId ? `${name}.${deploymentId}` : name;
+}
+
+/**
+ * Record what a response or input says about a run's routing: its marker (for
+ * a single-owner run) and deployment. A run without a marker is routed by
+ * itself.
+ */
+export function recordRunAffinity(
+  runId: string,
+  marker: string | undefined,
+  deploymentId: string | undefined
+): void {
   remember(routing, runId, {
     affinityId:
-      typeof affinityId === 'string' && affinityId ? affinityId : runId,
+      marker === undefined
+        ? runId
+        : affinityForMarker(runId, marker, deploymentId),
     at: Date.now(),
   });
 }
 
-/**
- * The affinity ID for a caller-chosen routing key (`InvokeOptions.routingKey`).
- * The key is scoped by the run's deployment, so the same key from two
- * deployments never selects the same executor. The run itself (or no key)
- * means per-run affinity.
- */
-export function affinityForRoutingKey(
-  runId: string,
-  routingKey: string | undefined,
-  deploymentId: string | undefined
-): string {
-  if (!routingKey || routingKey === runId) return runId;
-  return deploymentId ? `${routingKey}.${deploymentId}` : routingKey;
-}
-
-/** A recently server-reported affinity, if any. */
+/** A recently learned affinity, if any. */
 export function freshRunAffinity(runId: string): string | undefined {
   const entry = routing.get(runId);
   if (!entry) return undefined;

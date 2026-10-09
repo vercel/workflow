@@ -12,11 +12,19 @@ import {
 } from './buffered-event-writer.js';
 import { createWorkflowRunEvent } from './events.js';
 import { decodeEventFrameSequence } from './events-v4.js';
-import { ownerAffinity } from './run-affinity.js';
+import {
+  affinityForMarker,
+  ownerAffinity,
+  singleOwnerMarker,
+} from './run-affinity.js';
 import type { APIConfig } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
-/** An owner loop holds this lease across inputs, asynchronous steps and idle waits. */
+/**
+ * The single-owner runner's write session for one run: eventsync, the
+ * single-writer transport into the run's canonical event log. An owner loop
+ * holds this lease across inputs, asynchronous steps and idle waits.
+ */
 export function createEventWriteSession(
   runId: string,
   config?: APIConfig
@@ -26,10 +34,7 @@ export function createEventWriteSession(
   const spanId = randomUUID();
   const started = performance.now();
   const observeReady = (event: 'begin' | 'end', status?: string) => {
-    if (
-      process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync' &&
-      observations.hasSubscribers
-    )
+    if (observations.hasSubscribers)
       observations.publish({
         version: 1,
         runId,
@@ -45,17 +50,15 @@ export function createEventWriteSession(
   // Eventsync: every (re)connect resumes from the writer's committed head. The
   // initial connection opens at 0, so its catch-up is the owner's history.
   let writer: BufferedEventWriter | undefined;
-  const catchUp =
-    process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync'
-      ? {
-          position: () => writer?.position ?? 0,
-          decode: decodeEventFrameSequence as (
-            body: Uint8Array
-          ) => Promise<unknown[]>,
-          affinity: () => ownerAffinity(runId),
-          fresh: () => writer?.fresh ?? false,
-        }
-      : undefined;
+  const catchUp = {
+    position: () => writer?.position ?? 0,
+    decode: decodeEventFrameSequence as (
+      body: Uint8Array
+    ) => Promise<unknown[]>,
+    verify: (events: unknown[], after: number) =>
+      verifyOwnerAffinity(runId, events, after),
+    fresh: () => writer?.fresh ?? false,
+  };
   // Handle rejection immediately even when snapshot loading fails before a write.
   const opened = (
     isWsEventsTransportEnabled()
@@ -67,12 +70,12 @@ export function createEventWriteSession(
     (lease) => {
       // Keep the lease immediately available for disposal while observing the
       // connection that openWsChannel already starts beside snapshot loading.
-      if (lease && process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync')
+      if (lease)
         void lease.ready().then(
           () => observeReady('end', 'completed'),
           () => observeReady('end', 'error')
         );
-      else if (!lease) observeReady('end', 'error');
+      else observeReady('end', 'error');
       return { lease, error: undefined, failed: false };
     },
     (error: unknown) => {
@@ -90,7 +93,7 @@ export function createEventWriteSession(
     if (disposed) throw new Error('Event writer is disposed');
     const { lease, error, failed } = await opened;
     if (failed) throw error;
-    if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync' && !lease)
+    if (!lease)
       throw new Error('Canonical eventsync requires an active event channel');
     await lease?.ready();
     if (disposed) throw new Error('Event writer is disposed');
@@ -102,49 +105,67 @@ export function createEventWriteSession(
         skipPreload: true,
         preloadEvents: undefined,
       },
-      lease
-        ? {
-            ...config,
-            requireWsEvents: true,
-            onEventSent: onSent,
-            failStopEventWrites:
-              process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync',
-            ...(process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync'
-              ? { flushEvent: !onSent, wsGeneration: generation }
-              : {}),
-          }
-        : config
+      {
+        ...config,
+        requireWsEvents: true,
+        onEventSent: onSent,
+        failStopEventWrites: true,
+        flushEvent: !onSent,
+        wsGeneration: generation,
+      }
     );
   };
   const dispose = () => {
     disposed = true;
     disposal ??= opened.then(async ({ lease }) => {
-      if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
-        const { resolveWsTransport } = await import('./ws-transport.js');
-        resolveWsTransport(runId, config)?.transport.close(
-          'single writer disposed'
-        );
-      }
+      const { resolveWsTransport } = await import('./ws-transport.js');
+      resolveWsTransport(runId, config)?.transport.close(
+        'single writer disposed'
+      );
       lease?.();
     });
     return disposal;
   };
-  if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
-    const lease = async () => {
-      const { lease, error, failed } = await opened;
-      if (failed) throw error;
-      if (!lease) throw new Error('Eventsync channel is unavailable');
-      return lease;
-    };
-    writer = new BufferedEventWriter(
-      runId,
-      write,
-      dispose,
-      async (head, generation) =>
-        (await lease()).flushThrough(head, generation),
-      async () => (await lease()).takeCatchUp() as Promise<WriterCatchUp>
-    );
-    return writer;
-  }
-  return { create: write, dispose };
+  const lease = async () => {
+    const { lease, error, failed } = await opened;
+    if (failed) throw error;
+    if (!lease) throw new Error('Eventsync channel is unavailable');
+    return lease;
+  };
+  writer = new BufferedEventWriter(
+    runId,
+    write,
+    dispose,
+    async (head, generation) => (await lease()).flushThrough(head, generation),
+    async () => (await lease()).takeCatchUp() as Promise<WriterCatchUp>
+  );
+  return writer;
+}
+
+/**
+ * The owner's check that it owns the run, once its first catch-up has the
+ * run's `run_created`: the affinity this process was invoked under must be the
+ * one the run's single-owner marker routes to. Anything else is a stale or
+ * misrouted invocation, which must stop before writing.
+ */
+function verifyOwnerAffinity(runId: string, events: unknown[], after: number) {
+  if (after !== 0) return;
+  const invoked = ownerAffinity(runId);
+  const created = events[0] as
+    | {
+        eventType?: string;
+        eventData?: {
+          attributes?: Record<string, unknown>;
+          deploymentId?: string;
+        };
+      }
+    | undefined;
+  if (invoked === undefined || created?.eventType !== 'run_created') return;
+  const marker = singleOwnerMarker(created.eventData?.attributes);
+  const expected =
+    marker === undefined
+      ? runId
+      : affinityForMarker(runId, marker, created.eventData?.deploymentId);
+  if (invoked !== expected)
+    throw new Error(`Run is routed to affinity ${expected}, not ${invoked}`);
 }

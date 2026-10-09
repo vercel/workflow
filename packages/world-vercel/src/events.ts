@@ -68,11 +68,7 @@ import {
   type ListEventsV4Params,
   VercelEventWireSchema,
 } from './events-v4.js';
-import {
-  affinityCellSize,
-  affinityForRoutingKey,
-  recordRunAffinity,
-} from './run-affinity.js';
+import { recordRunAffinity, singleOwnerMarker } from './run-affinity.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
@@ -156,11 +152,6 @@ interface SplitEventData {
      * it without holding the run's symmetric key.
      */
     encryptionPublicKey?: string;
-    /** run_created's opt-in shared affinity cell size (experimental). Not a
-     *  World field: world-vercel adds it from its own configuration. */
-    affinityCellSize?: number;
-    /** run_created's creator-chosen affinity ID, from `routingKey`. */
-    affinityId?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -214,8 +205,7 @@ type MetaSourceField =
   | 'eventCount'
   | 'rsfs'
   | 'finalSchedulingReplay'
-  | 'optimizations'
-  | 'routingKey';
+  | 'optimizations';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -251,10 +241,7 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * Exported for unit tests because the metadata allowlist is the eventData wire
  * contract and must remain exhaustive with the @workflow/world event schemas.
  */
-export function splitEventDataForV4(
-  data: AnyEventRequest,
-  runId?: string
-): SplitEventData {
+export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (data.eventType === 'attr_set') {
     try {
       validateAttributeEventDataSize(data.eventData);
@@ -376,24 +363,6 @@ export function splitEventDataForV4(
   }
   if (typeof eventData.encryptionPublicKey === 'string') {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
-  }
-  if (data.eventType === 'run_created') {
-    // A creator-chosen routing key fixes the run's affinity: a shared key
-    // becomes its affinity ID, and a run routed by itself records no cell.
-    // Without a key the server may assign a shared cell.
-    if (typeof eventData.routingKey === 'string' && eventData.routingKey) {
-      if (eventData.routingKey !== runId)
-        meta.affinityId = affinityForRoutingKey(
-          runId ?? '',
-          eventData.routingKey,
-          typeof eventData.deploymentId === 'string'
-            ? eventData.deploymentId
-            : undefined
-        );
-    } else {
-      const cellSize = affinityCellSize();
-      if (cellSize !== undefined) meta.affinityCellSize = cellSize;
-    }
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -669,15 +638,13 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    if (data.eventType === 'run_created' && result.run) {
-      // The server's routing decision for the new run; kept out of the
-      // World-facing run object.
-      const { affinityId, ...run } = result.run as typeof result.run & {
-        affinityId?: string;
-      };
-      recordRunAffinity(run.runId, affinityId);
-      (result as { run?: unknown }).run = run;
-    }
+    if (data.eventType === 'run_created' && result.run)
+      // The new run's routing, for the invocation that starts its owner.
+      recordRunAffinity(
+        result.run.runId,
+        singleOwnerMarker(result.run.attributes),
+        result.run.deploymentId
+      );
     if (data.eventType === 'run_started' && !result.run?.startedAt) {
       throw new WorkflowWorldError(
         'run_started response is missing run.startedAt',
@@ -773,7 +740,7 @@ async function createWorkflowRunEventInner(
     ? 'resolve'
     : 'lazy';
 
-  const { payload, meta } = splitEventDataForV4(data, id ?? undefined);
+  const { payload, meta } = splitEventDataForV4(data);
 
   const input = {
     runId: id,

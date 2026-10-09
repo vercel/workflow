@@ -31,6 +31,7 @@ import {
 import { RetainedRunner, withRetainedRunner } from './retained-runner.js';
 import * as stepExecutor from './step-executor.js';
 
+const SINGLE_OWNER = { $experimentalSingleOwner: '{}' };
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
@@ -1562,9 +1563,9 @@ async function setup(
     eventData: {
       deploymentId: 'test',
       workflowName: 'workflow',
+      attributes: SINGLE_OWNER,
+      allowReservedAttributes: true,
       executionContext: {
-        retainedRunnerVersion: 1,
-        ...(ownerJournal ? { ownerJournalVersion: 1 } : {}),
         ...(queued
           ? {
               stepExecution: {
@@ -2498,8 +2499,8 @@ it('creates the run itself on an invoke-first start, before its connection or wa
     deploymentId: 'test',
     workflowName: 'workflow',
     specVersion: SPEC_VERSION_CURRENT,
-    executionContext: { retainedRunnerVersion: 1 },
-    routingKey: 'cell-0',
+    attributes: { $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}' },
+    allowReservedAttributes: true as const,
   };
   let acknowledged = false;
   const started = owner
@@ -2523,7 +2524,10 @@ it('creates the run itself on an invoke-first start, before its connection or wa
   expect(catchUp).not.toHaveBeenCalled();
   expect(staged[0]).toMatchObject({
     eventType: 'run_created',
-    eventData: { workflowName: 'workflow', routingKey: 'cell-0' },
+    eventData: {
+      workflowName: 'workflow',
+      attributes: { $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}' },
+    },
   });
   expect(staged.map((event) => event.eventType).slice(0, 2)).toEqual([
     'run_created',
@@ -2602,7 +2606,8 @@ it('runs no step before a durable invoke-first creation, and acknowledges once t
     deploymentId: 'test',
     workflowName: 'workflow',
     specVersion: SPEC_VERSION_CURRENT,
-    executionContext: { retainedRunnerVersion: 1 },
+    attributes: SINGLE_OWNER,
+    allowReservedAttributes: true as const,
   };
   let acknowledged = false;
   let flushedAtAck: string[][] = [];
@@ -2706,7 +2711,8 @@ it('creates the run from a start backup wake only when the run does not exist', 
         deploymentId: 'test',
         workflowName: 'workflow',
         specVersion: SPEC_VERSION_CURRENT,
-        executionContext: { retainedRunnerVersion: 1 },
+        attributes: SINGLE_OWNER,
+        allowReservedAttributes: true as const,
       },
     },
     metadata
@@ -2714,4 +2720,32 @@ it('creates the run from a start backup wake only when the run does not exist', 
   await vi.waitFor(() => expect(marks).toEqual(['first']));
   expect(staged.slice(0, 2)).toEqual(['run_created', 'run_started']);
   expect((await world.runs.get(runId)).runId).toBe(runId);
+});
+
+it('hands queue deliveries for a run without the marker to the existing handler, reading the run once', async () => {
+  vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+  const runId = `wrun_${ulid()}`;
+  const get = vi.fn().mockResolvedValue({
+    runId,
+    workflowName: 'workflow',
+    attributes: { team: 'a' },
+  });
+  const world = {
+    capabilities: { invoke: true },
+    invoke: vi.fn(),
+    runs: { get },
+  } as unknown as World;
+  const legacy = vi.fn().mockResolvedValue(undefined);
+  const handler = withRetainedRunner(world, '__wkf_workflow_', code)(legacy);
+  const metadata = {
+    queueName: ValidQueueName.parse('__wkf_workflow_workflow'),
+    messageId: MessageId.parse('wake'),
+    attempt: 1,
+  };
+  await handler({ runId }, metadata);
+  await handler({ runId }, metadata);
+  expect(legacy).toHaveBeenCalledTimes(2);
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(world.invoke).not.toHaveBeenCalled();
+  vi.unstubAllEnvs();
 });

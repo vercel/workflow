@@ -26,8 +26,11 @@ import {
   INVOCATION_HEADER,
   invocationAffinity,
   invocationConfig,
+  isSingleOwnerRun,
+  startInputAttributes,
 } from './invocation.js';
 import { logInvocationRouting } from './invocation-diagnostics.js';
+import { singleOwnerMarker } from './run-affinity.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
@@ -831,25 +834,30 @@ export function createQueue(config?: APIConfig): Queue {
         if (direct) logInvocationRouting('execution.received', observation);
         try {
           const wakeRunId = orchestrationRunId(payload);
-          if (forwardWake && wakeRunId && !('__healthCheck' in payload)) {
-            // A start's own input routes as its creator chose, which also
+          // Only a single-owner run's wake goes to its owner; every other
+          // run's delivery is handled here as before.
+          const startAttributes = startInputAttributes(payload);
+          if (
+            forwardWake &&
+            wakeRunId &&
+            !('__healthCheck' in payload) &&
+            (startAttributes
+              ? singleOwnerMarker(startAttributes) !== undefined
+              : await isSingleOwnerRun(wakeRunId, config))
+          ) {
+            // A start's own input routes as its creator placed it, which also
             // reaches the owner when the run was never created.
             const runInput = (
               payload as {
-                runInput?: {
-                  deploymentId?: string;
-                  workflowName?: string;
-                  routingKey?: string;
-                };
+                runInput?: { deploymentId?: string; workflowName?: string };
               }
             ).runInput;
             await forwardWake(wakeRunId, payload, {
               idempotencyKey: metadata.messageId,
-              ...(runInput?.routingKey &&
-              runInput.deploymentId &&
+              ...(startAttributes &&
+              runInput?.deploymentId &&
               runInput.workflowName
                 ? {
-                    routingKey: runInput.routingKey,
                     target: {
                       deploymentId: runInput.deploymentId,
                       workflowName: runInput.workflowName,

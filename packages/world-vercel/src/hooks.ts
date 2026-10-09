@@ -107,17 +107,28 @@ export async function getHookByToken(
   config?: APIConfig
 ): Promise<Hook> {
   try {
-    const { affinityId, ...hook } = await makeRequest({
+    const hook = await makeRequest({
       endpoint: `/v2/hooks/by-token?token=${encodeURIComponent(token)}`,
       options: {
         method: 'GET',
       },
       config,
-      schema: HookSchema.and(z.object({ affinityId: z.string().optional() })),
+      schema: HookSchema.and(
+        z.object({
+          resumeContext: z
+            .object({ singleOwner: z.string().optional() })
+            .passthrough()
+            .optional(),
+        })
+      ),
     });
-    // The server's current routing for the hook's run, used by the resume's
-    // invocation right after this lookup.
-    recordRunAffinity(hook.runId, affinityId);
+    // A single-owner run's routing, carried in the hook's resume context,
+    // for the resume's invocation right after this lookup.
+    recordRunAffinity(
+      hook.runId,
+      hook.resumeContext?.singleOwner,
+      hook.resumeContext?.deploymentId
+    );
     return hook as Hook;
   } catch (error) {
     if (WorkflowWorldError.is(error) && error.status === 404) {

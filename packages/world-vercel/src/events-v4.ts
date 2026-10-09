@@ -281,10 +281,6 @@ interface CreateEventV4InputBase {
    *  the run entity so cross-run writers can seal to it without holding the
    *  run's symmetric key. */
   encryptionPublicKey?: string;
-  /** run_created's opt-in shared affinity cell size (experimental). */
-  affinityCellSize?: number;
-  /** run_created's creator-chosen affinity ID (experimental). */
-  affinityId?: string;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -470,11 +466,7 @@ const CreateEventV4BodySchemas: {
 } = {
   run_created: z.compile(
     CreateEventV4BodyBaseSchema.extend({
-      // `affinityId` is world-vercel routing state, removed again by
-      // createWorkflowRunEvent after it is recorded.
-      run: WorkflowRunSchema.and(
-        z.object({ affinityId: z.string().optional() })
-      ),
+      run: WorkflowRunSchema,
     }).and(CreateEventV4PageSchema)
   ),
   run_started: z.compile(
@@ -662,10 +654,6 @@ function buildPostFrameMeta(
   if (input.encryptionPublicKey !== undefined) {
     meta.encryptionPublicKey = input.encryptionPublicKey;
   }
-  if (input.affinityCellSize !== undefined) {
-    meta.affinityCellSize = input.affinityCellSize;
-  }
-  if (input.affinityId !== undefined) meta.affinityId = input.affinityId;
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
@@ -1457,7 +1445,9 @@ async function postEventFrameOverWs(
       let reply: WsFrameReply;
       try {
         const traceHeaders = new Headers();
-        if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync')
+        // An eventsync write (fail-stop) parents its server work to the
+        // writer's trace.
+        if (config?.failStopEventWrites)
           await injectTraceContextIntoHeaders(traceHeaders);
         // `runId` isn't repeated here, since it's already in `wsUrl`, one
         // connection per run. The server's request-frame schema is a

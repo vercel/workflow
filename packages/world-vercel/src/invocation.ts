@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { getVercelOidcToken } from '@vercel/oidc';
-import { WorkflowWorldError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   captureInvocationOutcome,
   serializeWorkflowError,
@@ -24,12 +24,12 @@ import { logInvocationRouting } from './invocation-diagnostics.js';
 import { createInvocationMailbox } from './invocation-mailbox.js';
 import { observeInvocation } from './invocation-observer.js';
 import {
-  affinityForRoutingKey,
   forgetRunAffinity,
   freshRunAffinity,
   noteOwnerAffinity,
   ownerAffinity,
   recordRunAffinity,
+  singleOwnerMarker,
 } from './run-affinity.js';
 import { getWorkflowRun } from './runs.js';
 import {
@@ -73,6 +73,43 @@ export function invocationConfig(
  * server response for the run, else the affinity this process was invoked
  * under as the run's owner, else the run ID itself (per-run affinity).
  */
+/**
+ * Whether a run is single-owner, from a fresh read, which also records its
+ * routing for the invocation that follows. A missing run is not.
+ */
+export async function isSingleOwnerRun(
+  runId: string,
+  config?: APIConfig
+): Promise<boolean> {
+  try {
+    const run = await getWorkflowRun(runId, { resolveData: 'none' }, config);
+    return singleOwnerMarker(run.attributes) !== undefined;
+  } catch (error) {
+    if (WorkflowRunNotFoundError.is(error)) return false;
+    throw error;
+  }
+}
+
+/**
+ * The initial attributes a start invocation (or its backup wake) carries for
+ * its run, if this input is one.
+ */
+export function startInputAttributes(
+  input: unknown
+): Record<string, unknown> | undefined {
+  const runInput =
+    input && typeof input === 'object'
+      ? (input as { runInput?: unknown }).runInput
+      : undefined;
+  const attributes =
+    runInput && typeof runInput === 'object'
+      ? (runInput as { attributes?: unknown }).attributes
+      : undefined;
+  return attributes && typeof attributes === 'object'
+    ? (attributes as Record<string, unknown>)
+    : undefined;
+}
+
 export function invocationAffinity(runId: string): string {
   return freshRunAffinity(runId) ?? ownerAffinity(runId) ?? runId;
 }
@@ -211,16 +248,16 @@ export function createInvoker(
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
       const identity = { runId, requestId, invocationId };
-      // A caller-chosen routing key decides the affinity itself, which also
-      // lets a run be invoked before it exists (with its routing target).
-      if (options?.routingKey !== undefined && options.target)
+      // A start carries its run's attributes, so its routing is known before
+      // the run exists (with its routing target).
+      const startAttributes = options?.target
+        ? startInputAttributes(input)
+        : undefined;
+      if (startAttributes && options?.target)
         recordRunAffinity(
           runId,
-          affinityForRoutingKey(
-            runId,
-            options.routingKey,
-            options.target.deploymentId
-          )
+          singleOwnerMarker(startAttributes),
+          options.target.deploymentId
         );
       // Routing needs the server's current affinity for the run. A hook
       // resume or a fresh start has just received it; otherwise read the run.
@@ -447,8 +484,8 @@ export function createDirectInvocationHandler(
           expectedAffinityId: input.affinityId ?? input.runId,
           requestedDeploymentId: input.deploymentId,
         };
-        // The owner states this on its eventsync handshake; the server, which
-        // owns the mapping, rejects it if the run belongs to another affinity.
+        // The owner checks it against the run's marker once it has caught up
+        // (`event-write-session.ts`), and stops if the run is routed elsewhere.
         noteOwnerAffinity(input.runId, input.affinityId ?? input.runId);
         logInvocationRouting('direct.received', {
           ...routing,

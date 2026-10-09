@@ -182,14 +182,35 @@ Acceptance confirms input processing, not eventual continuation success. A later
 continuation failure is logged and requires existing runtime recovery or another
 execution request; this transport adds no durable recovery wake.
 
-### Retained runner
+### Single-owner runs (experimental)
 
-For new same-deployment Node VM runs, `WORKFLOW_RETAINED_RUNNER=1` enables a
-resident owner behind the direct invocation endpoint. The World must provide
-exclusive per-run delivery. The owner replays once, validates hook inputs using
-in-memory state, and serializes event persistence and state updates before
-acknowledging each input. Its VM stays resident while suspended for up to
-60 seconds, subject to the host deadline.
+A caller opts a run into the single-owner model at `start()`, with the reserved
+run attribute `$experimentalSingleOwner`:
+
+```ts
+await start(workflow, args, {
+  attributes: { $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}' },
+  allowReservedAttributes: true,
+});
+```
+
+The attribute's presence is the only marker; a run without it executes as
+before. Its value is a JSON object. `vercelAffinity` optionally names an owner
+that several runs of one deployment share: the run is routed with the affinity
+ID `<vercelAffinity>.<deploymentId>`. Without one (`'{}'`), the run is routed by
+its own ID. Hooks and queue wakes for the run route the same way, since the
+marker travels with the run.
+
+The deployment must host the single-owner runner, `WORKFLOW_RETAINED_RUNNER=1`,
+behind the direct invocation endpoint; `start()` refuses a marked run anywhere
+else. Other runs on that deployment keep their existing execution.
+
+The run's owner keeps its workflow resident. It replays once, validates hook
+inputs using in-memory state, and serializes event persistence and state updates
+before acknowledging each input. Its VM stays resident while suspended for up
+to 60 seconds, subject to the host deadline. The World must provide exclusive
+per-run delivery. The owner checks, from the run's history, that it was invoked
+under the run's affinity, and stops without writing otherwise.
 
 Step bodies run as asynchronous workers in the owning process; their state
 changes return to the same mailbox loop. Queue wakes use the direct endpoint.
@@ -198,25 +219,19 @@ run failure, and reject unfinished inputs. An inability to record that terminal
 failure is reported explicitly. This mode does not retry failed event writes
 or reconcile conflicting history.
 
-Node diagnostics channels `workflow.runner` and `workflow.execution` expose
-owner turns, persistence, step execution, failure recording and VM mode without
-including workflow payloads. Existing pinned runs keep their previous behavior.
-
-### `WORKFLOW_OWNER_JOURNAL` (experimental)
-
-Set `WORKFLOW_OWNER_JOURNAL=1` only with retained-owner execution and a compatible
-eventsync backend (`WORKFLOW_EVENTS_TRANSPORT=eventsync`). Newly created runs
-persist `executionContext.ownerJournalVersion: 1`; older runs keep their existing
-mode. This requires exclusive ownership across runner handoff and unfinished
-storage requests; the transport itself does not acquire that ownership.
-
-The owner validates run-local transitions in memory and commits contiguous event
-prefixes sequentially. All canonical events remain intact. The backend derives
-Step state from them, commits one event with an ordinary Put, and commits a larger
-prefix atomically. Flush-through barriers precede input acknowledgement and user
+The owner writes through a single-writer event connection. It validates
+run-local transitions in memory and commits contiguous event prefixes
+sequentially; all canonical events remain intact, and the backend derives Step
+state from them. Flush-through barriers precede input acknowledgement and user
 step execution. Shared-resource operations still use their native independent
 path. Terminal failure stays on the same owner writer; an uncertain or broken
 writer reports `terminalPersisted=false` rather than starting a competing write.
+Keep every write for a marked run on its owner: other write paths are
+unchanged, and are not coordinated with it.
+
+Node diagnostics channels `workflow.runner` and `workflow.execution` expose
+owner turns, persistence, step execution, failure recording and VM mode without
+including workflow payloads.
 
 ## Limitations
 
