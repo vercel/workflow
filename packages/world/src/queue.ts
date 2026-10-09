@@ -187,6 +187,10 @@ export type RunInput = z.infer<typeof RunInputSchema>;
  *
  * The `input` is the already-serialized (and possibly encrypted) step input:
  * the identical bytes the producer also sent on the direct `events.create`.
+ *
+ * The current `@workflow/core` runtime neither attaches nor reads this field:
+ * it publishes a step message only after its `step_created` write. The schema
+ * keeps accepting it so a message that carries it still parses.
  */
 export const StepDispatchInputSchema = z.compile(
   z.object({

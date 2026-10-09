@@ -875,11 +875,11 @@ export interface CreateEventParams {
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
    *
-   * Advisory. Parallelizing a create with its publish is opt-in and off by
-   * default (`WORKFLOW_RESILIENT_STEP_DISPATCH`), precisely because a create
-   * can come back refused while the message carrying its payload is already
-   * out. A deployment that opts in accepts that window, and a backend MAY use
-   * this flag to narrow it: refuse the re-ensure (world-vercel surfaces the
+   * Advisory, and not set by the current `@workflow/core` runtime, which
+   * publishes a step's queue message only after its create. A producer that
+   * parallelizes the two accepts that a create can come back refused while
+   * the message carrying its payload is already out, and a backend MAY use
+   * this flag to narrow that window: refuse the re-ensure (world-vercel surfaces the
    * backend's 410 as `RunExpiredError`, which the consumer treats as "nothing
    * left to execute" and acks the message) when it has recorded a refusal for
    * this correlation id and no step entity exists. Best-effort by nature (a
