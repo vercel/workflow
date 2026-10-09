@@ -599,12 +599,10 @@ export class RetainedRunner {
           'type' in parsed.input &&
           parsed.input.type === 'run_start'
         ) {
-          // Start delivered to this owner rather than through the queue.
-          // Version 1: the run is already durably created. Version 2: this
-          // owner created it during initialization. A repeated start only
-          // re-advances.
+          // Start delivered to this owner, which created the run during
+          // initialization. A repeated start only re-advances.
           const version = (parsed.input as { version?: unknown }).version;
-          if (version !== 1 && version !== 2)
+          if (version !== 2)
             throw new InputRejected('Invalid start input', { status: 400 });
           // A retained session means the run already advanced to a
           // suspension; re-advancing without new events is not a valid resume.

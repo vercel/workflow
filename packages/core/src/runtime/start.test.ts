@@ -64,15 +64,10 @@ vi.mock('../telemetry.js', () => ({
 }));
 
 describe('start', () => {
-  it('commits a single-owner run before starting its owner through invoke', async () => {
+  it('starts a single-owner run on its owner through invoke, which creates it', async () => {
     vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
-    const entered = Promise.withResolvers<void>();
-    const committed = Promise.withResolvers<unknown>();
-    const create = vi.fn((_runId: string | null, _event: unknown) => {
-      entered.resolve();
-      return committed.promise;
-    });
-    const queue = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn();
+    const queue = vi.fn();
     const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
@@ -86,45 +81,41 @@ describe('start', () => {
       const workflow = Object.assign(async () => 'result', {
         workflowId: 'retained-test',
       });
-      const starting = start(workflow, [], SINGLE_OWNER_START);
-      await entered.promise;
-      expect(invoke).not.toHaveBeenCalled();
+      const run = await start(workflow, [], SINGLE_OWNER_START);
+      // The caller never writes the run: its owner creates it.
+      expect(create).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      const [runId, input, options] = invoke.mock.calls[0];
+      expect(runId).toBe(run.runId);
+      expect(input).toMatchObject({ type: 'run_start', version: 2 });
       // The marker is the run's own attribute; nothing else marks the run.
-      const event = create.mock.calls[0][1] as {
-        eventData: Record<string, any>;
-      };
-      expect(event.eventData.attributes).toMatchObject(
+      expect(input.runInput.attributes).toMatchObject(
         SINGLE_OWNER_START.attributes
       );
-      expect(event.eventData.allowReservedAttributes).toBe(true);
-      expect(event.eventData.executionContext).not.toHaveProperty(
+      expect(input.runInput.allowReservedAttributes).toBe(true);
+      expect(input.runInput).toMatchObject({
+        deploymentId: 'deploy_123',
+        workflowName: 'retained-test',
+      });
+      expect(input.runInput.executionContext ?? {}).not.toHaveProperty(
         'retainedRunnerVersion'
       );
-      expect(event.eventData).not.toHaveProperty('routingKey');
-      const runId = create.mock.calls[0][0];
-      committed.resolve({ run: { runId, status: 'pending' } });
-      await starting;
-      expect(invoke).toHaveBeenCalledWith(
-        runId,
-        { type: 'run_start', version: 1 },
-        {
-          idempotencyKey: `run-start:${runId}`,
-          target: { deploymentId: 'deploy_123', workflowName: 'retained-test' },
-        }
-      );
-      expect(queue).not.toHaveBeenCalled();
+      expect(input.runInput).not.toHaveProperty('routingKey');
+      expect(options).toEqual({
+        idempotencyKey: `run-start:${runId}`,
+        target: { deploymentId: 'deploy_123', workflowName: 'retained-test' },
+      });
     } finally {
       setWorld(undefined);
       vi.unstubAllEnvs();
     }
   });
 
-  it('falls back to the queue wake when the direct start outcome is unknown', async () => {
+  it('fails start() when the start invocation fails, without creating the run from the caller', async () => {
     vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
-    const create = vi.fn(async (runId: string | null) => ({
-      run: { runId, status: 'pending' },
-    }));
-    const queue = vi.fn().mockResolvedValue(undefined);
+    const create = vi.fn();
+    const queue = vi.fn();
     const invoke = vi.fn().mockRejectedValue(new Error('outcome unknown'));
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
@@ -138,12 +129,12 @@ describe('start', () => {
       const workflow = Object.assign(async () => 'result', {
         workflowId: 'retained-test',
       });
-      await start(workflow, [], SINGLE_OWNER_START);
+      await expect(start(workflow, [], SINGLE_OWNER_START)).rejects.toThrow(
+        'outcome unknown'
+      );
       expect(invoke).toHaveBeenCalledTimes(1);
-      expect(queue).toHaveBeenCalledTimes(1);
-      expect(queue.mock.calls[0][1]).toMatchObject({
-        runId: create.mock.calls[0][0],
-      });
+      expect(create).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
     } finally {
       setWorld(undefined);
       vi.unstubAllEnvs();

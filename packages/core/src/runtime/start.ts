@@ -431,7 +431,7 @@ export interface StartOptionsBase {
   };
 
   /**
-   * With an invoke-first start, wait for `run_created` to be durable before
+   * For a single-owner run, wait for `run_created` to be durable before
    * the first step runs, and resolve `start()` as soon as the run exists.
    * Defaults to `WORKFLOW_DURABLE_RUN_CREATED=1`.
    */
@@ -1168,69 +1168,57 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
-      // Invoke-first start (experimental): the run's owner creates the run.
-      // The start invocation carries everything `run_created` needs; the owner
-      // commits it as the first event of its own session, enqueues a delayed
-      // wake carrying the same input as a backup, and resolves once the run
-      // and its first transitions are durable. An unconfirmed invocation
-      // falls back to the create-first path below, where an existing run is a
-      // benign conflict.
-      if (
-        singleOwner &&
-        process.env.WORKFLOW_INVOKE_FIRST_START === '1' &&
-        world.invoke
-      ) {
-        try {
-          await world.invoke(
-            runId,
-            {
-              type: 'run_start',
-              version: 2,
-              ...((opts.experimental_durableRunCreated ??
-              process.env.WORKFLOW_DURABLE_RUN_CREATED === '1')
-                ? { durableCreate: true }
+      // A single-owner run is started by its owner: the start invocation
+      // carries everything `run_created` needs, and the owner commits it as
+      // the first event of its own session, enqueues a delayed wake carrying
+      // the same input as a backup, and resolves once the run and its first
+      // transitions are durable. This is the only way such a run is created:
+      // a failed invocation fails start(), since writing the run from here
+      // would bypass its single writer.
+      if (singleOwner) {
+        if (!world.invoke)
+          throw new WorkflowRuntimeError('World invoke is unavailable');
+        await world.invoke(
+          runId,
+          {
+            type: 'run_start',
+            version: 2,
+            ...((opts.experimental_durableRunCreated ??
+            process.env.WORKFLOW_DURABLE_RUN_CREATED === '1')
+              ? { durableCreate: true }
+              : {}),
+            runInput: {
+              input: workflowArguments,
+              deploymentId,
+              workflowName,
+              specVersion,
+              executionContext,
+              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+              ...(creatorEnvironment !== undefined
+                ? { environment: creatorEnvironment }
                 : {}),
-              runInput: {
-                input: workflowArguments,
-                deploymentId,
-                workflowName,
-                specVersion,
-                executionContext,
-                ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-                ...(creatorEnvironment !== undefined
-                  ? { environment: creatorEnvironment }
-                  : {}),
-                ...attributeSeed,
-              },
+              ...attributeSeed,
             },
-            {
-              idempotencyKey: `run-start:${runId}`,
-              target: { deploymentId, workflowName },
-            }
-          );
-          safeWaitUntil(Promise.all(ops), (err) => {
-            runtimeLogger.warn(
-              'Background flush of workflow argument streams failed',
-              {
-                workflowRunId: runId,
-                error: err instanceof Error ? err.message : String(err),
-              }
-            );
-          });
-          span?.setAttributes({
-            ...Attribute.WorkflowRunId(runId),
-            ...Attribute.DeploymentId(deploymentId),
-          });
-          return new Run<TResult>(runId, { resilientStart: false });
-        } catch (error) {
+          },
+          {
+            idempotencyKey: `run-start:${runId}`,
+            target: { deploymentId, workflowName },
+          }
+        );
+        safeWaitUntil(Promise.all(ops), (err) => {
           runtimeLogger.warn(
-            'Invoke-first start did not confirm; creating the run first.',
+            'Background flush of workflow argument streams failed',
             {
               workflowRunId: runId,
-              error: error instanceof Error ? error.message : String(error),
+              error: err instanceof Error ? err.message : String(err),
             }
           );
-        }
+        });
+        span?.setAttributes({
+          ...Attribute.WorkflowRunId(runId),
+          ...Attribute.DeploymentId(deploymentId),
+        });
+        return new Run<TResult>(runId, { resilientStart: false });
       }
 
       const runCreated = world.events.create(
@@ -1317,43 +1305,9 @@ export async function start<TArgs extends unknown[], TResult>(
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         );
-      // Retained runs start on their owner through invoke, so the first turn
-      // runs where later inputs are routed. An unknown or failed invoke
-      // outcome falls back to the queue wake: a duplicate start only
-      // re-advances the owner, while no fallback could orphan the run.
-      const startOwner = async () => {
-        try {
-          if (!world.invoke) throw new Error('World invoke is unavailable');
-          await world.invoke(
-            runId,
-            { type: 'run_start', version: 1 },
-            {
-              idempotencyKey: `run-start:${runId}`,
-              target: { deploymentId, workflowName },
-            }
-          );
-        } catch (error) {
-          runtimeLogger.warn(
-            'Direct run start did not confirm; falling back to the queue.',
-            {
-              workflowRunId: runId,
-              error: error instanceof Error ? error.message : String(error),
-            }
-          );
-          await enqueue();
-        }
-      };
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
-        singleOwner
-          ? runCreated.then(startOwner, (error: unknown) =>
-              // The run already exists (an earlier start created it): its
-              // owner still has to be started.
-              EntityConflictError.is(error)
-                ? startOwner()
-                : Promise.reject(error)
-            )
-          : enqueue(),
+        enqueue(),
       ]);
 
       // Queue failure is always fatal: the run was not enqueued
