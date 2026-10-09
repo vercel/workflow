@@ -250,7 +250,20 @@ The `bootstrap` migration command uses the same precedence.
 
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
-Prefix for graphile-worker queue job names. Useful when sharing a database between multiple applications. Default: `workflow_`
+Prefix for graphile-worker queue job names. Default: `workflow_`
+
+Give each application that shares a database its own prefix. A World claims jobs only under its own prefix and stamps that prefix on every run it creates. On `start()`, it re-enqueues only the active runs stamped with its prefix, so restarting one application does not hand another application's runs to its worker. `WORKFLOW_QUEUE_NAMESPACE` does not separate applications that share a database.
+
+Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. The CLI and the observability UI build their World from the environment, so a run they create, such as a re-run, is stamped with the prefix they see, and only a World with that prefix runs and recovers it.
+
+Runs created by earlier versions of the Postgres World have no prefix, and every World still recovers them on `start()`. To assign them to one application, or to keep active runs recoverable after renaming a prefix, set the prefix on them directly:
+
+```sql
+UPDATE workflow.workflow_runs
+SET job_prefix = 'myapp_'
+WHERE status IN ('pending', 'running')
+  AND job_prefix IS NULL; -- after a rename: job_prefix = 'old_prefix_'
+```
 
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 

@@ -5,6 +5,14 @@ type PgConnectionConfig =
   | { pool: Pool; connectionString?: undefined; maxPoolSize?: undefined };
 
 export type PostgresWorldConfig = PgConnectionConfig & {
+  /**
+   * Prefix of the Graphile Worker tasks this World enqueues to and claims
+   * from (`${jobPrefix}flows`). Apps sharing a database keep their jobs apart
+   * by using distinct prefixes. Each run is stamped with the prefix of the
+   * World that created it, and `start()` re-enqueues only the active runs
+   * stamped with this World's prefix (plus unstamped runs, created before
+   * the stamp existed). Defaults to `workflow_`.
+   */
   jobPrefix?: string;
   /**
    * namespace for queue topic prefixes (e.g. 'custom' → '__custom_wkf_workflow_').
@@ -29,3 +37,17 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   streamFlushIntervalMs?: number;
 };
+
+const DEFAULT_JOB_PREFIX = 'workflow_';
+
+/**
+ * The effective `jobPrefix`: the one the queue builds its Graphile task names
+ * from, and the one stamped on the runs this World creates. Both must come
+ * from here, so that recovery only ever re-enqueues a run into the task whose
+ * runner claims it.
+ */
+export function resolveJobPrefix(
+  config: Pick<PostgresWorldConfig, 'jobPrefix'>
+): string {
+  return config.jobPrefix || DEFAULT_JOB_PREFIX;
+}

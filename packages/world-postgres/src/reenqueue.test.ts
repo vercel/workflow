@@ -7,6 +7,7 @@ import { createWorld } from './index.js';
 import {
   createEventsStorage,
   createHooksStorage,
+  createRecoverableRunsList,
   createRunsStorage,
   createStepsStorage,
 } from './storage.js';
@@ -43,6 +44,7 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
 
 vi.mock('./storage.js', () => ({
   createRunsStorage: vi.fn(),
+  createRecoverableRunsList: vi.fn(),
   createEventsStorage: vi.fn(),
   createHooksStorage: vi.fn(),
   createStepsStorage: vi.fn(),
@@ -81,26 +83,41 @@ describe('re-enqueue active runs on start', () => {
     end: vi.fn(),
   } as any;
 
-  function mockRunsList(
-    runsByStatus: Partial<
-      Record<
-        'pending' | 'running',
-        Array<{ runId: string; workflowName: string }>
-      >
+  type RunsByStatus = Partial<
+    Record<
+      'pending' | 'running',
+      Array<{ runId: string; workflowName: string }>
     >
+  >;
+
+  function listOf(runsByStatus: RunsByStatus) {
+    return vi.fn(async (params: any) => {
+      const statuses = Array.isArray(params?.status)
+        ? (params.status as Array<'pending' | 'running'>)
+        : params?.status
+          ? [params.status as 'pending' | 'running']
+          : (['pending', 'running'] as const);
+      const data = statuses.flatMap((status) =>
+        (runsByStatus[status] ?? []).map((r) => ({ ...r, status }))
+      );
+      return { data, hasMore: false, cursor: null };
+    });
+  }
+
+  /**
+   * `recoverable` is what the jobPrefix-scoped recovery listing returns.
+   * `unscoped` is what the public `runs.list` returns on top of it: runs
+   * another app created under its own prefix, which recovery must not see.
+   */
+  function mockRunsList(
+    recoverable: RunsByStatus,
+    unscoped: RunsByStatus = recoverable
   ) {
+    vi.mocked(createRecoverableRunsList).mockReturnValue(
+      listOf(recoverable) as any
+    );
     vi.mocked(createRunsStorage).mockReturnValue({
-      list: vi.fn(async (params: any) => {
-        const statuses = Array.isArray(params?.status)
-          ? (params.status as Array<'pending' | 'running'>)
-          : params?.status
-            ? [params.status as 'pending' | 'running']
-            : (['pending', 'running'] as const);
-        const data = statuses.flatMap((status) =>
-          (runsByStatus[status] ?? []).map((r) => ({ ...r, status }))
-        );
-        return { data, hasMore: false, cursor: null };
-      }),
+      list: listOf(unscoped),
       get: vi.fn(),
     } as any);
   }
@@ -129,6 +146,7 @@ describe('re-enqueue active runs on start', () => {
     delete process.env.WORKFLOW_POSTGRES_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PORT;
+    delete process.env.WORKFLOW_POSTGRES_JOB_PREFIX;
   });
 
   it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {
@@ -208,6 +226,88 @@ describe('re-enqueue active runs on start', () => {
     await world.close();
   });
 
+  it('recovers through the jobPrefix-scoped listing, not the public runs.list', async () => {
+    mockRunsList(
+      { pending: [{ runId: 'wrun_OURS', workflowName: 'wfOurs' }] },
+      {
+        pending: [
+          { runId: 'wrun_OURS', workflowName: 'wfOurs' },
+          { runId: 'wrun_THEIRS', workflowName: 'wfTheirs' },
+        ],
+      }
+    );
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(createRecoverableRunsList).toHaveBeenCalledWith(
+      expect.anything(),
+      'workflow_'
+    );
+    expect(world.runs.list).not.toHaveBeenCalled();
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(1);
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({ id: 'wfOurs' }),
+      expect.anything()
+    );
+
+    await world.close();
+  });
+
+  it('scopes recovery and run stamping to a configured jobPrefix', async () => {
+    mockRunsList({ running: [{ runId: 'wrun_AAA', workflowName: 'wfA' }] });
+
+    const world = createWorld({
+      connectionString: 'postgres://test',
+      pool,
+      jobPrefix: 'myapp_',
+    });
+    await world.start();
+
+    expect(createEventsStorage).toHaveBeenCalledWith(expect.anything(), {
+      jobPrefix: 'myapp_',
+    });
+    expect(createRecoverableRunsList).toHaveBeenCalledWith(
+      expect.anything(),
+      'myapp_'
+    );
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'myapp_flows',
+      expect.objectContaining({ id: 'wfA' }),
+      expect.anything()
+    );
+
+    await world.close();
+  });
+
+  it('takes the jobPrefix scope from WORKFLOW_POSTGRES_JOB_PREFIX in the default config', async () => {
+    process.env.WORKFLOW_POSTGRES_JOB_PREFIX = 'envapp_';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(createEventsStorage).toHaveBeenCalledWith(expect.anything(), {
+      jobPrefix: 'envapp_',
+    });
+    expect(createRecoverableRunsList).toHaveBeenCalledWith(
+      expect.anything(),
+      'envapp_'
+    );
+
+    await world.close();
+  });
+
+  it('stamps runs with the default jobPrefix when none is configured', async () => {
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+
+    expect(createEventsStorage).toHaveBeenCalledWith(expect.anything(), {
+      jobPrefix: 'workflow_',
+    });
+
+    await world.close();
+  });
+
   it('does not enqueue anything when there are no active runs', async () => {
     mockRunsList({});
 
@@ -223,8 +323,8 @@ describe('re-enqueue active runs on start', () => {
 
   it('pages through all active runs', async () => {
     let callCount = 0;
-    vi.mocked(createRunsStorage).mockReturnValue({
-      list: vi.fn(async (params: any) => {
+    vi.mocked(createRecoverableRunsList).mockReturnValue(
+      vi.fn(async (params: any) => {
         callCount++;
         // First call returns two runs (one per status) with hasMore=true,
         // second call returns empty. Assumes the caller asked for both
@@ -248,9 +348,8 @@ describe('re-enqueue active runs on start', () => {
           };
         }
         return { data: [], hasMore: false, cursor: null };
-      }),
-      get: vi.fn(),
-    } as any);
+      }) as any
+    );
 
     const world = createWorld({ connectionString: 'postgres://test', pool });
     await world.start();

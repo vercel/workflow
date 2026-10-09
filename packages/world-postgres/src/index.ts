@@ -1,7 +1,7 @@
 import type { Storage, World } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
-import type { PostgresWorldConfig } from './config.js';
+import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
 import {
@@ -12,6 +12,7 @@ import { createSnapshotsStorage } from './snapshots.js';
 import {
   createEventsStorage,
   createHooksStorage,
+  createRecoverableRunsList,
   createRunsStorage,
   createStepsStorage,
 } from './storage.js';
@@ -19,11 +20,12 @@ import { createStreamer } from './streamer.js';
 
 function createStorage(
   drizzle: Drizzle,
-  runStatusListener: RunStatusListener
+  runStatusListener: RunStatusListener,
+  jobPrefix: string
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle),
+    events: createEventsStorage(drizzle, { jobPrefix }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -71,7 +73,10 @@ export function createWorld(
   // Opens its `LISTEN` connection lazily, on the first `waitForTerminalStatus`
   // call, so a deployment that never awaits a run never pays for it.
   const runStatusListener = createRunStatusListener(pool);
-  const storage = createStorage(drizzle, runStatusListener);
+  // The prefix of the Graphile task this World's runner claims. Stamped on
+  // every run this World creates, and the scope of its startup recovery.
+  const jobPrefix = resolveJobPrefix(config);
+  const storage = createStorage(drizzle, runStatusListener, jobPrefix);
   const streamer = createStreamer(pool, drizzle);
 
   return {
@@ -96,8 +101,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Recover only this World's runs (and unstamped legacy ones): every
+      // recovered run lands in this World's own task, so a run created under
+      // another `jobPrefix` would be driven by the wrong app's runner.
       await reenqueueActiveRuns(
-        storage.runs,
+        {
+          ...storage.runs,
+          list: createRecoverableRunsList(drizzle, jobPrefix),
+        },
         queue.queue,
         'world-postgres',
         config.namespace
