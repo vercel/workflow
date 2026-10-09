@@ -2,6 +2,7 @@
   "title": "Advanced",
   "pages": [
     "child-workflows",
+    "dynamic-workflows",
     "upgrading-workflows",
     "serializable-steps",
     "publishing-libraries"
