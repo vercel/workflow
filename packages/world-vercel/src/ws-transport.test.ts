@@ -195,16 +195,22 @@ const ackFrame = (reqId: number, status = 201, body = EMPTY) =>
   encodeFrame({ reqId, type: 'event_ack', status }, body);
 
 /** Read the `reqId`s off the frames this transport put on the wire. */
+/** Request ids sent on a socket, without an eventsync `attach` frame. */
 const sentReqIds = (socket: { sent: Uint8Array[] }): unknown[] =>
-  socket.sent.map((raw) => {
-    const metaLen = new DataView(
-      raw.buffer,
-      raw.byteOffset,
-      raw.byteLength
-    ).getUint32(0, false);
-    const meta = decode(raw.subarray(4, 4 + metaLen)) as { reqId?: unknown };
-    return meta.reqId;
-  });
+  socket.sent
+    .map((raw) => {
+      const metaLen = new DataView(
+        raw.buffer,
+        raw.byteOffset,
+        raw.byteLength
+      ).getUint32(0, false);
+      return decode(raw.subarray(4, 4 + metaLen)) as {
+        reqId?: unknown;
+        type?: unknown;
+      };
+    })
+    .filter((meta) => meta.type !== 'attach')
+    .map((meta) => meta.reqId);
 
 const latest = () => sockets[sockets.length - 1];
 
@@ -301,6 +307,23 @@ describe('toEventsWsUrl', () => {
 
 describe('owner event writer', () => {
   const slotId = (slot: number) => `evnt_${String(slot).padStart(26, '0')}`;
+  const frameMeta = (raw: Uint8Array) => {
+    const length = new DataView(
+      raw.buffer,
+      raw.byteOffset,
+      raw.byteLength
+    ).getUint32(0, false);
+    return decode(raw.subarray(4, 4 + length)) as Record<string, any>;
+  };
+  /** Every eventsync socket is assigned by its first frame (`attach`). */
+  const attachOf = (socket: { sent: Uint8Array[] }) =>
+    socket.sent.map(frameMeta).find((meta) => meta.type === 'attach');
+  /** What a socket carried after its assignment. */
+  const requests = (socket: { sent: Uint8Array[] }) =>
+    socket.sent.filter((raw) => frameMeta(raw).type !== 'attach');
+  const isUnassigned = (socket: { url: string }) =>
+    new URL(socket.url).pathname ===
+    '/api/websockets/v1/experimental_eventsync';
   const created = new Date('2026-01-01T00:00:00.000Z');
   /** v4 event frames for slots after..head, as a `history` push body. */
   const history = (from: number, to: number) =>
@@ -366,10 +389,15 @@ describe('owner event writer', () => {
         .createWriteSession!('wrun_test');
       try {
         const socket = await nextSocket();
-        expect(new URL(socket.url).searchParams.get('after')).toBe('0');
+        expect(isUnassigned(socket)).toBe(true);
         socket.open();
         const loaded = writer.catchUp!();
         await tick();
+        expect(attachOf(socket)).toMatchObject({
+          type: 'attach',
+          runId: 'wrun_test',
+          after: 0,
+        });
         catchUp(socket, 0, 2);
         const result = await loaded;
         expect(result.head).toBe(2);
@@ -381,7 +409,7 @@ describe('owner event writer', () => {
           (result.events[0].eventData as { input: Uint8Array }).input
         ).toEqual(Uint8Array.of(9));
         expect(writer.heads).toEqual({ queued: 2, committed: 2 });
-        expect(socket.sent).toHaveLength(0);
+        expect(requests(socket)).toHaveLength(0);
         expect(fetch).not.toHaveBeenCalled();
       } finally {
         await writer.dispose();
@@ -471,13 +499,13 @@ describe('owner event writer', () => {
         .createWriteSession!('wrun_test');
       try {
         const socket = await nextSocket();
-        expect(new URL(socket.url).searchParams.get('affinity')).toBe(
-          'cell-iad1-abc123-0'
-        );
         socket.open();
         const loaded = writer.catchUp!();
         void loaded.catch(() => {});
         await tick();
+        expect(attachOf(socket)).toMatchObject({
+          affinity: 'cell-iad1-abc123-0',
+        });
         socket.deliver(
           encodeFrame(
             { reqId: -1, type: 'error', status: 409 },
@@ -526,15 +554,15 @@ describe('owner event writer', () => {
           await writer.stage!(hook, { eventCount: 2, resolveData: 'none' }),
           await writer.stage!(step, { eventCount: 3, resolveData: 'none' }),
         ];
-        expect(first.sent).toHaveLength(2);
+        expect(requests(first)).toHaveLength(2);
         const flushed = writer.flush!();
         await tick();
         // The socket breaks with both writes unacknowledged; slot 3 committed.
         first.close(1006);
         const second = await nextSocket();
-        expect(new URL(second.url).searchParams.get('after')).toBe('2');
         second.open();
         await tick();
+        expect(attachOf(second)).toMatchObject({ after: 2 });
         second.deliver(
           encodeFrame(
             { reqId: -1, type: 'history', eventCount: 1 },
@@ -557,14 +585,7 @@ describe('owner event writer', () => {
         );
         await vi.advanceTimersByTimeAsync(200);
         // Only the uncommitted entry is resent, at its original slot.
-        const resent = second.sent.map((raw) => {
-          const length = new DataView(
-            raw.buffer,
-            raw.byteOffset,
-            raw.byteLength
-          ).getUint32(0, false);
-          return decode(raw.subarray(4, 4 + length)) as Record<string, any>;
-        });
+        const resent = requests(second).map(frameMeta);
         expect(resent[0]).toMatchObject({
           type: 'event',
           event: { eventType: 'step_created', maxSlot: 3 },
@@ -723,9 +744,8 @@ describe('owner event writer', () => {
         staged.push(
           await writer.stage!(event, { eventCount: 3 + i, resolveData: 'none' })
         );
-      expect(socket.url).toContain('/experimental_eventsync');
-      expect(new URL(socket.url).searchParams.has('protocol')).toBe(false);
-      expect(socket.sent).toHaveLength(3);
+      expect(isUnassigned(socket)).toBe(true);
+      expect(requests(socket)).toHaveLength(3);
       let durable = false;
       const flushed = writer.flush!().then((results) => {
         durable = true;
@@ -733,7 +753,7 @@ describe('owner event writer', () => {
       });
       expect(durable).toBe(false);
       await tick();
-      expect(socket.sent).toHaveLength(4);
+      expect(requests(socket)).toHaveLength(4);
       for (const [i, result] of staged.entries())
         socket.deliver(
           encodeFrame(
@@ -795,25 +815,29 @@ describe('owner event writer', () => {
       NonNullable<typeof storage.events.createWriteSession>
     >;
     try {
-      // The first run connects directly; its connect fills the pool.
-      const unassigned = (socket: { url: string }) =>
-        new URL(socket.url).pathname ===
-        '/api/websockets/v1/experimental_eventsync';
+      // The first run opens its own socket now (the pool is still empty), and
+      // its connect starts filling the pool. Every socket is unassigned.
       for (let i = 0; i < 20 && sockets.length < 2; i++) await tick();
-      const direct = sockets.find((socket) => !unassigned(socket))!;
-      expect(direct.url).toContain('/runs/wrun_first/experimental_eventsync');
-      // Pool sockets open one at a time: the next only once one is open.
-      expect(sockets.filter(unassigned)).toHaveLength(1);
-      sockets.filter(unassigned)[0].open();
-      for (let i = 0; i < 20 && sockets.filter(unassigned).length < 2; i++)
-        await tick();
-      const pooled = sockets.filter(unassigned);
-      expect(pooled).toHaveLength(2);
-      pooled[1].open();
-      direct.open();
+      expect(sockets.every(isUnassigned)).toBe(true);
       const loaded = first.catchUp!();
+      // Open sockets as they appear (the pool opens one at a time) until the
+      // first run's own socket has attached and the pool holds two.
+      let direct: (typeof sockets)[number] | undefined;
+      for (let i = 0; i < 40; i++) {
+        for (const socket of sockets)
+          if (socket.readyState === 0) socket.open();
+        await tick();
+        direct ??= sockets.find(
+          (socket) => attachOf(socket)?.runId === 'wrun_first'
+        );
+        if (direct && sockets.filter((s) => s !== direct).length >= 2) break;
+      }
+      expect(direct).toBeDefined();
+      const pooled = sockets.filter((socket) => socket !== direct);
+      expect(pooled).toHaveLength(2);
+      for (const socket of pooled) if (socket.readyState === 0) socket.open();
       await tick();
-      catchUp(direct, 0, 0);
+      catchUp(direct!, 0, 0);
       await loaded;
       // The next run takes a pooled socket: no upgrade, an attach frame.
       const before = sockets.length;
@@ -869,17 +893,22 @@ describe('owner event writer', () => {
       return decode(raw.subarray(4, 4 + length)) as Record<string, unknown>;
     };
     try {
-      const unassigned = (socket: { url: string }) =>
-        new URL(socket.url).pathname ===
-        '/api/websockets/v1/experimental_eventsync';
       for (let i = 0; i < 20 && sockets.length < 2; i++) await tick();
-      const direct = sockets.find((socket) => !unassigned(socket))!;
-      const [pooled] = sockets.filter(unassigned);
-      pooled.open();
-      direct.open();
       const loaded = first.catchUp!();
+      let direct: (typeof sockets)[number] | undefined;
+      for (let i = 0; i < 40; i++) {
+        for (const socket of sockets)
+          if (socket.readyState === 0) socket.open();
+        await tick();
+        direct ??= sockets.find(
+          (socket) => attachOf(socket)?.runId === 'wrun_first'
+        );
+        if (direct && sockets.some((s) => s !== direct)) break;
+      }
+      const pooled = sockets.find((socket) => socket !== direct)!;
+      if (pooled.readyState === 0) pooled.open();
       await tick();
-      catchUp(direct, 0, 0);
+      catchUp(direct!, 0, 0);
       await loaded;
       second = storage.events.createWriteSession!(created);
       second.startFresh!();

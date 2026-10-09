@@ -581,8 +581,10 @@ class WsEventsTransport {
         };
         try {
           const after = this.catchUpOptions?.position();
-          // A pre-opened unassigned eventsync socket skips the upgrade: it is
-          // assigned to this run by its first frame (see `attachFrame`).
+          // Every eventsync connection is an unassigned socket assigned to
+          // this run by its first frame: a pre-opened one from the pool when
+          // one is ready (no upgrade on the critical path), otherwise one
+          // opened now.
           const unassigned =
             after !== undefined
               ? unassignedEventsyncUrl(this.wsUrl)
@@ -592,13 +594,10 @@ class WsEventsTransport {
           // A run this owner is creating is assigned by its run_created frame;
           // anything else attaches explicitly and waits for its catch-up.
           implicit =
-            pooled &&
-            unassigned &&
-            after === 0 &&
-            this.catchUpOptions?.fresh?.()
+            unassigned && after === 0 && this.catchUpOptions?.fresh?.()
               ? { runId: unassigned.runId }
               : undefined;
-          if (pooled && unassigned && !implicit)
+          if (unassigned && !implicit)
             attach = encodeFrame(
               {
                 reqId: 0,
@@ -615,15 +614,11 @@ class WsEventsTransport {
             ? undefined
             : await this.resolveUpgradeHeaders();
           mark('headersMs');
-          let url = this.wsUrl;
-          if (after !== undefined) {
-            const parsed = new URL(url);
-            parsed.searchParams.set('after', String(after));
-            const affinity = this.catchUpOptions?.affinity?.();
-            if (affinity) parsed.searchParams.set('affinity', affinity);
-            url = parsed.toString();
-          }
-          const ws = pooled ?? new WebSocket(url, { headers });
+          const ws =
+            pooled ??
+            new WebSocket(unassigned ? unassigned.url : this.wsUrl, {
+              headers,
+            });
           ws.binaryType = 'nodebuffer';
           conn = {
             ws,
@@ -733,7 +728,29 @@ class WsEventsTransport {
           // An eventsync connection is usable only after its catch-up stream.
           if (!syncing) adopt();
         };
-        if (!pooled) ws.on('open', onOpen);
+        // Assign an unassigned eventsync socket to this run: its first frame
+        // is `attach`, or (for a run being created) the run_created write.
+        const assign = () => {
+          if (attach && !this.closed) ws.send(attach);
+          if (implicit && !this.closed) {
+            // Usable at once: the log is empty, the server holds frames until
+            // its session is ready, and its `synced head 0` is checked when
+            // it arrives (see `syncing`).
+            conn.attach = implicit;
+            conn.catchUp = {
+              after: 0,
+              head: 0,
+              events: [],
+              generation: conn.generation,
+            };
+            adopt();
+          }
+        };
+        if (!pooled)
+          ws.on('open', () => {
+            onOpen();
+            if (opened && !this.closed) assign();
+          });
 
         ws.on('message', (raw: Buffer) => {
           // Rebuild a frame sent as parts before anything reads it.
@@ -869,20 +886,7 @@ class WsEventsTransport {
           timing.pooled = 1;
           mark('upgradeMs');
           onOpen();
-          if (attach && !this.closed) ws.send(attach);
-          if (implicit && !this.closed) {
-            // Usable at once: the log is empty, the server holds frames until
-            // its session is ready, and its `synced head 0` is checked when
-            // it arrives (see `syncing`).
-            conn.attach = implicit;
-            conn.catchUp = {
-              after: 0,
-              head: 0,
-              events: [],
-              generation: conn.generation,
-            };
-            adopt();
-          }
+          assign();
         }
       })();
     });
@@ -1149,7 +1153,6 @@ function eventsyncPoolSize(): number {
 function unassignedEventsyncUrl(
   wsUrl: string
 ): { url: string; runId: string } | undefined {
-  if (!eventsyncPoolSize()) return undefined;
   const url = new URL(wsUrl);
   const match = url.pathname.match(
     /^(.*)\/runs\/([^/]+)\/experimental_eventsync$/
