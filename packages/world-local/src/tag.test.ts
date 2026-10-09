@@ -354,6 +354,24 @@ describe('File tagging', () => {
       await world.close?.();
     });
 
+    // Regression: the streamer's cache of registered streams outlived clear(),
+    // so writing a stream again after clear() never re-registered it.
+    it('should list a stream written again after clear()', async () => {
+      const { createLocalWorld } = await import('./index.js');
+      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      await world.start?.();
+      const runId = 'wrun_clearedstream';
+
+      await world.writeToStream('strm_a', runId, 'before');
+      await world.clear();
+      expect(await world.listStreamsByRunId(runId)).toEqual([]);
+
+      await world.writeToStream('strm_a', runId, 'after');
+      expect(await world.listStreamsByRunId(runId)).toEqual(['strm_a']);
+
+      await world.close?.();
+    });
+
     it("should delete only its own tag's lock files", async () => {
       const { createLocalWorld } = await import('./index.js');
 
@@ -452,6 +470,22 @@ describe('File tagging', () => {
       expect((await world.runs.get(run.runId)).workflowName).toBe(
         'after-clear'
       );
+      await world.close?.();
+    });
+
+    it('should list a stream written again after clear()', async () => {
+      const { createLocalWorld } = await import('./index.js');
+      const world = createLocalWorld({ dataDir: testDir });
+      await world.start?.();
+      const runId = 'wrun_clearedstream';
+
+      await world.writeToStream('strm_a', runId, 'before');
+      await world.clear();
+      expect(await world.listStreamsByRunId(runId)).toEqual([]);
+
+      await world.writeToStream('strm_a', runId, 'after');
+      expect(await world.listStreamsByRunId(runId)).toEqual(['strm_a']);
+
       await world.close?.();
     });
   });
