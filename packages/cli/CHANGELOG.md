@@ -1,5 +1,17 @@
 # @workflow/cli
 
+## 4.3.18
+
+### Patch Changes
+
+- [#4760](https://github.com/vercel/workflow/pull/4760) [`b276686`](https://github.com/vercel/workflow/commit/b2766865c0bad62ef1f90e91764e4f3b6c8c4286) Thanks [@pranaygp](https://github.com/pranaygp)! - `workflow inspect stream` exits 1 when it cannot read or decode a stream, and `workflow inspect st` lists streams instead of steps.
+
+- Updated dependencies [[`12cf587`](https://github.com/vercel/workflow/commit/12cf587db0403e24eb2c3a918004b1816769ea74)]:
+  - @workflow/world-local@4.4.4
+  - @workflow/core@4.8.14
+  - @workflow/builders@4.1.19
+  - @workflow/web@4.1.30
+
 ## 4.3.17
 
 ### Patch Changes
