@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { globalSingleton } from '@workflow/utils';
 import {
   EntityConflictError,
   HookForceClaimedError,
@@ -602,6 +603,18 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
+/**
+ * The in-band fence's counters and locks, keyed by data directory and run.
+ * On `globalThis` (see `globalSingleton`) so every storage instance and every
+ * bundled copy of this module in one process shares them.
+ */
+function inBandFenceState() {
+  return globalSingleton('@workflow/world-local//inBandFence', 1, () => ({
+    seqInBand: new Map<string, number>(),
+    locks: new Map<string, Promise<unknown>>(),
+  }));
+}
+
 export type LocalEventsStorage = Storage['events'] & {
   clearCache(): void;
 };
@@ -3647,16 +3660,20 @@ export function createEventsStorage(
   // so a snapshot never counts an in-band write whose event the listing
   // that follows could miss.
   //
-  // In-process, per storage instance, like the step and hook locks above:
-  // two instances sharing a directory (or a restarted process) do not share
-  // it. A restart starts every run back at `IN_BAND_SEQ_AT_RUN_CREATION`,
-  // which is safe: the old process's writers are gone, and the next
-  // delivery adopts the restarted value from its own snapshot.
-  const inBandSeq = new Map<string, number>();
-  const fenceLocks = new Map<string, Promise<unknown>>();
+  // Shared by every storage instance on the same data directory in this
+  // process (and by every bundled copy of this module, via
+  // `globalSingleton`), like the run-file locks in runs-storage.ts, so two
+  // `createStorage(dir)` calls fence each other. Not shared across OS
+  // processes: world-local's run-level locks are per process too. A restart
+  // starts every run back at `IN_BAND_SEQ_AT_RUN_CREATION`, which is safe:
+  // the old process's writers are gone, and the next delivery adopts the
+  // restarted value from its own snapshot.
+  const fenceState = inBandFenceState();
+  const fenceKey = (runId: string) =>
+    `${path.resolve(basedir)}\0${slotStateKey(runId)}`;
 
   const readInBandSeq = (runId: string) =>
-    inBandSeq.get(slotStateKey(runId)) ?? IN_BAND_SEQ_AT_RUN_CREATION;
+    fenceState.seqInBand.get(fenceKey(runId)) ?? IN_BAND_SEQ_AT_RUN_CREATION;
 
   const fencedCreate = (async (
     runId: string | null,
@@ -3681,11 +3698,11 @@ export function createEventsStorage(
       );
     }
     assertSafeEntityId('runId', runId);
-    const key = slotStateKey(runId);
-    return withInProcessLock(fenceLocks, key, async () => {
+    const key = fenceKey(runId);
+    return withInProcessLock(fenceState.locks, key, async () => {
       const current = readInBandSeq(runId);
       if (current !== expected) {
-        const published = runSlotState.get(key)?.published;
+        const published = runSlotState.get(slotStateKey(runId))?.published;
         throw new InBandSupersededError(
           `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
           {
@@ -3702,11 +3719,17 @@ export function createEventsStorage(
         // published before failing; counting a write that did not land only
         // costs a superseded redelivery, while missing one that did would
         // let a stale writer in.
-        if (!isDefinitiveRefusal(error)) inBandSeq.set(key, current + 1);
+        if (!isDefinitiveRefusal(error)) {
+          fenceState.seqInBand.set(key, current + 1);
+        }
         throw error;
       }
-      inBandSeq.set(key, current + 1);
-      return result;
+      // A create can succeed without appending (`run_started` on a run that
+      // is already running returns the run and no event); it allocated no
+      // position, so the count stays.
+      const allocated = result.event ? 1 : 0;
+      if (allocated > 0) fenceState.seqInBand.set(key, current + allocated);
+      return { ...result, allocated };
     });
   }) as LocalEventsStorage['create'];
 

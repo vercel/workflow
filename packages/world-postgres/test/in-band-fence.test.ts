@@ -74,6 +74,7 @@ describe('in-band fence (world-postgres)', () => {
   inBandFenceConformance({
     name: 'world-postgres',
     events: () => events,
+    secondEvents: () => createEventsStorage(createClient(pool)),
     capabilities: () => createWorld({ pool }).capabilities,
     newRunId: () => `wrun_${ulid()}`,
     atRunCreation: IN_BAND_SEQ_AT_RUN_CREATION,

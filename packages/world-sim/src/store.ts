@@ -745,8 +745,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           );
         }
         const result = await create(runId, data, params);
-        seqInBandByRun.set(runId, current + 1);
-        return { ...result, allocated: 1 } as EventResult;
+        // A create can succeed without appending (`run_started` on a running
+        // run); it allocated no position, so the count stays.
+        const allocated = result.event ? 1 : 0;
+        if (allocated > 0) seqInBandByRun.set(runId, current + allocated);
+        return { ...result, allocated } as EventResult;
       });
     fenceLocks.set(runId, run);
     return run;

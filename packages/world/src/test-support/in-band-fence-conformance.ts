@@ -42,6 +42,13 @@ export interface InBandFenceConformanceOptions {
   newRunId: () => string | null;
   /** In-band positions a new run holds (the World's documented initial count). */
   atRunCreation: number;
+  /**
+   * A second events storage over the same backing data as the one passed in
+   * (for example a second instance on the same data directory or database),
+   * to check that the fence is shared between instances. Omit when the World
+   * cannot have two instances over one store.
+   */
+  secondEvents?: (first: Storage['events']) => Storage['events'];
   /** How many concurrent writers to race. Defaults to 8. */
   concurrentWriters?: number;
 }
@@ -236,6 +243,62 @@ export function inBandFenceConformance(
         slots: [1, 2],
       });
     });
+
+    test('an in-band create that appends nothing leaves the count alone', async () => {
+      const events = options.events();
+      const runId = await createRun(events);
+      const first = await (events.create as CreateAny)(runId, runStarted, {
+        inBand: true,
+        expectedSeqInBand: atRunCreation,
+      });
+      if (first.allocated !== undefined) expect(first.allocated).toBe(1);
+      const before = await load(events, runId);
+      // `run_started` on a run that is already running converges on the
+      // existing state and appends no event.
+      const second = await (events.create as CreateAny)(runId, runStarted, {
+        inBand: true,
+        expectedSeqInBand: before.snapshot?.seqInBand,
+      });
+      if (second.allocated !== undefined) expect(second.allocated).toBe(0);
+      expect(await load(events, runId)).toEqual(before);
+      // The count did not move, so the same writer keeps writing at it.
+      await expect(
+        (events.create as CreateAny)(runId, waitCreated(uniqueId('wait')), {
+          inBand: true,
+          expectedSeqInBand: before.snapshot?.seqInBand,
+        })
+      ).resolves.toBeDefined();
+    });
+
+    if (options.secondEvents) {
+      const secondEvents = options.secondEvents;
+      test('two storage instances over the same data share one fence', async () => {
+        const a = options.events();
+        const runId = await createRun(a);
+        const b = secondEvents(a);
+        const { snapshot } = await load(a, runId);
+        const outcomes = await Promise.allSettled(
+          [a, b].map((events) =>
+            (events.create as CreateAny)(runId, attrSet(uniqueId('v')), {
+              inBand: true,
+              expectedSeqInBand: snapshot?.seqInBand,
+            })
+          )
+        );
+        expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(
+          1
+        );
+        expect(
+          outcomes.filter(
+            (o) => o.status === 'rejected' && isSuperseded(o.reason)
+          )
+        ).toHaveLength(1);
+        expect((await load(b, runId)).snapshot).toEqual({
+          seq: 2,
+          seqInBand: (snapshot?.seqInBand ?? 0) + 1,
+        });
+      });
+    }
 
     test('refuses an in-band write without an expected count', async () => {
       const events = options.events();

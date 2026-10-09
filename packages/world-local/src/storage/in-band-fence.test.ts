@@ -73,6 +73,7 @@ function attrSet(value: string): AnyEventRequest {
 
 // The fence behavior every World shares, each test on a fresh data dir.
 const conformanceDirs: string[] = [];
+const eventsDirs = new WeakMap<object, string>();
 afterAll(() => {
   for (const dir of conformanceDirs)
     rmSync(dir, { recursive: true, force: true });
@@ -82,6 +83,13 @@ inBandFenceConformance({
   events: () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wl-fence-conf-'));
     conformanceDirs.push(dir);
+    const events = createStorage(dir).events;
+    eventsDirs.set(events, dir);
+    return events;
+  },
+  secondEvents: (first) => {
+    const dir = eventsDirs.get(first);
+    if (!dir) throw new Error('unknown events storage');
     return createStorage(dir).events;
   },
   capabilities: () => {
