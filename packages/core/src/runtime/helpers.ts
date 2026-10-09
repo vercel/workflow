@@ -1295,11 +1295,10 @@ function fnv1a32Hex(value: string): string {
  * the step's IDENTITY, correlation id plus (hashed) step name, rather than
  * the bare correlation id.
  *
- * The scoping matters for resilient step dispatch under the precondition
- * guard: a guard-rejected `step_created` leaves its (revoked) step message in
- * flight, and the corrected replay may re-derive the same correlation id for
- * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
- * dispatch would silently dedupe against the revoked in-flight message,
+ * The scoping matters when a step message is still in flight for a
+ * correlation id that a corrected replay re-derives for a DIFFERENT step.
+ * Under a bare-correlationId key the corrected replay's dispatch would
+ * silently dedupe against the stale in-flight message,
  * which then resolves `skipped` against the re-created entity (the server's
  * stepName fence rejects its bare start), and the legitimate step would
  * never be executed. Scoping by step name keeps every dedup property that

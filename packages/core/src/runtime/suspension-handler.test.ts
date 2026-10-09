@@ -1659,23 +1659,8 @@ describe('handleSuspension', () => {
   });
 });
 
-describe('resilient step dispatch', () => {
+describe('step dispatch on the single-event path', () => {
   const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
-
-  // Opt-in feature, so every test that expects a publish has to ask for it.
-  // The default-off case is covered by its own test below, which unsets this.
-  let previousFlag: string | undefined;
-  beforeEach(() => {
-    previousFlag = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
-  });
-  afterEach(() => {
-    if (previousFlag === undefined) {
-      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    } else {
-      process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = previousFlag;
-    }
-  });
 
   /** A run whose queue transport supports binary payloads (CBOR). */
   const cborRun: WorkflowRun = { ...run, specVersion: SPEC_VERSION_CURRENT };
@@ -1720,7 +1705,7 @@ describe('resilient step dispatch', () => {
     getTraceCarrier: vi.fn().mockResolvedValue({ traceparent: '00-abc' }),
   });
 
-  it('publishes the overflow step alongside its step_created, carrying stepInput', async () => {
+  it('writes step_created without publishing when a stepDispatch is provided', async () => {
     const { world, eventsCreate, queue } = createQueueWorld();
 
     const result = await handleSuspension({
@@ -1730,7 +1715,8 @@ describe('resilient step dispatch', () => {
       stepDispatch: stepDispatch(),
     });
 
-    // The overflow step is created AND queued by the suspension handler.
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
     expect(eventsCreate).toHaveBeenCalledWith(
       run.runId,
       expect.objectContaining({
@@ -1739,125 +1725,6 @@ describe('resilient step dispatch', () => {
       }),
       expect.anything()
     );
-    expect(queue).toHaveBeenCalledTimes(1);
-    const [calledQueueName, payload, opts] = queue.mock.calls[0];
-    expect(calledQueueName).toBe(queueName);
-    expect(payload).toMatchObject({
-      runId: run.runId,
-      stepId: 's4',
-      stepName: 's4',
-      traceCarrier: { traceparent: '00-abc' },
-      // Immutable run identity so the consumer can start the step without a
-      // blocking runs.get (vercel/workflow#3456).
-      runContext: {
-        deploymentId: run.deploymentId,
-        specVersion: cborRun.specVersion,
-        startedAt: Number(cborRun.startedAt),
-        rootRunId: run.runId,
-      },
-    });
-    // The message carries the same serialized input as the direct write.
-    expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
-    const createdInput = eventsCreate.mock.calls.find(
-      ([, event]) => event.correlationId === 's4'
-    )?.[1].eventData.input;
-    expect(payload.stepInput.input).toBe(createdInput);
-    expect(eventsCreate.mock.calls[0][1].eventData).not.toHaveProperty(
-      'runContext'
-    );
-    // Step-identity-scoped key — matches the dispatch key runtime.ts uses for
-    // the same step, so redundant publishes dedupe.
-    expect(opts).toMatchObject({
-      idempotencyKey: stepDispatchIdempotencyKey('s4', 's4'),
-    });
-    // Reported so the caller skips its own dispatch for this step.
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
-    expect(result.createdStepCorrelationIds).toContain('s4');
-  });
-
-  it('swallows a transient step_created failure once the message is out (resilient)', async () => {
-    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
-      if (event.eventType === 'step_created') {
-        throw new WorkflowWorldError('backend blip', { status: 503 });
-      }
-      return { event };
-    });
-    const { world, queue } = createQueueWorld({ eventsCreate });
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: cborRun,
-      stepDispatch: stepDispatch(),
-    });
-
-    // The publish carried the payload, so the consumer re-ensures the event.
-    expect(queue).toHaveBeenCalledTimes(1);
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
-    // The write did NOT land, so this handler does not claim creation.
-    expect(result.createdStepCorrelationIds.has('s4')).toBe(false);
-  });
-
-  it('propagates a queue publish failure (the message is the durability bar)', async () => {
-    const queue = vi.fn().mockRejectedValue(new Error('queue down'));
-    const { world } = createQueueWorld({ queue });
-
-    await expect(
-      handleSuspension({
-        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-        world,
-        run: cborRun,
-        stepDispatch: stepDispatch(),
-      })
-    ).rejects.toThrow('queue down');
-  });
-
-  it('propagates a non-retryable step_created failure even when the publish succeeded', async () => {
-    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
-      if (event.eventType === 'step_created') {
-        throw new WorkflowWorldError('bad request', { status: 400 });
-      }
-      return { event };
-    });
-    const { world } = createQueueWorld({ eventsCreate });
-
-    await expect(
-      handleSuspension({
-        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-        world,
-        run: cborRun,
-        stepDispatch: stepDispatch(),
-      })
-    ).rejects.toThrow('bad request');
-  });
-
-  it('falls back to create-only when the run predates the CBOR queue transport', async () => {
-    const { world, queue } = createQueueWorld();
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: { ...run, specVersion: 2 },
-      stepDispatch: stepDispatch(),
-    });
-
-    expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
-  });
-
-  it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH is unset', async () => {
-    delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    const { world, queue } = createQueueWorld();
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: cborRun,
-      stepDispatch: stepDispatch(),
-    });
-
-    expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
   it('never queues from here when no stepDispatch is provided (terminal drain)', async () => {
