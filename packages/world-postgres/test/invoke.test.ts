@@ -15,7 +15,7 @@ import { encode } from 'cbor-x';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
-import { Pool } from 'pg';
+import { Client, Pool } from 'pg';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../core/dist/private.js';
@@ -34,6 +34,7 @@ import {
 import { createWorld } from '../src/index.js';
 import {
   createInvocationNotifications,
+  INVOCATION_FALLBACK_MS,
   INVOCATION_INPUT_TOPIC,
   INVOCATION_RESULT_TOPIC,
   invocationNotificationKey,
@@ -1147,44 +1148,76 @@ describe.skipIf(process.platform === 'win32')(
       }
     });
 
-    it('reconnects a terminated real LISTEN client and receives later notifications', async () => {
+    it('reconnects a terminated real LISTEN client, retrying a failed attempt, and receives later notifications', async () => {
       const name = `notify-${randomUUID()}`;
       const listenerPool = new Pool({
         connectionString: container.getConnectionUri(),
         application_name: name,
       });
+      // The listener's first reconnect fails, as a connect timeout under load
+      // does. Nothing retries it but a later wait().
+      const connect = Client.prototype.connect;
+      let listenerConnects = 0;
+      const connectSpy = vi
+        .spyOn(Client.prototype, 'connect')
+        .mockImplementation(function (this: Client, ...args: never[]) {
+          const { connectionParameters } = this as unknown as {
+            connectionParameters: { application_name?: string };
+          };
+          if (
+            connectionParameters.application_name === `${name}:invocations` &&
+            ++listenerConnects === 2
+          ) {
+            return Promise.reject(
+              new Error('Connection terminated due to connection timeout')
+            );
+          }
+          return Reflect.apply(connect, this, args);
+        } as typeof connect);
+      const warn = vi.spyOn(console, 'warn');
+      // Logged right before the reconnected listener wakes its watches.
+      const restorations = () =>
+        warn.mock.calls.filter(([message]) =>
+          String(message).includes('Invocation notifications restored')
+        ).length;
       const observer = createInvocationNotifications(listenerPool);
       const key = invocationNotificationKey('reconnect');
       const watch = observer.watch(INVOCATION_INPUT_TOPIC, key);
       const signal = new AbortController().signal;
+      // A backend shows as idle before its LISTEN has run.
       const listenerPid = async () =>
         (
           await pool.query<{ pid: number }>(
-            'SELECT pid FROM pg_stat_activity WHERE application_name = $1 AND state = $2',
-            [`${name}:invocations`, 'idle']
+            "SELECT pid FROM pg_stat_activity WHERE application_name = $1 AND state = 'idle' AND query LIKE 'LISTEN %'",
+            [`${name}:invocations`]
           )
         ).rows[0]?.pid;
+      // Read, then wait, the way consumers do: each wait() past the backoff
+      // retries the connection, so a failed attempt cannot strand the watch.
+      const poll = <T>(read: () => Promise<T>, ready: (value: T) => boolean) =>
+        until(async () => {
+          const value = await read();
+          if (!ready(value))
+            await watch.wait(watch.revision, INVOCATION_FALLBACK_MS, signal);
+          return value;
+        }, ready);
       try {
-        await until(
-          async () => watch.revision,
-          (revision) => revision > 0
-        );
-        const firstPid = await until(listenerPid, (pid) => pid !== undefined);
+        const firstPid = await poll(listenerPid, (pid) => pid !== undefined);
         const beforeDisconnect = watch.revision;
+        const beforeRestore = restorations();
         await pool.query('SELECT pg_terminate_backend($1)', [firstPid]);
+        // Consumers reread on disconnect, then fall back to timed reads.
         await until(
           async () => watch.revision,
           (revision) => revision > beforeDisconnect
         );
-        // Normal consumers reread on disconnect, then use the slow fallback
-        // while reconnect is backed off, then wait/read again.
-        await watch.wait(watch.revision, 1_000, signal);
-        const reconnected = watch.wait(watch.revision, 5_000, signal);
-        const secondPid = await until(
-          listenerPid,
-          (pid) => pid !== undefined && pid !== firstPid
+        await poll(
+          async () => restorations(),
+          (count) => count > beforeRestore
         );
-        await reconnected;
+        expect(listenerConnects).toBeGreaterThanOrEqual(3);
+        const secondPid = await listenerPid();
+        expect(secondPid).toBeDefined();
         expect(secondPid).not.toBe(firstPid);
         const beforeNotify = watch.revision;
         await pool.query('SELECT pg_notify($1, $2)', [
@@ -1196,6 +1229,8 @@ describe.skipIf(process.platform === 'win32')(
           (revision) => revision > beforeNotify
         );
       } finally {
+        connectSpy.mockRestore();
+        warn.mockRestore();
         watch.dispose();
         await observer.close();
         await listenerPool.end();
