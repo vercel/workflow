@@ -1,4 +1,7 @@
-import type { WorkflowAfterTransformHook } from './swc-esbuild-plugin.js';
+import type {
+  HostModuleResolver,
+  WorkflowAfterTransformHook,
+} from './swc-esbuild-plugin.js';
 
 export const validBuildTargets = [
   'standalone',
@@ -62,6 +65,16 @@ interface BaseWorkflowConfig {
    * workflow bundles.
    */
   onAfterTransform?: WorkflowAfterTransformHook;
+
+  /**
+   * Last-resort resolver for module ids that only the host bundler can
+   * satisfy, such as Vite virtual modules reachable from a step. Consulted
+   * only after on-disk and esbuild resolution have both declined.
+   *
+   * Integrations set this when they can reach the host's plugin container.
+   * See vercel/workflow#3859.
+   */
+  hostResolver?: HostModuleResolver;
 
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
