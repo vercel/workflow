@@ -175,6 +175,16 @@ Closing the world stops the queue from accepting new jobs and waits for active j
 
 An aborted HTTP request does not guarantee that its server-side handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep the workflow HTTP routes and any caller-owned pool available until `world.close()` resolves.
 
+### Lost workers
+
+Graphile Worker ends a worker whose job release (completing or failing the job) fails with an error it does not retry, such as a dropped or refused connection during a database failover, or with a retryable error that outlasts its 100 retries. It does not replace that worker, so a process left alone would lose a worker on each failover that a job finishes across, until it claimed nothing.
+
+On a runner's first lost worker, the queue starts a new runner with the same options and stops the old one once the new one is up. While the database is unreachable, the new runner cannot start, and the old runner's remaining workers keep retrying their fetches. A failed start is tried again after 1s, doubling to 30s. One start runs at a time, for as long as connecting takes; pg has no connect timeout by default, so pass a `pool` with `connectionTimeoutMillis` to bound it. A replacement that is itself lost within 30s of starting is replaced only after the next of those steps, so a database that keeps failing releases costs at most one runner every 30s, each stranding up to `queueConcurrency` jobs. A runner that is stopping, through `world.close()` or Graphile Worker's own shutdown, is not replaced; one that Graphile Worker stops over an error, such as a failed crontab query at start, is.
+
+The old runner's jobs finish and are recorded as usual, so until they do, the process can run more than `queueConcurrency` jobs. Graphile Worker's shutdown abort does not reach them. Only the latest retired runner's jobs run without a time limit: the queue aborts an older one's deliveries 5s after a newer one is retired, and every retired runner's 5s after `world.close()` stops the active runner. Graphile Worker's own signal handling does not wait for a retired runner, so on a signal the queue aborts their deliveries at once, which usually fails their jobs for a retry before the process exits. With `applicationManagedShutdown`, awaiting `world.close()` waits for them.
+
+Each loss is passed to `onWorkerLost`, which defaults to a console warning. Unless the release committed before it failed, the job stays locked until Graphile Worker resets locks older than 4 hours, which it checks every 8 to 10 minutes. With `enableInvoke`, the run's executor queue stays locked with it, so that run's other executions wait too. Once unlocked, the job runs again, even if its delivery had finished.
+
 ## Configuration options
 
 | Option             | Type      | Default                                                                                | Description                                                                                          |
@@ -183,9 +193,10 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
 | `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
-| `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. A runner replaced after losing a worker can finish its jobs on top of this; see [Lost workers](#lost-workers). |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
+| `onWorkerLost` | `(lost: LostWorker) => void \| Promise<void>` | A console warning | Called with `{ error, workerId, jobId }` for each Graphile Worker worker lost to a failed job release. See [Lost workers](#lost-workers). |
 
 ## Environment variables
 
@@ -336,7 +347,9 @@ jobs can execute concurrently. The default job prefix produces these names:
 Graphile permits one active job per run's named queue across worker processes.
 Different runs, step jobs, and health checks can execute concurrently.
 `queueConcurrency` limits the total active Graphile jobs per worker process
-across both task identifiers and defaults to **50**.
+across both task identifiers and defaults to **50**. A runner replaced after
+losing a worker can finish its jobs on top of that (see
+[Lost workers](#lost-workers)).
 
 While a workflow execution job is active, the World passes pending invocation
 inputs to the SDK handler, including while inline steps wait. After an execution

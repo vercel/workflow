@@ -41,7 +41,7 @@ import {
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
-import type { PostgresWorldConfig } from './config.js';
+import type { LostWorker, PostgresWorldConfig } from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
@@ -191,6 +191,109 @@ type HttpExecutionResult =
 
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
+
+/**
+ * Backoff for starting a runner in place of one the queue lost: 1s, doubling
+ * with each failed start, capped at 30s. Replacing runners that keep being
+ * lost soon after they start takes the same steps (see quickLossesBefore).
+ */
+const RUNNER_REPLACEMENT_RETRY_BASE_MS = 1_000;
+const RUNNER_REPLACEMENT_RETRY_MAX_MS = 30_000;
+/** A replacement lost sooner than this after it started was lost quickly. */
+const QUICK_LOSS_WINDOW_MS = 30_000;
+/**
+ * How long a stopping runner's jobs run before their signals abort, passed to
+ * Graphile Worker as `gracefulShutdownAbortTimeout` (its default). A retired
+ * runner's deliveries get the same grace once close() stops the active runner,
+ * or once a newer runner is retired.
+ */
+const SHUTDOWN_ABORT_TIMEOUT_MS = 5_000;
+
+/** Step `step` (from 0) of the replacement backoff. */
+function replacementBackoffMs(step: number) {
+  return Math.min(
+    RUNNER_REPLACEMENT_RETRY_MAX_MS,
+    RUNNER_REPLACEMENT_RETRY_BASE_MS * 2 ** step
+  );
+}
+
+/** A runner's deliveries, as its task handlers see them. */
+type RunnerDeliveries = {
+  /**
+   * Set once the queue retires the runner, because a replacement took its
+   * place or because it started when it was no longer needed. Its deliveries
+   * do not see Graphile Worker's abort (see `withDeliverySignal`).
+   */
+  retiring: boolean;
+  /**
+   * Set once the queue aborts a retired runner's deliveries; one the runner
+   * starts after that is aborted at once.
+   */
+  aborted: boolean;
+  /** Aborts a retired runner's deliveries once their grace period passes. */
+  graceTimer: ReturnType<typeof setTimeout> | null;
+  inFlight: Set<AbortController>;
+};
+
+/** What the queue tracks for each runner it starts. */
+type RunnerState = RunnerDeliveries & {
+  runner: Runner;
+  /** Set once the runner is stopping, whoever stopped it. */
+  stopping: boolean;
+  /**
+   * Set once Graphile Worker stopped the runner over an error and rejected its
+   * promise. Such a runner is replaced like one that lost a worker.
+   */
+  failed: boolean;
+  /** Set while a replacement of this runner is under way. */
+  replacing: boolean;
+  /** When the runner started, as `performance.now()`. */
+  startedAt: number;
+  /**
+   * For a runner started in place of another, how many runners in a row
+   * before it were lost soon after starting (see quickLossesBefore). Null for
+   * the runner `start()` starts.
+   */
+  quickLosses: number | null;
+};
+
+/**
+ * Releases that keep failing while fetches succeed (a misconfigured database,
+ * or connections split between a primary and a read-only node) would have
+ * every new runner lose its workers as fast as they finish jobs, each one
+ * stranding its job. Replacing each runner at once would start runners at
+ * that pace. So this counts the runners in a row, `lost` included, that were
+ * started in place of another and lost within QUICK_LOSS_WINDOW_MS of
+ * starting. Each is replaced only after the next backoff step, so such a
+ * database costs at most one runner every RUNNER_REPLACEMENT_RETRY_MAX_MS.
+ */
+function quickLossesBefore(lost: RunnerState, now: number) {
+  if (lost.quickLosses === null) return 0;
+  return now - lost.startedAt < QUICK_LOSS_WINDOW_MS ? lost.quickLosses + 1 : 0;
+}
+
+/** Wait `ms`, or until `signal` aborts. */
+function delayUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    if (signal.aborted) done();
+    else signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** The default `onWorkerLost`. */
+function warnLostWorker({ error, workerId, jobId }: LostWorker) {
+  console.warn(
+    `[world-postgres] Graphile Worker ended worker ${workerId}: releasing job ${jobId ?? '(unknown)'} failed:`,
+    error
+  );
+}
 
 function executorInput(message: unknown) {
   if (HealthCheckPayloadSchema.safeParse(message).success) return undefined;
@@ -389,6 +492,19 @@ export function createQueue(
   let runnerStart: RunnerStart | null = null;
   let closing = false;
   let startPromise: Promise<void> | null = null;
+  const onWorkerLost = config.onWorkerLost ?? warnLostWorker;
+  /** Replacements under way; close() waits for them. */
+  const replacements = new Set<Promise<void>>();
+  /**
+   * Runners the queue retired, each until its stop settles: runners a
+   * replacement took the place of, and runners that started when they were no
+   * longer needed.
+   */
+  const retiredRunners = new Map<RunnerState, Promise<void>>();
+  /** Wakes a replacement waiting to retry, once close() begins. */
+  const closeController = new AbortController();
+  /** Set once Graphile Worker's signal handling shuts the runners down. */
+  let signalled = false;
 
   function markMessageCompleted(idempotencyKey: string) {
     completedMessages.delete(idempotencyKey);
@@ -842,7 +958,11 @@ export function createQueue(
     return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
   }
 
-  function createTaskHandler(queue: QueuePrefix, executor = false) {
+  function createTaskHandler(
+    deliveries: RunnerDeliveries,
+    queue: QueuePrefix,
+    executor = false
+  ) {
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileHelpers = GraphileHelpers.safeParse(helpers);
@@ -890,17 +1010,22 @@ export function createQueue(
         });
       }
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
-        const result = await executeMessageOverHttp({
-          queueName,
-          messageId: messageData.messageId,
-          attempt,
-          body: messageData.data,
-          headers: messageData.headers,
-          executorDelivery,
-          abortSignal: graphileHelpers.success
+        const result = await withDeliverySignal(
+          deliveries,
+          graphileHelpers.success
             ? graphileHelpers.data.abortSignal
             : undefined,
-        });
+          (abortSignal) =>
+            executeMessageOverHttp({
+              queueName,
+              messageId: messageData.messageId,
+              attempt,
+              body: messageData.data,
+              headers: messageData.headers,
+              executorDelivery,
+              abortSignal,
+            })
+        );
 
         if (result.type === 'completed') {
           return 'completed';
@@ -962,17 +1087,33 @@ export function createQueue(
   }
 
   async function setupListeners() {
+    runner = (await createRunner(null)).runner;
+  }
+
+  async function createRunner(
+    quickLosses: RunnerState['quickLosses']
+  ): Promise<RunnerState> {
+    const deliveries: RunnerDeliveries = {
+      retiring: false,
+      aborted: false,
+      graceTimer: null,
+      inFlight: new Set(),
+    };
     const taskList: Record<
       string,
       (payload: unknown, helpers: unknown) => Promise<void>
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    taskList[getJobQueueName()] = createTaskHandler(deliveries, workflowPrefix);
     if (invocations)
-      taskList[executorTask()] = createTaskHandler(workflowPrefix, true);
+      taskList[executorTask()] = createTaskHandler(
+        deliveries,
+        workflowPrefix,
+        true
+      );
 
-    runner = await run({
+    const created = await run({
       pgPool: pool,
       // Default of 50 is high enough to avoid worker-pool exhaustion in
       // workflows that use parent→child polling patterns (e.g. awaiting a
@@ -989,8 +1130,287 @@ export function createQueue(
         noHandleSignals: true,
       }),
       pollInterval: config.pollInterval ?? 500, // per worker; LISTEN/NOTIFY only wakes idle workers early
+      gracefulShutdownAbortTimeout: SHUTDOWN_ABORT_TIMEOUT_MS,
       taskList,
     });
+    const state: RunnerState = Object.assign(deliveries, {
+      runner: created,
+      stopping: false,
+      failed: false,
+      replacing: false,
+      startedAt: performance.now(),
+      quickLosses,
+    });
+    watchRunner(state);
+    return state;
+  }
+
+  /**
+   * Graphile Worker 0.16 ends a worker whose job release (completing or
+   * failing the job) fails with an error it does not retry: a refused or reset
+   * connection, a session the server ended, pg's own connect timeout, or a
+   * retryable error that outlasted its 100 retries. It logs "committing
+   * seppuku" and never replaces that worker, so each database failover a job
+   * finishes across costs the runner a worker, and a runner that has lost them
+   * all claims nothing while it still looks alive. Every loss is reported, and
+   * the first on a runner that is not stopping starts its replacement.
+   */
+  function watchRunner(state: RunnerState) {
+    const { events } = state.runner;
+    const markStopping = () => {
+      state.stopping = true;
+    };
+    events.on('stop', markStopping);
+    events.on('pool:gracefulShutdown', markStopping);
+    events.on('pool:forcefulShutdown', markStopping);
+    // Graphile Worker's signal handling does not wait for a retired runner:
+    // its pool is already shutting down, so the handler exits the process once
+    // the active runner's jobs end. A retired runner's delivery aborted now
+    // usually fails its job for a retry before then; one still running at the
+    // exit would leave its job locked for 4 hours.
+    const onSignal = () => {
+      signalled = true;
+      if (!closing) {
+        for (const retired of retiredRunners.keys()) abortDeliveries(retired);
+      }
+    };
+    events.on('gracefulShutdown', onSignal);
+    events.on('forcefulShutdown', onSignal);
+    events.on('worker:fatalError', ({ worker, error }) => {
+      startReplacing(state);
+      reportLostWorker({
+        error,
+        workerId: worker.workerId,
+        // Still set here; Graphile Worker clears it after this event.
+        jobId: worker.getActiveJob()?.id,
+      });
+    });
+    // Graphile Worker stops a runner whose cron or worker pool fails, as when
+    // the crontab query every runner makes at start meets a database that is
+    // going away, and rejects its promise. Nothing else would replace it.
+    state.runner.promise.catch((error: unknown) => {
+      if (closing || signalled || state.retiring) return;
+      if (runner !== state.runner) return;
+      console.warn(
+        '[world-postgres] Graphile Worker stopped its runner over an error; starting another:',
+        error
+      );
+      state.failed = true;
+      startReplacing(state);
+    });
+  }
+
+  /** Start replacing `state` unless that is under way or it is stopping. */
+  function startReplacing(state: RunnerState) {
+    if (closing || state.replacing) return;
+    if (state.stopping && !state.failed) return;
+    state.replacing = true;
+    trackReplacement(replaceRunner(state));
+  }
+
+  /** Pass a loss to `onWorkerLost`, which must not break the queue. */
+  function reportLostWorker(lost: LostWorker) {
+    const warn = (error: unknown) => {
+      console.warn('[world-postgres] onWorkerLost failed:', error);
+    };
+    try {
+      Promise.resolve(onWorkerLost(lost) as unknown).catch(warn);
+    } catch (error) {
+      warn(error);
+    }
+  }
+
+  /**
+   * Whether `lost` no longer needs replacing: close() began, a signal is
+   * shutting the runners down, Graphile Worker is stopping it on purpose, or
+   * it is no longer the runner.
+   */
+  function isOutdated(lost: RunnerState) {
+    if (closing || signalled || runner !== lost.runner) return true;
+    return lost.stopping && !lost.failed;
+  }
+
+  /**
+   * Start a runner in place of `lost`, and retire `lost` once the new one is
+   * up. A start needs a connection (Graphile Worker migrates first), and a lost
+   * worker usually means the database is going away, so while starts fail,
+   * `lost` keeps running, its remaining workers retrying their fetches, and the
+   * start is tried again with capped backoff. One start runs at a time, for as
+   * long as connecting takes: a runner that comes up late would run the jobs
+   * its workers had already claimed beside the one that took its place. The
+   * active-run recovery world.start() runs is not repeated.
+   */
+  async function replaceRunner(lost: RunnerState): Promise<void> {
+    try {
+      const quickLosses = quickLossesBefore(lost, performance.now());
+      if (quickLosses > 0) {
+        await delayUnlessAborted(
+          replacementBackoffMs(quickLosses - 1),
+          closeController.signal
+        );
+      }
+      for (let failures = 0; !isOutdated(lost); failures++) {
+        if (await tryReplacing(lost, quickLosses, failures)) return;
+        await delayUnlessAborted(
+          replacementBackoffMs(failures),
+          closeController.signal
+        );
+      }
+    } finally {
+      // Still the runner: let a later failure start another replacement.
+      if (runner === lost.runner) lost.replacing = false;
+    }
+  }
+
+  /**
+   * One start in place of `lost`. Resolves to false if the start failed and
+   * `lost` still needs replacing, and to true once nothing is left to try. A
+   * runner that came up when it was no longer needed is retired.
+   */
+  async function tryReplacing(
+    lost: RunnerState,
+    quickLosses: number,
+    failures: number
+  ): Promise<boolean> {
+    let fresh: RunnerState;
+    try {
+      fresh = await createRunner(quickLosses);
+    } catch (error) {
+      if (isOutdated(lost)) return true;
+      console.warn(
+        `[world-postgres] Failed to start a Graphile Worker runner to replace one; retrying in ${replacementBackoffMs(failures)}ms:`,
+        error
+      );
+      return false;
+    }
+    if (isOutdated(lost)) {
+      retireRunner(fresh);
+      return true;
+    }
+    runner = fresh.runner;
+    // Graphile Worker is already stopping a failed runner, aborting its jobs
+    // after the usual grace period. Of the runners the queue retires, only the
+    // latest runs its deliveries without a time limit.
+    if (!lost.failed) {
+      graceRetiredRunners();
+      retireRunner(lost);
+    }
+    return true;
+  }
+
+  /**
+   * Run a delivery under its own signal. Graphile Worker aborts a stopping
+   * runner's job signals once its grace period passes, which is how close()
+   * and a signal-handled shutdown cut a stalled delivery short. A runner
+   * retired after a replacement took its place is stopped the same way, but
+   * its deliveries are healthy and must finish: aborted, each would lose an
+   * attempt and be redelivered while its handler might still be running. So a
+   * retiring runner's deliveries ignore Graphile Worker's abort, and the queue
+   * aborts them itself when it should (see retireRunner).
+   */
+  async function withDeliverySignal<T>(
+    deliveries: RunnerDeliveries,
+    graphileSignal: AbortSignal | undefined,
+    deliver: (signal: AbortSignal) => Promise<T>
+  ): Promise<T> {
+    const controller = new AbortController();
+    const forward = () => {
+      if (!deliveries.retiring) controller.abort(graphileSignal?.reason);
+    };
+    if (graphileSignal?.aborted) forward();
+    else graphileSignal?.addEventListener('abort', forward, { once: true });
+    if (deliveries.aborted) controller.abort();
+    deliveries.inFlight.add(controller);
+    try {
+      return await deliver(controller.signal);
+    } finally {
+      graphileSignal?.removeEventListener('abort', forward);
+      deliveries.inFlight.delete(controller);
+    }
+  }
+
+  /** Abort a retired runner's deliveries, and any it starts from now on. */
+  function abortDeliveries(deliveries: RunnerDeliveries) {
+    deliveries.aborted = true;
+    for (const delivery of deliveries.inFlight) delivery.abort();
+  }
+
+  /** Abort a retired runner's deliveries once the grace period passes. */
+  function abortDeliveriesAfterGrace(deliveries: RunnerDeliveries) {
+    if (deliveries.graceTimer || deliveries.aborted) return;
+    deliveries.graceTimer = setTimeout(
+      () => abortDeliveries(deliveries),
+      SHUTDOWN_ABORT_TIMEOUT_MS
+    );
+    deliveries.graceTimer.unref?.();
+  }
+
+  /** Give each retired runner's deliveries the grace period from now. */
+  function graceRetiredRunners() {
+    for (const retired of retiredRunners.keys()) {
+      abortDeliveriesAfterGrace(retired);
+    }
+  }
+
+  /**
+   * Stop a runner that is no longer `runner`. Its idle workers stop at once.
+   * A worker running a job, or fetching one, finishes that job and records it
+   * as usual. Its deliveries are aborted after the grace period once a newer
+   * runner is retired or close() stops the active runner, and at once on a
+   * signal (see withDeliverySignal). close() waits for it.
+   */
+  function retireRunner(state: RunnerState) {
+    state.retiring = true;
+    state.stopping = true;
+    if (signalled) abortDeliveries(state);
+    else if (closing) abortDeliveriesAfterGrace(state);
+    const stopped = (async () => {
+      try {
+        await state.runner.stop();
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== 'Runner is already stopped'
+        ) {
+          console.warn(
+            '[world-postgres] Failed to stop a retired Graphile Worker runner:',
+            error
+          );
+        }
+      }
+      await state.runner.promise.catch(() => {});
+    })().finally(() => {
+      if (state.graceTimer) clearTimeout(state.graceTimer);
+      retiredRunners.delete(state);
+    });
+    retiredRunners.set(state, stopped);
+  }
+
+  /** For close(): no replacement starts after this. */
+  function stopReplacing() {
+    closeController.abort();
+  }
+
+  /** Keep `work` in `replacements` until it settles. */
+  function trackReplacement(work: Promise<void>) {
+    const tracked = work.finally(() => {
+      replacements.delete(tracked);
+    });
+    replacements.add(tracked);
+  }
+
+  /**
+   * For close(), once the active runner is stopped: wait for replacements
+   * still starting, which retire the runner they bring up, and for retired
+   * runners finishing their jobs. Settling a replacement can retire a runner,
+   * so this waits until none is left. Like stopping the active runner, which
+   * queries the database, a start under way is not bounded here against a
+   * database that stops responding.
+   */
+  async function settleReplacements() {
+    while (replacements.size > 0 || retiredRunners.size > 0) {
+      await Promise.all([...replacements, ...retiredRunners.values()]);
+    }
   }
 
   return {
@@ -1001,6 +1421,7 @@ export function createQueue(
     start,
     async close() {
       closing = true;
+      stopReplacing();
       await invocations?.close();
       if (runnerStart) {
         runnerStart.controller.abort();
@@ -1010,6 +1431,9 @@ export function createQueue(
       await startPromise?.catch(() => {});
       const activeRunner = runner;
       if (activeRunner) {
+        // Retired runners' deliveries get the grace period that the active
+        // runner's jobs get from its stop.
+        graceRetiredRunners();
         try {
           await activeRunner.stop();
         } catch (error) {
@@ -1023,6 +1447,9 @@ export function createQueue(
         await activeRunner.promise.catch(() => {});
         runner = null;
       }
+      // A retired runner can still be finishing jobs, and a job that finishes
+      // after the worker utils are released cannot enqueue its follow-up.
+      await settleReplacements();
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;
