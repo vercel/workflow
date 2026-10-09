@@ -1,5 +1,13 @@
 # @workflow/web-shared
 
+## 4.1.29
+
+### Patch Changes
+
+- Updated dependencies [[`5c25b32`](https://github.com/vercel/workflow/commit/5c25b32458825f8d48ef20464f9ad8b9868568b5)]:
+  - @workflow/world@4.5.1
+  - @workflow/core@4.8.13
+
 ## 4.1.28
 
 ### Patch Changes
