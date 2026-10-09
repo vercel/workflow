@@ -579,23 +579,29 @@ describe('v4 transport wraps pre-response failures the allowlist misses', () => 
     expect(rejection.message).toContain('transport failure');
   });
 
-  it('rejects a credential-bearing backend URL without dispatch or retry', async () => {
-    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://user:password@127.0.0.1');
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  it.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
+    'rejects a credential-bearing backend URL without dispatch or retry',
+    async () => {
+      vi.stubEnv(
+        'VERCEL_WORKFLOW_SERVER_URL',
+        'http://user:password@127.0.0.1'
+      );
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
-    const rejection = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
-      { token: 'test-token' }
-    ).catch((error: unknown) => error);
+      const rejection = await getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token' }
+      ).catch((error: unknown) => error);
 
-    expect(rejection).toMatchObject({
-      name: 'TypeError',
-      message: 'HTTP(S) URLs with embedded credentials are unsupported',
-    });
-    expect(WorkflowWorldError.is(rejection)).toBe(false);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
+      expect(rejection).toMatchObject({
+        name: 'TypeError',
+        message: 'HTTP(S) URLs with embedded credentials are unsupported',
+      });
+      expect(WorkflowWorldError.is(rejection)).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  );
 
   it('preserves unsupported headers from the backend configuration as non-retryable', async () => {
     vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://127.0.0.1:12345');
