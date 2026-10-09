@@ -17,7 +17,6 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   MessageId,
-  orchestratorRunIdOf,
   parseQueueName,
   type Queue,
   QueuePayloadSchema,
@@ -265,21 +264,6 @@ export function createQueue(
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
-  /**
-   * The Graphile named queue of one run's orchestrator deliveries.
-   *
-   * Graphile runs the jobs of a named queue one at a time, across every
-   * worker and process sharing the database, so a run's orchestrator
-   * deliveries never overlap: the queue half of the single-writer guarantee
-   * (the in-band fence in storage.ts is the other). Step messages and health
-   * checks carry no queue name and keep full parallelism. A delayed job (a
-   * timer, a `{ timeoutSeconds }` redelivery) does not hold the queue: only a
-   * running job locks it.
-   *
-   * The invoke executor lane uses the same name, so a run's ordinary and
-   * executor deliveries serialize with each other too, including while a
-   * deployment switches `enableInvoke`.
-   */
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
@@ -427,7 +411,6 @@ export function createQueue(
     delaySeconds,
     jobKey,
     executorRunId,
-    serialRunId,
     attemptOffset,
     createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
@@ -441,10 +424,7 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
-    /** Run the job on the invoke executor task, in this run's named queue. */
     executorRunId?: string;
-    /** An orchestrator delivery for this run: run it in the run's named queue. */
-    serialRunId?: string;
     attemptOffset?: number;
     maxAttempts?: number;
   }) {
@@ -458,7 +438,6 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
-    const runQueue = executorRunId ?? serialRunId;
     await utils.addJob(
       executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
@@ -475,7 +454,9 @@ export function createQueue(
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
-        ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
+        ...(executorRunId
+          ? { queueName: executorQueueName(executorRunId) }
+          : {}),
       }
     );
   }
@@ -826,9 +807,7 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
-      ...(input
-        ? { executorRunId: input.runId }
-        : { serialRunId: orchestratorRunIdOf(message) }),
+      ...(input ? { executorRunId: input.runId } : {}),
     });
     return { messageId };
   };
@@ -953,9 +932,7 @@ export function createQueue(
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
-            ...(orchestration
-              ? { executorRunId: orchestration.runId }
-              : { serialRunId: orchestratorRunIdOf(body) }),
+            ...(orchestration ? { executorRunId: orchestration.runId } : {}),
           });
           return 'rescheduled';
         }
@@ -967,10 +944,8 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        // Wakes carry no key. A run's orchestrator deliveries are already
-        // serialized by its named queue (see `executorQueueName`), and an
-        // orchestrator blocked on an inline step reads new events from the
-        // log itself rather than waiting for a second delivery.
+        // A delivery can hold an inline step until another wake aborts it.
+        // Run-level exclusion here would also exclude that required wake.
         await executeTask();
         return;
       }
