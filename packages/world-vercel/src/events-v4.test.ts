@@ -1355,6 +1355,37 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(
       replayEventObserver.mock.calls.map(([event]) => event.eventId)
     ).toEqual(['evnt_1', 'evnt_2']);
+    // Each event arrives with the wire size of its frame (measurement only,
+    // see `ReplayEventFrame`): both length prefixes, the meta and the body.
+    expect(replayEventObserver.mock.calls.map(([, frame]) => frame)).toEqual([
+      {
+        byteLength: encodeFrame(
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: CREATED_AT,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              input: new Uint8Array(),
+            },
+          },
+          input
+        ).byteLength,
+      },
+      {
+        byteLength: encodeFrame(
+          {
+            eventId: 'evnt_2',
+            runId: 'wrun_1',
+            eventType: 'run_started',
+            createdAt: CREATED_AT,
+          },
+          new Uint8Array()
+        ).byteLength,
+      },
+    ]);
     agent.assertNoPendingInterceptors();
   });
 

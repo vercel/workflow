@@ -415,6 +415,23 @@ export function isTurboEnabled(): boolean {
 }
 
 /**
+ * Whether the event-log prefix shadow is on: a metadata-only record of the
+ * dense log prefix each invocation held, used to measure, on the next
+ * invocation of the same run on this process, whether a cross-invocation
+ * prefix cache would have been usable and how much of the preload it would
+ * have skipped. It changes nothing a run does (see
+ * `runtime/event-log-prefix-shadow.ts`).
+ *
+ * Reads `process.env.WORKFLOW_EVENT_LOG_PREFIX_SHADOW` lazily. Default OFF;
+ * enabled only by an explicit `'1'` / `'true'`.
+ */
+export function isEventLogPrefixShadowEnabled(): boolean {
+  const raw = process.env.WORKFLOW_EVENT_LOG_PREFIX_SHADOW;
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
+/**
  * Whether the QuickJS engine's baseline-snapshot startup optimization is
  * enabled (default ON). When on, the engine hydrates a VM with the
  * workflow bundle once per function instance, snapshots it, and starts

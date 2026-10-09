@@ -81,6 +81,10 @@ export function createWorld(config?: APIConfig): World {
       // for large definitions). The server refuses a dynamic `run_created`
       // for a project outside its rollout, so `start()` fails at the write.
       dynamicWorkflowCode: true,
+      // The v4 replay-log streams are length-prefixed frames, so the decoder
+      // knows each event's wire size for free and hands it to the replay
+      // observer (measurement only; see `WorldCapabilities`).
+      replayEventFrameBytes: true,
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

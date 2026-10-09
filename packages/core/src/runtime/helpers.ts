@@ -15,6 +15,7 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  eventIdToSlot,
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
@@ -1010,6 +1011,42 @@ export function findEventSlotGap(
     return undefined;
   }
   return { firstMissingSlot, missingCount, maxSlot };
+}
+
+/**
+ * The length of the gap-free run of slots a log holds from the first slot: the
+ * largest `N` such that every slot `1..N` is occupied. `0` when slot 1 itself
+ * is absent, `undefined` when any event id carries no slot (a pre-slot run,
+ * which has no positions to be dense in).
+ *
+ * This is the fill rule for anything that treats a prefix of the log as a
+ * complete record of it (the event-log prefix shadow today; a
+ * cross-invocation prefix cache if one is ever built). It is deliberately NOT
+ * {@link findEventSlotGap} with its answer inverted: that audit exempts slot 1,
+ * because a replay that races its run's own `run_created` legitimately sees
+ * the log start at slot 2 and the hole fills in on its own. A prefix recorded
+ * from such a read would claim, forever, to hold a log whose first event it
+ * never saw, and the server's slot-N check cannot notice (workflow-server
+ * `specs/LogPrefixCache.tla`, `LogPrefixCacheHoleyFill`). So slot 1 is
+ * required here, not exempted.
+ *
+ * Sealed-log noops occupy their slot like any other event: the backend wrote
+ * them precisely so the position is accounted for.
+ *
+ * Order-independent, for the reason {@link findEventSlotGap} gives.
+ */
+export function densePrefixLength(
+  events: readonly Event[]
+): number | undefined {
+  const occupied = new Set<number>();
+  for (const event of events) {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null) return undefined;
+    occupied.add(slot);
+  }
+  let dense = 0;
+  while (occupied.has(dense + FIRST_EVENT_SLOT)) dense++;
+  return dense;
 }
 
 /**
