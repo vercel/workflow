@@ -1,7 +1,6 @@
 import assert from 'node:assert';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { globalSingleton } from '@workflow/utils';
 import {
   EntityConflictError,
   HookForceClaimedError,
@@ -13,6 +12,7 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type {
   AnyEventRequest,
   CreateEventParams,
