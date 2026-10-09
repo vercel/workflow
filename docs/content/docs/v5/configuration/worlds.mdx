@@ -146,6 +146,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: none
 - Default: new `pg.Pool`
 - Existing `pg.Pool` to use instead of constructing one from `connectionString`.
+- The World attaches no `'error'` listeners to a pool you pass. Listen on the pool and on each client it connects, or a connection the server ends will end the process. See [passing a `pg.Pool`](/worlds/postgres#programmatic-configuration).
 
 ### `jobPrefix`
 

@@ -2,6 +2,7 @@ import type { Storage, World } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
+import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
 import {
@@ -65,6 +66,8 @@ export function createWorld(
       connectionString: config.connectionString || getDefaultConnectionString(),
       ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
+  let closing = false;
+  if (pool !== config.pool) handleConnectionErrors(pool, () => closing);
 
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
@@ -104,6 +107,7 @@ export function createWorld(
       );
     },
     async close() {
+      closing = true;
       await queue.close();
       await streamer.close();
       await runStatusListener.close();

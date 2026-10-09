@@ -322,11 +322,28 @@ export default createWorld({
 
 Options passed to `createWorld()` take precedence over the environment variables above. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
 
-You can also pass an existing `pg.Pool` as `pool` instead of a connection string.
-
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
+
+You can also pass an existing `pg.Pool` as `pool` instead of a connection string. The World then leaves that pool's `'error'` events to you. A connection the server ends, in a restart, a failover or an idle timeout, emits one, and an `'error'` event with no listener ends the process. Listen on each client the pool connects as well as on the pool: pg-pool listens only on idle clients, and the World holds a checked-out client across a transaction's statements.
+
+{/*@skip-typecheck: requires pg, which the docs type-check does not install*/}
+
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+import { Pool } from "pg";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+pool.on("connect", (client) =>
+  client.on("error", (error) => console.error(error.message))
+);
+pool.on("error", () => {}); // An idle client's error, logged just above
+
+export default createWorld({ pool });
+```
+
+A pool the World creates from `connectionString` already has these listeners.
 
 ### Application-managed shutdown
 

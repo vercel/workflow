@@ -25,6 +25,7 @@ vi.mock('pg', () => ({
     return {
       query: vi.fn(async () => ({ rows: [{ exists: false }] })),
       end: vi.fn(),
+      on: vi.fn(),
     };
   }),
 }));
@@ -368,6 +369,23 @@ describe('re-enqueue active runs on start', () => {
     expect(localWorldClose).toHaveBeenCalledTimes(2);
     expect(streamer?.close).toHaveBeenCalledOnce();
     expect(internalPool?.end).toHaveBeenCalledOnce();
+  });
+
+  it('listens for connection errors on a pool it creates, not on a caller-owned one', () => {
+    createWorld({ connectionString: 'postgres://test' });
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+    expect(internalPool?.on).toHaveBeenCalledWith(
+      'connect',
+      expect.any(Function)
+    );
+    expect(internalPool?.on).toHaveBeenCalledWith(
+      'error',
+      expect.any(Function)
+    );
+
+    const callerPool = { ...pool, on: vi.fn() };
+    createWorld({ pool: callerPool });
+    expect(callerPool.on).not.toHaveBeenCalled();
   });
 
   it('does not close a caller-owned pool', async () => {
