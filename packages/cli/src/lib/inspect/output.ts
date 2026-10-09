@@ -33,8 +33,9 @@ import { resolveWorkflowNameFilter } from './workflow-name.js';
  * Create an EncryptionKeyResolver from a World instance.
  * Returns null if decrypt is false; encrypted data will show as a placeholder.
  *
- * The resolver fetches the full WorkflowRun (cached per runId) so that the
- * World can inspect deployment-specific fields for key resolution.
+ * The resolver reads the run's metadata (cached per runId) for the
+ * deploymentId the World needs to find the key. It reads metadata only: the
+ * default `resolveData` would also resolve the run's whole input and output.
  */
 function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
   if (!decrypt) return null;
@@ -44,8 +45,10 @@ function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
     let cached = cache.get(runId);
     if (!cached) {
       cached = world.runs
-        .get(runId)
-        .then((run) => world.getEncryptionKeyForRun!(run));
+        .get(runId, { resolveData: 'none' })
+        .then(({ deploymentId }) =>
+          world.getEncryptionKeyForRun!(runId, { deploymentId })
+        );
       cache.set(runId, cached);
     }
     return cached;
@@ -1119,13 +1122,19 @@ export const showStream = async (
   const rawStream = await world.streams.get(opts.runId, streamId);
 
   // Only resolve the encryption key when --decrypt is passed and --run is provided.
-  // We fetch the full WorkflowRun object so that getEncryptionKeyForRun has
-  // access to the deploymentId (needed for API-based key resolution).
+  // The run is read for its deploymentId (needed for API-based key
+  // resolution), metadata only: its payloads play no part in the lookup.
   let encryptionKey: EncryptionKeyParam;
   if (opts.decrypt && opts.runId) {
     encryptionKey = (async () => {
-      const run = await world.runs.get(opts.runId!);
-      const rawKey = await world.getEncryptionKeyForRun?.(run);
+      if (!world.getEncryptionKeyForRun) return undefined;
+      const runId = opts.runId!;
+      const { deploymentId } = await world.runs.get(runId, {
+        resolveData: 'none',
+      });
+      const rawKey = await world.getEncryptionKeyForRun(runId, {
+        deploymentId,
+      });
       // Full capability, so sealed ('encp') stream frames written by other
       // runs are readable too, not just the run's own symmetric frames.
       return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
