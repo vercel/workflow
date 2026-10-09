@@ -29,7 +29,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   let pool: TestPool;
   let connectionString: string;
   let server: Server;
-  let phase: 'headers' | 'body' | 'abort' | 'hook';
+  let phase: 'headers' | 'body' | 'abort' | 'hook' | 'reschedule';
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
   let disconnected = Promise.withResolvers<void>();
@@ -45,6 +45,13 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
+      if (phase === 'reschedule') {
+        // Ask for the same message again twice, then acknowledge it.
+        response.end(
+          attempts.length < 3 ? JSON.stringify({ timeoutSeconds: 0 }) : '{}'
+        );
+        return;
+      }
       if (phase === 'hook') {
         if (attempts.length === 1) await releaseInlineStep.promise;
         else releaseInlineStep.resolve();
@@ -120,6 +127,31 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         )
         .toBe(0);
       expect(attempts).toEqual(['1']);
+    } finally {
+      await queue.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  });
+
+  test('a { timeoutSeconds } redelivery reports the next delivery count', async () => {
+    phase = 'reschedule';
+    attempts = [];
+    const queue = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    try {
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
+        runId: `run_${randomUUID()}`,
+      });
+      // Each replacement job is a new Graphile job whose own attempt count
+      // starts over; the handler must still see 1, 2, 3 for one message.
+      await expect.poll(() => attempts, { timeout: 10_000 }).toHaveLength(3);
+      expect(attempts).toEqual(['1', '2', '3']);
     } finally {
       await queue.close();
       await pool.query('TRUNCATE graphile_worker._private_jobs');

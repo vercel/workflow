@@ -923,11 +923,13 @@ export function createQueue(
             queueId: messageData.id,
             body: messageData.data,
             // The same message: its id and creation time carry over, and
-            // the handler sees the next deliveryCount.
+            // the handler sees the next deliveryCount. The replacement is a
+            // new Graphile job whose own attempt count starts again at 1, so
+            // the deliveries made so far ride along as its offset.
             messageId: messageData.messageId,
             createdAt: messageData.createdAt,
             attempt: attempt + 1,
-            attemptOffset: messageData.attemptOffset,
+            attemptOffset: attempt,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
