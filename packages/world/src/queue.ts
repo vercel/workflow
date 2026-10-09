@@ -487,6 +487,31 @@ export const QueuePayloadSchema = z.compile(
 );
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
+/**
+ * The run whose orchestrator a queue message is a delivery for, or
+ * `undefined` when the message is not an orchestrator delivery.
+ *
+ * An orchestrator delivery is a {@link WorkflowInvokePayload} without a
+ * `stepId`: the start of a run, a wake after a step outcome, a hook resume,
+ * a cancellation or a timer. A step execution message (`stepId` set) and a
+ * health check (`__healthCheck`, which may carry the `runId` it prepares) are
+ * not, and keep full parallelism.
+ *
+ * Every World serializes orchestrator deliveries per run: at most one
+ * delivery for a given run id is in flight at a time, the others wait
+ * behind it, and step messages are never held back by it. That is the
+ * queue half of the single-writer guarantee on single-orchestrator runs
+ * (spec >= 9). The in-band fence is the other half: it makes an overlap that
+ * the queue still lets through (a delivery that outlives its lease) safe.
+ */
+export function orchestratorRunIdOf(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const message = payload as Record<string, unknown>;
+  if (message.__healthCheck === true) return undefined;
+  if (typeof message.stepId === 'string') return undefined;
+  return typeof message.runId === 'string' ? message.runId : undefined;
+}
+
 export interface QueueOptions {
   deploymentId?: string;
   idempotencyKey?: string;
@@ -620,6 +645,12 @@ export interface Queue {
    * whose queue mints a fresh ID per delivery degrades gracefully: owner
    * redeliveries fall back to the delayed-backstop path instead of executing
    * immediately, adding recovery latency but never wedging or duplicating.
+   *
+   * `meta.deliveryCount`, when the World reports it, is 1 on a message's first
+   * delivery and increments on every redelivery, whatever caused it (lease
+   * lapse, a rejected handler, a `{ timeoutSeconds }` result). A World whose
+   * queue cannot say leaves it `undefined`. `meta.createdAt`, when known, is
+   * when the message was first enqueued, unchanged across its redeliveries.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -627,6 +658,8 @@ export interface Queue {
       message: unknown,
       meta: {
         attempt: number;
+        deliveryCount?: number;
+        createdAt?: Date;
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;

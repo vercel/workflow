@@ -131,6 +131,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // `createHook({ experimental_force: true })`; see the hook_created
       // branch of storage/events-storage.ts.
       hookForceClaim: true,
+      // An in-process per-run in-band count; see the in-band writer fence in
+      // storage/events-storage.ts.
+      inBandFence: true,
     },
     ...queue,
     ...storage,

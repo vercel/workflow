@@ -730,7 +730,10 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   const world: SimWorld = {
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: {},
+    capabilities: {
+      // The store fences in-band writes; see store.ts.
+      inBandFence: true,
+    },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
     ),

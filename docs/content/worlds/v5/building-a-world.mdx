@@ -42,6 +42,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
+  inBandFence?: boolean;
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
 }
@@ -62,7 +63,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions.
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence).
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -251,6 +252,21 @@ A rejection may include the events the caller was missing as `{ events, cursor }
 
 The runtime handles a rejection wherever it arrives. It restarts the replay in-process from a corrected log and invokes a fresh replay after spending that budget. It never retries the rejected write as-is because a replay working from a corrected log derives different events. This behavior requires no declaration or capability.
 
+### Optional: the in-band writer fence
+
+The in-band writer fence keeps a run to one orchestrator writer when two orchestrator invocations of the same run overlap, for example a delivery that outlives its queue lease while a redelivery of the run is already running. A write made by the run's orchestrator is **in-band** (`params.inBand: true`). Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `attr_set` from `setAttributes()` outside the workflow.
+
+The fence is optional, and the runtime does not send `inBand` yet, so a World without it stays fully supported. Declare `capabilities.inBandFence: true` when you implement all of the following:
+
+- **Two counters per run.** Next to whatever allocates event positions, keep `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band and is never fenced itself, so a new run holds `seq = 1, seqInBand = 1` (`IN_BAND_SEQ_AT_RUN_CREATION` from `@workflow/world`).
+- **List snapshot.** On every `events.list()` page of a slot-numbered run, return `snapshot: { seq, seqInBand }`, read before the listing. A full load, followed to `hasMore: false`, covers every position up to the first page's `seq`. A fenced writer takes its count from that first page, never from counting events, because a count cannot tell which positions were in-band.
+- **Fenced in-band creates.** An in-band write carries `expectedSeqInBand`. Accept it only when that equals `seqInBand`, and advance both counters by the positions it allocates in the same atomic operation as the allocation. On a mismatch, throw `InBandSupersededError` from `@workflow/errors` (HTTP 412, `in-band-superseded`) and write and allocate nothing, so a refusal never leaves a hole. A batch is one fenced allocation for the whole block.
+- **Fence first.** Decide the fence before anything else the write does. A stale writer must touch no entity row. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (in Postgres, one transaction that locks the run's counter row first).
+- **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
+- **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
+
+`world-local` and `world-postgres` declare the fence. The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the snapshot and a stale in-band write end to end when the World declares the capability.
+
 ## Queue interface
 
 The Queue interface handles asynchronous workflow execution, including queued step work:
@@ -277,10 +293,21 @@ interface Queue {
 
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<unknown>
+    handler: (
+      message: unknown,
+      meta: {
+        attempt: number;
+        deliveryCount?: number;
+        createdAt?: Date;
+        queueName: ValidQueueName;
+        messageId: MessageId;
+      }
+    ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 }
 ```
+
+`meta.messageId` should be stable across redeliveries of one message. The optional `meta.deliveryCount` is 1 on a message's first delivery and increments on every redelivery; leave it `undefined` when your queue cannot say. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries.
 
 ### Invocation delivery
 

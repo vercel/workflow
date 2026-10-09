@@ -17,6 +17,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   MessageId,
+  orchestratorRunIdOf,
   parseQueueName,
   type Queue,
   QueuePayloadSchema,
@@ -264,6 +265,21 @@ export function createQueue(
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  /**
+   * The Graphile named queue of one run's orchestrator deliveries.
+   *
+   * Graphile runs the jobs of a named queue one at a time, across every
+   * worker and process sharing the database, so a run's orchestrator
+   * deliveries never overlap: the queue half of the single-writer guarantee
+   * (the in-band fence in storage.ts is the other). Step messages and health
+   * checks carry no queue name and keep full parallelism. A delayed job (a
+   * timer, a `{ timeoutSeconds }` redelivery) does not hold the queue: only a
+   * running job locks it.
+   *
+   * The invoke executor lane uses the same name, so a run's ordinary and
+   * executor deliveries serialize with each other too, including while a
+   * deployment switches `enableInvoke`.
+   */
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
@@ -411,18 +427,24 @@ export function createQueue(
     delaySeconds,
     jobKey,
     executorRunId,
+    serialRunId,
     attemptOffset,
+    createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
     idempotencyKey?: string;
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
+    /** Run the job on the invoke executor task, in this run's named queue. */
     executorRunId?: string;
+    /** An orchestrator delivery for this run: run it in the run's named queue. */
+    serialRunId?: string;
     attemptOffset?: number;
     maxAttempts?: number;
   }) {
@@ -436,6 +458,7 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
+    const runQueue = executorRunId ?? serialRunId;
     await utils.addJob(
       executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
@@ -444,6 +467,7 @@ export function createQueue(
         attempt,
         ...(attemptOffset !== undefined ? { attemptOffset } : {}),
         messageId,
+        ...(createdAt ? { createdAt } : {}),
         idempotencyKey,
         headers,
       }),
@@ -451,9 +475,7 @@ export function createQueue(
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
-        ...(executorRunId
-          ? { queueName: executorQueueName(executorRunId) }
-          : {}),
+        ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
       }
     );
   }
@@ -469,6 +491,7 @@ export function createQueue(
       queueId: message.id,
       body: message.data,
       messageId: message.messageId,
+      createdAt: message.createdAt,
       attempt,
       attemptOffset: attempt - 1,
       maxAttempts: remainingAttempts,
@@ -603,6 +626,7 @@ export function createQueue(
   async function executeMessageOverHttp({
     queueName,
     messageId,
+    createdAt,
     attempt,
     body,
     headers: extraHeaders,
@@ -611,6 +635,7 @@ export function createQueue(
   }: {
     queueName: ValidQueueName;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
     body: Uint8Array;
     headers?: Record<string, string>;
@@ -622,6 +647,8 @@ export function createQueue(
     headers.set('x-vqs-queue-name', queueName);
     headers.set('x-vqs-message-id', messageId);
     headers.set('x-vqs-message-attempt', String(attempt));
+    if (createdAt) headers.set('x-vqs-message-created-at', createdAt);
+    else headers.delete('x-vqs-message-created-at');
     // Strip caller-supplied provenance case-insensitively. Only the verified
     // executor task may set these headers, including on retries.
     headers.delete(EXECUTOR_JOB_HEADER);
@@ -793,12 +820,15 @@ export function createQueue(
       queueId,
       body,
       messageId,
+      createdAt: new Date().toISOString(),
       attempt: 1,
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
-      ...(input ? { executorRunId: input.runId } : {}),
+      ...(input
+        ? { executorRunId: input.runId }
+        : { serialRunId: orchestratorRunIdOf(message) }),
     });
     return { messageId };
   };
@@ -893,6 +923,7 @@ export function createQueue(
         const result = await executeMessageOverHttp({
           queueName,
           messageId: messageData.messageId,
+          createdAt: messageData.createdAt,
           attempt,
           body: messageData.data,
           headers: messageData.headers,
@@ -912,14 +943,19 @@ export function createQueue(
           await addGraphileJob({
             queueId: messageData.id,
             body: messageData.data,
+            // The same message: its id and creation time carry over, and
+            // the handler sees the next deliveryCount.
             messageId: messageData.messageId,
+            createdAt: messageData.createdAt,
             attempt: attempt + 1,
             attemptOffset: messageData.attemptOffset,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
-            ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+            ...(orchestration
+              ? { executorRunId: orchestration.runId }
+              : { serialRunId: orchestratorRunIdOf(body) }),
           });
           return 'rescheduled';
         }
@@ -931,8 +967,10 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        // A delivery can hold an inline step until another wake aborts it.
-        // Run-level exclusion here would also exclude that required wake.
+        // Wakes carry no key. A run's orchestrator deliveries are already
+        // serialized by its named queue (see `executorQueueName`), and an
+        // orchestrator blocked on an inline step reads new events from the
+        // log itself rather than waiting for a second delivery.
         await executeTask();
         return;
       }
