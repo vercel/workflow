@@ -18,6 +18,7 @@ import {
   listSleeps,
   listSteps,
   listStreamsByRunId,
+  showEvent,
   showHook,
   showRun,
   showStep,
@@ -36,6 +37,8 @@ export default class Inspect extends BaseCommand {
     '$ workflow inspect attributes',
     '$ workflow inspect runs --attribute tenant=acme --status failed',
     '$ workflow inspect events --step=step_01K5WAJZ8W367CV2RFKDSDNWB8',
+    '$ workflow inspect events --runId=wrun_01K5WAJZ8W367CV2RFKDSDNWB8 --json --all',
+    '$ workflow inspect event evnt_00000000000000000000000003 --runId=wrun_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect sleeps --runId=run_01K5WAJZ8W367CV2RFKDSDNWB8',
@@ -132,7 +135,8 @@ export default class Inspect extends BaseCommand {
       helpValue: 'KEY=VALUE',
     }),
     workflowName: Flags.string({
-      description: 'workflow name to filter by (runs and attributes)',
+      description:
+        'workflow name to filter by, in full or the short name the runs table shows (runs and attributes)',
       required: false,
       char: 'n',
       aliases: ['workflow'],
@@ -179,6 +183,14 @@ export default class Inspect extends BaseCommand {
       helpGroup: 'Display',
       helpLabel: '--decrypt',
     }),
+    all: Flags.boolean({
+      description:
+        'follow cursors to the last page and print every row (steps, events, and sleeps); --limit sets the page size',
+      required: false,
+      default: false,
+      helpGroup: 'Filtering',
+      helpLabel: '--all',
+    }),
     ...cliFlags,
     ...urlFlag,
   } as const;
@@ -211,6 +223,8 @@ export default class Inspect extends BaseCommand {
         opensWebUi:
           Boolean(flags.url) || Boolean(flags.web) || resource === 'web',
         withData: flags.withData,
+        all: flags.all,
+        interactive: flags.interactive,
       });
       if ('error' in bounded) {
         this.logError(bounded.error);
@@ -276,13 +290,10 @@ export default class Inspect extends BaseCommand {
 
       if (resource === 'event') {
         if (id) {
-          this.logError(
-            'Event-ID is not supported for events. Filter by run-id or step-id instead. Usage: `workflow inspect events --runId=<id>`'
-          );
-          process.exitCode = 1;
-          return;
+          await showEvent(world, id, options);
+        } else {
+          await listEvents(world, options);
         }
-        await listEvents(world, options);
         return;
       }
 
@@ -375,6 +386,7 @@ export function toInspectOptions(
     decrypt: flags.decrypt,
     backend: flags.backend,
     interactive: flags.interactive,
+    all: flags.all,
   };
 }
 
@@ -395,7 +407,9 @@ function normalizeResource(
   if (v.startsWith('a')) return 'attribute';
   if (v.startsWith('r')) return 'run';
   if (v.startsWith('e')) return 'event';
-  if (v.startsWith('str')) return 'stream';
+  // `st` is the stream alias `args.resource.options` lists; it fell through
+  // to the `s` (step) arm below.
+  if (v === 'st' || v.startsWith('str')) return 'stream';
   if (v.startsWith('sl')) return 'sleep';
   if (v.startsWith('s')) return 'step';
   if (v.startsWith('h')) return 'hook';

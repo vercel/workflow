@@ -1,5 +1,12 @@
 # @workflow/errors
 
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431)]:
+  - @workflow/world@5.0.3
+
 ## 5.0.2
 
 ### Patch Changes

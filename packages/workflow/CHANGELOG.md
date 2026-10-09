@@ -1,5 +1,23 @@
 # workflow
 
+## 5.2.0
+
+### Patch Changes
+
+- [#4438](https://github.com/vercel/workflow/pull/4438) [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Reject lifecycle registration inside steps, preserve reporting diagnostics for unreadable errors, and document executor registration and stream-lifetime constraints.
+- Updated dependencies [[`2036247`](https://github.com/vercel/workflow/commit/203624721d76f0e01be3e62ce352483185ca0543), [`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc)]:
+  - @workflow/cli@5.0.3
+  - @workflow/core@5.2.0
+  - @workflow/next@5.0.3
+  - @workflow/nitro@5.0.3
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/errors@5.0.3
+  - @workflow/astro@5.0.3
+  - @workflow/nest@5.1.1
+  - @workflow/rollup@5.0.3
+  - @workflow/sveltekit@5.0.3
+  - @workflow/nuxt@5.0.3
+
 ## 5.1.0
 
 ### Minor Changes
