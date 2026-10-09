@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import zlib from 'node:zlib';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../serialization-format.js';
 import * as clientModule from './client.js';
 import {
+  COMPRESSION_ASYNC_MIN_BYTES,
   COMPRESSION_MIN_BYTES,
   type CompressionStats,
   compress,
@@ -274,6 +276,87 @@ describe('mode serializers with compression', () => {
     expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
     const result = await clientModule.deserialize(data, undefined, {});
     expect(result).toEqual(value);
+  });
+
+  describe('client serialize compresses off the event loop (async zstd)', () => {
+    // devalue output for this many items lands well past the async gate.
+    const largeValue = () => makeCompressibleValue(2000);
+
+    function spyOnZstd() {
+      const asyncSpy = vi.spyOn(zlib, 'zstdCompress');
+      const syncSpy = vi.spyOn(zlib, 'zstdCompressSync');
+      return {
+        asyncSpy,
+        syncSpy,
+        restore() {
+          asyncSpy.mockRestore();
+          syncSpy.mockRestore();
+        },
+      };
+    }
+
+    it('uses the threadpool for large payloads and still round-trips', async () => {
+      const spies = spyOnZstd();
+      try {
+        const value = largeValue();
+        const data = await clientModule.serialize(value, undefined, {
+          compression: true,
+        });
+        expect(spies.asyncSpy).toHaveBeenCalledTimes(1);
+        expect(spies.syncSpy).not.toHaveBeenCalled();
+        expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+        expect(await clientModule.deserialize(data, undefined, {})).toEqual(
+          value
+        );
+      } finally {
+        spies.restore();
+      }
+    });
+
+    it('stays synchronous below COMPRESSION_ASYNC_MIN_BYTES', async () => {
+      const spies = spyOnZstd();
+      try {
+        const value = makeCompressibleValue();
+        const probe = textEncoder.encode(JSON.stringify(value));
+        expect(probe.length).toBeGreaterThan(COMPRESSION_MIN_BYTES);
+        expect(probe.length).toBeLessThan(COMPRESSION_ASYNC_MIN_BYTES);
+        const data = await clientModule.serialize(value, undefined, {
+          compression: true,
+        });
+        expect(spies.syncSpy).toHaveBeenCalledTimes(1);
+        expect(spies.asyncSpy).not.toHaveBeenCalled();
+        expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+      } finally {
+        spies.restore();
+      }
+    });
+
+    it('falls back to sync zstd when the callback API is missing', async () => {
+      const syncSpy = vi.spyOn(zlib, 'zstdCompressSync');
+      // A spy is still a function, so hide the property itself to model a
+      // node:zlib without the callback API.
+      const descriptor = Object.getOwnPropertyDescriptor(zlib, 'zstdCompress');
+      Object.defineProperty(zlib, 'zstdCompress', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+      try {
+        const value = largeValue();
+        const data = await clientModule.serialize(value, undefined, {
+          compression: true,
+        });
+        expect(syncSpy).toHaveBeenCalledTimes(1);
+        expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+        expect(await clientModule.deserialize(data, undefined, {})).toEqual(
+          value
+        );
+      } finally {
+        // biome-ignore lint/style/noNonNullAssertion: present on Node >= 22.15
+        Object.defineProperty(zlib, 'zstdCompress', descriptor!);
+        syncSpy.mockRestore();
+      }
+    });
   });
 
   it('nests compression inside encryption: encr(zstd(devl))', async () => {
