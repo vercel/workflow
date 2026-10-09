@@ -41,6 +41,47 @@ import type {
   StepWithoutData,
 } from './steps.js';
 
+/** Run-scoped transport resources for a single in-memory event writer.
+ * This does not acquire ownership. Buffered writers explicitly expose a durability barrier. */
+export interface EventWriteSession {
+  /** Writer-local positions, when available. Queued progress is not a durability
+   * acknowledgement; only committed progress may be exposed as official state. */
+  readonly heads?: {
+    readonly queued: number | undefined;
+    readonly committed: number | undefined;
+  };
+  /** Optional catch-up over the owner's own transport: every committed event
+   * after the writer's (initially empty) position, plus the run fields that
+   * are not events. Called once, before the first write. Event-sourced run,
+   * step and hook state is derived from these events by the owner. */
+  catchUp?(): Promise<{
+    events: Event[];
+    head: number;
+    expiredAt?: Date;
+  }>;
+  /** Optional: begin a session for a run this owner is about to create,
+   * instead of `catchUp()`. The log is empty, so the first transition is
+   * `run_created`; a run that turns out to exist fails the session. */
+  startFresh?(): void;
+  /** Optional tentative transition, paired with flush(). The owning loop must
+   * flush before input acknowledgement or externally visible step execution. */
+  stage?(
+    event: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  /** Make all previously staged transitions durable, or reject permanently.
+   * Return canonical acknowledgements for staged events when the backend
+   * materializes additional entity fields. The owner confirms these before
+   * executing a step or acknowledging the input. */
+  flush?(): Promise<void | readonly EventResult[]>;
+  create(
+    event: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  /** Release resources after the owning loop and its writes have finished. */
+  dispose(): Promise<void> | void;
+}
+
 export interface StreamWriteSession {
   /**
    * Write one ordered group from this in-memory writer lifetime.
@@ -392,6 +433,9 @@ export interface Storage {
    * reader has already passed, breaks the property every replay depends on.
    */
   events: {
+    /** Begin transport setup synchronously, so it can overlap snapshot reads.
+     * Optional: runtimes otherwise use events.create directly. */
+    createWriteSession?(runId: string): EventWriteSession;
     /**
      * Create a run_created event to start a new workflow run.
      * The runId may be provided by the client or left as null for the server to generate.

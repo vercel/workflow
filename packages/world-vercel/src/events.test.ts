@@ -735,6 +735,27 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.workflowName).toBe('wf');
   });
 
+  it("sends a single-owner run's marker as an ordinary attribute, with no routing fields", () => {
+    const attributes = {
+      $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}',
+    };
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_created',
+      specVersion: 4,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new Uint8Array(1),
+        attributes,
+        allowReservedAttributes: true,
+      },
+    } as AnyEventRequest);
+    expect(meta.attributes).toEqual(attributes);
+    expect(meta.allowReservedAttributes).toBe(true);
+    for (const field of ['affinityId', 'affinityCellSize', 'routingKey'])
+      expect(field in meta).toBe(false);
+  });
+
   it('splits resilient-start run_started input into the payload body', () => {
     const { payload, meta } = splitEventDataForV4({
       eventType: 'run_started',

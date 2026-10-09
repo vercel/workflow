@@ -78,6 +78,7 @@ import {
   type ListEventsV4Params,
   VercelEventWireSchema,
 } from './events-v4.js';
+import { recordRunAffinity, singleOwnerMarker } from './run-affinity.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
@@ -674,27 +675,36 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    const result = await withEventPostRetry(
-      () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType,
-      {
-        // The atomic lazy-resume shape is deduplicated server-side by the
-        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
-        // though plain hook_received is not; see EVENT_RETRY_ELIGIBILITY.
-        idempotentHookResume:
-          data.eventType === 'hook_received' &&
-          params?.resumeId !== undefined &&
-          params?.resumePayloadDigest !== undefined,
-        afterStepBody: params?.afterStepBody === true,
-        inBand: params?.inBand === true,
-      }
-    );
+    const result = config?.failStopEventWrites
+      ? await createWorkflowRunEventInner(id, data, params, config)
+      : await withEventPostRetry(
+          () => createWorkflowRunEventInner(id, data, params, config),
+          data.eventType,
+          {
+            // The atomic lazy-resume shape is deduplicated server-side by the
+            // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+            // though plain hook_received is not; see EVENT_RETRY_ELIGIBILITY.
+            idempotentHookResume:
+              data.eventType === 'hook_received' &&
+              params?.resumeId !== undefined &&
+              params?.resumePayloadDigest !== undefined,
+            afterStepBody: params?.afterStepBody === true,
+            inBand: params?.inBand === true,
+          }
+        );
     if (data.eventType === 'run_created' && !result.run) {
       throw new WorkflowWorldError(
         `${data.eventType} response is missing the run entity`,
         { code: 'SCHEMA_VALIDATION' }
       );
     }
+    if (data.eventType === 'run_created' && result.run)
+      // The new run's routing, for the invocation that starts its owner.
+      recordRunAffinity(
+        result.run.runId,
+        singleOwnerMarker(result.run.attributes),
+        result.run.deploymentId
+      );
     if (data.eventType === 'run_started' && !result.run?.startedAt) {
       throw new WorkflowWorldError(
         'run_started response is missing run.startedAt',

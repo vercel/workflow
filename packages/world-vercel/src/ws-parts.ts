@@ -242,6 +242,12 @@ export interface WsPartAssemblerOptions {
    */
   wanted?: (reqId: number) => boolean;
   onDiscarded?: (reqId: number) => void;
+  /**
+   * Which `reqId`s may open a split frame. Default: client `reqId`s only.
+   * Eventsync widens it for its catch-up pushes (`reqId: -1`), which the
+   * server sends as parts when one event is too large for a message.
+   */
+  splittable?: (reqId: unknown) => reqId is number;
 }
 
 /**
@@ -265,6 +271,7 @@ export class WsPartAssembler {
   private readonly maxPartCount: number;
   private readonly wanted: (reqId: number) => boolean;
   private readonly onDiscarded: (reqId: number) => void;
+  private readonly splittable: (reqId: unknown) => reqId is number;
 
   constructor(options: WsPartAssemblerOptions = {}) {
     this.maxFrameBytes = options.maxFrameBytes ?? WS_MAX_FRAME_BYTES;
@@ -277,6 +284,7 @@ export class WsPartAssembler {
     this.maxPartCount = options.maxPartCount ?? WS_MAX_PART_COUNT;
     this.wanted = options.wanted ?? (() => true);
     this.onDiscarded = options.onDiscarded ?? (() => {});
+    this.splittable = options.splittable ?? isClientReqId;
   }
 
   accept(frame: DecodedFrame): DecodedFrame | undefined {
@@ -288,7 +296,7 @@ export class WsPartAssembler {
     if (!('partIndex' in meta) && !('partCount' in meta)) {
       // A whole frame reusing a reqId whose split frame is still arriving
       // would be a second request, or reply, under one id.
-      if (isClientReqId(reqId) && this.open.has(reqId)) {
+      if (this.splittable(reqId) && this.open.has(reqId)) {
         throw new WsPartProtocolError(
           `whole frame for reqId ${reqId} while its split frame is open`
         );
@@ -297,7 +305,7 @@ export class WsPartAssembler {
     }
 
     // First part of a split frame.
-    if (!isClientReqId(reqId)) {
+    if (!this.splittable(reqId)) {
       throw new WsPartProtocolError('first part has no valid reqId');
     }
     if (partIndex !== 0) {
@@ -356,7 +364,7 @@ export class WsPartAssembler {
       );
     }
     const { reqId, partIndex, partCount } = meta;
-    if (!isClientReqId(reqId)) {
+    if (!this.splittable(reqId)) {
       throw new WsPartProtocolError('continuation part has no valid reqId');
     }
     const entry = this.open.get(reqId);

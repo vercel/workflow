@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { channel } from 'node:diagnostics_channel';
 import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
@@ -78,6 +79,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  injectTraceContextIntoHeaders,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -593,6 +595,38 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   }
 }
 
+/** An eventsync ACK for a write the server found already committed, identically. */
+export class EventsyncDuplicateCommit extends Error {
+  readonly name = 'EventsyncDuplicateCommit';
+  constructor(
+    readonly eventId: string,
+    readonly createdAt: string
+  ) {
+    super(`Event ${eventId} was already committed with identical contents`);
+  }
+  static is(error: unknown): error is EventsyncDuplicateCommit {
+    return error instanceof EventsyncDuplicateCommit;
+  }
+}
+
+/** Decode an eventsync `history` body: a sequence of v4 event frames. */
+export async function decodeEventFrameSequence(
+  bytes: Uint8Array
+): Promise<Event[]> {
+  const events: Event[] = [];
+  const source = (async function* () {
+    yield bytes;
+  })();
+  for await (const frame of decodeFrames(source)) {
+    if (frame.meta._end !== undefined || frame.meta._error !== undefined)
+      throw new WorkflowWorldError('Unexpected frame in eventsync history', {
+        code: 'PARSE_ERROR',
+      });
+    events.push(decodeEventFrame(frame));
+  }
+  return events;
+}
+
 function decodeEventFrame({ meta, body }: DecodedFrame): Event {
   const eventType = EventTypeSchema.parse(meta.eventType);
   if (body.byteLength === 0) return VercelEventWireSchema.parse(meta);
@@ -1056,12 +1090,18 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
-  if (isWsEventsTransportPossible()) {
+  if (config?.requireWsEvents || isWsEventsTransportPossible()) {
     // Absent means no socket was resolvable for this run, not that the write
     // failed, so fall through to HTTP. Under a per-workflow override that is
     // every run of a workflow that isn't listed.
     const reply = await postEventFrameOverWs(input, config);
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
+    if (config?.requireWsEvents) {
+      throw new WorkflowWorldError(
+        'Owner event writer lost its WebSocket channel',
+        { code: 'TRANSPORT' }
+      );
+    }
     assertWsFallbackAllowed(input.eventType);
   }
 
@@ -1154,6 +1194,24 @@ async function decodeCreateEventResponse<T extends EventType>(
     throw new WorkflowWorldError('v4 createEvent: invalid response body', {
       code: 'SCHEMA_VALIDATION',
       cause: parsedBody.error,
+    });
+  }
+  if (
+    parsedBody.data.event.eventType !== eventType &&
+    !(
+      eventType === 'hook_created' &&
+      parsedBody.data.event.eventType === 'hook_conflict'
+    )
+  ) {
+    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
+      code: 'SCHEMA_VALIDATION',
+      cause: new z.ZodError([
+        {
+          code: 'custom',
+          path: ['event', 'eventType'],
+          message: 'Invalid input',
+        },
+      ]),
     });
   }
   return parsedBody.data;
@@ -1473,10 +1531,9 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * key to the server's log line for the same frame. A synthetic span that hid
  * which transport produced it would be a trap, not a convenience.
  *
- * Two things the HTTP envelope has that this one deliberately does not: the
- * cache-bust header (a frame is memoized by nothing) and a per-frame
- * `traceparent` (frames carry no headers; trace context rides the upgrade
- * instead, so the server parents to the connection's span, not to this one).
+ * Frames need no cache-bust header. Ordinary WS keeps its upgrade-context
+ * behavior; eventsync additionally carries the current trace context per frame
+ * so later invocations on a retained connection remain correctly correlated.
  *
  * One gap this cannot close: Vercel's observability *outgoing requests* view is
  * built by instrumenting the global `fetch`, not by reading OpenTelemetry spans,
@@ -1547,6 +1604,11 @@ async function postEventFrameOverWs(
       const start = Date.now();
       let reply: WsFrameReply;
       try {
+        const traceHeaders = new Headers();
+        // An eventsync write (fail-stop) parents its server work to the
+        // writer's trace.
+        if (config?.failStopEventWrites)
+          await injectTraceContextIntoHeaders(traceHeaders);
         // `runId` isn't repeated here, since it's already in `wsUrl`, one
         // connection per run. The server's request-frame schema is a
         // discriminated union on
@@ -1560,7 +1622,20 @@ async function postEventFrameOverWs(
             // retry or a reconnect legitimately re-uses low numbers.
             span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
             return encodeFrame(
-              { reqId, type: 'event', event: buildPostFrameMeta(input) },
+              {
+                reqId,
+                type: 'event',
+                ...(traceHeaders.has('traceparent')
+                  ? {
+                      traceparent: traceHeaders.get('traceparent'),
+                      tracestate: traceHeaders.get('tracestate') ?? undefined,
+                    }
+                  : {}),
+                event: buildPostFrameMeta(input),
+                ...(config?.flushEvent === undefined
+                  ? {}
+                  : { flush: config.flushEvent }),
+              },
               input.payload ?? new Uint8Array(0)
             );
           },
@@ -1572,6 +1647,8 @@ async function postEventFrameOverWs(
                 span?.setAttributes({ ...WorkflowWsRequestParts(count) });
               }
             },
+            onSent: config?.onEventSent,
+            generation: config?.wsGeneration,
           }
         );
       } catch (err) {
@@ -1596,8 +1673,37 @@ async function postEventFrameOverWs(
         throw error;
       }
       const ms = Date.now() - start;
+      const commit = reply.meta.eventsyncCommit as
+        | Record<string, unknown>
+        | undefined;
+      if (
+        commit &&
+        typeof commit.eventCount === 'number' &&
+        typeof commit.eventTypes === 'string' &&
+        typeof commit.committedTo === 'number'
+      )
+        channel('workflow.eventsync').publish({
+          version: 1,
+          runId,
+          event: 'committed',
+          at: Date.now(),
+          eventCount: commit.eventCount,
+          eventTypes: commit.eventTypes,
+          committedTo: commit.committedTo,
+          kind: commit.kind,
+          serverTiming: commit.serverTiming,
+          serverCommittedAt: commit.serverCommittedAt,
+        });
       recordWsReplyParts(span, reply);
 
+      if (reply.meta.duplicate === true && reply.meta.status === 200) {
+        // The slot already held exactly this write (an earlier commit of it
+        // from a replaced connection). The owner confirms it from its outbox.
+        throw new EventsyncDuplicateCommit(
+          String(reply.meta.eventId),
+          String(reply.meta.createdAt)
+        );
+      }
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);
       const headers = {

@@ -7,6 +7,7 @@ import { createGetEncryptionKeyForRun } from './encryption.js';
 import { validateRunExecutionContext } from './execution-context.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
+import { invocationConfig } from './invocation.js';
 import { createQueue, recordStepExecution } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
@@ -25,6 +26,8 @@ export {
   MAX_EXECUTION_CONTEXT_BYTES,
   validateRunExecutionContext,
 } from './execution-context.js';
+export type { InvocationTarget, VercelInvokeConfig } from './invocation.js';
+export { invocationAffinity } from './invocation.js';
 export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
@@ -69,6 +72,7 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      ...(invocationConfig(config) ? { invoke: true } : {}),
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })` (workflow-server
       // docs/hook-force-claim.md). Static rather than attested per lookup,

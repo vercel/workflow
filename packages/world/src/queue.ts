@@ -143,6 +143,8 @@ export const RunInputSchema = z.compile(
        * when it is missing.
        */
       environment: z.string().optional(),
+      /** The run's X25519 public key (base64), mirrored from `run_created`. */
+      encryptionPublicKey: z.string().optional(),
     })
     .refine(
       (value) =>
@@ -531,6 +533,9 @@ export interface InvokeOptions {
   idempotencyKey?: string;
   /** Maximum time to await a response. Timeout does not undo processing. */
   timeoutMs?: number;
+  /** Immutable routing context already resolved from this run's hook. The
+   * executor still authenticates and validates the invocation normally. */
+  target?: { deploymentId: string; workflowName: string };
 }
 
 export interface Queue {

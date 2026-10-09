@@ -387,3 +387,33 @@ describe('golden fixture', () => {
     expect(frames[0]?.body).toEqual(goldenBody);
   });
 });
+
+describe('WsPartAssembler splittable', () => {
+  const push = encodeWsFrameMessages(
+    { reqId: 0, type: 'history', eventCount: 1 },
+    new Uint8Array(3 * 1024 * 1024),
+    2 * 1024 * 1024
+  ).map((message) => {
+    const { meta, body } = decodeFrame(message);
+    return { meta: { ...meta, reqId: -1 }, body };
+  });
+
+  it('refuses a push frame (reqId -1) sent as parts by default', () => {
+    expect(() => new WsPartAssembler().accept(push[0])).toThrow(
+      WsPartProtocolError
+    );
+  });
+
+  it('rebuilds one when the caller allows it', () => {
+    const assembler = new WsPartAssembler({
+      splittable: (reqId): reqId is number => reqId === -1,
+    });
+    const results = push.map((part) => assembler.accept(part));
+    expect(results.at(-1)?.meta).toEqual({
+      reqId: -1,
+      type: 'history',
+      eventCount: 1,
+    });
+    expect(results.at(-1)?.body.byteLength).toBe(3 * 1024 * 1024);
+  });
+});

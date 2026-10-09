@@ -430,7 +430,12 @@ export function errorForResponse(
       typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
     );
   }
-  if (status === 409) return new EntityConflictError(message);
+  if (status === 409) {
+    const error = new EntityConflictError(message);
+    // Preserve the server's machine-readable reason (e.g. `slot-conflict`).
+    if (code) Object.defineProperty(error, 'code', { value: code });
+    return error;
+  }
   if (status === 410) {
     if (code === 'stream-expired') {
       const streamDetails =

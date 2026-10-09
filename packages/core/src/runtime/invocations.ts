@@ -1,4 +1,5 @@
 import {
+  EntityConflictError,
   HookNotFoundError,
   RunExpiredError,
   WorkflowRunNotFoundError,
@@ -53,34 +54,78 @@ export async function handleInvocation(
   const digest = Buffer.from(
     await crypto.subtle.digest('SHA-256', input.payload)
   ).toString('hex');
+  const run = await world.runs.get(runId, { resolveData: 'none' });
+  if (
+    run.expiredAt ||
+    (isTerminalWorkflowRunStatus(run.status) &&
+      readRunRetention(run.attributes).mode === 'none')
+  ) {
+    throw new WorkflowWorldError(
+      'Invocation data has expired under the run retention policy',
+      {
+        status: 410,
+        code: 'INVOCATION_DATA_EXPIRED',
+      }
+    );
+  }
+  const staticDedup = world.capabilities?.hookResumeDedup === true;
+  let dedup = staticDedup;
   try {
-    const hook = await world.hooks.get(input.hookId);
-    if (hook.runId !== runId || hook.token !== input.token)
+    const hook = staticDedup
+      ? await world.hooks.get(input.hookId)
+      : await world.hooks.getByToken(input.token);
+    if (
+      hook.runId !== runId ||
+      hook.token !== input.token ||
+      hook.hookId !== input.hookId
+    )
       throw new HookNotFoundError(input.token);
-    const run = await world.runs.get(runId, { resolveData: 'none' });
     if (isTerminalWorkflowRunStatus(run.status))
       throw new HookNotFoundError(input.token);
-  } catch (error) {
-    if (!isHookGone(error)) throw error;
-    const run = await world.runs.get(runId, { resolveData: 'none' });
-    if (
-      run.expiredAt ||
-      (isTerminalWorkflowRunStatus(run.status) &&
-        readRunRetention(run.attributes).mode === 'none')
-    ) {
+    dedup ||= (hook.resumeCapabilities?.hookResumeDedupVersion ?? 0) >= 1;
+    if (!dedup)
       throw new WorkflowWorldError(
-        'Invocation data has expired under the run retention policy',
-        { status: 410, code: 'INVOCATION_DATA_EXPIRED' }
+        'Invocation requires backend hook deduplication support',
+        {
+          status: 409,
+          code: 'INVOCATION_DEDUP_UNAVAILABLE',
+        }
       );
-    }
+  } catch (error) {
+    if (
+      !isHookGone(error) &&
+      !(
+        WorkflowWorldError.is(error) &&
+        error.code === 'INVOCATION_DEDUP_UNAVAILABLE'
+      )
+    )
+      throw error;
     // Only the uncommon disposed/terminal retry needs this read. A prior
     // durable identity lets events.create validate/converge before lifecycle
     // rejection; a new input still cannot resurrect a disposed hook.
-    if (
-      !world.capabilities?.hookResumeDedup ||
-      !(await hasResume(world, runId, input.hookId, requestId))
-    ) {
-      throw error;
+    const prior = await findResume(
+      world,
+      runId,
+      input.hookId,
+      requestId,
+      staticDedup ? 'none' : 'all'
+    );
+    if (!prior) throw error;
+    if (!staticDedup) {
+      // After hook disposal, recover only a matching committed input; do not authorize a new write.
+      if (
+        prior.eventType !== 'hook_received' ||
+        prior.eventData.token !== input.token ||
+        !(prior.eventData.payload instanceof Uint8Array) ||
+        Buffer.from(
+          await crypto.subtle.digest('SHA-256', prior.eventData.payload)
+        ).toString('hex') !== digest
+      ) {
+        throw new EntityConflictError(
+          'Invocation identity reused with different contents'
+        );
+      }
+      return { status: 'accepted' };
     }
   }
   await world.events.create(
@@ -92,9 +137,7 @@ export async function handleInvocation(
       eventData: { token: input.token, payload: input.payload },
     },
     {
-      ...(world.capabilities?.hookResumeDedup
-        ? { resumeId: requestId, resumePayloadDigest: digest }
-        : {}),
+      ...(dedup ? { resumeId: requestId, resumePayloadDigest: digest } : {}),
     }
   );
   return { status: 'accepted' };
@@ -108,30 +151,29 @@ function isHookGone(error: unknown) {
   );
 }
 
-async function hasResume(
+async function findResume(
   world: World,
   runId: string,
   hookId: string,
-  requestId: string
+  requestId: string,
+  resolveData: 'none' | 'all'
 ) {
   let cursor: string | null = null;
   do {
     const page = await world.events.listByCorrelationId({
       runId,
       correlationId: hookId,
-      resolveData: 'none',
+      resolveData,
       pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
     });
-    if (
-      page.data.some(
-        (event) =>
-          event.eventType === 'hook_received' && event.resumeId === requestId
-      )
-    )
-      return true;
+    const prior = page.data.find(
+      (event) =>
+        event.eventType === 'hook_received' && event.resumeId === requestId
+    );
+    if (prior) return prior;
     cursor = page.hasMore ? page.cursor : null;
   } while (cursor);
-  return false;
+  return undefined;
 }
 
 /** Track processed inputs and notify workflow execution when a run has new activity. */

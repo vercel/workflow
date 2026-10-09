@@ -22,10 +22,13 @@
  * `events-v4.ts` consumes one seam instead of assembling the transport.
  */
 
+import { channel } from 'node:diagnostics_channel';
 import { getVercelOidcToken } from '@vercel/oidc';
+import { WorkflowWorldError } from '@workflow/errors';
 import { debugLog, globalSingleton } from '@workflow/utils';
+import { decode as decodeCbor } from 'cbor-x';
 import { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrame } from './frames.js';
+import { type DecodedFrame, decodeFrame, encodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -71,10 +74,46 @@ export interface WsFrameReply {
  * `postEventFrameOverWs` maps it to `code: 'TRANSPORT'`.
  */
 export class WsTransportError extends Error {
-  constructor(message: string, opts?: { cause?: unknown }) {
+  /** The server refused this connection outright; reconnecting cannot help. */
+  readonly permanent: boolean;
+  constructor(
+    message: string,
+    opts?: { cause?: unknown; permanent?: boolean }
+  ) {
     super(message, { cause: opts?.cause });
     this.name = 'WsTransportError';
+    this.permanent = opts?.permanent ?? false;
   }
+}
+
+/**
+ * Eventsync catch-up: the committed events after the position the connection
+ * was opened with, streamed by the server before it admits writes. `generation`
+ * identifies the connection; writes that name an older generation are refused
+ * before they reach a newer socket.
+ */
+export interface EventsyncCatchUp<E = unknown> {
+  after: number;
+  head: number;
+  events: E[];
+  expiredAt?: Date;
+  generation: number;
+}
+
+export interface EventsyncCatchUpOptions<E> {
+  /** The position to request on every (re)connect: the writer's committed head. */
+  position(): number;
+  /** Decode one `history` frame body (a v4 event-frame sequence). */
+  decode(body: Uint8Array): Promise<E[]>;
+  /**
+   * Check a complete catch-up before the connection is used (for example,
+   * that this process owns the run). Throwing stops the owner: the connection
+   * fails permanently, as superseded.
+   */
+  verify?(events: E[], after: number): void;
+  /** The owner is creating this run: its log is known to be empty, so a
+   * pre-opened socket is assigned by the `run_created` frame itself. */
+  fresh?(): boolean;
 }
 
 interface PendingRequest {
@@ -90,11 +129,15 @@ interface PendingRequest {
  */
 interface Connection {
   ws: WebSocket;
+  /** Rebuilds replies (and eventsync catch-up pushes) sent as parts. */
+  parts: WsPartAssembler;
   nextReqId: number;
   pending: Map<number, PendingRequest>;
-  /** Rebuilds replies the server sent as parts. Per connection, since a
-   *  frame's parts all travel on one socket. */
-  parts: WsPartAssembler;
+  generation: number;
+  /** Set once `synced` arrives on an eventsync connection; taken at most once. */
+  catchUp?: EventsyncCatchUp & { taken?: boolean };
+  /** Added to the first request's meta: an implicit attach (`run_created`). */
+  attach?: Record<string, unknown>;
 }
 
 /** Reserved reqId the server replies under when a frame was too malformed to
@@ -119,6 +162,15 @@ function readAuthorization(headers: Record<string, string>): string | null {
     if (key.toLowerCase() === 'authorization') return value;
   }
   return null;
+}
+
+/** Eventsync's catch-up pushes (`reqId: -1`) may arrive as parts too. */
+function isSplittableReply(reqId: unknown): reqId is number {
+  return (
+    typeof reqId === 'number' &&
+    Number.isSafeInteger(reqId) &&
+    (reqId >= 0 || reqId === -1)
+  );
 }
 
 /** Pull the `{ "message": string }` JSON an `error` frame carries as its body,
@@ -162,6 +214,8 @@ class WsEventsTransport {
   /** Authorization the current socket was opened with, so a forced refresh can
    *  tell whether it actually produced a new one. */
   private lastAuthorization: string | null = null;
+  private generation = 0;
+  private catchUpOptions?: EventsyncCatchUpOptions<unknown>;
 
   constructor(
     private readonly wsUrl: string,
@@ -178,6 +232,11 @@ class WsEventsTransport {
       /** Called with the number of messages the frame goes out as, before
        *  the first is sent, so a caller can record it even if no reply comes. */
       onMessages?: (count: number) => void;
+      /** Called once the whole frame (every part) has been sent. */
+      onSent?: () => void;
+      /** The connection the frame was positioned for (eventsync); a frame is
+       *  never handed to a successor connection. */
+      generation?: number;
     } = {}
   ): Promise<WsFrameReply> {
     if (this.closed) {
@@ -190,11 +249,22 @@ class WsEventsTransport {
       );
     }
     const conn = await this.ensureConnected();
+    const { generation } = options;
+    if (generation !== undefined && conn.generation !== generation)
+      // Never hand a frame positioned for a broken connection to its successor.
+      throw new WsTransportError(
+        `workflow-server events WS connection ${generation} was replaced`
+      );
 
     const reqId = conn.nextReqId++;
+    let frame = buildFrame(reqId);
+    if (conn.attach) {
+      frame = withMeta(frame, { attach: conn.attach });
+      conn.attach = undefined;
+    }
     // A frame over the message limit goes out as several messages; see
     // `ws-parts.ts`.
-    const messages = splitEncodedFrame(buildFrame(reqId), wsMaxMessageBytes());
+    const messages = splitEncodedFrame(frame, wsMaxMessageBytes());
     options.onMessages?.(messages.length);
     const timeoutMs = getRequestTimeoutMs();
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -223,8 +293,12 @@ class WsEventsTransport {
           );
         }, timeoutMs);
         deadline.unref?.();
+        let sent = 0;
         const onSent = (err?: Error) => {
-          if (!err) return;
+          if (!err) {
+            if (++sent === messages.length) options.onSent?.();
+            return;
+          }
           // `ws.send()` does not throw when the socket isn't OPEN; it
           // reports here instead, so without this callback the request would
           // wait for a reply that is never coming. `delete` doubles as the
@@ -278,6 +352,32 @@ class WsEventsTransport {
       // Already logged by `connect`.
       this.close('connect failed');
     });
+  }
+
+  async ready(): Promise<void> {
+    if (this.closed)
+      throw new WsTransportError('Events writer channel is closed');
+    await this.ensureConnected();
+  }
+
+  /** Request eventsync catch-up on this and every later connection. */
+  enableCatchUp<E>(options: EventsyncCatchUpOptions<E>): void {
+    this.catchUpOptions = options as EventsyncCatchUpOptions<unknown>;
+  }
+
+  /** The catch-up of the current connection, (re)connecting if needed. */
+  async takeCatchUp<E>(): Promise<EventsyncCatchUp<E>> {
+    if (this.closed)
+      throw new WsTransportError('Events writer channel is closed');
+    const conn = await this.ensureConnected();
+    const catchUp = conn.catchUp;
+    if (!catchUp || catchUp.taken) {
+      // Already consumed: this connection's position is stale for the caller.
+      this.failConnection(conn, 'eventsync catch-up already consumed');
+      throw new WsTransportError('Eventsync catch-up was already consumed');
+    }
+    catchUp.taken = true;
+    return catchUp as EventsyncCatchUp<E>;
   }
 
   /**
@@ -377,6 +477,8 @@ class WsEventsTransport {
     carrier.forEach((value, key) => {
       headers[key] = value;
     });
+    // This client rebuilds replies sent as parts (`ws-parts.ts`).
+    headers[WS_FLAGS_HEADER] = WS_CLIENT_FLAGS.join(',');
 
     // Tells the server this client rebuilds split replies. Without it the
     // server sends every reply whole, which is what older clients expect.
@@ -435,9 +537,73 @@ class WsEventsTransport {
     return new Promise<Connection>((resolve, reject) => {
       void (async () => {
         let conn: Connection;
+        let pooled: WebSocket | undefined;
+        let attach: Uint8Array | undefined;
+        let implicit: Record<string, unknown> | undefined;
+        let syncChain: Promise<void> = Promise.resolve();
+        /** Frames queued on `syncChain` and not handled yet. */
+        let chained = 0;
+        let syncing:
+          | {
+              history(body: Uint8Array): Promise<void>;
+              synced(meta: Record<string, unknown>): Promise<void>;
+            }
+          | undefined;
+        // Connection phase timing, published for diagnostics only.
+        const timing: Record<string, number | string> = {};
+        const startedAt = performance.now();
+        const mark = (name: string) => {
+          timing[name] = Math.round(performance.now() - startedAt);
+        };
+        const publishTiming = (status: string) => {
+          const observations = channel('workflow.eventsync');
+          if (observations.hasSubscribers)
+            observations.publish({
+              version: 1,
+              event: 'connect_timing',
+              at: Date.now(),
+              url: this.wsUrl,
+              status,
+              ...timing,
+            });
+        };
         try {
-          const headers = await this.resolveUpgradeHeaders();
-          const ws = new WebSocket(this.wsUrl, { headers });
+          const after = this.catchUpOptions?.position();
+          // Every eventsync connection is an unassigned socket assigned to
+          // this run by its first frame: a pre-opened one from the pool when
+          // one is ready (no upgrade on the critical path), otherwise one
+          // opened now.
+          const unassigned =
+            after !== undefined
+              ? unassignedEventsyncUrl(this.wsUrl)
+              : undefined;
+          pooled = unassigned ? takePooledSocket(unassigned.url) : undefined;
+          if (unassigned) fillPool(unassigned.url, this.getHeaders);
+          // A run this owner is creating is assigned by its run_created frame;
+          // anything else attaches explicitly and waits for its catch-up.
+          implicit =
+            unassigned && after === 0 && this.catchUpOptions?.fresh?.()
+              ? { runId: unassigned.runId }
+              : undefined;
+          if (unassigned && !implicit)
+            attach = encodeFrame(
+              {
+                reqId: 0,
+                type: 'attach',
+                runId: unassigned.runId,
+                after,
+              },
+              new Uint8Array()
+            );
+          const headers = pooled
+            ? undefined
+            : await this.resolveUpgradeHeaders();
+          mark('headersMs');
+          const ws =
+            pooled ??
+            new WebSocket(unassigned ? unassigned.url : this.wsUrl, {
+              headers,
+            });
           ws.binaryType = 'nodebuffer';
           const pending = new Map<number, PendingRequest>();
           conn = {
@@ -445,9 +611,12 @@ class WsEventsTransport {
             nextReqId: 1,
             pending,
             // A split reply for a request that already settled (its deadline
-            // or a send error) is read through, not buffered.
+            // or a send error) is read through, not buffered. Eventsync's
+            // catch-up pushes (`reqId: -1`) are wanted while it runs.
             parts: new WsPartAssembler({
-              wanted: (reqId) => pending.has(reqId),
+              splittable: isSplittableReply,
+              wanted: (reqId) =>
+                reqId === -1 ? syncing !== undefined : pending.has(reqId),
               onDiscarded: (reqId) =>
                 console.error(
                   `world-vercel: ws events transport received a split reply ` +
@@ -455,7 +624,67 @@ class WsEventsTransport {
                     `settled); dropping it.`
                 ),
             }),
+            generation: ++this.generation,
           };
+          if (after !== undefined) {
+            const catchUp = this.catchUpOptions!;
+            let events: unknown[] = [];
+            let chain = Promise.resolve();
+            syncing = {
+              history: (body) => {
+                if (timing.firstHistoryMs === undefined) mark('firstHistoryMs');
+                chain = chain.then(async () => {
+                  events = events.concat(await catchUp.decode(body));
+                });
+                return chain;
+              },
+              synced: (meta) => {
+                chain = chain.then(() => {
+                  const head = meta.head;
+                  if (
+                    typeof head !== 'number' ||
+                    head < after ||
+                    events.length !== head - after ||
+                    (implicit && head !== 0)
+                  )
+                    throw new WsTransportError(
+                      'Invalid eventsync catch-up stream',
+                      { permanent: true }
+                    );
+                  // An implicit attach already holds its (empty) catch-up.
+                  if (implicit) return;
+                  try {
+                    catchUp.verify?.(events, after);
+                  } catch (cause) {
+                    // This process is not the run's owner: it stops without
+                    // writing, and the caller retries at the right owner.
+                    throw new WsTransportError(
+                      'Eventsync catch-up shows another owner for the run',
+                      {
+                        permanent: true,
+                        cause: new WorkflowWorldError(
+                          cause instanceof Error
+                            ? cause.message
+                            : 'Run is routed to a different affinity',
+                          { status: 503, code: 'OWNER_SUPERSEDED' }
+                        ),
+                      }
+                    );
+                  }
+                  conn.catchUp = {
+                    after,
+                    head,
+                    events,
+                    generation: conn.generation,
+                    ...(typeof meta.expiredAt === 'string'
+                      ? { expiredAt: new Date(meta.expiredAt) }
+                      : {}),
+                  };
+                });
+                return chain;
+              },
+            };
+          }
         } catch (err) {
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
@@ -477,8 +706,28 @@ class WsEventsTransport {
 
         const { ws } = conn;
         let opened = false;
+        ws.on(
+          'upgrade',
+          (response: { socket?: { remoteAddress?: string } }) => {
+            if (timing.upgradeMs !== undefined) return;
+            mark('upgradeMs');
+            if (response?.socket?.remoteAddress)
+              timing.remoteAddress = response.socket.remoteAddress;
+          }
+        );
 
-        ws.on('open', () => {
+        let adopted = false;
+        const adopt = () => {
+          if (adopted) return;
+          adopted = true;
+          mark('readyMs');
+          publishTiming('completed');
+          this.connection = conn;
+          this.reconnectAttempts = 0;
+          resolve(conn);
+        };
+        const onOpen = () => {
+          mark('openMs');
           opened = true;
           if (this.closed) {
             // Released while this handshake was in flight: `close()` could
@@ -493,13 +742,88 @@ class WsEventsTransport {
             );
             return;
           }
-          this.connection = conn;
-          this.reconnectAttempts = 0;
-          resolve(conn);
-        });
+          // An eventsync connection is usable only after its catch-up stream.
+          if (!syncing) adopt();
+        };
+        // Assign an unassigned eventsync socket to this run: its first frame
+        // is `attach`, or (for a run being created) the run_created write.
+        const assign = () => {
+          if (attach && !this.closed) ws.send(attach);
+          if (implicit && !this.closed) {
+            // Usable at once: the log is empty, the server holds frames until
+            // its session is ready, and its `synced head 0` is checked when
+            // it arrives (see `syncing`).
+            conn.attach = implicit;
+            conn.catchUp = {
+              after: 0,
+              head: 0,
+              events: [],
+              generation: conn.generation,
+            };
+            adopt();
+          }
+        };
+        if (!pooled)
+          ws.on('open', () => {
+            onOpen();
+            if (opened && !this.closed) assign();
+          });
 
         ws.on('message', (raw: Buffer) => {
-          this.handleMessage(conn, new Uint8Array(raw));
+          const message = new Uint8Array(raw);
+          if (!syncing && chained === 0) {
+            this.handleMessage(conn, message);
+            return;
+          }
+          // During catch-up, and until every frame queued behind it is
+          // handled, frames go through one chain in arrival order. Each is
+          // rebuilt (when sent as parts) before anything reads it.
+          const read = this.readMessage(conn, message);
+          if (!read) return;
+          const sync = syncing;
+          chained++;
+          syncChain = syncChain
+            .then(async () => {
+              const frame = read.frame;
+              // Catch-up is over: an ordinary reply or push.
+              if (!sync || syncing !== sync) {
+                this.dispatchMessage(conn, frame, read.parts);
+                return;
+              }
+              if (frame.meta.type === 'history')
+                return sync.history(frame.body);
+              if (frame.meta.type === 'synced') {
+                await sync.synced(frame.meta);
+                syncing = undefined;
+                adopt();
+                return;
+              }
+              if (frame.meta.type === 'drain') return;
+              throw new WsTransportError(
+                `workflow-server eventsync catch-up failed: ${
+                  frame.meta.type === 'error'
+                    ? errorFrameMessage(frame.body)
+                    : `unexpected ${String(frame.meta.type)} frame`
+                }`,
+                { permanent: frame.meta.type === 'error' }
+              );
+            })
+            .catch((err: unknown) => {
+              if (!sync || syncing !== sync) return;
+              syncing = undefined;
+              reject(
+                err instanceof WsTransportError
+                  ? err
+                  : new WsTransportError(
+                      `workflow-server eventsync catch-up failed: ${describeError(err)}`,
+                      { cause: err }
+                    )
+              );
+              ws.close();
+            })
+            .finally(() => {
+              chained--;
+            });
         });
 
         ws.on('error', (err) => {
@@ -522,7 +846,7 @@ class WsEventsTransport {
 
           this.consumeDrainReason();
 
-          if (!opened) {
+          if (!opened || syncing) {
             // A close with no preceding `'error'` would leave `ensureConnected`
             // waiting forever. Rejecting an already-settled promise is a no-op.
             reject(
@@ -549,6 +873,12 @@ class WsEventsTransport {
             this.scheduleReconnect(code);
           }
         });
+        if (pooled) {
+          timing.pooled = 1;
+          mark('upgradeMs');
+          onOpen();
+          assign();
+        }
       })();
     });
   }
@@ -597,6 +927,20 @@ class WsEventsTransport {
   /** Synchronous so parts of a split reply are always assembled in arrival
    *  order. */
   private handleMessage(conn: Connection, raw: Uint8Array): void {
+    const read = this.readMessage(conn, raw);
+    if (read) this.dispatchMessage(conn, read.frame, read.parts);
+  }
+
+  /**
+   * Decode one message and feed it to the connection's part assembler: the
+   * complete frame with the number of messages it arrived as, or `undefined`
+   * while a split frame is still arriving, or after an unreadable frame or a
+   * part-protocol error has failed the connection.
+   */
+  private readMessage(
+    conn: Connection,
+    raw: Uint8Array
+  ): { frame: DecodedFrame; parts: number } | undefined {
     let message: DecodedFrame;
     try {
       message = decodeFrame(raw);
@@ -615,12 +959,17 @@ class WsEventsTransport {
       return;
     }
 
-    const assembled = this.assemble(conn, message);
     // A part of a reply that is still arriving, or a protocol error that
-    // already failed the connection.
-    if (assembled === undefined) return;
-    const { frame: decoded, parts: replyParts } = assembled;
+    // already failed the connection, reads as undefined.
+    return this.assemble(conn, message);
+  }
 
+  /** Handle one complete frame: a reply to its request, or a server push. */
+  private dispatchMessage(
+    conn: Connection,
+    decoded: DecodedFrame,
+    replyParts: number
+  ): void {
     if (decoded.meta.type === 'drain') {
       // Unsolicited server push, no reqId. Informational on its own: the
       // `close` that follows is what triggers the reconnect and consumes the
@@ -778,6 +1127,8 @@ const wsState = globalSingleton(
   1,
   () => ({
     transports: new Map<string, WsEventsTransport>(),
+    pool: new Map<string, PooledSocket[]>(),
+    poolOpening: new Map<string, number>(),
     loggedWsProxyFallback: false,
     loggedWsInUse: false,
   })
@@ -817,6 +1168,13 @@ export function resetWsEventsTransportsForTest(): void {
     transport.close('test reset');
   }
   wsState.transports.clear();
+  for (const pool of wsState.pool.values())
+    for (const entry of pool.splice(0)) {
+      entry.drop();
+      entry.ws.terminate();
+    }
+  wsState.pool.clear();
+  wsState.poolOpening.clear();
   wsState.loggedWsProxyFallback = false;
   wsState.loggedWsInUse = false;
 }
@@ -828,6 +1186,132 @@ export function resetWsEventsTransportsForTest(): void {
  * Scoped to one run because one client instance only ever drives one run, so
  * `runId` belongs on the connection rather than on every frame.
  */
+/**
+ * Pre-opened unassigned eventsync sockets, per process and server
+ * (`WORKFLOW_EVENTSYNC_POOL` sockets; off when unset). A run's connection takes
+ * one and assigns it with an `attach` frame instead of upgrading; each socket
+ * serves one run and is closed on release, and taking one opens a replacement.
+ */
+function eventsyncPoolSize(): number {
+  const size = Number(process.env.WORKFLOW_EVENTSYNC_POOL ?? 0);
+  return Number.isSafeInteger(size) && size > 0 ? Math.min(size, 32) : 0;
+}
+
+function unassignedEventsyncUrl(
+  wsUrl: string
+): { url: string; runId: string } | undefined {
+  const url = new URL(wsUrl);
+  const match = url.pathname.match(/^(.*)\/runs\/([^/]+)$/);
+  if (!match) return undefined;
+  url.pathname = `${match[1]}/experimental_eventsync`;
+  url.search = '';
+  return { url: url.toString(), runId: decodeURIComponent(match[2]) };
+}
+
+type PooledSocket = { ws: WebSocket; drop(): void };
+
+/** Re-encode a frame (`[meta length][meta][body length][body]`) with extra
+ * meta fields; the body is carried over byte for byte. */
+export function withMeta(frame: Uint8Array, extra: Record<string, unknown>) {
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const metaLength = view.getUint32(0, false);
+  const meta = decodeCbor(frame.subarray(4, 4 + metaLength)) as Record<
+    string,
+    unknown
+  >;
+  const bodyLength = view.getUint32(4 + metaLength, false);
+  const bodyStart = 8 + metaLength;
+  return encodeFrame(
+    { ...meta, ...extra },
+    frame.subarray(bodyStart, bodyStart + bodyLength)
+  );
+}
+
+function takePooledSocket(url: string): WebSocket | undefined {
+  const pool = wsState.pool.get(url);
+  while (pool?.length) {
+    const entry = pool.shift()!;
+    entry.drop();
+    if (entry.ws.readyState === WebSocket.OPEN) return entry.ws;
+    entry.ws.terminate();
+  }
+  return undefined;
+}
+
+function fillPool(
+  url: string,
+  getHeaders: (opts: {
+    forceRefresh: boolean;
+  }) => Promise<Record<string, string>>
+) {
+  const size = eventsyncPoolSize();
+  if (!wsState.pool.has(url)) wsState.pool.set(url, []);
+  const pool = wsState.pool.get(url)!;
+  // One upgrade at a time: a burst would spread the pool across freshly
+  // started server instances, each of whose first write is cold. Each socket
+  // opens once the previous one has (see openPooledSocket).
+  if ((wsState.poolOpening.get(url) ?? 0) > 0 || pool.length >= size) return;
+  wsState.poolOpening.set(url, 1);
+  void openPooledSocket(url, pool, getHeaders);
+}
+
+async function openPooledSocket(
+  url: string,
+  pool: PooledSocket[],
+  getHeaders: (opts: {
+    forceRefresh: boolean;
+  }) => Promise<Record<string, string>>
+) {
+  let settled = false;
+  const opened = () => {
+    if (settled) return;
+    settled = true;
+    wsState.poolOpening.set(
+      url,
+      Math.max(0, (wsState.poolOpening.get(url) ?? 1) - 1)
+    );
+  };
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(url, {
+      headers: {
+        ...(await getHeaders({ forceRefresh: false })),
+        [WS_FLAGS_HEADER]: WS_CLIENT_FLAGS.join(','),
+      },
+    });
+  } catch {
+    opened();
+    return;
+  }
+  ws.binaryType = 'nodebuffer';
+  const entry: PooledSocket = { ws, drop() {} };
+  const remove = () => {
+    opened();
+    const index = pool.indexOf(entry);
+    if (index >= 0) pool.splice(index, 1);
+  };
+  // Nothing is sent to an unassigned socket before `attach`; anything else
+  // retires it.
+  const retire = () => {
+    remove();
+    ws.terminate();
+  };
+  ws.on('close', remove);
+  ws.on('error', retire);
+  ws.on('message', retire);
+  ws.once('open', () => {
+    opened();
+    pool.push(entry);
+    // The next socket opens only now; a failed open waits for the next take.
+    fillPool(url, getHeaders);
+  });
+  entry.drop = () => {
+    ws.off('close', remove);
+    ws.off('error', retire);
+    ws.off('message', retire);
+  };
+}
+
 export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -887,6 +1371,13 @@ export { isWsEventsTransportEnabled };
  * inside it hits an already-closed instance, returns early, and leaves that
  * invocation on HTTP for its whole duration with nothing to signal it.
  */
+export type WsChannelLease = (() => void) & {
+  ready(): Promise<void>;
+  /** Eventsync only: the current connection's catch-up, consumed once. */
+  takeCatchUp(): Promise<EventsyncCatchUp>;
+  flushThrough(head: number, generation?: number): Promise<void>;
+};
+
 export function openWsChannel(
   runId: string,
   config?: APIConfig,
@@ -898,9 +1389,16 @@ export function openWsChannel(
      * deployment opens none.
      */
     workflowName?: string;
+    /** Eventsync: the single-owner runner's write session for this run. */
+    catchUp?: EventsyncCatchUpOptions<unknown>;
   } = {}
-): (() => void) | undefined {
-  if (!isWsEventsTransportEnabledForWorkflow(options.workflowName)) {
+): WsChannelLease | undefined {
+  // A single-owner run is written only through eventsync, whatever the
+  // events-transport setting; other channels follow it.
+  if (
+    !options.catchUp &&
+    !isWsEventsTransportEnabledForWorkflow(options.workflowName)
+  ) {
     return undefined;
   }
   const resolved = resolveChannelUrl(runId, config);
@@ -923,14 +1421,36 @@ export function openWsChannel(
     const { headers } = await getHttpConfig(config);
     return headersToRecord(headers);
   });
+  // Set before the first connect so even the initial upgrade carries `after`.
+  if (options.catchUp) transport.enableCatchUp(options.catchUp);
   transport.open();
 
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    transport.release('invocation complete');
-  };
+  return Object.assign(
+    () => {
+      if (released) return;
+      released = true;
+      transport.release('invocation complete');
+    },
+    {
+      ready: () => transport.ready(),
+      takeCatchUp: () => transport.takeCatchUp(),
+      async flushThrough(through: number, generation?: number) {
+        const reply = await transport.request(
+          (reqId) =>
+            encodeFrame({ reqId, type: 'flush', through }, new Uint8Array()),
+          { generation }
+        );
+        if (
+          reply.meta.type !== 'flush_ack' ||
+          reply.meta.status !== 200 ||
+          typeof reply.meta.committedTo !== 'number' ||
+          reply.meta.committedTo < through
+        )
+          throw new WsTransportError('Invalid eventsync flush acknowledgement');
+      },
+    }
+  );
 }
 
 /**

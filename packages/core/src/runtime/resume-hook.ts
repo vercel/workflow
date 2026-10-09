@@ -820,7 +820,15 @@ async function resumeHookAttempt<T = any>(
             token: hook.token,
             payload: dehydratedPayload,
           },
-          { idempotencyKey: logicalResumeId }
+          {
+            idempotencyKey: logicalResumeId,
+            // The hook's immutable routing context, so the World can skip
+            // a run lookup before invoking the run's executor.
+            target: {
+              deploymentId: resumeContext.deploymentId,
+              workflowName: resumeContext.workflowName,
+            },
+          }
         )
       );
       if (result.status === 'rejected') {

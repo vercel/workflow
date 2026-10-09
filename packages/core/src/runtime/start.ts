@@ -64,7 +64,9 @@ import {
   type HealthCheckResult,
   healthCheck,
 } from './helpers.js';
+import { QueuedStepPolicySchema } from './owned-step.js';
 import { Run } from './run.js';
+import { isSingleOwnerRun } from './single-owner.js';
 import {
   getSnapshotThresholdFromEnv,
   getWorkflowVmFromEnv,
@@ -419,6 +421,21 @@ export interface StartOptionsBase {
    * recognize the value keeps the data.
    */
   experimental_retention?: RunRetention;
+
+  /** Owner-managed steps. Hybrid keeps three bodies local and uses the existing
+   * Queue delivery primitive for direct-execution overflow; the backend must
+   * support that transport. Remote outcomes return through invoke. */
+  experimental_stepExecution?: {
+    mode: 'queued' | 'hybrid';
+    attemptTimeoutMs?: number;
+  };
+
+  /**
+   * With an invoke-first start, wait for `run_created` to be durable before
+   * the first step runs, and resolve `start()` as soon as the run exists.
+   * Defaults to `WORKFLOW_DURABLE_RUN_CREATED=1`.
+   */
+  experimental_durableRunCreated?: boolean;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -1001,7 +1018,37 @@ export async function start<TArgs extends unknown[], TResult>(
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
       const snapshotThreshold = getSnapshotThresholdFromEnv();
+      // A single-owner run (`single-owner.ts`) is the caller's choice, made
+      // with its marker attribute. It needs a deployment that hosts the
+      // single-owner runner and a World that can invoke its owner: the run is
+      // stored for its owner alone, so it must never be written another way.
+      const singleOwner = isSingleOwnerRun({ attributes: runAttributes });
+      if (
+        singleOwner &&
+        (process.env.WORKFLOW_RETAINED_RUNNER !== '1' ||
+          !world.capabilities?.invoke ||
+          !world.invoke ||
+          deploymentId !== currentDeploymentId)
+      )
+        throw new WorkflowRuntimeError(
+          'A single-owner run requires a local-target deployment with the single-owner runner (WORKFLOW_RETAINED_RUNNER=1) and an invoke-capable World'
+        );
+      // The single-owner runner executes this deployment's compiled bundle, so
+      // a dynamic run (which carries its own code) cannot be single-owner.
+      if (singleOwner && dynamicWorkflow)
+        throw new WorkflowRuntimeError(
+          'Dynamic workflows cannot be started as single-owner runs ($experimentalSingleOwner)'
+        );
+      const stepExecution = opts.experimental_stepExecution
+        ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
+        : undefined;
+      if (stepExecution && !singleOwner)
+        throw new WorkflowRuntimeError(
+          'Queued step execution requires a single-owner run'
+        );
+
       const executionContext = {
+        ...(stepExecution ? { stepExecution } : {}),
         traceCarrier,
         workflowCoreVersion,
         ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
@@ -1121,6 +1168,71 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
+      // Invoke-first start (experimental): the run's owner creates the run.
+      // The start invocation carries everything `run_created` needs; the owner
+      // commits it as the first event of its own session, enqueues a delayed
+      // wake carrying the same input as a backup, and resolves once the run
+      // and its first transitions are durable. An unconfirmed invocation
+      // falls back to the create-first path below, where an existing run is a
+      // benign conflict.
+      if (
+        singleOwner &&
+        process.env.WORKFLOW_INVOKE_FIRST_START === '1' &&
+        world.invoke
+      ) {
+        try {
+          await world.invoke(
+            runId,
+            {
+              type: 'run_start',
+              version: 2,
+              ...((opts.experimental_durableRunCreated ??
+              process.env.WORKFLOW_DURABLE_RUN_CREATED === '1')
+                ? { durableCreate: true }
+                : {}),
+              runInput: {
+                input: workflowArguments,
+                deploymentId,
+                workflowName,
+                specVersion,
+                executionContext,
+                ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                ...(creatorEnvironment !== undefined
+                  ? { environment: creatorEnvironment }
+                  : {}),
+                ...attributeSeed,
+              },
+            },
+            {
+              idempotencyKey: `run-start:${runId}`,
+              target: { deploymentId, workflowName },
+            }
+          );
+          safeWaitUntil(Promise.all(ops), (err) => {
+            runtimeLogger.warn(
+              'Background flush of workflow argument streams failed',
+              {
+                workflowRunId: runId,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          });
+          span?.setAttributes({
+            ...Attribute.WorkflowRunId(runId),
+            ...Attribute.DeploymentId(deploymentId),
+          });
+          return new Run<TResult>(runId, { resilientStart: false });
+        } catch (error) {
+          runtimeLogger.warn(
+            'Invoke-first start did not confirm; creating the run first.',
+            {
+              workflowRunId: runId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        }
+      }
+
       const runCreated = world.events.create(
         runId,
         {
@@ -1171,8 +1283,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
-        runCreated,
+      const enqueue = () =>
         world.queue(
           queueName,
           {
@@ -1205,7 +1316,44 @@ export async function start<TArgs extends unknown[], TResult>(
             // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
-        ),
+        );
+      // Retained runs start on their owner through invoke, so the first turn
+      // runs where later inputs are routed. An unknown or failed invoke
+      // outcome falls back to the queue wake: a duplicate start only
+      // re-advances the owner, while no fallback could orphan the run.
+      const startOwner = async () => {
+        try {
+          if (!world.invoke) throw new Error('World invoke is unavailable');
+          await world.invoke(
+            runId,
+            { type: 'run_start', version: 1 },
+            {
+              idempotencyKey: `run-start:${runId}`,
+              target: { deploymentId, workflowName },
+            }
+          );
+        } catch (error) {
+          runtimeLogger.warn(
+            'Direct run start did not confirm; falling back to the queue.',
+            {
+              workflowRunId: runId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+          await enqueue();
+        }
+      };
+      const [runCreatedResult, queueResult] = await Promise.allSettled([
+        runCreated,
+        singleOwner
+          ? runCreated.then(startOwner, (error: unknown) =>
+              // The run already exists (an earlier start created it): its
+              // owner still has to be started.
+              EntityConflictError.is(error)
+                ? startOwner()
+                : Promise.reject(error)
+            )
+          : enqueue(),
       ]);
 
       // Queue failure is always fatal: the run was not enqueued

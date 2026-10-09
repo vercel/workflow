@@ -29,6 +29,7 @@ import {
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
+import { isSingleOwnerRun } from './single-owner.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
 const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
@@ -291,6 +292,20 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     const run = await world.runs.get(this.runId, { resolveData: 'none' });
+    // A single-owner run is cancelled by its owner.
+    if (
+      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
+      world.capabilities?.invoke &&
+      world.invoke &&
+      isSingleOwnerRun(run)
+    ) {
+      await world.invoke(this.runId, {
+        type: 'run_cancel',
+        version: 1,
+        cancelReason: options?.cancelReason,
+      });
+      return;
+    }
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: specVersionForRunWrite(run.specVersion),
