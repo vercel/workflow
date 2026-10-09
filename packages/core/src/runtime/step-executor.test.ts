@@ -1086,6 +1086,96 @@ describe('executeStep — pre-claimed inline start', () => {
   });
 });
 
+describe('executeStep — turbo run-ready barrier on the awaited start', () => {
+  afterEach(() => {
+    counter += 1;
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  // Turbo backgrounds `run_started` and forces optimistic start, but an
+  // explicit opt-out sends the lazy `step_started` on the awaited branch. That
+  // write must still wait for the run to be started, or a world that requires
+  // a running run rejects the step's first start.
+  it.each([
+    { name: 'explicit opt-out under turbo', env: '0', force: true },
+    { name: 'optimistic start left off', env: undefined, force: false },
+  ])('holds the lazy step_started until run_started lands ($name)', async ({
+    env,
+    force,
+  }) => {
+    const world = makeWorld();
+    if (env !== undefined) vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', env);
+    const stepName = uniqueStepName();
+    const stepId = `step_${ulid()}`;
+    const runInput = await dehydrateStepArguments([], 'run', undefined);
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'wf',
+        input: runInput,
+      },
+    });
+    const runId = created.run!.runId;
+    const input = await dehydrateStepArguments(
+      { args: [], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+    let bodyRuns = 0;
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+
+    // The run's status at the moment each step_started is sent.
+    const runStatusAtStart: string[] = [];
+    const create = world.events.create.bind(world.events);
+    vi.spyOn(world.events, 'create').mockImplementation(async (...args) => {
+      const [targetRunId, event] = args;
+      if (targetRunId && event.eventType === 'step_started') {
+        runStatusAtStart.push((await world.runs.get(targetRunId)).status);
+      }
+      return create(...args);
+    });
+
+    const startGate = Promise.withResolvers<void>();
+    const runReadyBarrier = startGate.promise.then(() =>
+      create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      } as never)
+    );
+
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: input,
+      forceOptimisticStart: force,
+      runReadyBarrier,
+      authoritativeAttempt: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(runStatusAtStart).toEqual([]);
+    expect(bodyRuns).toBe(0);
+
+    startGate.resolve();
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+    expect(runStatusAtStart).toEqual(['running']);
+    expect(bodyRuns).toBe(1);
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+  });
+});
+
 describe('executeStep — unserializable-argument placeholder guard', () => {
   afterEach(() => {
     counter += 1;

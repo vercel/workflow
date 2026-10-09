@@ -635,6 +635,14 @@ export async function streamErrorWorkflow() {
 Stream errors don't trigger automatic retries for the producer step. Design your stream consumers to handle errors. Because the stream is already in an errored state, retrying the consumer won't help. Use `FatalError` to fail the workflow immediately.
 </Callout>
 
+## Performance
+
+Chunk trip time (CTT) measures how quickly a chunk written to a stream reaches its reader: the clock starts when one step writes the chunk and stops when another step receives it. The animation shows a writer step replaying a recorded agent stream and a reader step receiving each chunk.
+
+<MetricVideo metric="stream" />
+
+See [Chunk trip time](/docs/performance#chunk-trip-time-ctt) on the Performance page for how it's measured and the latest results.
+
 ## Related documentation
 
 - [`getWritable()` API reference](/docs/api-reference/workflow/get-writable): Get the workflow's writable stream

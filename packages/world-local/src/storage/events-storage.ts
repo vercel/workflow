@@ -69,6 +69,7 @@ import {
   readJSON,
   readJSONWithFallback,
   resolveWithinBase,
+  runEntityDir,
   SORT_KEY_CURSOR_PREFIX,
   stripTag,
   taggedPath,
@@ -76,6 +77,7 @@ import {
   writeExclusive,
   writeJSON,
 } from '../fs.js';
+import { withInProcessLock } from '../util.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
@@ -244,7 +246,7 @@ async function findCommittedResumeEvent(
   for (const eventId of scan.ids) {
     const event = await readJSONWithFallback(
       basedir,
-      'events',
+      runEntityDir('events', runId),
       `${runId}-${eventId}`,
       ReadEventSchema,
       tag
@@ -369,7 +371,7 @@ async function findExistingHookCreatedEventId(
   correlationId: string
 ): Promise<string | null> {
   const result = await paginatedFileSystemQuery({
-    directory: path.join(basedir, 'events'),
+    directory: path.join(basedir, runEntityDir('events', runId)),
     schema: ReadEventSchema,
     filePrefix: `${runId}-`,
     filter: (event) =>
@@ -412,7 +414,7 @@ async function repairHookEntityFromPersistedEvent(
   const compositeKey = `${runId}-${persistedEventId}`;
   const persistedEvent = await readJSONWithFallback(
     basedir,
-    'events',
+    runEntityDir('events', runId),
     compositeKey,
     ReadEventSchema,
     tag
@@ -486,41 +488,6 @@ async function pinCanonicalEventIdForLegacyClaim(
   }
   const existing = await readHookRecoveryMarker(markerPath);
   return existing?.eventId ?? null;
-}
-
-/**
- * In-process per-key async mutex backed by a caller-supplied `Map`.
- * Used by `createEventsStorage` to serialize same-key event writes
- * (`step_*` for the same step, `hook_created` for the same hook).
- * The map is instantiated per-storage-instance: different
- * instances do NOT share locks, so two instances sharing one data
- * directory behave exactly like two separate OS processes from the
- * locking standpoint. Cross-instance / cross-process arbitration
- * relies on the on-disk constraint / claim files instead.
- */
-function withInProcessLock<T>(
-  locks: Map<string, Promise<unknown>>,
-  key: string,
-  fn: () => Promise<T>
-): Promise<T> {
-  const prev = locks.get(key);
-  const taskBox: { task?: Promise<T> } = {};
-  const task = (async () => {
-    if (prev) {
-      // Wait for the previous task to settle; don't inherit its errors.
-      await prev.catch(() => undefined);
-    }
-    try {
-      return await fn();
-    } finally {
-      if (locks.get(key) === taskBox.task) {
-        locks.delete(key);
-      }
-    }
-  })();
-  taskBox.task = task;
-  locks.set(key, task);
-  return task;
 }
 
 /**
@@ -696,10 +663,10 @@ export function createEventsStorage(
     const fileId = `${runId}-${slotToEventId(slot)}`;
     for (const candidate of tag
       ? [
-          taggedPath(basedir, 'events', fileId, tag),
-          taggedPath(basedir, 'events', fileId),
+          taggedPath(basedir, runEntityDir('events', runId), fileId, tag),
+          taggedPath(basedir, runEntityDir('events', runId), fileId),
         ]
-      : [taggedPath(basedir, 'events', fileId)]) {
+      : [taggedPath(basedir, runEntityDir('events', runId), fileId)]) {
       try {
         await fs.stat(candidate);
         return true;
@@ -884,7 +851,7 @@ export function createEventsStorage(
     for (let attempt = 0; ; attempt++) {
       const eventPath = taggedPath(
         basedir,
-        'events',
+        runEntityDir('events', current.runId),
         `${current.runId}-${current.eventId}`,
         tag
       );
@@ -936,7 +903,7 @@ export function createEventsStorage(
 
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
-      directory: path.join(basedir, 'events'),
+      directory: path.join(basedir, runEntityDir('events', runId)),
       schema: ReadEventSchema,
       cachedItems: eventCache,
       filePrefix: `${runId}-`,
@@ -1341,7 +1308,7 @@ export function createEventsStorage(
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           validatedStep = await readJSONWithFallback(
             basedir,
-            'steps',
+            runEntityDir('steps', effectiveRunId),
             stepCompositeKey,
             StepSchema,
             tag
@@ -1433,7 +1400,7 @@ export function createEventsStorage(
             ) {
               const atClaimedId = await readJSONWithFallback(
                 basedir,
-                'events',
+                runEntityDir('events', effectiveRunId),
                 `${effectiveRunId}-${committedClaim.eventId}`,
                 ReadEventSchema,
                 tag
@@ -1526,7 +1493,7 @@ export function createEventsStorage(
               }
               const atClaimedId = await readJSONWithFallback(
                 basedir,
-                'events',
+                runEntityDir('events', effectiveRunId),
                 `${effectiveRunId}-${claim.eventId}`,
                 ReadEventSchema,
                 tag
@@ -2099,7 +2066,12 @@ export function createEventsStorage(
           };
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           await writeJSON(
-            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            taggedPath(
+              basedir,
+              runEntityDir('steps', effectiveRunId),
+              stepCompositeKey,
+              tag
+            ),
             step
           );
         } else if (data.eventType === 'step_started') {
@@ -2158,7 +2130,7 @@ export function createEventsStorage(
               await writeJSON(
                 taggedPath(
                   basedir,
-                  'steps',
+                  runEntityDir('steps', effectiveRunId),
                   `${effectiveRunId}-${data.correlationId}`,
                   tag
                 ),
@@ -2219,7 +2191,7 @@ export function createEventsStorage(
             const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
             const freshStep = await readJSONWithFallback(
               basedir,
-              'steps',
+              runEntityDir('steps', effectiveRunId),
               stepCompositeKey,
               StepSchema,
               tag
@@ -2242,7 +2214,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2277,7 +2254,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2317,7 +2299,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2339,7 +2326,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -3008,7 +3000,7 @@ export function createEventsStorage(
 
         let eventPath = taggedPath(
           basedir,
-          'events',
+          runEntityDir('events', effectiveRunId),
           `${effectiveRunId}-${eventId}`,
           tag
         );
@@ -3060,7 +3052,7 @@ export function createEventsStorage(
           event = { ...event, eventId };
           eventPath = taggedPath(
             basedir,
-            'events',
+            runEntityDir('events', effectiveRunId),
             `${effectiveRunId}-${eventId}`,
             tag
           );
@@ -3107,7 +3099,7 @@ export function createEventsStorage(
           event = prePublishedEvent;
           eventPath = taggedPath(
             basedir,
-            'events',
+            runEntityDir('events', effectiveRunId),
             `${effectiveRunId}-${eventId}`,
             tag
           );
@@ -3220,7 +3212,7 @@ export function createEventsStorage(
           if (data.eventType === 'hook_received' && params?.resumeId) {
             const occupant = await readJSONWithFallback(
               basedir,
-              'events',
+              runEntityDir('events', effectiveRunId),
               `${effectiveRunId}-${eventId}`,
               ReadEventSchema,
               tag
@@ -3248,7 +3240,7 @@ export function createEventsStorage(
           if (data.eventType === 'hook_created' && data.correlationId) {
             const occupant = await readJSONWithFallback(
               basedir,
-              'events',
+              runEntityDir('events', effectiveRunId),
               `${effectiveRunId}-${eventId}`,
               ReadEventSchema,
               tag
@@ -3453,7 +3445,7 @@ export function createEventsStorage(
       const compositeKey = `${runId}-${eventId}`;
       const event = await readJSONWithFallback(
         basedir,
-        'events',
+        runEntityDir('events', runId),
         compositeKey,
         ReadEventSchema,
         tag
@@ -3493,7 +3485,7 @@ export function createEventsStorage(
       assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
-        directory: path.join(basedir, 'events'),
+        directory: path.join(basedir, runEntityDir('events', params.runId)),
         schema: ReadEventSchema,
         cachedItems: eventCache,
         // Scoped to the run's own event files, since a correlation id

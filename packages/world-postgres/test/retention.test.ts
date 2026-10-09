@@ -1,7 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { RETENTION_ATTRIBUTE } from '@workflow/world';
-import { Pool } from 'pg';
 import { ulid } from 'ulid';
 import {
   afterAll,
@@ -15,6 +14,7 @@ import {
 import { createClient } from '../src/drizzle/index.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { createStreamer } from '../src/streamer.js';
+import { TestPool } from './pool.js';
 
 type EventsStorage = ReturnType<typeof createEventsStorage>;
 
@@ -49,7 +49,7 @@ describe('Retention ($retention: 0)', () => {
   }
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
   let runs: ReturnType<typeof createRunsStorage>;
   let events: EventsStorage;
@@ -67,7 +67,7 @@ describe('Retention ($retention: 0)', () => {
       env: process.env,
     });
 
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
     drizzle = createClient(pool);
     runs = createRunsStorage(drizzle);
     events = createEventsStorage(drizzle);

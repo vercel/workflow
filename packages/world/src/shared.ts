@@ -37,11 +37,13 @@ export const PageInfoSchema = z.compile(
 
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 
-// Shared schema for paginated responses
-export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
-  dataSchema: T
-) =>
-  z.compile(
+// per-copy-ok: callers reuse module-level data schemas across requests. Separate
+// bundler layers construct distinct schema objects, so an identity cache cannot
+// deduplicate those across copies. Stores schemas only, never page bodies.
+const paginatedResponseSchemas = new WeakMap<z.ZodTypeAny, z.ZodTypeAny>();
+
+function compilePaginatedResponse<T extends z.ZodTypeAny>(dataSchema: T) {
+  return z.compile(
     z.object({
       data: z.array(dataSchema),
       cursor: z.string().nullable(),
@@ -49,6 +51,20 @@ export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
       pageInfo: PageInfoSchema.optional(),
     })
   );
+}
+
+// Shared schema for paginated responses
+export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
+  dataSchema: T
+) => {
+  const cached = paginatedResponseSchemas.get(dataSchema) as
+    | ReturnType<typeof compilePaginatedResponse<T>>
+    | undefined;
+  if (cached) return cached;
+  const schema = compilePaginatedResponse(dataSchema);
+  paginatedResponseSchemas.set(dataSchema, schema);
+  return schema;
+};
 
 // Inferred type from schema
 export type PaginatedResponse<T> = z.infer<

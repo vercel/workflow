@@ -599,6 +599,7 @@ async function createWorkflowSessionInner(
     pendingDeliveries: 0,
     suspensionGeneration: 0,
     pendingDeliveryBarriers: new Map(),
+    hookPayloadAwaiters: new Map(),
     advanceClock,
     replayPayloadCache,
   };
