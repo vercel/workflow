@@ -121,9 +121,6 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 Each run's event and step files are stored in their own directory (`events/<runId>/`, `steps/<runId>/`).
 
-Local run data written by earlier releases, which kept these files directly in `events/` and `steps/`, isn't migrated. When the World starts on such a directory, it logs a warning, deletes the data directory, and starts with an empty one. The CLI and web UI only read the directory and never delete it. To downgrade afterward, delete the data directory yourself, because older releases show runs in the new layout without their events or steps.
-
-A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
 
 ## Limitations
 
