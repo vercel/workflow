@@ -174,8 +174,11 @@ export const QUEUE_AGENT_CONNECTIONS = 64;
  *
  * 30s rather than `REQUEST_TIMEOUT_MS` (60s): this bounds the calls that hold a
  * message's lease, and it has to leave the visibility-renewal loop room to
- * notice a failure and retry (`@vercel/queue` renews at 60s intervals and
- * retries a failed renewal after 3s) before the 300s lease lapses.
+ * notice a failure and retry (`@vercel/queue` retries a failed renewal after
+ * 3s) before the lease lapses. At the default 300s lease it renews every 60s;
+ * a handler created with a shorter `visibilityTimeoutSeconds` renews every
+ * `min(60, max(10, v / 5))` seconds and has less room, down to 10s between
+ * renewals of a 30s lease.
  *
  * Override with `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`; the clamp floor keeps a
  * misconfigured value from failing healthy acknowledgements.

@@ -331,7 +331,7 @@ A `dispatcher` passed to `createVercelWorld()` still wins over this variable. Th
 - Total deadline for one request the Vercel World's queue client makes, measured from the moment it is handed to the transport, so it also covers time the request spends waiting for a free connection.
 - Clamped to `[5000, 120000]`.
 - This is the only request path the World cannot bound with `WORKFLOW_REQUEST_TIMEOUT_MS`, because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
-- Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses.
+- Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses. That interval holds for the default 300-second lease. A handler created with a shorter [`visibilityTimeoutSeconds`](/docs/api-reference/workflow-runtime/world/queue#visibility-timeout) renews more often and has less room, down to 10 seconds between renewals of a 30-second lease.
 
 ### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
 

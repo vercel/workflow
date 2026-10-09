@@ -13,6 +13,7 @@ keywords:
   - getDeploymentId
   - queue
   - createQueueHandler
+  - visibilityTimeoutSeconds
   - ValidQueueName
   - queue dispatch
 ---
@@ -67,7 +68,7 @@ const { messageId } = await world.queue(queueName, payload, opts); // [!code hig
 Create an HTTP handler that processes messages from a queue. Use it to set up the queue consumer endpoint.
 
 ```typescript lineNumbers
-const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
+const handler = world.createQueueHandler(prefix, callback, opts); // [!code highlight]
 ```
 
 **Parameters:**
@@ -76,10 +77,34 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 |-----------|------|-------------|
 | `prefix` | `QueuePrefix` | Queue name prefix to match |
 | `callback` | `(message, meta) => Promise<void \| { timeoutSeconds: number }>` | Handler called for each message. `meta` contains `attempt`, `queueName`, `messageId`, `requestId`. |
+| `opts` | `QueueHandlerOptions` | Optional: `visibilityTimeoutSeconds`. Applies to this handler only. See [Visibility timeout](#visibility-timeout). |
 
 **Returns:** `(req: Request) => Promise<Response>`
 
 `meta.messageId` should be stable across redeliveries of the same message (one ID per enqueued message, reused on every delivery attempt). The runtime records it on inline `step_started` events as a liveness lease so that only a redelivery of the owning message re-executes a crashed inline step before the lease expires (see [Inline step message ownership](/docs/changelog/step-message-ownership)). A World whose queue mints a fresh ID per delivery degrades gracefully. Crashed inline steps recover via the delayed backstop instead of immediately on redelivery, but never wedge or duplicate.
+
+#### Visibility timeout
+
+`opts.visibilityTimeoutSeconds` sets the lease a delivery holds while `callback` runs. A World whose queue leases deliveries renews the lease while the callback is running. A callback that dies without responding (a crashed or killed instance) stops renewing it, and the message is redelivered once the last lease lapses. A shorter lease recovers a dead handler sooner.
+
+```typescript lineNumbers
+const handler = world.createQueueHandler(prefix, callback, {
+  visibilityTimeoutSeconds: 60, // [!code highlight]
+});
+```
+
+Omit it to keep the World's default. The SDK's own workflow route passes no options, so setting it on one handler changes nothing for the others.
+
+| World | Behavior |
+|-------|----------|
+| Vercel | Default `300`. Accepts an integer from `30` to `3600`, and throws a `RangeError` when the handler is created for anything else. The queue client extends the lease every `min(60, max(10, v / 5))` seconds, which is every 10 seconds at `30` and every 60 seconds at `300`. |
+| Local, Postgres | Ignored. The Local World holds a delivery in the process that runs it, and the Postgres World in a Graphile Worker job lock. Neither has a renewable lease to shorten. |
+
+A shorter lease has costs:
+
+- **Less tolerance for a stall.** The lease survives a failed renewal or a blocked event loop for roughly the lease minus one renewal interval, which is 20 seconds at `30`. A stall longer than that redelivers the message while the first callback is still running, so the callback must already be safe to run twice concurrently. The SDK's own handlers are.
+- **Renewal calls need room.** On the Vercel World, each renewal is bounded by [`WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_vercel_queue_timeout_ms), which defaults to 30 seconds. A single hung renewal at that default can outlast a 30-second lease. Use `60` or more, or lower the queue timeout, for handlers that run longer than a lease.
+- **Pushed deliveries start on the queue's lease.** On the Vercel World, a message the queue pushes together with its payload starts on the queue's own 300-second lease, and the handler's lease takes over at the client's first renewal, about 60 seconds in. A pushed delivery whose handler dies before that first renewal is still redelivered about 300 seconds after it started. After it, a dead handler is redelivered about one lease after its last renewal. Deliveries the handler claims itself hold the handler's lease from the start.
 
 ## Related
 

@@ -277,10 +277,22 @@ interface Queue {
 
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<unknown>
+    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<unknown>,
+    // Optional, per handler. See "Handler options" below.
+    options?: QueueHandlerOptions
   ): (req: Request) => Promise<Response>;
 }
 ```
+
+### Handler options
+
+`createQueueHandler` takes an optional third argument, `QueueHandlerOptions`. It applies to that one handler, so a single World can serve routes with different settings. The SDK's own workflow route passes none, and an implementation that declares only the first two parameters still satisfies the interface.
+
+`visibilityTimeoutSeconds` is the lease, in seconds, that a delivery holds while the handler runs:
+
+- **Your queue leases deliveries** (a visibility timeout that the consumer renews): use the value as that lease, renew it while the handler runs, and keep your default when it is omitted. A handler that dies without responding is then redelivered about that long after its last renewal. Reject a value your queue cannot honor when the handler is created, rather than letting renewals fail later. The Vercel World accepts an integer from 30 to 3600.
+- **A delivery is held by something else** (the process that runs it, a database row lock): ignore it.
+- **Your World delegates to another World's queue** that leases deliveries: pass `options` through.
 
 ### Invocation delivery
 
