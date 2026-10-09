@@ -239,6 +239,8 @@ export class EventsConsumer {
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
+  /** Set by {@link abandon}; nothing is reported after it. */
+  private abandoned = false;
   /**
    * The event a callback most recently claimed, for {@link describe}. Tracked
    * separately from {@link eventIndex} because the walk also steps over events
@@ -318,6 +320,33 @@ export class EventsConsumer {
   append(events: Event[]): void {
     for (const event of events) this.events.push(event);
     process.nextTick(this.consume);
+  }
+
+  /**
+   * Retire this consumer: no check already in flight fires, and no later one
+   * is scheduled.
+   *
+   * For the session that is thrown away while it is still being built (see
+   * `createWorkflowSession`). The walk is armed before the replay it belongs
+   * to can run, so an abandoned build leaves it stopped on an event with a
+   * deferred check on a timer and no replay coming to claim anything. Every
+   * outcome that check can reach is wrong by then: the caller already has the
+   * error that ended the build, the runtime has recorded the run from it, and
+   * the divergence it would report is about a workflow body that never ran.
+   *
+   * Cancels the same way {@link subscribe} does, for the same reason: the
+   * version bump is what stops an in-flight promise chain, and the
+   * `clearTimeout` stops a timer already scheduled. {@link abandoned} then
+   * keeps {@link scheduleUnconsumedCheck} from arming a new one.
+   */
+  abandon(): void {
+    this.abandoned = true;
+    this.unconsumedCheckVersion++;
+    this.pendingUnconsumedCheck = null;
+    if (this.pendingUnconsumedTimeout !== null) {
+      clearTimeout(this.pendingUnconsumedTimeout);
+      this.pendingUnconsumedTimeout = null;
+    }
   }
 
   /**
@@ -715,6 +744,12 @@ export class EventsConsumer {
   }
 
   private scheduleUnconsumedCheck(currentEvent: Event, mayPark: boolean) {
+    // The one seam an abandoned consumer has to be stopped at: every path to
+    // `onUnconsumedEvent` runs through a check scheduled here, and the walk
+    // itself only moves indices around on an object nobody reads again.
+    if (this.abandoned) {
+      return;
+    }
     // All callbacks returned NotConsumed for the current event.
     // Schedule a deferred check. We chain onto the promiseQueue so that any
     // pending async work (e.g., deserialization/decryption that triggers
