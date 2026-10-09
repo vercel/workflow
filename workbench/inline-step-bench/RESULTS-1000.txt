@@ -1,0 +1,284 @@
+inline-step-bench — step-to-step overhead for eagerly inlined steps
+node v22.22.2 · Intel(R) Xeon(R) Processor @ 2.90GHz × 16
+workflow SDK 5.0.0-beta.38 · repo HEAD 8bda7ce
+
+══════════════════════════════════════════════════════════════════════════════
+▶ turbo-on: default config (turbo mode ON — the shipped default)
+  1000 sequential null steps · world-local
+══════════════════════════════════════════════════════════════════════════════
+
+  flow-handler invocations for this run : 1  ✓ entire chain ran eagerly in ONE invocation
+  events in the log                     : 3003 (3.00 per step)
+    {"run_created":1,"run_started":1,"step_started":1000,"step_created":1000,"step_completed":1000,"run_completed":1}
+  step bodies executed                  : 1000 (each exactly once)
+  first-step-start → last-step-end      : 44437.27 ms
+  Σ step body time            : 0.96 ms  (0.00% of the span)
+  Σ step-to-step overhead               : 44436.31 ms  (100.00% of the span)
+  client-observed run wall time         : 44672.65 ms (includes 100 ms status polling)
+
+  step-to-step overhead by step index (ms)
+        steps      n      mean       p50       p90       min       max
+  ───────────  ─────  ────────  ────────  ────────  ────────  ────────
+          1–1      1     14.00     14.00     14.00     14.00     14.00
+         2–10      9      8.32      8.06      9.09      7.51     10.53
+        11–50     40      9.99      9.86     11.56      8.38     12.16
+       51–100     50     12.90     12.72     14.06     10.82     22.66
+      101–200    100     19.05     18.99     23.43     13.24     28.25
+      201–300    100     25.71     25.37     28.87     20.45     45.16
+      301–400    100     33.36     32.26     37.36     26.46     52.48
+      401–500    100     41.11     40.03     45.15     34.16     68.53
+      501–600    100     47.96     47.92     51.68     42.06     78.91
+      601–700    100     55.10     54.08     58.13     49.00     81.27
+      701–800    100     61.56     61.55     65.83     54.46     71.26
+      801–900    100     69.89     69.08     75.81     63.32    100.11
+      901–999     99     80.08     77.68     89.15     72.51    140.93
+
+  mean STSO, steps 1–10        : 8.89 ms
+  mean STSO, last 10 steps     : 87.78 ms
+  ratio (last 10 / first 10)   : 9.88×
+  OLS fit STSO(i) ≈ 7.309 ms + 0.074 ms × i
+     → fixed per-step cost ≈ 7.309 ms, marginal cost of each additional
+       already-completed step in the log ≈ 0.074 ms per replay
+
+══════════════════════════════════════════════════════════════════════════════
+▶ turbo-off: WORKFLOW_TURBO=0 (await step_started before running each body)
+  1000 sequential null steps · world-local
+══════════════════════════════════════════════════════════════════════════════
+
+  flow-handler invocations for this run : 1  ✓ entire chain ran eagerly in ONE invocation
+  events in the log                     : 3003 (3.00 per step)
+    {"run_created":1,"run_started":1,"step_started":1000,"step_created":1000,"step_completed":1000,"run_completed":1}
+  step bodies executed                  : 1000 (each exactly once)
+  first-step-start → last-step-end      : 43768.78 ms
+  Σ step body time            : 1.38 ms  (0.00% of the span)
+  Σ step-to-step overhead               : 43767.40 ms  (100.00% of the span)
+  client-observed run wall time         : 44006.32 ms (includes 100 ms status polling)
+
+  step-to-step overhead by step index (ms)
+        steps      n      mean       p50       p90       min       max
+  ───────────  ─────  ────────  ────────  ────────  ────────  ────────
+          1–1      1      8.90      8.90      8.90      8.90      8.90
+         2–10      9      7.79      7.88      8.03      7.41      8.05
+        11–50     40      9.91      9.62     11.73      7.58     19.92
+       51–100     50     12.32     12.14     13.58     10.95     15.50
+      101–200    100     17.27     17.41     20.45     12.79     22.18
+      201–300    100     24.90     25.49     28.37     20.05     37.24
+      301–400    100     31.64     31.12     34.79     26.18     57.11
+      401–500    100     38.83     38.97     41.68     33.25     66.30
+      501–600    100     45.46     43.80     50.76     39.14     71.32
+      601–700    100     55.98     55.54     62.79     47.45     80.20
+      701–800    100     63.45     62.50     67.84     57.09    105.64
+      801–900    100     70.18     69.21     73.93     64.84     89.49
+      901–999     99     79.85     78.24     88.28     69.38    108.56
+
+  mean STSO, steps 1–10        : 7.90 ms
+  mean STSO, last 10 steps     : 79.48 ms
+  ratio (last 10 / first 10)   : 10.06×
+  OLS fit STSO(i) ≈ 5.551 ms + 0.077 ms × i
+     → fixed per-step cost ≈ 5.551 ms, marginal cost of each additional
+       already-completed step in the log ≈ 0.077 ms per replay
+
+══════════════════════════════════════════════════════════════════════════════
+▶ void-steps: void steps, timings reconstructed from the event log (control)
+  1000 sequential null steps · world-local
+══════════════════════════════════════════════════════════════════════════════
+
+  flow-handler invocations for this run : 1  ✓ entire chain ran eagerly in ONE invocation
+  events in the log                     : 3003 (3.00 per step)
+    {"run_created":1,"run_started":1,"step_started":1000,"step_created":1000,"step_completed":1000,"run_completed":1}
+  step bodies executed                  : 1000 (each exactly once)
+  first-step-start → last-step-end      : 21230.00 ms
+  Σ step_started→step_completed: 2419.00 ms  (11.39% of the span)  ← event-log timestamps, so this is body + the step_started write, not body alone
+  Σ step-to-step overhead               : 18811.00 ms  (88.61% of the span)
+  client-observed run wall time         : 21305.94 ms (includes 100 ms status polling)
+
+  step-to-step overhead by step index (ms)
+        steps      n      mean       p50       p90       min       max
+  ───────────  ─────  ────────  ────────  ────────  ────────  ────────
+          1–1      1      6.00      6.00      6.00      6.00      6.00
+         2–10      9      5.44      5.00      6.00      5.00      6.00
+        11–50     40      6.00      6.00      7.00      5.00      8.00
+       51–100     50      6.78      7.00      7.10      6.00      9.00
+      101–200    100      9.12      9.00     10.10      6.00     31.00
+      201–300    100     11.46     11.00     13.00      9.00     16.00
+      301–400    100     14.10     14.00     15.00     12.00     18.00
+      401–500    100     17.26     17.00     19.00     14.00     26.00
+      501–600    100     19.78     19.50     22.00     17.00     24.00
+      601–700    100     22.65     23.00     24.00     19.00     33.00
+      701–800    100     26.65     26.00     29.00     23.00     37.00
+      801–900    100     29.12     28.00     31.00     26.00     53.00
+      901–999     99     31.95     31.00     34.00     28.00     58.00
+
+  mean STSO, steps 1–10        : 5.50 ms
+  mean STSO, last 10 steps     : 33.80 ms
+  ratio (last 10 / first 10)   : 6.15×
+  OLS fit STSO(i) ≈ 4.412 ms + 0.029 ms × i
+     → fixed per-step cost ≈ 4.412 ms, marginal cost of each additional
+       already-completed step in the log ≈ 0.029 ms per replay
+
+══════════════════════════════════════════════════════════════════════════════
+▶ replay-profile: runtime debug log: replayMs + eventCount per loop iteration
+  1000 sequential null steps · world-local
+══════════════════════════════════════════════════════════════════════════════
+
+  flow-handler invocations for this run : 1  ✓ entire chain ran eagerly in ONE invocation
+  events in the log                     : 3003 (3.00 per step)
+    {"run_created":1,"run_started":1,"step_started":1000,"step_created":1000,"step_completed":1000,"run_completed":1}
+  step bodies executed                  : 1000 (each exactly once)
+  first-step-start → last-step-end      : 45031.89 ms
+  Σ step body time            : 1.00 ms  (0.00% of the span)
+  Σ step-to-step overhead               : 45030.88 ms  (100.00% of the span)
+  client-observed run wall time         : 45279.28 ms (includes 100 ms status polling)
+
+  step-to-step overhead by step index (ms)
+        steps      n      mean       p50       p90       min       max
+  ───────────  ─────  ────────  ────────  ────────  ────────  ────────
+          1–1      1      8.90      8.90      8.90      8.90      8.90
+         2–10      9      7.36      7.38      7.48      6.96      7.61
+        11–50     40     10.30      9.92     12.02      7.61     15.90
+       51–100     50     12.75     12.70     13.98     11.09     14.88
+      101–200    100     17.56     18.00     20.44     12.60     22.15
+      201–300    100     25.30     25.41     28.79     20.19     35.01
+      301–400    100     34.46     33.29     38.26     28.68     64.48
+      401–500    100     39.57     39.22     43.01     35.49     46.04
+      501–600    100     47.86     47.30     53.03     41.40     71.95
+      601–700    100     56.96     55.71     61.25     51.11     80.24
+      701–800    100     65.03     64.34     70.82     57.81    107.52
+      801–900    100     71.98     71.06     76.95     64.31     92.83
+      901–999     99     81.14     81.05     86.39     70.33    121.34
+
+  mean STSO, steps 1–10        : 7.52 ms
+  mean STSO, last 10 steps     : 85.77 ms
+  ratio (last 10 / first 10)   : 11.41×
+  OLS fit STSO(i) ≈ 6.121 ms + 0.078 ms × i
+     → fixed per-step cost ≈ 6.121 ms, marginal cost of each additional
+       already-completed step in the log ≈ 0.078 ms per replay
+
+  runtime replay log: 1001 in-process loop iterations  ✓ 1000 step-scheduling replays + 1 final replay that ran the workflow to completion
+    → the workflow function was re-executed from the top 1001 times;
+      each step body executed exactly once
+    iterations   events@end   mean replayMs   max replayMs
+  ────────────  ───────────  ──────────────  ─────────────
+         1–100          299            6.15           9.00
+       101–200          599           11.62          16.00
+       201–300          899           18.19          24.00
+       301–400         1199           25.68          50.00
+       401–500         1499           30.74          36.00
+       501–600         1799           37.86          61.00
+       601–700         2099           45.71          69.00
+       701–800         2399           51.91          84.00
+       801–900         2699           58.04          73.00
+      901–1000         2999           65.95         101.00
+     1001–1001         3002          120.00         120.00
+  OLS fit replayMs ≈ 1.746 + 0.022 × eventCount
+  Σ replayMs = 35305.00 ms across all iterations
+  (event log grows by 3 events per step, so 0.022 ms/event ≈ 0.067 ms per prior step)
+
+  where the gap goes (ms): replay (fresh VM + re-run the workflow
+  function over the whole event log) vs everything else (world writes,
+  incremental events.list, suspension bookkeeping)
+        steps       gap    replay     other   replay%
+  ───────────  ────────  ────────  ────────  ────────
+          1–1      8.90      2.00      6.90     22.48
+         2–10      7.36      3.11      4.25     42.25
+        11–50     10.30      5.25      5.05     50.95
+       51–100     12.75      7.52      5.23     58.99
+      101–200     17.56     11.68      5.88     66.50
+      201–300     25.30     18.26      7.04     72.17
+      301–400     34.46     25.76      8.70     74.76
+      401–500     39.57     30.79      8.78     77.80
+      501–600     47.86     37.94      9.92     79.28
+      601–700     56.96     45.77     11.19     80.35
+      701–800     65.03     51.95     13.08     79.88
+      801–900     71.98     58.11     13.87     80.73
+      901–999     81.14     66.02     15.12     81.36
+
+══════════════════════════════════════════════════════════════════════════════
+▶ replay-profile-void: same, but for void steps (no per-step payload to re-deserialize)
+  1000 sequential null steps · world-local
+══════════════════════════════════════════════════════════════════════════════
+
+  flow-handler invocations for this run : 1  ✓ entire chain ran eagerly in ONE invocation
+  events in the log                     : 3003 (3.00 per step)
+    {"run_created":1,"run_started":1,"step_started":1000,"step_created":1000,"step_completed":1000,"run_completed":1}
+  step bodies executed                  : 1000 (each exactly once)
+  first-step-start → last-step-end      : 22597.00 ms
+  Σ step_started→step_completed: 2214.00 ms  (9.80% of the span)  ← event-log timestamps, so this is body + the step_started write, not body alone
+  Σ step-to-step overhead               : 20383.00 ms  (90.20% of the span)
+  client-observed run wall time         : 22657.90 ms (includes 100 ms status polling)
+
+  step-to-step overhead by step index (ms)
+        steps      n      mean       p50       p90       min       max
+  ───────────  ─────  ────────  ────────  ────────  ────────  ────────
+          1–1      1      5.00      5.00      5.00      5.00      5.00
+         2–10      9      5.33      5.00      6.00      4.00      6.00
+        11–50     40      6.63      6.00      8.00      5.00     11.00
+       51–100     50      7.34      7.00      8.00      6.00     17.00
+      101–200    100      9.22      9.00     11.10      7.00     18.00
+      201–300    100     12.10     12.00     14.00     10.00     19.00
+      301–400    100     15.33     15.00     17.00     13.00     22.00
+      401–500    100     18.99     19.00     21.00     15.00     30.00
+      501–600    100     21.69     22.00     23.10     19.00     25.00
+      601–700    100     24.89     25.00     27.00     23.00     29.00
+      701–800    100     28.92     29.00     31.00     25.00     34.00
+      801–900    100     31.02     31.00     33.00     28.00     35.00
+      901–999     99     35.17     35.00     38.00     31.00     42.00
+
+  mean STSO, steps 1–10        : 5.30 ms
+  mean STSO, last 10 steps     : 36.50 ms
+  ratio (last 10 / first 10)   : 6.89×
+  OLS fit STSO(i) ≈ 4.561 ms + 0.032 ms × i
+     → fixed per-step cost ≈ 4.561 ms, marginal cost of each additional
+       already-completed step in the log ≈ 0.032 ms per replay
+
+  runtime replay log: 1001 in-process loop iterations  ✓ 1000 step-scheduling replays + 1 final replay that ran the workflow to completion
+    → the workflow function was re-executed from the top 1001 times;
+      each step body executed exactly once
+    iterations   events@end   mean replayMs   max replayMs
+  ────────────  ───────────  ──────────────  ─────────────
+         1–100          299            4.16          14.00
+       101–200          599            5.79          15.00
+       201–300          899            7.69          10.00
+       301–400         1199           10.12          13.00
+       401–500         1499           12.52          22.00
+       501–600         1799           14.59          18.00
+       601–700         2099           17.21          19.00
+       701–800         2399           19.47          23.00
+       801–900         2699           21.40          26.00
+      901–1000         2999           24.21          30.00
+     1001–1001         3002           22.00          22.00
+  OLS fit replayMs ≈ 2.465 + 0.007 × eventCount
+  Σ replayMs = 13738.00 ms across all iterations
+  (event log grows by 3 events per step, so 0.007 ms/event ≈ 0.022 ms per prior step)
+
+  where the gap goes (ms): replay (fresh VM + re-run the workflow
+  function over the whole event log) vs everything else (world writes,
+  incremental events.list, suspension bookkeeping)
+        steps       gap    replay     other   replay%
+  ───────────  ────────  ────────  ────────  ────────
+          1–1      5.00      2.00      3.00     40.00
+         2–10      5.33      2.78      2.56     52.08
+        11–50      6.63      3.95      2.67     59.62
+       51–100      7.34      4.68      2.66     63.76
+      101–200      9.22      5.82      3.40     63.12
+      201–300     12.10      7.69      4.41     63.55
+      301–400     15.33     10.16      5.17     66.28
+      401–500     18.99     12.55      6.44     66.09
+      501–600     21.69     14.61      7.08     67.36
+      601–700     24.89     17.23      7.66     69.22
+      701–800     28.92     19.47      9.45     67.32
+      801–900     31.02     21.43      9.59     69.08
+      901–999     35.17     24.23     10.94     68.90
+
+══════════════════════════════════════════════════════════════════════════════
+summary
+══════════════════════════════════════════════════════════════════════════════
+              scenario   invocations   STSO 1–10   STSO last10    growth   fixed ms    ms/step    total ms
+  ────────────────────  ────────────  ──────────  ────────────  ────────  ─────────  ─────────  ──────────
+              turbo-on             1        8.89         87.78     9.88x      7.309      0.074    44437.27
+             turbo-off             1        7.90         79.48    10.06x      5.551      0.077    43768.78
+            void-steps             1        5.50         33.80     6.15x      4.412      0.029    21230.00
+        replay-profile             1        7.52         85.77    11.41x      6.121      0.078    45031.89
+   replay-profile-void             1        5.30         36.50     6.89x      4.561      0.032    22597.00
+
+raw results → /home/vercel-sandbox/workflow/workbench/inline-step-bench/results/bench-1000-2026-07-30T21-27-08-189Z.json
