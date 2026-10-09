@@ -459,9 +459,11 @@ export function errorForResponse(
     return new RunExpiredError(message);
   }
   if (status === 412 && code === IN_BAND_SUPERSEDED_CODE) {
-    // Distinct from the generic 412 precondition below: another orchestrator
-    // invocation of the run wrote in-band since this one loaded the log, and
-    // the caller must stop writing rather than reload and retry the write.
+    // The in-band writer fence refused an orchestrator write: another
+    // orchestrator invocation of the run wrote in-band since this one loaded
+    // the log. Distinct from the generic 412 precondition below and from
+    // every 409: the caller stops writing and redelivers, it never reads this
+    // as "already applied".
     const counters =
       details && typeof details === 'object'
         ? (details as { seq?: unknown; seqInBand?: unknown })

@@ -102,9 +102,10 @@ export async function publishHookWakeWithRetry(
  * a publish that still fails is logged rather than failing the claimer —
  * nothing of the claimer's is wrong, every later replay of the claimer inside
  * the republish window tries again ({@link forcedCreationsOwingWake}), and
- * the victim reads the row on its next invocation for any reason. The
- * idempotency key is the claimer's hook id, so those republishes collapse
- * into one wake.
+ * the victim reads the row on its next invocation for any reason. Like every
+ * orchestrator wake it carries no idempotency key, so a republish costs the
+ * victim one more delivery, which exits without a replay when its log holds
+ * nothing new.
  *
  * Skipped when the victim is the claimer itself (a run taking over its own
  * earlier hook is already running) and when the World recorded no
@@ -136,7 +137,6 @@ export async function publishForceClaimVictimWake(
               deploymentId: from.deploymentId,
             }),
             specVersion: from.runSpecVersion ?? SPEC_VERSION_LEGACY,
-            idempotencyKey: `hook-force-claim-${hook.hookId}`,
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)
@@ -164,14 +164,11 @@ export async function publishForceClaimVictimWake(
  * the creation, because that redelivery is the replay that must repay a wake
  * the invocation died before publishing. A queue message is retained for 24
  * hours from its send and the creation is written after the send, so any such
- * redelivery arrives within 24 hours of the creation. The same 24 hours is the
- * Vercel queue's idempotency window (`min(retention, 24h)`), so every
- * republish inside it collapses, under `hook-force-claim-<hookId>`, into the
- * one wake that was (or now is) delivered. Past it a republish would be a
- * genuinely new message, which is what the bound saves. world-postgres
- * remembers a completed key in-process to the same effect; world-local
- * dedupes a key only while its message is in flight, so there a republish can
- * deliver the victim one more replay, which reads nothing new.
+ * redelivery arrives within 24 hours of the creation. The wake carries no
+ * idempotency key, so each republish inside the window is one more delivery
+ * of the victim, which exits without a replay when its log holds nothing new;
+ * the bound keeps a long-lived claimer from paying that on every replay
+ * forever.
  */
 export const FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -185,9 +182,9 @@ export const FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS = 24 * 60 * 60 * 1000;
  * If the invocation died between the two, the creation is in the log and the
  * victim was never told; the row itself is the durable record of that debt,
  * and nothing records that the wake went out. So the replay does not try to
- * infer it: it republishes for every recent forced creation, and the hook's
- * idempotency key collapses a wake that did go out (a duplicate that slips
- * past a World's dedupe is one harmless replay of the victim).
+ * infer it: it republishes for every recent forced creation, and a wake that
+ * did go out costs the victim one more delivery, which exits without a replay
+ * when its log holds nothing new.
  *
  * The rule reads nothing written after the creation, which is what makes it
  * sound. Any row can land between the creation and the wake: a step, wait,

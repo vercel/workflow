@@ -106,7 +106,7 @@ const { openWsChannel, resetWsEventsTransportsForTest } = await import(
 );
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
-const REST_URL = `${ORIGIN}/api/v4/runs/wrun_1/events/step_completed`;
+const REST_URL = `${ORIGIN}/api/v5/runs/wrun_1/events/step_completed`;
 const WS_URL = `${ORIGIN.replace(/^http/, 'ws')}/api/websockets/v1/runs/wrun_1`;
 const CREATED_AT = '2026-06-10T00:00:00.000Z';
 
@@ -390,7 +390,7 @@ describe('per-write client span', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -595,7 +595,7 @@ describe('transport parity', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
+        path: '/api/v5/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
         method: 'GET',
       })
       .reply(
@@ -640,7 +640,7 @@ describe('transport parity', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {

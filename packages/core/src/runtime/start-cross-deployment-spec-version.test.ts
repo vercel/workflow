@@ -101,6 +101,7 @@ describe('cross-deployment start() spec version', () => {
           });
     setWorld({
       specVersion: callerSpecVersion,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn().mockResolvedValue('dpl_caller'),
       events: { create: mockEventsCreate },
       queue: mockQueue,
@@ -227,6 +228,7 @@ describe('cross-deployment start() spec version', () => {
   it('with no probe channel, falls back to the lowest served version', async () => {
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn().mockResolvedValue('dpl_caller'),
       events: { create: mockEventsCreate },
       queue: mockQueue,

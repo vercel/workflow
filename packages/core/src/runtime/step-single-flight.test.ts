@@ -1,7 +1,10 @@
 import { withResolvers } from '@workflow/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StepExecutionResult } from './step-executor.js';
-import { runStepSingleFlight } from './step-single-flight.js';
+import {
+  runStepSingleFlight,
+  STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,
+} from './step-single-flight.js';
 
 const RUN = 'wrun_00000000000000000000000000';
 const STEP = 'step_00000000000000000000000000';
@@ -29,9 +32,12 @@ describe('runStepSingleFlight', () => {
     const winner = runStepSingleFlight(RUN, STEP, execute, logLevel);
     const contender = runStepSingleFlight(RUN, STEP, execute, logLevel);
 
-    resolve({ type: 'completed' });
-    await expect(winner).resolves.toEqual({ type: 'completed' });
-    await expect(contender).resolves.toEqual({ type: 'skipped' });
+    resolve({ type: 'completed', result: {} } as StepExecutionResult);
+    await expect(winner).resolves.toEqual({ type: 'completed', result: {} });
+    await expect(contender).resolves.toEqual({
+      type: 'throttled',
+      timeoutSeconds: STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,
+    });
     expect(execute).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledTimes(expected === 'warn' ? 1 : 0);
     expect(debugLog).toHaveBeenCalledTimes(expected === 'debug' ? 1 : 0);
@@ -50,9 +56,9 @@ describe('runStepSingleFlight', () => {
     let calls = 0;
     const result = await runStepSingleFlight(RUN, STEP, async () => {
       calls++;
-      return { type: 'completed' } satisfies StepExecutionResult;
+      return { type: 'completed', result: {} } as StepExecutionResult;
     });
-    expect(result).toEqual({ type: 'completed' });
+    expect(result).toEqual({ type: 'completed', result: {} });
     expect(calls).toBe(1);
   });
 
@@ -84,9 +90,12 @@ describe('runStepSingleFlight', () => {
     expect(loserSettled).toBe(false);
     expect(loserCalls).toBe(0);
 
-    resolve({ type: 'completed' });
-    expect(await winner).toEqual({ type: 'completed' });
-    expect(await loser).toEqual({ type: 'skipped' });
+    resolve({ type: 'completed', result: {} } as StepExecutionResult);
+    expect(await winner).toEqual({ type: 'completed', result: {} });
+    expect(await loser).toEqual({
+      type: 'throttled',
+      timeoutSeconds: STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,
+    });
     expect(loserCalls).toBe(0);
   });
 
@@ -109,7 +118,10 @@ describe('runStepSingleFlight', () => {
     await expect(winner).rejects.toThrow('transient world error');
     // The winner's own queue message redelivers and owns the retry; the
     // loser just acks without executing.
-    expect(await loser).toEqual({ type: 'skipped' });
+    expect(await loser).toEqual({
+      type: 'throttled',
+      timeoutSeconds: STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,
+    });
   });
 
   it('releases the slot after settlement so later executions run again', async () => {
@@ -117,7 +129,7 @@ describe('runStepSingleFlight', () => {
     const run = () =>
       runStepSingleFlight(RUN, STEP, async () => {
         calls++;
-        return { type: 'completed' } satisfies StepExecutionResult;
+        return { type: 'completed', result: {} } as StepExecutionResult;
       });
     await run();
     await run();
@@ -134,13 +146,13 @@ describe('runStepSingleFlight', () => {
       'step_00000000000000000000000001',
       async () => {
         otherCalls++;
-        return { type: 'completed' };
+        return { type: 'completed', result: {} } as StepExecutionResult;
       }
     );
-    expect(other).toEqual({ type: 'completed' });
+    expect(other).toEqual({ type: 'completed', result: {} });
     expect(otherCalls).toBe(1);
 
-    resolve({ type: 'completed' });
+    resolve({ type: 'completed', result: {} } as StepExecutionResult);
     await first;
   });
 });

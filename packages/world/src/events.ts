@@ -6,10 +6,11 @@ import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type {
   EventsResolveData,
+  PaginatedResponse,
   PaginationOptions,
   ResolveData,
 } from './shared.js';
-import type { StartedStep, Step } from './steps.js';
+import type { Step } from './steps.js';
 import type { Wait } from './waits.js';
 
 export * from './event-metadata.js';
@@ -259,6 +260,10 @@ const stepLatencyTelemetryFields = {
   optimizations: z.array(z.string()).optional(),
 };
 
+/** Why a step attempt started; see `step_started.eventData.startReason`. */
+export const StepStartReasonSchema = z.enum(['first', 'retry', 'redelivery']);
+export type StepStartReason = z.infer<typeof StepStartReasonSchema>;
+
 const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
@@ -281,6 +286,8 @@ const StepFailedEventSchema = BaseEventSchema.extend({
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
+    /** The attempt that failed (spec >= 9). */
+    attempt: z.number().int().positive().optional(),
     ...stepLatencyTelemetryFields,
   }),
 });
@@ -299,6 +306,8 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
     retryAfter: z.coerce.date().optional(),
+    /** The attempt that failed (spec >= 9). */
+    attempt: z.number().int().positive().optional(),
   }),
 });
 
@@ -322,6 +331,15 @@ const StepStartedEventSchema = BaseEventSchema.extend({
     .object({
       stepName: z.string().optional(),
       attempt: z.number().optional(),
+      /**
+       * Why this attempt started (spec >= 9): `first` for the step's first
+       * attempt, `retry` for an attempt after a `step_retrying`, and
+       * `redelivery` for an attempt started because an earlier one ended
+       * without an outcome (its invocation died or stalled past its queue
+       * lease). The share of `redelivery` starts is the platform-caused
+       * re-execution rate.
+       */
+      startReason: StepStartReasonSchema.optional(),
       // Carried on the lazy-start path (where `input` is present) so the
       // backend can build the payload ref key without re-reading the run.
       workflowName: z.string().optional(),
@@ -356,6 +374,21 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
     stepName: z.string(),
     workflowName: z.string().optional(),
     input: SerializedDataSchema,
+    /**
+     * The step's execution mode, fixed at creation (spec >= 9). `true`: the
+     * orchestrator invocation that wrote this event may run the body in its
+     * own process, and a retry of that invocation may run it again. `false`
+     * (or absent): the step was handed to the queue, and only its queue
+     * message's invocation ever runs the body.
+     */
+    inline: z.boolean().optional(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event
+     * (spec >= 9). A background step is enqueued again only by a
+     * redelivery of this same message, and only while the step has no
+     * `step_started`.
+     */
+    creatorMessageId: z.string().optional(),
   }),
 });
 
@@ -484,6 +517,12 @@ const WaitCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     resumeAt: z.coerce.date(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event
+     * (spec >= 9). Only that delivery, or a redelivery of the same message,
+     * schedules the wait's timer.
+     */
+    creatorMessageId: z.string().optional(),
   }),
 });
 
@@ -792,53 +831,36 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   /**
-   * Whether the run's orchestrator is making this write, for the in-band
-   * writer fence. Optional World support: a World that implements the fence
-   * counts the positions it allocates to in-band writes, and accepts an
-   * in-band write only when {@link expectedSeqInBand} equals that count,
-   * refusing it otherwise with `InBandSupersededError` (HTTP 412,
-   * `in-band-superseded`) before anything is written or allocated.
-   * Out-of-band writes (`false` or absent) are never refused by the fence and
-   * never move the in-band count.
+   * Whether the run's orchestrator is making this write (spec >= 9).
    *
-   * Only the orchestrator's own writes may set it. Writes made from outside
-   * the run's orchestrator (cancellation, hook resumption, step execution,
-   * dispatch re-ensures) stay out-of-band, since they can come from a newer
-   * SDK than the run's own and must never be refused on its behalf. A
-   * fenced `step_created` must not be published to the step queue in parallel
-   * with its write (resilient step dispatch): the dispatch's out-of-band
-   * re-ensure would materialize a step the fence refused. A World may revoke
-   * such a dispatch on refusal, but only as a best-effort backstop.
+   * In-band writes are everything the orchestrator invocation writes:
+   * `run_started`, `run_completed`, `run_failed`, `step_created`,
+   * `wait_created`, `wait_completed`, `hook_created`, `hook_disposed`, an
+   * `attr_set` from the workflow body, a `hook_received` it writes for a
+   * resume carried on its own queue message, and every event of a step it
+   * runs inline. Out-of-band writes are everything else: events from a
+   * background step's invocation, `hook_received` from `resumeHook()` and
+   * webhooks, `run_cancelled` from `cancel()`, and `attr_set` from
+   * `setAttributes()` outside the workflow body. Classification is by writer,
+   * not by event type.
    *
-   * A World may refuse an in-band write on a run whose stamped spec version
-   * predates the sealed log (`SPEC_VERSION_SUPPORTS_SEALED_LOG`), rather than
-   * accept it unfenced. A caller must therefore decide from the run's stamped
-   * spec version, never from its own SDK version: the same SDK still executes
-   * runs stamped below it (the `WORKFLOW_SEALED_LOG` opt-out, and
-   * cross-deployment starts, which are stamped with the lower of the caller's
-   * and the target's version).
-   *
-   * The runtime does not set it yet.
+   * Every World implements the in-band fence (`WorldCapabilities.inBandFence`):
+   * it counts the positions it allocates to in-band writes, and accepts an
+   * in-band write only when {@link expectedSeqInBand} equals that count.
    */
   inBand?: boolean;
   /**
-   * The writer's count of in-band positions, required with `inBand: true`
-   * and only allowed with it. `run_created` counts as the run's first in-band
-   * position, so the lowest valid value is 1.
+   * The orchestrator's count of in-band positions, required with
+   * `inBand: true` (a World answers an in-band write without it with a 400).
+   * The runtime starts
+   * it from {@link EventListResponse.snapshot}`.seqInBand` of the first page
+   * of the delivery's full log load, and advances it by the number of
+   * positions each accepted in-band write allocated (1 for a single create,
+   * the event count for a batch).
    *
-   * The count is the World's, not the client's: a writer starts from a count
-   * the World reports (a snapshot read with the log it loaded) and advances
-   * it by the in-band positions the World reports a write allocated. It must
-   * never be derived by counting events or writes, because the two diverge:
-   *
-   * - a single create can allocate more than one position, when one of its
-   *   own positions is sealed and it allocates again;
-   * - a write the World rejects after allocating (for example a 409 on a
-   *   duplicate entity) may still have advanced the count;
-   * - a World may reset the count when it loses its counter, and only a
-   *   World-provided snapshot reflects that.
-   *
-   * A writer that holds no World-provided count must not send the fence.
+   * The World refuses a write whose value differs from its count with
+   * `InBandSupersededError`, and writes and allocates nothing for it, so a
+   * refusal never leaves a hole in the log.
    */
   expectedSeqInBand?: number;
   /**
@@ -940,6 +962,15 @@ export interface CreateEventParams {
    * folded back into the loaded log: a write issued after a sibling's
    * bump-and-report already holds the slots that report named, and asks for a
    * slot above them.
+   *
+   * For an in-band write on a spec >= 9 run the report is authoritative: the
+   * success response carries every event in positions `eventCount + 1` up to
+   * (not including) the write's own first position, in position order, each
+   * committed or sealed. When the World cannot produce all of it within its
+   * request budget it still answers success, with
+   * {@link EventResult.reportIncomplete} set. The orchestrator consumes an
+   * event it wrote that resolves a promise only after merging this report,
+   * so the VM consumes events in log order. Out-of-band writes get no report.
    */
   eventCount?: number;
   /**
@@ -1096,6 +1127,22 @@ export type EventResult<T extends EventType = EventType> = {
   stepCreated?: true;
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
+  /**
+   * Set on an in-band write's success response (spec >= 9) when the World
+   * could not produce the complete skipped-slot report in `events` within its
+   * request budget. The write committed; the writer must reload the log
+   * before it consumes anything the write resolves, since the report may be
+   * missing events that sit below its own.
+   */
+  reportIncomplete?: boolean;
+  /**
+   * How many positions this write allocated (spec >= 9):
+   * 1 for a create that appended its event, 0 for one that converged on an
+   * event the log already held (an idempotent replay). The orchestrator
+   * advances its in-band count by this number. Absent from a World that
+   * does not report it; the runtime then infers it.
+   */
+  allocated?: number;
 } & (
   | {
       /**
@@ -1141,9 +1188,7 @@ export type EventResult<T extends EventType = EventType> = {
     ? { run: WorkflowRun }
     : T extends 'run_started'
       ? { run: StartedWorkflowRun }
-      : T extends 'step_started'
-        ? { step: StartedStep }
-        : unknown);
+      : unknown);
 
 /**
  * One event of a batch write ({@link Storage.events.createBatch}), in request
@@ -1179,17 +1224,24 @@ export interface CreateEventBatchParams {
    */
   requestId?: string;
   /**
-   * The in-band fence for the whole batch, as {@link CreateEventParams.inBand}.
-   * Every event of a batch shares it.
+   * Whether the run's orchestrator makes this batch (spec >= 9), as
+   * {@link CreateEventParams.inBand}. Every event of a batch shares it.
    */
   inBand?: boolean;
   /**
-   * The writer's in-band count for the whole block, as
-   * {@link CreateEventParams.expectedSeqInBand}. The block's positions are
-   * allocated in one fenced allocation, and the count the World reports for
-   * it covers the whole block even when some of its events are rejected.
+   * The orchestrator's in-band count for the whole block, as
+   * {@link CreateEventParams.expectedSeqInBand}. The World allocates the
+   * block's positions in one conditional allocation.
    */
   expectedSeqInBand?: number;
+  /**
+   * The position the batch was decided from, as
+   * {@link CreateEventParams.eventCount}; required with `inBand: true`. The
+   * response then carries the skipped-slot report for
+   * the block at the top level (`events` / `reportIncomplete` on
+   * {@link EventBatchResult}).
+   */
+  eventCount?: number;
 }
 
 /**
@@ -1257,10 +1309,72 @@ export type BatchEventItemResult =
 export interface EventBatchResult {
   /** One entry per submitted event, in request order. */
   results: BatchEventItemResult[];
+  /**
+   * The skipped-slot report of an in-band batch (spec >= 9): the events in
+   * positions `eventCount + 1` up to the block's first position.
+   */
+  events?: Event[];
+  /** As {@link EventResult.reportIncomplete}, for an in-band batch. */
+  reportIncomplete?: boolean;
+  /**
+   * How many positions the batch allocated: the admitted items, one block.
+   * As {@link EventResult.allocated}; absent when the World does not report
+   * it.
+   */
+  allocated?: number;
 }
 
 export interface GetEventParams {
   resolveData?: ResolveData;
+}
+
+/**
+ * The sequencer state a World read, strongly consistently, before it listed
+ * a run's log (spec >= 9). Positions are slots.
+ */
+export interface EventLogSnapshot {
+  /** Highest position allocated to any write when the list began. */
+  seq: number;
+  /** Number of positions allocated to in-band writes when the list began. */
+  seqInBand: number;
+}
+
+/**
+ * A run's in-band count right after its creation, before any other write:
+ * `run_created` counts as the run's first in-band position, so the run's
+ * first orchestrator write (`run_started`) expects this value. It is the same
+ * when `run_created` never landed and `run_started` creates the run (resilient
+ * start): the creation the World performs for it counts in its place.
+ *
+ * The runtime adopts it in place of a load snapshot when it knows the log
+ * holds nothing but the run's creation: a run with no events yet, and turbo
+ * mode's first delivery, which skips the initial load.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
+
+/**
+ * Result of {@link Storage.events.list}.
+ *
+ * `snapshot` is required on every page of a single-orchestrator run's log
+ * (spec >= 9; see `WorldCapabilities.inBandFence`). A full load (following `cursor` until `hasMore` is false) then
+ * covers every position up to `snapshot.seq` of its FIRST page, each one
+ * committed or sealed as a `noop`. The runtime takes its
+ * {@link CreateEventParams.expectedSeqInBand} from the first page's
+ * `snapshot.seqInBand` and never from counting events in the log: a count
+ * cannot tell which positions were in-band. The runtime refuses to write
+ * in-band from a full load whose first page has none.
+ *
+ * Optional in the type only because `list` also serves runs created before
+ * spec 9, which have no in-band count.
+ */
+export type EventListResponse = PaginatedResponse<Event> & {
+  snapshot?: EventLogSnapshot;
+};
+
+/** Options for {@link Storage.events.subscribe}. */
+export interface EventsSubscribeOptions {
+  /** Called once when the World stops delivering for a transport reason. */
+  onError?: (error: unknown) => void;
 }
 
 export interface ListEventsParams {

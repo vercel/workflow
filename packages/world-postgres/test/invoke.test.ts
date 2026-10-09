@@ -41,6 +41,7 @@ import {
 import { createInvocations } from '../src/invocations.js';
 import { MessageData } from '../src/message.js';
 import { createQueue } from '../src/queue.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 const code = `
 const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
@@ -100,6 +101,7 @@ describe.skipIf(process.platform === 'win32')(
         connectionString: container.getConnectionUri(),
         max: 20,
       });
+      tolerateTeardown(pool);
       await migrate(drizzle(pool), {
         migrationsFolder: fileURLToPath(
           new URL('../src/drizzle/migrations', import.meta.url)
@@ -469,11 +471,13 @@ describe.skipIf(process.platform === 'win32')(
       ]);
       expect(maximum.get(runId)).toBe(1);
       const events = await world.events.list({ runId });
-      const stepStart = events.data.find(
-        (event) => event.eventType === 'step_started'
+      // The step ran inline in the delivery that created it.
+      const stepCreated = events.data.find(
+        (event) => event.eventType === 'step_created'
       );
-      expect(stepStart?.eventData).toMatchObject({
-        ownerMessageId: expect.any(String),
+      expect(stepCreated?.eventData).toMatchObject({
+        inline: true,
+        creatorMessageId: expect.any(String),
       });
     });
 

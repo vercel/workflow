@@ -19,7 +19,10 @@ import {
   HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
+  ThrottleError,
   WorkflowNotRegisteredError,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -30,6 +33,7 @@ import {
   type EventResult,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
+  type SerializedData,
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
   SPEC_VERSION_CURRENT,
@@ -37,8 +41,9 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
-import { classifyRunError, isRetryableWorldError } from '../classify-error.js';
+import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
+import { getStepFunction } from '../private.js';
 import {
   deriveRunPayloadKeys,
   encrypt as encryptSerializedData,
@@ -54,15 +59,12 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
-import {
-  getInlineOwnershipLeaseSeconds,
-  getMaxInlineSteps,
-  isResilientStepDispatchEnabled,
-  MAX_RESILIENT_STEP_INPUT_BYTES,
-} from './constants.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { getMaxInlineSteps } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
+  maxEventSlot,
   queueMessage,
   REPLAY_RESOLVE_DATA,
   runDispatchContext,
@@ -76,6 +78,26 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
+import {
+  schedulesWaitTimer,
+  stepsToReenqueue,
+} from './orchestrator/creator-rules.js';
+import {
+  type InBandWriter,
+  OrchestratorSupersededError,
+} from './orchestrator/in-band-writer.js';
+import {
+  getOrchestratorLingerMs,
+  getOrchestratorPollIntervalMs,
+  LiveLogFeed,
+} from './orchestrator/live-feed.js';
+import {
+  analyzeLogSteps,
+  awaitsExternalWork,
+  type LogStepState,
+  MAX_STEP_MESSAGE_INPUT_BYTES,
+} from './orchestrator/log-state.js';
+import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
@@ -96,7 +118,12 @@ import {
   sealSnapshot,
 } from './quickjs-snapshot-codec.js';
 import { ReplayBudget } from './replay-budget.js';
-import { executeStep, type StepExecutionResult } from './step-executor.js';
+import {
+  type CallerStart,
+  DEFAULT_STEP_MAX_RETRIES,
+  executeStep,
+  type StepExecutionResult,
+} from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import {
@@ -187,6 +214,10 @@ async function queueStepMessage(params: {
    * dispatchPendingOps parallelizes with the step_created write.
    */
   stepInput?: Uint8Array;
+  /** The attempt the message starts with, when above 1. */
+  stepAttempt?: number;
+  /** Event id of the step's `step_created`, for reading its input back. */
+  stepCreatedEventId?: string;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
   const {
@@ -212,6 +243,12 @@ async function queueStepMessage(params: {
       traceCarrier,
       requestedAt: new Date(),
       ...(stepInput !== undefined ? { stepInput: { input: stepInput } } : {}),
+      ...(params.stepAttempt !== undefined && params.stepAttempt > 1
+        ? { stepAttempt: params.stepAttempt }
+        : {}),
+      ...(params.stepCreatedEventId
+        ? { stepCreatedEventId: params.stepCreatedEventId }
+        : {}),
       // Immutable run identity so the consumer can start the step without a
       // blocking runs.get — see RunDispatchContextSchema.
       runContext: runDispatchContext(workflowRun),
@@ -226,6 +263,9 @@ async function queueStepMessage(params: {
         purpose === 'dispatch'
           ? stepDispatchIdempotencyKey(step.correlationId, step.stepId)
           : `${step.correlationId}:${purpose}`,
+      retentionSeconds: stepMessageRetentionSeconds(
+        getStepFunction(step.stepId)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
+      ),
       ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
     }
   );
@@ -360,6 +400,17 @@ async function dispatchPendingOps(params: {
    */
   skipStepCreation?: Set<string>;
   /**
+   * Correlation ids of the waits and attribute writes whose event this
+   * invocation already committed. Neither has a row a World could refuse a
+   * second create with, and the VM may not have been fed the committed event
+   * yet (a write's own event is delivered off its response only for
+   * `wait_completed`; see `QuickJSLogView.absorb`), so it still reports the
+   * op as uncreated. Updated here with every create this dispatch commits.
+   */
+  writtenOpIds?: Set<string>;
+  /** Queue message id of this delivery, recorded on step and wait creates. */
+  creatorMessageId?: string;
+  /**
    * Step cids the caller intends to hand to the queue this turn (overflow
    * steps beyond the inline cap). Eligible ones are published here, in
    * parallel with their step_created write (resilient step dispatch), and
@@ -392,6 +443,12 @@ async function dispatchPendingOps(params: {
 }): Promise<{
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
+  /**
+   * A hook create committed a `hook_conflict` instead of a `hook_created`.
+   * The workflow consumes it on its next pass: the caller wakes the run if
+   * the delivery could end before that.
+   */
+  createdHookConflict: boolean;
   /** Step cids already published via resilient dispatch. See above. */
   queuedStepCids: Set<string>;
   /**
@@ -401,6 +458,10 @@ async function dispatchPendingOps(params: {
    * terminal event (the inline loop's feed, or the requeue signal).
    */
   failedSerializationStepCids: Set<string>;
+  /** Event ids of the `step_created` events this dispatch wrote. */
+  createdStepEventIds: Map<string, string>;
+  /** Serialized inputs of the steps this dispatch created. */
+  createdStepInputs: Map<string, Uint8Array>;
 }> {
   const {
     world,
@@ -408,12 +469,12 @@ async function dispatchPendingOps(params: {
     workflowRun,
     encryptionKey,
     pendingOperations,
-    namespace,
-    nextTraceCarrier,
     createEvent,
   } = params;
   const skipStepCreation = params.skipStepCreation;
-  const queueStepCids = params.queueStepCids;
+  const createdStepEventIds = new Map<string, string>();
+  const createdStepInputs = new Map<string, Uint8Array>();
+  const creatorMessageId = params.creatorMessageId;
   const wfdiag = params.wfdiag;
   // Step cids published via resilient dispatch below (create + queue in
   // parallel, message carrying `stepInput`). Reported to the caller so it
@@ -433,16 +494,12 @@ async function dispatchPendingOps(params: {
   // the consumer's re-ensure therefore cannot materialize a step the guard
   // rejected. If this engine ever adopts guarded suspension writes, the
   // capability gate from the node:vm handler must be added here too.
-  const resilientDispatchEligible =
-    queueStepCids !== undefined &&
-    queueStepCids.size > 0 &&
-    isResilientStepDispatchEnabled() &&
-    (workflowRun.specVersion ?? 0) >=
-      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
   // so replay can confirm creation and resolve the awaiter.
   let createdGetConflictHook = false;
+  // Set when a hook create committed a `hook_conflict` this invocation.
+  let createdHookConflict = false;
   // Set when a new attr_set event is written this invocation. The
   // workflow must be re-invoked to consume it (resolving the pending
   // setAttributes() promise), so the entrypoint requeues immediately,
@@ -529,20 +586,12 @@ async function dispatchPendingOps(params: {
           });
         }
 
-        // If storage detected a real token conflict with another
-        // workflow's hook, re-queue so the workflow handler can
-        // process the conflict event and fail gracefully.
+        // A token conflict with another run's hook committed a
+        // `hook_conflict`, which the workflow has to consume. The inline
+        // loop feeds it to the live VM; the caller wakes the run only if
+        // the delivery ends before that (see `createdHookConflict`).
         if (result.event?.eventType === 'hook_conflict') {
-          await queueMessage(
-            world,
-            getWorkflowQueueName(workflowRun.workflowName, namespace),
-            {
-              runId,
-              traceCarrier: await nextTraceCarrier(),
-              requestedAt: new Date(),
-            },
-            { idempotencyKey: `hook_conflict_${hook.correlationId}` }
-          );
+          createdHookConflict = true;
         }
       } catch (err) {
         // Already created by a concurrent invocation, so fall through
@@ -727,6 +776,12 @@ async function dispatchPendingOps(params: {
                 correlationId: step.correlationId,
                 eventData: {
                   stepName: step.stepId,
+                  workflowName: workflowRun.workflowName,
+                  // Inline, created by this delivery: if the step_failed
+                  // below never lands, the redelivery runs the step inline,
+                  // and the executor fails it from the placeholder input.
+                  inline: true,
+                  ...(creatorMessageId ? { creatorMessageId } : {}),
                   input: (await dehydrateStepArguments(
                     unserializableStepInputPlaceholder(),
                     runId,
@@ -751,6 +806,8 @@ async function dispatchPendingOps(params: {
                 correlationId: step.correlationId,
                 eventData: {
                   stepName: step.stepId,
+                  // Never started: this is the step's first and only attempt.
+                  attempt: 1,
                   error: await dehydrateStepError(
                     step.serializationError,
                     runId,
@@ -788,98 +845,28 @@ async function dispatchPendingOps(params: {
             encryptionKey
           );
 
-          // Resilient step dispatch: fire the step_created write and the
-          // step's queue publish in parallel: the message carries the
-          // same serialized input (`stepInput`) so the consumer can
-          // idempotently re-ensure the event if the direct write failed
-          // transiently. Mirrors the node:vm suspension handler and the
-          // resilient start / resilient hook resume patterns. Only for
-          // caller-designated overflow steps with inputs the queue
-          // message can safely carry (binary, under the VQS size cap).
-          if (
-            resilientDispatchEligible &&
-            queueStepCids?.has(step.correlationId) &&
-            encryptedInput instanceof Uint8Array &&
-            encryptedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
-          ) {
-            const [createResult, queueResult] = await Promise.allSettled([
-              createEvent({
-                eventType: 'step_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: step.correlationId,
-                eventData: {
-                  stepName: step.stepId,
-                  input: encryptedInput,
-                },
-              }),
-              queueStepMessage({
-                world,
-                runId,
-                workflowRun,
-                step,
-                namespace,
-                nextTraceCarrier,
-                purpose: 'dispatch',
-                stepInput: encryptedInput,
-                wfdiag,
-              }),
-            ]);
-            // Queue failure is always fatal for this dispatch pass:
-            // without the message the step would rely on the create
-            // alone, and if the create ALSO failed there would be no
-            // durable record at all. Propagating redelivers the
-            // orchestrator message, which re-creates the (idempotent)
-            // step_created and re-dispatches.
-            if (queueResult.status === 'rejected') {
-              throw queueResult.reason;
-            }
-            queuedStepCids.add(step.correlationId);
-            if (createResult.status === 'rejected') {
-              const err = createResult.reason;
-              if (EntityConflictError.is(err)) {
-                // Concurrent invocation wrote it first: the message is
-                // already out; its duplicate publish dedupes on the
-                // shared step-identity-scoped idempotency key.
-                return;
-              }
-              if (isRetryableWorldError(err)) {
-                // Resilient: the write failed transiently (429 / 5xx /
-                // transport) but the step message (carrying the same
-                // serialized input) was published, so the consumer
-                // idempotently re-ensures the step_created before
-                // executing.
-                runtimeLogger.warn(
-                  'Step creation event write failed, but the step was ' +
-                    'dispatched via the queue. The step_created event ' +
-                    'will be ensured by the queue consumer.',
-                  {
-                    workflowRunId: runId,
-                    correlationId: step.correlationId,
-                    stepName: step.stepId,
-                    error: err instanceof Error ? err.message : String(err),
-                  }
-                );
-                wfdiag('step_resilient_dispatch_recovered', {
-                  stepId: step.stepId,
-                  correlationId: step.correlationId,
-                });
-                return;
-              }
-              throw err;
-            }
-            return;
-          }
-
           try {
-            await createEvent({
+            const created = await createEvent({
               eventType: 'step_created',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: step.correlationId,
               eventData: {
                 stepName: step.stepId,
+                workflowName: workflowRun.workflowName,
                 input: encryptedInput,
+                inline: false,
+                ...(creatorMessageId ? { creatorMessageId } : {}),
               },
             });
+            if (created.event) {
+              createdStepEventIds.set(
+                step.correlationId,
+                created.event.eventId
+              );
+            }
+            if (encryptedInput instanceof Uint8Array) {
+              createdStepInputs.set(step.correlationId, encryptedInput);
+            }
           } catch (err) {
             if (EntityConflictError.is(err)) return;
             throw err;
@@ -891,8 +878,13 @@ async function dispatchPendingOps(params: {
           // queueStepMessage).
         })()
       );
-    } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
+    } else if (
+      op.type === 'attribute' &&
+      !op.hasCreatedEvent &&
+      !params.writtenOpIds?.has(op.correlationId)
+    ) {
       const attr = op as PendingAttribute;
+      params.writtenOpIds?.add(op.correlationId);
       opsPromises.push(
         (async () => {
           try {
@@ -920,8 +912,13 @@ async function dispatchPendingOps(params: {
           }
         })()
       );
-    } else if (op.type === 'wait' && !op.hasCreatedEvent) {
+    } else if (
+      op.type === 'wait' &&
+      !op.hasCreatedEvent &&
+      !params.writtenOpIds?.has(op.correlationId)
+    ) {
       const wait = op as PendingWait;
+      params.writtenOpIds?.add(op.correlationId);
       opsPromises.push(
         (async () => {
           try {
@@ -931,6 +928,7 @@ async function dispatchPendingOps(params: {
               correlationId: wait.correlationId,
               eventData: {
                 resumeAt: new Date(wait.resumeAt),
+                ...(creatorMessageId ? { creatorMessageId } : {}),
               },
             });
           } catch (err) {
@@ -948,8 +946,11 @@ async function dispatchPendingOps(params: {
   return {
     createdAttributeEvent,
     createdGetConflictHook,
+    createdHookConflict,
     queuedStepCids,
     failedSerializationStepCids,
+    createdStepEventIds,
+    createdStepInputs,
   };
 }
 
@@ -1096,6 +1097,12 @@ export async function runWorkflowWithQuickJS(params: {
    */
   deliveryAttempt?: number;
   /**
+   * Epoch ms past which a delivery with nothing left to run does not linger
+   * for work done elsewhere (see `getOrchestratorLingerMs`): the invocation's
+   * inline deadline. Absent: no lingering.
+   */
+  lingerDeadlineMs?: number;
+  /**
    * Queue message ID of the delivery driving this invocation, stamped as
    * `ownerMessageId` on inline lazy step claims so wake replays defer to
    * the in-flight body instead of requeueing the step.
@@ -1103,6 +1110,11 @@ export async function runWorkflowWithQuickJS(params: {
   ownerMessageId?: string;
   /** Request ID of the queue invocation, when the queue provides one. */
   requestId?: string;
+  /**
+   * The orchestrator's in-band writer. Every event this engine writes goes
+   * through it, so the writes are marked in-band and fenced.
+   */
+  writer?: InBandWriter;
   /**
    * Queue namespace resolved at route registration (runtime.ts). Must be
    * threaded into every message publish: the builders bake the namespace
@@ -1127,6 +1139,27 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
+  /**
+   * Turbo mode (the run's first delivery, see `isTurboEnabled`): the caller
+   * wrote `run_started` without waiting for it and did not load the log, which
+   * holds only the run's creation. The VM starts on an empty log, no snapshot
+   * is looked up, and while `optimistic` holds, inline step bodies start
+   * before their `step_created`/`step_started` commit, until a suspension has
+   * an operation other than a step.
+   */
+  /**
+   * Waits a `run.wakeUp()` asked this delivery to complete whatever their
+   * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
+   */
+  wakeUpWaits?: ReadonlySet<string>;
+  turbo?: {
+    /** The backgrounded `run_started`, folded into the log view on landing. */
+    runStarted: Promise<EventResult>;
+    /** Settles once `run_started` landed; rejects if it failed. */
+    runReadyBarrier: Promise<void>;
+    /** Whether inline bodies may start ahead of their start. */
+    optimistic: boolean;
+  };
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -1143,6 +1176,7 @@ export async function runWorkflowWithQuickJS(params: {
     requestId,
     namespace,
     waitContinuation,
+    turbo,
   } = params;
 
   /**
@@ -1157,6 +1191,39 @@ export async function runWorkflowWithQuickJS(params: {
     waitContinuation?.correlationId === correlationId
       ? waitContinuation.attempt + 1
       : 0;
+  /**
+   * Whether this delivery arms the timer of the wait `correlationId`: only
+   * the delivery whose message wrote its `wait_created`, a redelivery of
+   * that message, or the wait's own timer delivery (see
+   * `schedulesWaitTimer`). Other deliveries leave the timer to them, so
+   * timer messages do not pile up across suspensions. Assigned once the
+   * log is loaded.
+   */
+  let armsWaitTimer: (correlationId: string) => boolean = () => true;
+  /** A timer wake: delayed, and carrying no idempotency key. */
+  const queueWaitTimer = async (
+    correlationId: string,
+    seconds: number
+  ): Promise<void> => {
+    const attempt = nextWaitContinuationAttempt(correlationId);
+    const { delaySeconds } = getWaitContinuationDispatch(
+      seconds,
+      correlationId,
+      Date.now(),
+      attempt
+    );
+    await queueMessage(
+      world,
+      getWorkflowQueueName(workflowRun.workflowName, namespace),
+      {
+        runId,
+        traceCarrier: await nextTraceCarrier(),
+        requestedAt: new Date(),
+        waitContinuation: { correlationId, attempt },
+      },
+      { delaySeconds }
+    );
+  };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
   const nextTraceCarrier =
@@ -1299,6 +1366,7 @@ export async function runWorkflowWithQuickJS(params: {
   if (
     snapshotsStorage &&
     snapshotThreshold > 0 &&
+    !turbo &&
     !isFirstInvocation(preloadedEvents) &&
     !preloadBelowThreshold &&
     !runsBelowSnapshotThreshold.has(runId)
@@ -1401,12 +1469,14 @@ export async function runWorkflowWithQuickJS(params: {
   let loadedCursor: string | null = null;
   const usePreloaded =
     !existingSnapshot &&
-    ((preloadedEventsComplete === true &&
-      Array.isArray(preloadedEvents) &&
-      preloadedEvents.length > 0) ||
+    // Turbo: the log holds only the run's creation, and nothing was loaded.
+    (turbo !== undefined ||
+      (preloadedEventsComplete === true &&
+        Array.isArray(preloadedEvents) &&
+        preloadedEvents.length > 0) ||
       isFirstInvocation(preloadedEvents));
-  if (usePreloaded && preloadedEvents) {
-    events = preloadedEvents;
+  if (usePreloaded) {
+    events = preloadedEvents ?? [];
     loadedCursor = preloadedCursor ?? null;
   } else {
     const read = await listRunLogFrom(world, runId, snapshotCursor);
@@ -1437,8 +1507,57 @@ export async function runWorkflowWithQuickJS(params: {
       ? events.length
       : (existingSnapshot?.metadata.eventCount ?? 0) + events.length;
   const logView = new QuickJSLogView(events, loadedCursor, loadedPosition);
+  // Turbo: the backgrounded `run_started` is noted like any write of this
+  // invocation, and its skipped-slot report (`run_created`) is queued for
+  // the VM.
+  void turbo?.runStarted.then(
+    (result) => {
+      logView.absorb(result, { deliverEvent: deliversOwnEvent('run_started') });
+    },
+    () => {}
+  );
+  /**
+   * Turbo: whether inline bodies still start ahead of their start. Ends for
+   * the rest of the delivery at the first suspension with a hook or a wait,
+   * as on the node engine.
+   */
+  let turboOptimistic = turbo?.optimistic === true;
+  armsWaitTimer = (correlationId) =>
+    ownerMessageId === undefined ||
+    schedulesWaitTimer({
+      wait: events.find(
+        (event) =>
+          event.eventType === 'wait_created' &&
+          event.correlationId === correlationId
+      ),
+      correlationId,
+      messageId: ownerMessageId,
+      timerFor: waitContinuation?.correlationId,
+    });
+  const writeEvent: EventCreator = (data, eventParams) =>
+    params.writer
+      ? params.writer.create(data, eventParams)
+      : world.events.create(runId, data, eventParams);
+  /**
+   * Whether a write's own event is delivered to the VM off its response:
+   * `wait_completed` (nothing in it for a VM to resolve), and the run's
+   * start, step and hook events when they go through the in-band writer. An
+   * inline step then costs no listing: its creation, start and outcome reach
+   * the VM from the writes that made them, in position order behind whatever
+   * their reports carry, so the VM still consumes its own outcome only after
+   * it committed. A hook's creation reaches the VM the same way, so a pass
+   * the live feed wakes before any listing sees the hook as created and does
+   * not write its `hook_created` a second time (which a World with the token
+   * already taken answers with a `hook_conflict`).
+   */
+  const deliversOwnEvent = (eventType: string): boolean =>
+    eventType === 'wait_completed' ||
+    (params.writer !== undefined &&
+      (eventType === 'run_started' ||
+        eventType.startsWith('step_') ||
+        eventType.startsWith('hook_')));
   const createEvent: EventCreator = async (data, eventParams) => {
-    const result = await world.events.create(runId, data, {
+    const result = await writeEvent(data, {
       // Returned replay events only feed the log; read them the way replay
       // reads the log.
       resolveData: REPLAY_RESOLVE_DATA,
@@ -1468,10 +1587,12 @@ export async function runWorkflowWithQuickJS(params: {
       return result;
     }
     // The created event is delivered off the response only when it carries
-    // no payload a VM reads; every other type waits for a page or a listing,
-    // which return it with its refs resolved. See QuickJSLogView.
+    // no payload a VM reads, or when it went through the in-band writer,
+    // which hands back a fresh write's event with the payload it sent (see
+    // `withWrittenEventData`). Every other write waits for a page or a
+    // listing, which return it with its refs resolved. See QuickJSLogView.
     const absorbed = logView.absorb(result, {
-      deliverEvent: data.eventType === 'wait_completed',
+      deliverEvent: deliversOwnEvent(data.eventType),
     });
     if (absorbed.truncated) {
       runtimeLogger.debug(
@@ -1493,7 +1614,7 @@ export async function runWorkflowWithQuickJS(params: {
    * engine's `deltaRequestCursor` makes the same exclusion for `sinceCursor`.
    */
   const terminalCreateEvent: EventCreator = (data, eventParams) =>
-    world.events.create(runId, data, eventParams);
+    writeEvent(data, eventParams);
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling. With a restored snapshot `events` is only
@@ -1553,12 +1674,17 @@ export async function runWorkflowWithQuickJS(params: {
           ? (event.eventData as Record<string, unknown>)
           : undefined;
       const resumeAt = eventData?.resumeAt;
-      if (resumeAt && now >= new Date(resumeAt as string).getTime()) {
+      if (
+        resumeAt &&
+        (now >= new Date(resumeAt as string).getTime() ||
+          params.wakeUpWaits?.has(event.correlationId))
+      ) {
         try {
           const result = await createEvent({
             eventType: 'wait_completed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: event.correlationId,
+            eventData: { resumeAt: new Date(resumeAt as string) },
           });
           if (!logView.tracking && result.event) {
             // No positions to order by (see QuickJSLogView), so the event
@@ -1734,6 +1860,14 @@ export async function runWorkflowWithQuickJS(params: {
   let eventsProcessedSinceSnapshot = events.length;
   // Step cids already executed inline by this invocation.
   const executedStepIds = new Set<string>();
+  // Waits and attribute writes this invocation committed (see
+  // `dispatchPendingOps.writtenOpIds`).
+  const writtenOpIds = new Set<string>();
+  // Step cids whose `step_created` this invocation wrote on the inline path.
+  // The VM only learns of those events from a later listing, so until then
+  // its pending op still reads as uncreated; dispatch must not write the
+  // event a second time.
+  const inlineCreatedStepIds = new Set<string>();
   // Steps for which THIS invocation already sent a queue message.
   const queuedStepIds = new Set<string>();
   // Aborts THIS invocation already recorded (hook_received written).
@@ -1885,6 +2019,445 @@ export async function runWorkflowWithQuickJS(params: {
     return queued;
   };
 
+  // Inline steps run as background work of this delivery, so the live VM
+  // keeps advancing while a body runs: a due timer completes its wait, a hook
+  // payload or an abort reaches the workflow, a sibling's outcome resolves.
+  // Events reach the VM only between turns of the loop below, in log order,
+  // through the view. Every body settles before the delivery returns.
+  type InlineSettled = {
+    step: PendingStep;
+    outcome: PromiseSettledResult<StepExecutionResult>;
+  };
+  const inFlightInline = new Map<string, Promise<void>>();
+  const settledInline: InlineSettled[] = [];
+  let inlineFeed: LiveLogFeed | undefined;
+  /** Events the live feed delivered so far in this invocation. */
+  let fedEventCount = 0;
+  /**
+   * Starts the live feed once: events other writers commit (a background
+   * step's outcome, a hook payload, a cancellation) are pushed or polled into
+   * the view and wake the loop.
+   */
+  const ensureInlineFeed = (): void => {
+    if (inlineFeed || !logView.tracking) return;
+    inlineFeed = new LiveLogFeed(world, runId, {
+      // From what this invocation already knows, its own writes included: a
+      // feed started late would otherwise wait on positions it never hears
+      // of again, and drop everything after them until a poll fills in.
+      afterSlot: Math.max(
+        maxEventSlot(events) ?? 0,
+        logView.highestKnownSlot ?? 0
+      ),
+      cursor: logView.logCursor,
+      pollIntervalMs: getOrchestratorPollIntervalMs(),
+      onEvents: (fed) => {
+        fedEventCount += fed.length;
+        logView.absorb({ events: fed });
+        notifyProgress();
+      },
+    });
+    inlineFeed.start();
+  };
+  let progressDirty = false;
+  let progressWaiter: (() => void) | undefined;
+  const notifyProgress = (): void => {
+    progressDirty = true;
+    const waiter = progressWaiter;
+    progressWaiter = undefined;
+    waiter?.();
+  };
+  /**
+   * Inline steps an earlier delivery created and did not finish: their start
+   * was refused for load, or the delivery that started them died before the
+   * outcome. This orchestrator runs them inline again (attempt = their
+   * `step_started` count + 1). Read from the delivery's full log, since a
+   * restored snapshot's log holds only the suffix after it.
+   */
+  const fullLog = (): Event[] => {
+    const byId = new Map<string, Event>();
+    for (const e of params.preloadedEventsComplete
+      ? (params.preloadedEvents ?? [])
+      : []) {
+      byId.set(e.eventId, e);
+    }
+    for (const e of events) byId.set(e.eventId, e);
+    return [...byId.values()].sort((a, b) =>
+      a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
+    );
+  };
+  const logStepStates = (): Map<string, LogStepState> =>
+    new Map(analyzeLogSteps(fullLog()).map((s) => [s.correlationId, s]));
+  let loggedSteps: Map<string, LogStepState> | undefined;
+  const stepInputFromLog = async (
+    state: LogStepState
+  ): Promise<SerializedData> => {
+    const created =
+      events.find((e) => e.eventId === state.createdEventId) ??
+      params.preloadedEvents?.find((e) => e.eventId === state.createdEventId);
+    if (
+      created?.eventType === 'step_created' &&
+      created.eventData.input !== undefined
+    ) {
+      return created.eventData.input;
+    }
+    // A World may leave step inputs out of replay loads; read it back.
+    const read = await world.events.get(runId, state.createdEventId, {
+      resolveData: 'all',
+    });
+    if (read.eventType !== 'step_created') {
+      throw new WorkflowRuntimeError(
+        `Event "${state.createdEventId}" is not a step_created`
+      );
+    }
+    return read.eventData.input;
+  };
+
+  /**
+   * Writes a new inline step's `step_created`, and with it the first
+   * attempt's `step_started` when the World takes batch writes: two plain
+   * appends in one fenced write. Resolves with the start when it committed;
+   * otherwise the executor writes it. Mirrors the node engine's creation
+   * batch (`planStepsAndWaits` with `startInlineSteps`).
+   */
+  const createInlineStep = async (
+    step: PendingStep,
+    input: SerializedData
+  ): Promise<CallerStart | undefined> => {
+    const created: CreateEventRequest = {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: step.correlationId,
+      eventData: {
+        stepName: step.stepId,
+        workflowName: workflowRun.workflowName,
+        input,
+        inline: true,
+        ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
+      },
+    };
+    const writer = params.writer;
+    if (!writer?.supportsBatch) {
+      await createEvent(created);
+      return undefined;
+    }
+    const postSentAtMs = Date.now();
+    const batch = await writer.createBatch(
+      [
+        { event: created },
+        {
+          event: {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: step.correlationId,
+            eventData: {
+              stepName: step.stepId,
+              attempt: 1,
+              startReason: 'first',
+            },
+          },
+          computeInstanceId: COMPUTE_INSTANCE_ID,
+        },
+      ],
+      {
+        ...(requestId ? { requestId } : {}),
+        ...logView.snapshotParams(),
+      }
+    );
+    const completedAtMs = Date.now();
+    const [createdItem, startedItem] = batch.results;
+    // Positions of both writes, and the report of what landed below them.
+    let first = true;
+    for (const item of batch.results) {
+      if (item.error !== undefined) continue;
+      logView.absorb(
+        first
+          ? { event: item.event, events: batch.events }
+          : { event: item.event },
+        { deliverEvent: deliversOwnEvent(item.event.eventType) }
+      );
+      first = false;
+    }
+    if (createdItem?.error !== undefined) {
+      // The batch is not atomic on a single-orchestrator run; a refused
+      // creation fails this delivery the way a single write would.
+      const message = `Inline step creation failed with ${createdItem?.status}: ${createdItem?.message}`;
+      if (createdItem?.status === 429) throw new ThrottleError(message);
+      if (createdItem?.status === 410) throw new RunExpiredError(message);
+      throw new WorkflowWorldError(message, {
+        status: createdItem?.status ?? 500,
+      });
+    }
+    if (!startedItem) return undefined;
+    if (startedItem.error !== undefined) {
+      // Created, not started. A throttle or a finished run is the start's
+      // refusal; anything else leaves the start to the executor.
+      const message = `Inline step start failed with ${startedItem.status}: ${startedItem.message}`;
+      if (startedItem.status === 429) throw new ThrottleError(message);
+      if (startedItem.status === 410) throw new RunExpiredError(message);
+      return undefined;
+    }
+    return {
+      startedAt: new Date(startedItem.event.createdAt),
+      postSentAtMs,
+      completedAtMs,
+    };
+  };
+
+  /**
+   * Starts one inline step's body; never awaited here. `optimistic` (turbo)
+   * starts it before its `step_created` and `step_started` commit.
+   */
+  const launchInline = (
+    step: PendingStep,
+    resume?: LogStepState,
+    optimistic = false
+  ): void => {
+    // A step this delivery started inline never runs inline again in it.
+    executedStepIds.add(step.correlationId);
+    inlineStepsExecuted++;
+    // The replay budget covers orchestration, not step bodies: it stays
+    // paused while any body runs.
+    if (inFlightInline.size === 0) budget.pause();
+    ensureInlineFeed();
+    const run = runStepSingleFlight(
+      runId,
+      step.correlationId,
+      async () => {
+        let input: SerializedData;
+        let startAfter: Promise<unknown> | undefined;
+        if (resume) {
+          // Created inline by an earlier delivery: its `step_created` (and
+          // the input on it) is already in the log.
+          input = await stepInputFromLog(resume);
+        } else {
+          input = await encryptSerializedData(step.input, encryptionKey);
+          // The step's execution mode is fixed here: inline, run by this
+          // orchestrator. `step_created` commits before the body starts,
+          // except under turbo's optimistic start, where the body starts
+          // now and its `step_started` follows this commit.
+          inlineCreatedStepIds.add(step.correlationId);
+          // The executor waits for it before the start (and, unless
+          // optimistic, before the body), and reads a refusal as its start's.
+          startAfter = createInlineStep(step, input);
+          startAfter.catch(() => {});
+        }
+        return executeStep({
+          world,
+          createEvent: async (data, eventParams) => {
+            const written = await writeEvent(data, {
+              ...eventParams,
+              ...logView.snapshotParams(),
+            });
+            logView.absorb(written, {
+              deliverEvent: deliversOwnEvent(data.eventType),
+            });
+            return written;
+          },
+          workflowRunId: runId,
+          workflowDeploymentId: workflowRun.deploymentId,
+          workflowName: workflowRun.workflowName,
+          workflowStartedAt,
+          requestId,
+          rootRunId,
+          stepId: step.correlationId,
+          stepName: step.stepId,
+          encryptionKey,
+          runSpecVersion: workflowRun.specVersion,
+          attempt: resume ? resume.starts + 1 : 1,
+          startReason: resume && resume.starts > 0 ? 'redelivery' : 'first',
+          ...(resume?.firstStartedAt
+            ? { firstStartedAt: resume.firstStartedAt }
+            : {}),
+          input,
+          forceOptimisticStart: optimistic && !resume,
+          ...(turbo ? { runReadyBarrier: turbo.runReadyBarrier } : {}),
+          ...(startAfter
+            ? { startAfter: startAfter as Promise<CallerStart | undefined> }
+            : {}),
+          beforeBody: () => params.writer?.assertActive(),
+        });
+      },
+      'debug'
+    )
+      .then(
+        (value) => {
+          settledInline.push({ step, outcome: { status: 'fulfilled', value } });
+        },
+        (reason: unknown) => {
+          settledInline.push({ step, outcome: { status: 'rejected', reason } });
+        }
+      )
+      .finally(() => {
+        inFlightInline.delete(step.correlationId);
+        if (inFlightInline.size === 0) budget.resume();
+        notifyProgress();
+      });
+    inFlightInline.set(step.correlationId, run);
+  };
+  /** Lets every running inline body settle, and stops the live feed. */
+  const drainInline = async (): Promise<void> => {
+    while (inFlightInline.size > 0) {
+      await Promise.allSettled([...inFlightInline.values()]);
+    }
+    inlineFeed?.stop();
+    inlineFeed = undefined;
+  };
+  /**
+   * Acts on the inline bodies that settled since the last turn. A body that
+   * threw (a superseded writer, a transport error) ends the delivery once
+   * every other body has settled.
+   */
+  const processSettledInline = async (): Promise<void> => {
+    const settled = settledInline.splice(0);
+    let failure: { reason: unknown } | undefined;
+    for (const { step, outcome } of settled) {
+      if (outcome.status === 'rejected') {
+        if (
+          failure === undefined ||
+          OrchestratorSupersededError.is(outcome.reason)
+        ) {
+          failure = { reason: outcome.reason };
+        }
+        continue;
+      }
+      const result = outcome.value;
+      if (result.type === 'throttled') {
+        // The start was refused for load: defer a fresh orchestrator
+        // invocation by the backoff, whose replay runs the step inline again.
+        throttledReplaySeconds = Math.max(
+          throttledReplaySeconds ?? 0,
+          result.timeoutSeconds
+        );
+      } else if (result.type === 'retry') {
+        // The retry moves to the background: this is the step's first
+        // message, and it carries the next attempt.
+        queuedStepIds.add(step.correlationId);
+        await queueStepMessage({
+          world,
+          runId,
+          workflowRun,
+          step,
+          delaySeconds: result.timeoutSeconds,
+          namespace,
+          nextTraceCarrier,
+          purpose: 'dispatch',
+          stepAttempt: 2,
+          wfdiag,
+        });
+      } else if (result.type === 'gone') {
+        runGone = true;
+      } else {
+        // A terminal outcome the VM has not been fed yet. Until a feed
+        // delivers it, exiting must hand the run to a fresh invocation:
+        // an inline step has no queue message of its own.
+        pendingRequeueSignal = true;
+      }
+    }
+    if (settled.length > 0) {
+      wfdiag('inline_steps_settled', {
+        count: settled.length,
+        outcomes: settled.map(({ outcome }) =>
+          outcome.status === 'fulfilled' ? outcome.value.type : 'rejected'
+        ),
+      });
+    }
+    if (failure !== undefined) {
+      await drainInline();
+      throw failure.reason;
+    }
+  };
+  /**
+   * Waits for a body to settle, a live-feed event, or the earliest open
+   * wait's deadline, whichever comes first.
+   */
+  const waitForInlineProgress = async (
+    pendingOperations: PendingOperation[]
+  ): Promise<void> => {
+    if (progressDirty) {
+      progressDirty = false;
+      return;
+    }
+    let dueMs: number | undefined;
+    for (const op of pendingOperations) {
+      if (op.type !== 'wait') continue;
+      const wait = op as PendingWait;
+      if (completedWaitIds2.has(wait.correlationId)) continue;
+      const at = new Date(wait.resumeAt).getTime();
+      if (dueMs === undefined || at < dueMs) dueMs = at;
+    }
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    await new Promise<void>((resolve) => {
+      progressWaiter = resolve;
+      if (dueMs !== undefined) {
+        handle = setTimeout(resolve, Math.max(0, dueMs - Date.now()));
+      }
+    });
+    if (handle) clearTimeout(handle);
+    progressWaiter = undefined;
+    progressDirty = false;
+  };
+
+  /**
+   * Keeps this delivery live while the run waits on work done elsewhere (see
+   * `getOrchestratorLingerMs`). `true` once the feed delivered an event or a
+   * wait fell due, so the loop takes another turn; `false` when the time ran
+   * out without either.
+   */
+  const lingerForExternalWork = async (
+    awaitsExternal: boolean,
+    pendingOperations: PendingOperation[]
+  ): Promise<boolean> => {
+    const lingerMs = getOrchestratorLingerMs();
+    if (
+      !awaitsExternal ||
+      lingerMs <= 0 ||
+      params.lingerDeadlineMs === undefined ||
+      !world.events.subscribe ||
+      !logView.tracking
+    ) {
+      return false;
+    }
+    const untilMs = Math.min(Date.now() + lingerMs, params.lingerDeadlineMs);
+    if (untilMs <= Date.now()) return false;
+    ensureInlineFeed();
+    const fedBefore = fedEventCount;
+    const startedAtMs = Date.now();
+    budget.pause();
+    try {
+      while (Date.now() < untilMs) {
+        let handle: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          waitForInlineProgress(pendingOperations),
+          new Promise<void>((resolve) => {
+            handle = setTimeout(resolve, untilMs - Date.now());
+          }),
+        ]);
+        clearTimeout(handle);
+        progressWaiter = undefined;
+        const waitDue = pendingOperations.some(
+          (op) =>
+            op.type === 'wait' &&
+            !completedWaitIds2.has(op.correlationId) &&
+            new Date((op as PendingWait).resumeAt).getTime() <= Date.now()
+        );
+        if (fedEventCount > fedBefore || waitDue) {
+          wfdiag('linger', {
+            outcome: 'resumed',
+            lingeredMs: Date.now() - startedAtMs,
+          });
+          return true;
+        }
+      }
+    } finally {
+      budget.resume();
+    }
+    wfdiag('linger', {
+      outcome: 'idle',
+      lingeredMs: Date.now() - startedAtMs,
+    });
+    return false;
+  };
+
   try {
     let iteration = 0;
     while (result.suspended && !runGone && !budget.isExhausted()) {
@@ -1904,7 +2477,17 @@ export async function runWorkflowWithQuickJS(params: {
           maxEventsLimit
         );
       }
+      await processSettledInline();
+      if (throttledReplaySeconds !== undefined || runGone) break;
       const pendingOperations = result.suspended.pendingOperations;
+      if (
+        turboOptimistic &&
+        pendingOperations.some(
+          (op) => op.type !== 'step' && op.type !== 'attribute'
+        )
+      ) {
+        turboOptimistic = false;
+      }
 
       // Select this turn's inline candidates BEFORE dispatch: fresh steps
       // (no step_created yet) that this invocation hasn't already handled.
@@ -1931,8 +2514,28 @@ export async function runWorkflowWithQuickJS(params: {
       const healthySteps = freshSteps.filter(
         (step) => !step.serializationError
       );
+      // Inline steps an earlier delivery created and left open run inline
+      // again here (once per delivery), ahead of fresh steps for the inline
+      // slots. A placeholder-input step (its arguments refused to serialize)
+      // is among them: the executor fails it from the placeholder.
+      loggedSteps ??= logStepStates();
+      const resumedInline = pendingOperations.flatMap(
+        (op): { step: PendingStep; state: LogStepState }[] => {
+          if (op.type !== 'step' || !op.hasCreatedEvent) return [];
+          if (executedStepIds.has(op.correlationId)) return [];
+          if (queuedStepIds.has(op.correlationId)) return [];
+          const state = loggedSteps?.get(op.correlationId);
+          if (!state?.runnableInline) return [];
+          return [{ step: op as PendingStep, state }];
+        }
+      );
       const inlineCandidates =
-        maxInlineSteps <= 0 ? [] : healthySteps.slice(0, maxInlineSteps);
+        maxInlineSteps <= 0
+          ? []
+          : healthySteps.slice(
+              0,
+              Math.max(0, maxInlineSteps - resumedInline.length)
+            );
       const inlineClaimCids = new Set(
         inlineCandidates.map((step) => step.correlationId)
       );
@@ -1976,14 +2579,25 @@ export async function runWorkflowWithQuickJS(params: {
           ? { deltaCursor: logView.logCursor }
           : {}),
         pendingOperations: opsToDispatch,
-        skipStepCreation: inlineClaimCids,
+        // Every step whose `step_created` this invocation already wrote,
+        // whether or not the VM has been fed it yet: a World that keeps no
+        // step rows would append a second one.
+        skipStepCreation: new Set([
+          ...inlineClaimCids,
+          ...inlineCreatedStepIds,
+          ...queuedStepIds,
+          ...executedStepIds,
+        ]),
+        writtenOpIds,
+        creatorMessageId: ownerMessageId,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
         finalizeUnserializableSteps: true,
         wfdiag,
       });
       if (
         dispatched.createdAttributeEvent ||
-        dispatched.createdGetConflictHook
+        dispatched.createdGetConflictHook ||
+        dispatched.createdHookConflict
       ) {
         pendingRequeueSignal = true;
       }
@@ -2009,6 +2623,10 @@ export async function runWorkflowWithQuickJS(params: {
           .filter((step) => !dispatched.queuedStepCids.has(step.correlationId))
           .map((step) => {
             queuedStepIds.add(step.correlationId);
+            const createdEventId = dispatched.createdStepEventIds.get(
+              step.correlationId
+            );
+            const input = dispatched.createdStepInputs.get(step.correlationId);
             return queueStepMessage({
               world,
               runId,
@@ -2017,6 +2635,13 @@ export async function runWorkflowWithQuickJS(params: {
               namespace,
               nextTraceCarrier,
               purpose: 'dispatch',
+              ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
+              ...(input &&
+              input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
+              (workflowRun.specVersion ?? 0) >=
+                SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+                ? { stepInput: input }
+                : {}),
               wfdiag,
             });
           })
@@ -2029,7 +2654,12 @@ export async function runWorkflowWithQuickJS(params: {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (completedWaitIds2.has(wait.correlationId)) continue;
-        if (new Date(wait.resumeAt).getTime() - Date.now() > 0) continue;
+        if (
+          new Date(wait.resumeAt).getTime() - Date.now() > 0 &&
+          !params.wakeUpWaits?.has(wait.correlationId)
+        ) {
+          continue;
+        }
         completedWaitIds2.add(wait.correlationId);
         waitCompletePromises.push(
           (async () => {
@@ -2038,6 +2668,7 @@ export async function runWorkflowWithQuickJS(params: {
                 eventType: 'wait_completed',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: wait.correlationId,
+                eventData: { resumeAt: new Date(wait.resumeAt) },
               });
             } catch (err) {
               if (EntityConflictError.is(err)) return;
@@ -2061,9 +2692,16 @@ export async function runWorkflowWithQuickJS(params: {
       // does advance the cursor, saves a listing outright. Same shape as the
       // node engine.
       {
+        // A listing only when the VM is short of a position this invocation
+        // knows of (see `QuickJSLogView.behind`): a turn that wrote nothing,
+        // or whose writes came back on their responses, has nothing to read.
         const queued = takeQueuedEvents();
         const newEvents =
-          queued.length > 0 ? queued : await fetchUnseenEvents();
+          queued.length > 0
+            ? queued
+            : logView.behind
+              ? await fetchUnseenEvents()
+              : [];
         if (newEvents.length > 0) {
           // The listing caught up with this invocation's writes, so any
           // attr_set / getConflict hook_created has been (or is being)
@@ -2090,122 +2728,86 @@ export async function runWorkflowWithQuickJS(params: {
       const stepOps = pendingOperations.filter(
         (op): op is PendingStep => op.type === 'step'
       );
-      // Steps created by an EARLIER invocation (or an earlier turn) that
-      // are still pending, with no work owned by THIS invocation. Mirror
-      // the node engine's ownership decision table (step-ownership.ts),
-      // NOT a deliveryAttempt gate: worlds advance the attempt counter on
-      // routine redeliveries (world-local counts every handled response),
-      // so attempt > 1 is the common case and would fire backstops at
-      // steps actively executing inline in a live invocation.
-      //
-      //   - Ownership lease ACTIVE, held by ANOTHER message → the step is
-      //     (presumably) executing inline in a live invocation. Arm a
-      //     DELAYED backstop for the lease remainder, keyed to the
-      //     ownership epoch (a refreshed lease re-arms a fresh backstop
-      //     instead of deduping against the in-flight one). If the owner
-      //     completes normally, the backstop delivery resolves the step
-      //     as 'skipped'.
-      //   - Ownership lease ACTIVE, held by THIS message → this delivery
-      //     is the owner's redelivery; the claimant crashed
-      //     mid-execution. Dispatch immediately for background recovery.
-      //   - No stamp / lease EXPIRED / step_retrying observed → the step
-      //     is queue-owned or orphaned. Dispatch immediately; the
-      //     step-identity-scoped idempotency key dedupes against the
-      //     original handoff.
-      const nowMs = Date.now();
+      // Steps created by an earlier invocation that are still pending are
+      // enqueued again only by a redelivery of the message that created
+      // them, and only while they have no `step_started` (see
+      // `stepsToReenqueue`). Any broader rule would send a second message
+      // for a step whose first one is still retrying, which is a second
+      // owner of its body.
+      const reenqueue = new Set(
+        stepsToReenqueue({
+          events,
+          messageId: ownerMessageId ?? '',
+          deliveryCount: deliveryAttempt,
+        })
+      );
       for (const step of stepOps) {
         if (!step.hasCreatedEvent) continue;
         if (executedStepIds.has(step.correlationId)) continue;
         if (queuedStepIds.has(step.correlationId)) continue;
-        const ownership = stepOwnership.get(step.correlationId);
-        const ownershipActive =
-          ownership !== undefined &&
-          ownership.owner !== undefined &&
-          !ownership.sawRetrying;
-        let leaseRemainingSeconds = 0;
-        if (ownershipActive && ownership.startedAtMs !== undefined) {
-          const leaseSeconds = getInlineOwnershipLeaseSeconds();
-          leaseRemainingSeconds = Math.min(
-            leaseSeconds,
-            Math.max(
-              0,
-              Math.ceil(
-                (ownership.startedAtMs + leaseSeconds * 1000 - nowMs) / 1000
-              )
-            )
-          );
-        }
-        if (
-          ownershipActive &&
-          ownership.owner !== ownerMessageId &&
-          leaseRemainingSeconds > 0
-        ) {
-          queuedStepIds.add(step.correlationId);
-          await queueStepMessage({
-            world,
-            runId,
-            workflowRun,
-            step,
-            delaySeconds: leaseRemainingSeconds,
-            namespace,
-            nextTraceCarrier,
-            purpose: `backstop:${ownership.startedAtMs}`,
-            wfdiag,
-          });
-        } else {
-          queuedStepIds.add(step.correlationId);
-          await queueStepMessage({
-            world,
-            runId,
-            workflowRun,
-            step,
-            namespace,
-            nextTraceCarrier,
-            purpose: 'dispatch',
-            wfdiag,
-          });
-        }
+        if (!reenqueue.has(step.correlationId)) continue;
+        queuedStepIds.add(step.correlationId);
+        await queueStepMessage({
+          world,
+          runId,
+          workflowRun,
+          step,
+          namespace,
+          nextTraceCarrier,
+          purpose: 'dispatch',
+          wfdiag,
+        });
       }
 
-      if (inlineCandidates.length === 0) {
+      if (
+        inlineCandidates.length === 0 &&
+        resumedInline.length === 0 &&
+        inFlightInline.size === 0
+      ) {
+        // Outcomes of bodies that just settled are acted on first.
+        if (settledInline.length > 0) continue;
         // No in-process progress possible: the run awaits an external
-        // stimulus (hook payload, queued step, wait timer).
+        // stimulus (hook payload, queued step, wait timer). While it waits
+        // on a hook or a step running from its own message, stay live for
+        // it instead of leaving it to a queued wake.
+        if (
+          await lingerForExternalWork(
+            pendingOperations.some(
+              (op) =>
+                op.type === 'hook' ||
+                (op.type === 'step' &&
+                  // Running from its own message: queued by this delivery
+                  // (its retry included), or created by an earlier one and
+                  // not run here.
+                  (queuedStepIds.has(op.correlationId) ||
+                    ((op as PendingStep).hasCreatedEvent &&
+                      !executedStepIds.has(op.correlationId))))
+            ) || awaitsExternalWork(fullLog()),
+            pendingOperations
+          )
+        ) {
+          continue;
+        }
         break;
       }
 
-      // Racing timers must fire on time while step bodies block this
-      // invocation: enqueue a delayed continuation for the soonest
-      // pending wait (a separate invocation writes its wait_completed at
-      // the right log position, the same mechanism as the node:vm engine's
-      // wait-continuation dispatch).
+      // A timer for the soonest pending wait, armed once per wait while
+      // bodies run, so the wait still completes if this invocation dies
+      // mid-body. While it lives, the loop completes the wait itself when it
+      // falls due (see `waitForInlineProgress`).
       let soonestWait: { correlationId: string; seconds: number } | undefined;
       for (const op of pendingOperations) {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (scheduledWaitContinuations.has(wait.correlationId)) continue;
-        // Waits whose wait_completed THIS invocation already wrote (the
-        // elapsed-wait pass above) are done: the event just hasn't fed
-        // back into the VM yet. No continuation needed.
+        if (!armsWaitTimer(wait.correlationId)) continue;
+        // Completed by this invocation already; the event just has not been
+        // fed back into the VM yet.
         if (completedWaitIds2.has(wait.correlationId)) continue;
         const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
-        // An already-elapsed wait MUST still get a continuation (clamped
-        // to the 1s minimum, exactly like the node engine's
-        // `Math.max(1000, resumeAtMs - now)`), not be skipped: a wait
-        // whose deadline falls between this iteration's elapsed-wait
-        // pass (which saw it as still pending and wrote nothing) and
-        // this sweep would otherwise get NEITHER a wait_completed NOR a
-        // continuation, and the inline batch below then blocks this
-        // invocation for the full step duration with no wake armed
-        // anywhere. For `Promise.race(step, sleep)` that silently hands
-        // the race to the step: the sleep's wait_completed is never
-        // written and the run completes with the wrong winner. The
-        // window between the two checks spans this iteration's dispatch
-        // + feed round-trips, so on network-backed worlds (world-vercel)
-        // a short sleep lands in it routinely, observed as a ~50%
-        // sleepWinsRaceWorkflow failure rate in the Vercel e2e legs,
-        // while world-local's sub-ms round-trips masked it locally. The
-        // continuation invocation's pre-VM elapsed check writes the
-        // wait_completed ~1s later.
+        // An elapsed wait still gets a continuation (clamped to 1s): one
+        // whose deadline fell between the elapsed-wait pass above and this
+        // sweep would otherwise get neither a wait_completed nor a timer.
         const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (!soonestWait || seconds < soonestWait.seconds) {
           soonestWait = { correlationId: wait.correlationId, seconds };
@@ -2213,230 +2815,29 @@ export async function runWorkflowWithQuickJS(params: {
       }
       if (soonestWait) {
         scheduledWaitContinuations.add(soonestWait.correlationId);
-        const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
-        await queueMessage(
-          world,
-          getWorkflowQueueName(workflowRun.workflowName, namespace),
-          {
-            runId,
-            traceCarrier: await nextTraceCarrier(),
-            requestedAt: new Date(),
-            waitContinuation: {
-              correlationId: soonestWait.correlationId,
-              attempt,
-            },
-          },
-          getWaitContinuationDispatch(
-            soonestWait.seconds,
-            soonestWait.correlationId,
-            Date.now(),
-            attempt
-          )
-        );
+        await queueWaitTimer(soonestWait.correlationId, soonestWait.seconds);
         wfdiag('wait_continuation_scheduled', {
           correlationId: soonestWait.correlationId,
           delaySeconds: soonestWait.seconds,
-          attempt,
         });
       }
 
-      // Execute the inline batch in parallel. The replay budget is
-      // paused while step bodies run: step duration is bounded by the
-      // platform function duration, not the replay timeout. NOTE (by
-      // design): with the budget parked per batch, the only bound on how
-      // many inline steps one invocation can chain is the platform's
-      // function timeout: the SDK deliberately imposes no cap of its
-      // own, matching the node:vm engine, where a long sequential
-      // workflow likewise runs step-by-step until the platform reclaims
-      // the invocation and a redelivery resumes from the log.
-      // Inline delta: a single inline step's terminal write asks the World
-      // for everything after the cursor this view holds, so the step's own
-      // events (and anything interleaved) arrive on the write's response and
-      // the feed below needs no listing. Same gate as the node engine's
-      // `requestInlineDelta` (runtime.ts), translated to this loop's terms:
-      //
-      // - This step is the only step outstanding: no overflow sibling queued
-      //   this iteration, no unserializable sibling, no step from an earlier
-      //   invocation handed to the queue above. Several writers each diffing
-      //   against the same cursor would produce deltas of which only the
-      //   first could be taken.
-      // - No wait is pending. A `wait_completed` is a resolution the
-      //   workflow is waiting on rather than an event it can observe one
-      //   iteration late, so a delta that predates it would settle the
-      //   sleep from a view that does not hold its completion; the listing
-      //   after the step is what reads it in order.
-      // - The log has a cursor to name (tracking on, something read).
-      const hasPendingWait = pendingOperations.some(
-        (op) =>
-          op.type === 'wait' &&
-          !completedWaitIds2.has((op as PendingWait).correlationId)
-      );
-      const inlineDeltaSinceCursor =
-        stepOps.length === 1 &&
-        freshSteps.length === 1 &&
-        inlineCandidates.length === 1 &&
-        !hasPendingWait &&
-        logView.tracking &&
-        typeof logView.logCursor === 'string'
-          ? logView.logCursor
-          : undefined;
-      budget.pause();
-      let outcomes: StepExecutionResult[];
-      try {
-        outcomes = await Promise.all(
-          inlineCandidates.map((step) =>
-            runStepSingleFlight(
-              runId,
-              step.correlationId,
-              () =>
-                (async () =>
-                  executeStep({
-                    world,
-                    workflowRunId: runId,
-                    workflowDeploymentId: workflowRun.deploymentId,
-                    workflowName: workflowRun.workflowName,
-                    workflowStartedAt,
-                    requestId,
-                    rootRunId,
-                    stepId: step.correlationId,
-                    stepName: step.stepId,
-                    encryptionKey,
-                    runSpecVersion: workflowRun.specVersion,
-                    // Lazy inline claim: step_created is deferred (dispatch
-                    // skipped it) and this step_started carries the input,
-                    // so the world creates the step atomically:
-                    // exactly-one-owner. A concurrent claimant gets
-                    // EntityConflictError → { type: 'skipped' } and never
-                    // runs the body. Mirrors the node engine's inline path.
-                    lazyStepInput: await encryptSerializedData(
-                      step.input,
-                      encryptionKey
-                    ),
-                    // Ownership stamp: wake replays see the body as in
-                    // flight in this invocation and arm a delayed backstop
-                    // instead of immediately requeueing the step.
-                    ownerMessageId,
-                    // A lazy step is brand-new by construction: first
-                    // attempt.
-                    authoritativeAttempt: 1,
-                    ...(inlineDeltaSinceCursor !== undefined
-                      ? { inlineDeltaSinceCursor }
-                      : {}),
-                  }))(),
-              'debug'
-            )
-          )
-        );
-      } finally {
-        budget.resume();
+      for (const { step, state } of resumedInline) launchInline(step, state);
+      for (const step of inlineCandidates) {
+        launchInline(step, undefined, turboOptimistic);
       }
-      inlineStepsExecuted += inlineCandidates.length;
-
-      for (let i = 0; i < inlineCandidates.length; i++) {
-        const step = inlineCandidates[i];
-        const outcome = outcomes[i];
-        executedStepIds.add(step.correlationId);
-        if (
-          outcome.type === 'completed' &&
-          outcome.inlineDelta !== undefined &&
-          inlineDeltaSinceCursor !== undefined
-        ) {
-          const advanced = logView.absorbDelta(
-            inlineDeltaSinceCursor,
-            outcome.inlineDelta
-          );
-          wfdiag('inline_delta_absorbed', {
-            iteration,
-            correlationId: step.correlationId,
-            events: outcome.inlineDelta.events.length,
-            hasMore: outcome.inlineDelta.hasMore,
-            cursorAdvanced: advanced,
-          });
-        }
-        if (outcome.type === 'throttled') {
-          // The lazy `step_started` (the write that would have created the
-          // step from its input) was rejected, so the step does NOT exist.
-          // Handing it to the queue as a background step would send a bare
-          // `step_started` the world rejects with "step not found" on every
-          // delivery until the ceiling, with no input left to recover it
-          // from. Mirror the node engine instead: defer a fresh orchestrator
-          // invocation by the backoff, whose replay re-attempts the step
-          // inline WITH its input (its step_created is deferred anew).
-          throttledReplaySeconds = Math.max(
-            throttledReplaySeconds ?? 0,
-            outcome.timeoutSeconds
-          );
-        } else if (outcome.type === 'retry') {
-          // The step's start succeeded, so it exists: hand it to the queue
-          // with the requested backoff:
-          // background delivery drives the retry from here.
-          queuedStepIds.add(step.correlationId);
-          await queueStepMessage({
-            world,
-            runId,
-            workflowRun,
-            step,
-            delaySeconds: outcome.timeoutSeconds,
-            namespace,
-            nextTraceCarrier,
-            // Suffixed key: this step was inline-claimed, so no dispatch
-            // publish exists under the dispatch key, but suffixing
-            // keeps the retry enqueueable even if a world retired a
-            // historical key for this step (see the purpose docs above).
-            purpose: 'retry:1',
-            wfdiag,
-          });
-        } else if (outcome.type === 'gone') {
-          runGone = true;
-        }
-        // 'skipped': a concurrent invocation won the lazy create-claim and
-        // owns the body. Marked executed above so this invocation never
-        // re-claims it; the winner's terminal events arrive via the feed
-        // (or drive a separate invocation).
-      }
-      wfdiag('inline_steps_executed', {
-        iteration,
-        count: inlineCandidates.length,
-        outcomes: outcomes.map((o) => o.type),
-      });
-      // A throttled claim ends this invocation: the deferred replay picks up
-      // the batch's other terminals along with the retried step, and the
-      // backoff is what the throttle asked for.
-      if (throttledReplaySeconds !== undefined) break;
-
-      // Feed the inline batch's terminal events into the live VM. When
-      // the eventually-consistent listing has not surfaced them yet,
-      // exiting must NOT ack silently: the terminals this invocation just
-      // caused are durably written with no queue message left to consume
-      // them (inline steps have none), so an awaiting_external exit would
-      // park the run 'running' with all its steps complete. Raise the
-      // requeue signal so the suspended exit schedules a fresh immediate
-      // invocation whose fresh read picks the terminals up. Outcomes that
-      // wrote no terminal ('skipped': a concurrent claimant owns the
-      // body; 'gone'; 'retry': a queue message exists) don't
-      // need it, but signaling on them too only costs a no-op invocation
-      // in an already-rare lag window.
-      const queued = takeQueuedEvents();
-      const newEvents = queued.length > 0 ? queued : await fetchUnseenEvents();
-      if (newEvents.length === 0) {
-        pendingRequeueSignal = true;
-        break;
-      }
-      eventsProcessedSinceSnapshot += newEvents.length;
-      result = await session.continueWithEvents(newEvents);
-
       wfdiag('inline_iteration', {
         iteration,
         phase: 'steps',
-        fedEvents: newEvents.length,
-        outcome: result.completed
-          ? 'completed'
-          : result.failed
-            ? 'failed'
-            : 'suspended',
-        budgetExhausted: budget.isExhausted(),
+        launched: inlineCandidates.length + resumedInline.length,
+        inFlight: inFlightInline.size,
       });
+      await waitForInlineProgress(pendingOperations);
     }
+    // Every inline body settles before the delivery returns, including when
+    // the workflow finished while one still ran.
+    await drainInline();
+    await processSettledInline();
     if (snapshotThreshold > 0 && result.suspended) {
       // Remember whether a snapshot can exist for this run yet, so the
       // next invocation in this process can skip a guaranteed-miss load.
@@ -2639,6 +3040,12 @@ export async function runWorkflowWithQuickJS(params: {
           // Plain create: the run is ending, nothing replays its log, so a
           // page handed back here would be read by no one.
           createEvent: terminalCreateEvent,
+          skipStepCreation: new Set([
+            ...inlineCreatedStepIds,
+            ...queuedStepIds,
+            ...executedStepIds,
+          ]),
+          writtenOpIds,
           pendingOperations: result.completed.drainOperations,
           wfdiag,
         });
@@ -2785,7 +3192,10 @@ export async function runWorkflowWithQuickJS(params: {
       const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
       if (resumeMs <= 0) {
         hasElapsedWait = true;
-      } else if (!scheduledWaitContinuations.has(wait.correlationId)) {
+      } else if (
+        !scheduledWaitContinuations.has(wait.correlationId) &&
+        armsWaitTimer(wait.correlationId)
+      ) {
         const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
           soonestWait = {
@@ -2829,26 +3239,7 @@ export async function runWorkflowWithQuickJS(params: {
         waitCorrelationId: soonestWait.correlationId,
       });
       scheduledWaitContinuations.add(soonestWait.correlationId);
-      const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
-      await queueMessage(
-        world,
-        getWorkflowQueueName(workflowRun.workflowName, namespace),
-        {
-          runId,
-          traceCarrier: await nextTraceCarrier(),
-          requestedAt: new Date(),
-          waitContinuation: {
-            correlationId: soonestWait.correlationId,
-            attempt,
-          },
-        },
-        getWaitContinuationDispatch(
-          soonestWait.seconds,
-          soonestWait.correlationId,
-          Date.now(),
-          attempt
-        )
-      );
+      await queueWaitTimer(soonestWait.correlationId, soonestWait.seconds);
       return;
     }
 
@@ -2916,6 +3307,12 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           createEvent: terminalCreateEvent,
+          skipStepCreation: new Set([
+            ...inlineCreatedStepIds,
+            ...queuedStepIds,
+            ...executedStepIds,
+          ]),
+          writtenOpIds,
           pendingOperations: result.failed.drainOperations,
           wfdiag,
         });

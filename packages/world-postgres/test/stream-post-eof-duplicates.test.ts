@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createStreamer } from '../src/streamer.js';
+import { tolerateTeardown } from './fixtures/pool.js';
 
 /**
  * A producer that retries a terminal write (lost ACK, overlapping attempts)
@@ -36,6 +37,7 @@ describe('Postgres stream reads after a retried terminal write', () => {
     });
 
     pool = new Pool({ connectionString: dbUrl, max: 4 });
+    tolerateTeardown(pool);
     const drizzle = createClient(pool);
     streamer = createStreamer(pool, drizzle);
   }, 120_000);

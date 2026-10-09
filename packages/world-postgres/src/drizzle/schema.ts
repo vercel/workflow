@@ -208,6 +208,14 @@ export const events = schema.table(
  */
 export const eventSlots = schema.table('workflow_event_slots', {
   runId: varchar('run_id').primaryKey(),
+  /**
+   * The in-band writer fence of a single-orchestrator run: positions
+   * accepted from in-band (orchestrator) writes, `run_created` included. An
+   * in-band insert advances it in the same statement that inserts the event,
+   * and only when it equals the writer's `expectedSeqInBand`. See
+   * `fencedInsert` in storage.ts.
+   */
+  seqInBand: integer('seq_in_band').notNull().default(1),
 });
 
 export const steps = schema.table(

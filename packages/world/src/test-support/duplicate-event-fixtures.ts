@@ -11,6 +11,9 @@ import type { EventType } from '../events.js';
  * them with the log's own record of when each entity finished, because that is
  * the point past which the runtime has no consumer left for the entity.
  *
+ * Both apply the terminal-inert rule: once an entity's terminal event is in
+ * the log, every later event for that entity is inert, whatever its class.
+ *
  * The two rules agree on every fixture here, and the interesting ones are the
  * near misses: a retried step writes several `step_started` events that are
  * all consumed, and a step that is still open absorbs a second `step_created`.
@@ -90,25 +93,38 @@ export const DUPLICATE_EVENT_FIXTURES: readonly DuplicateEventFixture[] = [
     ignoredIndices: [3],
   },
   {
-    name: 'class the log has not recorded yet',
-    why: 'The trailing start repeats nothing, so nobody claiming it is divergence rather than a repeat, and neither side may hide it.',
+    name: 'start after the outcome, class not recorded yet',
+    why: 'A background step invocation is not fenced, so one that stalled past its queue lease can write a start after the outcome another invocation recorded. The step is closed, so the start is inert even though no earlier start repeats it.',
     events: [
       { eventType: 'step_created', entity: 'step_a' },
       { eventType: 'step_completed', entity: 'step_a' },
       { eventType: 'step_started', entity: 'step_a' },
     ],
-    ignoredIndices: [],
+    ignoredIndices: [2],
   },
   {
-    name: 'repeat of a class the log has not recorded yet',
-    why: 'The run stops on the first trailing start and never reads the second, so neither side may present it as a repeat the run passed over.',
+    name: 'several stragglers after the outcome',
+    why: 'Every event for a closed step is inert, so a redelivered attempt that writes a start and then a retry after the outcome changes nothing either.',
     events: [
       { eventType: 'step_created', entity: 'step_a' },
+      { eventType: 'step_started', entity: 'step_a' },
       { eventType: 'step_completed', entity: 'step_a' },
       { eventType: 'step_started', entity: 'step_a' },
+      { eventType: 'step_retrying', entity: 'step_a' },
       { eventType: 'step_started', entity: 'step_a' },
     ],
-    ignoredIndices: [],
+    ignoredIndices: [3, 4, 5],
+  },
+  {
+    name: 'retry recorded after the outcome',
+    why: 'A retry with no earlier retry to repeat used to read as divergence. After the outcome it is inert like any other event for the step.',
+    events: [
+      { eventType: 'step_created', entity: 'step_a' },
+      { eventType: 'step_started', entity: 'step_a' },
+      { eventType: 'step_failed', entity: 'step_a' },
+      { eventType: 'step_retrying', entity: 'step_a' },
+    ],
+    ignoredIndices: [3],
   },
   {
     name: 'sleep recreated after it elapsed',

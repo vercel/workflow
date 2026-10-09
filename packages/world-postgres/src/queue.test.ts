@@ -339,52 +339,67 @@ describe('postgres queue http execution', () => {
   it.each([
     undefined,
     'custom',
-  ])('delivers a wake while the same run is awaiting an inline step (namespace: %s)', async (namespace) => {
-    const firstRequestStarted = Promise.withResolvers<void>();
-    const releaseFirstRequest = Promise.withResolvers<void>();
-    let requestCount = 0;
-    const server = await startWorkflowHttpServer([], 0, undefined, async () => {
-      requestCount += 1;
-      if (requestCount === 1) {
-        firstRequestStarted.resolve();
-        await releaseFirstRequest.promise;
-      }
-    });
-    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-
+  ])('routes a run’s orchestrator deliveries to its own named queue (namespace: %s)', async (namespace) => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', namespace },
       pool
     );
     await queue.start();
-    const task = getTaskHandler('workflow_flows');
-    const queueName = namespace
-      ? `__${namespace}_wkf_workflow_test-workflow`
-      : '__wkf_workflow_test-workflow';
-    const payload = { runId: 'wrun_01ABC' };
-    const firstExecution = task(
-      buildMessageData(queueName, payload, {
-        messageId: MessageId.parse('msg_01ABC'),
-      }),
+    const queueName = (
+      namespace
+        ? `__${namespace}_wkf_workflow_test-workflow`
+        : '__wkf_workflow_test-workflow'
+    ) as ValidQueueName;
+    await queue.queue(queueName, { runId: 'run_a' });
+    await queue.queue(queueName, { runId: 'run_a' }, { delaySeconds: 60 });
+    await queue.queue(queueName, { runId: 'run_b' });
+    await queue.queue(queueName, {
+      runId: 'run_a',
+      stepId: 'step_a',
+      stepName: 'step',
+    });
+    await queue.queue(queueName, {
+      __healthCheck: true,
+      correlationId: 'hc_a',
+      runId: 'run_a',
+    });
+    const options = vi
+      .mocked(workerUtilsMock.addJob)
+      .mock.calls.map((call) => call[2]);
+    // Without invoke, orchestrator deliveries stay on the ordinary task; the
+    // named queue alone is what serializes them.
+    expect(
+      vi.mocked(workerUtilsMock.addJob).mock.calls.map((call) => call[0])
+    ).toEqual(Array(5).fill('workflow_flows'));
+    expect(options[0]).toMatchObject({
+      queueName: 'workflow_flows:run_a:executor',
+    });
+    expect(options[1]).toMatchObject({
+      queueName: 'workflow_flows:run_a:executor',
+    });
+    expect(options[2]).toMatchObject({
+      queueName: 'workflow_flows:run_b:executor',
+    });
+    expect(options[3]).not.toHaveProperty('queueName');
+    expect(options[4]).not.toHaveProperty('queueName');
+  });
+
+  it('keeps a rescheduled orchestrator delivery in its run’s named queue', async () => {
+    const server = await startWorkflowHttpServer([], 0, undefined, undefined, {
+      timeoutSeconds: 5,
+    });
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test-workflow', { runId: 'run_a' }),
       {}
     );
-    let wakeExecution: Promise<void> | undefined;
-    try {
-      await firstRequestStarted.promise;
-      // A wake must reach the runtime before the inline step completes:
-      // it may be the hook resumption that aborts that very step.
-      wakeExecution = task(
-        buildMessageData(queueName, payload, {
-          messageId: MessageId.parse('msg_01ABD'),
-        }),
-        {}
-      );
-      await expect.poll(() => requestCount, { timeout: 1_000 }).toBe(2);
-      await wakeExecution;
-    } finally {
-      releaseFirstRequest.resolve();
-      await Promise.all([firstExecution, wakeExecution]);
-    }
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({ attempt: 2 }),
+      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+    );
   });
 
   it('does not require a runId for workflow health-check payloads', async () => {
@@ -493,6 +508,59 @@ describe('postgres queue http execution', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('stamps createdAt on a new message and keeps an idempotency key off a wake', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await queue.queue('__wkf_workflow_test', { runId: 'run_01ABC' });
+    const [, data, options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0] as [string, MessageData, { jobKey?: string }];
+    expect(new Date(data.createdAt ?? '').getTime()).not.toBeNaN();
+    expect(data.idempotencyKey).toBeUndefined();
+    // A wake's job key is its own message id, so two wakes never collapse.
+    expect(options.jobKey).toBe(data.messageId);
+  });
+
+  it('redelivers the same message on timeoutSeconds: same id and createdAt, next attempt', async () => {
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      undefined,
+      undefined,
+      { timeoutSeconds: 7 }
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    const createdAt = '2026-10-05T00:00:00.000Z';
+    const messageId = MessageId.parse('msg_01STEP');
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__wkf_workflow_test-step',
+        { runId: 'run_01ABC', stepId: 'step_01ABC', stepName: 'test-step' },
+        { messageId, createdAt, idempotencyKey: 'step_01ABC', attempt: 2 }
+      ),
+      { job: { attempts: 2 } }
+    );
+
+    expect(requests[0]?.headers).toMatchObject({
+      'x-vqs-message-id': messageId,
+      'x-vqs-message-attempt': '2',
+      'x-vqs-message-created-at': createdAt,
+    });
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({
+        messageId,
+        createdAt,
+        attempt: 3,
+        idempotencyKey: 'step_01ABC',
+      }),
+      expect.objectContaining({ jobKey: 'step_01ABC' })
+    );
   });
 
   it('defaults pollInterval to 500ms and honors an override from config', async () => {
@@ -929,6 +997,7 @@ function buildMessageData(
     headers?: Record<string, string>;
     idempotencyKey?: string;
     messageId?: MessageId;
+    createdAt?: string;
   }
 ) {
   const { id } = parseQueueName(queueName);
@@ -940,6 +1009,7 @@ function buildMessageData(
     headers: opts?.headers,
     idempotencyKey: opts?.idempotencyKey,
     messageId: opts?.messageId ?? MessageId.parse('msg_01ABC'),
+    ...(opts?.createdAt ? { createdAt: opts.createdAt } : {}),
   });
 }
 
@@ -959,7 +1029,8 @@ async function startWorkflowHttpServer(
   }>,
   port = 0,
   path = '/.well-known/workflow/v1/flow',
-  beforeResponse?: () => Promise<void>
+  beforeResponse?: () => Promise<void>,
+  responseBody: unknown = { ok: true }
 ) {
   const server = createServer(async (req, res) => {
     const body = await new Promise<string>((resolve, reject) => {
@@ -983,7 +1054,7 @@ async function startWorkflowHttpServer(
     if (req.method === 'POST' && req.url === path) {
       if (beforeResponse) await beforeResponse();
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(JSON.stringify(responseBody));
       return;
     }
 

@@ -161,9 +161,9 @@ describe('resumeHook durable resume', () => {
     expect(wake.hookInput).toBeUndefined();
     expect(wake.hookResume).toBeUndefined();
     expect(wake.hookResumeTiming.strategy).toBe('sequential');
-    // Publish retries whose response was lost dedup on the claim key, so a
-    // duplicate wake (one full replay of the run) is not enqueued.
-    expect(wakeOptions.idempotencyKey).toBe(`hook-${params.resumeId}`);
+    // A wake carries no idempotency key: a duplicate costs a cheap
+    // delivery, a key could be absorbed and lose the wakeup.
+    expect(wakeOptions.idempotencyKey).toBeUndefined();
 
     const attributes = Object.assign(
       {},

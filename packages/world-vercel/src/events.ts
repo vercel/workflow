@@ -34,6 +34,8 @@
 import {
   HookForceClaimedError,
   HookNotFoundError,
+  IN_BAND_SUPERSEDED_CODE,
+  InBandSupersededError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -46,6 +48,7 @@ import {
   type Event,
   type EventBatchResult,
   type EventDataPayloadField,
+  type EventListResponse,
   type EventResult,
   entityResolveData,
   type GetEventParams,
@@ -54,7 +57,8 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
-  type PaginatedResponse,
+  type StepStartReason,
+  StepStartReasonSchema,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -118,7 +122,6 @@ type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
 const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
-  'step_started', // runtime reads result.step (checks attempt, state)
 ]);
 
 // =============================================================================
@@ -188,6 +191,13 @@ interface SplitEventData {
     finalSchedulingReplay?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
+    /** step_created: the step's execution mode (spec >= 9). */
+    inline?: boolean;
+    /** step_created / wait_created: the creating orchestrator delivery's
+     *  queue message id (spec >= 9). */
+    creatorMessageId?: string;
+    /** step_started: why this attempt started (spec >= 9). */
+    startReason?: StepStartReason;
   };
 }
 
@@ -235,7 +245,10 @@ type MetaSourceField =
   | 'eventCount'
   | 'rsfs'
   | 'finalSchedulingReplay'
-  | 'optimizations';
+  | 'optimizations'
+  | 'inline'
+  | 'creatorMessageId'
+  | 'startReason';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -443,6 +456,20 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   ) {
     meta.optimizations = eventData.optimizations as string[];
   }
+  // Single-orchestrator (spec >= 9) step and wait bookkeeping. The backend
+  // persists all three into the stored eventData, so a log reader sees the
+  // step's execution mode, which delivery created it, and why each attempt
+  // started.
+  if (typeof eventData.inline === 'boolean') {
+    meta.inline = eventData.inline;
+  }
+  if (typeof eventData.creatorMessageId === 'string') {
+    meta.creatorMessageId = eventData.creatorMessageId;
+  }
+  const startReason = StepStartReasonSchema.safeParse(eventData.startReason);
+  if (startReason.success) {
+    meta.startReason = startReason.data;
+  }
 
   let payload: Uint8Array | undefined;
   if (payloadField && payloadField in eventData) {
@@ -495,7 +522,7 @@ export async function getEvent(
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
@@ -534,6 +561,8 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
+    // The in-band fence's sequencer snapshot, on single-orchestrator runs.
+    ...(result.snapshot ? { snapshot: result.snapshot } : {}),
   };
 }
 
@@ -553,6 +582,10 @@ export async function createWorkflowRunEventBatch(
   params?: CreateEventBatchParams,
   config?: APIConfig
 ): Promise<EventBatchResult> {
+  // The backend allocates a fenced batch in one step from the first frame's
+  // `expectedSeqInBand` and `maxSlot`, and refuses a batch whose frames
+  // disagree on `inBand`, so every frame carries the same values.
+  const fence = params;
   if (events.length === 0) {
     throw new WorkflowWorldError(
       'world-vercel: createBatch requires at least one event',
@@ -597,6 +630,11 @@ export async function createWorkflowRunEventBatch(
       // `params.requestId` → `vercelId` threading, stamped per frame so
       // batched usage facts carry the same attribution.
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(fence?.inBand !== undefined ? { inBand: fence.inBand } : {}),
+      ...(fence?.expectedSeqInBand !== undefined
+        ? { expectedSeqInBand: fence.expectedSeqInBand }
+        : {}),
+      ...(fence?.eventCount !== undefined ? { maxSlot: fence.eventCount } : {}),
       payload,
       ...meta,
       // The batch is one fenced allocation: the backend requires every frame
@@ -639,7 +677,30 @@ export async function createWorkflowRunEventBatch(
     { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
+  // A fenced batch is allocated in one step, so a refusal refuses every event
+  // in it and allocates nothing. Surface it as the same error a single write
+  // gets rather than as per-event failures a caller could mistake for
+  // conflicts.
+  const superseded = wire.results.find(
+    (item) => item.error === IN_BAND_SUPERSEDED_CODE && item.status === 412
+  );
+  if (superseded?.error !== undefined) {
+    throw new InBandSupersededError(superseded.message);
+  }
+
+  // The skipped-slot report of an in-band batch, and the positions the
+  // backend allocated for it (`allocated` is not declared on
+  // `EventBatchResult`; it rides along under that name).
+  const report = {
+    ...(wire.events !== undefined ? { events: wire.events } : {}),
+    ...(wire.reportIncomplete !== undefined
+      ? { reportIncomplete: wire.reportIncomplete }
+      : {}),
+    ...(wire.allocated !== undefined ? { allocated: wire.allocated } : {}),
+  };
+
   return {
+    ...report,
     results: wire.results.map((item): BatchEventItemResult => {
       if (item.error !== undefined) {
         return {
@@ -698,12 +759,6 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     if (data.eventType === 'run_started' && !result.run?.startedAt) {
       throw new WorkflowWorldError(
         'run_started response is missing run.startedAt',
-        { code: 'SCHEMA_VALIDATION' }
-      );
-    }
-    if (data.eventType === 'step_started' && !result.step?.startedAt) {
-      throw new WorkflowWorldError(
-        'step_started response is missing step.startedAt',
         { code: 'SCHEMA_VALIDATION' }
       );
     }
@@ -825,6 +880,12 @@ async function createWorkflowRunEventInner(
     // `maxSlot` because the v4 meta already has an unrelated telemetry
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
+    // The in-band writer fence (spec >= 9). The backend requires `inBand` on
+    // every write to a single-orchestrator run and ignores both on older runs.
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
     // In-band writer fence. The backend refuses a stale in-band write with
     // 412 `in-band-superseded` (InBandSupersededError).
@@ -861,7 +922,14 @@ async function createWorkflowRunEventInner(
     ...meta,
   };
 
-  if (data.eventType === 'run_started' && !params?.skipPreload) {
+  // A single-orchestrator (spec >= 9) write, which always declares `inBand`,
+  // is answered with a plain CBOR body: the runtime loads the log, and its
+  // fence snapshot, before writing `run_started`, so there is no preload.
+  if (
+    data.eventType === 'run_started' &&
+    !params?.skipPreload &&
+    params?.inBand === undefined
+  ) {
     const result = await createWorkflowRunStartedEventV4(
       input,
       config,

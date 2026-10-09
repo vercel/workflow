@@ -929,6 +929,7 @@ async function resumeHookAttempt<T = any>(
         },
         {
           v1Compat,
+          inBand: false,
           ...(resumeId && payloadDigest
             ? { resumeId, resumePayloadDigest: payloadDigest }
             : {}),
@@ -970,13 +971,10 @@ async function resumeHookAttempt<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             ...queueOptions,
-            // Dedup retried publishes whose response was lost: a
-            // duplicate wake is harmless for correctness (deterministic
-            // replay) but costs a full replay of the run, and the queue
-            // accepts a repeated idempotency key by delivering only one
-            // of the messages. Claim-less writes have no resumeId and
-            // keep the previous behavior.
-            ...(resumeId ? { idempotencyKey: `hook-${resumeId}` } : {}),
+            // No idempotency key: a key could be absorbed by an
+            // orchestrator delivery that is already exiting and lose the
+            // wakeup. A duplicate wake from a retried publish only costs
+            // a cheap delivery.
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

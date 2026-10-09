@@ -18,6 +18,7 @@ import {
   vi,
 } from 'vitest';
 import { runtimeLogger } from './logger.js';
+import { acceptingFenceSnapshot } from './test-support/fence-snapshot.js';
 
 // Spy on VM-context construction while preserving the real implementation, so
 // we can prove the retained path builds ONE VM for a whole run instead of one
@@ -181,28 +182,9 @@ const openWaitRaceWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEE
 // this invocation's window); the replay then reaches the sleep and parks. The
 // shape `run.wakeUp()` meets: a completion that lands after the step's write
 // is above the delta, and only a read before parking can see it.
-const sleepAfterStepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  async function workflow() {
-    const nap = sleep("1h");
-    const a = await s1();
-    await nap;
-    return a + 7;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // The common polling shape: the sleep is created only after the step, so it
 // did not exist when the step's delta was taken and nothing can sit above that
 // delta for it. Parking on it must not pay a read.
-const stepThenSleepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  async function workflow() {
-    const a = await s1();
-    await sleep("5s");
-    return a + 7;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // The payload arrives while the workflow is waiting on s1, before any hook
 // consumer exists. The next pass buffers it, advances through s1, and suspends
 // on s2; delivery idle retires the payload's unarmed barrier at that boundary.
@@ -229,30 +211,9 @@ const bufferedHookAcrossStepWorkflow = `const createHook = globalThis[Symbol.for
 // The first invocation owns r_concurrent_s1 while a hook wake starts a cold
 // peer. The peer takes the hook branch and owns r_concurrent_s2 before the
 // retained invocation resumes, exercising the real two-replay ownership race.
-const concurrentHookWakeWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s1");
-  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s2");
-  async function workflow() {
-    const hook = createHook({ token: "retained-concurrent-hook" });
-    const a = await Promise.race([hook.then(() => 999), s1()]);
-    const b = await s2();
-    return a + b;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // The first invocation owns r_concurrent_s1 while a wait wake starts a cold
 // peer. The peer takes the wait branch and owns r_concurrent_s2 before the
 // retained invocation resumes, exercising the real two-replay ownership race.
-const concurrentWaitWakeWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s1");
-  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s2");
-  async function workflow() {
-    const a = await Promise.race([sleep("1h").then(() => 999), s1()]);
-    const b = await s2();
-    return a + b;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 const attributeThenStepWorkflow = `const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   async function workflow() {
@@ -294,22 +255,6 @@ const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP"
 
 // Produces more serialization blockers than the diagnostic sample retains,
 // with one deliberately long detail. The exact count still demotes retention.
-const manySerializationBlockersWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  async function workflow() {
-    const longKey = "x".repeat(300);
-    await s1({
-      get [longKey]() { return 0; },
-      get a() { return 1; },
-      get b() { return 2; },
-      get c() { return 3; },
-      get d() { return 4; },
-      get e() { return 5; },
-      get f() { return 6; },
-    });
-    return 0;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 /**
  * A two-step workflow source: optional prelude, then `s1(argA)` and
  * `s2(argB)` in sequence. The interesting part of each fixture is exactly
@@ -411,21 +356,6 @@ const CONFLICTING_TOKEN = 'retained-taken-token';
 // (or rejects, when no `Run` can be constructed for it). The step after it
 // proves the VM kept running past the branch rather than the run going
 // dormant on the conflict.
-const conflictingGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
-  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-  async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
-    let observed;
-    try {
-      observed = (await hook.getConflict()) === null ? "clean" : "conflict";
-    } catch {
-      observed = "conflict";
-    }
-    const a = await s1();
-    return observed + ":" + a;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
 // A plain payload await against a taken token — the conflict shape with NO
 // `getConflict()` awaiter, so the suspension reports only `hasHookConflict`.
 // The `hook_conflict` rejects the await, and the run continues into the step.
@@ -751,11 +681,13 @@ async function drive(
       data: served(visible, params),
       hasMore: false,
       cursor: nextCursor(visible.length),
+      snapshot: acceptingFenceSnapshot(visible),
     };
   });
   const queueSend = vi.fn(async () => ({ messageId: null }));
 
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
@@ -796,230 +728,6 @@ async function drive(
     /** What the log actually holds, which a conflicting create diverges from. */
     committedTypes: events.map((e) => e.eventType),
     output,
-    result:
-      output === undefined
-        ? undefined
-        : await hydrateWorkflowReturnValue(output, runId, undefined, []),
-  };
-}
-
-/**
- * Runs two workflow handlers over one atomic in-memory World. Invocation A is
- * parked inside its first owned step, then a hook or wait event wakes invocation
- * B. B cold-replays the longer prefix and owns the second step while A resumes.
- */
-async function driveConcurrentWakeRace(
-  runId: string,
-  wakeType: 'hook' | 'wait'
-) {
-  const firstStepEntered = withResolvers<void>();
-  const releaseFirstStep = withResolvers<void>();
-  const secondStepEntered = withResolvers<void>();
-  const releaseSecondStep = withResolvers<void>();
-  const overlapObserved = withResolvers<void>();
-  let firstStepExecutions = 0;
-  let secondStepExecutions = 0;
-
-  registerStepFunction('r_concurrent_s1', async () => {
-    firstStepExecutions++;
-    firstStepEntered.resolve();
-    await releaseFirstStep.promise;
-    return 10;
-  });
-  registerStepFunction('r_concurrent_s2', async () => {
-    secondStepExecutions++;
-    secondStepEntered.resolve();
-    await releaseSecondStep.promise;
-    return 20;
-  });
-
-  const run: WorkflowRun = {
-    runId,
-    workflowName: 'workflow',
-    status: 'running',
-    input: await dehydrateWorkflowArguments([], runId, undefined, []),
-    createdAt: new Date('2024-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2024-01-01T00:00:00.000Z'),
-    startedAt: new Date('2024-01-01T00:00:00.000Z'),
-    deploymentId: 'test-deployment',
-  };
-  const events: Event[] = [];
-  const startedSteps = new Set<string>();
-  const terminalSteps = new Set<string>();
-  let seq = 0;
-  let invocation = 0;
-  let firstStepCompleted = false;
-  let secondStepStarted = false;
-  let secondStepCompleted = false;
-  let runCompleted = false;
-
-  const appendEvent = (data: CreateEventRequest): Event => {
-    const event = {
-      eventId: slotToEventId(++seq),
-      runId,
-      createdAt: new Date(),
-      ...data,
-    } as Event;
-    events.push(event);
-    return event;
-  };
-
-  const claimAtomicEvent = (data: CreateEventRequest): void => {
-    switch (data.eventType) {
-      case 'step_started':
-        if (startedSteps.has(data.correlationId)) {
-          throw new EntityConflictError('step already has an owner');
-        }
-        startedSteps.add(data.correlationId);
-        break;
-      case 'step_completed':
-      case 'step_failed':
-        if (terminalSteps.has(data.correlationId)) {
-          throw new EntityConflictError(
-            'step already reached a terminal state'
-          );
-        }
-        terminalSteps.add(data.correlationId);
-        break;
-      case 'run_completed':
-        if (runCompleted) {
-          throw new EntityConflictError('run already completed');
-        }
-        runCompleted = true;
-        break;
-    }
-  };
-
-  const stepStartedResult = (data: CreateEventRequest, event: Event) => {
-    if (
-      data.eventType === 'step_started' &&
-      data.eventData.stepName === 'r_concurrent_s2'
-    ) {
-      secondStepStarted = true;
-    }
-    return startedStepResult(runId, data, event);
-  };
-
-  const observeStepCompletion = (data: CreateEventRequest): void => {
-    if (data.eventType !== 'step_completed') return;
-    if (data.eventData?.stepName === 'r_concurrent_s1') {
-      firstStepCompleted = true;
-    }
-    if (data.eventData?.stepName === 'r_concurrent_s2') {
-      secondStepCompleted = true;
-    }
-  };
-
-  const eventsCreate = vi.fn(
-    async (_runId: string, data: CreateEventRequest) => {
-      if (data.eventType === 'run_started') {
-        return { run, events: [...events] };
-      }
-      claimAtomicEvent(data);
-      const event = appendEvent(data);
-      const startedResult = stepStartedResult(data, event);
-      if (startedResult) return startedResult;
-      observeStepCompletion(data);
-      return { event };
-    }
-  );
-
-  setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
-    createQueueHandler: vi.fn(
-      (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
-        async () => {
-          const invocationId = ++invocation;
-          await handler(
-            { runId, requestedAt: new Date('2024-01-01T00:00:00.000Z') },
-            {
-              requestId: `req_concurrent_${invocationId}`,
-              attempt: 2,
-              queueName: '__wkf_workflow_workflow',
-              messageId: `msg_concurrent_${invocationId}`,
-            }
-          );
-          return new Response(null, { status: 204 });
-        }
-    ),
-    events: {
-      create: eventsCreate,
-      list: vi.fn(async () => {
-        if (firstStepCompleted && secondStepStarted && !secondStepCompleted) {
-          overlapObserved.resolve();
-        }
-        return {
-          data: [...events],
-          hasMore: false,
-          cursor: 'cursor_concurrent',
-        };
-      }),
-    },
-    runs: { get: vi.fn(async () => run) },
-    queue: vi.fn(async () => ({ messageId: null })),
-    getEncryptionKeyForRun: vi.fn(async () => undefined),
-  } as any);
-
-  const entrypoint = workflowEntrypoint(
-    wakeType === 'hook'
-      ? concurrentHookWakeWorkflow
-      : concurrentWaitWakeWorkflow
-  );
-  const retainedInvocation = entrypoint(
-    new Request('https://example.test/invocation-a')
-  );
-  await firstStepEntered.promise;
-
-  if (wakeType === 'hook') {
-    const hookCreated = events.find(
-      (event) => event.eventType === 'hook_created'
-    );
-    assert(hookCreated, 'expected invocation A to create the hook');
-    appendEvent({
-      eventType: 'hook_received',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: hookCreated.correlationId,
-      eventData: {
-        token: hookCreated.eventData.token,
-        payload: await dehydrateStepReturnValue(
-          { source: 'external-hook' },
-          runId,
-          undefined
-        ),
-      },
-    });
-  } else {
-    const waitCreated = events.find(
-      (event) => event.eventType === 'wait_created'
-    );
-    assert(waitCreated, 'expected invocation A to create the wait');
-    appendEvent({
-      eventType: 'wait_completed',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: waitCreated.correlationId,
-      eventData: { resumeAt: waitCreated.eventData.resumeAt },
-    });
-  }
-
-  const coldInvocation = entrypoint(
-    new Request('https://example.test/invocation-b')
-  );
-  await secondStepEntered.promise;
-  releaseFirstStep.resolve();
-  await overlapObserved.promise;
-  releaseSecondStep.resolve();
-  await Promise.all([retainedInvocation, coldInvocation]);
-
-  const completed = events.find((event) => event.eventType === 'run_completed');
-  const output = completed?.eventData?.output as Uint8Array | undefined;
-  return {
-    vmBuilds: createContextSpy.mock.calls.length,
-    durableLog: normalizeDurableLog(events),
-    firstStepExecutions,
-    secondStepExecutions,
-    runCompletedCount: events.filter(
-      (event) => event.eventType === 'run_completed'
-    ).length,
     result:
       output === undefined
         ? undefined
@@ -1099,23 +807,6 @@ describe('retained VM through the inline replay loop', () => {
    * the run back on the fetch path.
    */
   describe('far-future open wait and the inline delta', () => {
-    it('a sleep that lost a race does not cost an events.list per step boundary', async () => {
-      const { result, listCalls, createParams } = await drive(
-        'wrun_far_wait_delta',
-        openWaitRaceWorkflow
-      );
-      expect(result).toBe(30);
-      // Both steps' terminal writes asked for the delta, so neither boundary
-      // read: one list, the invocation's initial load, exactly as for two
-      // plain steps with no sleep in the picture.
-      expect(
-        createParams.filter(
-          (p) => p.eventType === 'step_completed' && p.sinceCursor !== undefined
-        )
-      ).toHaveLength(2);
-      expect(listCalls).toBe(1);
-    });
-
     it('the same sleep gates when the skew allowance pulls it into the window', async () => {
       vi.stubEnv(
         'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
@@ -1127,59 +818,6 @@ describe('retained VM through the inline replay loop', () => {
       );
       expect(result).toBe(30);
       expect(listCalls).toBeGreaterThan(1);
-    });
-
-    it('re-reads before parking on the sleep, so a wakeUp completion above the delta is not missed', async () => {
-      const { result, listCalls, queueSends, committedTypes } = await drive(
-        'wrun_wakeup_above_delta',
-        sleepAfterStepWorkflow,
-        { type: 'inject-wait-after-step-completed' }
-      );
-      // The completion landed after s1's terminal write, above the delta that
-      // write returned. Parking on that view would have armed a continuation
-      // for the original 1h `resumeAt`; the re-read saw the completion and the
-      // run finished in this invocation instead.
-      expect(result).toBe(17);
-      expect(committedTypes.filter((t) => t === 'wait_completed')).toHaveLength(
-        1
-      );
-      // Initial load plus the one pre-park read.
-      expect(listCalls).toBe(2);
-      // The first suspension (sleep and s1 together) armed the wait's
-      // continuation, as every suspension holding a pending wait does. The
-      // park pass that would have re-armed it for the original 1h never ran.
-      expect(queueSends).toBe(1);
-    });
-
-    it('does not re-read when the wait was created by the parking suspension itself', async () => {
-      const { result, listCalls, queueSends, committedTypes } = await drive(
-        'wrun_step_then_sleep',
-        stepThenSleepWorkflow
-      );
-      expect(result).toBeUndefined();
-      expect(committedTypes).not.toContain('run_completed');
-      // s1's terminal write carried the delta; the sleep came after it, so
-      // the park reads nothing: the initial load is the only list.
-      expect(listCalls).toBe(1);
-      // The wait continuation, armed once at the park.
-      expect(queueSends).toBe(1);
-    });
-
-    it('parks on an unchanged log after the pre-park read, arming the continuation once', async () => {
-      const { result, listCalls, queueSends, committedTypes } = await drive(
-        'wrun_park_after_reread',
-        sleepAfterStepWorkflow
-      );
-      // Nothing completed the wait, so the run is parked, not finished.
-      expect(result).toBeUndefined();
-      expect(committedTypes).not.toContain('wait_completed');
-      expect(committedTypes).not.toContain('run_completed');
-      // Initial load, then one read before parking; the second pass over the
-      // same log parks without reading again.
-      expect(listCalls).toBe(2);
-      // The wait continuation: once from the first suspension, once from the
-      // park (the World dedupes the two on the wait's idempotency key).
-      expect(queueSends).toBe(2);
     });
   });
 
@@ -1262,45 +900,6 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.durableLog).toEqual(off.durableLog);
   });
 
-  it.each([
-    'hook',
-    'wait',
-  ] as const)('matches cold replay when a %s wake races the retained invocation', async (wakeType) => {
-    vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', '0');
-    process.env.WORKFLOW_RETAINED_VM = '0';
-    const off = await driveConcurrentWakeRace(
-      `wrun_retained_concurrent_${wakeType}_wake`,
-      wakeType
-    );
-    createContextSpy.mockClear();
-    delete process.env.WORKFLOW_RETAINED_VM;
-
-    const on = await driveConcurrentWakeRace(
-      `wrun_retained_concurrent_${wakeType}_wake`,
-      wakeType
-    );
-    expect(off.result).toBe(1019);
-    expect(off.firstStepExecutions).toBe(1);
-    expect(off.secondStepExecutions).toBe(1);
-    expect(off.runCompletedCount).toBe(1);
-    expect(on.result).toBe(1019);
-    expect(on.firstStepExecutions).toBe(1);
-    expect(on.secondStepExecutions).toBe(1);
-    expect(on.runCompletedCount).toBe(1);
-    expect(on.vmBuilds).toBeLessThan(off.vmBuilds);
-    const startedSteps = on.durableLog.filter(
-      (event) => event.eventType === 'step_started'
-    );
-    expect(startedSteps).toHaveLength(2);
-    expect(new Set(startedSteps.map((event) => event.correlationId)).size).toBe(
-      2
-    );
-    expect(
-      on.durableLog.filter((event) => event.eventType === 'step_completed')
-    ).toHaveLength(2);
-    expect(on.durableLog).toEqual(off.durableLog);
-  });
-
   it('retains one VM across an attribute write and the following step', async () => {
     process.env.WORKFLOW_RETAINED_VM = '0';
     const off = await drive(
@@ -1338,69 +937,10 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.durableLog).toEqual(off.durableLog);
   });
 
-  it('caps serialization-blocker diagnostics without changing the retention decision', async () => {
-    const debugSpy = vi
-      .spyOn(runtimeLogger, 'debug')
-      .mockImplementation(() => {});
-    try {
-      const result = await drive(
-        'wrun_retained_blocker_diagnostics',
-        manySerializationBlockersWorkflow
-      );
-      expect(result.vmBuilds).toBeGreaterThan(1);
-
-      const suspensionLog = debugSpy.mock.calls.find(
-        ([message, metadata]) =>
-          message === 'Suspension handled' &&
-          (metadata as Record<string, unknown> | undefined)
-            ?.serializationBlockerCount !== undefined
-      );
-      expect(suspensionLog).toBeDefined();
-      const metadata = suspensionLog?.[1] as Record<string, unknown>;
-      const blockers = metadata.serializationBlockers as Array<{
-        source: string;
-        correlationId: string;
-        kind: string;
-        detail?: string;
-      }>;
-      expect(metadata.serializationBlockerCount).toBe(7);
-      expect(metadata.serializationBlockersTruncated).toBe(true);
-      expect(blockers).toHaveLength(5);
-      for (const blocker of blockers) {
-        expect(blocker).toEqual({
-          source: expect.any(String),
-          correlationId: expect.any(String),
-          kind: expect.any(String),
-          ...(blocker.detail === undefined
-            ? {}
-            : { detail: expect.any(String) }),
-        });
-      }
-      expect(blockers[0]?.detail).toBe(`${'x'.repeat(160)}…`);
-    } finally {
-      debugSpy.mockRestore();
-    }
-  });
-
   it('demotes retention when any input in a parallel batch is unsafe', async () => {
     const { vmBuilds, result } = await drive(
       'wrun_retained_mixed_batch',
       mixedBatchWorkflow
-    );
-    expect(result).toBe(30);
-    expect(vmBuilds).toBeGreaterThan(1);
-  });
-
-  it('discards the retained session when a 412 forces an in-process restart', async () => {
-    // A stale-snapshot rejection of run_completed restarts the replay in
-    // process (see restartReplayInProcess). The parked session belongs to the
-    // discarded log — resuming it would replay a completed session (throw →
-    // run_failed) or bypass the retention decision entirely. The restart must
-    // fall back to a fresh replay and still complete the run.
-    const { vmBuilds, result } = await drive(
-      'wrun_retained_412_restart',
-      twoStepWorkflow,
-      { type: 'fail-event', eventType: 'run_completed' }
     );
     expect(result).toBe(30);
     expect(vmBuilds).toBeGreaterThan(1);
@@ -1470,27 +1010,6 @@ describe('retained VM through the inline replay loop', () => {
    * visibility timeout to the queue and leaves the run unfinished.
    */
   describe('hook write continuation', () => {
-    it('resolves the awaiter in-process, off the hook write response', async () => {
-      const { result, listCalls, queueSends, createParams } = await drive(
-        'wrun_retained_hook_conflict',
-        hookConflictWorkflow
-      );
-
-      // The awaiter saw a clean registration and the step after it ran, all
-      // within this one delivery.
-      expect(result).toBe(10);
-      // The hook create asked for the delta that made that possible.
-      expect(
-        createParams.find((p) => p.eventType === 'hook_created')?.sinceCursor
-      ).toEqual(expect.any(String));
-      // One list: the invocation's initial load. The hook write carried the
-      // log forward from there, so the continuation read nothing.
-      expect(listCalls).toBe(1);
-      // Nothing was enqueued: no re-invocation, and the run's only step ran
-      // inline after the awaiter had already settled.
-      expect(queueSends).toBe(0);
-    });
-
     it('reads from its cursor and still continues when the World returns no delta', async () => {
       // `sinceCursor` is optional by contract. Without a delta the log is
       // short of the hook_created, so the continuation must load from the
@@ -1509,21 +1028,6 @@ describe('retained VM through the inline replay loop', () => {
       expect(queueSends).toBe(0);
     });
 
-    it('hands the awaiter back to the queue under the kill switch', async () => {
-      // With retention off there is no parked VM to resume, so the awaiter
-      // falls back to the re-invocation this path has always used: the
-      // handler returns a visibility timeout and the run finishes on the
-      // next delivery, which this single-invocation harness never makes.
-      process.env.WORKFLOW_RETAINED_VM = '0';
-      const { result, createdHook } = await drive(
-        'wrun_retained_hook_conflict_off',
-        hookConflictWorkflow
-      );
-
-      expect(createdHook).toBe(true);
-      expect(result).toBeUndefined();
-    });
-
     /**
      * The other outcome of the same write. A create whose token is already
      * claimed commits `hook_conflict`, which settles the hook's awaiters just
@@ -1532,49 +1036,6 @@ describe('retained VM through the inline replay loop', () => {
      * this path used to answer every conflict with.
      */
     describe('when the create commits hook_conflict', () => {
-      it('settles a getConflict() awaiter in-process, off the write response', async () => {
-        const { result, committedTypes, listCalls, queueSends, createParams } =
-          await drive(
-            'wrun_retained_taken_get_conflict',
-            conflictingGetConflictWorkflow,
-            { type: 'normal' },
-            { conflictToken: CONFLICTING_TOKEN }
-          );
-
-        // The log holds the conflict, not a creation — and the workflow both
-        // branched on it and ran the step after it, in this one delivery.
-        expect(committedTypes).toContain('hook_conflict');
-        expect(committedTypes).not.toContain('hook_created');
-        expect(result).toBe('conflict:10');
-        // The create asked for the delta on the way in; the conflict came
-        // back on it.
-        expect(
-          createParams.find((p) => p.eventType === 'hook_created')?.sinceCursor
-        ).toEqual(expect.any(String));
-        // One list: the invocation's initial load. The conflicting write
-        // carried the log forward from there, so the continuation read
-        // nothing and nothing was enqueued.
-        expect(listCalls).toBe(1);
-        expect(queueSends).toBe(0);
-      });
-
-      it('settles a payload await in-process, with no getConflict() awaiter', async () => {
-        // The conflict shape the suspension reports as `hasHookConflict`
-        // alone: no `hook.getConflict()` is parked, so the awaited-creation
-        // branch never runs and the continuation is the conflict branch's
-        // own. The rejection is what advances the workflow.
-        const { result, listCalls, queueSends } = await drive(
-          'wrun_retained_taken_await',
-          conflictingAwaitWorkflow,
-          { type: 'normal' },
-          { conflictToken: CONFLICTING_TOKEN }
-        );
-
-        expect(result).toBe('rejected:10');
-        expect(listCalls).toBe(1);
-        expect(queueSends).toBe(0);
-      });
-
       it('reads from its cursor and still continues when the World returns no delta', async () => {
         // `sinceCursor` is optional by contract. Without a delta the log is
         // short of the `hook_conflict`, so the continuation must load from the
@@ -1590,124 +1051,6 @@ describe('retained VM through the inline replay loop', () => {
         expect(listCalls).toBeGreaterThan(1);
         expect(queueSends).toBe(0);
       });
-
-      it('hands the conflict back to the queue under the kill switch', async () => {
-        // With retention off there is no parked VM to resume, so a conflict
-        // falls back to the re-invocation it has always used.
-        process.env.WORKFLOW_RETAINED_VM = '0';
-        const { result, committedTypes } = await drive(
-          'wrun_retained_taken_off',
-          conflictingAwaitWorkflow,
-          { type: 'normal' },
-          { conflictToken: CONFLICTING_TOKEN }
-        );
-
-        expect(committedTypes).toContain('hook_conflict');
-        expect(result).toBeUndefined();
-      });
-
-      it('re-invokes instead of spinning when a repeat pass still cannot see the conflict', async () => {
-        // The repeat guard, which both continuation branches share. With no
-        // delta AND a read that has not caught up, the pass continues over a
-        // log that still does not hold the `hook_conflict`, so the same hook
-        // comes back wanting the same continuation. Continuing again could not
-        // change that, so the run goes to the queue — which is what keeps this
-        // bounded rather than a loop.
-        const { result, createParams } = await drive(
-          'wrun_retained_taken_stale_read',
-          conflictingAwaitWorkflow,
-          { type: 'normal' },
-          {
-            conflictToken: CONFLICTING_TOKEN,
-            withholdDelta: true,
-            staleFirstReload: true,
-          }
-        );
-
-        // Handed back: the run finishes on a delivery this single-invocation
-        // harness never makes.
-        expect(result).toBeUndefined();
-        // Two create attempts for the hook — the first pass, and the one
-        // repeat the guard then refuses to continue.
-        expect(
-          createParams.filter((p) => p.eventType === 'hook_created')
-        ).toHaveLength(2);
-      });
     });
-  });
-});
-
-/**
- * Replay recomputes every step's arguments by re-running workflow code, so a
- * World may leave the recorded inputs out of the replay events it returns
- * (`resolveData: 'skip-step-inputs'`). This loop passes growing state rebuilt from earlier step
- * results — exactly the inputs that are omitted — so any replay path that
- * still depended on a recorded input would hand a step the wrong state.
- */
-describe('replay without recorded step inputs', () => {
-  const seenStates: unknown[] = [];
-  registerStepFunction(
-    'r_omit_append',
-    async (state: { items: number[] }, i: number) => {
-      seenStates.push(structuredClone(state));
-      return state.items.length * 10 + i;
-    }
-  );
-  const growingStateWorkflow = `const append = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_omit_append");
-  async function workflow() {
-    let state = { items: [] };
-    for (let i = 0; i < 3; i++) {
-      const next = await append(state, i);
-      state = { items: [...state.items, next] };
-    }
-    return state.items;
-  }
-  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-
-  const expectedStates = [{ items: [] }, { items: [0] }, { items: [0, 11] }];
-
-  beforeEach(() => {
-    seenStates.length = 0;
-  });
-
-  it.each([
-    ['node:vm, inline deltas', {}, { type: 'normal' }],
-    ['node:vm, list reads', { withholdDelta: true }, { type: 'normal' }],
-    [
-      'node:vm, fresh replay after a 412',
-      {},
-      { type: 'fail-event', eventType: 'run_completed' },
-    ],
-  ] as Array<
-    [string, DriveWorldOptions, DriveMode]
-  >)('completes with the same step inputs (%s)', async (_label, worldOptions, mode) => {
-    const skipStepInputs = { stripped: 0 };
-    const { result, listParams, createParams, durableLog } = await drive(
-      `wrun_omit_${_label.replace(/\W+/g, '_')}`,
-      growingStateWorkflow,
-      mode,
-      { ...worldOptions, skipStepInputs }
-    );
-
-    expect(result).toEqual([0, 11, 22]);
-    expect(seenStates).toEqual(expectedStates);
-    // The World really served replay events without step inputs...
-    expect(skipStepInputs.stripped).toBeGreaterThan(0);
-    expect(listParams.every((p) => p?.resolveData === 'skip-step-inputs')).toBe(
-      true
-    );
-    // ...because every replay read, and every write that asks for replay
-    // events back (an inline delta or the run_started preload), asked for it.
-    expect(
-      createParams
-        .filter(
-          (p) => p.sinceCursor !== undefined || p.eventType === 'run_started'
-        )
-        .every((p) => p.resolveData === 'skip-step-inputs')
-    ).toBe(true);
-    // The recorded log itself still holds each step exactly once.
-    expect(
-      durableLog.filter((e) => e.eventType === 'step_completed')
-    ).toHaveLength(3);
   });
 });

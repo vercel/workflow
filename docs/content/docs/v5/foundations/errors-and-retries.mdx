@@ -33,7 +33,15 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
-Steps get enqueued immediately after a failure. Read on to see how this can be customized.
+A failed step is retried after about a second by default. Read on to see how this can be customized.
+
+### How a retry runs
+
+- A step that runs from the queue keeps one queue message for its whole life. A retry writes a `step_retrying` event and asks for that same message again after the retry delay, so a retry never creates a second message, and the message is acknowledged only once the step completes or fails for good.
+- A step that ran inline in the workflow's own invocation moves to the queue for its retry.
+- The attempt number comes from the event log: it is the number of times the step has started, plus one. `getStepMetadata().attempt` reports it, and `stepStartedAt` stays the time of the first attempt.
+- A queue may deliver a retry before its delay has passed (Vercel Queues waits at most 15 minutes per delivery). The step checks the log and asks for the remaining time without running its body.
+- A step whose next retry would land after its queue message expires (7 days) fails with the error instead.
 
 <Callout type="info">
   When a retried step performs external side effects (payments, emails, API
@@ -134,9 +142,11 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
 <Callout type="info">
-  Setting <code>maxRetries = 0</code> means the step will run once but will not
-  be retried on failure. The default is <code>maxRetries = 3</code>, meaning the
-  step can run up to 4 times total (1 initial attempt + 3 retries).
+  Setting <code>maxRetries = 0</code> means the step will run at most once and
+  will not be retried on failure. If the invocation running it dies after the
+  step started, the step fails instead of running again. The default is
+  <code>maxRetries = 3</code>, meaning the step can run up to 4 times total (1
+  initial attempt + 3 retries).
 </Callout>
 
 ## Serialization failures

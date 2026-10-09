@@ -125,6 +125,17 @@ export async function startServer(opts: {
 
 const Invoke = z.compile(z.object({ runId: z.coerce.string() }));
 
+type FenceSnapshot = { seq: number; seqInBand: number };
+
+/** What the `/_fence-probe` route in server.mts observed. */
+type FenceProbe = {
+  atCreation: FenceSnapshot | null;
+  refusal: { name: string; status: unknown } | null;
+  afterRefusal: FenceSnapshot | null;
+  acceptedEventId: string | null;
+  afterAccept: FenceSnapshot | null;
+};
+
 export function createFetcher(control: Control) {
   return {
     async invoke<F extends Files, W extends Workflows<F>>(
@@ -179,6 +190,37 @@ export function createFetcher(control: Control) {
         }[];
       };
       return data.events;
+    },
+    /** The in-band fence snapshot the first page of a run's log carried. */
+    async getEventLogSnapshot(
+      runId: string
+    ): Promise<{ seq: number; seqInBand: number } | null> {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events`
+      );
+      const data = (await x.json()) as {
+        snapshot: { seq: number; seqInBand: number } | null;
+      };
+      return data.snapshot;
+    },
+    async getCapabilities(): Promise<Record<string, unknown>> {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/_capabilities`
+      );
+      return (await x.json()) as Record<string, unknown>;
+    },
+    /** See the `/_fence-probe` route in server.mts. */
+    async probeFence(): Promise<FenceProbe> {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/_fence-probe`,
+        {
+          method: 'POST',
+        }
+      );
+      if (!x.ok) {
+        throw new Error(`Fence probe failed: ${x.status} ${await x.text()}`);
+      }
+      return (await x.json()) as FenceProbe;
     },
     async getFlowInvocationCount(runId: string): Promise<number> {
       const x = await fetch(

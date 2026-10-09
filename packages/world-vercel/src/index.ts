@@ -62,10 +62,24 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // Vercel Queues supports maxConcurrency-limited consumers, which
-      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
-      // flow topics (see queue.ts and @workflow/builders).
+      // Vercel Queues supports maxConcurrency-limited consumers: every run's
+      // orchestrator messages go to a per-run topic consumed with
+      // `maxConcurrency: 1` (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // The backend fences in-band writes on single-orchestrator runs: list
+      // pages carry `snapshot`, and a stale in-band write gets 412
+      // `in-band-superseded`, mapped to `InBandSupersededError` (events.ts).
+      inBandFence: true,
+      // The backend stores a single-orchestrator event's `occurredAt` as its
+      // `createdAt` (clamped only for clock skew beyond an hour ahead or a
+      // week behind), on creates and batch items alike, so run-ahead may
+      // hand an outcome to the workflow before its write commits. The
+      // runtime checks every speculative write's stored time anyway.
+      inBandEventTime: true,
+      // A spec-9 batch is ordered per entity: once the backend refuses an
+      // item, it refuses the batch's later items of the same correlation id
+      // (409 `batch-earlier-item-failed`).
+      inBandBatchEntityOrder: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,

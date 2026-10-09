@@ -446,33 +446,34 @@ describe('sim store', () => {
     });
   });
 
-  describe('precondition guard', () => {
-    it('fences a replay write behind an out-of-band one, only when enabled', async () => {
-      const guarded = setup({ preconditionGuard: true });
-      await createRun(guarded.store, RUN);
-      await guarded.store.events.create(RUN, {
+  describe('in-band fence', () => {
+    it('lets an out-of-band write land between a load and an in-band write without superseding it', async () => {
+      const { store } = setup();
+      await createRun(store, RUN);
+      await store.events.create(RUN, {
         eventType: 'hook_created',
         specVersion: SPEC,
         correlationId: 'hook_1',
         eventData: { token: 'approval:1' },
       });
+      const loaded = await store.events.list({ runId: RUN });
 
-      guarded.tick(10);
-      const snapshot = {
-        maxSlot: guarded.store.allEvents(RUN).length,
-        count: guarded.store.allEvents(RUN).length,
-      };
-      guarded.tick(10);
-      // An out-of-band resume: no snapshot, so it advances the marker.
-      await guarded.store.events.create(RUN, {
+      // An out-of-band resume after the load moves `seq`, not `seqInBand`.
+      await store.events.create(RUN, {
         eventType: 'hook_received',
         specVersion: SPEC,
         correlationId: 'hook_1',
         eventData: { payload: new Uint8Array() },
       });
+      const after = await store.events.list({ runId: RUN });
+      expect(after.snapshot).toEqual({
+        seq: (loaded.snapshot?.seq ?? 0) + 1,
+        seqInBand: loaded.snapshot?.seqInBand,
+      });
 
+      // So the orchestrator's count from the earlier load is still current.
       await expect(
-        guarded.store.events.create(
+        store.events.create(
           RUN,
           {
             eventType: 'step_created',
@@ -480,58 +481,8 @@ describe('sim store', () => {
             correlationId: 'step_1',
             eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
           },
-          { snapshot }
+          { inBand: true, expectedSeqInBand: loaded.snapshot?.seqInBand }
         )
-      ).rejects.toThrow(/out of band/);
-
-      // An up-to-date snapshot passes — an equal slot must not livelock.
-      await expect(
-        guarded.store.events.create(
-          RUN,
-          {
-            eventType: 'step_created',
-            specVersion: SPEC,
-            correlationId: 'step_1',
-            eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
-          },
-          {
-            snapshot: {
-              maxSlot: guarded.store.allEvents(RUN).length,
-              count: guarded.store.allEvents(RUN).length,
-            },
-          }
-        )
-      ).resolves.toBeTruthy();
-    });
-
-    // No book scenario reaches this half at a decision: with commit-time slots
-    // an in-flight write lands above the caller's watermark, where the
-    // watermark half sees it first. Only a hole below the watermark gets here.
-    it('fences a snapshot missing an event below its own watermark, only with the count guard', async () => {
-      const writeStep = (target: SimStore, maxSlot: number, count: number) =>
-        target.events.create(
-          RUN,
-          {
-            eventType: 'step_created',
-            specVersion: SPEC,
-            correlationId: 'step_1',
-            eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
-          },
-          { snapshot: { maxSlot, count } }
-        );
-
-      const counted = setup({ preconditionGuard: true, countGuard: true });
-      await createRun(counted.store, RUN);
-      const tail = counted.store.allEvents(RUN).length;
-      await expect(writeStep(counted.store, tail, tail - 1)).rejects.toThrow(
-        /at or below the caller's watermark/
-      );
-      await expect(writeStep(counted.store, tail, tail)).resolves.toBeTruthy();
-
-      const watermarkOnly = setup({ preconditionGuard: true });
-      await createRun(watermarkOnly.store, RUN);
-      await expect(
-        writeStep(watermarkOnly.store, tail, tail - 1)
       ).resolves.toBeTruthy();
     });
   });

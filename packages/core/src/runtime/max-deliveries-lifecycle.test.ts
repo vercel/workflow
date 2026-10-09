@@ -20,8 +20,12 @@ beforeEach(() => {
   vi.stubEnv('WORKFLOW_MAX_QUEUE_DELIVERIES', '1');
   vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
-    events: { create },
+    events: {
+      create,
+      list: async () => ({ data: [], hasMore: false, cursor: null }),
+    },
     createQueueHandler: (_prefix, handler) => async () => {
       await handler(
         { runId, requestedAt: new Date() },
@@ -46,12 +50,12 @@ afterEach(() => {
 const run = () => workflowEntrypoint('')(new Request('http://localhost/'));
 
 it('dispatches max-deliveries failure only after its terminal write lands', async () => {
-  const persisted = withResolvers<void>();
+  const persisted = withResolvers<object>();
   create.mockReturnValueOnce(persisted.promise);
   const execution = run();
   await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
   expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
-  persisted.resolve();
+  persisted.resolve({});
   expect((await execution).status).toBe(204);
   expect(dispatchRunFailedHooks).toHaveBeenCalledExactlyOnceWith(
     runId,

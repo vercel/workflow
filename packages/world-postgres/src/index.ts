@@ -59,12 +59,7 @@ export function createWorld(
 ): World & { start(): Promise<void> } {
   const maxPoolSize =
     config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
-  const pool =
-    config.pool ||
-    new Pool({
-      connectionString: config.connectionString || getDefaultConnectionString(),
-      ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
-    });
+  const pool = config.pool || createOwnedPool(config, maxPoolSize);
 
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
@@ -87,6 +82,12 @@ export function createWorld(
       // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
       // the hook_created branch of storage.ts.
       hookForceClaim: true,
+      // A run's orchestrator deliveries share one Graphile named queue (see
+      // queue.ts), and the events storage fences in-band writes: the two
+      // halves of the single-writer guarantee.
+      maxConcurrency: true,
+      // Required by the runtime; see in-band-fence.test.ts for conformance.
+      inBandFence: true,
     },
     ...storage,
     ...streamer,
@@ -112,6 +113,33 @@ export function createWorld(
       }
     },
   };
+}
+
+/**
+ * The pool the World creates when the caller passes none.
+ *
+ * It listens for `error`: pg-pool re-emits an idle client's connection error
+ * (a database restart, `pg_terminate_backend`) on the pool, and an
+ * EventEmitter with no `error` listener throws it as an uncaught exception.
+ * Graphile Worker listens only while the queue runs, and `pool.end()`
+ * resolves before its idle clients have closed, so without this a backend
+ * terminated during or after `close()` ends the process. The dropped client is
+ * already out of the pool, and the next query opens a new one.
+ */
+function createOwnedPool(
+  config: PostgresWorldConfig,
+  maxPoolSize: number | undefined
+): Pool {
+  const pool = new Pool({
+    connectionString: config.connectionString || getDefaultConnectionString(),
+    ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
+  });
+  pool.on('error', (error) => {
+    console.warn(
+      `[world-postgres] idle database connection closed: ${error.message}`
+    );
+  });
+  return pool;
 }
 
 // Re-export schema for users who want to extend or inspect the database schema

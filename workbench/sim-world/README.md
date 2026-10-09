@@ -107,7 +107,11 @@ so virtual time stops with it and no timer can fire while anything is held. If
 the interleaving you need is *a timer firing while a step result is
 outstanding*, no arrangement of holds will reach it. `sim.deliverQueued` is the
 way out. It delivers a queued message from inside the script, concurrently with
-the hold. See
+the hold. A timer is an orchestrator message, though, and the queue never runs
+two of a run's orchestrator deliveries at once, so a timer for a run whose
+orchestrator is held also needs `sim.expireLease()` first: that is the
+scenario stating that the held delivery stalled past its lease, and what it
+then asserts is the in-band fence. See
 [the API reference](../../packages/world-sim/README.md#deliverqueued-and-why-it-is-not-an-advance)
 for the shape, and
 [`unclaimed-payload-under-fork.ts`](./scenarios/unclaimed-payload-under-fork.ts)
@@ -130,10 +134,16 @@ intermediate ordering.
 There is deliberately no way to expect a violation. A scenario states the
 outcome the run should have reached and stays red until the runtime gets there.
 
-### Per-scenario world flags
+### Overlapping orchestrators
 
-`preconditionGuard` and `countGuard` on the spec control the guards for that
-scenario. The command-line fence flags below override them for a whole run.
+The simulated World always implements the single-writer guarantee of a
+single-orchestrator run: its queue hands out one orchestrator delivery per run
+at a time, and its store enforces the in-band fence. There is no flag to turn
+either off. To force the overlap the queue would otherwise prevent, hold the
+orchestrator and call `sim.expireLease({ redeliver: true })`, then
+`sim.deliverQueued()` to start a successor alongside it. Whichever of the two
+writes in-band second is refused with `InBandSupersededError`; assert that
+with `sim.check`.
 
 ## Flags
 
@@ -141,17 +151,10 @@ scenario. The command-line fence flags below override them for a whole run.
 | --- | --- |
 | `--verbose` | Include queue deliveries in the trace |
 | `--color` / `--no-color` | Force color on through a pipe or off. Default: on for a terminal, off otherwise, so `pnpm sim > out.txt` is already diffable |
-| `--fence` / `--no-fence` | Force the optimistic-concurrency fence on or off for every scenario |
 | `--report-only` | Print every failure, but exit 0 |
 | `--summary-file <path>` | Create one collapsed `<details>` with the count on the visible line and the table behind it for a PR comment or `$GITHUB_STEP_SUMMARY` |
 | `--detail-file <path>` | Write the full trace with color forced off as a CI artifact |
 | `--title <text>` | Set the heading for the summary file |
-
-**`--no-fence`** turns the fence off everywhere, asking whether anything relies
-on it. It is a diagnostic. **Read the violation count, not the
-pass count**, because a scenario whose whole point is that the guard fired
-asserts exactly that and fails by design when you disarm it
-(`in-flight-before-decision-counted` is the one that does this today).
 
 ## In CI
 
@@ -214,9 +217,9 @@ means a scenario is ready to retire.
 
 Run the book to see the current set. This file deliberately does not keep a
 list, because a list here is a second copy of something the book already says
-exactly, and it is the copy that goes stale. [`DESIGN.md`](../../packages/world-sim/DESIGN.md#the-six)
-contains the analysis that you cannot derive from a run: which guard closes
-which shape, which guards are armed in production, and which are dark.
+exactly, and it is the copy that goes stale. [`DESIGN.md`](../../packages/world-sim/DESIGN.md#9-current-status)
+contains the analysis that you cannot derive from a run: which mechanism
+closes which shape.
 
 ## Requirements
 

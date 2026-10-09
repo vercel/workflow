@@ -13,6 +13,12 @@ export const MessageData = z.compile(
     /** Attempts used before a legacy job was moved to the workflow execution task. */
     attemptOffset: z.number().int().nonnegative().optional(),
     messageId: MessageId.describe('The unique ID of the message'),
+    /**
+     * When the message was first enqueued (ISO 8601). Carried unchanged by
+     * every reschedule of the same message. Absent on jobs enqueued before it
+     * existed.
+     */
+    createdAt: z.iso.datetime().optional(),
     idempotencyKey: z.string().optional(),
     headers: z.record(z.string(), z.string()).optional(),
     id: z

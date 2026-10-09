@@ -37,8 +37,9 @@ describe('publishForceClaimVictimWake', () => {
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
       specVersion: SPEC_VERSION_CURRENT,
-      idempotencyKey: 'hook-force-claim-hook_claimer',
     });
+    // A wake carries no idempotency key.
+    expect(options).not.toHaveProperty('idempotencyKey');
   });
 
   it('skips a hook that took nothing over, and a run taking over its own hook', async () => {
