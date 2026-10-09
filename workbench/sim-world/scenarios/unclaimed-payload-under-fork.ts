@@ -9,7 +9,13 @@ export const scenario: ScenarioSpec = {
     'A step result is allowed to skip the unclaimed payload — it would ' +
     'otherwise stall until the barrier registry idles — but skipping the ' +
     'wait parked behind that payload inverts the order the log recorded, ' +
-    'and the two branches swap the step_created ids they draw next.',
+    'and the two branches swap the step_created ids they draw next. ' +
+    'The timer fires while the step result is held only because the script ' +
+    'expires the lease of the delivery holding it: the queue otherwise ' +
+    'serializes a run’s orchestrator deliveries. The fence then refuses that ' +
+    'stalled delivery’s step result, and the timer’s orchestrator runs the ' +
+    'step again, so the resolutions it has to order all reach the log ' +
+    'through one writer.',
   workflow: 'unclaimedPayloadForkWorkflow',
   input: ['doc-32'],
   script: async (sim) => {
@@ -35,6 +41,11 @@ export const scenario: ScenarioSpec = {
     //    here. Hold that second delivery the instant its `wait_completed` is
     //    durable — pick the timer explicitly, because the hook delivery
     //    enqueued a flow message of its own and it sorts earlier.
+    //    The queue serializes a run's orchestrator deliveries, so that
+    //    timer would wait for the delivery holding the step. Expiring its
+    //    lease is the overlap production reaches when a delivery stalls past
+    //    its visibility timeout; the in-band fence is what keeps it safe.
+    sim.check('the held delivery’s lease expired', sim.expireLease() === 1);
     const atWait = wf.runToEventCommitted('wait_completed');
     const fired = sim.deliverQueued(
       (pending) =>
@@ -42,18 +53,33 @@ export const scenario: ScenarioSpec = {
     );
     await atWait;
 
-    // 4. Land the step result immediately behind the wait, while the delivery
-    //    that wrote the wait has not yet read the log back. That is what puts
-    //    all three — unclaimed payload, armed wait, step result — in one
-    //    barrier set, in that order. Firing the timer and releasing the step
-    //    independently would give the same log with the wait's own branch
-    //    already resumed, and nothing left to order.
-    const atCommitted = body.runToEventCommitted('step_completed');
+    // 4. Release the held step result. Its delivery lost its lease and the
+    //    timer delivery has written in-band since, so the fence refuses it:
+    //    a stale writer's outcome never reaches the log. The step's outcome
+    //    now comes from the current orchestrator, which runs the step again
+    //    once it is released, so all three resolutions (unclaimed payload,
+    //    wait, step result) are still in the log for that orchestrator to
+    //    order, now in one serialized writer's order.
+    const refused = sim.until({
+      eventType: 'step_completed',
+      stepName: 'pokedWork',
+      failed: true,
+    });
     await body.release();
-    await atCommitted;
-    await body.release();
-
+    await refused;
+    sim.check(
+      'the fence refused the stalled delivery’s step result',
+      sim.world
+        .rejections()
+        .some(
+          (r) =>
+            r.eventType === 'step_completed' &&
+            r.errorName === 'InBandSupersededError'
+        )
+    );
+    const finished = sim.until({ eventType: 'run_completed' });
     await wf.release();
+    await finished;
     sim.check('the watchdog fired while the step result was held', await fired);
 
     // 5. The property. Two branches were resolved by two events; the log puts
@@ -99,7 +125,9 @@ export const scenario: ScenarioSpec = {
   // same code against the same log and agrees with it either way.)
   //
   // This scenario was red until #3406 fixed the delivery-barrier ordering; it
-  // is kept as the regression test for that fix.
+  // is kept as the regression test for that fix. Before single-orchestrator
+  // runs the held step result itself landed behind the wait; now the fence
+  // refuses it and the step's outcome comes from the current orchestrator.
   expect: {
     status: 'completed',
     output: 'afterStep:doc-32|afterSleep:doc-32',

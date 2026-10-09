@@ -40,9 +40,12 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * TEMPORARY: points at the single-orchestrator backend preview while the v5
+ * event routes are developed. Revert to '' before merge.
  */
 // biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-git-peter-single-orchestrator.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

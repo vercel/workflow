@@ -45,6 +45,7 @@ import { scenario as peekHookBeforeBranch } from './peek-hook-before-branch.ts';
 import { scenario as raceDuplicateDelivery } from './race-duplicate-delivery.ts';
 import { scenario as raceHookAfterProbe } from './race-hook-after-probe.ts';
 import { scenario as raceHookBeforeProbe } from './race-hook-before-probe.ts';
+import { scenario as runAheadFencedOverlap } from './run-ahead-fenced-overlap.ts';
 import { scenario as smokeNoSteps } from './smoke-no-steps.ts';
 import { scenario as smokeOneStep } from './smoke-one-step.ts';
 import { scenario as staleReadEqualStepCounts } from './stale-read-equal-step-counts.ts';
@@ -132,23 +133,19 @@ export const scenarios: ScenarioSpec[] = [
   stepVsStepFork,
   stepVsStepForkFenced,
   fenceCatchesBenignDirection,
+  runAheadFencedOverlap,
 
   // -------------------------------------------------------------------------
-  // The same fork as the doc-23 pair, but with no stale read anywhere. The
-  // log's earlier event is simply still IN FLIGHT: its id — the log's sort
-  // key — was minted at the handler boundary (workflow-server calls
-  // `EventId.make()` before it attempts the write, because DynamoDB does not
-  // generate ids), and the write has not landed. Every reader gets a complete,
-  // strongly-consistent view of the log; that log just does not contain the
-  // event yet, and when it finally does the event appears *behind* a position
-  // readers have already passed.
-  //
-  // This is the shape production actually has, now that event-log reads are
-  // strongly consistent: there is no read to be stale, so `withholdNextEvent`
-  // models a fault that no longer exists. What differs between the three
-  // scenarios below is only *when* the in-flight write lands relative to the
-  // decision it invalidates, and that timing alone decides which guard, if
-  // any, can see it.
+  // The same fork as the doc-23 pair, with the hook's write still IN FLIGHT
+  // around the orchestrator's decision rather than hidden from a read: the log
+  // simply does not contain the event yet. What differs between the three
+  // in-flight scenarios is when the hook lands relative to the decision, and
+  // in the first whether a successor orchestrator overlaps the stalled one
+  // (`sim.expireLease()`). On a single-orchestrator run an out-of-band write
+  // is never refused and never supersedes the orchestrator; what keeps an
+  // overlap safe is the in-band fence, which refuses the stale orchestrator.
+  // The stale-read scenario after them puts a lagging read on the successor
+  // of such an overlap, which the skipped-slot report corrects.
   //
   // The in-flight writer has to be the out-of-band one. Holding an inline
   // step's `step_completed` between mint and commit stalls the orchestrator

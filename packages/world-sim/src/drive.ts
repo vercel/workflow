@@ -100,7 +100,18 @@ export async function driveQueue(options: {
     }
 
     const message = selectMessage(world, options.selectNext);
-    if (!message) break;
+    if (!message) {
+      // Nothing deliverable, but a run's orchestrator message may be waiting
+      // only for that run's in-flight delivery, which a script started (the
+      // loop's own deliveries have all returned by now). That is not
+      // quiescence: wait until the lease frees or that delivery enqueues
+      // something, and look again.
+      if (world.simQueue.gated().length > 0) {
+        await world.simQueue.nextChange();
+        continue;
+      }
+      break;
+    }
 
     if (deliveries >= limits.maxDeliveries) {
       world.simQueue.requeue(message, message.readyAtMs);
@@ -139,11 +150,18 @@ function selectMessage(
   if (selectNext) {
     const chosen = selectNext(world.simQueue.view());
     if (chosen) {
-      const message = world.simQueue.takeById(chosen);
-      if (message) return message;
+      const pending = world.simQueue
+        .pending()
+        .find((m) => m.messageId === chosen);
+      if (pending && world.simQueue.isDeliverable(pending)) {
+        const message = world.simQueue.takeById(chosen);
+        if (message) return message;
+      }
       world.pushTrace({
         kind: 'warn',
-        message: `selectNext chose ${chosen}, which is not pending; falling back to the default order`,
+        message: pending
+          ? `selectNext chose ${chosen}, whose run has an orchestrator delivery in flight; falling back to the default order`
+          : `selectNext chose ${chosen}, which is not pending; falling back to the default order`,
       });
     }
   }
@@ -155,8 +173,28 @@ function selectMessage(
  * protocol: `{ timeoutSeconds }` reschedules the same message (same
  * `messageId`, which the runtime's inline step-ownership lease depends on),
  * a non-2xx redelivers after a backoff, anything else settles it.
+ *
+ * An orchestrator delivery holds its run's lease until the handler responds,
+ * and waits for the run's current holder first (see `SimQueue.acquireLease`).
  */
 export async function deliver(
+  world: SimWorld,
+  message: QueuedMessage
+): Promise<void> {
+  const lease = await world.simQueue.acquireLease(message, (holder) =>
+    world.pushTrace({
+      kind: 'note',
+      message: `${message.messageId} waits: ${holder.messageId} is the run's orchestrator delivery in flight`,
+    })
+  );
+  try {
+    await deliverHoldingLease(world, message);
+  } finally {
+    world.simQueue.releaseLease(lease);
+  }
+}
+
+async function deliverHoldingLease(
   world: SimWorld,
   message: QueuedMessage
 ): Promise<void> {

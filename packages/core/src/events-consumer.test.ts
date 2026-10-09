@@ -974,10 +974,10 @@ describe('EventsConsumer', () => {
       });
     });
 
-    it('does not let one class suppress another for the same entity', async () => {
-      // The step's outcome is in the log but its first attempt never wrote a
-      // step_started, so this one is not a repeat of anything and divergence
-      // is the right answer.
+    it('treats any event after the entity closed as inert', async () => {
+      // Terminal-inert: the step's outcome is in the log, so a later start is
+      // inert even though no earlier start repeats it (a background step
+      // invocation stalled past its lease can write one).
       const corr = 'step_A';
       const events = [
         realEvent('step_created', corr),
@@ -993,13 +993,13 @@ describe('EventsConsumer', () => {
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
       await afterDeferredCheck(() => {
-        expect(consumer.eventIndex).toBe(2);
-        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(consumer.eventIndex).toBe(3);
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[2],
+          'step_completed'
+        );
       });
-
-      await afterDeferredCheck(() => {
-        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
-      });
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
 
     it('skips a second attr_set for an id the walk already resolved', async () => {

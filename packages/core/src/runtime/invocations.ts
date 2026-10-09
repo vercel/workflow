@@ -92,6 +92,7 @@ export async function handleInvocation(
       eventData: { token: input.token, payload: input.payload },
     },
     {
+      inBand: false,
       ...(world.capabilities?.hookResumeDedup
         ? { resumeId: requestId, resumePayloadDigest: digest }
         : {}),

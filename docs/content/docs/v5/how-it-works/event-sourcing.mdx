@@ -29,9 +29,21 @@ Event sourcing is a persistence pattern where state changes are stored as a sequ
 In the Workflow SDK, the following entity types are managed through events:
 
 - **Runs**: Workflow execution instances (materialized in storage)
-- **Steps**: Individual atomic operations within a workflow (materialized in storage)
+- **Steps**: Individual atomic operations within a workflow (folded from the run's events)
 - **Hooks**: Suspension points that can receive external data (materialized in storage)
-- **Waits**: Sleep or delay operations (materialized in storage)
+- **Waits**: Sleep or delay operations (folded from the run's events)
+
+Step and wait events are plain appends to the log. Nothing in storage checks a step or wait write against a step or wait row, so the runtime keeps those lifecycles correct itself: one orchestrator per run decides every step and wait event, and replay treats any event for an entity after its terminal event as inert (see [Duplicate events](#duplicate-events)). A World may still keep step and wait records for its read APIs; the runtime never relies on them.
+
+## One orchestrator per run
+
+Runs at `specVersion` 9 and above have a single decider. One orchestrator invocation at a time replays the run, runs the workflow code, and makes every decision: it writes `run_started` (once per run), `step_created`, `wait_created`, `wait_completed`, hook and attribute events, runs the steps it executes inline, and writes `run_completed` or `run_failed`. These writes are **in-band**. A step that runs from its own queue message only writes its `step_started` and outcome, then wakes the orchestrator; it never replays the workflow. Those writes, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `setAttributes()` outside a workflow are **out-of-band**. Classification is by writer, so an inline step's events are in-band.
+
+- **Execution mode on `step_created`.** Each step's `step_created` records whether it runs inline in the orchestrator (`inline: true`) or from its own queue message, and which queue message's delivery created it (`creatorMessageId`). An enqueued step never runs inline. Its message is enqueued once, after `step_created` commits, and only a redelivery of the creating message enqueues it again, and only while the step has not started.
+- **One message per step.** A background step keeps one queue message for its whole life. A userland retry writes `step_retrying` and asks for the same message again after `retryAfter`. The message is acknowledged only after a terminal step or run event is committed. Any delivery other than a plain first one reads the run's log first: a terminal outcome is acknowledged without running the body, a retry that is not due yet is delivered again later, and a step whose next attempt would exceed `maxRetries + 1` is failed (so a `maxRetries: 0` step runs at most once).
+- **The in-band fence.** Every World refuses an in-band write from an orchestrator that another invocation of the same run has superseded. The log load returns the count of in-band positions, the orchestrator sends it with each in-band write and advances it by what each write allocated, and a stale count is refused with `InBandSupersededError`. The refused invocation stops, does not acknowledge its message, and is delivered again; its redelivery loads the log afresh.
+- **Consume after commit.** A write that resolves a promise in the workflow (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports at lower positions, so the workflow observes events in log order.
+- **Wakes carry no idempotency key.** Every out-of-band writer enqueues a wake after its event commits. A wake that finds nothing new exits without a replay. A sleep's timer is scheduled only by the delivery that wrote its `wait_created`.
 
 ## Entity lifecycles
 
@@ -95,6 +107,8 @@ flowchart TD
 The `step_retrying` event is optional. Steps can retry without it, regardless of whether the event is emitted. You may see consecutive `step_started` events when a step retries after a timeout, when the error isn't explicitly captured, or when concurrent replays each commit one. See [Duplicate events](#duplicate-events) and [Errors and retries](/docs/foundations/errors-and-retries) for more information.
 </Callout>
 
+Each `step_started` records the attempt it starts (`attempt`) and why (`startReason`): `first`, `retry` after a `step_retrying`, or `redelivery` when an earlier attempt started and recorded nothing after it (its invocation died or stalled). A step's attempt count is the number of `step_started` events in the log.
+
 When present, the `step_retrying` event moves a step back to `pending` state and records the error that caused the retry. This provides two benefits:
 
 - **Cleaner observability**: The event log explicitly shows retry transitions rather than consecutive `step_started` events
@@ -149,7 +163,7 @@ flowchart TD
 - `completed`: Delay period has elapsed, workflow can resume
 
 <Callout type="info">
-Like runs, steps, and hooks, waits are materialized as entities in storage. Processing a `wait_created` event creates a wait entity with the `waiting` status. Processing a `wait_completed` event atomically transitions the wait entity to `completed`. This process guarantees that a wait can only be completed once, even if multiple concurrent invocations attempt to complete it simultaneously.
+Only the run's orchestrator writes `wait_created` and `wait_completed`, so a wait is completed once without a storage-side check. Replay also treats `wait_completed` as one-shot: a second one for the same wait is inert.
 </Callout>
 
 ## Event types reference
@@ -239,11 +253,13 @@ That guard sits on the write path. Replay handles duplicates that the write path
 
 ## Duplicate events
 
-Concurrent invocations replaying the same run share one event log. An invocation working from a stale prefix that predates another invocation's write can commit its own `step_created`, `step_started`, or `wait_created` for an entity that already has one in the log. These writes pass the terminal-state guard, so the write path commits them even when a backend validates transitions atomically with the insert.
+One orchestrator per run removes almost all duplicates, but a log can still hold some: a background step invocation that stalled past its queue lease can be delivered again and write a second `step_started` after the step's outcome, and logs written by earlier releases hold copies from concurrent replays.
 
 Those duplicates are committed but inert. The outcome was decided by the first event of its kind at a lower position in the log, and every replay reads that same event at that same position, so a later copy cannot change what the workflow observes.
 
-To prevent an inert copy from failing an otherwise healthy run, the runtime groups event types into **classes**. For each entity, it tracks which classes the current replay has consumed. If no registered consumer accepts an event and its class is already recorded for that entity, replay skips it instead of reporting a [replay divergence](/docs/errors/replay-divergence). After exhausting the recovery budget, a replay divergence ends the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
+**Any event for an entity after its terminal event is inert**, whatever its type: once a step's outcome, a `wait_completed`, a `hook_disposed`, or a workflow `attr_set` has been consumed, nothing claims another event under that correlation ID, and replay steps over it. A `step_started` or `step_retrying` after a step's outcome is read past rather than reported as divergence, whether or not an earlier event of its type exists.
+
+To prevent an inert copy before an entity's terminal event from failing an otherwise healthy run, the runtime also groups event types into **classes**. For each entity, it tracks which classes the current replay has consumed. If no registered consumer accepts an event and its class is already recorded for that entity, replay skips it instead of reporting a [replay divergence](/docs/errors/replay-divergence). After exhausting the recovery budget, a replay divergence ends the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
 
 | Class | Event types |
 |-------|-------------|
@@ -271,38 +287,30 @@ The remaining event types belong to no class and are never skipped:
 
 Both kinds of skip are logged at `debug`, so neither reaches the console unless you run with `DEBUG=workflow:runtime:*`. A duplicate is a permanent part of the log. Every later replay reads it and reaches the same check, so an unconditional message would print once per replay for the life of the run without requiring action. A repeat that decides a class differently, such as a `step_failed` after a `step_completed` or the reverse, gets its own message. Unlike a recommit of the same outcome, both writers cannot be correct.
 
-The observability UI grays out events it can identify this way and shows the reason on hover. Its set is narrower than the runtime's because it reads the log without consumer state. A consumer for an entity that is still open can legitimately claim a repeat because each step retry writes another `step_started`. The UI marks a repeat only when no consumer can remain for it: after a terminal event for the same entity or at a second `run_started`, of which the log records one per run. The UI marks nothing on a partial log view, such as one page of a paginated list or search results, because identifying the first copy requires the entire log.
+The observability UI grays out events it can identify this way and shows the reason on hover. Its set is narrower than the runtime's because it reads the log without consumer state. A consumer for an entity that is still open can legitimately claim a repeat because each step retry writes another `step_started`. The UI marks an event only when no consumer can remain for it: any event after a terminal event for the same entity, or a second `run_started`, of which the log records one per run. The UI marks nothing on a partial log view, such as one page of a paginated list or search results, because identifying the first copy requires the entire log.
 
 ## Events returned on a write
 
-Concurrent invocations of one run write to a shared log, and a write is decided against the log the writer had loaded. When the write lands above other events the writer had not seen, the World can hand those events back on the write's own success response, so the writer merges them and continues rather than discovering the gap on its next read. Two parameters of `events.create()` ask for this:
+A write is decided against the log its writer had loaded, and it can land above events that writer had not seen. Every in-band write names the position it was decided from (`eventCount`), and the World returns the events on the positions between that one and the write's own (the *skipped-slot report*) on the success response, in position order. The orchestrator folds the report and its own event into its log and continues without a read.
 
-- **`eventCount`** says how many events the writer held. When the write commits at a higher position than `eventCount + 1`, the World returns the events on the positions in between (the *skipped-slot report*).
-- **`sinceCursor`** is the `events.list()` cursor the writer had read to. The World returns everything after it, the write itself included (the *inline delta*), in the same `events` / `cursor` / `hasMore` shape as a list page.
+For an in-band write on a spec 9 run the report is authoritative. When the World cannot produce it completely in time, the write still succeeds with `reportIncomplete: true`, and the orchestrator reloads the log before it consumes anything that write resolves. Out-of-band writes (a background step's events, `resumeHook()`, `cancel()`) hold no log and get no report; they wake the orchestrator, which reads the log.
 
-Both save a reload, so the rule for which writes send them is not about the event type. It is about whether the process that writes **holds a loaded log it will keep deciding from**: its own next writes, or the replay it resumes after the write. A writer with no log has nothing to merge a page into, and whoever decides next is a fresh replay that loads the log anyway. Three things must hold for a page to come back: the writer named a position, the World reads a page for that event type (a backend may decline for types whose writer never holds a log), and there is something to return (the report only when positions were skipped; the delta always).
+| Event | Writer | Sends |
+|-------|--------|-------|
+| `run_created` | `start()` | Nothing. No log exists yet. |
+| `run_started`, `step_created`, `wait_created`, `wait_completed`, `hook_created`, `hook_disposed`, workflow `attr_set`, `run_completed`, `run_failed` | Orchestrator | `eventCount`, in-band |
+| `step_started`, `step_retrying`, `step_completed`, `step_failed` of an inline step | Orchestrator | `eventCount`, in-band |
+| `step_started`, `step_retrying`, `step_completed`, `step_failed` of a background step | The step's own invocation | Nothing, out-of-band |
+| `hook_received` | `resumeHook()` or a webhook | Nothing, out-of-band |
+| `run_cancelled` | `cancel()` | Nothing, out-of-band |
 
-| Event | Writer | Sends | Why |
-|-------|--------|-------|-----|
-| `run_created` | `start()` | Nothing | No log exists yet. |
-| `run_started` | Replay, first write of a delivery | `eventCount` when a log is loaded; no cursor | The `run_started` response already carries the full log as a preload. |
-| `step_created`, `wait_created`, `hook_disposed`, `attr_set` | Suspension handler | `eventCount` | The handler keeps writing from this log and the replay resumes from it. |
-| `hook_created` | Suspension handler | `eventCount` and `sinceCursor` (only when the suspension creates exactly one hook) | The delta is how a hook whose payload already arrived resolves without another invocation. Two creates diffing against one cursor would give two deltas of which only the first could be taken. |
-| `hook_received` | Replay resuming a hook | `eventCount` | The replay continues from the log right after. |
-| `hook_received` | Webhook or `resumeHook()` | Nothing | Out-of-band. It enqueues a delivery that loads the log. |
-| `wait_completed` | Replay completing an elapsed wait | `eventCount` | The replay continues from the log right after. |
-| `step_started`, `step_retrying` | Step executor | Nothing | The executor holds no log. The next decision is a replay that reloads, or receives the delta on the step's terminal write. |
-| `step_completed`, `step_failed` | Step executor | `sinceCursor` when a single step runs inline; nothing from a queued delivery | Inline, this is where the invocation gets its log back without a list. From a queue, a fresh replay loads the log anyway. |
-| `attr_set` | `setAttributes()` outside a workflow | Nothing | Out-of-band. |
-| `run_completed`, `run_failed`, `run_cancelled` | Replay, or `cancel()` | Never `sinceCursor` | Terminal. Nothing replays the log afterwards, so a page would be read by no one. |
+A hook create made alone in a suspension also asks for the events after the cursor the orchestrator had read to (`sinceCursor`), so a hook whose create commits a `hook_conflict` or whose payload already arrived resolves in the same invocation. A batch write (`events.createBatch()`) names the position for its whole block, and its report rides at the top level of the batch result. On a spec 9 run a batch is not atomic: an item can fail while others commit, and the failed item's position is sealed.
 
-Batched writes (`events.createBatch()`) carry no position and get no page. Both runtime engines follow this table: the `node:vm` engine merges a returned page into the log it replays from, and the QuickJS engine queues it for delivery to its live VM, in position order, ahead of its next `events.list()`.
-
-A World that supports this returns the page in `events`, `cursor`, and `hasMore` on the `EventResult`. A World that does not simply returns the created event, and the runtime lists. See [Building a World](/worlds/building-a-world#event-id-allocation) for the World-side contract.
+See [Building a World](/worlds/building-a-world#event-id-allocation) for the World-side contract.
 
 ## Sealed positions (noop events)
 
-Runs at `specVersion` 7 and above use a *sealed log*. The backend gives each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race for a slot. New runs use this behavior by default. [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) returns a deployment to the previous scheme. Every runtime reads a sealed log regardless, and a run's version is fixed at creation, so changing the setting never affects an in-flight run. However, a writer can claim a position and then stop because of a crashed process or canceled transaction. This leaves a hole that no writer will fill, and a hole looks like an event the reader failed to load.
+Runs at `specVersion` 7 and above use a *sealed log*. The backend gives each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race for a slot. New runs always use it: the single-orchestrator version (9) counts the in-band fence in sequencer positions. A run's version is fixed at creation. However, a writer can claim a position and then stop because of a crashed process or canceled transaction. This leaves a hole that no writer will fill, and a hole looks like an event the reader failed to load.
 
 The backend restores the dense log at read time by **sealing** these positions. Once a hole is provably abandoned, bounded by the commit time of later positions, the backend writes a `noop` event into it. Positions are assigned in order, so a committed later position proves how long the hole has been open. A `noop` occupies its position, and length-based completeness checks, cursors, and pagination all count it. It has no other effect:
 

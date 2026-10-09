@@ -2,50 +2,58 @@ import type { ScenarioSpec } from '@workflow/world-sim';
 
 export const scenario: ScenarioSpec = {
   id: 'step-vs-step-fork',
-  name: 'two racing STEPS, no hook anywhere',
+  name: 'two racing STEPS: the outcome order is the serialized writer’s',
   description:
-    'Green since slot-numbered event ids: a read missing an event the log already holds is a gap in a numbered sequence, so the runtime re-reads and decides the fork the way the log records it. Kept as the regression test for that. Answers "does this need an out-of-band event type?" — no. The fork is ' +
-    "decided by two of the run's own step_completed events, and withholding " +
-    'one of them from the deciding read is enough. Two inline step bodies in ' +
-    'ONE invocation are already two concurrent writers to the same log; no ' +
-    'second invocation is required. ' +
-    'Both writers are held so the ordering is stated rather than observed: ' +
-    'stop `fast` and `slow` at their produced points, arm the withhold, then ' +
-    "release `slow` first, so the log's earliest completion is the one hidden " +
-    'from the read that decides the fork. Hiding the *later* completion ' +
-    'instead is harmless — the live pass then agrees with the log by ' +
-    'accident — which is why the choice has to be made on purpose. ' +
-    'Note that both waits are started before either is awaited: awaiting the ' +
-    'first would let the second writer sail past its point.',
+    'Two inline steps race, and the fork is decided by which outcome the log ' +
+    'records first. On a single-orchestrator run both outcomes are in-band ' +
+    'writes of the one orchestrator, and its writer submits them one at a ' +
+    'time, in the order the bodies finished. So holding the first outcome ' +
+    '(`fast`) at its produced point holds the second behind it: `slow` cannot ' +
+    'commit first, and there is no way to make the log disagree with the order ' +
+    'the run observed. The run, the log and a cold replay all take `afterFast`. ' +
+    'This replaces the old shape of the scenario, which released `slow` ahead ' +
+    'of a held `fast` and hid one completion from the deciding read: that ' +
+    'needed two writers racing to one log, which a run now has only when a ' +
+    'delivery outlives its lease (see the `-fenced` scenario below).',
   workflow: 'stepVsStepForkWorkflow',
   input: ['doc-26'],
   script: async (sim) => {
     const fast = sim.writer.step('fast');
     const slow = sim.writer.step('slow');
 
-    const atFast = fast.runToEventProduced('step_completed');
-    const atSlow = slow.runToEventProduced('step_completed');
-    await atFast;
-    await atSlow;
-
+    await fast.runToEventProduced('step_completed');
+    // Give `slow` every chance to overtake: its body has nothing to wait for.
+    const overtook = sim.until(
+      { eventType: 'step_completed', stepName: 'slow', phase: 'before' },
+      'slow submits while fast is held'
+    );
+    const outcome = await Promise.race([
+      overtook.then(() => 'overtook' as const),
+      new Promise<'held'>((resolve) => setTimeout(() => resolve('held'), 200)),
+    ]);
     sim.check(
-      'neither completion is in the log while both writers are held',
-      sim.world.events().filter((e) => e.eventType === 'step_completed')
-        .length === 0
+      'slow’s outcome waits behind the held one in the orchestrator’s writer',
+      outcome === 'held' &&
+        !slow.history().some((p) => p.eventType === 'step_completed')
+    );
+    sim.check(
+      'nothing is in the log while the first outcome is held',
+      sim.world.events().every((e) => e.eventType !== 'step_completed')
     );
 
-    // Who this withheld reader is in production: not this invocation. With
-    // strongly-consistent reads a single invocation cannot miss its own
-    // committed write, so the reader that misses one of these two step
-    // writes is a *concurrent second invocation* of the same run — the storm
-    // shape, which the sim cannot model directly (DESIGN §10). The withhold
-    // stands in for that reader; it is not a claim that a single-invocation
-    // read can be stale.
-    sim.withholdNextEvent(1);
-    await slow.release();
+    const done = sim.until({ eventType: 'run_completed' });
     await fast.release();
+    await done;
+
+    const completions = sim.world
+      .events()
+      .filter((e) => e.eventType === 'step_completed')
+      .map((e) => sim.world.steps().find((s) => s.stepId === e.correlationId))
+      .map((s) => s?.stepName.split('//').at(-1));
+    sim.check(
+      'the log records fast’s outcome first, the order the writer submitted',
+      completions[0] === 'fast' && completions[1] === 'slow'
+    );
   },
-  // FAILS TODAY. `slow` commits first, so the log says `slow` won the race
-  // and the run should end on `afterSlow`. The live pass sees only `fast`.
-  expect: { status: 'completed', output: 'afterSlow:doc-26' },
+  expect: { status: 'completed', output: 'afterFast:doc-26' },
 };

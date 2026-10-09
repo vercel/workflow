@@ -61,7 +61,8 @@ the runtime and the outside, that is a complete set of injection points.
 **2. Nothing happens on its own.** `queue()` records a message and returns; it
 never dispatches. The scheduler picks the next message (always the minimum by
 `(readyAt, enqueueSeq)`), hands it to the flow handler, and waits for it to
-finish before looking again. One delivery is in flight at a time.
+finish before looking again. One delivery is in flight at a time, and a run's
+orchestrator deliveries never overlap unless a script expires a lease.
 
 **3. Time is a number the scheduler assigns.** `sleep('30d')` becomes a queue
 message dated 30 days out; delivering it means moving the clock, not waiting.
@@ -127,32 +128,23 @@ every *validation* is kept, because rejections are the observable contract.
   already seen, so no two reads can disagree about the past.
 - Every read is a *prefix* of the log. A read can be short, missing a write
   that has not committed yet, but never self-inconsistent. Staleness collapses
-  into lag, and lag is what an optimistic-concurrency fence can see; a hole is
-  what it cannot.
+  into lag, which the runtime closes by reading on: a write's skipped-slot
+  report hands back what its load missed.
 
 `withholdNextEvent` models a lagging replica by truncating the visible tail;
 `StaleRead` reports `{ eventId, hidden, truncated }` for that read.
 
-**Precondition fence** (`preconditionGuard: true`): Rejects a write whose
-snapshot is strictly older than the newest externally originated event. It is a
-high-water mark, so it sees a log truncated at the end and is blind to a hole in
-the middle.
-
-**Count guard** (`countGuard: true`): Adds the other half, which is how many events the
-log holds at or below that watermark, against how many the caller loaded. It
-closes the hole a watermark cannot see. It is evaluated inside the fence's
-predicate, so it is only live when the fence is.
-
-Both halves read one snapshot, and the sim reconstructs it rather than reading
-it off the wire: a client on slot-numbered event IDs sends a slot count, the sim
-mints ULIDs, so the facade derives `{ updatedAt, count }` from the pages the
-writer actually read, within the delivery that read them. The derivation is the
-client's own: the newest loaded position and how many loaded events sit at or
-below it. A write the facade attached no snapshot to did not come from a replay
-context and is never fenced.
-
-Each is a spec field, and `RunScenarioOptions` carries a run-wide override for
-the fence. [DESIGN.md §5](./DESIGN.md#the-two-guards) has the guards in full.
+**In-band fence:** The store implements the fence every World does on a
+single-orchestrator run (`WorldCapabilities.inBandFence`). It counts the
+positions allocated to in-band writes, `run_created` holding the first, and
+`events.list` returns `snapshot: { seq, seqInBand }`. An in-band create whose
+`expectedSeqInBand` is not the current count is refused with
+`InBandSupersededError` before anything is written; an out-of-band create
+moves `seq` and never `seqInBand`. It is always on: the queue's one
+orchestrator delivery per run and this fence are the two halves of the
+single-writer guarantee, and a scenario forces an overlap with
+`sim.expireLease()` (see below). It is checked by the shared conformance
+suite in `src/in-band-fence.test.ts`.
 
 ## Usage
 
@@ -431,7 +423,8 @@ wrong.
 | `deliverHook(token, payload)` | Runs the real `resumeHook()`, the same code an out-of-band webhook receiver would |
 | `cancelRun(reason?)` | Cancel the run under test |
 | `advanceTime(ms)` | Jump the virtual clock |
-| `deliverQueued(select?)` | Deliver one queued message now, concurrently with a held writer |
+| `deliverQueued(select?)` | Deliver one queued message now, concurrently with a held writer (an orchestrator message waits for its run's in-flight delivery) |
+| `expireLease(opts?)` | Expire the run's in-flight orchestrator delivery's lease, so the next one can overlap it; `{ redeliver: true }` also makes its message pending again |
 | `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace; a false check fails the scenario |
 | `world` | Read-only snapshot: runs, events, steps, hooks, waits, pending messages, rejected calls |
 
@@ -452,10 +445,28 @@ there in the script, so it runs alongside the held writer rather than after it.
 `takeById` removes it first, so the loop can never pick up the same message: the
 two are different deliveries running concurrently, not a race for one.
 
-That concurrency is real, and so is its fallout. Two flow deliveries for one run
-will collide the way they do in production. Expect `EntityConflictError` and
-`HookNotFoundError` in the rejection list once both branches finish. Those are
-the deliveries losing races they are supposed to lose, not violations.
+The queue still delivers a run's orchestrator messages one at a time, as
+production's per-run topic does. A timer or a wake for a run whose orchestrator
+delivery is held waits for that delivery to respond, so `deliverQueued` of one
+alongside a held orchestrator (or a step body running inside it) only
+completes once the script releases it. Step messages are delivered at once.
+
+To overlap two orchestrator deliveries of one run, say so with
+`sim.expireLease()` first: the held delivery keeps running but no longer holds
+the run, which is production's delivery stalled past its visibility timeout.
+`sim.expireLease({ redeliver: true })` also makes its message pending again,
+as the queue would. The in-band fence is what keeps that overlap safe, so
+expect `InBandSupersededError` in the rejection list: whichever orchestrator
+writes in-band second is refused, stops, and redelivers. That is the fence
+doing its job, not a violation.
+
+```ts
+import type { Tempo } from '@workflow/world-sim';
+
+declare const sim: Tempo; // the `script` parameter
+
+sim.check('the held delivery stalled past its lease', sim.expireLease() === 1);
+```
 
 The default picks `pending[0]`, matching the loop's own order. Usually you want
 to choose: a hook delivery enqueues a flow message of its own and it sorts
@@ -475,6 +486,10 @@ Note the missing `await`. Awaiting it here would wait for the delivery to
 *finish*, which defeats the purpose. Arm a hold on the writer that delivery will
 wake, fire it, await the hold, and the two are now interleaved. Await the
 returned promise at the end to assert it found something.
+[`step-vs-step-fork-fenced.ts`](../../workbench/sim-world/scenarios/step-vs-step-fork-fenced.ts)
+and
+[`fence-catches-benign-direction.ts`](../../workbench/sim-world/scenarios/fence-catches-benign-direction.ts)
+are the two orders of a forced overlap.
 
 ## Extending the simulator
 
@@ -489,10 +504,10 @@ The module map is [DESIGN.md §1](./DESIGN.md#1-module-map).
 | add a phase to an existing call | `CallPhase` in `types.ts`, where `world.ts` parks on it, plus the writer op that names it | [§3 Two phases](./DESIGN.md#two-phases-and-a-third-hold-that-is-not-one) |
 | add a rule the log must satisfy | `invariants.ts`, plus the rule table above | [§8 Consistency checking](./DESIGN.md#8-consistency-checking) |
 | add or change a writer kind | `writers.ts` for the handles, `world.ts` for attribution | [§3 Writer attribution](./DESIGN.md#writer-attribution-is-derived-not-instrumented) |
-| add a fault injector | `store.ts`, next to `withholdNextEvent` and the guards | [§5 Fault injection](./DESIGN.md#fault-injection) |
+| add a fault injector | `store.ts`, next to `withholdNextEvent` | [§5 Fault injection](./DESIGN.md#fault-injection) |
 | change what a read returns | `store.ts` `applyWithhold` | [§5 The store](./DESIGN.md#5-the-store) |
 | change where an event lands | `store.ts` `positionAtCommit` / `mintEvent` | [World behaviors](#world-behaviors) above |
-| add a spec field | `ScenarioSpec` in `scenario.ts`, `RunScenarioOptions` beside it, then `run.ts` for the CLI flag | [§6 Spec](./DESIGN.md#spec) |
+| add a spec field | `ScenarioSpec` in `scenario.ts`, `RunScenarioOptions` beside it, then `run.ts` for a CLI flag | [§6 Spec](./DESIGN.md#spec) |
 | change the replay check | `replay.ts` | [§8 Replay verification](./DESIGN.md#replay-verification) |
 | change the output | `report.ts`: `renderScenario`, `renderSummary`, `renderMarkdownSummary` | [Reading the output](#reading-the-output) above |
 

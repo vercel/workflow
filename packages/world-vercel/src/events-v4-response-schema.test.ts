@@ -6,6 +6,7 @@ import {
   type CreateEventV4Input,
   createEventResponseSchema,
   createWorkflowRunEventV4,
+  EVENTS_API_VERSION,
   getCreateEventResponseSchema,
 } from './events-v4.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -69,7 +70,7 @@ async function postRaw(
   agent
     .get(origin)
     .intercept({
-      path: `/api/v4/runs/wrun_1/events/${eventType}`,
+      path: `/api/${EVENTS_API_VERSION}/runs/wrun_1/events/${eventType}`,
       method: 'POST',
     })
     .reply(200, raw, {

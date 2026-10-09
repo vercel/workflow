@@ -127,7 +127,6 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(message).toEqual({ runId: 'wrun_victim' });
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
-      idempotencyKey: 'hook-force-claim-hook_claimer',
     });
   });
 
@@ -159,9 +158,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
       event(6, 'wait_completed', {}, 'wait_1'),
     ]);
     expect(queue).toHaveBeenCalledTimes(1);
-    expect(queue.mock.calls[0][2]).toMatchObject({
-      idempotencyKey: 'hook-force-claim-hook_claimer',
-    });
+    expect(queue.mock.calls[0][2]).toMatchObject({});
   });
 
   it("repays the victim's wake when a later claimer took the token from this run (the chain)", async () => {
@@ -267,10 +264,10 @@ describe('QuickJS force-claim victim wake on replay', () => {
       preloadedEvents: [],
     });
 
-    // Each victim is still woken once, under its own claimer hook's key.
+    // Each victim is still woken once, with no idempotency key.
     expect(wakes.sort()).toEqual([
-      'wrun_victim_a:hook-force-claim-hook_forced_a',
-      'wrun_victim_b:hook-force-claim-hook_forced_b',
+      'wrun_victim_a:undefined',
+      'wrun_victim_b:undefined',
     ]);
   });
 

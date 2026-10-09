@@ -5,6 +5,7 @@ import {
   EntityConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
@@ -16,10 +17,12 @@ import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventLogSnapshot,
   EventResult,
   EventsResolveData,
   Hook,
   HookCreatedEventRequest,
+  ListEventsParams,
   PaginatedResponse,
   PaginationOptions,
   SerializedData,
@@ -120,6 +123,13 @@ import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * In-band positions a single-orchestrator run holds before its first fenced
+ * write: `run_created`'s. The value the in-band fence and its list snapshot
+ * report for a run no in-band write has advanced yet.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
 
 /**
  * Entry ceiling for the in-process event cache. A run whose log exceeds this
@@ -488,6 +498,28 @@ async function pinCanonicalEventIdForLegacyClaim(
   }
   const existing = await readHookRecoveryMarker(markerPath);
   return existing?.eventId ?? null;
+}
+
+/**
+ * Whether `error` is a refusal this World raises before it writes anything:
+ * the conflict, not-found, expired and too-early errors of the event
+ * lifecycle checks, or any error carrying a 4xx status. The in-band fence
+ * leaves its count alone for these, and counts every other failure.
+ */
+function isDefinitiveRefusal(error: unknown): boolean {
+  if (
+    EntityConflictError.is(error) ||
+    RunExpiredError.is(error) ||
+    TooEarlyError.is(error) ||
+    HookNotFoundError.is(error) ||
+    HookForceClaimedError.is(error) ||
+    WorkflowRunNotFoundError.is(error) ||
+    RunNotSupportedError.is(error)
+  ) {
+    return true;
+  }
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status >= 400 && status < 500;
 }
 
 /**
@@ -1033,7 +1065,14 @@ export function createEventsStorage(
         // free to land somewhere else, and the claim is the fast path other
         // writers read first, so it is corrected once the append commits.
         let resumeClaimRecordedId: string | null = null;
-        const now = new Date();
+        // An in-band write's time is the one its orchestrator chose
+        // (`occurredAt`), as on world-vercel's slot-identity runs: an
+        // orchestrator that runs ahead of its writes has already handed the
+        // event to the workflow with that time, and replay must read the same.
+        const now =
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
         let effectiveRunId: string;
@@ -3602,5 +3641,110 @@ export function createEventsStorage(
     return reportSkippedSlots(result, params.eventCount, resolveData);
   }) as LocalEventsStorage['create'];
 
-  return { ...storage, create };
+  // ------------------------------------------------------------------
+  // In-band writer fence (single-orchestrator runs, spec >= 9)
+  // ------------------------------------------------------------------
+  //
+  // An in-process counter per run of the positions accepted from in-band
+  // writes (writes by the run's orchestrator). `list` reports it as
+  // `snapshot.seqInBand`, read before the listing; an in-band create is
+  // accepted only when its `expectedSeqInBand` equals it, and otherwise
+  // refused with `InBandSupersededError` before anything is written, so a
+  // refusal leaves no event behind. Out-of-band writes never touch it.
+  //
+  // The counter is a fence token, not a count of events in the log: what
+  // keeps it sound is that a snapshot and the fence read the same number, and
+  // that an accepted write advances it by the amount the writer advances its
+  // own copy (one per create). It is incremented after the write publishes,
+  // so a snapshot never counts an in-band write whose event the listing
+  // that follows could miss.
+  //
+  // In-process, per storage instance, like the step and hook locks above:
+  // two instances sharing a directory (or a restarted process) do not share
+  // it. A restart starts every run back at `IN_BAND_SEQ_AT_RUN_CREATION`,
+  // which is safe: the old process's writers are gone, and the next
+  // delivery adopts the restarted value from its own snapshot.
+  const inBandSeq = new Map<string, number>();
+  const fenceLocks = new Map<string, Promise<unknown>>();
+
+  const readInBandSeq = (runId: string) =>
+    inBandSeq.get(slotStateKey(runId)) ?? IN_BAND_SEQ_AT_RUN_CREATION;
+
+  const fencedCreate = (async (
+    runId: string | null,
+    request: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    const data = request as CreateEventRequest;
+    // `run_created` opens the run's in-band count at
+    // IN_BAND_SEQ_AT_RUN_CREATION and is never fenced itself.
+    if (!params?.inBand || !runId || request.eventType === 'run_created') {
+      return create(runId as string, data, params);
+    }
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
+    assertSafeEntityId('runId', runId);
+    const key = slotStateKey(runId);
+    return withInProcessLock(fenceLocks, key, async () => {
+      const current = readInBandSeq(runId);
+      if (current !== expected) {
+        const published = runSlotState.get(key)?.published;
+        throw new InBandSupersededError(
+          `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+          {
+            seqInBand: current,
+            ...(published !== undefined ? { seq: published } : {}),
+          }
+        );
+      }
+      let result: EventResult;
+      try {
+        result = await create(runId, data, params);
+      } catch (error) {
+        // A definitive refusal (4xx) wrote nothing. Anything else may have
+        // published before failing; counting a write that did not land only
+        // costs a superseded redelivery, while missing one that did would
+        // let a stale writer in.
+        if (!isDefinitiveRefusal(error)) inBandSeq.set(key, current + 1);
+        throw error;
+      }
+      inBandSeq.set(key, current + 1);
+      return result;
+    });
+  }) as LocalEventsStorage['create'];
+
+  /**
+   * The fence snapshot for `runId`, read before a listing: the in-band count
+   * first, then the highest published slot. `undefined` for a run whose
+   * events are ULID-numbered, which predates the fence.
+   */
+  async function readEventLogSnapshot(
+    runId: string
+  ): Promise<EventLogSnapshot | undefined> {
+    const seqInBand = readInBandSeq(runId);
+    const state = runSlotState.get(slotStateKey(runId));
+    if (state === null) return undefined;
+    if (state !== undefined) return { seq: state.published, seqInBand };
+    const scan = await scanRunEventIds(basedir, runId, tag);
+    if (scan.count > 0 && !scan.usesSlots) return undefined;
+    return { seq: scan.maxSlot, seqInBand };
+  }
+
+  const list = (async (params: ListEventsParams) => {
+    assertSafeEntityId('runId', params.runId);
+    const snapshot = await readEventLogSnapshot(params.runId);
+    const result = await storage.list(params);
+    return snapshot ? { ...result, snapshot } : result;
+  }) as LocalEventsStorage['list'];
+
+  return { ...storage, create: fencedCreate, list };
 }

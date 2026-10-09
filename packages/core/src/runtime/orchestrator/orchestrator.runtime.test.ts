@@ -1,0 +1,712 @@
+import { RetryableError, RUN_ERROR_CODES } from '@workflow/errors';
+import {
+  type Event,
+  SPEC_VERSION_CURRENT,
+  type WorkflowRun,
+} from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerStepFunction } from '../../private.js';
+import { workflowEntrypoint } from '../../runtime.js';
+import { dehydrateWorkflowArguments } from '../../serialization.js';
+import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import { expectReplaced } from '../../test-support/orchestrator-harness.js';
+import * as workflowModule from '../../workflow.js';
+import {
+  getMaxQueueDeliveries,
+  MAX_MESSAGE_REPLACEMENTS,
+} from '../constants.js';
+import { setWorld } from '../world.js';
+
+vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+const QUEUE = '__wkf_workflow_workflow';
+
+function transform(name: string) {
+  return `;globalThis.__private_workflows = new Map([[${JSON.stringify(name)}, ${name}]]);`;
+}
+
+const calls: Record<string, number> = {};
+function count(name: string) {
+  calls[name] = (calls[name] ?? 0) + 1;
+}
+
+registerStepFunction('so_add', async (a: number, b: number) => {
+  count('so_add');
+  return a + b;
+});
+let flakyFailures = 0;
+registerStepFunction('so_flaky', async () => {
+  count('so_flaky');
+  if (flakyFailures > 0) {
+    flakyFailures--;
+    throw new Error('transient');
+  }
+  return 'ok';
+});
+let longRetryFailures = 0;
+registerStepFunction('so_long_retry', async () => {
+  count('so_long_retry');
+  if (longRetryFailures > 0) {
+    longRetryFailures--;
+    throw new RetryableError('come back in an hour', {
+      retryAfter: new Date(Date.now() + 3_600_000),
+    });
+  }
+  return 'ok';
+});
+const once = Object.assign(
+  async () => {
+    count('so_once');
+    return 'ran';
+  },
+  { maxRetries: 0 }
+);
+registerStepFunction('so_once', once);
+
+let currentEngine: 'node' | 'quickjs' = 'node';
+
+// A step body that keeps running until the run's log holds a wait_completed
+// (or gives up after a bound), to observe whether the orchestrator advances
+// the workflow while an inline body runs.
+let currentWorld: AppendOnlyWorld | undefined;
+registerStepFunction('so_until_wait_completed', async () => {
+  count('so_until_wait_completed');
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (currentWorld?.events.some((e) => e.eventType === 'wait_completed')) {
+      return 'saw the timer';
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return 'timed out';
+});
+
+async function setup(
+  code: string,
+  args: unknown[],
+  options: ConstructorParameters<typeof AppendOnlyWorld>[0] = {}
+) {
+  const runId = `wrun_so_${Math.random().toString(36).slice(2)}`;
+  const world = new AppendOnlyWorld(options);
+  world.seedRun({
+    runId,
+    workflowName: 'workflow',
+    deploymentId: 'dpl_test',
+    status: 'pending',
+    executionContext: { workflowVm: currentEngine },
+    input: await dehydrateWorkflowArguments(args, runId, undefined, []),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as unknown as WorkflowRun);
+  currentWorld = world;
+  setWorld(world.asWorld());
+  await workflowEntrypoint(code)(new Request('https://example.test'));
+  const start = world.enqueue(QUEUE, { runId, requestedAt: new Date() });
+  return { world, runId, start };
+}
+
+const eventsOf = (world: AppendOnlyWorld, type: string) =>
+  world.events.filter((event) => event.eventType === type);
+
+const data = (event: Event | undefined) =>
+  (event as { eventData?: Record<string, unknown> } | undefined)?.eventData;
+
+beforeEach(() => {
+  for (const key of Object.keys(calls)) delete calls[key];
+  flakyFailures = 0;
+  longRetryFailures = 0;
+});
+
+afterEach(() => {
+  setWorld(undefined);
+});
+
+describe.each([
+  'node',
+  'quickjs',
+] as const)('single orchestrator against an append-only World (%s engine)', (engine) => {
+  beforeEach(() => {
+    currentEngine = engine;
+  });
+
+  it('runs a step inline, marks every orchestrator write in-band, and advances the fence', async () => {
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+      [1, 2]
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const created = eventsOf(world, 'step_created')[0];
+    expect(data(created)).toMatchObject({
+      stepName: 'so_add',
+      inline: true,
+      creatorMessageId: world.deliveries[0]?.messageId,
+    });
+    expect(data(eventsOf(world, 'step_started')[0])).toMatchObject({
+      stepName: 'so_add',
+      attempt: 1,
+      startReason: 'first',
+    });
+    expect(calls.so_add).toBe(1);
+    // Every write after run_created came from the orchestrator.
+    expect(world.creates.every((c) => c.params?.inBand === true)).toBe(true);
+    // A batch's events share one expected count: the positions before it.
+    const expected = world.creates.map((c) => c.params?.expectedSeqInBand);
+    const firstOfWrite = world.creates.map((c) =>
+      world.creates.findIndex((d) => d.params === c.params)
+    );
+    expect(expected).toEqual(firstOfWrite.map((i) => i + 1));
+    // No step message was needed.
+    expect(world.queueCalls).toEqual([]);
+  });
+
+  it('replays an inline step result when the create response carries no payload bytes', async () => {
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) {
+         const first = await add(a, b);
+         return await add(first, 10);
+       }${transform('workflow')}`,
+      [1, 2],
+      {
+        encryptionKey: new Uint8Array(32).fill(7),
+        lazyCreatePayloads: true,
+      }
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(calls.so_add).toBe(2);
+  });
+
+  it('fails a step whose arguments cannot be serialized, observably to the workflow', async () => {
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow() {
+         try {
+           await add(() => 1, 2);
+           return 'no error';
+         } catch (error) {
+           return 'caught';
+         }
+       }${transform('workflow')}`,
+      []
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(data(eventsOf(world, 'step_failed')[0])).toMatchObject({
+      stepName: 'so_add',
+      attempt: 1,
+    });
+    expect(calls.so_add ?? 0).toBe(0);
+  });
+
+  it('takes one workflow pass per inline step when the live feed echoes its own writes', async () => {
+    const steps = 20;
+    const resume = vi.spyOn(workflowModule, 'resumeWorkflow');
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(n) {
+         let x = 0;
+         for (let i = 0; i < n; i++) x = await add(x, 1);
+         return x;
+       }${transform('workflow')}`,
+      [steps],
+      { fence: true, subscribe: true }
+    );
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    // The feed pushes every event, the orchestrator's own included. Those
+    // echoes are not progress: one pass per step settling, no more.
+    if (engine === 'node') {
+      expect(resume.mock.calls.length).toBeLessThanOrEqual(steps);
+    }
+    resume.mockRestore();
+  });
+
+  it('enqueues background steps once with a stable key and retention, and wakes the orchestrator unkeyed after the last', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    try {
+      const { world } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow() {
+           const [a, b, c] = await Promise.all([add(1, 1), add(2, 2), add(3, 3)]);
+           return a + b + c;
+         }${transform('workflow')}`,
+        []
+      );
+      await world.runUntilIdle();
+
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const created = eventsOf(world, 'step_created');
+      // One inline step and two background ones (the engines may write
+      // them in different orders).
+      expect(created.map((e) => data(e)?.inline).sort()).toEqual([
+        false,
+        false,
+        true,
+      ]);
+      const stepMessages = world.queueCalls.filter(
+        (call) => (call.message as { stepId?: string }).stepId !== undefined
+      );
+      expect(stepMessages).toHaveLength(2);
+      for (const call of stepMessages) {
+        expect(call.opts?.idempotencyKey).toEqual(expect.any(String));
+        expect(call.opts?.retentionSeconds).toEqual(expect.any(Number));
+        expect(
+          (call.message as { stepCreatedEventId?: string }).stepCreatedEventId
+        ).toEqual(expect.any(String));
+      }
+      const wakes = world.queueCalls.filter(
+        (call) => (call.message as { stepId?: string }).stepId === undefined
+      );
+      expect(wakes.length).toBeGreaterThan(0);
+      // The last completion wakes the orchestrator unkeyed. One that leaves
+      // another step pending sends its window's shared, delayed wake.
+      expect(
+        wakes.some((wake) => wake.opts?.idempotencyKey === undefined)
+      ).toBe(true);
+      for (const wake of wakes) {
+        const key = wake.opts?.idempotencyKey;
+        if (key === undefined) continue;
+        expect(key).toMatch(/^wake:/);
+        expect(wake.opts?.delaySeconds).toBeGreaterThan(0);
+      }
+      // Background step writes are out-of-band.
+      const bgWrites = world.creates.filter(
+        (c) =>
+          c.event.eventType.startsWith('step_') &&
+          c.event.correlationId !==
+            created.find((e) => data(e)?.inline === true)?.correlationId &&
+          c.event.eventType !== 'step_created'
+      );
+      expect(bgWrites.length).toBe(4);
+      expect(bgWrites.every((c) => c.params?.inBand === false)).toBe(true);
+      expect(calls.so_add).toBe(3);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('retries a background step in place on its own message', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    flakyFailures = 1;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const { world } = await setup(
+        `const flaky = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_flaky");
+         async function workflow() { return await flaky(); }${transform('workflow')}`,
+        [],
+        {
+          advanceClock: (seconds) => {
+            offsetMs += seconds * 1000;
+          },
+        }
+      );
+      await world.runUntilIdle();
+
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const stepMessages = world.queueCalls.filter(
+        (call) => (call.message as { stepId?: string }).stepId !== undefined
+      );
+      // One message for the step's whole life.
+      expect(stepMessages).toHaveLength(1);
+      const stepDeliveries = world.deliveries.filter(
+        (d) => (d.message as { stepId?: string }).stepId !== undefined
+      );
+      expect(stepDeliveries.map((d) => d.deliveryCount)).toEqual([1, 2]);
+      expect(stepDeliveries[0]?.result).toMatchObject({
+        timeoutSeconds: expect.any(Number),
+      });
+      const starts = eventsOf(world, 'step_started');
+      expect(starts.map((e) => data(e)?.attempt)).toEqual([1, 2]);
+      expect(starts.map((e) => data(e)?.startReason)).toEqual([
+        'first',
+        'retry',
+      ]);
+      expect(data(eventsOf(world, 'step_retrying')[0])).toMatchObject({
+        attempt: 1,
+        retryAfter: expect.any(Date),
+      });
+    } finally {
+      nowSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('waits out a retryAfter longer than one queue hop across several redeliveries', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    longRetryFailures = 1;
+    // The queue clamps each redelivery delay, as Vercel Queues does.
+    const MAX_HOP_SECONDS = 900;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const { world } = await setup(
+        `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_long_retry");
+         async function workflow() { return await step(); }${transform('workflow')}`,
+        [],
+        {
+          advanceClock: (seconds) => {
+            offsetMs += Math.min(seconds, MAX_HOP_SECONDS) * 1000;
+          },
+        }
+      );
+      await world.runUntilIdle();
+
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const stepDeliveries = world.deliveries.filter(
+        (d) => (d.message as { stepId?: string }).stepId !== undefined
+      );
+      // First delivery fails and asks for an hour; the queue clamps that to
+      // 900s per hop, and each early hop reads the log and asks for the rest.
+      expect(stepDeliveries.length).toBeGreaterThanOrEqual(5);
+      expect(
+        stepDeliveries.slice(1, -1).every((d) => {
+          const result = d.result as { timeoutSeconds?: number } | undefined;
+          return (result?.timeoutSeconds ?? 0) > 0;
+        })
+      ).toBe(true);
+      // Only two attempts ran: the early hops ran no body.
+      expect(calls.so_long_retry).toBe(2);
+      expect(
+        eventsOf(world, 'step_started').map((e) => data(e)?.startReason)
+      ).toEqual(['first', 'retry']);
+      // One message for the whole retry span.
+      expect(new Set(stepDeliveries.map((d) => d.messageId)).size).toBe(1);
+    } finally {
+      nowSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('runs a maxRetries: 0 step at most once across a redelivery', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    try {
+      const { world } = await setup(
+        `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_once");
+         async function workflow() {
+           try { return await once(); } catch (e) { return "failed: " + e.message; }
+         }${transform('workflow')}`,
+        []
+      );
+      await world.deliver(world.held[0]!);
+      const stepMessage = world.held.find(
+        (held) => (held.message as { stepId?: string }).stepId !== undefined
+      );
+      expect(stepMessage).toBeDefined();
+      // The step's invocation wrote step_started and died before the
+      // outcome: append the start, then redeliver the same message.
+      world.appendOutOfBand({
+        eventType: 'step_started',
+        correlationId: (stepMessage!.message as { stepId: string }).stepId,
+        eventData: { stepName: 'so_once', attempt: 1, startReason: 'first' },
+      } as Partial<Event>);
+      await world.deliver({ ...stepMessage!, deliveryCount: 2 });
+
+      expect(calls.so_once).toBeUndefined();
+      const failed = eventsOf(world, 'step_failed');
+      expect(failed).toHaveLength(1);
+      expect(data(failed[0])).toMatchObject({ attempt: 2 });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('acks a redelivered step message without a body when the outcome is already in the log', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    try {
+      const { world } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow() { return await add(2, 3); }${transform('workflow')}`,
+        []
+      );
+      await world.deliver(world.held[0]!);
+      const stepMessage = world.held.find(
+        (held) => (held.message as { stepId?: string }).stepId !== undefined
+      )!;
+      await world.deliver(stepMessage);
+      expect(calls.so_add).toBe(1);
+      // The committed outcome's response was lost: the same message comes
+      // back with a higher delivery count.
+      const result = await world.deliver({ ...stepMessage, deliveryCount: 2 });
+      expect(result).toBeUndefined();
+      expect(calls.so_add).toBe(1);
+      expect(eventsOf(world, 'step_completed')).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('stops a superseded orchestrator without running bodies and replaces its message', async () => {
+    const { world, start } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+      [1, 2]
+    );
+    // Another orchestrator of the run writes in-band between this
+    // delivery's load and its first write.
+    const asWorld = world.asWorld();
+    const list = asWorld.events.list.bind(asWorld.events);
+    let competed = false;
+    asWorld.events.list = async (params) => {
+      const page = await list(params);
+      if (!competed) {
+        competed = true;
+        world.seqInBand++;
+        world.appendOutOfBand({ eventType: 'run_started' } as Partial<Event>);
+      }
+      return page;
+    };
+    setWorld(asWorld);
+    await workflowEntrypoint(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`
+    )(new Request('https://example.test'));
+
+    const result = await world.deliver(start);
+    expect(calls.so_add).toBeUndefined();
+    // Acknowledged, and a fresh message stands in for it.
+    const replacement = expectReplaced(world, result, start);
+    expect(replacement.message).toMatchObject({
+      replacesMessage: { messageId: start.messageId, count: 1 },
+    });
+    // The replacement re-snapshots and finishes the run.
+    await world.runUntilIdle();
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(calls.so_add).toBe(1);
+  });
+
+  it('fails an orchestrator past the delivery cap in-band, and never a step message', async () => {
+    const { world, start } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+      [1, 2]
+    );
+    const cap = getMaxQueueDeliveries();
+    await world.deliver({
+      ...start,
+      message: {
+        runId: world.events[0]?.runId,
+        stepId: 'step_x',
+        stepName: 'so_add',
+      },
+      deliveryCount: cap + 1,
+    });
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+
+    await world.deliver({ ...start, deliveryCount: cap + 1 });
+    const failed = world.creates.find(
+      (c) => c.event.eventType === 'run_failed'
+    );
+    expect(data(failed?.event)).toMatchObject({
+      errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+    });
+    expect(failed?.params).toMatchObject({
+      inBand: true,
+      expectedSeqInBand: expect.any(Number),
+    });
+  });
+
+  it('keeps advancing the workflow while an inline step body runs', async () => {
+    const { world } = await setup(
+      `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_until_wait_completed");
+       const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() {
+         const body = step();
+         await sleep("500ms");
+         return await body;
+       }${transform('workflow')}`,
+      []
+    );
+    await world.deliver(world.held[0]!);
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const slot = (type: string) =>
+      world.events.findIndex((e) => e.eventType === type);
+    // The sleep completed while the body ran, written by the delivery that
+    // runs the body (the timer message it armed comes later), and the body
+    // saw it before it finished.
+    expect(slot('wait_completed')).toBeGreaterThan(-1);
+    expect(slot('wait_completed')).toBeLessThan(slot('step_completed'));
+    const firstDelivery = world.deliveries[0]?.messageId;
+    expect(firstDelivery).toBeDefined();
+    expect(calls.so_until_wait_completed).toBe(1);
+  });
+
+  it('fences every in-band write without a live feed', async () => {
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+      [4, 5],
+      {}
+    );
+    await world.runUntilIdle();
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const inBand = world.creates.filter((c) => c.params?.inBand === true);
+    expect(inBand.length).toBeGreaterThan(0);
+    expect(
+      inBand.every((c) => typeof c.params?.expectedSeqInBand === 'number')
+    ).toBe(true);
+  });
+
+  it('arms a sleep timer only from the delivery that created the wait', async () => {
+    const { world } = await setup(
+      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+      []
+    );
+    await world.deliver(world.held[0]!);
+    const created = eventsOf(world, 'wait_created')[0];
+    expect(data(created)?.creatorMessageId).toBe(
+      world.deliveries[0]?.messageId
+    );
+    const timers = world.queueCalls.filter(
+      (call) =>
+        (call.message as { waitContinuation?: unknown }).waitContinuation !==
+        undefined
+    );
+    expect(timers).toHaveLength(1);
+    expect(timers[0]?.opts?.idempotencyKey).toBeUndefined();
+    expect(timers[0]?.opts?.delaySeconds).toBeGreaterThan(0);
+
+    // An unrelated wake (a different message) does not arm another timer.
+    world.held.length = 0;
+    const before = world.queueCalls.length;
+    await world.deliver(
+      world.enqueue(QUEUE, { runId: world.events[0]?.runId })
+    );
+    expect(world.queueCalls.length).toBe(before);
+  });
+
+  // A delivery that stands down replaces its message with a fresh one, and
+  // the replacement holds the replaced message's creator identity: it alone
+  // may send again what that delivery created and never got out.
+  it('lets the replacement of a delivery re-send the background step that delivery created', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    try {
+      const { world, runId, start } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+        [1, 2]
+      );
+      await world.deliver(start);
+      expect(eventsOf(world, 'step_created')).toHaveLength(1);
+      // The step's message never got out (the crash window between the
+      // commit and the enqueue).
+      world.held.length = 0;
+      const stepMessages = () =>
+        world.queueCalls.filter(
+          (call) => (call.message as { stepId?: string }).stepId !== undefined
+        ).length;
+      const sent = stepMessages();
+
+      // A plain wake is not the creator: it leaves the step alone.
+      await world.deliver(world.enqueue(QUEUE, { runId }));
+      expect(stepMessages()).toBe(sent);
+
+      // The replacement of the creating delivery sends it again.
+      world.held.length = 0;
+      await world.deliver(
+        world.enqueue(QUEUE, {
+          runId,
+          replacesMessage: { messageId: start.messageId, count: 1 },
+        })
+      );
+      expect(stepMessages()).toBe(sent + 1);
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(calls.so_add).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('lets the replacement of a delivery arm the timer of the wait that delivery created', async () => {
+    const { world, runId, start } = await setup(
+      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+      []
+    );
+    await world.deliver(start);
+    const timers = () =>
+      world.queueCalls.filter(
+        (call) =>
+          (call.message as { waitContinuation?: unknown }).waitContinuation !==
+          undefined
+      ).length;
+    expect(timers()).toBe(1);
+    world.held.length = 0;
+    await world.deliver(
+      world.enqueue(QUEUE, {
+        runId,
+        replacesMessage: { messageId: start.messageId, count: 1 },
+      })
+    );
+    expect(timers()).toBe(2);
+  });
+
+  it('falls back to redelivering its own message past the replacement cap', async () => {
+    const code = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`;
+    const { world, runId } = await setup(code, [1, 2]);
+    const asWorld = world.asWorld();
+    const list = asWorld.events.list.bind(asWorld.events);
+    let competed = false;
+    asWorld.events.list = async (params) => {
+      const page = await list(params);
+      if (!competed) {
+        competed = true;
+        world.seqInBand++;
+        world.appendOutOfBand({ eventType: 'run_started' } as Partial<Event>);
+      }
+      return page;
+    };
+    setWorld(asWorld);
+    await workflowEntrypoint(code)(new Request('https://example.test'));
+    world.held.length = 0;
+    const capped = world.enqueue(QUEUE, {
+      runId,
+      replacesMessage: {
+        messageId: 'msg_original',
+        count: MAX_MESSAGE_REPLACEMENTS,
+      },
+    });
+
+    const result = await world.deliver(capped);
+    expect(result).toEqual({ timeoutSeconds: expect.any(Number) });
+    expect(world.held.map((h) => h.messageId)).toEqual([capped.messageId]);
+  });
+
+  it('acknowledges a wake with nothing new without a replay', async () => {
+    const { world, runId } = await setup(
+      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+      []
+    );
+    await world.deliver(world.held[0]!);
+    world.held.length = 0;
+    const creates = world.creates.length;
+    const listSpy = vi.spyOn(world, 'deliver');
+    await world.deliver(world.enqueue(QUEUE, { runId }));
+    expect(world.creates.length).toBe(creates);
+    listSpy.mockRestore();
+    expect(SPEC_VERSION_CURRENT).toBeGreaterThan(0);
+  });
+});

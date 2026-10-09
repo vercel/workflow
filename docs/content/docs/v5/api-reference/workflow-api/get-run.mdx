@@ -169,6 +169,8 @@ export async function POST(req: Request) {
 }
 ```
 
+`wakeUp()` returns once the run's orchestrator has been asked to complete the sleeps: it writes their `wait_completed` events itself, in order with the run's other decisions, shortly after. `stoppedCount` is the number of sleeps it was asked to complete.
+
 You can also target specific sleep calls by correlation ID:
 
 ```typescript lineNumbers

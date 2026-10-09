@@ -168,6 +168,15 @@ export function getReplayTimeoutMaxRetries(): number {
 }
 
 /**
+ * How many times in a row an orchestrator delivery the fence refused, or that
+ * stopped running ahead, may replace itself with a fresh message (see
+ * `replacesMessage` on the invocation payload). Past it the delivery asks the
+ * queue to redeliver its own message after the fence redelivery delay, so a
+ * run that keeps losing the fence backs off instead of spinning.
+ */
+export const MAX_MESSAGE_REPLACEMENTS = 10;
+
+/**
  * Default maximum number of steps the owned-inline path runs inline (in
  * parallel) per suspension. The rest are queued to background handlers. Each
  * inline step is created lazily (its `step_created` is folded into the
@@ -180,8 +189,8 @@ export function getReplayTimeoutMaxRetries(): number {
  */
 export const MAX_INLINE_STEPS = 3;
 
-/** Lower bound for the inline-steps env override (1 = single inline step). */
-export const MIN_MAX_INLINE_STEPS = 1;
+/** Lower bound for the inline-steps env override (0 = every step is enqueued). */
+export const MIN_MAX_INLINE_STEPS = 0;
 
 /**
  * Upper bound for the inline-steps env override. Inline bodies run in parallel
@@ -201,11 +210,11 @@ export function getMaxInlineSteps(): number {
   const raw = process.env.WORKFLOW_MAX_INLINE_STEPS;
   if (!raw) return MAX_INLINE_STEPS;
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!Number.isInteger(parsed) || parsed < 0) {
     if (!warned.maxInlineStepsValues.has(raw)) {
       warned.maxInlineStepsValues.add(raw);
       runtimeLogger.warn(
-        'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a positive integer; using default',
+        'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a nonnegative integer; using default',
         { raw, defaultValue: MAX_INLINE_STEPS }
       );
     }
@@ -225,107 +234,6 @@ export function getMaxInlineSteps(): number {
   }
   return parsed;
 }
-
-/**
- * Upper bound on the serialized step input that resilient step dispatch will
- * inline into the queue message's `stepInput`.
- *
- * Vercel Queues has no hard message-size cap (bodies above its ~256 KB
- * inline threshold transparently spill to S3-backed storage), so this bound
- * is a cost/latency choice, not a rejection guard: the message also carries
- * the runId, stepId, stepName, and trace carrier alongside CBOR framing
- * overhead, and staying under the queue's inline threshold keeps step
- * messages on its fast inline path instead of paying an S3 store+fetch
- * double-hop for bytes that already live in the event log. Above this size
- * the dispatch falls back to the sequential path (`step_created` write, then
- * a payload-less queue message).
- */
-export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
-
-/**
- * Whether resilient step dispatch is enabled: the suspension handler
- * parallelizes each newly created step's `step_created` event write with its
- * step-execution queue publish, carrying the serialized step input in the
- * queue message (`stepInput`) so the consumer can idempotently re-ensure the
- * event if the direct write failed transiently. Mirrors the resilient start
- * (`runInput`) pattern (and the legacy lazy hook resume's `hookInput`, which
- * current producers no longer send).
- *
- * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
- *
- * The queue publish races the create's verdict, and a create can come back
- * refused: as a duplicate this replay should stop pursuing, or as a stale
- * write on a World that refuses rather than reports. Either way the message
- * carrying the payload is already out, so the consumer can materialize a step
- * whose create was refused, and nothing orders the verdict before the
- * consumer's redelivery re-ensure. Enabling this trades that window for the
- * latency the parallel publish saves.
- */
-export function isResilientStepDispatchEnabled(): boolean {
-  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
-}
-
-/**
- * Whether batched event transitions are enabled: the suspension handler folds
- * a clean fan-out's `step_created` + `wait_created` writes into one
- * `world.events.createBatch` call (one durable write, per-event outcomes)
- * instead of one write per event. Only engages when the World implements the
- * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute writes and no
- * resilient step dispatch. Hook writes in the same suspension go through the
- * single-event path concurrently with the batch. Everything else keeps the
- * single-event path byte-for-byte.
- *
- * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
- * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the
- * operator escape hatch that restores the exact prior one-write-per-event
- * path, mirroring `WORKFLOW_TURBO`'s kill-switch shape.
- */
-export function isBatchTransitionsEnabled(): boolean {
-  const raw = process.env.WORKFLOW_BATCH_TRANSITIONS;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
- * Ceiling on events per `createBatch` call from the batched fan-out fold.
- * The server's transaction budgets are the hard limit: each fan-out event
- * costs 2 transaction items server-side (entity + event row) against the
- * 100-item DynamoDB cap, and inline payloads count against a 768 KB byte
- * budget. A fan-out larger than this commits in successive batches, all in
- * flight at once (split batches lose cross-batch atomicity, which is exactly
- * the per-event-write crash surface, and every batch still converges on retry
- * via per-event 409s).
- *
- * Within the budget the value is a latency trade, measured on durabench
- * production sweeps (Vercel World, iad1, `Promise.all` of N one-step branches,
- * 100 ms of work and 1 KB JSON each, 2026-10-07, every candidate built off the
- * same commit and interleaved in one sweep):
- *
- * - A queued (non-inline) branch's message is published only once the chunk
- *   carrying its `step_created` commits, then goes out in that chunk's
- *   batched publish, and both hops slow down as the chunk grows. Smaller
- *   chunks start the queued branches sooner: at 64 branches the queued
- *   branches' median `step_started` moved from ~570 ms after `run_started` at
- *   32 to ~460 ms at 16, and the last branch's first line from 967 to 875 ms
- *   (p50, 45 runs each); at 128 branches, from 4,059 to 3,855 ms (20 runs).
- * - More chunks are more concurrent `createBatch` requests per run, and the
- *   inline branches' pair chunk is one of them. From about 16 concurrent
- *   chunks the first (inline) branch slows down: at 128 branches 8 per chunk
- *   cost it ~120 ms, and at 256 branches 4, 8 and 12 per chunk cost it ~470,
- *   ~120 and ~140 ms. At 16 a 256-branch fan-out is 16 plain chunks, at the
- *   edge of that (+~100 ms, not significant over 20 runs); at 24 and 32 it
- *   is flat.
- *
- * 16 is the largest value with a clear last-branch gain at 64 and 128
- * branches and no first-branch or join regression there; an 8-branch fan-out
- * fits one chunk either way. It also keeps the default inline pairs (two rows
- * per inline step, `MAX_INLINE_STEPS` = 3) in one chunk. A
- * `WORKFLOW_MAX_INLINE_STEPS` above 8 spills the pairs into more than one pair
- * chunk; they commit concurrently and all of them gate the inline bodies, so
- * that degrades latency, not correctness.
- */
-export const MAX_BATCH_FANOUT_EVENTS = 16;
 
 /**
  * Optional client-side override for the server-supplied per-run event ceiling.
@@ -352,66 +260,6 @@ export function getMaxEventsOverride(): number | undefined {
     return undefined;
   }
   return parsed;
-}
-
-/**
- * Whether optimistic inline step start is enabled. When on, the owned-inline
- * path begins running a brand-new step's body *before* its lazy `step_started`
- * network call resolves (the input is already known locally), awaiting the
- * `step_started` only before the terminal write.
- *
- * This can run a step body more than once when handlers race for the same
- * step's create-claim: both run the body before one wins. That is unsafe for
- * steps with non-idempotent side effects; in particular, two concurrent runs
- * of a step that writes to the workflow stream (e.g. an AI agent streaming
- * tokens) can interleave and corrupt the stream data. So the optimization is
- * **off by default** and must be explicitly opted into per deployment.
- *
- * Reads `process.env.WORKFLOW_OPTIMISTIC_INLINE_START` lazily. Default OFF;
- * enabled only by an explicit `'1'` / `'true'`.
- */
-export function isOptimisticInlineStartEnabled(): boolean {
-  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-  if (raw === undefined || raw === '') return false;
-  return raw === '1' || raw.toLowerCase() === 'true';
-}
-
-/**
- * Whether an operator has **explicitly disabled** optimistic inline start via
- * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Distinct from "unset": unset
- * leaves the optimization off by default but lets turbo force it on; an explicit
- * `0`/`false` is an operator opt-out that turbo must honor (turbo's forced
- * optimistic start still runs a step body before `step_started`/`run_started` is
- * confirmed, the property such an operator is opting out of), so
- * `forceOptimisticStart` defers to this. Reads the env var lazily.
- */
-export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
-  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-  if (raw === undefined || raw === '') return false;
-  return raw === '0' || raw.toLowerCase() === 'false';
-}
-
-/**
- * Whether "turbo mode" is enabled. Turbo mode fast-paths the *first delivery of
- * the first invocation* of a run (detected by the entrypoint via `runInput`
- * presence + `metadata.attempt === 1`): it backgrounds the `run_started` event
- * creation, skips the initial event-log load (nothing has been written yet),
- * and forces optimistic inline step start for that invocation, independent of
- * `WORKFLOW_OPTIMISTIC_INLINE_START`.
- *
- * Forcing optimistic start is safe here because the first delivery has no
- * concurrent peer handler to race the step create-claim, so a step body runs
- * exactly once. That single-handler guarantee ends as soon as the run creates a
- * hook or wait (which introduce resume/parallel invocations), so the runtime
- * exits turbo at that point.
- *
- * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
- * explicit `'0'` / `'false'` (case-insensitive).
- */
-export function isTurboEnabled(): boolean {
-  const raw = process.env.WORKFLOW_TURBO;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
 /**
@@ -452,6 +300,54 @@ export function isVmRetentionEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
+/**
+ * Whether an operator has explicitly disabled optimistic inline start with
+ * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Turbo mode starts the first
+ * delivery's inline step bodies before their `step_started` commits; this
+ * opt-out keeps turbo's other shortcuts and makes those bodies wait for the
+ * commit instead.
+ *
+ * Only the opt-out is read. On single-orchestrator runs there is no general
+ * optimistic inline start to turn on: a body that runs before its
+ * `step_started` commits can run twice if the in-band fence then refuses the
+ * start, and only turbo's first delivery is known to have no other
+ * orchestrator. `1` / `true` therefore change nothing. Reads the env var
+ * lazily.
+ */
+export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
+  const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+  if (raw === undefined || raw === '') return false;
+  return raw === '0' || raw.toLowerCase() === 'false';
+}
+
+/**
+ * Whether "turbo mode" is enabled. Turbo mode fast-paths the first delivery of
+ * a run's first orchestrator message (the message `start()` enqueued, which
+ * carries `runInput`, on its first delivery). That delivery:
+ *
+ * - writes `run_started` without waiting for it, and synthesizes the run
+ *   locally from `runInput`;
+ * - skips the initial event-log load: the log holds only `run_created`, which
+ *   counts as the run's first in-band position, so the in-band fence count is
+ *   known without the load's snapshot;
+ * - starts inline step bodies before their `step_created` and `step_started`
+ *   commit (optimistic inline start), unless
+ *   `WORKFLOW_OPTIMISTIC_INLINE_START=0`. It stops doing so for the rest of
+ *   the delivery once the run creates a hook or a wait or writes attributes.
+ *
+ * Every write still lands after `run_started`: in-band writes queue behind it
+ * in the delivery's in-band writer, and stream and attribute writes from step
+ * bodies wait on the run-ready barrier.
+ *
+ * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
+ * explicit `'0'` / `'false'` (case-insensitive).
+ */
+export function isTurboEnabled(): boolean {
+  const raw = process.env.WORKFLOW_TURBO;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
 /** Environment variable that opts a deployment into dynamic workflows. */
 export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
 
@@ -473,74 +369,6 @@ export function isDynamicWorkflowsEnabled(): boolean {
   return raw === '1' || raw.toLowerCase() === 'true';
 }
 
-/**
- * Whether inline step ownership is enabled (default ON). When on, the lazy
- * `step_started` that creates an inline step records the owning queue
- * message ID, and wake replays that observe an actively-owned step enqueue a
- * *delayed backstop* message instead of immediately requeueing it, fixing
- * duplicate inline step execution when a hook/wait wakes a run mid-step
- * (vercel/workflow#2780).
- *
- * `WORKFLOW_INLINE_OWNERSHIP=0` (or `false`) is the kill switch: dispatch
- * reverts to the unconditional immediate requeue. Stamping is unaffected:
- * the recorded ownerMessageId is inert data when the switch is off.
- */
-export function isInlineOwnershipEnabled(): boolean {
-  const raw = process.env.WORKFLOW_INLINE_OWNERSHIP;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
- * Default inline-ownership lease, in seconds: how long after a step's latest
- * (stamped) `step_started` a non-owner invocation assumes the owning
- * invocation may still be alive. Within the lease, wake replays enqueue the
- * step's backstop message with `delaySeconds = lease remaining` instead of
- * immediately; past it, they enqueue immediately (today's behavior).
- *
- * Why a fixed 860 and not a value derived from the function's `maxDuration`:
- * neither runtime nor build time can see the resolved value: builders emit
- * `maxDuration: 'max'`, which the platform resolves per-plan at deploy, and
- * no env var or request-context deadline API exposes the result. The bound
- * comes from a platform rule instead: durations above 800s require explicit
- * per-function numeric config, so a builder-emitted `'max'` resolves to at
- * most 800s, and 860s therefore dominates any workflow route's invocation
- * lifetime plus scheduling slack. Revisit when that ceiling moves (the
- * 30-minute duration beta becoming reachable via `'max'` would invalidate
- * the bound). Worlds without an invocation kill bound (world-local,
- * self-hosted) get no death proof from any constant. There the in-process
- * single-flight layer (step-single-flight.ts) is what makes a backstop
- * firing mid-step harmless.
- *
- * 860 also stays under the queue's 900s maximum delay (SQS cap), so a
- * backstop's full lease remainder always fits in a single delayed message.
- *
- * Override via `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (clamped to
- * 1..`MAX_INLINE_OWNERSHIP_LEASE_SECONDS`).
- */
-export const INLINE_OWNERSHIP_LEASE_SECONDS = 860;
-
-/**
- * Upper bound for the lease env override. 900s is the queue's maximum
- * per-message delay (SQS cap). A longer lease would need delay chaining
- * like long waits use; clamp instead so one delayed message always suffices.
- */
-export const MAX_INLINE_OWNERSHIP_LEASE_SECONDS = 900;
-
-/**
- * Effective inline-ownership lease. Override via
- * `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`, e.g. raise it on self-hosted
- * multi-instance worlds with long-running steps to widen the window in which
- * a live owner is protected from a concurrent backstop execution.
- */
-export function getInlineOwnershipLeaseSeconds(): number {
-  return envNumber(
-    'WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS',
-    INLINE_OWNERSHIP_LEASE_SECONDS,
-    { integer: true, min: 1, max: MAX_INLINE_OWNERSHIP_LEASE_SECONDS }
-  );
-}
-
 // A replay-consumer mismatch can be caused by a transient divergent replay
 // rather than an invalid persisted history. Queue bounded recovery replays
 // before recording terminal corruption for a run that cannot replay.
@@ -557,121 +385,6 @@ export function getReplayDivergenceMaxRetries(): number {
     { integer: true }
   );
 }
-
-// A pending wait suppresses the per-step inline event delta only if it can
-// fire while this invocation is still scheduling inline batches: its
-// `resumeAt` must fall before the end of the invocation's inline window
-// (`invocationStartTime + noInlineReplayAfterMs`, the budget the replay loop
-// stops scheduling batches at; see `getMaxInlineDurationMs`) plus this skew
-// allowance. A wait due later than that cannot have its timer write a
-// `wait_completed` before this invocation hands the run off. Nothing disposes
-// a wait, so without this a `sleep('24h')` that lost a `Promise.race` against
-// a hook would hold every later step boundary of the run on the fetch path.
-//
-// The window is the inline budget, not the platform deadline: that budget is
-// `WORKFLOW_V2_TIMEOUT_MS` when set, otherwise a tier derived from the
-// function's deadline that tops out at 10 minutes. Raising the function's
-// duration alone therefore widens the window only up to that tier; the env
-// var is what takes it further.
-//
-// What the allowance has to cover, all of it seconds at most:
-//   - clocks that are not this process's: the wait timer's queue may deliver
-//     a continuation early (`NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS` tolerates 2s
-//     of that), and the host that writes `wait_completed` has its own offset;
-//   - the inline-window check sits at the top of the loop, so the last batch
-//     an invocation schedules can start one replay pass plus a claim round
-//     trip after the window nominally closes.
-// 30s covers both with an order of magnitude to spare.
-//
-// The bound is a statement about the wait's own timer, not about every writer.
-// `run.wakeUp()` (public API, and the dashboard's "cancel sleeps" action)
-// completes pending waits regardless of `resumeAt`. A completion it lands
-// after a step's terminal write is absent from that write's delta; the runtime
-// therefore re-reads the log before parking on a wait over a delta-extended
-// log (see `eventLogFromInlineDelta` in runtime.ts), so the completion is
-// acted on then rather than when the wait's own timer would have fired. Turbo's
-// forced optimistic start does not use this window at all: any open wait keeps
-// it off, because a wake `run.wakeUp()` enqueues is a peer that can race a
-// forced body for its claim, and a body executed twice is not repairable the
-// way a delayed wake is.
-export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
-
-/**
- * Effective skew allowance added to the invocation's inline window when
- * deciding whether a pending wait can fire during it. Override via
- * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`. Must be a finite integer: a value such
- * as `31536000000` (one year) restores the unconditional gating of any
- * pending wait, while `Infinity` is rejected and falls back to the default.
- */
-export function getOpenWaitClockSkewMs(): number {
-  return envNumber(
-    'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
-    OPEN_WAIT_CLOCK_SKEW_MS,
-    {
-      integer: true,
-    }
-  );
-}
-
-// A stale-snapshot rejection (412) means the replay's event log was missing an
-// event the World had already recorded, so the replay is re-derived from a
-// corrected log inside the same invocation. Bounded because a persistently
-// rejected write should escalate rather than spin: after this many restarts the
-// run is re-invoked (a new invocation, possibly in a different region), and the
-// run-level budget below then applies.
-export const PRECONDITION_MAX_INPROCESS_RESTARTS = 3;
-
-/**
- * Effective in-process replay-restart budget for stale-snapshot rejections.
- * Override via `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`.
- */
-export function getPreconditionMaxInProcessRestarts(): number {
-  return envNumber(
-    'WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS',
-    PRECONDITION_MAX_INPROCESS_RESTARTS,
-    { integer: true }
-  );
-}
-
-// The in-process budget above is per-invocation, and a re-invocation that
-// enqueues a fresh message also restarts the queue's delivery count, so without
-// a counter carried on the message a permanently fenced run has no run-level
-// bound at all. It can stay fenced without any permanent fault (a full reload
-// is not atomic across pages, so a busy run can acquire a new hole on every
-// reload), so the chain is counted and the run fails once this many
-// re-invocations have been spent on stale-snapshot rejections.
-export const PRECONDITION_MAX_REINVOCATIONS = 5;
-
-/**
- * Effective per-run budget for re-invocations caused by stale-snapshot
- * rejections. Override via `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS`.
- */
-export function getPreconditionMaxReinvocations(): number {
-  return envNumber(
-    'WORKFLOW_PRECONDITION_MAX_REINVOCATIONS',
-    PRECONDITION_MAX_REINVOCATIONS,
-    { integer: true }
-  );
-}
-
-// Backoff before a precondition re-invocation. Unlike the in-process restart
-// (where the point is to re-read immediately), a re-invocation only happens
-// after the in-process budget failed to catch up, so the log is being extended
-// faster than this replay can follow it. Waiting lets the writers quiesce.
-export const PRECONDITION_REINVOKE_DELAY_SECONDS = 2;
-
-/**
- * Effective delay before a precondition re-invocation. Override via
- * `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS`.
- */
-export function getPreconditionReinvokeDelaySeconds(): number {
-  return envNumber(
-    'WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS',
-    PRECONDITION_REINVOKE_DELAY_SECONDS,
-    { integer: true }
-  );
-}
-
 // A delivery reaching a deployment the run is not pinned to is not treated as
 // permanent. Re-route the message at the run's own deployment a bounded number
 // of times before failing the run with DEPLOYMENT_MISMATCH.
@@ -689,3 +402,69 @@ export function getDeploymentMismatchMaxRetries(): number {
     { integer: true, min: 0 }
   );
 }
+
+/** Default {@link getRunAheadDepth}. */
+export const RUN_AHEAD_DEPTH = 10;
+/** Upper bound of {@link getRunAheadDepth}. */
+export const MAX_RUN_AHEAD_DEPTH = 16;
+
+/**
+ * How many inline step outcomes the orchestrator runs ahead of
+ * (`WORKFLOW_RUN_AHEAD_DEPTH`, default {@link RUN_AHEAD_DEPTH}, clamped to
+ * `0`..{@link MAX_RUN_AHEAD_DEPTH}): at most this many steps whose
+ * `step_completed`/`step_failed` has not committed yet, past the last write
+ * the orchestrator has seen confirmed. `0` disables run-ahead. See
+ * `runtime/out-of-band-observation.ts` for when run-ahead applies.
+ */
+export function getRunAheadDepth(): number {
+  return Math.min(
+    MAX_RUN_AHEAD_DEPTH,
+    envNumber('WORKFLOW_RUN_AHEAD_DEPTH', RUN_AHEAD_DEPTH, {
+      integer: true,
+      min: 0,
+    })
+  );
+}
+
+/**
+ * Allowance added to the invocation's inline window when deciding whether
+ * an open wait can come due while the orchestrator is still deciding. A wait
+ * due within the window plus this allowance makes a run-ahead boundary drain
+ * instead.
+ *
+ * It covers clocks that are not this process's (the host that delivers a
+ * timer, and an early timer delivery) and the last boundary of a window
+ * starting one replay pass after the window nominally closes: seconds at
+ * most, so 30s has an order of magnitude to spare.
+ *
+ * `run.wakeUp()` completes waits regardless of `resumeAt`, but on a
+ * single-orchestrator run it does so by naming them on an orchestrator
+ * message, and the orchestrator writes `wait_completed` in-band. An open wait
+ * is therefore only path-changing through its own timer.
+ */
+export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
+
+/**
+ * Effective {@link OPEN_WAIT_CLOCK_SKEW_MS}
+ * (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`). A finite integer: a large value such
+ * as `31536000000` (one year) makes every open wait de-opt run-ahead.
+ */
+export function getOpenWaitClockSkewMs(): number {
+  return envNumber(
+    'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
+    OPEN_WAIT_CLOCK_SKEW_MS,
+    {
+      integer: true,
+    }
+  );
+}
+
+/**
+ * Ceiling on events per `createBatch` call the orchestrator makes. A World
+ * caps a batch by event count and by bytes (world-vercel: 100 events, and a
+ * byte budget over frame meta plus inline-bound payloads) and refuses an
+ * oversized one whole, so a suspension's creations go out in batches of at
+ * most this many, with a margin under both. A step's `step_created` and the
+ * `step_started` behind it stay in one batch.
+ */
+export const MAX_BATCH_EVENTS = 32;

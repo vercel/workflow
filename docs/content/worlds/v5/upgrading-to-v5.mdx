@@ -52,7 +52,7 @@ export function createWorld(): World {
 
 In v4 the runtime required that number to equal its own current version exactly. In v5 it checks the declaration against a range before it creates or replays anything, and refuses a World outside it with an error naming both the range and what your World declared. The floor is the version that introduced [slot-numbered event IDs](#event-id-allocation), because a World below it allocates IDs the runtime cannot read positions out of, and admitting one would only move the failure from startup into the middle of a run. The ceiling is the highest version this runtime can read.
 
-`mintedSpecVersion()` is a function rather than a constant because the version a World stamps is a deployment-level choice. It answers with the sealed-log version by default, and with the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) opts new runs out. Both sit inside the accepted range, so either answer is a valid declaration. Reading it per `createWorld()` call rather than once at module load is what lets a single process create Worlds in both modes.
+`mintedSpecVersion()` answers with the current spec version, the single-orchestrator version (9). Earlier releases let `WORKFLOW_SEALED_LOG=0` lower it; that switch no longer exists, because the single-orchestrator version requires the sealed log. It stays a function so a World that calls it keeps moving with the `@workflow/world` version it resolves.
 
 Calling it is also what keeps the check passing across upgrades, since it moves with the `@workflow/world` version your package resolves. A hard-coded number leaves your World a version behind the next bump and gets it rejected by the runtime it ships alongside. That includes the constants: `SPEC_VERSION_CURRENT` and `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` are literals by another name for this purpose, since neither follows the sealed-log setting. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
 
@@ -63,7 +63,7 @@ The sealed-log version exists for a World whose store makes allocating a positio
 Two consequences for an implementation:
 
 - **If you allocate at the commit, you are already compliant** and have nothing to build. No write can leave a position empty, so you have no holes to seal and will never emit a `noop`. `@workflow/world-local` and `@workflow/world-postgres` are in this position.
-- **What the version actually gates is the reader.** A run stamped at the sealed-log version can only be replayed by a reader that knows to skip `noop`. That is every runtime on this release train, but a runtime pinning its own accepted range separately, such as the Python runtime, has to catch up first. `WORKFLOW_SEALED_LOG=0` is the switch for an environment where it has not.
+- **What the version actually gates is the reader.** A run stamped at the sealed-log version can only be replayed by a reader that knows to skip `noop`. That is every runtime on this release train, but a runtime pinning its own accepted range separately, such as the Python runtime, has to catch up first, and keeps stamping its own lower version until it does.
 
 Runs carry a spec version too, and a run keeps the version it was created under for its whole life. Read the stamped version off the run rather than assuming every run matches what your World declares today. Changing what you stamp does not reach runs already in your store: their version is persisted, every version test in the runtime is a lower bound, and a run's event ID scheme is resolved from what is stored.
 
@@ -136,7 +136,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, and `dynamicWorkflowCode`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
+| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, `inBandFence`, and `dynamicWorkflowCode`. `inBandFence` is required on the v6 beta (see [Single-writer guarantee](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
 | `events.createBatch` | Appends an ordered list of events in one durable write, with a per-event outcome for each. Implementing the method *is* the declaration: the runtime folds a suspension's `step_created` / `wait_created` writes into batches only when it exists, and otherwise takes the single-event path unchanged. Implement it with real atomicity per attempt, so a lost race leaves nothing behind, or leave it out. See [Batched event writes](/docs/changelog/batched-event-writes). |
 | `runs.waitForTerminalStatus` | Long-polls until a run reaches a terminal status. `await run.returnValue` uses it when present, instead of polling on an interval. |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |

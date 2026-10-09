@@ -1,0 +1,478 @@
+import { ThrottleError, WorkflowWorldError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
+import type { Event } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerStepFunction } from '../../private.js';
+import { workflowEntrypoint } from '../../runtime.js';
+import { dehydrateStepReturnValue } from '../../serialization.js';
+import { setAttributes } from '../../set-attributes.js';
+import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import {
+  dataOf,
+  eventsOf,
+  orchestratorMessagesOf,
+  registerWorkflow,
+  runResult,
+  setupOrchestratorRun,
+  stepMessagesOf,
+} from '../../test-support/orchestrator-harness.js';
+import { getMaxInlineSteps, MAX_BATCH_EVENTS } from '../constants.js';
+import { setWorld } from '../world.js';
+
+vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+const calls: Record<string, number> = {};
+const count = (name: string) => {
+  calls[name] = (calls[name] ?? 0) + 1;
+};
+let failuresLeft = 0;
+let bodyEntered = withResolvers<void>();
+let bodyGate = withResolvers<void>();
+
+/** Called at the start of every `iw_a` body. */
+let onStepA: (() => void) | undefined;
+registerStepFunction('iw_a', async () => {
+  count('iw_a');
+  onStepA?.();
+  return 1;
+});
+registerStepFunction('iw_b', async () => {
+  count('iw_b');
+  return 2;
+});
+registerStepFunction('iw_flaky', async () => {
+  count('iw_flaky');
+  if (failuresLeft > 0) {
+    failuresLeft--;
+    throw new Error('transient');
+  }
+  return 3;
+});
+registerStepFunction('iw_gated', async () => {
+  count('iw_gated');
+  bodyEntered.resolve();
+  await bodyGate.promise;
+  return 'step';
+});
+
+registerStepFunction('iw_attributes', async (n: number) => {
+  count('iw_attributes');
+  await setAttributes({ phase: 'step-started' });
+  await setAttributes({ phase: 'step-done' });
+  return n * 4;
+});
+
+const step = (name: string) =>
+  `globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(name)})`;
+
+const oneStepWorkflow = `const a = ${step('iw_a')};
+  async function workflow() { return await a(); }${registerWorkflow()}`;
+
+const threeStepWorkflow = `const a = ${step('iw_a')}; const b = ${step('iw_b')};
+  const flaky = ${step('iw_flaky')};
+  async function workflow() {
+    const [x, y, z] = await Promise.all([a(), b(), flaky()]);
+    return x + y + z;
+  }${registerWorkflow()}`;
+
+// More steps at once than one batch may carry, as a fan-out does.
+const FAN_OUT = 100;
+const fanOutWorkflow = `const a = ${step('iw_a')};
+  async function workflow(n) {
+    const results = await Promise.all(Array.from({ length: n }, () => a()));
+    return results.reduce((sum, x) => sum + x, 0);
+  }${registerWorkflow()}`;
+
+const attributesStepWorkflow = `const s = ${step('iw_attributes')};
+  async function workflow(n) { return await s(n); }${registerWorkflow()}`;
+
+// A hook payload races an inline step body; whichever the log holds first
+// wins.
+const hookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const gated = ${step('iw_gated')};
+  async function workflow() {
+    const hook = createHook({ token: "iw-race-hook" });
+    return await Promise.race([hook.then(() => "hook"), gated()]);
+  }${registerWorkflow()}`;
+
+/**
+ * Refuses the first `step_started` of each listed step with a 429, as a
+ * loaded World does. The refusal allocates nothing.
+ */
+function throttleFirstStart(
+  world: AppendOnlyWorld,
+  code: string,
+  retryAfterByStep: Record<string, number>
+) {
+  const asWorld = world.asWorld();
+  const create = asWorld.events.create.bind(asWorld.events);
+  const throttled = new Set<string>();
+  asWorld.events.create = (async (...args: Parameters<typeof create>) => {
+    const data = args[1] as {
+      eventType: string;
+      eventData?: { stepName?: string };
+    };
+    const stepName = data.eventData?.stepName;
+    if (
+      data.eventType === 'step_started' &&
+      stepName !== undefined &&
+      retryAfterByStep[stepName] !== undefined &&
+      !throttled.has(stepName)
+    ) {
+      throttled.add(stepName);
+      throw new ThrottleError('throttled', {
+        retryAfter: retryAfterByStep[stepName],
+      });
+    }
+    return create(...args);
+  }) as typeof create;
+  setWorld(asWorld);
+  return workflowEntrypoint(code)(new Request('https://example.test'));
+}
+
+/** The delay the first orchestrator delivery deferred the run by. */
+function deferral(world: AppendOnlyWorld): number | undefined {
+  const result = world.deliveries[0]?.result as
+    | { timeoutSeconds?: number }
+    | undefined;
+  if (result?.timeoutSeconds !== undefined) return result.timeoutSeconds;
+  const delays = orchestratorMessagesOf(world)
+    .map((call) => call.opts?.delaySeconds as number | undefined)
+    .filter((d): d is number => d !== undefined);
+  return delays.length > 0 ? Math.max(...delays) : undefined;
+}
+
+beforeEach(() => {
+  for (const key of Object.keys(calls)) delete calls[key];
+  failuresLeft = 0;
+  bodyEntered = withResolvers<void>();
+  bodyGate = withResolvers<void>();
+});
+
+afterEach(() => {
+  bodyGate.resolve();
+  setWorld(undefined);
+  vi.unstubAllEnvs();
+});
+
+describe.each([
+  'node',
+  'quickjs',
+] as const)('inline step writes (%s engine)', (engine) => {
+  // The deferred replay finds the step's `step_created` (inline, never
+  // started) and runs the step inline.
+  // A World without batch writes: the executor writes the start, and its
+  // throttle carries the World's backoff.
+  it('defers the run instead of queueing a throttled inline step, and runs it inline afterwards', async () => {
+    // Run-ahead starts a body before its separate start write commits, so a
+    // refused start would no longer keep the body from running.
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+    const { world, start } = await setupOrchestratorRun(
+      oneStepWorkflow,
+      [],
+      { noBatch: true },
+      engine
+    );
+    await throttleFirstStart(world, oneStepWorkflow, { iw_a: 5 });
+
+    await world.deliver(start);
+    // The start was refused: no body, no step message, and the run comes
+    // back after the backoff.
+    expect(calls.iw_a).toBeUndefined();
+    expect(stepMessagesOf(world)).toEqual([]);
+    expect(deferral(world)).toBe(5);
+
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(1);
+    expect(calls.iw_a).toBe(1);
+    expect(eventsOf(world, 'step_created')).toHaveLength(1);
+    expect(dataOf(eventsOf(world, 'step_created')[0])?.inline).toBe(true);
+    expect(
+      eventsOf(world, 'step_started').map((e) => dataOf(e)?.attempt)
+    ).toEqual([1]);
+    expect(stepMessagesOf(world)).toEqual([]);
+  });
+
+  // Every settled sibling is acted on before the deferral: the longest
+  // backoff (9s) wins, and the failed sibling's retry message goes out now.
+  it('defers by the longest backoff and queues a sibling retry in the same delivery', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+    failuresLeft = 1;
+    const { world, start } = await setupOrchestratorRun(
+      threeStepWorkflow,
+      [],
+      { noBatch: true },
+      engine
+    );
+    await throttleFirstStart(world, threeStepWorkflow, { iw_a: 3, iw_b: 9 });
+
+    await world.deliver(start);
+    expect(calls.iw_a).toBeUndefined();
+    expect(calls.iw_b).toBeUndefined();
+    expect(calls.iw_flaky).toBe(1);
+    // The failed step exists and started, so its retry gets its own message.
+    expect(
+      stepMessagesOf(world).map(
+        (call) => (call.message as { stepName?: string }).stepName
+      )
+    ).toEqual(['iw_flaky']);
+    expect(deferral(world)).toBe(9);
+  });
+
+  it('finishes a run whose inline steps were throttled beside a retrying sibling', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+    failuresLeft = 1;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const { world } = await setupOrchestratorRun(
+        threeStepWorkflow,
+        [],
+        {
+          advanceClock: (seconds) => {
+            offsetMs += seconds * 1000;
+          },
+        },
+        engine
+      );
+      await throttleFirstStart(world, threeStepWorkflow, {
+        iw_a: 3,
+        iw_b: 9,
+      });
+      await world.runUntilIdle(30);
+
+      expect(await runResult(world)).toBe(6);
+      expect(calls).toEqual({ iw_a: 1, iw_b: 1, iw_flaky: 2 });
+      // The retry ran in the background, on one message.
+      expect(
+        new Set(stepMessagesOf(world).map((c) => c.opts?.idempotencyKey)).size
+      ).toBe(1);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  // A redelivery finds the inline step created and started with no outcome,
+  // and runs it inline again as a redelivery attempt.
+  it('runs an inline step again when the delivery that started it died before the outcome', async () => {
+    const { world, start } = await setupOrchestratorRun(
+      oneStepWorkflow,
+      [],
+      {},
+      engine
+    );
+    // The first delivery dies inside the body: its outcome write never
+    // happens, and the queue redelivers the same message.
+    const asWorld = world.asWorld();
+    const create = asWorld.events.create.bind(asWorld.events);
+    let died = false;
+    asWorld.events.create = (async (...args: Parameters<typeof create>) => {
+      if (!died && args[1].eventType === 'step_completed') {
+        died = true;
+        throw new Error('invocation died');
+      }
+      return create(...args);
+    }) as typeof create;
+    setWorld(asWorld);
+    await workflowEntrypoint(oneStepWorkflow)(
+      new Request('https://example.test')
+    );
+    await world.deliver(start).catch(() => {});
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'step_completed')).toHaveLength(0);
+    if (!world.held.some((h) => h.messageId === start.messageId)) {
+      world.held.push({ ...start, deliveryCount: 2 });
+    }
+
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(1);
+    expect(calls.iw_a).toBe(2);
+    expect(
+      eventsOf(world, 'step_started').map((e) => dataOf(e)?.startReason)
+    ).toEqual(['first', 'redelivery']);
+    expect(stepMessagesOf(world)).toEqual([]);
+  });
+
+  it('feeds an out-of-band event that landed below an inline outcome before the outcome', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      hookRaceWorkflow,
+      [],
+      {},
+      engine
+    );
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    const delivery = world.deliver(start);
+    await bodyEntered.promise;
+    // The hook payload commits while the body runs, so it sits below the
+    // step's outcome in the log.
+    const hookCreated = eventsOf(world, 'hook_created')[0]!;
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      correlationId: hookCreated.correlationId,
+      eventData: {
+        token: dataOf(hookCreated)?.token,
+        payload: await dehydrateStepReturnValue('payload', runId, undefined),
+      },
+    } as Partial<Event>);
+    bodyGate.resolve();
+    await delivery;
+    await world.runUntilIdle();
+
+    // The step outcome's write named the delivery's position, and its
+    // skipped-slot report carried the hook payload, which the workflow
+    // consumed first, as every later replay does.
+    const outcome = world.creates.find(
+      (c) => c.event.eventType === 'step_completed'
+    );
+    expect(outcome?.params).toMatchObject({
+      inBand: true,
+      eventCount: expect.any(Number),
+    });
+    expect(await runResult(world)).toBe('hook');
+    expect(calls.iw_gated).toBe(1);
+  });
+
+  // The live feed delivers the batch's own events, and the body's
+  // out-of-band `attr_set`s after them, before the batch's response. A World
+  // that reports no allocated count leaves the writer to infer it, and the
+  // slots the feed showed it in the meantime are no evidence of a replay.
+  it('keeps the fence count when the feed shows a batch and later events before its response', async () => {
+    const { world } = await setupOrchestratorRun(
+      attributesStepWorkflow,
+      [9],
+      { subscribe: true, createDelayMs: 20 },
+      engine
+    );
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(36);
+    expect(world.deliveries).toHaveLength(1);
+    expect(calls.iw_attributes).toBe(1);
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'attr_set')).toHaveLength(2);
+  });
+
+  // A World refuses an oversized batch whole, so a fan-out wider than one
+  // batch commits its creations in several.
+  it('commits a fan-out wider than one batch in batches the World takes', async () => {
+    const { world } = await setupOrchestratorRun(
+      fanOutWorkflow,
+      [FAN_OUT],
+      {},
+      engine
+    );
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    // Steps past the inline limit run from their own messages.
+    await world.runUntilIdle(4 * FAN_OUT);
+
+    expect(await runResult(world)).toBe(FAN_OUT);
+    expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
+    expect(
+      Math.max(...world.batches.map((batch) => batch.length))
+    ).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
+  });
+
+  // The inline steps ride the first creation batch, so their bodies start
+  // once it commits instead of after every batch of the fan-out.
+  it.skipIf(engine !== 'node')(
+    'starts a wide fan-out once its first creation batch committed',
+    async () => {
+      const bodyStarted = withResolvers<void>();
+      onStepA = () => bodyStarted.resolve();
+      let heldBatches = 0;
+      let releasedByBody = 0;
+      let timedOut = false;
+      let current: AppendOnlyWorld | undefined;
+      try {
+        const { world } = await setupOrchestratorRun(
+          fanOutWorkflow,
+          [FAN_OUT],
+          {
+            // Holds every later creation batch until a body started, or
+            // for 2s if none does.
+            async beforeCreate(data, _params, source) {
+              if (
+                timedOut ||
+                !source?.batch ||
+                data.eventType !== 'step_created' ||
+                (current?.batches.length ?? 0) < 2
+              ) {
+                return;
+              }
+              heldBatches++;
+              const byBody = await Promise.race([
+                bodyStarted.promise.then(() => true),
+                new Promise<boolean>((resolve) =>
+                  setTimeout(() => resolve(false), 2000)
+                ),
+              ]);
+              if (byBody) releasedByBody++;
+              else timedOut = true;
+            },
+          },
+          engine
+        );
+        current = world;
+        vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+        await world.runUntilIdle(4 * FAN_OUT);
+
+        expect(await runResult(world)).toBe(FAN_OUT);
+        expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
+      } finally {
+        onStepA = undefined;
+      }
+      expect(heldBatches).toBeGreaterThan(0);
+      expect(releasedByBody).toBe(heldBatches);
+    }
+  );
+
+  // A later creation batch the World refuses fails the delivery even though
+  // the inline steps already ran; its redelivery creates what is missing,
+  // and no step is created or run twice.
+  it.skipIf(engine !== 'node')(
+    'redelivers a wide fan-out whose later creation batch was refused',
+    async () => {
+      let batchedCreations = 0;
+      let refused = false;
+      const { world } = await setupOrchestratorRun(
+        fanOutWorkflow,
+        [FAN_OUT],
+        {
+          beforeCreate(data, _params, source) {
+            if (
+              !refused &&
+              source?.batch &&
+              data.eventType === 'step_created' &&
+              ++batchedCreations === MAX_BATCH_EVENTS
+            ) {
+              refused = true;
+              throw new WorkflowWorldError('unavailable', { status: 503 });
+            }
+          },
+        },
+        engine
+      );
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+      await world.deliver(world.held[0]!).catch(() => {});
+      await world.runUntilIdle(4 * FAN_OUT);
+
+      expect(refused).toBe(true);
+      expect(await runResult(world)).toBe(FAN_OUT);
+      const created = eventsOf(world, 'step_created').map(
+        (e) => e.correlationId
+      );
+      expect(new Set(created).size).toBe(FAN_OUT);
+      expect(created).toHaveLength(FAN_OUT);
+      // A failed write stops the delivery's later writes, the inline steps'
+      // outcomes included, so those bodies may run again on the redelivery
+      // (a step that allows retries tolerates that). No other step does.
+      expect(calls.iw_a).toBeGreaterThanOrEqual(FAN_OUT);
+      expect(calls.iw_a).toBeLessThanOrEqual(FAN_OUT + getMaxInlineSteps());
+    }
+  );
+});

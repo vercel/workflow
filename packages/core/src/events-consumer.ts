@@ -3,6 +3,8 @@ import { envNumber } from '@workflow/world/env-config';
 import {
   classifyEntityEvent,
   isSealedNoopEvent,
+  RUN_ENTITY_KEY,
+  TERMINAL_EVENT_CLASSES,
 } from '@workflow/world/event-metadata';
 import { eventsLogger } from './logger.js';
 
@@ -228,6 +230,8 @@ export class EventsConsumer {
    * {@link EventsConsumer.firstEventTypeOfClass}.
    */
   private readonly seenEventClasses = new Map<string, Event['eventType']>();
+  /** Correlation ids whose terminal event was consumed, with its type. */
+  private readonly closedEntities = new Map<string, Event['eventType']>();
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
   private onDuplicateEvent?: (
@@ -595,6 +599,15 @@ export class EventsConsumer {
     if (key !== undefined && !this.seenEventClasses.has(key)) {
       this.seenEventClasses.set(key, event.eventType);
     }
+    const classification = classifyEntityEvent(event);
+    if (
+      classification !== undefined &&
+      classification.entity !== RUN_ENTITY_KEY &&
+      TERMINAL_EVENT_CLASSES.has(classification.eventClass) &&
+      !this.closedEntities.has(classification.entity)
+    ) {
+      this.closedEntities.set(classification.entity, event.eventType);
+    }
   }
 
   /**
@@ -641,8 +654,20 @@ export class EventsConsumer {
    * class map lives next to the event types rather than being inferred.
    */
   private firstEventTypeOfClass(event: Event): Event['eventType'] | undefined {
+    // Terminal-inert: once an entity's terminal event (a step outcome, a
+    // `wait_completed`, a `hook_disposed`, an `attr_set`) has been consumed,
+    // its consumer is gone and every later event under the same correlation
+    // id is inert, whatever its class. A background step invocation that
+    // stalled past its queue lease can write a `step_started` or
+    // `step_retrying` after the step's outcome, and that straggler cannot
+    // change what the workflow observed.
     const key = this.eventClassKey(event);
-    return key === undefined ? undefined : this.seenEventClasses.get(key);
+    const firstOfClass =
+      key === undefined ? undefined : this.seenEventClasses.get(key);
+    if (firstOfClass !== undefined) return firstOfClass;
+    return event.correlationId
+      ? this.closedEntities.get(event.correlationId)
+      : undefined;
   }
 
   /**

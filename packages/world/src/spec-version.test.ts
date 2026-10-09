@@ -6,10 +6,10 @@ import {
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
-  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
@@ -19,8 +19,10 @@ import {
 } from './spec-version.js';
 
 describe('spec version classification', () => {
-  const versionConstants = Object.entries(specVersions).filter(([name]) =>
-    name.startsWith('SPEC_VERSION_SUPPORTS_')
+  const versionConstants = Object.entries(specVersions).filter(
+    ([name]) =>
+      name.startsWith('SPEC_VERSION_SUPPORTS_') ||
+      name === 'SPEC_VERSION_SINGLE_ORCHESTRATOR'
   ) as [string, number][];
 
   it.each(
@@ -42,6 +44,18 @@ describe('spec version classification', () => {
     expect(crossesStructuralSpecVersion(3, 8)).toBe(true);
   });
 
+  it('treats the single-orchestrator version as structural', () => {
+    expect(STRUCTURAL_SPEC_VERSIONS.has(SPEC_VERSION_SINGLE_ORCHESTRATOR)).toBe(
+      true
+    );
+    expect(
+      crossesStructuralSpecVersion(
+        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      )
+    ).toBe(true);
+  });
+
   it('lets capability-only versions be crossed', () => {
     expect(crossesStructuralSpecVersion(3, 5)).toBe(false);
     expect(crossesStructuralSpecVersion(7, 8)).toBe(false);
@@ -59,11 +73,12 @@ describe('spec version classification', () => {
 });
 
 describe('spec version constants', () => {
-  it('current spec version is the hook-force-claim version', () => {
+  it('current spec version is the single-orchestrator version', () => {
     expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
     expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
     expect(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM).toBe(8);
-    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBe(9);
+    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   });
 
   describe('mintedSpecVersion', () => {
@@ -74,19 +89,11 @@ describe('spec version constants', () => {
       );
     });
 
-    it('falls back to slot identity when switched off', () => {
-      for (const off of ['0', 'false']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
-          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-        );
-      }
-    });
-
-    it('stays on by default for an unset or malformed value', () => {
-      // A flag is an escape hatch, not a hard requirement: a typo must not
-      // silently move a deployment onto the older identity scheme.
-      for (const raw of ['', '1', 'true', 'yes-please']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: raw })).toBe(
+    it('ignores the removed sealed-log opt-out', () => {
+      // The single-orchestrator version requires the sealed log, so the old
+      // `WORKFLOW_SEALED_LOG=0` switch must not lower what gets minted.
+      for (const raw of ['0', 'false', '', '1']) {
+        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
           SPEC_VERSION_CURRENT
         );
       }
@@ -103,9 +110,7 @@ describe('spec version constants', () => {
     // "What do we write?" and "what can we still read?" are separate dials,
     // and the ceiling must never sit below the default: an SDK that stamps a
     // version it cannot read back would reject its own runs.
-    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(
-      SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-    );
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
       SPEC_VERSION_CURRENT
     );
