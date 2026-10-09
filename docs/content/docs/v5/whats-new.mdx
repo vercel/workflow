@@ -27,6 +27,15 @@ npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-
 
 ### Faster and cheaper runs
 
+<Image
+  srcLight="/performance/v5.2.0/01-overview-light.png"
+  srcDark="/performance/v5.2.0/01-overview-dark.png"
+  alt="Dot plot of how many times faster v5.2.0 is than v4.8.12 at p75 on each benchmark, on a log scale. Every benchmark is faster or unchanged."
+  caption="At p75, v5.2.0 is as fast as or faster than v4.8.12 on every benchmark."
+  width={2016}
+  height={1444}
+/>
+
 The largest change in v5 has no API surface: the runtime does far less work per unit of progress. The time between calling `start()` and your first step body executing is now less than half of what it was in v4. This is made possible by many smaller optimizations:
 
 **A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes several steps inline per suspension, in parallel, and only uses the queue for a wait, a hook, or when the function approaches its timeout.
@@ -48,6 +57,28 @@ The largest change in v5 has no API surface: the runtime does far less work per 
 On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute costs by up to 80% for workflows made of many small steps, and storage cost by up to 70%, depending on the workload. Depending on your setup, you may see similar gains using self-hosted or third-party Worlds.
 
 How much work fits in one invocation now scales with the function's own limit: the inline budget is derived from the runtime deadline the World reports, so raising `maxDuration` widens it without configuration. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms).
+
+Benchmarks on Vercel compare v5.2.0 with v4.8.12:
+
+<Image
+  srcLight="/performance/v5.2.0/02-sequential-light.png"
+  srcDark="/performance/v5.2.0/02-sequential-dark.png"
+  alt="Three charts: v5.2.0 reaches the first step and moves between steps sooner than v4.8.12; through a 1,020-step run, step-to-step overhead on v4.8.12 grows toward the end while v5.2.0 stays flat; and v5.2.0 finishes all 1,020 steps several times sooner."
+  caption="Step-to-step overhead stays flat through a 1,020-step run on v5.2.0, while on v4.8.12 it grows with the event log."
+  width={2016}
+  height={2328}
+/>
+
+<Image
+  srcLight="/performance/v5.2.0/05-streams-light.png"
+  srcDark="/performance/v5.2.0/05-streams-dark.png"
+  alt="Three charts of a replayed agent stream: v5.2.0 delivers the response in about the recording's length while v4.8.12 takes about four times as long, v5.2.0 has a shorter chunk trip time, and no v5.2.0 run had a chunk delayed by over 1 s."
+  caption="v5.2.0 writes streams over a WebSocket by default and keeps pace with a recorded agent stream that v4.8.12 falls behind."
+  width={2016}
+  height={1628}
+/>
+
+See [Performance](/docs/performance) for how these benchmarks are measured, the full results, and their limits.
 
 ### Multi-region support
 
@@ -154,7 +185,7 @@ All three first-party Worlds now implement it: Vercel accepts up to 30 days, and
 - **A run cannot be forked across environments.** `start()` stamps the environment it was called from onto the queue message, and a deployment refuses a delivery whose run was created in a different environment. Previously a preview client and a production deployment could each hold half of one run ID.
 - **An experimental QuickJS VM engine.** Set [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm) to run workflow functions in a QuickJS VM compiled to WebAssembly instead of `node:vm`, for platforms that do not provide `node:vm`. Replay semantics are identical, but the available globals are not: check the differences before switching an existing deployment. By default, an encrypted QuickJS run that passes 1,000 events resumes from a VM-memory snapshot instead of replaying its full event log (see [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold)).
 - **Experimental dynamic workflows.** Pass workflow source as a string to `start()` to run orchestration assembled after deployment over steps already deployed with your app. The code is stored with the run (encrypted on Vercel), so replays always execute the code the run started with. Off unless the deployment sets `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`. See [Dynamic Workflows](/docs/advanced/dynamic-workflows).
-- **A WebSocket transport for event writes** on the Vercel World, which ships a run's events over one socket instead of one HTTP request each. It is the default; set [`WORKFLOW_EVENTS_TRANSPORT=http`](/worlds/vercel#workflow_events_transport) to opt out. Tracing is unaffected: each write still emits an `http POST` client span, synthesized around the frame, with the transport on `workflow.events.transport`.
+- **A WebSocket transport for event and stream writes** on the Vercel World, which sends a run's event writes and stream writes over a socket instead of one HTTP request each. It is the default; set [`WORKFLOW_EVENTS_TRANSPORT=http`](/worlds/vercel#workflow_events_transport) or [`WORKFLOW_STREAMS_TRANSPORT=http`](/worlds/vercel#workflow_streams_transport) to opt out. Tracing is unaffected: each write still emits an `http POST` client span, synthesized around the frame, with the transport on `workflow.events.transport`.
 - **`await run.returnValue` waits instead of polling.** Reading a run's result long-polls the World until the run reaches a terminal status, rather than asking again on a fixed interval. A result is observed as soon as it exists, and an idle wait costs one open request instead of a request per tick. Worlds that do not implement the long poll keep the interval.
 - **An event arriving mid-replay no longer fails the run.** A hook resume or step completion landing while a replay is in flight used to be able to fail it with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log). Writes now come back with the events the replay had not seen, and the event is held for whichever part of the workflow awaits it. A run only fails when the log is genuinely missing a position.
 

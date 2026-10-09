@@ -3,10 +3,10 @@ import { createServer, type Server } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { getQueueTopicPrefix } from '@workflow/world';
-import { Pool } from 'pg';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue } from '../src/queue.js';
+import { TestPool } from './pool.js';
 
 /**
  * Queue deliveries execute the workflow body inline, so response headers
@@ -26,7 +26,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   const originalDispatcher = getGlobalDispatcher();
   const shortDeadline = new Agent({ headersTimeout: 10, bodyTimeout: 10 });
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let connectionString: string;
   let server: Server;
   let phase: 'headers' | 'body' | 'abort' | 'hook';
@@ -38,7 +38,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     connectionString = container.getConnectionUri();
-    pool = new Pool({ connectionString, max: 4 });
+    pool = new TestPool({ connectionString, max: 4 });
     server = createServer(async (request, response) => {
       await request.toArray();
       attempts.push(String(request.headers['x-vqs-message-attempt']));
