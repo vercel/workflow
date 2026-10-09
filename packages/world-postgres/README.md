@@ -131,6 +131,11 @@ export WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN="1"
 
 # Optional: Maximum Hook minimum retention in days (default: 30)
 export WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS="30"
+
+# Optional: Seconds a running delivery's job lock may go unrenewed before
+# another process redelivers the job (default: 0, off; 30 is a good value
+# when more than one process shares the database, see "Crash recovery")
+export WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS="30"
 ```
 
 ### Programmatic usage
@@ -186,6 +191,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
+| `jobLockStaleSeconds` | `number` | `process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` or `0` (off) | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job. `0` turns renewal and the release of stale locks off. `30` is a good value when more than one process shares the database. See [Crash recovery](#crash-recovery). |
 
 ## Environment variables
 
@@ -199,6 +205,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
+| `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job; `0` disables | `0` (off) |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 
@@ -277,6 +284,17 @@ and its token can be reused. If the token is never reused, the expired
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
+- With `jobLockStaleSeconds` set, a running delivery renews its job lock, and a job whose process died is redelivered by another process after `jobLockStaleSeconds` (see below)
+
+### Crash recovery
+
+Graphile Worker on its own keeps a dead worker's job locked for 4 hours. By default (`jobLockStaleSeconds: 0`), a delivery whose process died mid-delivery is therefore recovered only by the next `start()`, which re-enqueues active runs, or after those 4 hours.
+
+Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. In invoke mode, the release covers the run's executor queue too.
+
+Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
+
+It's off by default because of rolling upgrades. Processes on an earlier version don't renew their locks, so an upgraded process would redeliver any of their deliveries that run longer than the window, and when the earlier-version process finishes such a delivery, its acknowledgement isn't fenced on the lock holder and can delete the redelivered job's row. So turn it on only once every process that shares the database runs a version that includes `jobLockStaleSeconds`, and set the same value on all of them.
 
 ### Experimental synchronous invocation
 

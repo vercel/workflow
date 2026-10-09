@@ -114,6 +114,7 @@ describe('postgres queue http execution', () => {
     delete process.env.PORT;
     delete process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS;
     delete process.env.WORKFLOW_POSTGRES_BODY_TIMEOUT_MS;
+    delete process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS;
     setWorkflowBasePath(undefined);
   });
 
@@ -895,6 +896,80 @@ describe('postgres queue http execution', () => {
         jobKey: 'step_01ABC',
         maxAttempts: 73,
       })
+    );
+  });
+
+  it("renews a running delivery's job lock and releases stale locks while the runner runs", async () => {
+    const server = await startHangingWorkflowHttpServer('headers');
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    pool.query.mockImplementation(async (sql: string, params?: unknown[]) =>
+      sql.includes('unnest(')
+        ? {
+            rows: (params?.[1] as string[]).map((worker, i) => ({
+              id: (params?.[0] as string[])[i],
+              worker,
+            })),
+          }
+        : { rows: [{ exists: false }] }
+    );
+    const queue = createQueue(
+      { connectionString: 'postgres://test', jobLockStaleSeconds: 1 },
+      pool
+    );
+    try {
+      await queue.start();
+      const controller = new AbortController();
+      const execution = getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        {
+          abortSignal: controller.signal,
+          job: {
+            attempts: 1,
+            id: '7',
+            locked_by: 'worker-a',
+            task_identifier: 'workflow_flows',
+          },
+        }
+      );
+      await server.requestReceived;
+      await vi.waitFor(
+        () => {
+          expect(pool.query).toHaveBeenCalledWith(
+            expect.stringContaining('unnest('),
+            [['7'], ['worker-a']]
+          );
+          expect(pool.query).toHaveBeenCalledWith(
+            expect.stringContaining('"graphile_worker"._private_tasks'),
+            [1, ['workflow_flows', 'workflow_flows_executor']]
+          );
+        },
+        { timeout: 2_000 }
+      );
+      controller.abort();
+      await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      await queue.close();
+    }
+    const queriesAtClose = pool.query.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(pool.query).toHaveBeenCalledTimes(queriesAtClose);
+  });
+
+  it('reads the stale window from WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS', async () => {
+    process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS = '1';
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', jobPrefix: 'myapp_' },
+      pool
+    );
+    await queue.start();
+    await vi.waitFor(
+      () => {
+        expect(pool.query).toHaveBeenCalledWith(
+          expect.stringContaining('"graphile_worker"._private_tasks'),
+          [1, ['myapp_flows', 'myapp_flows_executor']]
+        );
+      },
+      { timeout: 2_000 }
     );
   });
 
