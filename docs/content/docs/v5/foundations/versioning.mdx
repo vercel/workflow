@@ -81,7 +81,8 @@ This keeps the version boundary visible. The old run ends as canceled or failed,
 # Inspect affected runs and copy the exact workflowName value.
 npx workflow inspect runs \
   --backend vercel \
-  --status running
+  --status running \
+  --json
 
 # Cancel one run.
 npx workflow cancel <run-id> \
@@ -94,7 +95,7 @@ npx workflow cancel \
   --backend vercel
 ```
 
-The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`, and use [`parseWorkflowName()`](/docs/api-reference/workflow-observability/parse-workflow-name) when you need display-friendly names.
+The `workflow cancel --workflowName` filter expects the generated workflow ID, not only the exported function's short name. Copy the `workflowName` value from `workflow inspect runs --json`, since the runs table shows the short name, and use [`parseWorkflowName()`](/docs/api-reference/workflow-observability/parse-workflow-name) when you need display-friendly names.
 
 In the [observability UI](/docs/observability), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
 
