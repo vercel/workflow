@@ -1033,6 +1033,12 @@ export async function start<TArgs extends unknown[], TResult>(
         throw new WorkflowRuntimeError(
           'A single-owner run requires a local-target deployment with the single-owner runner (WORKFLOW_RETAINED_RUNNER=1) and an invoke-capable World'
         );
+      // The single-owner runner executes this deployment's compiled bundle, so
+      // a dynamic run (which carries its own code) cannot be single-owner.
+      if (singleOwner && dynamicWorkflow)
+        throw new WorkflowRuntimeError(
+          'Dynamic workflows cannot be started as single-owner runs ($experimentalSingleOwner)'
+        );
       const stepExecution = opts.experimental_stepExecution
         ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
         : undefined;

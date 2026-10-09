@@ -292,6 +292,27 @@ describe('start', () => {
         expect(eventsCreate).toHaveBeenCalledOnce();
         expect(queue).toHaveBeenCalledOnce();
       });
+
+      it('refuses a dynamic start as a single-owner run, before any write', async () => {
+        vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+        setWorld({
+          ...optInWorld(),
+          capabilities: { dynamicWorkflowCode: true, invoke: true },
+          invoke: vi.fn(),
+        });
+        await expect(
+          start(source, {
+            experimental_dynamic: {
+              steps: { noop: { stepId: 'step//./test//noop' } },
+            },
+            attributes: { $experimentalSingleOwner: '{}' },
+            allowReservedAttributes: true,
+          })
+        ).rejects.toThrow(/cannot be started as single-owner/);
+        expect(eventsCreate).not.toHaveBeenCalled();
+        expect(upload).not.toHaveBeenCalled();
+        expect(queue).not.toHaveBeenCalled();
+      });
     });
 
     it.each([

@@ -18,7 +18,6 @@ import {
   singleOwnerMarker,
 } from './run-affinity.js';
 import type { APIConfig } from './utils.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * The single-owner runner's write session for one run: eventsync, the
@@ -60,29 +59,27 @@ export function createEventWriteSession(
     fresh: () => writer?.fresh ?? false,
   };
   // Handle rejection immediately even when snapshot loading fails before a write.
-  const opened = (
-    isWsEventsTransportEnabled()
-      ? import('./ws-transport.js').then(({ openWsChannel }) =>
-          openWsChannel(runId, config, { catchUp })
-        )
-      : Promise.resolve(undefined)
-  ).then(
-    (lease) => {
-      // Keep the lease immediately available for disposal while observing the
-      // connection that openWsChannel already starts beside snapshot loading.
-      if (lease)
-        void lease.ready().then(
-          () => observeReady('end', 'completed'),
-          () => observeReady('end', 'error')
-        );
-      else observeReady('end', 'error');
-      return { lease, error: undefined, failed: false };
-    },
-    (error: unknown) => {
-      observeReady('end', 'error');
-      return { lease: undefined, error, failed: true };
-    }
-  );
+  // A single-owner run is written only over eventsync, whatever the
+  // events-transport setting.
+  const opened = import('./ws-transport.js')
+    .then(({ openWsChannel }) => openWsChannel(runId, config, { catchUp }))
+    .then(
+      (lease) => {
+        // Keep the lease immediately available for disposal while observing the
+        // connection that openWsChannel already starts beside snapshot loading.
+        if (lease)
+          void lease.ready().then(
+            () => observeReady('end', 'completed'),
+            () => observeReady('end', 'error')
+          );
+        else observeReady('end', 'error');
+        return { lease, error: undefined, failed: false };
+      },
+      (error: unknown) => {
+        observeReady('end', 'error');
+        return { lease: undefined, error, failed: true };
+      }
+    );
   let disposal: Promise<void> | undefined;
   const write = async (
     event: CreateEventRequest,

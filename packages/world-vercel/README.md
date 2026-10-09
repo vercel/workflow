@@ -185,25 +185,31 @@ cannot be persisted, the failure observation explicitly reports that fact.
 The optional `workflow.runner` Node diagnostics channel reports mailbox turns,
 persistence, step execution, and terminal-failure recording. Messages include
 owner/span identities and timing, not workflow payloads. `workflow.execution`
-reports replay versus retained VM passes. Older pinned runs retain their prior
-execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
+reports replay versus retained VM passes.
 
-### Owner-journal mode (experimental)
+### Single-owner runs (experimental)
 
-`WORKFLOW_OWNER_JOURNAL=1` opts newly created retained-owner runs into
-`executionContext.ownerJournalVersion: 1`. It requires a compatible eventsync
-backend (`WORKFLOW_EVENTS_TRANSPORT=eventsync`) and guaranteed exclusive ownership,
-including handoff and unfinished storage requests. One experimental eventsync
-wire contract uses the persisted storage-mode marker; older runs retain their
-original persistence behavior. There is no `?protocol=` selector. Update the
-experimental client and endpoint together when changing that contract.
+A run started with the reserved attribute `$experimentalSingleOwner` (see
+`@workflow/core`) is routed by the attribute's JSON value: its optional
+`vercelAffinity` places several runs of a deployment on one owner, with the
+affinity ID `<vercelAffinity>.<deploymentId>`; without it the run is routed by
+its own ID. Hooks and queue wakes for the run route the same way. Queue wakes
+are forwarded to the owner only for single-owner runs.
 
-The owner validates transitions locally and commits contiguous event prefixes
-sequentially. Canonical events remain intact; derived Step state is reconstructed
-from them by the backend. Single-event prefixes use a normal Put and larger
-prefixes use an atomic transaction. Queued progress is not a durability ACK.
-Terminal failure uses the same writer. If that writer is broken, diagnostics
-report `terminalPersisted=false`; no competing fallback writer is started.
+The owner writes through a single-writer event connection, chosen per run
+whatever `WORKFLOW_EVENTS_TRANSPORT` says, and checks from its first catch-up
+that it was invoked under the run's affinity. It validates transitions locally
+and commits contiguous event prefixes sequentially. Canonical events remain
+intact; derived Step state is reconstructed from them by the backend.
+Single-event prefixes use a normal Put and larger prefixes use an atomic
+transaction. Queued progress is not a durability ACK. Terminal failure uses the
+same writer. If that writer is broken, diagnostics report
+`terminalPersisted=false`; no competing fallback writer is started.
+`WORKFLOW_EVENTSYNC_POOL` keeps that many connections open ahead of time.
+
+This requires guaranteed exclusive ownership, including handoff and unfinished
+storage requests. Other write paths to a single-owner run are not coordinated
+with its owner.
 
 ## Custom dispatcher
 

@@ -2537,10 +2537,10 @@ export function withRetainedRunner(
       if (HealthCheckPayloadSchema.safeParse(message).success)
         return legacy(message, metadata);
       const input = WorkflowInvokePayloadSchema.parse(message);
-      // Only single-owner runs are invoked; a queue delivery for any other
-      // run takes the existing path.
-      if (!input.invoke && !(await singleOwner(input)))
-        return fallback(message, metadata);
+      // Any other run's input, queued or invoked, takes the existing path:
+      // invoked inputs (such as a hook resume on an invoke-capable World) are
+      // handled there as they are on a deployment without this runner.
+      if (!(await singleOwner(input))) return fallback(message, metadata);
       let owner = registry.get(input.runId);
       if (!owner) {
         if (registry.size >= 64)

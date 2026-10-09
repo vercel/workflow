@@ -54,17 +54,28 @@ hydrated from the persisted failure, including when a handler throws.
 Register in the workflow executor's host startup, never from workflow or step
 code. Framework-specific support, hot-reload behavior, and stream cleanup are
 documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks).
-With a compatible single-owner World, `WORKFLOW_OWNER_JOURNAL=1` marks newly
-created retained-owner runs for journal-only persistence. Core validates retries
-and step transitions locally and keeps terminal failure on the same serialized
-writer. If persistence cannot record the failure, diagnostics expose
-`terminalPersisted=false` instead of starting a competing write path.
+
+### Single-owner runs (experimental)
+
+A caller opts a run in at `start()` with the reserved run attribute
+`$experimentalSingleOwner` (and `allowReservedAttributes: true`). Its presence
+is the only marker: the run's inputs go to one owner, which keeps the workflow
+resident and writes through the World's single-writer event session. The value
+is opaque to core; a World may route by it. The deployment must host the
+single-owner runner (`WORKFLOW_RETAINED_RUNNER=1`) with an invoke-capable World,
+and the run must be a static (non-dynamic) workflow; `start()` refuses it
+otherwise. Other runs on that deployment, queued or invoked, take the existing
+path.
+
+Core validates retries and step transitions locally and keeps terminal failure
+on the same serialized writer. If persistence cannot record the failure,
+diagnostics expose `terminalPersisted=false` instead of starting a competing
+write path.
 
 ### Queued steps in a retained run (experimental)
 
 `start(workflow, args, { experimental_stepExecution: { mode: 'queued' } })`
-persists an immutable queued-step policy on a new retained run. This requires an
-invoke-capable World and the current deployment as the target. The optional
+persists an immutable queued-step policy on a new single-owner run. The optional
 `attemptTimeoutMs` defaults to 60,000 (range 1,000–900,000). Existing runs keep
 their execution policy. Up to sixteen admitted bodies can be outstanding per run.
 
