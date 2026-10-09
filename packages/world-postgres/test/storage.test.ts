@@ -34,7 +34,7 @@ import {
   createRunsStorage,
   createStepsStorage,
 } from '../src/storage.js';
-import { tolerateTeardown } from './fixtures/pool.js';
+import { TestPool } from './pool.js';
 
 // Helper types for events storage
 type EventsStorage = ReturnType<typeof createEventsStorage>;
@@ -132,6 +132,28 @@ async function createHook(
   return result.hook;
 }
 
+// Walks a cursor-paginated list to the end and returns the ids on each page,
+// so a test can assert the whole sequence: order, page boundaries, no gaps and
+// no repeats.
+async function listPageIds<T>(
+  listPage: (cursor: string | undefined) => Promise<{
+    data: T[];
+    cursor: string | null;
+    hasMore: boolean;
+  }>,
+  getId: (item: T) => string
+): Promise<string[][]> {
+  const pages: string[][] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < 20; i++) {
+    const page = await listPage(cursor);
+    pages.push(page.data.map(getId));
+    if (!page.hasMore) return pages;
+    cursor = page.cursor ?? undefined;
+  }
+  throw new Error('Pagination did not terminate after 20 pages');
+}
+
 describe('Storage (Postgres integration)', () => {
   if (process.platform === 'win32') {
     test.skip('skipped on Windows since it relies on a docker container', () => {});
@@ -167,8 +189,7 @@ describe('Storage (Postgres integration)', () => {
     });
 
     // Initialize database clients and storage
-    pool = new Pool({ connectionString: dbUrl, max: 1 });
-    tolerateTeardown(pool);
+    pool = new TestPool({ connectionString: dbUrl, max: 1 });
     drizzle = createClient(pool);
     runs = createRunsStorage(drizzle);
     steps = createStepsStorage(drizzle);
@@ -522,6 +543,81 @@ describe('Storage (Postgres integration)', () => {
 
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].runId).not.toBe(page1.data[0].runId);
+      });
+
+      it('lists oldest first when sortOrder is asc', async () => {
+        const created: string[] = [];
+        for (let i = 0; i < 3; i++) {
+          const run = await createRun(events, {
+            deploymentId: `deployment-${i}`,
+            workflowName: `workflow-${i}`,
+            input: new Uint8Array(),
+          });
+          created.push(run.runId);
+        }
+
+        const asc = await runs.list({ pagination: { sortOrder: 'asc' } });
+        expect(asc.data.map((r) => r.runId)).toEqual(created);
+
+        const desc = await runs.list({ pagination: { sortOrder: 'desc' } });
+        expect(desc.data.map((r) => r.runId)).toEqual([...created].reverse());
+      });
+
+      it('pages forward from the oldest run when sortOrder is asc', async () => {
+        const created: string[] = [];
+        for (let i = 0; i < 5; i++) {
+          const run = await createRun(events, {
+            deploymentId: `deployment-${i}`,
+            workflowName: `workflow-${i}`,
+            input: new Uint8Array(),
+          });
+          created.push(run.runId);
+        }
+
+        const asc = await listPageIds(
+          (cursor) =>
+            runs.list({ pagination: { limit: 2, cursor, sortOrder: 'asc' } }),
+          (r) => r.runId
+        );
+        expect(asc).toEqual([
+          [created[0], created[1]],
+          [created[2], created[3]],
+          [created[4]],
+        ]);
+
+        const desc = await listPageIds(
+          (cursor) =>
+            runs.list({ pagination: { limit: 2, cursor, sortOrder: 'desc' } }),
+          (r) => r.runId
+        );
+        expect(desc).toEqual([
+          [created[4], created[3]],
+          [created[2], created[1]],
+          [created[0]],
+        ]);
+      });
+
+      it('applies filters alongside sortOrder asc', async () => {
+        const matching: string[] = [];
+        for (let i = 0; i < 4; i++) {
+          const run = await createRun(events, {
+            deploymentId: `deployment-${i}`,
+            workflowName: i % 2 === 0 ? 'wanted' : 'other',
+            input: new Uint8Array(),
+          });
+          if (i % 2 === 0) matching.push(run.runId);
+        }
+
+        const pages = await listPageIds(
+          (cursor) =>
+            runs.list({
+              workflowName: 'wanted',
+              status: ['pending', 'running'],
+              pagination: { limit: 1, cursor, sortOrder: 'asc' },
+            }),
+          (r) => r.runId
+        );
+        expect(pages).toEqual([[matching[0]], [matching[1]]]);
       });
 
       it('filters by a single status', async () => {
@@ -1182,6 +1278,121 @@ describe('Storage (Postgres integration)', () => {
 
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].stepId).not.toBe(page1.data[0].stepId);
+      });
+
+      it('lists oldest first when sortOrder is asc', async () => {
+        for (const stepId of ['step-1', 'step-2', 'step-3']) {
+          await createStep(events, testRunId, {
+            stepId,
+            stepName: `${stepId}-name`,
+            input: new Uint8Array(),
+          });
+        }
+
+        const asc = await steps.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+        expect(asc.data.map((s) => s.stepId)).toEqual([
+          'step-1',
+          'step-2',
+          'step-3',
+        ]);
+
+        const desc = await steps.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'desc' },
+        });
+        expect(desc.data.map((s) => s.stepId)).toEqual([
+          'step-3',
+          'step-2',
+          'step-1',
+        ]);
+      });
+
+      it('pages forward through one run when sortOrder is asc', async () => {
+        const otherRun = await createRun(events, {
+          deploymentId: 'deployment-other',
+          workflowName: 'other-workflow',
+          input: new Uint8Array(),
+        });
+        for (let i = 0; i < 5; i++) {
+          await createStep(events, testRunId, {
+            stepId: `step-${i}`,
+            stepName: `step-name-${i}`,
+            input: new Uint8Array(),
+          });
+          // A step in another run whose id sorts between this run's steps:
+          // the cursor must not let it into this run's pages.
+          await createStep(events, otherRun.runId, {
+            stepId: `step-${i}-other`,
+            stepName: `other-step-name-${i}`,
+            input: new Uint8Array(),
+          });
+        }
+
+        const asc = await listPageIds(
+          (cursor) =>
+            steps.list({
+              runId: testRunId,
+              pagination: { limit: 2, cursor, sortOrder: 'asc' },
+            }),
+          (s) => s.stepId
+        );
+        expect(asc).toEqual([
+          ['step-0', 'step-1'],
+          ['step-2', 'step-3'],
+          ['step-4'],
+        ]);
+
+        const desc = await listPageIds(
+          (cursor) =>
+            steps.list({
+              runId: testRunId,
+              pagination: { limit: 2, cursor, sortOrder: 'desc' },
+            }),
+          (s) => s.stepId
+        );
+        expect(desc).toEqual([
+          ['step-4', 'step-3'],
+          ['step-2', 'step-1'],
+          ['step-0'],
+        ]);
+      });
+    });
+  });
+
+  describe('hooks', () => {
+    describe('list', () => {
+      it('defaults to oldest first and honors sortOrder in both directions', async () => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-hooks',
+          workflowName: 'hooks-workflow',
+          input: new Uint8Array(),
+        });
+        for (const hookId of ['hook-1', 'hook-2', 'hook-3']) {
+          await createHook(events, run.runId, {
+            hookId,
+            token: `${hookId}-token`,
+          });
+        }
+
+        const byDefault = await listPageIds(
+          (cursor) =>
+            hooks.list({ runId: run.runId, pagination: { limit: 2, cursor } }),
+          (h) => h.hookId
+        );
+        expect(byDefault).toEqual([['hook-1', 'hook-2'], ['hook-3']]);
+
+        const desc = await listPageIds(
+          (cursor) =>
+            hooks.list({
+              runId: run.runId,
+              pagination: { limit: 2, cursor, sortOrder: 'desc' },
+            }),
+          (h) => h.hookId
+        );
+        expect(desc).toEqual([['hook-3', 'hook-2'], ['hook-1']]);
       });
     });
   });
