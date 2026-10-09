@@ -45,7 +45,7 @@ import {
 } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { getComputeInstanceId } from './compute-instance.js';
 import {
   getMaxInlineSteps,
   isBatchTransitionsEnabled,
@@ -1731,7 +1731,7 @@ export async function handleSuspension({
               // the compute-instance attribution the single claim sends via
               // CreateEventParams.
               ...(entry.kind === 'inline-started'
-                ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+                ? { computeInstanceId: getComputeInstanceId() }
                 : {}),
             })),
             // Per-write request attribution, same as the single path's
