@@ -349,6 +349,8 @@ capability when retrying a hook event whose response was lost.
 
 `queueBatch` is optional. Implement it when your transport can accept several messages in one round trip, and the runtime will use it to dispatch a wide `Promise.all` fan-out. A fan-out otherwise costs one round trip per branch, paid before the first branch's step body runs, so it lands directly on time-to-first-step.
 
+A call doesn't have to be one request. Split it however your transport delivers soonest: `world-vercel` sends concurrent requests of at most 4 messages, because its queue service delivers a batch's messages later the more messages the request carried. Each queued branch waits for its own message, so delivery latency, not request count, is what a fan-out pays for.
+
 Its contract differs from `queue` in one important way: **a message that fails is reported, not thrown.** Return one result per input message, in input order, where `error` is set on the entries that were rejected and `retryable` says whether republishing might succeed. Reject the promise only for a request-level failure, where you cannot say what happened to any individual message.
 
 The count must match: return exactly as many results as you were given messages. The runtime rejects the whole batch if it does not, because an omitted result is indistinguishable from a message that was never published, and treating it as success would strand that step with nothing reporting an error.

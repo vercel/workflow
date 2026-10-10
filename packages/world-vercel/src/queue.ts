@@ -25,11 +25,32 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js';
 
 /**
- * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
- * rejects the whole request above it, so this is the API's ceiling rather
- * than a tuning knob; `queueBatch` splits anything larger.
+ * Messages per `experimental_sendBatch` request when `queueBatch` publishes a
+ * fan-out. `queueBatch` splits larger inputs into requests of this size and
+ * sends them concurrently. VQS rejects a whole request above 100 messages, so
+ * this must stay at or below 100.
+ *
+ * This is a latency setting, not a limit, and it trades two costs measured on
+ * durabench production fan-outs (Vercel World, iad1, 64 one-step branches,
+ * 2026-10-07/08):
+ *
+ * - VQS delivers a request's messages later the more messages it carried.
+ *   From the moment VQS accepted a request to each message's push delivery,
+ *   the median was about 34 ms for 1 message per request, 44 ms for 4, 65 ms
+ *   for 8, 108 ms for 16 and 157 ms for 32. A queued branch cannot start
+ *   before its message is delivered.
+ * - More requests take longer to get out of one instance. From a chunk's
+ *   commit to VQS accepting its messages, the median was about 60 ms at 16
+ *   messages per request, 60-80 ms at 4, but 150 ms at 2 and 220 ms at 1.
+ *
+ * At 4 the earlier delivery outweighs the slower publish. Across four
+ * interleaved sweeps the last branch of the 64-branch fan-out started ~65 ms
+ * sooner at p50 and ~80 ms sooner at p75 than with one request per 16-event
+ * chunk, while 2 and 1 per request were no better and worse. Requests ride
+ * the queue client's own connection pool (see `QUEUE_AGENT_CONNECTIONS` in
+ * `http-client.ts`).
  */
-const MAX_QUEUE_SEND_BATCH = 100;
+export const QUEUE_SEND_BATCH_SIZE = 4;
 
 /**
  * Mirrors `@vercel/queue`'s own kill switch. `queueBatch` injects trace
@@ -709,9 +730,10 @@ export function createQueue(config?: APIConfig): Queue {
 
     // Group by the routing dimensions a single VQS request cannot span. In
     // the case this exists for — one run's fan-out to one logical queue —
-    // every message lands in one group, so this is one request per
-    // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
-    // one request per distinct route.
+    // every message lands in one group, which is then sent as concurrent
+    // requests of QUEUE_SEND_BATCH_SIZE messages each (see its comment for
+    // why small requests). Mixed input still
+    // works, it just costs at least one request per distinct route.
     //
     // `topic` is one of those dimensions, which makes this a no-op under
     // WORKFLOW_SEQUENTIAL_REPLAYS=1: step dispatches ride the flow topic,
@@ -754,26 +776,36 @@ export function createQueue(config?: APIConfig): Queue {
       groups.set(key, group);
     }
 
-    await Promise.all(
-      [...groups.values()].map(async ({ route, entries }) => {
-        const client = clientFor(route);
-        for (
-          let offset = 0;
-          offset < entries.length;
-          offset += MAX_QUEUE_SEND_BATCH
-        ) {
-          const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
-          const sent = await client.experimental_sendBatch(
-            // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
-            chunk[0]!.topic,
-            chunk.map((entry) => entry.message)
-          );
-          for (const [position, entry] of chunk.entries()) {
-            results[entry.index] = toBatchResult(sent[position]);
-          }
-        }
-      })
+    const batchSize = QUEUE_SEND_BATCH_SIZE;
+    const requests: Promise<void>[] = [];
+    for (const { route, entries } of groups.values()) {
+      const client = clientFor(route);
+      for (let offset = 0; offset < entries.length; offset += batchSize) {
+        const chunk = entries.slice(offset, offset + batchSize);
+        requests.push(
+          (async () => {
+            const sent = await client.experimental_sendBatch(
+              // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
+              chunk[0]!.topic,
+              chunk.map((entry) => entry.message)
+            );
+            for (const [position, entry] of chunk.entries()) {
+              results[entry.index] = toBatchResult(sent[position]);
+            }
+          })()
+        );
+      }
+    }
+    // Every request settles before the call does, success or not: a caller
+    // that sees this reject fails its delivery and republishes the whole set
+    // (deduped by the per-message idempotency keys), and it must not do so
+    // while a sibling request of this call is still in flight.
+    const settled = await Promise.allSettled(requests);
+    const failure = settled.find(
+      (outcome): outcome is PromiseRejectedResult =>
+        outcome.status === 'rejected'
     );
+    if (failure) throw failure.reason;
     return results;
   };
 

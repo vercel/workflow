@@ -1872,13 +1872,15 @@ export async function handleSuspension({
           const stepEntries = chunk.filter((entry) => entry.kind === 'step');
           if (stepEntries.length === 0) return;
           const traceCarrier = await getStepDispatchTraceCarrier();
-          // One batched publish per chunk instead of one round trip per step.
+          // One `queueBatch` call per chunk instead of one round trip per step.
           // It does not hold up the inline bodies (a caller that opted into
           // `allowDeferredBatchWork` runs them off the pair chunk while this
           // rides `deferredBatchWork`), but it is the last hop before the
-          // chunk's queued branches can start anywhere, and a batched
-          // publish's latency grows with its message count: one reason
-          // MAX_BATCH_FANOUT_EVENTS is no larger than it is.
+          // chunk's queued branches can start anywhere. How the call is split
+          // into requests is the World's: the Vercel World sends concurrent
+          // requests of a few messages each, because its queue delivers a
+          // request's messages later the more of them it carried (see
+          // QUEUE_SEND_BATCH_SIZE in world-vercel).
           // `queueMessages` falls back to concurrent single sends on a World
           // with no batch support.
           await queueMessages(

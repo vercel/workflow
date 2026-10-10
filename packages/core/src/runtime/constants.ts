@@ -309,6 +309,10 @@ export function isBatchTransitionsEnabled(): boolean {
  *   branches' median `step_started` moved from ~570 ms after `run_started` at
  *   32 to ~460 ms at 16, and the last branch's first line from 967 to 875 ms
  *   (p50, 45 runs each); at 128 branches, from 4,059 to 3,855 ms (20 runs).
+ *   Those runs published each chunk as ONE queue request. The Vercel World
+ *   now splits a chunk's publish into small concurrent requests (see
+ *   QUEUE_SEND_BATCH_SIZE in world-vercel), so on it only the commit still
+ *   scales with the chunk.
  * - More chunks are more concurrent `createBatch` requests per run, and the
  *   inline branches' pair chunk is one of them. From about 16 concurrent
  *   chunks the first (inline) branch slows down: at 128 branches 8 per chunk

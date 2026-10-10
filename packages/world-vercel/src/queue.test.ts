@@ -73,7 +73,11 @@ vi.mock('./utils.js', () => ({
 }));
 
 import { missingDeploymentIdMessage } from './deployment-id.js';
-import { createQueue, recordStepExecution } from './queue.js';
+import {
+  createQueue,
+  QUEUE_SEND_BATCH_SIZE,
+  recordStepExecution,
+} from './queue.js';
 import { getHttpUrl } from './utils.js';
 
 describe('createQueue', () => {
@@ -1516,6 +1520,7 @@ describe('queueBatch', () => {
   });
   afterEach(() => {
     delete process.env.VERCEL_DEPLOYMENT_ID;
+    mockSendBatch.mockReset();
   });
 
   const entries = (n: number, runId = RUN) =>
@@ -1524,56 +1529,87 @@ describe('queueBatch', () => {
       opts: { idempotencyKey: `key-${i}` },
     }));
 
-  it('publishes a whole fan-out in one request and preserves input order', async () => {
-    mockSendBatch.mockResolvedValueOnce(
-      Array.from({ length: 5 }, (_, i) => sent(`m${i}`))
+  /** Answers each request with one `sent` result per message, named by key. */
+  const echoSent = async (
+    _topic: string,
+    messages: { idempotencyKey?: string }[]
+  ) => messages.map((m) => sent(`m-${m.idempotencyKey}`));
+
+  it('splits a fan-out into concurrent requests of QUEUE_SEND_BATCH_SIZE and preserves input order', async () => {
+    expect(QUEUE_SEND_BATCH_SIZE).toBe(4);
+    // Hold every request open so the test can see them all in flight at once.
+    const releases: (() => void)[] = [];
+    mockSendBatch.mockImplementation(
+      (topic: string, messages: { idempotencyKey?: string }[]) =>
+        new Promise((resolve) => {
+          releases.push(() => resolve(echoSent(topic, messages)));
+        })
     );
     const queue = createQueue();
     assert(queue.queueBatch);
 
-    const results = await queue.queueBatch('__wkf_workflow_test', entries(5));
-
-    expect(mockSendBatch).toHaveBeenCalledTimes(1);
+    const pending = queue.queueBatch('__wkf_workflow_test', entries(10));
+    await vi.waitFor(() => expect(mockSendBatch).toHaveBeenCalledTimes(3));
+    // All three requests are out before any of them has answered: a later
+    // request never waits on an earlier one.
+    expect(releases).toHaveLength(3);
     expect(mockSend).not.toHaveBeenCalled();
-    const [topic, messages] = mockSendBatch.mock.calls[0];
-    expect(topic).toBe('__wkf_workflow_test');
-    expect(messages).toHaveLength(5);
+    const calls = mockSendBatch.mock.calls as [
+      string,
+      { idempotencyKey?: string }[],
+    ][];
+    expect(calls.map(([, messages]) => messages.length)).toEqual([4, 4, 2]);
+    expect(calls.every(([topic]) => topic === '__wkf_workflow_test')).toBe(
+      true
+    );
     // Each message keeps its own idempotency key: the recovery for a failed
     // batch is to republish it, which must not redeliver what already landed.
     expect(
-      messages.map((m: { idempotencyKey?: string }) => m.idempotencyKey)
-    ).toEqual(['key-0', 'key-1', 'key-2', 'key-3', 'key-4']);
-    expect(results.map((r) => r.messageId)).toEqual([
-      'm0',
-      'm1',
-      'm2',
-      'm3',
-      'm4',
-    ]);
+      calls.flatMap(([, messages]) => messages.map((m) => m.idempotencyKey))
+    ).toEqual(Array.from({ length: 10 }, (_, i) => `key-${i}`));
+
+    // Answer out of order; the split must not be observable in the results.
+    for (const release of [...releases].reverse()) release();
+    const results = await pending;
+    expect(results.map((r) => r.messageId)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `m-key-${i}`)
+    );
   });
 
-  it('splits at the 100-message VQS cap', async () => {
+  it('lets every request settle before rejecting with the first failure', async () => {
+    let releaseLast: (() => void) | undefined;
     mockSendBatch
-      .mockResolvedValueOnce(
-        Array.from({ length: 100 }, (_, i) => sent(`a${i}`))
-      )
-      .mockResolvedValueOnce(
-        Array.from({ length: 40 }, (_, i) => sent(`b${i}`))
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockImplementationOnce(echoSent)
+      .mockImplementationOnce(
+        (topic: string, messages: { idempotencyKey?: string }[]) =>
+          new Promise((resolve) => {
+            releaseLast = () => resolve(echoSent(topic, messages));
+          })
       );
     const queue = createQueue();
     assert(queue.queueBatch);
 
-    const results = await queue.queueBatch('__wkf_workflow_test', entries(140));
+    let settled = false;
+    const pending = queue
+      .queueBatch('__wkf_workflow_test', entries(9))
+      .finally(() => {
+        settled = true;
+      });
+    // Observe the rejection from the start so it is never unhandled.
+    const outcome = pending.then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    await vi.waitFor(() => expect(releaseLast).toBeDefined());
+    // The first request has already failed, but a sibling is still in flight:
+    // the caller's recovery (republish everything) must not start yet.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
 
-    expect(mockSendBatch).toHaveBeenCalledTimes(2);
-    expect(mockSendBatch.mock.calls[0][1]).toHaveLength(100);
-    expect(mockSendBatch.mock.calls[1][1]).toHaveLength(40);
-    // The split must not be observable in the returned order.
-    expect(results).toHaveLength(140);
-    expect(results[0].messageId).toBe('a0');
-    expect(results[99].messageId).toBe('a99');
-    expect(results[100].messageId).toBe('b0');
-    expect(results[139].messageId).toBe('b39');
+    releaseLast?.();
+    expect(await outcome).toEqual(new Error('connection reset'));
+    expect(mockSendBatch).toHaveBeenCalledTimes(3);
   });
 
   it('reports per-entry failures without rejecting', async () => {
@@ -1697,11 +1733,8 @@ describe('queueBatch trace propagation', () => {
   ): Promise<
     { headers: Record<string, string> | undefined; spanId: string }[]
   > {
-    mockSendBatch.mockResolvedValueOnce(
-      Array.from({ length: count }, (_, i) => ({
-        status: 'sent' as const,
-        messageId: `m${i}`,
-      }))
+    mockSendBatch.mockImplementation(async (_topic, messages: unknown[]) =>
+      messages.map((_, i) => ({ status: 'sent' as const, messageId: `m${i}` }))
     );
     const queue = createQueue();
     assert(queue.queueBatch);
@@ -1711,10 +1744,11 @@ describe('queueBatch trace propagation', () => {
       await queue.queueBatch?.('__wkf_workflow_test', entries(count));
     });
     span.end();
-    const sent = mockSendBatch.mock.calls[0]?.[1] as
-      | { headers?: Record<string, string> }[]
-      | undefined;
-    return (sent ?? []).map((m) => ({ headers: m.headers, spanId }));
+    // Across every request the call was split into, in input order.
+    const sent = mockSendBatch.mock.calls.flatMap(
+      (call) => call[1] as { headers?: Record<string, string> }[]
+    );
+    return sent.map((m) => ({ headers: m.headers, spanId }));
   }
 
   it('puts the producer traceparent on EVERY message in the batch', async () => {
@@ -1722,7 +1756,8 @@ describe('queueBatch trace propagation', () => {
 
     expect(sent).toHaveLength(64);
     for (const { headers, spanId } of sent) {
-      // Same span on every entry: one publish, one producer context.
+      // Same span on every entry, whichever request carried it: one
+      // publish, one producer context.
       expect(headers?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-/);
       expect(headers?.traceparent).toContain(spanId);
     }
