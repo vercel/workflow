@@ -57,57 +57,44 @@ documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/obser
 
 ### Single-owner runs (experimental)
 
-A caller opts a run in at `start()` with the reserved run attribute
-`$experimentalSingleOwner` (and `allowReservedAttributes: true`). Its presence
-is the only marker: the run's inputs go to one owner, which keeps the workflow
-resident and writes through the World's single-writer event session. The value
-is opaque to core; a World may route by it. The deployment must host the
-single-owner runner (`WORKFLOW_RETAINED_RUNNER=1`) with an invoke-capable World,
-and the run must be a static (non-dynamic) workflow; `start()` refuses it
-otherwise. Other runs on that deployment, queued or invoked, take the existing
-path.
+Runs are single-owner by default wherever the deployment can host their owner:
+a World that can invoke it (`capabilities.invoke`), a run of this deployment's
+own static (non-dynamic) workflows, and a spec version with attributes. `start()`
+marks such a run with the reserved attribute `$experimentalSingleOwner`, whose
+value `{}` routes it by its own run ID. A caller may pass the marker itself (with
+`allowReservedAttributes: true`) to choose an affinity, for example
+`{"vercelAffinity":"cell-0"}`; an explicit marker that cannot be hosted makes
+`start()` throw. The marker is the only setting: there are no other options for
+this model. Elsewhere (for example a World without invoke), runs take the
+existing path.
+
+A single-owner run's inputs go to one owner, which keeps the workflow resident
+and writes through the World's single-writer event session. The value is opaque
+to core; a World may route by it.
 
 Core validates retries and step transitions locally and keeps terminal failure
 on the same serialized writer. If persistence cannot record the failure,
 diagnostics expose `terminalPersisted=false` instead of starting a competing
 write path.
 
-### Queued steps in a retained run (experimental)
+### Step placement
 
-`start(workflow, args, { experimental_stepExecution: { mode: 'queued' } })`
-persists an immutable queued-step policy on a new single-owner run. The optional
-`attemptTimeoutMs` defaults to 60,000 (range 1,000–900,000). Existing runs keep
-their execution policy. Up to sixteen admitted bodies can be outstanding per run.
+The owner runs at most three step bodies at a time itself. Further admitted
+bodies (up to 100 outstanding per run) are delivered with the existing Queue
+primitive as messages marked `input.executionMode: 'remote'`, which the World
+delivers directly to another invocation rather than through a queue. A generated
+step-only handler executes the admitted body and returns its result with
+`invoke`; the Next.js integration serves it at `/.well-known/workflow/v1/step`.
+An admitted attempt that produces no outcome within 60 seconds is superseded by
+a native retry or failure event, including after the owner is replaced, so
+bodies are at-least-once across attempts and side effects must stay idempotent.
 
-The owner durably commits step creation/start before publishing through the
-existing Queue API. The generated flow handler selects the worker branch before
-creating a retained owner. A worker uses the committed start descriptor, executes
-one body, and sends its native serialized outcome to the owner using `invoke`.
-Only the owner writes the journal; results and downstream bodies wait for its
-durable prefix. No extra World capability or compiler transform is needed.
-
-A recovery wake is armed before admission to cover the commit-to-publish gap.
-Worker redelivery first resolves uncertain execution through the owner; transport
-delivery count is not a new step attempt. Lost result acknowledgements reuse the
-serialized outcome while it remains cached in the worker. Recovery reconstructs
-outcome identities from canonical history. Expired attempts are superseded by
-native retry/failure events; bodies are at-least-once across attempts. Application
-side effects must therefore remain idempotent. Native payload/queue limits apply.
-
-The worker reuses native hydration, serialization, error/retry and stream-op
-handling. Its event sink accepts only its own step outcome; arbitrary workflow
-event writes from a worker are rejected. Key and payload APIs remain available
-for capabilities outside the owner event channel.
-
-### Three-local-step overflow (experimental)
-
-`experimental_stepExecution: { mode: 'hybrid' }` keeps at most three concurrent
-step bodies in the retained owner and admits up to 100 outstanding bodies per
-run. Overflow uses the existing Queue delivery primitive with
-`input.executionMode: 'remote'`; the backend must implement direct execution for
-these messages rather than publishing them to a queue. A generated step-only
-handler executes the admitted body and returns its result with `invoke`; the
-Next.js integration serves it at `/.well-known/workflow/v1/step`.
+The owner durably commits each step start before the body runs anywhere. A
+worker uses the committed start descriptor, executes one body, and sends its
+native serialized outcome to the owner; only the owner writes the journal. A
+recovery wake is armed before admission. Worker redelivery first resolves
+uncertain execution through the owner; transport delivery count is not a new
+step attempt. Its event sink accepts only its own step outcome.
 
 Direct delivery is tracked outside the serialized owner turn, so a synchronous
 HTTP worker can await its result acknowledgement without deadlocking the owner.

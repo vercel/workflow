@@ -309,8 +309,19 @@ export const getHeaders = (
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
+  // A workflow-server deployment behind Deployment Protection (for example a
+  // preview named by VERCEL_WORKFLOW_SERVER_URL): its automation bypass token.
+  const bypass = process.env.VERCEL_WORKFLOW_SERVER_BYPASS;
+  if (
+    bypass &&
+    workflowServerUrlOverride &&
+    !headers.has(PROTECTION_BYPASS_HEADER)
+  )
+    headers.set(PROTECTION_BYPASS_HEADER, bypass);
   return headers;
 };
+
+const PROTECTION_BYPASS_HEADER = 'x-vercel-protection-bypass';
 
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);

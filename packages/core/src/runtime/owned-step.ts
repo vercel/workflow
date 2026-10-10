@@ -20,14 +20,6 @@ import { retryOwnerDelivery } from './owner-delivery.js';
 import { executeStep } from './step-executor.js';
 import { withScopedWorld } from './world.js';
 
-/** Runner protocol inside Queue's existing opaque input field. */
-export const QueuedStepPolicySchema = z.compile(
-  z.object({
-    mode: z.enum(['queued', 'hybrid']),
-    attemptTimeoutMs: z.number().int().min(1000).max(900_000).default(60_000),
-  })
-);
-
 export const OwnedStepExecutionSchema = z.compile(
   z.object({
     type: z.literal('step_execute'),

@@ -64,9 +64,8 @@ import {
   type HealthCheckResult,
   healthCheck,
 } from './helpers.js';
-import { QueuedStepPolicySchema } from './owned-step.js';
 import { Run } from './run.js';
-import { isSingleOwnerRun } from './single-owner.js';
+import { isSingleOwnerRun, SINGLE_OWNER_ATTRIBUTE } from './single-owner.js';
 import {
   getSnapshotThresholdFromEnv,
   getWorkflowVmFromEnv,
@@ -421,14 +420,6 @@ export interface StartOptionsBase {
    * recognize the value keeps the data.
    */
   experimental_retention?: RunRetention;
-
-  /** Owner-managed steps. Hybrid keeps three bodies local and uses the existing
-   * Queue delivery primitive for direct-execution overflow; the backend must
-   * support that transport. Remote outcomes return through invoke. */
-  experimental_stepExecution?: {
-    mode: 'queued' | 'hybrid';
-    attemptTimeoutMs?: number;
-  };
 
   /**
    * For a single-owner run, wait for `run_created` to be durable before
@@ -931,9 +922,28 @@ export async function start<TArgs extends unknown[], TResult>(
         specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
           ? resolveLineageAttributes()
           : undefined;
+      // Single-owner is the default wherever this deployment can host the
+      // run's owner: a World that can invoke it, this deployment's own
+      // workflows, and attribute support for the marker. Without a caller
+      // affinity the run is routed by its own ID (`{}`); a caller's marker
+      // (for example `{"vercelAffinity":"cell-0"}`) is kept as given.
+      const defaultSingleOwner =
+        !isSingleOwnerRun({ attributes }) &&
+        world.capabilities?.invoke === true &&
+        !!world.invoke &&
+        deploymentId === currentDeploymentId &&
+        !dynamicWorkflow &&
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? { [SINGLE_OWNER_ATTRIBUTE]: '{}' }
+          : undefined;
       const runAttributes =
-        lineage || retentionAttribute
-          ? { ...lineage, ...attributes, ...retentionAttribute }
+        lineage || retentionAttribute || defaultSingleOwner
+          ? {
+              ...lineage,
+              ...defaultSingleOwner,
+              ...attributes,
+              ...retentionAttribute,
+            }
           : attributes;
 
       // Shared by the run_created event and the resilient-start queue input.
@@ -942,7 +952,8 @@ export async function start<TArgs extends unknown[], TResult>(
             attributes: runAttributes,
             ...(allowReservedAttributes ||
             lineage != null ||
-            retentionAttribute != null
+            retentionAttribute != null ||
+            defaultSingleOwner != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }
@@ -1018,20 +1029,20 @@ export async function start<TArgs extends unknown[], TResult>(
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
       const snapshotThreshold = getSnapshotThresholdFromEnv();
-      // A single-owner run (`single-owner.ts`) is the caller's choice, made
-      // with its marker attribute. It needs a deployment that hosts the
-      // single-owner runner and a World that can invoke its owner: the run is
-      // stored for its owner alone, so it must never be written another way.
+      // A single-owner run (`single-owner.ts`) needs this deployment and a
+      // World that can invoke its owner: the run is stored for its owner
+      // alone, so it must never be written another way. The default only
+      // applies where that holds; an explicit marker that cannot be hosted
+      // is an error.
       const singleOwner = isSingleOwnerRun({ attributes: runAttributes });
       if (
         singleOwner &&
-        (process.env.WORKFLOW_RETAINED_RUNNER !== '1' ||
-          !world.capabilities?.invoke ||
+        (!world.capabilities?.invoke ||
           !world.invoke ||
           deploymentId !== currentDeploymentId)
       )
         throw new WorkflowRuntimeError(
-          'A single-owner run requires a local-target deployment with the single-owner runner (WORKFLOW_RETAINED_RUNNER=1) and an invoke-capable World'
+          'A single-owner run requires a local-target deployment and an invoke-capable World'
         );
       // The single-owner runner executes this deployment's compiled bundle, so
       // a dynamic run (which carries its own code) cannot be single-owner.
@@ -1039,16 +1050,7 @@ export async function start<TArgs extends unknown[], TResult>(
         throw new WorkflowRuntimeError(
           'Dynamic workflows cannot be started as single-owner runs ($experimentalSingleOwner)'
         );
-      const stepExecution = opts.experimental_stepExecution
-        ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
-        : undefined;
-      if (stepExecution && !singleOwner)
-        throw new WorkflowRuntimeError(
-          'Queued step execution requires a single-owner run'
-        );
-
       const executionContext = {
-        ...(stepExecution ? { stepExecution } : {}),
         traceCarrier,
         workflowCoreVersion,
         ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),

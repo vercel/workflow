@@ -1,15 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   captureInvocationOutcome,
-  serializeWorkflowError,
   unwrapInvocationOutcome,
 } from '@workflow/errors/invocation';
 import { globalSingleton } from '@workflow/utils';
 import {
   getQueueTopicPrefix,
-  type InvocationOutcome,
   MessageId,
   type Queue,
   type QueuePrefix,
@@ -57,15 +55,30 @@ export interface VercelInvokeConfig {
   getToken?: () => Promise<string>;
 }
 
+/** The generated HTTP entry point for invocations of a run's owner. */
+export const INVOKE_ROUTE_PATH = '/.well-known/workflow/v1/invoke';
+
+/**
+ * Where a run's owner is invoked: `config.invoke`, else
+ * `WORKFLOW_VERCEL_INVOKE_URL` (a full URL, or a base such as a service
+ * binding's, to which the generated route is appended), else this
+ * deployment's own generated route. Invocation is on by default on Vercel.
+ */
 export function invocationConfig(
   config?: APIConfig
 ): VercelInvokeConfig | undefined {
-  return (
-    config?.invoke ??
-    (process.env.WORKFLOW_VERCEL_INVOKE_URL
-      ? { endpoint: process.env.WORKFLOW_VERCEL_INVOKE_URL }
-      : undefined)
-  );
+  if (config?.invoke) return config.invoke;
+  const explicit = process.env.WORKFLOW_VERCEL_INVOKE_URL;
+  if (explicit) {
+    const url = new URL(explicit);
+    if (url.pathname === '/' || url.pathname === '')
+      url.pathname = INVOKE_ROUTE_PATH;
+    return { endpoint: url.href };
+  }
+  const host = process.env.VERCEL_URL;
+  return host
+    ? { endpoint: new URL(INVOKE_ROUTE_PATH, `https://${host}`).href }
+    : undefined;
 }
 
 /**
@@ -569,8 +582,7 @@ type Metadata = Parameters<Handler>[1];
 export function createDirectInvocationHandler(
   prefix: QueuePrefix,
   handler: Handler,
-  config: APIConfig | undefined,
-  runNormal: (runId: string, metadata: Metadata) => Promise<unknown>
+  config: APIConfig | undefined
 ) {
   let mailboxPromise:
     | Promise<ReturnType<typeof createInvocationMailbox>>
@@ -647,21 +659,7 @@ export function createDirectInvocationHandler(
           request.signal,
           AbortSignal.timeout(input.timeoutMs),
         ]);
-        const retained = process.env.WORKFLOW_RETAINED_RUNNER === '1';
-        const run = retained
-          ? undefined
-          : await awaitSignal(
-              getWorkflowRun(input.runId, { resolveData: 'none' }, config),
-              signal
-            );
-        if (
-          run &&
-          (run.deploymentId !== input.deploymentId ||
-            input.queueName !== `${prefix}${run.workflowName}`)
-        )
-          throw new WorkflowWorldError('Invocation target mismatch', {
-            status: 409,
-          });
+        // The retained owner validates its own run: no run lookup per request.
         signal.throwIfAborted();
         const metadata: Metadata = {
           queueName: input.queueName,
@@ -669,77 +667,30 @@ export function createDirectInvocationHandler(
           attempt: 1,
           requestId: request.headers.get('x-vercel-id') ?? undefined,
         };
-        if (retained) {
-          const message =
-            input.kind === 'wake'
-              ? input.input
-              : {
-                  runId: input.runId,
-                  invoke: true,
-                  requestId: input.requestId,
-                  input: input.input,
-                };
-          if (
-            !message ||
-            typeof message !== 'object' ||
-            !('runId' in message) ||
-            message.runId !== input.runId ||
-            !input.queueName.startsWith(prefix)
-          ) {
-            throw new WorkflowWorldError('Invocation target mismatch', {
-              status: 409,
-            });
-          }
-          const outcome = await awaitSignal(
-            captureInvocationOutcome(() => handler(message, metadata)),
-            signal
-          );
-          logInvocationRouting('direct.completed', {
-            ...routing,
-            ...target,
-            elapsedMs: performance.now() - started,
-            ok: outcome.ok,
-          });
-          return new Response(encodeBody(outcome), {
-            headers: {
-              'content-type': 'application/cbor',
-              [INVOCATION_HEADER]: '1',
-            },
+        const message =
+          input.kind === 'wake'
+            ? input.input
+            : {
+                runId: input.runId,
+                invoke: true,
+                requestId: input.requestId,
+                input: input.input,
+              };
+        if (
+          !message ||
+          typeof message !== 'object' ||
+          !('runId' in message) ||
+          message.runId !== input.runId ||
+          !input.queueName.startsWith(prefix)
+        ) {
+          throw new WorkflowWorldError('Invocation target mismatch', {
+            status: 409,
           });
         }
-        const mailbox = await awaitSignal(getMailbox(), signal);
-        signal.throwIfAborted();
-        let pending: Promise<InvocationOutcome>;
-        try {
-          pending = mailbox.submit(
-            input.runId,
-            input.requestId,
-            createHash('sha256').update(encodeBody(input.input)).digest('hex'),
-            () =>
-              handler(
-                {
-                  runId: input.runId,
-                  invoke: true,
-                  requestId: input.requestId,
-                  input: input.input,
-                },
-                metadata
-              ),
-            () => runNormal(input.runId, metadata)
-          );
-        } catch (error) {
-          // Admission conflicts/overload are known rejections, not lost replies.
-          return new Response(
-            encodeBody({ ok: false, error: serializeWorkflowError(error) }),
-            {
-              headers: {
-                'content-type': 'application/cbor',
-                [INVOCATION_HEADER]: '1',
-              },
-            }
-          );
-        }
-        const outcome = await awaitSignal(pending, signal);
+        const outcome = await awaitSignal(
+          captureInvocationOutcome(() => handler(message, metadata)),
+          signal
+        );
         logInvocationRouting('direct.completed', {
           ...routing,
           ...target,

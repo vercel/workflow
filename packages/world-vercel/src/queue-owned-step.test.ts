@@ -78,7 +78,6 @@ afterEach(() => {
 });
 
 it('delivers an owner-managed step to the worker without forwarding a wake or opening an owner channel', async () => {
-  vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
   const handler = vi.fn();
   createQueue().createQueueHandler('__wkf_workflow_', handler);
   await mocks.callback!(
@@ -101,7 +100,6 @@ it('delivers an owner-managed step to the worker without forwarding a wake or op
 });
 
 it("still forwards a single-owner run's orchestration wakes to its one owner", async () => {
-  vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
   const handler = vi.fn();
   createQueue().createQueueHandler('__wkf_workflow_', handler);
   await mocks.callback!(
@@ -122,7 +120,6 @@ it("still forwards a single-owner run's orchestration wakes to its one owner", a
 });
 
 it("handles any other run's orchestration wake here", async () => {
-  vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
   mocks.singleOwner.mockResolvedValueOnce(false);
   const handler = vi.fn();
   createQueue().createQueueHandler('__wkf_workflow_', handler);

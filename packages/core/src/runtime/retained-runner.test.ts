@@ -198,7 +198,8 @@ it('dispatches admitted steps, executes concurrent workers without worker writes
     return n;
   });
   const fixture = await queuedFixture();
-  expect(fixture.messages).toHaveLength(2);
+  // Dispatches start one event-loop turn apart, outside the owner's turn.
+  await vi.waitFor(() => expect(fixture.messages).toHaveLength(2));
   expect(started).toEqual([]);
   for (const message of fixture.messages) {
     if (!('stepId' in message)) throw new Error('not a step');
@@ -1557,17 +1558,7 @@ async function setup(
       workflowName: 'workflow',
       attributes: SINGLE_OWNER,
       allowReservedAttributes: true,
-      executionContext: {
-        ...(queued
-          ? {
-              stepExecution: {
-                mode: queued === 'hybrid' ? 'hybrid' : 'queued',
-                attemptTimeoutMs:
-                  attemptTimeoutMs ?? (queued === 'hybrid' ? 60_000 : 1000),
-              },
-            }
-          : {}),
-      },
+      executionContext: {},
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
     },
   });
@@ -1588,7 +1579,10 @@ async function setup(
     workflowCode,
     metadata,
     retired,
-    idleMs
+    idleMs,
+    attemptTimeoutMs ?? (queued === true ? 1000 : 60_000),
+    // The former all-dispatched mode: every body goes to another invocation.
+    queued === true ? 0 : 3
   );
   const send = async (requestId: string, value: string, target = owner) => {
     const hook = target.events.find(
@@ -2104,20 +2098,39 @@ it('hands off to a fresh owner at its deadline instead of failing the run', asyn
   );
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
   // The handoff wake reaches a fresh owner, which restarts the step.
-  const next = new RetainedRunner(
-    fixture.world,
-    fixture.runId,
-    '__wkf_workflow_',
-    slowStepCode,
-    fixture.metadata,
-    () => {},
-    40
-  );
+  const owner = () =>
+    new RetainedRunner(
+      fixture.world,
+      fixture.runId,
+      '__wkf_workflow_',
+      slowStepCode,
+      fixture.metadata,
+      () => {},
+      1000,
+      300
+    );
+  let next = owner();
   fixture.world.getRuntimeDeadline = undefined;
   await next.submit(
     { runId: fixture.runId },
     { ...fixture.metadata, messageId: MessageId.parse('handoff-wake') }
   );
+  // The attempt may still run elsewhere: it is superseded once its attempt
+  // timeout passes, and retried after its retry delay, on later wakes (each
+  // reaching a fresh owner once the previous one retired).
+  for (let i = 0; i < 10; i++) {
+    if ((await fixture.world.runs.get(fixture.runId)).status === 'completed')
+      break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const wake = {
+      ...fixture.metadata,
+      messageId: MessageId.parse(`recovery-wake-${i}`),
+    };
+    await next.submit({ runId: fixture.runId }, wake).catch(() => {
+      next = owner();
+      return next.submit({ runId: fixture.runId }, wake);
+    });
+  }
   await vi.waitFor(async () =>
     expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
       'completed'
@@ -2189,12 +2202,23 @@ it('restarts an inline step orphaned by a lost owner when the monitor wake reach
     code,
     fixture.metadata,
     () => {},
-    40
+    1000,
+    300
   );
   await replacement.submit(
     { runId: fixture.runId },
     { ...fixture.metadata, messageId: MessageId.parse('monitor-wake') }
   );
+  // The orphaned attempt is superseded once its attempt timeout passes,
+  // and retried after its retry delay, on later wakes.
+  for (let i = 0; i < 10; i++) {
+    if (replacement.events.some((e) => e.eventType === 'step_completed')) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await replacement.submit(
+      { runId: fixture.runId },
+      { ...fixture.metadata, messageId: MessageId.parse(`recovery-wake-${i}`) }
+    );
+  }
   await vi.waitFor(() =>
     expect(
       replacement.events.filter((e) => e.eventType === 'step_completed')
@@ -2454,7 +2478,9 @@ it('creates the run itself on an invoke-first start, before its connection or wa
   vi.spyOn(world, 'queue').mockImplementation(
     async (_name, message, options) => {
       wakes.push({ message, options });
-      await wakeArmed;
+      // Hold only the start's backup wake (it carries the run input); the
+      // step-recovery wake is armed before steps are admitted.
+      if ('runInput' in (message as object)) await wakeArmed;
       return { messageId: null };
     }
   );
@@ -2715,7 +2741,6 @@ it('creates the run from a start backup wake only when the run does not exist', 
 });
 
 it('hands queue deliveries for a run without the marker to the existing handler, reading the run once', async () => {
-  vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
   const runId = `wrun_${ulid()}`;
   const get = vi.fn().mockResolvedValue({
     runId,

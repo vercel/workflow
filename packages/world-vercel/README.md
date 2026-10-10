@@ -67,10 +67,13 @@ until the burst finishes. Call `releaseLock()` when finished contributing, not
 `close()`, unless you intend to close the shared stream.
 ## Experimental direct invocation
 
-Set `WORKFLOW_VERCEL_INVOKE_URL` to the full workflow execution endpoint URL on
-producers and receivers, or pass `invoke: { endpoint }` to `createWorld()`.
-Invocation is disabled by default. Enabling it implements `invoke` and declares
-`capabilities.invoke`, following the shared World contract.
+Invocation is on by default on Vercel: the endpoint is this deployment's
+generated `https://$VERCEL_URL/.well-known/workflow/v1/invoke`. Set
+`WORKFLOW_VERCEL_INVOKE_URL` to another URL (a bare origin, such as a service
+binding's, gets the generated route appended), or pass `invoke: { endpoint }` to
+`createWorld()`. It implements `invoke` and declares `capabilities.invoke`,
+following the shared World contract, which makes runs single-owner by default
+(see `@workflow/core`).
 
 ```ts
 import { createWorld } from '@workflow/world-vercel';
@@ -130,11 +133,11 @@ or another execution request. The implementation adds no durable input storage
 or stale-writer fencing. Test placement and deployment routing on the actual
 endpoint before relying on affinity for single-runner exclusion.
 
-## Retained runner (opt-in)
+## Retained runner
 
-Set `WORKFLOW_RETAINED_RUNNER=1` alongside the direct invocation configuration
-for new, same-deployment runs using the Node VM. This mode requires the World
-to provide exclusive per-run delivery. The header is a routing mechanism;
+Single-owner runs execute on the retained runner, which is always on where
+invocation is configured. It requires the World to provide exclusive per-run
+delivery. The header is a routing mechanism;
 the runtime does not add a distributed ownership protocol.
 
 The owner loads committed history once and retains the VM across hook inputs.
@@ -211,6 +214,8 @@ transaction. Queued progress is not a durability ACK. Terminal failure uses the
 same writer. If that writer is broken, diagnostics report
 `terminalPersisted=false`; no competing fallback writer is started.
 `WORKFLOW_EVENTSYNC_POOL` keeps that many connections open ahead of time.
+`VERCEL_WORKFLOW_SERVER_BYPASS` sends a Deployment Protection bypass token to a
+workflow-server named by `VERCEL_WORKFLOW_SERVER_URL` (for example a preview).
 
 This requires guaranteed exclusive ownership, including handoff and unfinished
 storage requests. Other write paths to a single-owner run are not coordinated

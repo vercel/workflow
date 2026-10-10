@@ -148,7 +148,7 @@ entry point without a queue trigger. Other integrations must provide an HTTP
 entry point using their workflow execution handler. Reusing handler code does
 not guarantee that the HTTP and queue routes share a running process.
 
-The default is disabled. The endpoint must already support function affinity and
+By default the endpoint is the deployment's own generated route. It must support function affinity and
 deployment selection; setting this URL does not provision those platform features.
 Requests use `x-vercel-affinity-id: runId` and `x-deployment-id` for the run's
 pinned deployment. The deployment header follows [Skew Protection](https://vercel.com/docs/skew-protection)
@@ -192,8 +192,11 @@ execution request; this transport adds no durable recovery wake.
 
 ### Single-owner runs (experimental)
 
-A caller opts a run into the single-owner model at `start()`, with the reserved
-run attribute `$experimentalSingleOwner`:
+Runs are single-owner by default where the deployment can host their owner (an
+invoke-capable World, this deployment's static workflows). `start()` marks them
+with the reserved run attribute `$experimentalSingleOwner` set to `'{}'`, which
+routes the run by its own ID. A caller can pass the attribute to choose an
+affinity:
 
 ```ts
 await start(workflow, args, {
@@ -202,16 +205,15 @@ await start(workflow, args, {
 });
 ```
 
-The attribute's presence is the only marker; a run without it executes as
-before. Its value is a JSON object. `vercelAffinity` optionally names an owner
+The attribute's presence is the only marker, and the only setting. Its value is
+a JSON object. `vercelAffinity` optionally names an owner
 that several runs of one deployment share: the run is routed with the affinity
 ID `<vercelAffinity>.<deploymentId>`. Without one (`'{}'`), the run is routed by
 its own ID. Hooks and queue wakes for the run route the same way, since the
 marker travels with the run.
 
-The deployment must host the single-owner runner, `WORKFLOW_RETAINED_RUNNER=1`,
-behind the direct invocation endpoint; `start()` refuses a marked run anywhere
-else. Other runs on that deployment keep their existing execution.
+`start()` refuses an explicit marker where the deployment cannot host the run's
+owner.
 
 The run's owner keeps its workflow resident. It replays once, validates hook
 inputs using in-memory state, and serializes event persistence and state updates

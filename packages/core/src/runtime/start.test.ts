@@ -65,7 +65,6 @@ vi.mock('../telemetry.js', () => ({
 
 describe('start', () => {
   it('starts a single-owner run on its owner through invoke, which creates it', async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const create = vi.fn();
     const queue = vi.fn();
     const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
@@ -113,7 +112,6 @@ describe('start', () => {
   });
 
   it('fails start() when the start invocation fails, without creating the run from the caller', async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const create = vi.fn();
     const queue = vi.fn();
     const invoke = vi.fn().mockRejectedValue(new Error('outcome unknown'));
@@ -141,13 +139,10 @@ describe('start', () => {
     }
   });
 
-  it('starts a run without the marker as before, on a deployment that hosts single-owner runs', async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
-    const create = vi.fn(async (runId: string | null) => ({
-      run: { runId, status: 'pending' },
-    }));
-    const queue = vi.fn().mockResolvedValue(undefined);
-    const invoke = vi.fn();
+  it('makes an unmarked run single-owner by default, routed by its own run ID', async () => {
+    const create = vi.fn();
+    const queue = vi.fn();
+    const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       capabilities: { invoke: true },
@@ -161,11 +156,71 @@ describe('start', () => {
         workflowId: 'ordinary-test',
       });
       await start(workflow, []);
-      expect(invoke).not.toHaveBeenCalled();
-      expect(queue).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      const input = invoke.mock.calls[0][1];
+      expect(input).toMatchObject({ type: 'run_start', version: 2 });
+      expect(input.runInput.attributes).toMatchObject({
+        $experimentalSingleOwner: '{}',
+      });
+      expect(input.runInput.allowReservedAttributes).toBe(true);
     } finally {
       setWorld(undefined);
-      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps an explicit affinity', async () => {
+    const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { invoke: true },
+      invoke,
+      getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+      events: { create: vi.fn() },
+      queue: vi.fn(),
+    });
+    try {
+      const workflow = Object.assign(async () => 'result', {
+        workflowId: 'cell-test',
+      });
+      await start(workflow, [], {
+        attributes: { $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}' },
+        allowReservedAttributes: true,
+      });
+      expect(invoke.mock.calls[0][1].runInput.attributes).toMatchObject({
+        $experimentalSingleOwner: '{"vercelAffinity":"cell-0"}',
+      });
+    } finally {
+      setWorld(undefined);
+    }
+  });
+
+  it('starts a run as before where the World cannot invoke its owner', async () => {
+    const create = vi.fn(async (runId: string | null) => ({
+      run: { runId, status: 'pending' },
+    }));
+    const queue = vi.fn().mockResolvedValue(undefined);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+      events: { create },
+      queue,
+    });
+    try {
+      const workflow = Object.assign(async () => 'result', {
+        workflowId: 'ordinary-test',
+      });
+      await start(workflow, []);
+      expect(queue).toHaveBeenCalledTimes(1);
+      const event = create.mock.calls[0][1] as {
+        eventData: Record<string, any>;
+      };
+      expect(event.eventData.attributes ?? {}).not.toHaveProperty(
+        '$experimentalSingleOwner'
+      );
+    } finally {
+      setWorld(undefined);
     }
   });
 
@@ -173,8 +228,7 @@ describe('start', () => {
     const create = vi.fn();
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      capabilities: { invoke: true },
-      invoke: vi.fn(),
+      // A World that cannot invoke a run's owner.
       getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
       events: { create },
       queue: vi.fn(),
@@ -183,7 +237,7 @@ describe('start', () => {
       const workflow = Object.assign(async () => 'result', {
         workflowId: 'single-owner-test',
       });
-      // WORKFLOW_RETAINED_RUNNER is unset.
+      // An explicit marker that cannot be hosted is an error.
       await expect(start(workflow, [], SINGLE_OWNER_START)).rejects.toThrow(
         /single-owner run requires/
       );
@@ -285,7 +339,6 @@ describe('start', () => {
       });
 
       it('refuses a dynamic start as a single-owner run, before any write', async () => {
-        vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
         setWorld({
           ...optInWorld(),
           capabilities: { dynamicWorkflowCode: true, invoke: true },

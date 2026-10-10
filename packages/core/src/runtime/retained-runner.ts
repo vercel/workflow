@@ -50,7 +50,6 @@ import {
   isStepOutcome,
   OwnedStepResultSchema,
   OwnedStepStatusSchema,
-  QueuedStepPolicySchema,
   stepOutcomeDigest,
 } from './owned-step.js';
 import { isRetryableOwnerDelivery } from './owner-delivery.js';
@@ -65,10 +64,6 @@ type Handler = Parameters<Queue['createQueueHandler']>[1];
 type LegacyHandler = Parameters<ReturnType<typeof withRunInputs>>[0];
 type Metadata = Parameters<Handler>[1];
 const observations = channel('workflow.runner');
-
-export function retainedRunnerEnabled() {
-  return process.env.WORKFLOW_RETAINED_RUNNER === '1';
-}
 
 class RunnerFault extends WorkflowRuntimeError {
   readonly code = 'RETAINED_RUNNER_FAILED';
@@ -339,9 +334,12 @@ export class RetainedRunner {
    * supersede them at this time instead of waiting for the attempt timeout. */
   private undelivered = new Map<string, number>();
 
+  /** Step placement for every single-owner run: up to three bodies
+   * (`localStepSlots`) run in this owner, the rest go directly to other invocations (`executionMode:
+   * 'remote'`), and every result returns through invoke. Implied by the
+   * single-owner marker; there is no option. */
   private get queuedSteps() {
-    const value = this.runState?.executionContext?.stepExecution;
-    return value ? QueuedStepPolicySchema.parse(value) : undefined;
+    return { mode: 'hybrid' as const, attemptTimeoutMs: this.attemptTimeoutMs };
   }
 
   private get run(): WorkflowRun {
@@ -363,7 +361,11 @@ export class RetainedRunner {
     private readonly workflowCode: string,
     private readonly metadata: Metadata,
     private readonly retire: () => void,
-    private readonly idleMs = 60_000
+    private readonly idleMs = 60_000,
+    /** How long an admitted body may run before recovery supersedes it. */
+    private readonly attemptTimeoutMs = 60_000,
+    /** Step bodies this owner runs itself; the rest are dispatched. */
+    private readonly localStepSlots = 3
   ) {
     this.facade = {
       ...backend,
@@ -490,7 +492,7 @@ export class RetainedRunner {
         // Retryable: the next delivery reaches a fresh owner.
         new WorkflowWorldError('Runner is retiring', { status: 503 })
       );
-    if (this.pending.length >= (this.queuedSteps?.mode === 'hybrid' ? 128 : 32))
+    if (this.pending.length >= 128)
       return Promise.reject(
         new WorkflowWorldError('Runner mailbox is full', { status: 429 })
       );
@@ -1278,7 +1280,7 @@ export class RetainedRunner {
   private async advance() {
     if (!this.runState || isTerminalWorkflowRunStatus(this.runState.status))
       return;
-    if (this.queuedSteps) await this.expireQueuedSteps();
+    await this.expireQueuedSteps();
     for (;;) {
       if (this.fault) throw this.fault;
       // Near the function deadline: take no more work. The input is rejected
@@ -1362,7 +1364,7 @@ export class RetainedRunner {
         claimed?: Step & { startedAt: Date };
       }> = [];
       const policy = this.queuedSteps;
-      if (policy) await this.armStepRecovery();
+      await this.armStepRecovery();
       // Make each start prefix available as soon as it is staged, so a large
       // fan-out dispatches its first bodies while later starts persist.
       const launch = async () => {
@@ -1380,10 +1382,9 @@ export class RetainedRunner {
           step: Step;
           claimed?: Step & { startedAt: Date };
         }> = [];
-        let localSlots =
-          policy?.mode === 'hybrid' ? 3 - this.localWorkers.size : 0;
+        let localSlots = this.localStepSlots - this.localWorkers.size;
         for (const entry of chunk) {
-          if (policy && localSlots-- <= 0) remote.push(entry);
+          if (localSlots-- <= 0) remote.push(entry);
           else this.startStep(entry.step, entry.claimed);
         }
         await this.flushWriter();
@@ -1407,10 +1408,10 @@ export class RetainedRunner {
             );
           admittedRemote.push(admitted);
         }
-        await this.dispatchSteps(admittedRemote, policy!.attemptTimeoutMs);
+        await this.dispatchSteps(admittedRemote, policy.attemptTimeoutMs);
       };
       let available =
-        (policy?.mode === 'hybrid' ? 100 : 16) -
+        100 -
         [...this.steps.values()].filter((step) => step.status === 'running')
           .length;
       for (const step of this.steps.values()) {
@@ -1424,25 +1425,22 @@ export class RetainedRunner {
           (step.status === 'pending' || step.status === 'running') &&
           !this.workers.has(step.stepId)
         ) {
-          if (policy && (step.status === 'running' || available-- <= 0))
-            continue;
-          if (policy || this.eventWriter?.stage) {
-            const result = await this.commit({
-              eventType: 'step_started',
-              correlationId: step.stepId,
-              specVersion: SPEC_VERSION_CURRENT,
-              eventData: { stepName: step.stepName },
-            });
-            if (!result.step?.startedAt)
-              throw new RunnerFault(
-                'persistence',
-                new Error('Step start did not return its started state')
-              );
-            starts.push({
-              step,
-              claimed: { ...result.step, startedAt: result.step.startedAt },
-            });
-          } else starts.push({ step });
+          if (step.status === 'running' || available-- <= 0) continue;
+          const result = await this.commit({
+            eventType: 'step_started',
+            correlationId: step.stepId,
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { stepName: step.stepName },
+          });
+          if (!result.step?.startedAt)
+            throw new RunnerFault(
+              'persistence',
+              new Error('Step start did not return its started state')
+            );
+          starts.push({
+            step,
+            claimed: { ...result.step, startedAt: result.step.startedAt },
+          });
           if (starts.length >= START_PREFIX_SIZE) await launch();
         }
       }
@@ -1769,8 +1767,6 @@ export class RetainedRunner {
   }
 
   private async receiveStepInput(value: unknown, deferAdvance = false) {
-    if (!this.queuedSteps)
-      throw new InputRejected('Run does not use queued steps', { status: 409 });
     const result = OwnedStepResultSchema.safeParse(value);
     const status = OwnedStepStatusSchema.safeParse(value);
     if (!result.success && !status.success)
@@ -1882,7 +1878,6 @@ export class RetainedRunner {
 
   private async armStepRecovery(explicitAt?: number) {
     const policy = this.queuedSteps;
-    if (!policy) return;
     const now = Date.now();
     const due = [...this.steps.values()].flatMap((step) => {
       if (step.status === 'running') {
@@ -1987,10 +1982,7 @@ export class RetainedRunner {
             workflowName: this.run.workflowName,
             workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
             parentSpanId: this.currentTurnId,
-            executionMode:
-              this.queuedSteps?.mode === 'hybrid'
-                ? ('remote' as const)
-                : ('queued' as const),
+            executionMode: 'remote' as const,
             step,
           },
         },
@@ -2001,133 +1993,86 @@ export class RetainedRunner {
         },
       };
     });
-    if (this.queuedSteps?.mode === 'hybrid') {
-      // Direct execution can wait for a result invoke. Never await it inside the
-      // serialized owner turn: that would deadlock its own result admission.
-      const parentSpanId = this.currentTurnId;
-      // Yield between request starts: a synchronous burst of HTTP requests
-      // is throttled by the platform. Each start waits for the previous one
-      // plus a macrotask, without awaiting any request's completion.
-      let started: Promise<void> = Promise.resolve();
-      for (const { message, opts } of messages) {
-        const gate = started.then(yieldToEventLoop);
-        started = gate;
-        const work = this.inTurn.run(false, async () => {
-          await gate;
-          try {
-            await this.observed(
-              'step_dispatch',
-              async () => {
-                const result = await this.backend.queue(
-                  this.metadata.queueName,
-                  message,
-                  opts
-                );
-                if ('error' in result && result.error)
-                  throw new WorkflowWorldError('Remote step delivery failed', {
-                    status:
-                      'retryable' in result && result.retryable === true
-                        ? 503
-                        : 400,
-                  });
-              },
-              { parentSpanId, stepId: message.stepId, executionMode: 'remote' }
-            );
-          } catch (cause) {
-            await this.enqueue('step.delivery_failed', async () => {
-              // A lost HTTP reply after a committed callback is not a lost step.
-              if (
-                !this.stepOutcomes.has(message.input.executionId) &&
-                !isTerminalWorkflowRunStatus(this.run.status)
-              ) {
-                // Only a definite rejection of the delivery itself is a bug.
-                // Anything else (platform/transport failure, a worker whose
-                // result reached a superseded owner) leaves the body's
-                // outcome unknown.
-                if (
-                  !isRetryableOwnerDelivery(cause) &&
-                  WorkflowWorldError.is(cause) &&
-                  [400, 401, 403].includes(cause.status ?? 0)
-                )
-                  throw cause;
-                // No outcome is not evidence of a failed body. Keep the
-                // admitted attempt running until recovery supersedes it. A
-                // platform refusal before any worker received the invocation
-                // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED) retries soon as a
-                // new attempt; other unknown outcomes wait for the timeout. A
-                // late result from the superseded attempt is ignored.
-                const status = (cause as { status?: unknown })?.status;
-                const refused = status === 500 || status === 502;
-                const retryAt = refused
-                  ? Date.now() + 1000
-                  : message.input.deadline;
-                if (refused)
-                  this.undelivered.set(message.input.executionId, retryAt);
-                this.observe('step_delivery', 'end', randomUUID(), {
-                  parentSpanId,
-                  stepId: message.stepId,
-                  executionId: message.input.executionId,
-                  outcome: 'uncertain',
-                  status: 'error',
-                  errorCode: (cause as { code?: unknown })?.code,
-                  httpStatus: status,
-                  recoveryAt: retryAt,
-                });
-                await this.armStepRecovery(retryAt);
-              }
-            }).catch(() => {});
-          } finally {
-            this.workers.delete(message.stepId);
-            this.signal?.();
-          }
-        });
-        this.workers.set(message.stepId, work);
-      }
-      return;
-    }
-    try {
-      await this.observed(
-        'step_dispatch',
-        async () => {
-          const results = this.backend.queueBatch
-            ? await this.backend.queueBatch(this.metadata.queueName, messages)
-            : await Promise.all(
-                messages.map(async ({ message, opts }) => {
-                  try {
-                    return await this.backend.queue(
-                      this.metadata.queueName,
-                      message,
-                      opts
-                    );
-                  } catch {
-                    return {
-                      messageId: null,
-                      error: 'Queue publication failed',
-                    };
-                  }
-                })
+    // Direct execution can wait for a result invoke. Never await it inside the
+    // serialized owner turn: that would deadlock its own result admission.
+    const parentSpanId = this.currentTurnId;
+    // Yield between request starts: a synchronous burst of HTTP requests
+    // is throttled by the platform. Each start waits for the previous one
+    // plus a macrotask, without awaiting any request's completion.
+    let started: Promise<void> = Promise.resolve();
+    for (const { message, opts } of messages) {
+      const gate = started.then(yieldToEventLoop);
+      started = gate;
+      const work = this.inTurn.run(false, async () => {
+        await gate;
+        try {
+          await this.observed(
+            'step_dispatch',
+            async () => {
+              const result = await this.backend.queue(
+                this.metadata.queueName,
+                message,
+                opts
               );
-          if (results.length !== messages.length)
-            throw new RunnerFault(
-              'conflict',
-              new Error('Queue batch omitted an outcome'),
-              'step_dispatch_count'
-            );
-          if (results.some((result) => 'error' in result && result.error))
-            throw new WorkflowWorldError(
-              'Some admitted steps await recovery after publication failure',
-              { status: 503 }
-            );
-        },
-        { stepCount: steps.length, executionMode: 'queued' }
-      );
-    } catch (error) {
-      if (error instanceof RunnerFault) throw error;
-      // Starts are durable and the backstop was durably armed BEFORE them.
-      // An ambiguous publish cannot justify rerunning the same attempt here.
-      console.error('[workflow] Queued step publication awaits recovery', {
-        runId: this.runId,
+              if ('error' in result && result.error)
+                throw new WorkflowWorldError('Remote step delivery failed', {
+                  status:
+                    'retryable' in result && result.retryable === true
+                      ? 503
+                      : 400,
+                });
+            },
+            { parentSpanId, stepId: message.stepId, executionMode: 'remote' }
+          );
+        } catch (cause) {
+          await this.enqueue('step.delivery_failed', async () => {
+            // A lost HTTP reply after a committed callback is not a lost step.
+            if (
+              !this.stepOutcomes.has(message.input.executionId) &&
+              !isTerminalWorkflowRunStatus(this.run.status)
+            ) {
+              // Only a definite rejection of the delivery itself is a bug.
+              // Anything else (platform/transport failure, a worker whose
+              // result reached a superseded owner) leaves the body's
+              // outcome unknown.
+              if (
+                !isRetryableOwnerDelivery(cause) &&
+                WorkflowWorldError.is(cause) &&
+                [400, 401, 403].includes(cause.status ?? 0)
+              )
+                throw cause;
+              // No outcome is not evidence of a failed body. Keep the
+              // admitted attempt running until recovery supersedes it. A
+              // platform refusal before any worker received the invocation
+              // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED) retries soon as a
+              // new attempt; other unknown outcomes wait for the timeout. A
+              // late result from the superseded attempt is ignored.
+              const status = (cause as { status?: unknown })?.status;
+              const refused = status === 500 || status === 502;
+              const retryAt = refused
+                ? Date.now() + 1000
+                : message.input.deadline;
+              if (refused)
+                this.undelivered.set(message.input.executionId, retryAt);
+              this.observe('step_delivery', 'end', randomUUID(), {
+                parentSpanId,
+                stepId: message.stepId,
+                executionId: message.input.executionId,
+                outcome: 'uncertain',
+                status: 'error',
+                errorCode: (cause as { code?: unknown })?.code,
+                httpStatus: status,
+                recoveryAt: retryAt,
+              });
+              await this.armStepRecovery(retryAt);
+            }
+          }).catch(() => {});
+        } finally {
+          this.workers.delete(message.stepId);
+          this.signal?.();
+        }
       });
+      this.workers.set(message.stepId, work);
     }
   }
 
@@ -2457,17 +2402,15 @@ export function withRetainedRunner(
   workflowCode: string
 ) {
   return (legacy: LegacyHandler): Handler => {
-    if (!retainedRunnerEnabled()) {
+    // Single-owner runs need a World that can invoke their owner; without
+    // one, every run executes as before.
+    if (!world.capabilities?.invoke || !world.invoke) {
       const fallback = withRunInputs(world)(legacy);
       return (message, metadata) =>
         isOwnedStepMessage(message)
           ? executeOwnedStep(world, message, metadata)
           : fallback(message, metadata);
     }
-    if (!world.capabilities?.invoke || !world.invoke)
-      throw new WorkflowRuntimeError(
-        'Retained runner requires an invoke-capable World'
-      );
     const registries = globalSingleton(
       '@workflow/core//retainedRunners',
       1,

@@ -163,12 +163,7 @@ export async function cancelRun(
 ): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
-    if (
-      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
-      world.capabilities?.invoke &&
-      world.invoke &&
-      isSingleOwnerRun(run)
-    ) {
+    if (world.capabilities?.invoke && world.invoke && isSingleOwnerRun(run)) {
       await world.invoke(runId, {
         type: 'run_cancel',
         version: 1,
@@ -237,14 +232,7 @@ export async function cancelRuns(
   }
 
   // Fast path: a single batch operation when the world supports it.
-  if (
-    world.runs.cancelMany &&
-    !(
-      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
-      world.capabilities?.invoke &&
-      world.invoke
-    )
-  ) {
+  if (world.runs.cancelMany && !(world.capabilities?.invoke && world.invoke)) {
     return world.runs.cancelMany({
       runIds,
       ...(options?.cancelReason !== undefined

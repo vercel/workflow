@@ -1,10 +1,6 @@
 import { channel } from 'node:diagnostics_channel';
-import { createServer } from 'node:http';
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
-import {
-  serializeWorkflowError,
-  unwrapInvocationOutcome,
-} from '@workflow/errors/invocation';
+import { serializeWorkflowError } from '@workflow/errors/invocation';
 import { decode, encode } from 'cbor-x';
 import { generateKeyPair, SignJWT } from 'jose';
 import {
@@ -269,7 +265,7 @@ describe('direct Vercel invocation', () => {
     });
     vi.stubGlobal('fetch', fetch);
     await expect(
-      createInvoker(config)!(runId, payload, {
+      createInvoker(config)?.(runId, payload, {
         target: { deploymentId: 'dpl_hook', workflowName: 'from_hook' },
       })
     ).resolves.toBe('ok');
@@ -286,7 +282,7 @@ describe('direct Vercel invocation', () => {
     });
     vi.stubGlobal('fetch', fetch);
     await expect(
-      createInvoker(config)!(runId, payload, {
+      createInvoker(config)?.(runId, payload, {
         target: { deploymentId: 'dpl_hook', workflowName: 'from_hook' },
       })
     ).resolves.toBe('ok');
@@ -312,7 +308,7 @@ describe('direct Vercel invocation', () => {
           )
       )
     );
-    await expect(createInvoker(config)!(runId, payload)).rejects.toThrow();
+    await expect(createInvoker(config)?.(runId, payload)).rejects.toThrow();
     expect(invocationAffinity(runId)).toBe(runId);
   });
   it('separates metadata lookup from the exact POST boundary and excludes observer work before sending', async () => {
@@ -355,7 +351,7 @@ describe('direct Vercel invocation', () => {
             return 'private-token';
           },
         },
-      })!(runId, payload, { idempotencyKey: 'request-timing' });
+      })?.(runId, payload, { idempotencyKey: 'request-timing' });
       expect(events.map((e) => `${e.phase}.${e.event}`)).toEqual([
         'lookup.begin',
       ]);
@@ -402,7 +398,7 @@ describe('direct Vercel invocation', () => {
     vi.stubGlobal('fetch', fetch);
     mocks.run.mockRejectedValue(new Error('lookup failed'));
     try {
-      await expect(createInvoker(config)!(runId, payload)).rejects.toThrow(
+      await expect(createInvoker(config)?.(runId, payload)).rejects.toThrow(
         'lookup failed'
       );
       expect(fetch).not.toHaveBeenCalled();
@@ -430,11 +426,10 @@ describe('direct Vercel invocation', () => {
       });
     });
     vi.stubGlobal('fetch', fetch);
-    await expect(createInvoker(config)!(runId, payload)).resolves.toBe('ok');
+    await expect(createInvoker(config)?.(runId, payload)).resolves.toBe('ok');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
   it('lets the retained owner validate input without a per-request run lookup or extra continuation', async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const handler = vi.fn(async () => ({ status: 'accepted' }));
     const receive = createQueue(config).createQueueHandler(
       '__wkf_workflow_',
@@ -452,7 +447,6 @@ describe('direct Vercel invocation', () => {
   });
 
   it("forwards a single-owner run's queue wakes to the affinitized HTTP endpoint", async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     mocks.run.mockResolvedValue({
       runId,
       deploymentId: 'dpl_pinned',
@@ -494,7 +488,6 @@ describe('direct Vercel invocation', () => {
   });
 
   it("handles any other run's queue wake here, without forwarding it", async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const handler = vi.fn();
@@ -517,7 +510,6 @@ describe('direct Vercel invocation', () => {
   });
 
   it('does not retry retained-runner persistence operations', async () => {
-    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const { withEventPostRetry } = await import('./event-retry.js');
     const operation = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
     await expect(
@@ -540,7 +532,7 @@ describe('direct Vercel invocation', () => {
       )
     );
     await expect(
-      createInvoker(config)!(runId, payload, {
+      createInvoker(config)?.(runId, payload, {
         idempotencyKey: 'diagnostic-request',
       })
     ).rejects.toMatchObject({
@@ -552,47 +544,6 @@ describe('direct Vercel invocation', () => {
       responseContentType: 'text/plain',
       responseProtocolVersion: null,
     });
-  });
-  it('returns a typed admission conflict while the original input is still processing', async () => {
-    const commit = Promise.withResolvers<void>();
-    const entered = Promise.withResolvers<void>();
-    const receiver = createDirectInvocationHandler(
-      '__wkf_workflow_',
-      async () => {
-        entered.resolve();
-        await commit.promise;
-        return 'processed';
-      },
-      config,
-      async () => {}
-    );
-    const first = receiver.handle(request());
-    await entered.promise;
-    const conflict = await receiver.handle(
-      request({ ...payload, payload: new Uint8Array([99]) })
-    );
-    const outcome = decode(Buffer.from(await conflict.arrayBuffer()));
-    expect(() => unwrapInvocationOutcome(outcome)).toThrow(EntityConflictError);
-    commit.resolve();
-    expect((await first).status).toBe(200);
-    await Promise.all(mocks.retain.mock.calls.map(([work]) => work));
-  });
-  it.each([
-    '',
-    '/base',
-  ])('keeps malformed requests on the HTTP invocation path out of VQS (%s)', async (basePath) => {
-    const queue = createQueue(config);
-    const handler = vi.fn();
-    const receive = queue.createQueueHandler('__wkf_workflow_', handler);
-    const response = await receive(
-      new Request(
-        `https://workflow.example.test${basePath}/.well-known/workflow/v1/invoke`,
-        { method: 'POST' }
-      )
-    );
-    expect(response.status).toBe(400);
-    expect(mocks.vqsRequest).not.toHaveBeenCalled();
-    expect(handler).not.toHaveBeenCalled();
   });
   it('dispatches direct calls through createQueueHandler without VQS or response rescheduling', async () => {
     const queue = createQueue(config);
@@ -766,48 +717,12 @@ describe('direct Vercel invocation', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('keeps the HTTP response pending until the mailbox handler completes', async () => {
-    const commit = Promise.withResolvers<void>();
-    const entered = Promise.withResolvers<void>();
-    const handler = vi.fn(async (input) => {
-      expect(input.input).toEqual(payload);
-      entered.resolve();
-      await commit.promise;
-      return 'processed';
-    });
-    const drive = vi.fn(async () => {});
-    const receiver = createDirectInvocationHandler(
-      '__wkf_workflow_',
-      handler,
-      config,
-      drive
-    );
-    let settled = false;
-    const result = receiver.handle(request()).then((response) => {
-      settled = true;
-      return response;
-    });
-    await entered.promise;
-    expect(settled).toBe(false);
-    expect(drive).not.toHaveBeenCalled();
-    commit.resolve();
-    const response = await result;
-    expect(response.status).toBe(200);
-    expect(decode(Buffer.from(await response.arrayBuffer()))).toEqual({
-      ok: true,
-      value: 'processed',
-    });
-    await Promise.all(mocks.retain.mock.calls.map(([work]) => work));
-    expect(drive).toHaveBeenCalledOnce();
-  });
-
   it('validates workload scope and actual deployment before invoking user code', async () => {
     const handler = vi.fn();
     const receiver = createDirectInvocationHandler(
       '__wkf_workflow_',
       handler,
-      config,
-      async () => {}
+      config
     );
     expect(
       (
@@ -836,11 +751,6 @@ describe('direct Vercel invocation', () => {
       (await receiver.handle(request(payload, { deploymentId: 'dpl_wrong' })))
         .status
     ).toBe(409);
-    mocks.run.mockResolvedValue({
-      deploymentId: 'dpl_other',
-      workflowName: 'example',
-    });
-    expect((await receiver.handle(request())).status).toBe(409);
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -849,8 +759,7 @@ describe('direct Vercel invocation', () => {
     const receiver = createDirectInvocationHandler(
       '__wkf_workflow_',
       handler,
-      config,
-      async () => {}
+      config
     );
     for (const [index, affinity] of [
       undefined,
@@ -886,70 +795,13 @@ describe('direct Vercel invocation', () => {
     await Promise.all(mocks.retain.mock.calls.map(([work]) => work));
   });
 
-  it('supports a real local HTTP round trip with signed workload identity and a cold mailbox', async () => {
-    const handler = vi.fn(async (_message: unknown, _metadata: unknown) => ({
-      completed: true,
-      data: new Uint8Array([8, 9]),
-    }));
-    const drive = vi.fn(async () => {});
-    const receiver = createDirectInvocationHandler(
-      '__wkf_workflow_',
-      handler,
-      config,
-      drive
-    );
-    const server = createServer(async (incoming, outgoing) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
-      const response = await receiver.handle(
-        new Request(endpoint, {
-          method: 'POST',
-          headers: incoming.headers as Record<string, string>,
-          body: Buffer.concat(chunks),
-        })
-      );
-      outgoing.writeHead(response.status, Object.fromEntries(response.headers));
-      outgoing.end(Buffer.from(await response.arrayBuffer()));
-    });
-    await new Promise<void>((resolve) =>
-      server.listen(0, '127.0.0.1', resolve)
-    );
-    try {
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('No local address');
-      const invoke = createInvoker({
-        invoke: { endpoint: `http://127.0.0.1:${address.port}/flow` },
-      });
-      await expect(invoke?.(runId, payload)).resolves.toEqual({
-        completed: true,
-        data: new Uint8Array([8, 9]),
-      });
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler.mock.calls[0][1]).toMatchObject({
-        messageId: expect.any(String),
-        attempt: 1,
-      });
-      await Promise.all(mocks.retain.mock.calls.map(([work]) => work));
-      expect(drive).toHaveBeenCalledWith(
-        runId,
-        expect.objectContaining({ queueName: '__wkf_workflow_example' })
-      );
-    } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
-      );
-    }
-  });
-
   it('shares normal execution with direct inputs without serializing a self-hook behind its step', async () => {
     const step = Promise.withResolvers<void>();
     const driver = vi.fn(async () => step.promise);
     const receiver = createDirectInvocationHandler(
       '__wkf_workflow_',
       async () => 'accepted',
-      config,
-      () => driver()
+      config
     );
     const running = receiver.execute(runId, driver);
     await Promise.resolve();

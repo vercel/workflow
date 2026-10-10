@@ -890,18 +890,10 @@ export function createQueue(config?: APIConfig): Queue {
       }
     };
     const direct = invocationConfig(config)
-      ? createDirectInvocationHandler(
-          prefix,
-          handler,
-          config,
-          (runId, metadata) =>
-            runHandler({ runId }, metadata, process.env.VERCEL_DEPLOYMENT_ID)
-        )
+      ? createDirectInvocationHandler(prefix, handler, config)
       : undefined;
-    const forwardWake =
-      process.env.WORKFLOW_RETAINED_RUNNER === '1'
-        ? createInvoker(config, 'wake')
-        : undefined;
+    // Wakes of single-owner runs go to their owner.
+    const forwardWake = createInvoker(config, 'wake');
     const vqsHandler = client.handleCallback(
       async (message: unknown, metadata) => {
         if (!message || !metadata) return;

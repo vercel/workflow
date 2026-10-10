@@ -293,12 +293,7 @@ export class Run<TResult> {
     // The caller is often not the run's executor, so stamp the run's version.
     const run = await world.runs.get(this.runId, { resolveData: 'none' });
     // A single-owner run is cancelled by its owner.
-    if (
-      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
-      world.capabilities?.invoke &&
-      world.invoke &&
-      isSingleOwnerRun(run)
-    ) {
+    if (world.capabilities?.invoke && world.invoke && isSingleOwnerRun(run)) {
       await world.invoke(this.runId, {
         type: 'run_cancel',
         version: 1,
