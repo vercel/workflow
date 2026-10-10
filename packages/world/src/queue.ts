@@ -305,9 +305,10 @@ export const HookResumeTimingSchema = z.compile(
     /** Epoch ms immediately before the queue publish was requested. */
     queuePublishRequestedAtMs: z.number(),
     /**
-     * Which `resumeHook()` dispatch path ran. Current producers always report
-     * `sequential` (durable write, then wake); older producers may report
-     * `lazy` or `parallel`.
+     * Which `resumeHook()` dispatch path ran. Current producers report
+     * `sequential` (durable write, then wake) or `parallel` (fenced wake
+     * published concurrently with the write); older producers may report
+     * `lazy`, or `parallel` for their unfenced variant.
      */
     strategy: z.string().optional(),
     /** Epoch ms the final consumer's queue handler was entered. */
@@ -321,6 +322,51 @@ export const HookResumeTimingSchema = z.compile(
   })
 );
 export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
+
+/**
+ * Upper bound on {@link HookResumeFence.windowMs}. Producers never send more;
+ * consumers clamp to it, so a malformed or hostile message cannot hold an
+ * invocation open for longer than this before replaying.
+ */
+export const HOOK_RESUME_FENCE_MAX_WINDOW_MS = 5_000;
+
+/**
+ * Consumer-side fence for a hook wake published IN PARALLEL with its
+ * `hook_received` write (`resumeHook()` strategy `parallel`).
+ *
+ * The wake can reach the consumer before the write commits. A consumer that
+ * replayed over the log without the event would park on `await hook`, and the
+ * wake (deduplicated by idempotency key) would not come again. So a consumer
+ * that receives a fence does not replay until it has either read a
+ * `hook_received` carrying `resumeId` or a read that STARTED at least
+ * `windowMs` after the delivery's handler was entered (measured on a monotonic
+ * clock) still did not find it. It also stops early when the log proves the
+ * event can no longer commit (`hook_disposed` for `hookId`, or a terminal run
+ * event).
+ *
+ * The producer completes the guarantee: if its write took long enough that it
+ * could have committed after the consumer's window closed, it publishes a
+ * second wake under a distinct idempotency key once the write has committed.
+ * The fence never carries the payload and the consumer never writes
+ * `hook_received` from it: the producer's write is the only writer, so a
+ * disposal racing the resume cannot be bypassed by the wake.
+ *
+ * Only producers that observed the target run's
+ * `hookResumeInputVersion >= HOOK_RESUME_FENCE_INPUT_VERSION` send it; older
+ * consumers strip the unknown field, which is why the producer gates on the
+ * marker instead.
+ */
+export const HookResumeFenceSchema = z.compile(
+  z.object({
+    /** The resume's idempotency key, persisted on its `hook_received`. */
+    resumeId: z.string(),
+    /** The hook being resumed (`hook_received.correlationId`). */
+    hookId: z.string(),
+    /** How long the consumer must keep looking, from handler entry. */
+    windowMs: z.number().nonnegative(),
+  })
+);
+export type HookResumeFence = z.infer<typeof HookResumeFenceSchema>;
 
 export const WorkflowInvokePayloadSchema = z.compile(
   z.object({
@@ -437,6 +483,13 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * telemetry field. Anything unparseable degrades to "no measurement".
      */
     hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
+    /**
+     * Present on a hook wake published in parallel with its `hook_received`
+     * write. See {@link HookResumeFenceSchema}. `.catch(undefined)` so a
+     * malformed value degrades to an unfenced wake instead of failing the
+     * parse of every delivery.
+     */
+    hookResumeFence: HookResumeFenceSchema.optional().catch(undefined),
   })
 );
 

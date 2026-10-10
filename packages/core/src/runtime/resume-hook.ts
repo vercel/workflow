@@ -9,6 +9,7 @@ import {
 import {
   HOOK_RESUME_DEDUP_VERSION,
   type HookResumeContext,
+  type HookResumeFence,
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_LEGACY,
@@ -35,6 +36,12 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
+import {
+  HOOK_RESUME_FENCE_WINDOW_MS,
+  isParallelHookWakeEnabled,
+  parallelHookWakeNeedsInsurance,
+  runSupportsHookResumeFence,
+} from './hook-resume-fence.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
 import { HookInvocationResultSchema } from './invocations.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -480,6 +487,11 @@ async function resumeHookImpl<T = any>(
       // key would be unreadable to the new owner.
       let keyOverride = encryptionKeyOverride;
       let redirects = 0;
+      // Index of the attempt about to run. A parallel attempt publishes its
+      // wake before its write is answered, so an attempt that ends in a
+      // redirect has already spent its wake key; the next attempt (aimed at
+      // another run) must not reuse it or the queue would drop its wake.
+      let attemptIndex = 0;
       // After a `hook-force-claimed` the World has completed the transfer, so
       // the token names the new owner — but a World whose lookup index lags
       // its writes by a few milliseconds (world-local's files) can still
@@ -518,7 +530,8 @@ async function resumeHookImpl<T = any>(
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            webhookOnly,
+            attemptIndex++
           );
         } catch (err) {
           if (
@@ -643,7 +656,8 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  webhookOnly: boolean,
+  attemptIndex = 0
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
@@ -852,13 +866,14 @@ async function resumeHookAttempt<T = any>(
       specVersion: resumeContext.runSpecVersion ?? SPEC_VERSION_LEGACY,
     };
 
-    // The dispatch is strictly serial: the hook_received event is made
+    // By default the dispatch is serial: the hook_received event is made
     // durable FIRST, and the workflow wake is published only after the
-    // write is acknowledged. This is what lets `resumeHook()` resolving
-    // mean "the resume survives anything that happens next" — a disposal
-    // or run completion racing the queue delivery cannot erase a committed
-    // event, and the wake itself carries no payload, so nothing rides on
-    // the message but the trigger.
+    // write is acknowledged. The parallel dispatch below overlaps the two
+    // but still resolves only once both have succeeded. Either way,
+    // `resumeHook()` resolving means "the resume survives anything that
+    // happens next" — a disposal or run completion racing the queue
+    // delivery cannot erase a committed event, and the wake itself carries
+    // no payload, so nothing rides on the message but the trigger.
     //
     // Backend dedup is attested when EITHER the live server attests it
     // fresh on this by-token hook (world-vercel: response-only, recomputed
@@ -879,11 +894,23 @@ async function resumeHookAttempt<T = any>(
       !v1Compat &&
       dehydratedPayload instanceof Uint8Array;
 
+    const resumeId = canClaimResume ? logicalResumeId : undefined;
+
+    // Parallel dispatch (runtime/hook-resume-fence.ts): publish the wake
+    // concurrently with the write, saving one round trip. Requires all of:
+    // the producer opted in (WORKFLOW_PARALLEL_HOOK_WAKE), a resumeId the
+    // consumer can match the committed event by (claim path only), and a
+    // target run whose pinned runtime honors the wake's fence. Anything else
+    // takes the serial write-then-wake dispatch.
+    const parallelWake =
+      resumeId !== undefined &&
+      isParallelHookWakeEnabled() &&
+      runSupportsHookResumeFence(resumeContext.hookResumeInputVersion);
+    const strategy = parallelWake ? 'parallel' : 'sequential';
     span?.setAttributes({
-      'workflow.hook.resume_strategy': 'sequential',
+      'workflow.hook.resume_strategy': strategy,
     });
 
-    const resumeId = canClaimResume ? logicalResumeId : undefined;
     const payloadDigest = canClaimResume
       ? await computeResumePayloadDigest(dehydratedPayload)
       : undefined;
@@ -914,74 +941,136 @@ async function resumeHookAttempt<T = any>(
     // hiding that behind "not found" would mask the bug.)
     const isHookGoneError = (err: unknown): boolean =>
       HookNotFoundError.is(err) || RunExpiredError.is(err);
-    try {
-      await world.events.create(
-        hook.runId,
-        {
-          eventType: 'hook_received',
-          // The payload is already encoded for the run (see `compression`).
-          specVersion: specVersionForRunWrite(resumeContext.runSpecVersion),
-          correlationId: hook.hookId,
-          eventData: {
-            ...(v1Compat ? {} : { token: hook.token }),
-            payload: dehydratedPayload,
-          },
-        },
-        {
-          v1Compat,
-          ...(resumeId && payloadDigest
-            ? { resumeId, resumePayloadDigest: payloadDigest }
-            : {}),
-        }
-      );
-    } catch (err) {
-      // A takeover refusal is a redirect, handled by the caller's loop;
-      // it must not be re-keyed to the final "not found".
-      if (HookForceClaimedError.is(err)) throw err;
-      if (isHookGoneError(err)) {
-        throw new HookNotFoundError(hook.token);
-      }
-      throw err;
-    }
-    // Stamped AFTER the write resolves (entry-time attributes cannot tell
-    // an attempted resume from a committed one): together with
-    // HookWakePublished below, this is what makes a stranded resume — a
-    // committed event whose wake never went out or was never delivered —
-    // queryable from traces. See the alerting note on HookWakePublished.
-    span?.setAttributes(Attribute.HookResumeCommitted(true));
-
-    // T1 of the TTR window. Stamped immediately before the publish so
-    // `producer_prep` covers exactly the work above it (hook lookup, key
-    // resolution, serialization, and the awaited hook_received write,
-    // which is genuinely serial here).
-    const queuePublishRequestedAtMs = Date.now();
-    await publishHookWakeWithRetry(
-      () =>
-        world.queue(
-          queueName,
+    const writeHookReceived = async (): Promise<void> => {
+      try {
+        await world.events.create(
+          hook.runId,
           {
-            runId: hook.runId,
-            traceCarrier: resumeContext.traceCarrier ?? undefined,
-            hookResumeTiming: {
-              resumeRequestedAtMs,
-              queuePublishRequestedAtMs,
-              strategy: 'sequential',
+            eventType: 'hook_received',
+            // The payload is already encoded for the run (see `compression`).
+            specVersion: specVersionForRunWrite(resumeContext.runSpecVersion),
+            correlationId: hook.hookId,
+            eventData: {
+              ...(v1Compat ? {} : { token: hook.token }),
+              payload: dehydratedPayload,
             },
-          } satisfies WorkflowInvokePayload,
+          },
           {
-            ...queueOptions,
-            // Dedup retried publishes whose response was lost: a
-            // duplicate wake is harmless for correctness (deterministic
-            // replay) but costs a full replay of the run, and the queue
-            // accepts a repeated idempotency key by delivering only one
-            // of the messages. Claim-less writes have no resumeId and
-            // keep the previous behavior.
-            ...(resumeId ? { idempotencyKey: `hook-${resumeId}` } : {}),
+            v1Compat,
+            ...(resumeId && payloadDigest
+              ? { resumeId, resumePayloadDigest: payloadDigest }
+              : {}),
           }
-        ),
-      world.isDeploymentUnavailableError?.bind(world)
-    );
-    span?.setAttributes(Attribute.HookWakePublished(true));
+        );
+      } catch (err) {
+        // A takeover refusal is a redirect, handled by the caller's loop;
+        // it must not be re-keyed to the final "not found".
+        if (HookForceClaimedError.is(err)) throw err;
+        if (isHookGoneError(err)) {
+          throw new HookNotFoundError(hook.token);
+        }
+        throw err;
+      }
+      // Stamped AFTER the write resolves (entry-time attributes cannot tell
+      // an attempted resume from a committed one): together with
+      // HookWakePublished below, this is what makes a stranded resume — a
+      // committed event whose wake never went out or was never delivered —
+      // queryable from traces. See the alerting note on HookWakePublished.
+      span?.setAttributes(Attribute.HookResumeCommitted(true));
+    };
+
+    // Dedup retried publishes whose response was lost: a duplicate wake is
+    // harmless for correctness (deterministic replay) but costs a full
+    // replay of the run, and the queue accepts a repeated idempotency key by
+    // delivering only one of the messages. Claim-less writes have no
+    // resumeId and keep the previous behavior. A redirected attempt gets its
+    // own key: a parallel attempt has already published under its key before
+    // learning the token moved.
+    const wakeKey = resumeId
+      ? attemptIndex === 0
+        ? `hook-${resumeId}`
+        : `hook-${resumeId}-${attemptIndex}`
+      : undefined;
+    const publishWake = (
+      queuePublishRequestedAtMs: number,
+      idempotencyKey: string | undefined,
+      hookResumeFence?: HookResumeFence
+    ): Promise<void> =>
+      publishHookWakeWithRetry(
+        () =>
+          world.queue(
+            queueName,
+            {
+              runId: hook.runId,
+              traceCarrier: resumeContext.traceCarrier ?? undefined,
+              hookResumeTiming: {
+                resumeRequestedAtMs,
+                queuePublishRequestedAtMs,
+                strategy,
+              },
+              ...(hookResumeFence ? { hookResumeFence } : {}),
+            } satisfies WorkflowInvokePayload,
+            {
+              ...queueOptions,
+              ...(idempotencyKey ? { idempotencyKey } : {}),
+            }
+          ),
+        world.isDeploymentUnavailableError?.bind(world)
+      );
+
+    if (!parallelWake) {
+      await writeHookReceived();
+      // T1 of the TTR window. Stamped immediately before the publish so
+      // `producer_prep` covers exactly the work above it (hook lookup, key
+      // resolution, serialization, and the awaited hook_received write,
+      // which is genuinely serial here).
+      await publishWake(Date.now(), wakeKey);
+      span?.setAttributes(Attribute.HookWakePublished(true));
+      return asLazyMetadataHook(hook) satisfies ResumedHook;
+    }
+
+    // Parallel dispatch. T1 is stamped before both legs start, so
+    // `producer_prep` covers the same pre-dispatch work as the serial path
+    // and the overlapped write is no longer counted in it.
+    const queuePublishRequestedAtMs = Date.now();
+    const dispatchStartedAt = performance.now();
+    const fence: HookResumeFence = {
+      resumeId: logicalResumeId,
+      hookId: hook.hookId,
+      windowMs: HOOK_RESUME_FENCE_WINDOW_MS,
+    };
+    let writeAcknowledgedAt: number | undefined;
+    const [written, woken] = await Promise.allSettled([
+      writeHookReceived().then(() => {
+        writeAcknowledgedAt = performance.now();
+      }),
+      publishWake(queuePublishRequestedAtMs, wakeKey, fence).then(() => {
+        span?.setAttributes(Attribute.HookWakePublished(true));
+      }),
+    ]);
+    // The write decides the outcome. A wake that went out for a write that
+    // failed is harmless: its consumer fences, finds no event (or the
+    // disposal / terminal event that refused it) and replays over an
+    // unchanged log.
+    if (written.status === 'rejected') throw written.reason;
+    // Committed but not woken: the same outcome the serial path reports
+    // when its publish fails after the write.
+    if (woken.status === 'rejected') throw woken.reason;
+
+    // Producer half of the fence. If the write was acknowledged so late
+    // that it may have committed after the consumer's fence window closed,
+    // that consumer may have replayed without it and parked. The event is
+    // durable now, so a second wake, under a key of its own (the first is
+    // spent), is replayed over a log that holds it.
+    const writeDurationMs =
+      (writeAcknowledgedAt ?? performance.now()) - dispatchStartedAt;
+    span?.setAttributes({
+      'workflow.hook.resume_write_ms': Math.round(writeDurationMs),
+    });
+    if (parallelHookWakeNeedsInsurance(writeDurationMs, fence.windowMs)) {
+      span?.setAttributes({ 'workflow.hook.resume_insurance_wake': true });
+      await publishWake(queuePublishRequestedAtMs, `${wakeKey}-late`);
+    }
 
     return asLazyMetadataHook(hook) satisfies ResumedHook;
   } catch (err) {

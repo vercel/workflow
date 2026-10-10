@@ -79,6 +79,7 @@ import {
 import {
   absorbSkippedSlotReport,
   appendEventLog,
+  findEventSlotGap,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -100,6 +101,7 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
+import { awaitHookResumeFence } from './runtime/hook-resume-fence.js';
 import { withRunInputs } from './runtime/invocations.js';
 import {
   dispatchRunCompletedHooks,
@@ -833,6 +835,10 @@ export function workflowEntrypoint(
         // when the message turns out to carry resume timing; taking it
         // unconditionally keeps it honest for the deliveries that do.
         const handlerEnteredAtMs = Date.now();
+        // Monotonic twin of the above: the start of a fenced hook wake's
+        // window (runtime/hook-resume-fence.ts), which must not move with
+        // wall-clock adjustments.
+        const handlerEnteredAtMono = performance.now();
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
         // They only write a status response to a stream and do not expose sensitive data.
@@ -860,6 +866,7 @@ export function workflowEntrypoint(
           stepInput,
           runContext,
           hookResumeTiming,
+          hookResumeFence,
           waitContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
@@ -2923,6 +2930,9 @@ export function workflowEntrypoint(
                         // See the pre-check re-route above: forwarded as
                         // received, so the extra hop is queue delivery.
                         ...(hookResumeTiming ? { hookResumeTiming } : {}),
+                        // A parallel resume's write may still be in flight:
+                        // the pinned consumer must fence too.
+                        ...(hookResumeFence ? { hookResumeFence } : {}),
                       }),
                       awaitRunReady
                     )) !== 'continue'
@@ -3083,6 +3093,88 @@ export function workflowEntrypoint(
                         eventLog = { type: 'loadAll' };
                       }
                     } // end else (re-ensure needed)
+                  }
+
+                  // Parallel hook wake fence (runtime/hook-resume-fence.ts).
+                  // The producer published this wake concurrently with its
+                  // hook_received write, so the write may not have committed
+                  // when this delivery loaded its log. Replaying now would
+                  // park on `await hook` and the deduplicated wake would not
+                  // come again. Hold the replay (bounded) until the fenced
+                  // event is readable. Read-only: this never writes
+                  // hook_received, so a racing disposal keeps refusing the
+                  // producer's write. Runs before engine dispatch, so both
+                  // the node:vm and QuickJS engines replay over the result.
+                  if (
+                    hookResumeFence !== undefined &&
+                    incomingStepId === undefined
+                  ) {
+                    await awaitRunReady();
+                    const loadFenceLog = async (full: boolean) => {
+                      eventLogFromInlineDelta = false;
+                      if (
+                        full ||
+                        eventLog.type === 'loadAll' ||
+                        eventLog.cursor === null
+                      ) {
+                        eventLog = {
+                          ...(await loadWorkflowRunEvents(runId)),
+                          type: 'ready',
+                        };
+                        return;
+                      }
+                      const cursor = eventLog.cursor;
+                      const page = await loadWorkflowRunEvents(runId, cursor);
+                      appendEventLog(eventLog, page);
+                      eventLog = { ...eventLog, type: 'ready' };
+                    };
+                    if (eventLog.type !== 'ready') {
+                      await loadFenceLog(false);
+                    }
+                    const fenceResult = await awaitHookResumeFence({
+                      fence: hookResumeFence,
+                      runId,
+                      getEvents: () =>
+                        eventLog.type === 'loadAll' ? [] : eventLog.events,
+                      // A position below the cursor that is still empty may
+                      // be this very write mid-commit, which a cursor read
+                      // can never return: re-read in full only then.
+                      reload: async () => {
+                        let holey = false;
+                        if (
+                          eventLog.type !== 'loadAll' &&
+                          isSlotGapCheckEnabled()
+                        ) {
+                          try {
+                            holey =
+                              findEventSlotGap(eventLog.events) !== undefined;
+                          } catch {
+                            holey = false;
+                          }
+                        }
+                        await loadFenceLog(holey);
+                      },
+                      handlerEnteredAt: handlerEnteredAtMono,
+                    });
+                    span?.setAttributes({
+                      'workflow.hook.resume_fence.outcome': fenceResult.outcome,
+                      'workflow.hook.resume_fence.reloads': fenceResult.reloads,
+                      'workflow.hook.resume_fence.waited_ms': Math.round(
+                        fenceResult.waitedMs
+                      ),
+                    });
+                    if (fenceResult.outcome === 'window_elapsed') {
+                      runtimeLogger.warn(
+                        'Fenced hook wake: hook_received not readable within the fence window; replaying without it',
+                        {
+                          workflowRunId: runId,
+                          hookId: hookResumeFence.hookId,
+                          resumeId: hookResumeFence.resumeId,
+                          reloads: fenceResult.reloads,
+                          waitedMs: Math.round(fenceResult.waitedMs),
+                        }
+                      );
+                    }
                   }
 
                   // The code this run replays. For every static run that is

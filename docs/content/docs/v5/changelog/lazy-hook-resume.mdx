@@ -35,6 +35,18 @@ Because the event is committed before the wake exists, a disposal or run
 completion racing the queue delivery cannot erase a resume the caller was told
 succeeded: the delivery replays the committed event from the log.
 
+### Opt-in parallel wake
+
+[`WORKFLOW_PARALLEL_HOOK_WAKE=1`](/docs/configuration/runtime-tuning#workflow_parallel_hook_wake)
+overlaps steps 2 and 3 to save a round trip, and keeps the same contract. The
+call still resolves only after the write committed and the wake was accepted,
+and the consumer still never writes the event from the message. The wake
+carries the `resumeId` as a fence: the consuming invocation re-reads the log
+(bounded) until that `hook_received` is readable before it replays. A write
+slow enough to outlast the fence is followed by a second wake once it commits.
+Only runs created by a deployment whose runtime honors the fence
+(`hookResumeInputVersion` 2 or higher) get the parallel dispatch.
+
 - `ResumedHook.resilientResume` remains on the type for source compatibility
   and is no longer set. The internal `resumeHookDurable()` entry point is
   removed; `resumeHook()` itself now provides the durable guarantee.

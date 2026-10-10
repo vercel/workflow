@@ -12,7 +12,7 @@ related:
 
 Resumes a workflow run by sending a payload to a hook identified by its token.
 
-It durably writes the `hook_received` event and only then publishes a workflow wake. The call resolves only after both operations succeed, in that order.
+It durably writes the `hook_received` event and only then publishes a workflow wake. The call resolves only after both operations succeed, in that order. With [`WORKFLOW_PARALLEL_HOOK_WAKE`](/docs/configuration/runtime-tuning#workflow_parallel_hook_wake) enabled, the two overlap for runs whose deployment supports it, but the call still resolves only after both succeed.
 
 `resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
 

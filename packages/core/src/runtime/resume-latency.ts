@@ -24,11 +24,16 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
  * T7 immediately before stepFn.apply()
  * ```
  *
- * The producer's `hook_received` write is awaited inside `producer_prep`
- * (the wake is only published after it commits). Older producers may report
- * `lazy`, where the consumer materializes the event from `hookInput`, or
- * `parallel`, where the write raced the publish. The write has no phase of
- * its own; it remains visible as a contextual span (`hook.resume`).
+ * Under the `sequential` strategy the producer's `hook_received` write is
+ * awaited inside `producer_prep` (the wake is only published after it
+ * commits). Under `parallel` (WORKFLOW_PARALLEL_HOOK_WAKE) T1 is stamped
+ * before the write and the publish start together, so `producer_prep` covers
+ * the same pre-dispatch work and excludes the write; any time the consumer
+ * spends fencing for a write still in flight lands in `resume_setup`, and an
+ * insurance wake carries the original T1, so its extra hop lands in
+ * `queue_delivery`. Older producers may report `lazy`, where the consumer
+ * materializes the event from `hookInput`. The write has no phase of its
+ * own; it remains visible as a contextual span (`hook.resume`).
  *
  * T0/T1 are stamped on the producer's machine and T2..T7 on the consumer's, so
  * the measurement is subject to cross-machine clock skew. Rather than clamp
@@ -43,9 +48,11 @@ export type ResumeTrigger = 'hook';
 /**
  * Which `resumeHook()` dispatch path produced this resume.
  *
- * Current producers always send `sequential` (durable write, then wake).
- * Older producers may send `lazy` (the consumer materializes the event from
- * `hookInput`) or `parallel` (the write raced the publish).
+ * Current producers send `sequential` (durable write, then wake) or
+ * `parallel` (a fenced wake published concurrently with the write, see
+ * runtime/hook-resume-fence.ts). Older producers may send `lazy` (the
+ * consumer materializes the event from `hookInput`) or `parallel` for their
+ * unfenced variant.
  */
 export type ResumeStrategy = 'lazy' | 'parallel' | 'sequential';
 
