@@ -47,7 +47,7 @@
  * applies to EVERY event type: a genuine application 429 means the server
  * rejected the write outright (nothing landed), so none of the duplicate-row /
  * attempt-double-count hazards above apply (the same definitive-no-write
- * reasoning `STREAM_RETRY_OPTIONS` uses to retry 429 on stream PUTs). Firewall
+ * reasoning `retryStreamAppend` uses to retry 429 on stream PUTs). Firewall
  * challenges never reach here as `ThrottleError`: `errorForResponse` maps a
  * 429 + `x-vercel-mitigated: challenge` to a transport `WorkflowWorldError`
  * instead (see isFirewallChallenge429), so throttle retries cannot hot-loop

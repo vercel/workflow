@@ -675,6 +675,12 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
   timeoutMs?: number | null;
   /** Optional caller abort signal, composed with the timeout. */
   signal?: AbortSignal;
+  /**
+   * Retry confirmed 429 append rejections with fresh requests. Only enable for
+   * the default stream dispatcher, whose own retries are disabled. Custom
+   * dispatchers and node:http keep their caller-selected retry behavior.
+   */
+  retryStreamAppend?: boolean;
   /** Inject W3C trace context onto the request headers. Default true. */
   injectTraceContext?: boolean;
   /** Set the X-Request-Time cache-bust header. Default true. */
@@ -714,15 +720,41 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
   /**
    * Called synchronously after the request promise is created, before awaiting
    * its response. This observes local dispatch only; it does not imply that any
-   * bytes reached the origin. Must not throw.
+   * bytes reached the origin. Called once, before any append retries. Must not
+   * throw.
    */
   onRequestDispatched?: () => void;
   /** Error code used when the request itself fails before a response arrived. */
   transportErrorCode?: 'TRANSPORT' | 'STREAM_ERROR';
 }
 
+const STREAM_APPEND_MAX_RETRIES = 5;
+
+function streamAppendRetryDelay(value: string | null, retry: number): number {
+  const seconds = Number(value);
+  const retryAfterMs = Number.isNaN(seconds)
+    ? Date.parse(value ?? '') - Date.now()
+    : seconds * 1000;
+  return Math.min(retryAfterMs > 0 ? retryAfterMs : 500 * 2 ** retry, 30_000);
+}
+
+function waitForStreamRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 /**
- * Issue a single instrumented request through the global `fetch` (so Vercel's
+ * Issue an instrumented request through the global `fetch` (so Vercel's
  * observability "outgoing requests" view picks it up) with a caller-supplied
  * undici dispatcher.
  *
@@ -744,6 +776,7 @@ export async function instrumentedFetch(
     peerService,
     timeoutMs = getRequestTimeoutMs(),
     signal: callerSignal,
+    retryStreamAppend = false,
     injectTraceContext = true,
     cacheBust = true,
     logLabel,
@@ -758,6 +791,12 @@ export async function instrumentedFetch(
   } = opts;
   const label = logLabel ?? url;
   validateHttpUrl(url);
+  const retryAppend = retryStreamAppend && method === 'PUT' && !!dispatcher;
+  // Fetch turns materialized bytes into a one-shot reader. Keep our own bytes
+  // above fetch so each retry gets a new reader, even if the caller mutates a
+  // Buffer between attempts. Buffer.slice() would retain the caller's storage.
+  const requestBody =
+    retryAppend && body instanceof Uint8Array ? Uint8Array.from(body) : body;
 
   return withHttpClientSpan(
     { method, url, peerService, spanName, attributes },
@@ -767,11 +806,6 @@ export async function instrumentedFetch(
       // bypasses ambient auto-instrumentation. No-ops when no OTEL SDK is
       // registered.
       if (injectTraceContext) await injectTraceContextIntoHeaders(headers);
-
-      // Unique header per attempt to bypass RSC/Next fetch memoization (and to
-      // avoid replaying a memoized truncated body). See:
-      // https://github.com/vercel/workflow/issues/618
-      if (cacheBust) headers.set('X-Request-Time', Date.now().toString());
 
       const timeoutSignal =
         timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
@@ -798,30 +832,55 @@ export async function instrumentedFetch(
       const start = Date.now();
       let response: Response;
       try {
-        const request = nodeAgents
-          ? nodeHttpFetch(url, {
-              method,
-              headers,
-              body,
-              signal,
-              agents: nodeAgents,
-              // Match undici's per-phase defaults (which the undici agents
-              // inherit implicitly): without these the node:http path arms no
-              // stalled-socket deadline, and a `timeoutMs: null` caller would
-              // have no deadline at all.
-              headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
-              bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
-            })
-          : fetch(url, {
-              method,
-              headers,
-              body,
-              signal,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-              dispatcher,
-            } as any);
-        onRequestDispatched?.();
-        response = await request;
+        for (let retry = 0; ; retry++) {
+          signal?.throwIfAborted();
+          // Refresh for each fetch to bypass RSC/Next memoization. See #618.
+          if (cacheBust) headers.set('X-Request-Time', Date.now().toString());
+          const request = nodeAgents
+            ? nodeHttpFetch(url, {
+                method,
+                headers,
+                body: requestBody,
+                signal,
+                agents: nodeAgents,
+                // Match undici's stalled-socket deadlines even when the
+                // whole-request timeout is disabled for large stream writes.
+                headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+                bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+              })
+            : fetch(url, {
+                method,
+                headers,
+                body: requestBody,
+                signal,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+                dispatcher,
+              } as any);
+          if (retry === 0) onRequestDispatched?.();
+          response = await request;
+          if (
+            !retryAppend ||
+            response.status !== 429 ||
+            isFirewallChallenge429(
+              response.status,
+              response.headers.get('x-vercel-mitigated')
+            ) ||
+            retry === STREAM_APPEND_MAX_RETRIES
+          ) {
+            break;
+          }
+          // The append service rejects 429s before persistence. A thrown
+          // transport error or any other status does not prove that, so it
+          // must never cause a resend. Discard this rejected response rather
+          // than waiting for a potentially stalled diagnostic body.
+          const delay = streamAppendRetryDelay(
+            response.headers.get('Retry-After'),
+            retry
+          );
+          // An already-failed diagnostic body does not undo the rejection.
+          await response.body?.cancel().catch(() => {});
+          await waitForStreamRetry(delay, signal);
+        }
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
