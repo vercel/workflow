@@ -80,6 +80,7 @@ import {
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import { getStep } from './steps.js';
 import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -118,8 +119,96 @@ type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
 const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
-  'step_started', // runtime reads result.step (checks attempt, state)
+  // Runtime reads result.step (attempt, status, startedAt, error, input).
+  // A lazy start carrying a large input is the exception: see
+  // lazyStepStartInput.
+  'step_started',
 ]);
+
+/**
+ * Kill switch for skipping the step-input echo on lazy step starts. On by
+ * default; `0` or `false` restores the fully resolved `step_started` response.
+ * Read per call so a deployment can flip it without a code change.
+ */
+export function isSkipStepInputEchoEnabled(): boolean {
+  const raw = process.env.WORKFLOW_SKIP_STEP_INPUT_ECHO?.trim().toLowerCase();
+  return raw !== '0' && raw !== 'false';
+}
+
+/**
+ * Smallest lazy-start input worth not echoing. Mirrors the backend's
+ * `STEP_STARTED_INLINE_REF_MAX_BYTES`: an input shorter than this is stored
+ * inline in the step item, and an inline ref's lazy descriptor carries the
+ * bytes base64-encoded (`_data`), so `lazy` would return about 4/3 of what
+ * `resolve` does. At or above it the input lives in S3 and the lazy
+ * descriptor is a key of a few dozen bytes. If the backend cutoff moves, this
+ * only shifts where the saving starts; correctness never depends on it.
+ */
+export const LAZY_STEP_START_INPUT_ECHO_MIN_BYTES = 64_000;
+
+/**
+ * The input of a lazy `step_started` whose echo is worth skipping, or
+ * undefined for any other write.
+ *
+ * A lazy start names the step and carries its input so the backend creates
+ * the step on the fly. The backend applies the same test (`stepName` is a
+ * string and `input` is present) to route the write to its atomic
+ * create-claim, which either creates the step from exactly these bytes and
+ * answers `stepCreated: true`, or rejects with 409. Resolving the step's
+ * `inputRef` echoes those bytes back in the response, only for the client to
+ * decode bytes it already holds. A large one requests `lazy` refs instead
+ * and re-attaches its own input: see attachLazyStepStartInput.
+ */
+function lazyStepStartInput(data: AnyEventRequest): Uint8Array | undefined {
+  if (data.eventType !== 'step_started') return undefined;
+  const eventData = data.eventData as
+    | { stepName?: unknown; input?: unknown }
+    | undefined;
+  if (typeof eventData?.stepName !== 'string') return undefined;
+  const input = eventData.input;
+  return input instanceof Uint8Array &&
+    input.byteLength >= LAZY_STEP_START_INPUT_ECHO_MIN_BYTES
+    ? input
+    : undefined;
+}
+
+/**
+ * Give a lazy `step_started` result the step input a resolved response would
+ * have carried.
+ *
+ * `stepCreated: true` means this very request created the step from the
+ * bytes it uploaded, as running attempt 1 with no prior error, so the local
+ * bytes ARE the stored input and every other field in the lazy response is
+ * already materialized (refs only stand in for payloads). Without that flag
+ * the step predates this write, and the lazy response holds a ref descriptor
+ * where a prior attempt's `error` would be. No current backend answers a lazy
+ * start that way (a step that already exists is a 409), but rather than
+ * trusting that, read the step back resolved, the response `resolve` would
+ * have produced, at the cost of one round trip on a path that should not occur.
+ */
+async function attachLazyStepStartInput(
+  result: EventResult,
+  runId: string,
+  input: Uint8Array,
+  config: APIConfig | undefined
+): Promise<EventResult> {
+  const step = result.step;
+  // A missing entity is reported by the caller's startedAt check.
+  if (!step) return result;
+  if (result.stepCreated === true) {
+    return { ...result, step: { ...step, input } };
+  }
+  const resolved = await getStep(
+    runId,
+    step.stepId,
+    { resolveData: 'all' },
+    config
+  );
+  return {
+    ...result,
+    step: { ...step, input: resolved.input, error: resolved.error },
+  };
+}
 
 // =============================================================================
 // Helpers
@@ -800,11 +889,13 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
-    data.eventType
-  )
-    ? 'resolve'
-    : 'lazy';
+  const localStepInput = isSkipStepInputEchoEnabled()
+    ? lazyStepStartInput(data)
+    : undefined;
+  const remoteRefBehavior: 'resolve' | 'lazy' =
+    localStepInput === undefined && eventsNeedingResolve.has(data.eventType)
+      ? 'resolve'
+      : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
@@ -929,12 +1020,15 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  return createWorkflowRunEventV4(
+  const result = await createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
+  return localStepInput === undefined
+    ? result
+    : attachLazyStepStartInput(result, id, localStepInput, config);
 }
 
 /**

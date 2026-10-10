@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
+  LAZY_STEP_START_INPUT_ECHO_MIN_BYTES,
   splitEventDataForV4,
 } from './events.js';
 import {
@@ -603,6 +604,177 @@ describe('createWorkflowRunEvent computeInstanceId wire field', () => {
   it('omits computeInstanceId from the v4 frame meta when not provided', async () => {
     const meta = await postStepStartedMeta(undefined);
     expect('computeInstanceId' in meta).toBe(false);
+  });
+});
+
+describe('lazy step_started input echo', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const startedStep = {
+    runId: 'wrun_1',
+    stepId: 'step_1',
+    stepName: 'step',
+    status: 'running',
+    attempt: 1,
+    startedAt: STARTED_AT,
+    createdAt: STARTED_AT,
+    updatedAt: STARTED_AT,
+  };
+  // What the backend's normalizeForCbor makes of an S3-backed input ref.
+  const s3InputRef = {
+    _ref: 's3rf:wrun_1/step_1/input',
+    _type: 'RemoteRef',
+  };
+
+  function inputOf(byteLength: number): Uint8Array {
+    return new Uint8Array(byteLength).map((_, i) => (i * 31) & 0xff);
+  }
+
+  function lazyStart(input?: Uint8Array): AnyEventRequest {
+    return {
+      eventType: 'step_started',
+      specVersion: 2,
+      correlationId: 'step_1',
+      eventData: {
+        stepName: 'step',
+        workflowName: 'workflow',
+        ...(input ? { input } : {}),
+      },
+    } as AnyEventRequest;
+  }
+
+  /** POSTs `data`, answering with `entities`; returns the result + sent meta. */
+  async function postStart(
+    data: AnyEventRequest,
+    entities: Record<string, unknown>,
+    agent = mockAgent()
+  ) {
+    let meta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_started',
+        method: 'POST',
+      })
+      .reply(200, (opts: { body?: unknown }) => {
+        meta = decodePostedMeta(opts.body);
+        return createEventBody(
+          {
+            eventType: 'step_started',
+            specVersion: 2,
+            correlationId: 'step_1',
+            eventData: { stepName: 'step' },
+          } as AnyEventRequest,
+          entities
+        );
+      });
+    const result = await createWorkflowRunEvent('wrun_1', data, undefined, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+    agent.assertNoPendingInterceptors();
+    return { result, meta: meta ?? {} };
+  }
+
+  it('asks for lazy refs on a large lazy start and re-attaches its own input', async () => {
+    const input = inputOf(LAZY_STEP_START_INPUT_ECHO_MIN_BYTES);
+    const { result, meta } = await postStart(lazyStart(input), {
+      step: { ...startedStep, inputRef: s3InputRef },
+      stepCreated: true,
+    });
+
+    expect(meta.remoteRefBehavior).toBe('lazy');
+    expect(result.stepCreated).toBe(true);
+    // The very bytes the write uploaded, not a copy decoded off the wire.
+    expect(result.step?.input).toBe(input);
+    expect(result.step).toMatchObject({
+      status: 'running',
+      attempt: 1,
+      startedAt: STARTED_AT,
+    });
+    expect(result.step?.error).toBeUndefined();
+    expect(result.step).not.toHaveProperty('inputRef');
+  });
+
+  it('keeps resolve below the inline cutoff, where lazy would return base64', async () => {
+    const input = inputOf(LAZY_STEP_START_INPUT_ECHO_MIN_BYTES - 1);
+    const echoed = input.slice();
+    const { result, meta } = await postStart(lazyStart(input), {
+      step: { ...startedStep, input: echoed },
+      stepCreated: true,
+    });
+
+    expect(meta.remoteRefBehavior).toBe('resolve');
+    expect(result.step?.input).toEqual(echoed);
+  });
+
+  it('keeps resolve on a bare start, which needs the stored input', async () => {
+    const stored = inputOf(LAZY_STEP_START_INPUT_ECHO_MIN_BYTES);
+    const { result, meta } = await postStart(lazyStart(), {
+      step: { ...startedStep, attempt: 2, input: stored },
+    });
+
+    expect(meta.remoteRefBehavior).toBe('resolve');
+    expect(result.step?.input).toEqual(stored);
+  });
+
+  it.each([
+    '0',
+    'false',
+  ])('keeps resolve when WORKFLOW_SKIP_STEP_INPUT_ECHO=%s', async (value) => {
+    vi.stubEnv('WORKFLOW_SKIP_STEP_INPUT_ECHO', value);
+    const input = inputOf(LAZY_STEP_START_INPUT_ECHO_MIN_BYTES);
+    const { result, meta } = await postStart(lazyStart(input), {
+      step: { ...startedStep, input: input.slice() },
+      stepCreated: true,
+    });
+
+    expect(meta.remoteRefBehavior).toBe('resolve');
+    expect(result.step?.input).toEqual(input);
+  });
+
+  it('reads the step back resolved when the response does not say it created the step', async () => {
+    const input = inputOf(LAZY_STEP_START_INPUT_ECHO_MIN_BYTES);
+    const stored = inputOf(LAZY_STEP_START_INPUT_ECHO_MIN_BYTES + 1);
+    const priorError = new Uint8Array([1, 2, 3]);
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v2/runs/wrun_1/steps/step_1?remoteRefBehavior=resolve',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        () =>
+          encode({
+            ...startedStep,
+            attempt: 2,
+            input: stored,
+            error: priorError,
+          }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const { result, meta } = await postStart(
+      lazyStart(input),
+      {
+        // A lazy response for a step that predates the write: refs stand in
+        // for its payloads, the prior attempt's error included.
+        step: {
+          ...startedStep,
+          attempt: 2,
+          inputRef: s3InputRef,
+          errorRef: { _ref: 's3rf:wrun_1/step_1/error', _type: 'RemoteRef' },
+        },
+      },
+      agent
+    );
+
+    expect(meta.remoteRefBehavior).toBe('lazy');
+    expect(result.step?.attempt).toBe(2);
+    expect(result.step?.input).toEqual(stored);
+    expect(result.step?.error).toEqual(priorError);
   });
 });
 

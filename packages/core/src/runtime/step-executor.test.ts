@@ -793,6 +793,137 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
   });
 });
 
+describe('executeStep — lazy start input source', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    counter += 1;
+  });
+
+  async function dehydrateArgs(runId: string, args: unknown[]) {
+    return dehydrateStepArguments(
+      { args, closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+  }
+
+  function registerArgsRecorder(stepName: string): unknown[][] {
+    const seen: unknown[][] = [];
+    registerStepFunction(stepName, async (...args: unknown[]) => {
+      seen.push(args);
+      return 'ok';
+    });
+    return seen;
+  }
+
+  it('hydrates the bytes it sent when its awaited lazy start created the step', async () => {
+    // The awaited branch: optimistic start is off.
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', '0');
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      createStep: false,
+    });
+    const seen = registerArgsRecorder(stepName);
+    const input = await dehydrateArgs(runId, ['local', 42]);
+
+    // A World that does not echo the input it was just sent (world-vercel
+    // asks for lazy refs on this write), but does say it created the step.
+    const create = world.events.create.bind(world.events);
+    vi.spyOn(world.events, 'create').mockImplementation(async (...args) => {
+      const result = await create(...args);
+      if (args[1].eventType !== 'step_started' || !result.step) return result;
+      expect(result.stepCreated).toBe(true);
+      return { ...result, step: { ...result.step, input: undefined } };
+    });
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: input,
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(seen).toEqual([['local', 42]]);
+  });
+
+  it("keeps the World's input when the lazy start does not report creating the step", async () => {
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', '0');
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      createStep: false,
+    });
+    const seen = registerArgsRecorder(stepName);
+    const stored = await dehydrateArgs(runId, ['stored']);
+
+    // A World that accepted the lazy start without saying it created the
+    // step (every bundled World 409s instead, but the contract leaves
+    // `stepCreated` optional): its stored input stays the authority.
+    const create = world.events.create.bind(world.events);
+    vi.spyOn(world.events, 'create').mockImplementation(async (...args) => {
+      const result = await create(...args);
+      if (args[1].eventType !== 'step_started' || !result.step) return result;
+      const { stepCreated: _, ...rest } = result;
+      return { ...rest, step: { ...result.step, input: stored } };
+    });
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      lazyStepInput: await dehydrateArgs(runId, ['local']),
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(seen).toEqual([['stored']]);
+  });
+
+  it("hydrates the World's input on a bare start", async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      stepArgs: ['stored'],
+    });
+    const seen = registerArgsRecorder(stepName);
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(seen).toEqual([['stored']]);
+  });
+});
+
 describe('executeStep — compute instance stamping', () => {
   afterEach(() => {
     counter += 1;

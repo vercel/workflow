@@ -858,7 +858,18 @@ export async function executeStep(
         );
         stepClaimCompletedAtMs = Date.now();
 
-        step = startResult.step;
+        // A lazy start that created the step stored exactly the bytes it
+        // sent, so hydrate those rather than the World's copy, the same way
+        // the batch pre-claim path re-attaches its input. A World then need
+        // not echo the input back (world-vercel skips the echo for large
+        // inputs). Every bundled World rejects a lazy start on an existing
+        // step with a 409, but `stepCreated` is optional in the contract: a
+        // World that accepts one without reporting it keeps its response as
+        // the authority on the stored input.
+        step =
+          params.lazyStepInput !== undefined && startResult.stepCreated === true
+            ? { ...startResult.step, input: params.lazyStepInput }
+            : startResult.step;
       } catch (err) {
         const mapped = startErrorToResult(err);
         if (mapped) return mapped;
