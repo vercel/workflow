@@ -398,6 +398,16 @@ World needs to do nothing to support either.
 
 The SDK also sends an internal `HealthCheckPayload` through the same workflow queue.
 
+### Delivery guarantees
+
+A queue handler relies on `meta.messageId`, `meta.attempt` and its own result, and on nothing else about how your queue holds a delivery. Give it these guarantees:
+
+- **A throw brings the same message back.** When the handler rejects, deliver the same message again with the same `meta.messageId` and `meta.attempt` incremented, after your retry backoff.
+- **A crash brings the same message back.** While the handler runs, keep its message from other consumers, and renew whatever holds the delivery (a visibility timeout, a job lock) without the handler's help. If the process running the handler dies, or you lose your hold on the delivery, deliver the same message again with `meta.attempt` incremented. Document how long that takes, because it bounds how soon a crashed handler's work is picked up again. Re-enqueueing active runs as new messages from `start()` is a backstop, not a substitute: a new message isn't the delivery that owned the work.
+- **A return means done.** Acknowledge the delivery. For an ordinary result of `{ timeoutSeconds }`, also schedule a wake that delivers the same payload again after that many seconds, and don't lose it if the process dies between scheduling it and acknowledging the delivery. The wake may be the same message or a new one, and its `meta.attempt` may start again at 1. Handlers don't rely on either.
+
+The handler needs nothing else from you: no lease length, deadline or loss signal in `meta`. The runtime records work under the delivering `meta.messageId` and recovers it when that same message comes back, so a World that keeps these guarantees recovers a crashed handler's work as soon as it redelivers the message. See [What the callback can rely on](/docs/api-reference/workflow-runtime/world/queue#what-the-callback-can-rely-on) for how the bundled Worlds keep them.
+
 ### Implementation considerations
 
 - Messages must be delivered at-least-once

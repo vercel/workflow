@@ -607,7 +607,39 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
-   * A rejected handler must retry the same message with an incremented attempt.
+   *
+   * A handler relies on `meta.messageId`, `meta.attempt` and its own result,
+   * and on nothing else about how the World holds a delivery (a renewed
+   * visibility timeout, a job lock, the process that runs it). A World
+   * gives a handler three rules:
+   *
+   * - **A throw brings the same message back.** A rejected handler is called
+   *   again with the same `meta.messageId` and `meta.attempt` incremented,
+   *   after the World's retry backoff and up to its retry limit.
+   * - **A crash brings the same message back.** While a handler runs, the
+   *   World SHOULD keep its message from every other handler, renewing
+   *   whatever holds the delivery without the handler's help. If the process
+   *   running the handler dies, or the World loses its hold on the delivery,
+   *   the World SHOULD deliver the same message again, with `meta.attempt`
+   *   incremented, within a bound it documents.
+   * - **A return means done.** The delivery is acknowledged. An ordinary
+   *   result of `{ timeoutSeconds: n }` also schedules a wake: the World
+   *   delivers the payload again after about `n` seconds. It may wake sooner
+   *   when `n` exceeds its cap, so a handler that needs the full delay
+   *   returns `{ timeoutSeconds }` again for the rest. Whether the wake is
+   *   the same message is World-specific, and it may be a new message whose
+   *   `attempt` starts again at 1. So never return a wake while work is still
+   *   recorded under this delivery's `messageId`, and don't rely on
+   *   `messageId` or `attempt` carrying across one.
+   *
+   * Together these let a handler recover its own work without knowing how
+   * the World holds a delivery. Work an earlier delivery recorded under this
+   * `messageId` and left open is this delivery's to recover: a handler never
+   * returns with work open, so that delivery threw or died. It may still be
+   * running if the World only lost its hold on it (a stalled renewal, a
+   * frozen process), so the recovery must be fenced. `meta.attempt > 1` only
+   * says this is not the message's first delivery.
+   *
    * With `invoke: true`, the return value is response data delivered by World.
    * Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
    *
