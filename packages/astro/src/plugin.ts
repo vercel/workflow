@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type AstroConfig, createBuildQueue } from '@workflow/builders';
+import {
+  type AstroConfig,
+  createBuildQueue,
+  type WorkflowAfterBundleHook,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
@@ -14,6 +18,11 @@ export interface WorkflowPluginOptions {
    * also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+
+  /**
+   * Runs after the workflow bundles and manifest have been written.
+   */
+  onAfterBundle?: WorkflowAfterBundleHook;
 }
 
 export function workflowPlugin(
@@ -21,6 +30,7 @@ export function workflowPlugin(
 ): AstroIntegration {
   let builderOptions: Partial<AstroConfig> = {
     sourcemap: options.sourcemap,
+    onAfterBundle: options.onAfterBundle,
   };
   const enqueue = createBuildQueue();
 
@@ -36,6 +46,7 @@ export function workflowPlugin(
           workingDir: fileURLToPath(config.root),
           dirs: [join(srcDir, 'pages'), join(srcDir, 'workflows')],
           sourcemap: options.sourcemap,
+          onAfterBundle: options.onAfterBundle,
         };
         const vitePlugins = [workflowTransformPlugin()];
 
