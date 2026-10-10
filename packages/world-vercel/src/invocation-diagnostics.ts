@@ -16,6 +16,9 @@ interface RoutingObservation {
   responseStatus?: number;
   responseRequestId?: string | null;
   responseErrorCode?: string | null;
+  /** The platform's function-affinity outcome (`x-affinity`: hot or cold);
+   * null when the response carried none, i.e. affinity was not applied. */
+  responseAffinity?: string | null;
   responseContentType?: string | null;
   responseProtocolVersion?: string | null;
   requestedDeploymentId?: string;

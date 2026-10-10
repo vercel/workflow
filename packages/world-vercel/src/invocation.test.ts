@@ -272,6 +272,26 @@ describe('direct Vercel invocation', () => {
     expect(mocks.run).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it("logs the platform's affinity outcome from the x-affinity response header", async () => {
+    recordRunAffinity(runId, '{}', 'dpl_hook');
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(encode({ ok: true, value: 'ok' }), {
+            headers: { [INVOCATION_HEADER]: '1', 'x-affinity': 'hot' },
+          })
+      )
+    );
+    await createInvoker(config)!(runId, payload, {
+      target: { deploymentId: 'dpl_hook', workflowName: 'from_hook' },
+    });
+    const response = info.mock.calls
+      .map(([line]) => JSON.parse(String(line)))
+      .find((entry) => entry.event === 'direct.response');
+    expect(response).toMatchObject({ responseAffinity: 'hot' });
+  });
   it('reads the run when no fresh affinity accompanies the routing context', async () => {
     forgetRunAffinity(runId);
     const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {

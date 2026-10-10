@@ -378,6 +378,8 @@ export function createInvoker(
                 response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
               responseErrorCode:
                 response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
+              responseAffinity:
+                response.headers.get('x-affinity')?.slice(0, 64) ?? null,
               responseContentType:
                 response.headers.get('content-type')?.slice(0, 256) ?? null,
               responseProtocolVersion:
@@ -561,6 +563,8 @@ export function createStepDelivery(config: APIConfig | undefined) {
         response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
       responseErrorCode:
         response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
+      responseAffinity:
+        response.headers.get('x-affinity')?.slice(0, 64) ?? null,
     });
     if (!response.ok || response.headers.get(INVOCATION_HEADER) !== '1') {
       void response.body?.cancel().catch(() => {});
