@@ -413,6 +413,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       'x-vqs-queue-name': ValidQueueName,
       'x-vqs-message-id': MessageId,
       'x-vqs-message-attempt': z.coerce.number(),
+      // Sent by world-postgres, whose `attempt` restarts on a reschedule.
+      'x-vqs-message-delivery-count': z.coerce
+        .number()
+        .int()
+        .positive()
+        .optional(),
       // Absent on a delivery from a sender that predates it.
       'x-vqs-message-created-at': z.iso.datetime().optional(),
     })
@@ -436,6 +442,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       const queueName = headers.data['x-vqs-queue-name'];
       const messageId = headers.data['x-vqs-message-id'];
       const attempt = headers.data['x-vqs-message-attempt'];
+      const deliveryCountHeader = headers.data['x-vqs-message-delivery-count'];
       const createdAtHeader = headers.data['x-vqs-message-created-at'];
 
       if (!queueName.startsWith(prefix)) {
@@ -448,7 +455,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           attempt,
           // Counts every delivery of this message that reached a handler,
           // starting at 1, including `{ timeoutSeconds }` redeliveries.
-          deliveryCount: attempt,
+          deliveryCount: deliveryCountHeader ?? attempt,
           ...(createdAtHeader ? { createdAt: new Date(createdAtHeader) } : {}),
           queueName,
           messageId,

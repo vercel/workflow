@@ -123,6 +123,38 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('createQueueHandler reports a delivery-count header as deliveryCount, separate from attempt', async () => {
+    const metas: { attempt: number; deliveryCount?: number }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, meta) => {
+        metas.push({
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+        });
+        return undefined;
+      }
+    );
+    const request = (extra: Record<string, string>) =>
+      new Request('http://localhost/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__wkf_workflow_test',
+          'x-vqs-message-id': 'msg_01ABC',
+          'x-vqs-message-attempt': '1',
+          ...extra,
+        },
+        body: JSON.stringify(workflowPayload),
+      });
+    await handler(request({ 'x-vqs-message-delivery-count': '3' }));
+    await handler(request({}));
+    expect(metas).toEqual([
+      { attempt: 1, deliveryCount: 3 },
+      { attempt: 1, deliveryCount: 1 },
+    ]);
+  });
+
   it('treats invocation return values containing timeoutSeconds as data', async () => {
     const result = { timeoutSeconds: 123, value: 'data' };
     const handler = localQueue.createQueueHandler(

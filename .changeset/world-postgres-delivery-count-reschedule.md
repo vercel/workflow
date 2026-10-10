@@ -1,5 +1,6 @@
 ---
 "@workflow/world-postgres": patch
+"@workflow/world-local": patch
 ---
 
-Keep counting a message's deliveries across `{ timeoutSeconds }` redeliveries, as `@workflow/world-local` does.
+Report a message's cumulative `deliveryCount` across `{ timeoutSeconds }` redeliveries on `@workflow/world-postgres`.

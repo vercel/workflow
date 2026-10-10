@@ -12,6 +12,13 @@ export const MessageData = z.compile(
     attempt: z.number().describe('The attempt number of the message'),
     /** Attempts used before a legacy job was moved to the workflow execution task. */
     attemptOffset: z.number().int().nonnegative().optional(),
+    /**
+     * Deliveries of this message made by earlier Graphile jobs (a
+     * `{ timeoutSeconds }` reschedule is a new job whose own attempt count
+     * starts again at 1). Added to the job's attempts to report the
+     * message's cumulative `deliveryCount`. Absent: `attemptOffset`.
+     */
+    deliveryOffset: z.number().int().nonnegative().optional(),
     messageId: MessageId.describe('The unique ID of the message'),
     /**
      * When the message was first enqueued (ISO 8601). Carried unchanged by

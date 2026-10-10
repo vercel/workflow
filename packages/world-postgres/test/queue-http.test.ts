@@ -34,6 +34,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   let accepted = Promise.withResolvers<void>();
   let disconnected = Promise.withResolvers<void>();
   let attempts: string[] = [];
+  let deliveryCounts: string[] = [];
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -42,6 +43,9 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     server = createServer(async (request, response) => {
       await request.toArray();
       attempts.push(String(request.headers['x-vqs-message-attempt']));
+      deliveryCounts.push(
+        String(request.headers['x-vqs-message-delivery-count'])
+      );
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
@@ -136,6 +140,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   test('a { timeoutSeconds } redelivery reports the next delivery count', async () => {
     phase = 'reschedule';
     attempts = [];
+    deliveryCounts = [];
     const queue = createQueue(
       {
         connectionString,
@@ -149,9 +154,13 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         runId: `run_${randomUUID()}`,
       });
       // Each replacement job is a new Graphile job whose own attempt count
-      // starts over; the handler must still see 1, 2, 3 for one message.
+      // starts over. `deliveryCount` keeps counting the message's
+      // deliveries; `attempt`, which core counts against its max-deliveries
+      // cap, starts over with the job, so a step retried in place many times
+      // on one message is not failed by that cap.
       await expect.poll(() => attempts, { timeout: 10_000 }).toHaveLength(3);
-      expect(attempts).toEqual(['1', '2', '3']);
+      expect(deliveryCounts).toEqual(['1', '2', '3']);
+      expect(attempts).toEqual(['1', '1', '1']);
     } finally {
       await queue.close();
       await pool.query('TRUNCATE graphile_worker._private_jobs');
