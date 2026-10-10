@@ -226,6 +226,38 @@ async function flushWaitUntil(from = 0) {
 }
 
 /**
+ * What the queue handler hands an invocation: the whole log as a complete
+ * preload (what its setup request returns) and the snapshot read it started
+ * at entry, if any.
+ */
+function preloadParams(
+  log: Event[],
+  snapshotPrefetch: Promise<unknown> | undefined
+) {
+  return {
+    preloadedEvents: log.slice(),
+    preloadedEventsComplete: true,
+    preloadedCursor: log[log.length - 1].eventId,
+    snapshotPrefetch: snapshotPrefetch as
+      | Promise<{ data: Uint8Array; metadata: SnapshotMetadata } | null>
+      | undefined,
+  };
+}
+
+/**
+ * How many of an invocation's `events.list` calls loaded its log: those
+ * before its first write. (Later ones are the inline loop looking for new
+ * events.)
+ */
+function listCallsBeforeFirstWrite(
+  listOrders: number[],
+  createOrders: number[]
+): number {
+  const firstWrite = createOrders[0] ?? Number.POSITIVE_INFINITY;
+  return listOrders.filter((order) => order < firstWrite).length;
+}
+
+/**
  * Run the hook workflow to completion, delivering each hook's payload
  * after the invocation that created it. With `holdSaveAt`, the save of
  * that invocation is held until after the NEXT invocation's save lands, so
@@ -235,18 +267,42 @@ async function runToCompletion(options: {
   threshold: number;
   hooks: number;
   holdSaveAt?: number;
+  /**
+   * Hand each invocation the whole log as a complete preload (what the
+   * queue handler's setup request returns) and the snapshot read the
+   * handler would have started at entry.
+   */
+  preload?: boolean;
 }) {
   const env = makeWorld(options.threshold);
   setWorld(env.world);
   const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { prefetchQuickJSSnapshot } = await import(
+    './quickjs-snapshot-resume.js'
+  );
   let heldFrom: number | undefined;
+  let prefetches = 0;
+  let initialLoadListCalls = 0;
+  const listMock = vi.mocked(env.world.events.list).mock;
+  const createMock = vi.mocked(env.world.events.create).mock;
   for (let invocation = 0; invocation < options.hooks + 5; invocation++) {
     if (invocation === options.holdSaveAt) env.holdNextSave();
+    const listsBefore = listMock.invocationCallOrder.length;
+    const createsBefore = createMock.invocationCallOrder.length;
+    const preload = options.preload
+      ? preloadParams(env.log, prefetchQuickJSSnapshot(env.world, runId))
+      : undefined;
+    if (preload?.snapshotPrefetch) prefetches++;
     await runWorkflowWithQuickJS({
       workflowCode: hookWorkflow(options.hooks),
       workflowName,
       workflowRun: env.run,
+      ...preload,
     });
+    initialLoadListCalls += listCallsBeforeFirstWrite(
+      listMock.invocationCallOrder.slice(listsBefore),
+      createMock.invocationCallOrder.slice(createsBefore)
+    );
     if (invocation === options.holdSaveAt) {
       // This invocation's save is now blocked; later ones go through.
       await env.control.held;
@@ -282,6 +338,9 @@ async function runToCompletion(options: {
     shape: env.log.map((e) => `${e.eventType}:${e.correlationId ?? ''}`),
     saves: env.saves,
     restores: env.loads.filter(Boolean).length,
+    loads: env.loads.length,
+    prefetches,
+    initialLoadListCalls,
     snapshotsLeft: env.snapshots.size,
   };
 }
@@ -371,6 +430,56 @@ describe('QuickJS snapshots across many generations', () => {
         );
       }
     }
+  });
+
+  it('restores from a preload and a prefetched snapshot without listing the log again', async () => {
+    const hooks = 12;
+    const baseline = await runToCompletion({ threshold: 0, hooks });
+    for (const threshold of [1, 3]) {
+      vi.clearAllMocks();
+      const listed = await runToCompletion({ threshold, hooks });
+      vi.clearAllMocks();
+      const preloaded = await runToCompletion({
+        threshold,
+        hooks,
+        preload: true,
+      });
+      expect(preloaded.result, `threshold ${threshold}`).toBe(baseline.result);
+      expect(preloaded.shape, `threshold ${threshold}`).toEqual(baseline.shape);
+      expect(preloaded.snapshotsLeft, `threshold ${threshold}`).toBe(0);
+      expect(preloaded.restores, `threshold ${threshold}`).toBeGreaterThan(0);
+      // Every snapshot read the engine made was the one started ahead of it.
+      expect(preloaded.prefetches, `threshold ${threshold}`).toBeGreaterThan(0);
+      expect(preloaded.loads, `threshold ${threshold}`).toBe(
+        preloaded.prefetches
+      );
+      // Without the preload, every invocation lists its log to load it (a
+      // restore lists its delta); with it, none does, restores included.
+      expect(
+        listed.initialLoadListCalls,
+        `threshold ${threshold}`
+      ).toBeGreaterThanOrEqual(listed.loads);
+      expect(preloaded.initialLoadListCalls, `threshold ${threshold}`).toBe(0);
+    }
+  });
+
+  it('converges with a preload when an older snapshot lands after a newer one', async () => {
+    const hooks = 10;
+    const baseline = await runToCompletion({ threshold: 0, hooks });
+    vi.clearAllMocks();
+    const outcome = await runToCompletion({
+      threshold: 1,
+      hooks,
+      holdSaveAt: 4,
+      preload: true,
+    });
+    const counts = outcome.saves.map((saved) => saved.eventCount as number);
+    expect(counts.some((count, i) => i > 0 && count < counts[i - 1])).toBe(
+      true
+    );
+    expect(outcome.result).toBe(baseline.result);
+    expect(outcome.shape).toEqual(baseline.shape);
+    expect(outcome.snapshotsLeft).toBe(0);
   });
 
   it('converges when an older snapshot lands after a newer one', async () => {

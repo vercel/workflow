@@ -263,6 +263,14 @@ What a snapshot contains, and how it is protected:
 - Default: disabled
 - Set `1` or `true` on the workflow handler to let the QuickJS engine persist VM snapshots for runs without an encryption key. See [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold) for what that stores.
 
+### `WORKFLOW_SNAPSHOT_PREFETCH`
+
+- Default: enabled
+- Only used by the QuickJS engine with snapshotting on (see [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold)).
+- When a function instance has already seen a run suspend with its event log at or past the snapshot threshold, the next delivery for that run on the same instance starts reading the run's snapshot as soon as the delivery arrives. That read then runs in parallel with the request that resumes the run, instead of after it. The engine would read the snapshot during that delivery anyway, so this adds no requests. It only moves one earlier.
+- A delivery on an instance that has not seen the run reads the snapshot after the resume request, as before. A run that another instance finished in the meantime costs one unused read.
+- Set `0` or `false` on the workflow handler to turn the early read off.
+
 ## Dynamic workflows
 
 ### `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`
