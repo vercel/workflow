@@ -417,6 +417,152 @@ export function createInvoker(
   };
 }
 
+/** The generated HTTP entry point for owner-managed overflow steps. */
+export const STEP_ROUTE_PATH = '/.well-known/workflow/v1/step';
+
+/** A step the retained owner admitted for execution outside its process. */
+export function isRemoteStepMessage(payload: unknown): boolean {
+  const input = (payload as { input?: { executionMode?: unknown } } | null)
+    ?.input;
+  return (
+    !!input && typeof input === 'object' && input.executionMode === 'remote'
+  );
+}
+
+/** The routing fields of a remote step message, validated. */
+function remoteStepTarget(message: unknown, deploymentOverride?: string) {
+  const step = message as {
+    runId?: unknown;
+    stepId?: unknown;
+    runContext?: { deploymentId?: string };
+    input?: { deadline?: unknown };
+  };
+  if (
+    typeof step.runId !== 'string' ||
+    typeof step.stepId !== 'string' ||
+    !step.runContext ||
+    typeof step.input?.deadline !== 'number'
+  )
+    throw new WorkflowWorldError('Invalid direct step dispatch', {
+      status: 400,
+    });
+  const deploymentId =
+    deploymentOverride ??
+    step.runContext.deploymentId ??
+    process.env.VERCEL_DEPLOYMENT_ID;
+  if (!deploymentId)
+    throw new WorkflowWorldError('Missing execution deployment ID', {
+      status: 400,
+    });
+  return {
+    runId: step.runId,
+    stepId: step.stepId,
+    deadline: step.input.deadline,
+    deploymentId,
+  };
+}
+
+/**
+ * Delivers an owner-managed overflow step (`executionMode: 'remote'`) as one
+ * direct POST to this deployment's generated step route, without affinity, so
+ * an ordinary instance runs the body and returns its result to the owner
+ * through invoke. The response arrives once the owner has accepted that
+ * result. Never falls back to a queue.
+ *
+ * Errors keep the owner's classification: no response leaves the outcome
+ * unknown (no status), and an HTTP failure carries its status.
+ */
+export function createStepDelivery(config: APIConfig | undefined) {
+  const settings = invocationConfig(config);
+  return async (
+    queueName: ValidQueueName,
+    message: unknown,
+    opts?: { deploymentId?: string; idempotencyKey?: string }
+  ): Promise<{ messageId: MessageId }> => {
+    const { runId, deadline, deploymentId } = remoteStepTarget(
+      message,
+      opts?.deploymentId
+    );
+    const host = process.env.VERCEL_URL;
+    if (!host)
+      throw new WorkflowWorldError(
+        'Direct step delivery requires the deployment URL (VERCEL_URL)',
+        { status: 400 }
+      );
+    const requestId = opts?.idempotencyKey ?? randomUUID();
+    const timeoutMs = Math.min(
+      120_000,
+      Math.max(1, Math.floor(deadline - Date.now()))
+    );
+    const url = new URL(STEP_ROUTE_PATH, `https://${host}`);
+    const token = await (settings?.getToken ?? getVercelOidcToken)();
+    const body = encodeBody(
+      Envelope.parse({
+        kind: 'wake',
+        version: 1,
+        runId,
+        requestId,
+        deploymentId,
+        queueName,
+        timeoutMs,
+        input: message,
+      })
+    );
+    const headers = new Headers({
+      'content-type': 'application/cbor',
+      accept: 'application/cbor',
+      [INVOCATION_HEADER]: '1',
+      authorization: `Bearer ${token}`,
+      'x-vercel-trusted-oidc-idp-token': token,
+    });
+    await injectTraceContextIntoHeaders(headers);
+    const signal = AbortSignal.timeout(timeoutMs);
+    const observation = {
+      transport: 'direct' as const,
+      invocationId: randomUUID(),
+      runId,
+      requestId,
+      requestedDeploymentId: deploymentId,
+      targetHost: url.hostname,
+    };
+    logInvocationRouting('step.send', observation);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal,
+      redirect: 'error',
+      ...(config?.dispatcher ? { dispatcher: config.dispatcher } : {}),
+    } as RequestInit).catch((cause) => {
+      logInvocationRouting('step.error', { ...observation, ok: false });
+      // No response: the body may or may not have run.
+      throw new WorkflowWorldError('Direct step HTTP delivery failed', {
+        code: 'TRANSPORT',
+        cause,
+      });
+    });
+    logInvocationRouting('step.response', {
+      ...observation,
+      responseStatus: response.status,
+      responseRequestId:
+        response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
+      responseErrorCode:
+        response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
+    });
+    if (!response.ok || response.headers.get(INVOCATION_HEADER) !== '1') {
+      void response.body?.cancel().catch(() => {});
+      // 408/429/5xx (including affinity backoff 503) leave the delivery
+      // uncertain rather than failing the step.
+      throw new WorkflowWorldError(
+        `Direct step HTTP delivery failed (${response.status})`,
+        { status: response.ok ? 502 : response.status }
+      );
+    }
+    unwrapInvocationOutcome(decode(await readBody(response.body, signal)));
+    return { messageId: MessageId.parse(`direct_${requestId}`) };
+  };
+}
+
 type Handler = Parameters<Queue['createQueueHandler']>[1];
 type Metadata = Parameters<Handler>[1];
 

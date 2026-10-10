@@ -20,9 +20,11 @@ import {
   AFFINITY_HEADER,
   createDirectInvocationHandler,
   createInvoker,
+  createStepDelivery,
   DEPLOYMENT_HEADER,
   INVOCATION_HEADER,
   invocationAffinity,
+  STEP_ROUTE_PATH,
 } from './invocation.js';
 import { createQueue } from './queue.js';
 import { forgetRunAffinity, recordRunAffinity } from './run-affinity.js';
@@ -151,6 +153,99 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+});
+
+describe('direct overflow step delivery', () => {
+  const step = (deadline = Date.now() + 10_000) => ({
+    runId,
+    stepId: 'step_1',
+    stepName: 'work',
+    runContext: { deploymentId: 'dpl_run', specVersion: 3, startedAt: 1 },
+    input: {
+      type: 'step_execute',
+      executionMode: 'remote',
+      executionId: 'evnt_1',
+      deadline,
+    },
+  });
+  const queueName = '__wkf_workflow_test' as never;
+
+  it('posts the step to the deployment step route without affinity and resolves after the outcome', async () => {
+    vi.stubEnv('VERCEL_URL', 'app-abc.vercel.app');
+    const fetch = vi.fn(async (url: unknown, init: RequestInit) => {
+      expect(String(url)).toBe(`https://app-abc.vercel.app${STEP_ROUTE_PATH}`);
+      const headers = new Headers(init.headers);
+      expect(headers.get(AFFINITY_HEADER)).toBeNull();
+      expect(headers.get(DEPLOYMENT_HEADER)).toBeNull();
+      expect(headers.get(INVOCATION_HEADER)).toBe('1');
+      expect(headers.get('authorization')).toBe(`Bearer ${mocks.token}`);
+      expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBe(mocks.token);
+      const envelope = decode(Buffer.from(init.body as Uint8Array));
+      expect(envelope).toMatchObject({
+        kind: 'wake',
+        version: 1,
+        runId,
+        requestId: 'step-key',
+        deploymentId: 'dpl_run',
+        queueName,
+        input: step(envelope.input.input.deadline),
+      });
+      expect(envelope.timeoutMs).toBeGreaterThan(0);
+      expect(envelope.timeoutMs).toBeLessThanOrEqual(10_000);
+      return new Response(encode({ ok: true, value: { status: 'accepted' } }), {
+        headers: { [INVOCATION_HEADER]: '1' },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      createStepDelivery(undefined)(queueName, step(), {
+        idempotencyKey: 'step-key',
+      })
+    ).resolves.toEqual({ messageId: 'direct_step-key' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the outcome unknown when no response arrives, and keeps HTTP statuses', async () => {
+    vi.stubEnv('VERCEL_URL', 'app-abc.vercel.app');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('socket hang up');
+      })
+    );
+    const lost = await createStepDelivery(undefined)(queueName, step()).catch(
+      (error: unknown) => error
+    );
+    expect(WorkflowWorldError.is(lost)).toBe(true);
+    expect((lost as WorkflowWorldError).status).toBeUndefined();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('busy', { status: 503 }))
+    );
+    await expect(
+      createStepDelivery(undefined)(queueName, step())
+    ).rejects.toMatchObject({ status: 503 });
+  });
+
+  it('sends remote steps from queue() directly, never through VQS', async () => {
+    vi.stubEnv('VERCEL_URL', 'app-abc.vercel.app');
+    vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_run');
+    const fetch = vi.fn(
+      async () =>
+        new Response(encode({ ok: true, value: { status: 'accepted' } }), {
+          headers: { [INVOCATION_HEADER]: '1' },
+        })
+    );
+    vi.stubGlobal('fetch', fetch);
+    mocks.send.mockClear();
+    await expect(
+      createQueue().queue(queueName, step() as never, {
+        idempotencyKey: 'k',
+      })
+    ).resolves.toEqual({ messageId: 'direct_k' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
 });
 
 describe('direct Vercel invocation', () => {

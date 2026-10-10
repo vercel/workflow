@@ -7,12 +7,13 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
 Experimental owner-managed overflow messages marked `input.executionMode: 'remote'`
-require an installed direct-execution transport. The VQS adapter rejects these
-messages rather than silently falling back to queued execution.
-The Next.js integration generates `/.well-known/workflow/v1/step` as their HTTP
-entry point: the execution handler without a queue trigger or affinity, so a
-transport can deliver a step outside the owner, which receives its result
-through invoke.
+never go through VQS: `queue()` POSTs each one directly, with the deployment's
+workload OIDC token and no affinity, to `https://$VERCEL_URL/.well-known/workflow/v1/step`.
+The Next.js integration generates that route: the execution handler without a
+queue trigger, so an ordinary instance runs the step body and returns its
+result to the owner through invoke. The request resolves once the owner has
+accepted the result. A delivery without a response leaves the outcome unknown;
+HTTP failures keep their status.
 
 ## Connection failures
 

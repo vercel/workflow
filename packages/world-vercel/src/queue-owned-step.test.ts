@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(async () => () => {}),
   execute: vi.fn(async (_runId, work) => work()),
   singleOwner: vi.fn(async () => true),
+  deliverStep: vi.fn(async () => ({ messageId: 'direct_step' })),
   callback: undefined as
     | undefined
     | ((message: unknown, metadata: unknown) => Promise<unknown>),
@@ -34,6 +35,9 @@ vi.mock('./invocation.js', () => ({
     input?.runInput?.attributes,
   createInvoker: (_config: unknown, kind: string) =>
     kind === 'wake' ? mocks.wake : mocks.invoke,
+  isRemoteStepMessage: (payload: { input?: { executionMode?: string } }) =>
+    payload?.input?.executionMode === 'remote',
+  createStepDelivery: () => mocks.deliverStep,
   createDirectInvocationHandler: () => ({
     execute: mocks.execute,
     handle: vi.fn(),
@@ -48,15 +52,24 @@ vi.mock('./ws-transport-enabled.js', () => ({
 import { ValidQueueName } from '@workflow/world';
 import { createQueue } from './queue.js';
 
-it('does not silently publish direct overflow execution to VQS', async () => {
+it('delivers direct overflow execution itself instead of publishing it to VQS', async () => {
+  const message = {
+    runId: 'run',
+    stepId: 'step',
+    stepName: 'work',
+    input: { type: 'step_execute', executionMode: 'remote' },
+  };
   await expect(
-    createQueue().queue(ValidQueueName.parse('__wkf_workflow_test'), {
-      runId: 'run',
-      stepId: 'step',
-      stepName: 'work',
-      input: { type: 'step_execute', executionMode: 'remote' },
-    })
-  ).rejects.toThrow('refusing VQS fallback');
+    createQueue().queue(
+      ValidQueueName.parse('__wkf_workflow_test'),
+      message as never
+    )
+  ).resolves.toEqual({ messageId: 'direct_step' });
+  expect(mocks.deliverStep).toHaveBeenCalledWith(
+    '__wkf_workflow_test',
+    message,
+    undefined
+  );
 });
 
 afterEach(() => {

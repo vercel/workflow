@@ -23,10 +23,12 @@ import {
   AFFINITY_HEADER,
   createDirectInvocationHandler,
   createInvoker,
+  createStepDelivery,
   DEPLOYMENT_HEADER,
   INVOCATION_HEADER,
   invocationAffinity,
   invocationConfig,
+  isRemoteStepMessage,
   isSingleOwnerRun,
   startInputAttributes,
 } from './invocation.js';
@@ -616,7 +618,7 @@ export function createQueue(config?: APIConfig): Queue {
       payload.input.executionMode === 'remote'
     )
       throw new Error(
-        'Direct step execution transport is not configured; refusing VQS fallback'
+        'Overflow steps are delivered one at a time through queue(), never batched through VQS'
       );
     // Check if we have a deployment ID either from options or environment
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
@@ -693,11 +695,16 @@ export function createQueue(config?: APIConfig): Queue {
       transport: route.useCbor ? cborTransport : jsonTransport,
     });
 
+  // Owner-managed overflow steps never go through VQS: they are delivered
+  // directly to the deployment's step route.
+  const deliverStep = createStepDelivery(config);
   const queue: QueueFunction = async (
     queueName,
     payload,
     opts?: QueueOptions
   ) => {
+    if (isRemoteStepMessage(payload))
+      return deliverStep(queueName, payload, opts);
     const prepared = prepareSend(queueName, payload, opts);
     const client = clientFor(prepared);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
