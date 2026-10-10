@@ -620,6 +620,12 @@ export interface Queue {
    * whose queue mints a fresh ID per delivery degrades gracefully: owner
    * redeliveries fall back to the delayed-backstop path instead of executing
    * immediately, adding recovery latency but never wedging or duplicating.
+   *
+   * `meta.deliveryCount`, when the World reports it, is 1 on a message's first
+   * delivery and increments on every redelivery, whatever caused it (lease
+   * lapse, a rejected handler, a `{ timeoutSeconds }` result). A World whose
+   * queue cannot say leaves it `undefined`. `meta.createdAt`, when known, is
+   * when the message was first enqueued, unchanged across its redeliveries.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -627,6 +633,8 @@ export interface Queue {
       message: unknown,
       meta: {
         attempt: number;
+        deliveryCount?: number;
+        createdAt?: Date;
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;

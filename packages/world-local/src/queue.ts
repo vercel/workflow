@@ -190,6 +190,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
+    // One message for its whole life: every delivery below, including the
+    // `{ timeoutSeconds }` redeliveries, reuses this id and creation time.
+    const createdAt = new Date().toISOString();
 
     // Extract identifiers from the message for structured logging.
     // Combined workflow messages carry `runId` and may include `stepId`.
@@ -246,6 +249,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(delivery + 1),
+            'x-vqs-message-created-at': createdAt,
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
@@ -409,6 +413,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       'x-vqs-queue-name': ValidQueueName,
       'x-vqs-message-id': MessageId,
       'x-vqs-message-attempt': z.coerce.number(),
+      // Sent by world-postgres, whose `attempt` restarts on a reschedule.
+      'x-vqs-message-delivery-count': z.coerce
+        .number()
+        .int()
+        .positive()
+        .optional(),
+      // Absent on a delivery from a sender that predates it.
+      'x-vqs-message-created-at': z.iso.datetime().optional(),
     })
   );
 
@@ -430,6 +442,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       const queueName = headers.data['x-vqs-queue-name'];
       const messageId = headers.data['x-vqs-message-id'];
       const attempt = headers.data['x-vqs-message-attempt'];
+      const deliveryCountHeader = headers.data['x-vqs-message-delivery-count'];
+      const createdAtHeader = headers.data['x-vqs-message-created-at'];
 
       if (!queueName.startsWith(prefix)) {
         return Response.json({ error: 'Unhandled queue' }, { status: 400 });
@@ -437,7 +451,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
       const body = await new TypedJsonTransport().deserialize(req.body);
       try {
-        const result = await handler(body, { attempt, queueName, messageId });
+        const result = await handler(body, {
+          attempt,
+          // Counts every delivery of this message that reached a handler,
+          // starting at 1, including `{ timeoutSeconds }` redeliveries.
+          deliveryCount: deliveryCountHeader ?? attempt,
+          ...(createdAtHeader ? { createdAt: new Date(createdAtHeader) } : {}),
+          queueName,
+          messageId,
+        });
 
         if (
           typeof body === 'object' &&

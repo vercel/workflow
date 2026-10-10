@@ -82,6 +82,8 @@ export function createWorld(
       // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
       // the hook_created branch of storage.ts.
       hookForceClaim: true,
+      // The events storage fences in-band writes; see storage.ts.
+      inBandFence: true,
     },
     ...storage,
     ...streamer,

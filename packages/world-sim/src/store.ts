@@ -20,6 +20,7 @@
 import {
   EntityConflictError,
   HookNotFoundError,
+  InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
   TooEarlyError,
@@ -34,6 +35,7 @@ import {
   entityResolveData,
   type Hook,
   type HookResumeContext,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isStepEventType,
@@ -695,6 +697,64 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     }
   }
 
+  // ---- In-band writer fence (WorldCapabilities.inBandFence) ----------------
+  // How many in-band writes each run has committed, `run_created` counting as
+  // the first. An in-band create names the count it expects; a stale one is
+  // refused before anything is written, so the refusal allocates nothing. The
+  // check and the write it guards run under one per-run lock, because `create`
+  // awaits between its own checks and its append.
+  const seqInBandByRun = new Map<string, number>();
+  const fenceLocks = new Map<string, Promise<unknown>>();
+  const readSeqInBand = (runId: string): number =>
+    seqInBandByRun.get(runId) ?? IN_BAND_SEQ_AT_RUN_CREATION;
+
+  async function fencedCreate(
+    runIdArg: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> {
+    // `run_created` opens the count and is never fenced itself.
+    if (
+      params?.inBand !== true ||
+      !runIdArg ||
+      data.eventType === 'run_created'
+    ) {
+      return create(runIdArg, data, params);
+    }
+    const runId = runIdArg;
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
+    const previous = fenceLocks.get(runId) ?? Promise.resolve();
+    const run = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const current = readSeqInBand(runId);
+        if (expected !== current) {
+          throw new InBandSupersededError(
+            `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+            { seq: eventsForRun(runId).length, seqInBand: current }
+          );
+        }
+        const result = await create(runId, data, params);
+        // A create can succeed without appending (`run_started` on a running
+        // run); it allocated no position, so the count stays.
+        const allocated = result.event ? 1 : 0;
+        if (allocated > 0) seqInBandByRun.set(runId, current + allocated);
+        return { ...result, allocated } as EventResult;
+      });
+    fenceLocks.set(runId, run);
+    return run;
+  }
+
   async function create(
     runIdArg: string | null,
     data: AnyEventRequest,
@@ -1274,7 +1334,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     },
 
     events: {
-      create: create as Storage['events']['create'],
+      create: fencedCreate as Storage['events']['create'],
       async get(runId, eventId, params) {
         const found = events.find(
           (e) => e.runId === runId && e.eventId === eventId
@@ -1284,6 +1344,12 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         return stripEventDataRefs(clone(found), params?.resolveData ?? 'all');
       },
       async list(params) {
+        // Read before the page, so a load that follows its cursor to the end
+        // covers every in-band write this count stands for.
+        const snapshot = {
+          seq: eventsForRun(params.runId).length,
+          seqInBand: readSeqInBand(params.runId),
+        };
         const page = paginate(applyWithhold(eventsForRun(params.runId)), {
           pagination: params.pagination,
           defaultSortOrder: 'asc',
@@ -1294,6 +1360,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         return {
           ...page,
           data: page.data.map((e) => stripEventDataRefs(e, resolve)),
+          snapshot,
         };
       },
       async listByCorrelationId(params) {

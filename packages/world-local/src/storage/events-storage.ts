@@ -5,21 +5,25 @@ import {
   EntityConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type {
   AnyEventRequest,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventLogSnapshot,
   EventResult,
   EventsResolveData,
   Hook,
   HookCreatedEventRequest,
+  ListEventsParams,
   PaginatedResponse,
   PaginationOptions,
   SerializedData,
@@ -35,6 +39,7 @@ import {
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
   HookSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
@@ -491,6 +496,29 @@ async function pinCanonicalEventIdForLegacyClaim(
 }
 
 /**
+/**
+ * Whether `error` is a refusal this World raises before it writes anything:
+ * the conflict, not-found, expired and too-early errors of the event
+ * lifecycle checks, or any error carrying a 4xx status. The in-band fence
+ * leaves its count alone for these, and counts every other failure.
+ */
+function isDefinitiveRefusal(error: unknown): boolean {
+  if (
+    EntityConflictError.is(error) ||
+    RunExpiredError.is(error) ||
+    TooEarlyError.is(error) ||
+    HookNotFoundError.is(error) ||
+    HookForceClaimedError.is(error) ||
+    WorkflowRunNotFoundError.is(error) ||
+    RunNotSupportedError.is(error)
+  ) {
+    return true;
+  }
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status >= 400 && status < 500;
+}
+
+/**
  * Helper function to delete all waits associated with a workflow run.
  * Called when a run reaches a terminal state.
  */
@@ -575,6 +603,18 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
+/**
+ * The in-band fence's counters and locks, keyed by data directory and run.
+ * On `globalThis` (see `globalSingleton`) so every storage instance and every
+ * bundled copy of this module in one process shares them.
+ */
+function inBandFenceState() {
+  return globalSingleton('@workflow/world-local//inBandFence', 1, () => ({
+    seqInBand: new Map<string, number>(),
+    locks: new Map<string, Promise<unknown>>(),
+  }));
+}
+
 export type LocalEventsStorage = Storage['events'] & {
   clearCache(): void;
 };
@@ -3602,5 +3642,120 @@ export function createEventsStorage(
     return reportSkippedSlots(result, params.eventCount, resolveData);
   }) as LocalEventsStorage['create'];
 
-  return { ...storage, create };
+  // ------------------------------------------------------------------
+  // In-band writer fence (WorldCapabilities.inBandFence)
+  // ------------------------------------------------------------------
+  //
+  // An in-process counter per run of the positions accepted from in-band
+  // writes (writes by the run's orchestrator). `list` reports it as
+  // `snapshot.seqInBand`, read before the listing; an in-band create is
+  // accepted only when its `expectedSeqInBand` equals it, and otherwise
+  // refused with `InBandSupersededError` before anything is written, so a
+  // refusal leaves no event behind. Out-of-band writes never touch it.
+  //
+  // The counter is a fence token, not a count of events in the log: what
+  // keeps it sound is that a snapshot and the fence read the same number, and
+  // that an accepted write advances it by the amount the writer advances its
+  // own copy (one per create). It is incremented after the write publishes,
+  // so a snapshot never counts an in-band write whose event the listing
+  // that follows could miss.
+  //
+  // Shared by every storage instance on the same data directory in this
+  // process (and by every bundled copy of this module, via
+  // `globalSingleton`), like the run-file locks in runs-storage.ts, so two
+  // `createStorage(dir)` calls fence each other. Not shared across OS
+  // processes: world-local's run-level locks are per process too. A restart
+  // starts every run back at `IN_BAND_SEQ_AT_RUN_CREATION`, which is safe:
+  // the old process's writers are gone, and the next delivery adopts the
+  // restarted value from its own snapshot.
+  const fenceState = inBandFenceState();
+  const fenceKey = (runId: string) =>
+    `${path.resolve(basedir)}\0${slotStateKey(runId)}`;
+
+  const readInBandSeq = (runId: string) =>
+    fenceState.seqInBand.get(fenceKey(runId)) ?? IN_BAND_SEQ_AT_RUN_CREATION;
+
+  const fencedCreate = (async (
+    runId: string | null,
+    request: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    const data = request as CreateEventRequest;
+    // `run_created` opens the run's in-band count at
+    // IN_BAND_SEQ_AT_RUN_CREATION and is never fenced itself.
+    if (!params?.inBand || !runId || request.eventType === 'run_created') {
+      return create(runId as string, data, params);
+    }
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
+    assertSafeEntityId('runId', runId);
+    const key = fenceKey(runId);
+    return withInProcessLock(fenceState.locks, key, async () => {
+      const current = readInBandSeq(runId);
+      if (current !== expected) {
+        const published = runSlotState.get(slotStateKey(runId))?.published;
+        throw new InBandSupersededError(
+          `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+          {
+            seqInBand: current,
+            ...(published !== undefined ? { seq: published } : {}),
+          }
+        );
+      }
+      let result: EventResult;
+      try {
+        result = await create(runId, data, params);
+      } catch (error) {
+        // A definitive refusal (4xx) wrote nothing. Anything else may have
+        // published before failing; counting a write that did not land only
+        // costs a superseded redelivery, while missing one that did would
+        // let a stale writer in.
+        if (!isDefinitiveRefusal(error)) {
+          fenceState.seqInBand.set(key, current + 1);
+        }
+        throw error;
+      }
+      // A create can succeed without appending (`run_started` on a run that
+      // is already running returns the run and no event); it allocated no
+      // position, so the count stays.
+      const allocated = result.event ? 1 : 0;
+      if (allocated > 0) fenceState.seqInBand.set(key, current + allocated);
+      return { ...result, allocated };
+    });
+  }) as LocalEventsStorage['create'];
+
+  /**
+   * The fence snapshot for `runId`, read before a listing: the in-band count
+   * first, then the highest published slot. `undefined` for a run whose
+   * events are ULID-numbered, which predates the fence.
+   */
+  async function readEventLogSnapshot(
+    runId: string
+  ): Promise<EventLogSnapshot | undefined> {
+    const seqInBand = readInBandSeq(runId);
+    const state = runSlotState.get(slotStateKey(runId));
+    if (state === null) return undefined;
+    if (state !== undefined) return { seq: state.published, seqInBand };
+    const scan = await scanRunEventIds(basedir, runId, tag);
+    if (scan.count > 0 && !scan.usesSlots) return undefined;
+    return { seq: scan.maxSlot, seqInBand };
+  }
+
+  const list = (async (params: ListEventsParams) => {
+    assertSafeEntityId('runId', params.runId);
+    const snapshot = await readEventLogSnapshot(params.runId);
+    const result = await storage.list(params);
+    return snapshot ? { ...result, snapshot } : result;
+  }) as LocalEventsStorage['list'];
+
+  return { ...storage, create: fencedCreate, list };
 }
