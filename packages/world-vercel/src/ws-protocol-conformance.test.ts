@@ -277,13 +277,17 @@ async function callThroughFixture(
   // Stand in for the flow route: without an open channel the write resolves
   // none and goes over HTTP, which is the whole point of the explicit pair.
   openWsChannel(input.runId, { token: 'test-token' });
-  const pending = createWorkflowRunEventV4(input, { token: 'test-token' });
-  void pending.catch(() => {});
-  // Let the transport construct its socket (it awaits the header thunk).
+  // Let the transport construct its socket (it awaits the header thunk), and
+  // finish the handshake *before* issuing the write. The write path only takes
+  // the socket once it is genuinely open — a frame issued mid-connect resolves
+  // no transport and goes over HTTP, which would leave this fixture asserting
+  // on a socket nothing was ever sent through.
   await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0));
   const socket = sockets[0];
   const seen = attachFixtureServer(socket, handler);
   socket.open();
+  const pending = createWorkflowRunEventV4(input, { token: 'test-token' });
+  void pending.catch(() => {});
   return { pending, socket, seen };
 }
 
