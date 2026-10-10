@@ -8,7 +8,7 @@ import {
   getNextBuilderEager,
 } from './builder-eager.js';
 
-it('generates an HTTP invocation route that delegates to the execution handler without a queue trigger', async () => {
+it('generates HTTP invocation and step routes that delegate to the execution handler without a queue trigger', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'workflow-invoke-route-'));
   try {
     const workflowGeneratedDir = join(directory, '.well-known/workflow/v1');
@@ -23,23 +23,27 @@ it('generates an HTTP invocation route that delegates to the execution handler w
     );
     const builder = new Builder({ workingDir: directory });
     await builder.buildInvocationRoute({ workflowGeneratedDir });
+    await builder.buildStepRoute({ workflowGeneratedDir });
     await builder.writeFunctionsConfig(directory);
-    const { POST } = await import(
-      pathToFileURL(join(workflowGeneratedDir, 'invoke/route.js')).href
-    );
-    const response = await POST(
-      new Request('https://example.test/.well-known/workflow/v1/invoke', {
-        method: 'POST',
-        body: 'invocation body',
-      })
-    );
-    expect(await response.text()).toBe('invocation body');
+    for (const route of ['invoke', 'step']) {
+      const { POST } = await import(
+        pathToFileURL(join(workflowGeneratedDir, `${route}/route.js`)).href
+      );
+      const response = await POST(
+        new Request(`https://example.test/.well-known/workflow/v1/${route}`, {
+          method: 'POST',
+          body: `${route} body`,
+        })
+      );
+      expect(await response.text()).toBe(`${route} body`);
+    }
     const config = JSON.parse(
       await readFile(join(workflowGeneratedDir, 'config.json'), 'utf8')
     );
     expect(Object.keys(config)).toEqual(['version', 'workflows']);
     expect(config.workflows.experimentalTriggers).toHaveLength(1);
     expect(config.invoke).toBeUndefined();
+    expect(config.step).toBeUndefined();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

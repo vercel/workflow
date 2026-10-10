@@ -9,6 +9,10 @@ Used by default for deployments on Vercel. Authentication and API endpoints are 
 Experimental owner-managed overflow messages marked `input.executionMode: 'remote'`
 require an installed direct-execution transport. The VQS adapter rejects these
 messages rather than silently falling back to queued execution.
+The Next.js integration generates `/.well-known/workflow/v1/step` as their HTTP
+entry point: the execution handler without a queue trigger or affinity, so a
+transport can deliver a step outside the owner, which receives its result
+through invoke.
 
 ## Connection failures
 
