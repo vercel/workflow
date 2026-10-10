@@ -1,5 +1,13 @@
 # @workflow/next
 
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.4
+  - @workflow/core@5.3.0
+
 ## 5.0.3
 
 ### Patch Changes

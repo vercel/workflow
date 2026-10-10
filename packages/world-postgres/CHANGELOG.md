@@ -1,5 +1,25 @@
 # @workflow/world-postgres
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement the optional in-band writer fence and list snapshot in `@workflow/world-local` and `@workflow/world-postgres`, declared with the new `inBandFence` capability.
+
+### Patch Changes
+
+- [#4817](https://github.com/vercel/workflow/pull/4817) [`026741b`](https://github.com/vercel/workflow/commit/026741b8cf218d8bc89c33746139ce8958e48b20) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a process crash when the database closes an idle connection
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report a message's cumulative `deliveryCount` across `{ timeoutSeconds }` redeliveries on `@workflow/world-postgres`.
+
+- [#4756](https://github.com/vercel/workflow/pull/4756) [`e631e78`](https://github.com/vercel/workflow/commit/e631e7883bb635c7c02c3d53e2bc6bb0569a4baa) Thanks [@pranaygp](https://github.com/pranaygp)! - Honor `pagination.sortOrder` in `runs.list` and `steps.list`, which always returned newest first.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report `deliveryCount` and `createdAt` in queue handler meta on `@workflow/world-local` and `@workflow/world-postgres`.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb)]:
+  - @workflow/errors@5.1.0
+  - @workflow/world@5.1.0
+  - @workflow/world-local@5.2.0
+
 ## 5.0.3
 
 ### Patch Changes

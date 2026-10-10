@@ -1,5 +1,22 @@
 # @workflow/cli
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4760](https://github.com/vercel/workflow/pull/4760) [`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve `workflow inspect` for long runs and scoped lookups: add `--all` for complete steps, events, and sleeps listings, print reusable cursor hints, and keep pagination on the read path that issued the cursor. Support event ID and short workflow-name lookups, require `--runId` for individual steps, events, and streams, fix `st` to mean streams, include run IDs in stream hints, and exit non-zero when a stream read fails.
+
+### Patch Changes
+
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb)]:
+  - @workflow/errors@5.1.0
+  - @workflow/world@5.1.0
+  - @workflow/world-vercel@5.3.0
+  - @workflow/world-local@5.2.0
+  - @workflow/builders@5.0.4
+  - @workflow/core@5.3.0
+  - @workflow/web@5.0.4
+
 ## 5.0.3
 
 ### Patch Changes

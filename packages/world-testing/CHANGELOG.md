@@ -1,5 +1,16 @@
 # @workflow/world-testing
 
+## 5.0.4
+
+### Patch Changes
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement the optional in-band writer fence and list snapshot in `@workflow/world-local` and `@workflow/world-postgres`, declared with the new `inBandFence` capability.
+- Updated dependencies [[`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb)]:
+  - @workflow/cli@5.1.0
+  - @workflow/world@5.1.0
+  - workflow@5.3.0
+  - @workflow/core@5.3.0
+
 ## 5.0.3
 
 ### Patch Changes
