@@ -270,7 +270,7 @@ Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables 
 
 The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent — now that the WebSocket is the default, nothing asked for it — and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
 
-Event writes use the WebSocket only while that run's events channel is open. The queue handler opens it for every delivery, so workflows need nothing extra. Code that writes a run's events outside a delivery, such as a custom driver or a long-lived process, opens the channel with `openEventsChannel(runId)`, or those writes go over HTTP. Call the returned release when you're done, because an open socket keeps the process alive:
+Event writes use the WebSocket only while that run's events channel is open. The queue handler opens it for every delivery, so workflows need nothing extra. Code that writes a run's events outside a delivery, such as a custom driver or a long-lived process, opens the channel with `openEventsChannel(runId)`, or those writes go over HTTP. Call the returned release when you're done, because an open socket keeps the process alive. After the release, the socket stays open for [`WORKFLOW_EVENTS_TRANSPORT_WS_LINGER_MS`](/docs/configuration/runtime-tuning#workflow_events_transport_ws_linger_ms) so the next channel for the same run can reuse it, but it no longer keeps the process alive:
 
 {/*@skip-typecheck: incomplete code sample*/}
 
@@ -299,8 +299,12 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | `workflow.events.ws.req_id` | — | per-connection request id, matching the server's log line |
 | `workflow.events.ws.request_parts` | — | messages the request was sent as, when it was split |
 | `workflow.events.ws.reply_parts` | — | messages the reply arrived as, when it was split |
+| `workflow.events.ws.connection_reused` | — | `true` when the socket was reused from an earlier delivery for the same run |
+| `workflow.events.ws.fallback` | `connecting` or `verifying` when the run's channel was open but its socket could not take the write yet | — |
 
-The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the cost of opening (or eagerly reopening) a connection is attributable rather than showing up as unexplained time inside the first write.
+A write doesn't wait for a socket that isn't ready. While the handshake (or a reconnect) is still in progress, or while a reused socket waits for the server to answer a ping, the write goes over HTTP and the socket keeps connecting for the writes after it. `workflow.events.ws.fallback` on the HTTP span records why.
+
+The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the cost of opening (or eagerly reopening) a connection is attributable. A delivery that reuses a lingering socket has no `workflow.events.ws.connect` span.
 
 ### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
 

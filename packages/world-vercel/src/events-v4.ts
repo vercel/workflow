@@ -88,6 +88,8 @@ import {
   WorkflowEventType,
   WorkflowStepStartMode,
   WorkflowStepStartOwnerStamped,
+  WorkflowWsConnectionReused,
+  WorkflowWsFallback,
   WorkflowWsReplyParts,
   WorkflowWsRequestId,
   WorkflowWsRequestParts,
@@ -95,7 +97,7 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
-import type { WsFrameReply } from './ws-transport.js';
+import type { WsFrameReply, WsNotReadyReason } from './ws-transport.js';
 import {
   isWsEventsTransportEnabled,
   isWsEventsTransportPossible,
@@ -956,7 +958,10 @@ async function postWorkflowRunEventV4(
     skipPreload?: true;
   },
   responseType: 'materialized' | 'event-stream',
-  config?: APIConfig
+  config?: APIConfig,
+  /** Set when the run had an open events channel whose socket could not take
+   *  this write yet; see `WorkflowWsFallback`. */
+  wsFallback?: WsNotReadyReason
 ) {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
@@ -978,6 +983,7 @@ async function postWorkflowRunEventV4(
     'createEvent',
     {
       ...WorkflowEventsTransport('http'),
+      ...(wsFallback !== undefined ? WorkflowWsFallback(wsFallback) : {}),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
       ...inBandFenceAttributes(input),
@@ -1052,20 +1058,44 @@ function assertWsFallbackAllowed(eventType: EventType): void {
   );
 }
 
+/**
+ * Whether a write waits for a channel's socket that is not ready instead of
+ * going over HTTP. Only under strict mode, and only for the event types it
+ * guards: that keeps the e2e lane's assertion meaning "the socket carried this
+ * run's `step_completed`" rather than "it happened to be ready in time".
+ */
+function waitsForWsSocket(eventType: EventType): boolean {
+  return (
+    STRICT_WS_EVENT_TYPES.has(eventType) &&
+    isWsEventsTransportStrict() &&
+    isWsEventsTransportEnabled()
+  );
+}
+
 export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
+  let wsFallback: WsNotReadyReason | undefined;
   if (isWsEventsTransportPossible()) {
     // Absent means no socket was resolvable for this run, not that the write
     // failed, so fall through to HTTP. Under a per-workflow override that is
-    // every run of a workflow that isn't listed.
-    const reply = await postEventFrameOverWs(input, config);
-    if (reply) return decodeCreateEventResponse(reply, input.eventType);
-    assertWsFallbackAllowed(input.eventType);
+    // every run of a workflow that isn't listed. A `wsFallback` means the
+    // channel is open but its socket is not ready, and HTTP beats waiting.
+    const result = await postEventFrameOverWs(input, config);
+    if (result && !('wsFallback' in result)) {
+      return decodeCreateEventResponse(result, input.eventType);
+    }
+    if (result) wsFallback = result.wsFallback;
+    else assertWsFallbackAllowed(input.eventType);
   }
 
-  const response = await postWorkflowRunEventV4(input, 'materialized', config);
+  const response = await postWorkflowRunEventV4(
+    input,
+    'materialized',
+    config,
+    wsFallback
+  );
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1490,7 +1520,7 @@ async function postEventFrameOverWs(
     skipPreload?: true;
   },
   config: APIConfig | undefined
-): Promise<FrameResponseLike | undefined> {
+): Promise<FrameResponseLike | { wsFallback: WsNotReadyReason } | undefined> {
   // Dynamic so `ws` initializes only on a deployment that opted in. The gate
   // at the call site lives in its own import-free module for exactly this
   // reason. The module is cached after the first write, and on the queue path
@@ -1501,7 +1531,12 @@ async function postEventFrameOverWs(
   // No span: resolving nothing means no write was attempted here at all. The
   // caller falls through to HTTP, which opens its own.
   if (!resolved) return undefined;
-  const { transport, wsUrl } = resolved;
+  const { transport, wsUrl, notReady } = resolved;
+  // Also no span: the caller's HTTP write carries the reason instead.
+  if (notReady !== undefined && !waitsForWsSocket(input.eventType)) {
+    return { wsFallback: notReady };
+  }
+  const reused = transport.connectionReused;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
   // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
   // returned null for the proxy World, so this is always the direct
@@ -1541,6 +1576,7 @@ async function postEventFrameOverWs(
           : {}),
         ...NetworkProtocolName('websocket'),
         ...WorkflowWsUrl(wsUrl),
+        ...(reused ? WorkflowWsConnectionReused(true) : {}),
       },
     },
     async (span) => {
