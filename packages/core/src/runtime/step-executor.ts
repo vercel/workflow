@@ -246,6 +246,17 @@ export interface StepExecutorParams {
    */
   runReadyBarrier?: Promise<unknown>;
   /**
+   * Writes the step's terminal event (`step_completed`, `step_failed`,
+   * `step_retrying`) only once this settles, whether it resolves or rejects.
+   * `step_started` never waits for it. The runtime passes the suspension's
+   * deferred abort-hook creates (`SuspensionHandlerResult.deferredHookWork`)
+   * so a body may start before those `hook_created` writes commit while its
+   * terminal event still lands after them, exactly as it did when the body
+   * waited. A rejection is not this step's to report: the caller's join on
+   * the same work fails the delivery.
+   */
+  terminalWriteBarrier?: Promise<unknown>;
+  /**
    * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
    * by the orchestrator. When set, this executor computes the final values
    * against the wall clock taken immediately before user code runs and
@@ -390,13 +401,21 @@ export async function executeStep(
   // all `step_started` writes. Omitting the count is the documented shape for
   // a caller with no loaded log to be stale against, and the conditional
   // write on (runId, correlationId) remains the ownership fence.
+  const terminalWriteBarrier = params.terminalWriteBarrier;
   const createEvent = async <T extends CreateEventRequest>(
     data: T,
     eventParams?: CreateEventParams
-  ) =>
-    replayRecoveryReporter.withEventCreate(withReplayDelta(eventParams), (p) =>
-      world.events.create(workflowRunId, data, p)
+  ) => {
+    // Every terminal write funnels through here, the pre-body failure paths
+    // included, so this one check orders all of them after the barrier.
+    if (terminalWriteBarrier && data.eventType !== 'step_started') {
+      await terminalWriteBarrier.catch(() => {});
+    }
+    return replayRecoveryReporter.withEventCreate(
+      withReplayDelta(eventParams),
+      (p) => world.events.create(workflowRunId, data, p)
     );
+  };
 
   // `step_started` identifies the invocation that performed this attempt.
   // Keep request and compute provenance independent: world-vercel serializes

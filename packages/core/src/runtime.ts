@@ -4373,6 +4373,14 @@ export function workflowEntrypoint(
                         // delay/key selection rationale.
                         const traceCarrier = await nextTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
+                        const deferredHookWork =
+                          suspensionResult.deferredHookWork;
+                        const afterDeferredHookCreates = <T>(
+                          publish: () => Promise<T>
+                        ): Promise<T> =>
+                          deferredHookWork
+                            ? deferredHookWork.then(publish)
+                            : publish();
                         const inlineOwnership = isInlineOwnershipEnabled();
                         const dispatchNowMs = Date.now();
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
@@ -4524,37 +4532,45 @@ export function workflowEntrypoint(
                             handOffResumeTiming = false;
                             resumeTracking = undefined;
                           }
+                          // A step this suspension created alongside a
+                          // deferred abort-hook create is published only once
+                          // that create settles, as it was when the handler
+                          // waited for it: the step may hold the controller
+                          // and resume its hook from another process, where
+                          // `pendingHookCreation` cannot see the write.
                           dispatches.push(
-                            queueMessage(
-                              world,
-                              getWorkflowQueueName(workflowName, namespace),
-                              {
-                                runId,
-                                stepId: step.correlationId,
-                                stepName: step.stepName,
-                                traceCarrier,
-                                requestedAt: new Date(),
-                                // Immutable run identity so the consumer can
-                                // start the step without a blocking runs.get
-                                // — see RunDispatchContextSchema.
-                                runContext: runDispatchContext(workflowRun),
-                                ...(stepResumeTiming
-                                  ? { hookResumeTiming: stepResumeTiming }
-                                  : {}),
-                              },
-                              {
-                                // Step-identity-scoped: dedupes against every
-                                // other dispatch of THIS step (concurrent
-                                // handlers, crash-recovery re-dispatch, the
-                                // suspension handler's resilient publish)
-                                // without absorbing a dispatch of a different
-                                // step under a reassigned correlation id.
-                                // See stepDispatchIdempotencyKey.
-                                idempotencyKey: stepDispatchIdempotencyKey(
-                                  step.correlationId,
-                                  step.stepName
-                                ),
-                              }
+                            afterDeferredHookCreates(() =>
+                              queueMessage(
+                                world,
+                                getWorkflowQueueName(workflowName, namespace),
+                                {
+                                  runId,
+                                  stepId: step.correlationId,
+                                  stepName: step.stepName,
+                                  traceCarrier,
+                                  requestedAt: new Date(),
+                                  // Immutable run identity so the consumer can
+                                  // start the step without a blocking runs.get
+                                  // — see RunDispatchContextSchema.
+                                  runContext: runDispatchContext(workflowRun),
+                                  ...(stepResumeTiming
+                                    ? { hookResumeTiming: stepResumeTiming }
+                                    : {}),
+                                },
+                                {
+                                  // Step-identity-scoped: dedupes against every
+                                  // other dispatch of THIS step (concurrent
+                                  // handlers, crash-recovery re-dispatch, the
+                                  // suspension handler's resilient publish)
+                                  // without absorbing a dispatch of a different
+                                  // step under a reassigned correlation id.
+                                  // See stepDispatchIdempotencyKey.
+                                  idempotencyKey: stepDispatchIdempotencyKey(
+                                    step.correlationId,
+                                    step.stepName
+                                  ),
+                                }
+                              )
                             )
                           );
                         }
@@ -5155,6 +5171,13 @@ export function workflowEntrypoint(
                                 // See suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
+                                // The body may start before this suspension's
+                                // deferred abort-hook creates commit; its
+                                // terminal event still lands after them, so
+                                // the log order and any inline delta are what
+                                // they were when the body waited. See
+                                // SuspensionHandlerResult.deferredHookWork.
+                                terminalWriteBarrier: deferredHookWork,
                                 ...(stepIndex === 0 &&
                                 (s.lazyStepInput !== undefined ||
                                   s.preclaimedStart !== undefined) &&

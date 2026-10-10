@@ -10,6 +10,10 @@
 import { FatalError } from '@workflow/errors';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  pendingHookCreation,
+  trackPendingHookCreation,
+} from './runtime/pending-hook-creations.js';
+import {
   dehydrateStepArguments,
   hydrateStepArguments,
 } from './serialization.js';
@@ -716,5 +720,46 @@ describe('step-initiated abort: durable hook resume is committed before completi
       aborted: true,
       reason: 'aborted from step',
     });
+  });
+
+  // The orchestrator may start an inline body before the controller's
+  // `hook_created` commits (deferred abort-hook creation). A resume posted
+  // ahead of that write would fail with HookNotFoundError, which this path
+  // swallows, so it must wait for the in-flight create first.
+  it.each([
+    ['commits', true],
+    ['fails', false],
+  ])('holds the hook resume until an in-flight hook create %s', async (_label, commits) => {
+    const { controller, preCompletionOps } = await reviveControllerInStep();
+    const creation = Promise.withResolvers<void>();
+    trackPendingHookCreation('abrt_pre_completion', creation.promise);
+
+    const store: StepContext = {
+      stepMetadata: {
+        stepName: 'aborter',
+        stepId: 'step_test',
+        stepStartedAt: new Date(),
+        attempt: 1,
+      },
+      workflowMetadata: {
+        workflowName: 'wf',
+        workflowRunId: 'wrun_test',
+        workflowStartedAt: new Date(),
+        features: { encryption: false },
+      },
+      ops: [],
+      preCompletionOps,
+      encryptionKey: undefined,
+    };
+    contextStorage.run(store, () => controller.abort('aborted early'));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockResumeHook).not.toHaveBeenCalled();
+
+    if (commits) creation.resolve();
+    else creation.reject(new Error('hook write failed'));
+    await Promise.all(preCompletionOps);
+    expect(mockResumeHook).toHaveBeenCalledTimes(1);
+    expect(pendingHookCreation('abrt_pre_completion')).toBeUndefined();
   });
 });
