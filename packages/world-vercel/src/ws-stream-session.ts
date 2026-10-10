@@ -1017,9 +1017,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
     writeMetadata?: WriteMetadata,
     maxMessageBytes?: number
   ): Promise<Record<string, unknown>> {
-    // `bounded`: past the budget the request falls back to HTTP, whose
-    // dispatcher has its own 429 policy, rather than failing the write, so a
-    // longer wait on the socket would buy little.
+    // `bounded`: past the budget the request falls back to HTTP, which has
+    // its own 429 policy, rather than failing the write, so a longer wait on
+    // the socket would buy little.
     const waitOutThrottle = createThrottleWaiter(
       operation === 'write' ? 'writing stream chunks' : 'writing stream close',
       'bounded'
@@ -1050,8 +1050,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
       // Disposed or poisoned during the wait.
       this.assertUsable();
       // Budget exhausted. The request did not apply and nothing is
-      // outstanding, so hand it to HTTP, whose dispatcher applies its own
-      // 429 policy, rather than failing a write HTTP would complete.
+      // outstanding, so hand it to HTTP, which applies its own 429 policy,
+      // rather than failing a write HTTP would complete.
       this.fallbackToHttpBeforeSend('stream request throttled');
       throw new StreamWsRequestNotSentError(error);
     } finally {

@@ -12,6 +12,20 @@ Backend connection failures and interrupted event streams follow existing retry 
 
 See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
 
+## HTTP stream append retries
+
+The default undici stream transport retries confirmed HTTP 429 rejections with
+fresh requests built from preserved append bytes. It makes at most five retries,
+honoring `Retry-After` seconds or dates up to 30 seconds, or using exponential
+backoff starting at 500 ms. This relies on the stream service rejecting a 429
+before persisting the append. Network failures and other HTTP errors are not
+resent in-process because the append may already have been saved.
+Firewall challenges (`x-vercel-mitigated: challenge`) surface immediately.
+
+Stream close remains idempotent and keeps its separate retry policy, including
+selected 5xx responses. Custom dispatchers retain control of their retry policy;
+`WORKFLOW_NODE_HTTP` does not gain in-process append retries.
+
 ## Events channel
 
 Event writes go over a per-run WebSocket (the default `WORKFLOW_EVENTS_TRANSPORT`;
@@ -59,7 +73,7 @@ until the burst finishes. Call `releaseLock()` when finished contributing, not
 
 ## Custom dispatcher
 
-HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:
+HTTP requests (including the queue) default to shared undici dispatchers for connection pooling, with retry policies specific to each operation. Pass a custom `dispatcher` to override them, for example, to tune undici on newer Node.js runtimes:
 
 ```ts
 import { Agent } from 'undici';
