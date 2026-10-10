@@ -1,5 +1,23 @@
 # workflow
 
+## 5.3.0
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+- Updated dependencies [[`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff)]:
+  - @workflow/cli@5.1.0
+  - @workflow/errors@5.1.0
+  - @workflow/core@5.3.0
+  - @workflow/astro@5.0.4
+  - @workflow/nest@5.1.2
+  - @workflow/next@5.0.4
+  - @workflow/nitro@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/sveltekit@5.0.4
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/nuxt@5.0.4
+
 ## 5.2.0
 
 ### Patch Changes

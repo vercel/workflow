@@ -1,5 +1,16 @@
 # @workflow/nitro
 
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.4
+  - @workflow/core@5.3.0
+  - @workflow/web@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/vite@5.0.4
+
 ## 5.0.3
 
 ### Patch Changes
