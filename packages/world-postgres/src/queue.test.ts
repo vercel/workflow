@@ -245,6 +245,120 @@ describe('postgres queue http execution', () => {
     );
   });
 
+  describe('pauseClaims / resumeClaims', () => {
+    const queueName = ValidQueueName.parse('__wkf_workflow_test');
+
+    it('starts no runner while claims are paused, not even from an enqueue', async () => {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+      await queue.pauseClaims();
+      await queue.start();
+      await queue.queue(queueName, { runId: 'run_01ABC' });
+
+      expect(run).not.toHaveBeenCalled();
+      expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes by starting a runner, without repeating start()', async () => {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+      await queue.pauseClaims();
+      await queue.start();
+      await queue.resumeClaims();
+
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(makeWorkerUtils).toHaveBeenCalledTimes(1);
+    });
+
+    it('only lifts the pause when resumed before start()', async () => {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+      await queue.pauseClaims();
+      await queue.resumeClaims();
+      expect(run).not.toHaveBeenCalled();
+
+      await queue.start();
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops the runner on pause, and close() waits for the jobs it still has', async () => {
+      let finishStop: () => void = () => {};
+      const stoppingRunner = {
+        stop: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              finishStop = resolve;
+            })
+        ),
+        promise: Promise.resolve(),
+      };
+      vi.mocked(run).mockResolvedValueOnce(stoppingRunner as unknown as Runner);
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+
+      // Resolves while the runner is still stopping.
+      await queue.pauseClaims();
+      expect(stoppingRunner.stop).toHaveBeenCalledTimes(1);
+
+      let closed = false;
+      const closing = queue.close().then(() => {
+        closed = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(closed).toBe(false);
+      expect(workerUtilsMock.release).not.toHaveBeenCalled();
+
+      finishStop();
+      await closing;
+      expect(workerUtilsMock.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies pause and resume in call order', async () => {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+
+      await Promise.all([
+        queue.pauseClaims(),
+        queue.resumeClaims(),
+        queue.pauseClaims(),
+      ]);
+      await queue.queue(queueName, { runId: 'run_01ABC' });
+
+      // start, then the resume in between; both runners stopped since.
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(runnerMock.stop).toHaveBeenCalledTimes(2);
+    });
+
+    it('tolerates a runner Graphile Worker already stopped', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(run).mockResolvedValueOnce({
+        stop: vi.fn(async () => {
+          throw new Error('Runner is already stopped');
+        }),
+        promise: Promise.resolve(),
+      } as unknown as Runner);
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+
+      await queue.pauseClaims();
+      await queue.close();
+
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('does not start a runner when resumed after close()', async () => {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.pauseClaims();
+      await queue.start();
+      await queue.close();
+
+      await queue.resumeClaims();
+
+      expect(run).not.toHaveBeenCalled();
+    });
+  });
+
   it('aborts while waiting for an HTTP response without scheduling a replacement', async () => {
     const server = await startHangingWorkflowHttpServer('headers');
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;

@@ -175,6 +175,16 @@ Closing the world stops the queue from accepting new jobs and waits for active j
 
 An aborted HTTP request does not guarantee that its server-side handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep the workflow HTTP routes and any caller-owned pool available until `world.close()` resolves.
 
+### Pausing claims
+
+Every process running a Postgres World against the same database claims from the same queue. To make one process stop taking new work without shutting it down — for example a blue-green revision that no longer receives traffic but is still draining — call `world.pauseClaims()`. Jobs already running finish; enqueueing, streams and storage keep working; and neither `world.start()` nor an enqueue starts a new runner until `world.resumeClaims()`, which does not repeat the active-run recovery `world.start()` performs. `world.close()` waits for any jobs a paused runner still had.
+
+```ts
+await world.pauseClaims();
+// ...
+await world.resumeClaims();
+```
+
 ## Configuration options
 
 | Option             | Type      | Default                                                                                | Description                                                                                          |
