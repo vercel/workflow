@@ -55,6 +55,7 @@ import {
   WorkflowEventSeqInBand,
   WorkflowHttpTransport,
 } from './telemetry.js';
+import { fetchWithDispatcher } from './undici-runtime.js';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
@@ -812,14 +813,13 @@ export async function instrumentedFetch(
               headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
               bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
             })
-          : fetch(url, {
+          : fetchWithDispatcher(url, {
               method,
               headers,
               body,
               signal,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
-            } as any);
+            });
         onRequestDispatched?.();
         response = await request;
       } catch (error) {

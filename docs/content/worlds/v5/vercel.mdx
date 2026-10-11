@@ -174,6 +174,12 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 <WorldTestingPerformance worldId="vercel" />
 
+### Bun
+
+On Bun 1.4.0 and later, the Vercel World sends its requests through the installed `undici` package, so retries, timeouts, and connection pooling behave as they do on Node.js. On older Bun versions requests still work, but without in-process retries on transient failures or per-request connection timeouts.
+
+On every Bun version, queue requests (message acknowledgements and lease renewals) use Bun's own `fetch`, so they are bounded by Bun's default timeout rather than the shorter deadline they get on Node.js.
+
 ## Configuration
 
 In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
