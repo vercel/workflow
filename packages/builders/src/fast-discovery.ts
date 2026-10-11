@@ -3,8 +3,8 @@ import { builtinModules, createRequire } from 'node:module';
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import enhancedResolveOriginal from 'enhanced-resolve';
-import { findUp } from 'find-up';
 import JSON5 from 'json5';
+import { findTsConfigPath } from './config-helpers.js';
 import { importParents } from './discover-entries-esbuild-plugin.js';
 import {
   detectWorkflowPatterns,
@@ -665,9 +665,9 @@ export async function fastDiscoverEntries({
       return cached;
     }
 
-    const promise = findUp(['tsconfig.json', 'jsconfig.json'], {
-      cwd: importerDir,
-    }).then((found) => found ?? defaultTsconfigPath);
+    const promise = findTsConfigPath(importerDir).then(
+      (found) => found ?? defaultTsconfigPath
+    );
     tsconfigPathByDirCache.set(importerDir, promise);
     return promise;
   };

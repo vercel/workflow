@@ -6,6 +6,7 @@ export {
   createBaseBuilderConfig,
   type DecoratorOptions,
   type DecoratorOptionsWithConfigPath,
+  findTsConfigPath,
   getDecoratorOptionsForDirectory,
   getDecoratorOptionsForDirectoryWithConfigPath,
   resolveConfiguredProjectRoot,
