@@ -1,0 +1,44 @@
+name: Changeset Lint
+
+# Checks the changesets a PR adds against the style guide in AGENTS.md
+# ("Writing changesets"): one changeset per PR, and a summary short enough to
+# read as one changelog entry. See .github/scripts/lint-changesets.js for the
+# rules.
+#
+# Deliberately its own workflow rather than a job in lint.yml: adding or
+# removing the `allow-multiple-changesets` override label has to re-run the
+# check, and re-running all of lint.yml on every label change would be
+# wasteful. This job needs no install, so re-running it is cheap.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changeset-style:
+    name: Changeset Style
+    runs-on: ubuntu-latest
+    steps:
+      # A pull_request checkout is the PR's merge commit, whose first parent
+      # is the base branch tip, so a depth of 2 is enough to diff against it.
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Lint changesets added or edited by this PR
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: node .github/scripts/lint-changesets.js --base HEAD^1
