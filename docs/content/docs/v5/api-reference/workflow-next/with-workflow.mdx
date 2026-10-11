@@ -103,7 +103,32 @@ export default withWorkflow(nextConfig, {
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
+| `workflows.maxDuration` | `number \| 'max'` | `'max'` | Maximum duration in seconds for each invocation of the combined workflow function on Vercel. |
 | `workflows.sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. See [Source maps](#source-maps) below. |
+
+### Function duration
+
+Set `workflows.maxDuration` to a positive integer in seconds to configure the
+generated Vercel function that runs workflows and steps:
+
+```ts title="next.config.ts"
+export default withWorkflow(nextConfig, {
+  workflows: { maxDuration: 300 },
+});
+```
+
+The default, `'max'`, lets Vercel resolve the function duration. It does not
+necessarily enable longer durations that require an explicit numeric setting.
+The value is written to the SDK's generated function configuration, which takes
+precedence over `vercel.json` rules for that function. Webhook function settings
+are unaffected. Vercel's plan and project limits still apply.
+
+This controls a single function invocation, not the total lifetime of a durable
+workflow. It does not change inline-execution budgets or step retry ownership.
+The current runtime's default inline ownership lease assumes function invocations
+last at most 800 seconds. Increasing the function duration beyond that bound
+requires compatible retry ownership handling to avoid retrying a step while its
+original invocation is still running.
 
 ### Source maps
 
