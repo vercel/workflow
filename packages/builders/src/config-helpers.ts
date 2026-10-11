@@ -66,6 +66,12 @@ export async function getDecoratorOptionsFromTsConfig(
  * @param cwd - Directory to start searching for tsconfig.json
  * @returns DecoratorOptions with settings based on tsconfig compilerOptions
  */
+export async function findTsConfigPath(
+  cwd: string
+): Promise<string | undefined> {
+  return findUp(['tsconfig.json', 'jsconfig.json'], { cwd });
+}
+
 export async function getDecoratorOptionsForDirectory(
   cwd: string
 ): Promise<DecoratorOptions> {
@@ -80,9 +86,7 @@ export async function getDecoratorOptionsForDirectory(
 export async function getDecoratorOptionsForDirectoryWithConfigPath(
   cwd: string
 ): Promise<DecoratorOptionsWithConfigPath> {
-  const configPath = await findUp(['tsconfig.json', 'jsconfig.json'], {
-    cwd,
-  });
+  const configPath = await findTsConfigPath(cwd);
   const options = await getDecoratorOptionsFromTsConfig(configPath);
   return { options, configPath };
 }

@@ -17,7 +17,6 @@ import { pluralize } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
-import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
 import {
   applySwcTransform,
@@ -46,6 +45,7 @@ import {
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import { findTsConfigPath as findNearestTsConfigPath } from './config-helpers.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
@@ -350,7 +350,7 @@ export abstract class BaseBuilder {
    */
   protected async findTsConfigPath(): Promise<string | undefined> {
     const cwd = this.config.workingDir || process.cwd();
-    return findUp(['tsconfig.json', 'jsconfig.json'], { cwd });
+    return findNearestTsConfigPath(cwd);
   }
 
   /**
