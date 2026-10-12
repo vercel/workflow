@@ -1202,8 +1202,24 @@ describe.skipIf(process.platform === 'win32')(
             await watch.wait(watch.revision, INVOCATION_FALLBACK_MS, signal);
           return value;
         }, ready);
+      const notified = async () => {
+        const before = watch.revision;
+        await pool.query('SELECT pg_notify($1, $2)', [
+          INVOCATION_INPUT_TOPIC,
+          key,
+        ]);
+        await until(
+          async () => watch.revision,
+          (revision) => revision > before
+        );
+      };
       try {
         const firstPid = await poll(listenerPid, (pid) => pid !== undefined);
+        // The server lists the LISTEN before the client has read its reply,
+        // and a failed first connect leaves a restore log still to come. A
+        // notification follows that reply on the same socket, so once it is
+        // seen the first subscription has settled, wake and log included.
+        await notified();
         const beforeDisconnect = watch.revision;
         const beforeRestore = restorations();
         await pool.query('SELECT pg_terminate_backend($1)', [firstPid]);
@@ -1220,15 +1236,7 @@ describe.skipIf(process.platform === 'win32')(
         const secondPid = await listenerPid();
         expect(secondPid).toBeDefined();
         expect(secondPid).not.toBe(firstPid);
-        const beforeNotify = watch.revision;
-        await pool.query('SELECT pg_notify($1, $2)', [
-          INVOCATION_INPUT_TOPIC,
-          key,
-        ]);
-        await until(
-          async () => watch.revision,
-          (revision) => revision > beforeNotify
-        );
+        await notified();
       } finally {
         connectSpy.mockRestore();
         warn.mockRestore();
