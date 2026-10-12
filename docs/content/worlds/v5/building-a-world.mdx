@@ -265,7 +265,7 @@ The fence is optional, and the runtime does not send `inBand` yet, so a World wi
 - **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
 - **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
 
-`world-local` and `world-postgres` declare the fence. The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the snapshot and a stale in-band write end to end when the World declares the capability.
+`world-local`, `world-postgres` and `world-vercel` declare the fence. `world-vercel`'s backend refuses a stale in-band write on every run with an event sequencer, and its list responses carry the snapshot only where the backend reads one, so a writer there can find none. A refusal's `seq` and `seqInBand` are read under the fence, like a snapshot: a writer that lists the log after a refusal, and folds every position up to its `seq`, has seen every in-band write its `seqInBand` counts. The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the snapshot and a stale in-band write end to end when the World declares the capability.
 
 ## Queue interface
 

@@ -1,16 +1,25 @@
+import { Buffer } from 'node:buffer';
 import {
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
 } from '@workflow/errors';
 import { decode, encode } from 'cbor-x';
+import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   createWorkflowRunEventBatch,
+  getWorkflowRunEvents,
 } from './events.js';
-import { throwForErrorResponse } from './events-v4.js';
+import {
+  createWorkflowRunEventV4,
+  throwForErrorResponse,
+} from './events-v4.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { errorForResponse, recordInBandRefusal } from './http-core.js';
+import { createWorld } from './index.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 vi.mock('./get-deadline.js', () => ({
   getDeadline: vi.fn(async () => undefined),
@@ -248,5 +257,139 @@ describe('in-band writer fence (world-vercel)', () => {
     recordInBandRefusal(span, new InBandSupersededError('superseded'));
     recordInBandRefusal(span, new PreconditionFailedError('stale'));
     expect(span.setAttributes).not.toHaveBeenCalled();
+  });
+
+  it('declares the fence', () => {
+    expect(createWorld(config).capabilities?.inBandFence).toBe(true);
+  });
+});
+
+describe('in-band writer fence counts (world-vercel)', () => {
+  const origin = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+  const CREATED_AT = '2026-06-10T00:00:00.000Z';
+  const runCreated = encodeFrame(
+    {
+      eventId: 'evnt_1',
+      runId: 'wrun_1',
+      eventType: 'run_created',
+      createdAt: CREATED_AT,
+      eventData: { deploymentId: 'dpl_1', workflowName: 'w', input: null },
+    },
+    new Uint8Array([1])
+  );
+
+  function listing(
+    end: Record<string, unknown>,
+    headers: Record<string, string> = {}
+  ) {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: (path) => path.startsWith('/api/v4/runs/wrun_1/events'),
+        method: 'GET',
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          runCreated,
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false, ...end },
+            new Uint8Array(0)
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE, ...headers } }
+      );
+    return agent;
+  }
+
+  it("passes on the snapshot a list response's end frame carries", async () => {
+    const agent = listing({ snapshot: { seq: 1, seqInBand: 1 } });
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(page.data).toHaveLength(1);
+    expect(page.snapshot).toEqual({ seq: 1, seqInBand: 1 });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('takes the snapshot from the headers when the end frame has none', async () => {
+    const agent = listing(
+      {},
+      { 'x-wf-snapshot-seq': '7', 'x-wf-snapshot-seq-in-band': '3' }
+    );
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(page.snapshot).toEqual({ seq: 7, seqInBand: 3 });
+  });
+
+  it('lists no snapshot when the backend reports none, or a malformed one', async () => {
+    for (const agent of [
+      listing({}),
+      listing({}, { 'x-wf-snapshot-seq': '7' }),
+      listing(
+        {},
+        { 'x-wf-snapshot-seq': '-1', 'x-wf-snapshot-seq-in-band': '3' }
+      ),
+    ]) {
+      const page = await getWorkflowRunEvents(
+        { runId: 'wrun_1' },
+        { token: 'test-token', dispatcher: agent }
+      );
+      expect(page).not.toHaveProperty('snapshot');
+    }
+  });
+
+  it('passes on the positions a create allocated, when the backend reports them', async () => {
+    for (const allocated of [2, undefined]) {
+      const agent = new MockAgent();
+      agent.disableNetConnect();
+      agent
+        .get(origin)
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events/step_completed',
+          method: 'POST',
+        })
+        .reply(
+          200,
+          encode({
+            event: {
+              eventType: 'step_completed',
+              specVersion: 7,
+              correlationId: 'step_1',
+              eventData: {},
+              eventId: 'evnt_3',
+              runId: 'wrun_1',
+              createdAt: CREATED_AT,
+            },
+            ...(allocated !== undefined ? { allocated } : {}),
+          }),
+          {
+            headers: {
+              'x-wf-event-id': 'evnt_3',
+              'x-wf-run-id': 'wrun_1',
+              'x-wf-created-at': CREATED_AT,
+            },
+          }
+        );
+      const result = await createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'step_completed',
+          specVersion: 7,
+          correlationId: 'step_1',
+          inBand: true,
+          expectedSeqInBand: 1,
+          payload: new TextEncoder().encode('"ok"'),
+        },
+        { token: 'test-token', dispatcher: agent }
+      );
+      expect(result.allocated).toBe(allocated);
+      agent.assertNoPendingInterceptors();
+    }
   });
 });

@@ -621,6 +621,8 @@ export interface WorldCapabilities {
    * - **A list snapshot.** `events.list` on a slot-numbered run returns
    *   `snapshot: { seq, seqInBand }` on every page
    *   ({@link EventListResponse.snapshot}), read before the listing.
+   *   world-vercel passes on the snapshot its backend reports, which it does
+   *   not on every run; its refusals carry both counters.
    * - **Fenced in-band creates.** A create with `inBand: true` carries
    *   {@link CreateEventParams.expectedSeqInBand}. The World checks it
    *   against `seqInBand` and advances both counters by the positions it
