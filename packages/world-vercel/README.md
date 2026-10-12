@@ -12,6 +12,27 @@ Backend connection failures and interrupted event streams follow existing retry 
 
 See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
 
+## HTTP stream append retries
+
+HTTP stream appends using the built-in undici dispatcher retry confirmed 429
+rejections with fresh requests built from preserved bytes, at most five times.
+The shared throttle policy honors `Retry-After` seconds or dates, with a
+one-second minimum and default wait, a 30-second cumulative wait budget, and
+15 seconds reserved before the invocation deadline. A wait exceeding either
+limit surfaces the 429 instead of retrying early. Throttle waits are logged.
+This relies on the stream service rejecting a 429 before persisting the append.
+Firewall challenges (`x-vercel-mitigated: challenge`) surface immediately.
+
+Pre-connect failures (`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, and
+`UND_ERR_CONNECT_TIMEOUT`) can also retry because no append was sent, with
+exponential backoff starting at 500 ms. Other transport failures surface without
+replay because the outcome can be uncertain. HTTP errors other than 429 also
+surface immediately.
+
+Stream close is idempotent and has a separate retry policy, including selected
+5xx responses. Custom dispatchers and `WORKFLOW_NODE_HTTP` bypass the SDK append
+retry loop. Custom dispatchers must not replay append PUTs with consumed bodies.
+
 ## Events channel
 
 Event writes go over a per-run WebSocket (the default `WORKFLOW_EVENTS_TRANSPORT`;
@@ -59,7 +80,7 @@ until the burst finishes. Call `releaseLock()` when finished contributing, not
 
 ## Custom dispatcher
 
-HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:
+HTTP requests (including the queue) default to shared undici dispatchers for connection pooling, with retry policies specific to each operation. Pass a custom `dispatcher` to override them, for example, to tune undici on newer Node.js runtimes:
 
 ```ts
 import { Agent } from 'undici';
