@@ -114,6 +114,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     tag
   );
+  const { clearCache: clearStreamerCache, ...streamer } = createStreamer(
+    mergedConfig.dataDir,
+    tag
+  );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: mintedSpecVersion(),
@@ -131,11 +135,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // `createHook({ experimental_force: true })`; see the hook_created
       // branch of storage/events-storage.ts.
       hookForceClaim: true,
+      // A per-run in-band count on disk, under a lock file, so every process
+      // on the data directory shares it; see the in-band writer fence in
+      // storage/events-storage.ts.
+      inBandFence: true,
     },
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
-      ...createStreamer(mergedConfig.dataDir, tag),
+      ...streamer,
       ...(mergedConfig.streamFlushIntervalMs !== undefined && {
         streamFlushIntervalMs: mergedConfig.streamFlushIntervalMs,
       }),
@@ -304,6 +312,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
       }
+      // The stream indexes are gone, so forget which streams were registered.
+      clearStreamerCache();
     },
   };
 }

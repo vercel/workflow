@@ -6,6 +6,7 @@ import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type {
   EventsResolveData,
+  PaginatedResponse,
   PaginationOptions,
   ResolveData,
 } from './shared.js';
@@ -1096,6 +1097,14 @@ export type EventResult<T extends EventType = EventType> = {
   stepCreated?: true;
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
+  /**
+   * How many positions this write allocated to the run's log, when the World
+   * reports it: 1 for a create that appended its event, 0 for one that
+   * converged on an event the log already held. A World implementing the
+   * in-band fence advances the run's in-band count by this number for an
+   * accepted in-band write. Absent from a World that does not report it.
+   */
+  allocated?: number;
 } & (
   | {
       /**
@@ -1258,6 +1267,41 @@ export interface EventBatchResult {
   /** One entry per submitted event, in request order. */
   results: BatchEventItemResult[];
 }
+
+/**
+ * The sequencer state a World read before it listed a run's log, for the
+ * in-band writer fence ({@link CreateEventParams.inBand}). Positions are
+ * slots.
+ */
+export interface EventLogSnapshot {
+  /** Highest position allocated to any write when the list began. */
+  seq: number;
+  /** Number of positions allocated to in-band writes when the list began. */
+  seqInBand: number;
+}
+
+/**
+ * A run's in-band count right after its creation, before any other write:
+ * `run_created` counts as the run's first in-band position, so the run's
+ * first fenced orchestrator write expects this value.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
+
+/**
+ * Result of {@link Storage.events.list}.
+ *
+ * `snapshot` is set by a World that implements the in-band writer fence
+ * (`WorldCapabilities.inBandFence`), on every page of a slot-numbered run's
+ * log. It is read before the listing, so a full load (following `cursor`
+ * until `hasMore` is false) covers every position up to the FIRST page's
+ * `snapshot.seq`. A fenced writer takes its
+ * {@link CreateEventParams.expectedSeqInBand} from the first page's
+ * `snapshot.seqInBand`, never from counting events: a count cannot tell
+ * which positions were in-band.
+ */
+export type EventListResponse = PaginatedResponse<Event> & {
+  snapshot?: EventLogSnapshot;
+};
 
 export interface GetEventParams {
   resolveData?: ResolveData;

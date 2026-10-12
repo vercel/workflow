@@ -65,7 +65,7 @@ bunx --package @workflow/world-postgres bootstrap
 ```
 
 <Callout type="info">
-The migration is idempotent and can safely be run as a post-deployment lifecycle script.
+The migration is idempotent and can safely be run as a post-deployment lifecycle script. Run it again when you upgrade `@workflow/world-postgres`: a release can add migrations that the upgraded World needs before it handles workflows.
 </Callout>
 
 ## Starting the World
@@ -320,9 +320,9 @@ export default createWorld({
 });
 ```
 
-Options passed to `createWorld()` take precedence over the environment variables above. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+You can also pass an existing `pg.Pool` as `pool` instead of a connection string. On a pool it creates, the World logs and drops an idle connection that the database closes, for example on a restart. A pool you pass needs its own `pool.on("error", ...)` listener. Without one, Node.js throws the error as an uncaught exception and the process exits.
 
-You can also pass an existing `pg.Pool` as `pool` instead of a connection string.
+Options passed to `createWorld()` take precedence over the environment variables above. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
 
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"

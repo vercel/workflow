@@ -300,7 +300,8 @@ export function createQueue(
                 attempt: metadata.attempt,
               },
               input.runId,
-              metadata.attempt
+              metadata.attempt,
+              metadata.deliveryCount ?? metadata.attempt
             );
             return;
           }
@@ -412,11 +413,14 @@ export function createQueue(
     jobKey,
     executorRunId,
     attemptOffset,
+    deliveryOffset,
+    createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
     idempotencyKey?: string;
     headers?: Record<string, string>;
@@ -424,6 +428,7 @@ export function createQueue(
     jobKey?: string;
     executorRunId?: string;
     attemptOffset?: number;
+    deliveryOffset?: number;
     maxAttempts?: number;
   }) {
     const utils = workerUtils;
@@ -443,7 +448,9 @@ export function createQueue(
         data: Buffer.from(body),
         attempt,
         ...(attemptOffset !== undefined ? { attemptOffset } : {}),
+        ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
         messageId,
+        ...(createdAt ? { createdAt } : {}),
         idempotencyKey,
         headers,
       }),
@@ -462,6 +469,7 @@ export function createQueue(
     message: MessageData,
     runId: string,
     attempt: number,
+    deliveryCount: number,
     remainingAttempts = Math.max(1, MAX_GRAPHILE_JOB_ATTEMPTS - attempt + 1)
   ) {
     await start();
@@ -469,8 +477,10 @@ export function createQueue(
       queueId: message.id,
       body: message.data,
       messageId: message.messageId,
+      createdAt: message.createdAt,
       attempt,
       attemptOffset: attempt - 1,
+      deliveryOffset: deliveryCount - 1,
       maxAttempts: remainingAttempts,
       idempotencyKey: message.idempotencyKey,
       headers: message.headers,
@@ -603,7 +613,9 @@ export function createQueue(
   async function executeMessageOverHttp({
     queueName,
     messageId,
+    createdAt,
     attempt,
+    deliveryCount,
     body,
     headers: extraHeaders,
     abortSignal,
@@ -611,7 +623,9 @@ export function createQueue(
   }: {
     queueName: ValidQueueName;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
+    deliveryCount: number;
     body: Uint8Array;
     headers?: Record<string, string>;
     abortSignal?: AbortSignal;
@@ -622,6 +636,9 @@ export function createQueue(
     headers.set('x-vqs-queue-name', queueName);
     headers.set('x-vqs-message-id', messageId);
     headers.set('x-vqs-message-attempt', String(attempt));
+    headers.set('x-vqs-message-delivery-count', String(deliveryCount));
+    if (createdAt) headers.set('x-vqs-message-created-at', createdAt);
+    else headers.delete('x-vqs-message-created-at');
     // Strip caller-supplied provenance case-insensitively. Only the verified
     // executor task may set these headers, including on retries.
     headers.delete(EXECUTOR_JOB_HEADER);
@@ -793,6 +810,7 @@ export function createQueue(
       queueId,
       body,
       messageId,
+      createdAt: new Date().toISOString(),
       attempt: 1,
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
@@ -849,6 +867,14 @@ export function createQueue(
       const attempt = graphileHelpers.success
         ? graphileHelpers.data.job.attempts + (messageData.attemptOffset ?? 0)
         : messageData.attempt;
+      // `attempt` is what core counts against its max-deliveries cap, and a
+      // `{ timeoutSeconds }` reschedule starts it over (as it always has), so
+      // a step retried in place many times on one message is not failed by
+      // the cap. `deliveryCount` keeps counting across reschedules.
+      const deliveryCount = graphileHelpers.success
+        ? graphileHelpers.data.job.attempts +
+          (messageData.deliveryOffset ?? messageData.attemptOffset ?? 0)
+        : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
       const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
@@ -872,6 +898,7 @@ export function createQueue(
             messageData,
             orchestration.runId,
             attempt,
+            deliveryCount,
             job
               ? Math.max(
                   1,
@@ -893,7 +920,9 @@ export function createQueue(
         const result = await executeMessageOverHttp({
           queueName,
           messageId: messageData.messageId,
+          createdAt: messageData.createdAt,
           attempt,
+          deliveryCount,
           body: messageData.data,
           headers: messageData.headers,
           executorDelivery,
@@ -912,9 +941,15 @@ export function createQueue(
           await addGraphileJob({
             queueId: messageData.id,
             body: messageData.data,
+            // The same message: its id and creation time carry over. The
+            // replacement is a new Graphile job whose own attempt count
+            // starts again at 1; the deliveries made so far ride along as
+            // `deliveryOffset`, so the handler sees the next deliveryCount.
             messageId: messageData.messageId,
+            createdAt: messageData.createdAt,
             attempt: attempt + 1,
             attemptOffset: messageData.attemptOffset,
+            deliveryOffset: deliveryCount,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,

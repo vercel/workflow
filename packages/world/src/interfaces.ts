@@ -10,6 +10,7 @@ import type {
   CreateEventRequest,
   Event,
   EventBatchResult,
+  EventListResponse,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -471,7 +472,7 @@ export interface Storage {
       params?: GetEventParams
     ): Promise<Event>;
 
-    list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
+    list(params: ListEventsParams): Promise<EventListResponse>;
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<Event>>;
@@ -604,6 +605,37 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World implements the in-band writer fence
+   * ({@link CreateEventParams.inBand}). Optional: the runtime does not send
+   * the fence yet, and a World without it stays fully supported.
+   *
+   * Declaring it commits the World to all of:
+   *
+   * - **A per-run in-band count.** Next to the position counter its sequencer
+   *   allocates from (`seq`), the World counts the positions allocated to
+   *   in-band writes (`seqInBand`). A new run's `run_created` counts as
+   *   in-band and is never fenced itself, so a fresh run holds
+   *   `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
+   * - **A list snapshot.** `events.list` on a slot-numbered run returns
+   *   `snapshot: { seq, seqInBand }` on every page
+   *   ({@link EventListResponse.snapshot}), read before the listing.
+   * - **Fenced in-band creates.** A create with `inBand: true` carries
+   *   {@link CreateEventParams.expectedSeqInBand}. The World checks it
+   *   against `seqInBand` and advances both counters by the positions it
+   *   allocates in one atomic step. On a mismatch it throws
+   *   `InBandSupersededError` (HTTP 412, `in-band-superseded`) and writes and
+   *   allocates nothing. An in-band write without an expected count is a 400.
+   *   A batch is one fenced allocation for the whole block.
+   * - **Unfenced out-of-band creates.** Writes with `inBand: false` (or
+   *   absent) move `seq` and never `seqInBand`, and are never refused by the
+   *   fence.
+   *
+   * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
+   * each of these against a World's `events` storage.
+   */
+  inBandFence?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes

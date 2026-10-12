@@ -57,6 +57,7 @@ export {
   HOOK_EVENTS_REQUIRING_EXISTENCE,
   HOOK_LIFECYCLE_EVENT_TYPES,
   HookCreatedEventSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
