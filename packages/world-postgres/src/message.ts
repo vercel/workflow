@@ -1,4 +1,4 @@
-import { MessageId } from '@workflow/world';
+import { MessageId, QueuePrefix } from '@workflow/world';
 import { z } from 'zod/v4';
 import { Base64Buffer } from './zod.js';
 
@@ -33,6 +33,19 @@ export const MessageData = z.compile(
       .describe(
         "The ID of the sub-queue. For workflows, it's the workflow name. For steps, it's the step name."
       ),
+    /**
+     * The queue prefix the message was enqueued under (`__wkf_workflow_`,
+     * `__{namespace}_wkf_workflow_`), so a worker delivers it as the queue
+     * name it was sent to. Absent on jobs enqueued before it existed: those
+     * take the worker's own prefix, as they always did.
+     */
+    prefix: QueuePrefix.optional(),
+    /**
+     * The route the producer had registered for `prefix`
+     * (`Queue.registerRoute`), so a worker in another process delivers it
+     * there. A route the worker has registered itself takes precedence.
+     */
+    route: z.string().optional(),
     data: Base64Buffer.describe('The message that was sent'),
   })
 );
