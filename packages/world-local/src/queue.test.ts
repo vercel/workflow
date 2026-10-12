@@ -123,6 +123,38 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('createQueueHandler reports a delivery-count header as deliveryCount, separate from attempt', async () => {
+    const metas: { attempt: number; deliveryCount?: number }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, meta) => {
+        metas.push({
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+        });
+        return undefined;
+      }
+    );
+    const request = (extra: Record<string, string>) =>
+      new Request('http://localhost/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__wkf_workflow_test',
+          'x-vqs-message-id': 'msg_01ABC',
+          'x-vqs-message-attempt': '1',
+          ...extra,
+        },
+        body: JSON.stringify(workflowPayload),
+      });
+    await handler(request({ 'x-vqs-message-delivery-count': '3' }));
+    await handler(request({}));
+    expect(metas).toEqual([
+      { attempt: 1, deliveryCount: 3 },
+      { attempt: 1, deliveryCount: 1 },
+    ]);
+  });
+
   it('treats invocation return values containing timeoutSeconds as data', async () => {
     const result = { timeoutSeconds: 123, value: 'data' };
     const handler = localQueue.createQueueHandler(
@@ -197,6 +229,102 @@ describe('queue timeout re-enqueue', () => {
     // The queue fires off processing asynchronously, so we need to wait
     await vi.waitFor(() => {
       expect(callCount).toBe(3);
+    });
+  });
+
+  it('redelivers the SAME message on timeoutSeconds: one id, one createdAt, increasing deliveryCount', async () => {
+    const metas: {
+      messageId: string;
+      deliveryCount?: number;
+      attempt: number;
+      createdAt?: Date;
+    }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_body, meta) => {
+        metas.push(meta);
+        return metas.length < 3 ? { timeoutSeconds: 1 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC', retentionSeconds: 3600 }
+    );
+
+    await vi.waitFor(() => {
+      expect(metas).toHaveLength(3);
+    });
+    expect(metas.map((meta) => meta.messageId)).toEqual([
+      messageId,
+      messageId,
+      messageId,
+    ]);
+    expect(metas.map((meta) => meta.deliveryCount)).toEqual([1, 2, 3]);
+    expect(metas.map((meta) => meta.attempt)).toEqual([1, 2, 3]);
+    expect(metas[0]?.createdAt).toBeInstanceOf(Date);
+    expect(new Set(metas.map((meta) => meta.createdAt?.getTime())).size).toBe(
+      1
+    );
+  });
+
+  it('dedupes a second send under the same idempotency key while the first message is retrying', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        if (calls === 1) {
+          await held;
+          return { timeoutSeconds: 1 };
+        }
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const first = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    await vi.waitFor(() => {
+      expect(calls).toBe(1);
+    });
+    const second = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    expect(second.messageId).toBe(first.messageId);
+    release();
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+  });
+
+  it('delivers a wake sent without an idempotency key every time', async () => {
+    let calls = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    const wake = { runId: 'run_01ABC' };
+    const a = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    const b = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    expect(a.messageId).not.toBe(b.messageId);
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
     });
   });
 

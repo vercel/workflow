@@ -2,10 +2,16 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { serve } from '@hono/node-server';
 import {
+  type AnyEventRequest,
+  type CreateEventParams,
+  type EventLogSnapshot,
+  type EventResult,
   type EventsResolveData,
   getEventDataPayloadField,
+  SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { Hono } from 'hono';
+import { ulid } from 'ulid';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
@@ -160,12 +166,16 @@ const app = new Hono()
       payloadDigest: string | null;
     }[] = [];
     let cursor: string | undefined;
+    // The in-band fence snapshot of the first page, which the whole listing
+    // covers (see `EventListResponse.snapshot`).
+    let snapshot: EventLogSnapshot | null | undefined;
     while (true) {
       const page = await world.events.list({
         runId,
         pagination: { sortOrder: 'asc', cursor },
         ...(resolveData ? { resolveData } : {}),
       });
+      if (snapshot === undefined) snapshot = page.snapshot ?? null;
       for (const e of page.data) {
         allEvents.push({
           eventId: e.eventId,
@@ -178,7 +188,71 @@ const app = new Hono()
       cursor = page.cursor ?? undefined;
       if (!cursor) break;
     }
-    return ctx.json({ events: allEvents });
+    return ctx.json({ events: allEvents, snapshot });
+  })
+  .get('/_capabilities', async (ctx) => {
+    const world = await getWorld();
+    return ctx.json(world.capabilities ?? {});
+  })
+  .post('/_fence-probe', async (ctx) => {
+    // Drives the in-band fence on a run of its own, created directly through
+    // the World so no orchestrator writes to it concurrently.
+    const world = await getWorld();
+    // Without its overloads, so the probe can send any request.
+    const create = world.events.create.bind(world.events) as (
+      runId: string,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ) => Promise<EventResult>;
+    const runId = `wrun_${ulid()}`;
+    const created = await create(runId, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: await world.getDeploymentId(),
+        workflowName: 'fenceProbe',
+        input: new Uint8Array([1]),
+      },
+    } as AnyEventRequest);
+    const id = created.event?.runId ?? created.run?.runId ?? runId;
+    const snapshotOf = async () =>
+      (await world.events.list({ runId: id })).snapshot ?? null;
+    const attrSet = (value: string) =>
+      ({
+        eventType: 'attr_set',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          changes: [{ key: 'fence_probe', value }],
+          writer: { type: 'workflow' },
+        },
+      }) as AnyEventRequest;
+
+    const atCreation = await snapshotOf();
+    const current = atCreation?.seqInBand ?? 0;
+    // A count one behind the World's, as a superseded orchestrator holds.
+    const refusal = await create(id, attrSet('stale'), {
+      inBand: true,
+      expectedSeqInBand: current - 1,
+    }).then(
+      () => null,
+      (error: unknown) => ({
+        name: (error as Error)?.name,
+        status: (error as { status?: unknown })?.status ?? null,
+      })
+    );
+    const afterRefusal = await snapshotOf();
+    const accepted = await create(id, attrSet('current'), {
+      inBand: true,
+      expectedSeqInBand: current,
+    });
+    const afterAccept = await snapshotOf();
+    return ctx.json({
+      atCreation,
+      refusal,
+      afterRefusal,
+      acceptedEventId: accepted.event?.eventId ?? null,
+      afterAccept,
+    });
   });
 
 serve(

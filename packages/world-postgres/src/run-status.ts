@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { envNumber } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
-import type { Drizzle } from './drizzle/index.js';
+import type { DrizzleHandle } from './drizzle/index.js';
 import { listenChannel } from './streamer.js';
 
 /**
@@ -65,7 +65,7 @@ export function getRunStatusPollIntervalMs(): number {
  * Call it after the terminal `UPDATE` has committed.
  */
 export async function notifyRunTerminal(
-  drizzle: Drizzle,
+  drizzle: DrizzleHandle,
   runId: string
 ): Promise<void> {
   try {

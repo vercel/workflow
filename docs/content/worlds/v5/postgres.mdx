@@ -65,7 +65,7 @@ bunx --package @workflow/world-postgres bootstrap
 ```
 
 <Callout type="info">
-The migration is idempotent and can safely be run as a post-deployment lifecycle script.
+The migration is idempotent and can safely be run as a post-deployment lifecycle script. Run it again when you upgrade `@workflow/world-postgres`: a release can add migrations that the upgraded World needs before it handles workflows.
 </Callout>
 
 ## Starting the World
