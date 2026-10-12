@@ -6,10 +6,12 @@
  * reports the count as `snapshot.seqInBand`.
  */
 
+import { fork } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EntityConflictError, InBandSupersededError } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -168,5 +170,122 @@ describe('in-band fence (world-local)', () => {
     });
     expect(first.snapshot).toEqual(second.snapshot);
     expect(first.snapshot?.seq).toBe(4);
+  });
+
+  it('keeps the count on disk: a dead writer between its check and its publish is counted, and a snapshot reports the count without it', async () => {
+    const runId = await createRun();
+    // What a writer that died after the fence accepted it, and before it
+    // finished, leaves behind.
+    await fs.mkdir(path.join(testDir, '.locks', 'runs'), { recursive: true });
+    await fs.writeFile(
+      path.join(testDir, '.locks', 'runs', `${runId}.in-band`),
+      JSON.stringify({ seqInBand: 1, pending: 1 })
+    );
+    expect((await snapshotOf(runId)).snapshot?.seqInBand).toBe(1);
+    // A writer at that count may have been the dead one's stale sibling: refused.
+    const error = await storage.events
+      .create(runId, attrSet('stale'), { inBand: true, expectedSeqInBand: 1 })
+      .catch((err: unknown) => err);
+    expect(InBandSupersededError.is(error)).toBe(true);
+    expect((error as InBandSupersededError).seqInBand).toBe(2);
+    expect((await snapshotOf(runId)).snapshot?.seqInBand).toBe(2);
+    await storage.events.create(runId, attrSet('next'), {
+      inBand: true,
+      expectedSeqInBand: 2,
+    });
+    // Another storage instance (a restart, another process) reads the same count.
+    const reopened = createStorage(testDir);
+    const page = await reopened.events.list({ runId });
+    expect(page.snapshot?.seqInBand).toBe(3);
+  });
+
+  describe('across OS processes on one data directory', () => {
+    const child = fileURLToPath(
+      new URL('./in-band-fence.child.mjs', import.meta.url)
+    );
+    type Answer = {
+      status: 'accepted' | 'refused' | 'error';
+      seqInBand?: number;
+      message?: string;
+    };
+    /** A process on `testDir`, ready to make one in-band write at `expected` when told to. */
+    async function otherProcess(runId: string, expected: number) {
+      const proc = fork(
+        child,
+        [testDir, runId, String(expected), String(SPEC)],
+        {
+          stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+        }
+      );
+      const answers: Answer[] = [];
+      const next = () =>
+        new Promise<Answer>((resolve, reject) => {
+          const queued = answers.shift();
+          if (queued) return resolve(queued);
+          proc.once('message', (m) => resolve(m as Answer));
+          proc.once('exit', (code) =>
+            reject(new Error(`child exited (${code}) without answering`))
+          );
+        });
+      expect((await next()).status).toBe('ready');
+      return {
+        write() {
+          const answer = next();
+          proc.send('go');
+          return answer;
+        },
+      };
+    }
+
+    it('a stale writer in this process is refused after another process wrote in-band', async () => {
+      const runId = await createRun();
+      const { snapshot } = await snapshotOf(runId);
+      const loaded = snapshot?.seqInBand as number;
+      const other = await otherProcess(runId, loaded);
+      expect(await other.write()).toMatchObject({ status: 'accepted' });
+      // This process decided from its load, before the other one wrote.
+      const error = await storage.events
+        .create(runId, attrSet('stale'), {
+          inBand: true,
+          expectedSeqInBand: loaded,
+        })
+        .catch((err: unknown) => err);
+      expect(InBandSupersededError.is(error)).toBe(true);
+      expect((error as InBandSupersededError).seqInBand).toBe(loaded + 1);
+      const after = await snapshotOf(runId);
+      expect(after.snapshot?.seqInBand).toBe(loaded + 1);
+      // The refused write left nothing behind.
+      expect(after.slots).toEqual([1, 2]);
+    }, 30_000);
+
+    it('of writers in several processes holding the same count, exactly one is accepted', async () => {
+      const runId = await createRun();
+      const { snapshot } = await snapshotOf(runId);
+      const loaded = snapshot?.seqInBand as number;
+      const others = await Promise.all(
+        [1, 2, 3].map(() => otherProcess(runId, loaded))
+      );
+      const answers = await Promise.all([
+        ...others.map((o) => o.write()),
+        storage.events
+          .create(runId, attrSet('here'), {
+            inBand: true,
+            expectedSeqInBand: loaded,
+          })
+          .then(
+            (): Answer => ({ status: 'accepted' }),
+            (err: unknown): Answer => ({
+              status: InBandSupersededError.is(err) ? 'refused' : 'error',
+              message: String(err),
+            })
+          ),
+      ]);
+      expect(answers.filter((a) => a.status === 'error')).toEqual([]);
+      expect(answers.filter((a) => a.status === 'accepted')).toHaveLength(1);
+      expect(answers.filter((a) => a.status === 'refused')).toHaveLength(3);
+      const after = await snapshotOf(runId);
+      expect(after.snapshot?.seqInBand).toBe(loaded + 1);
+      expect(after.slots).toEqual([1, 2]);
+    }, 30_000);
   });
 });
