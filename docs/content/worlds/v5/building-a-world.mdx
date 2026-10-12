@@ -259,13 +259,23 @@ The in-band writer fence keeps a run to one orchestrator writer when two orchest
 The fence is optional, and the runtime does not send `inBand` yet, so a World without it stays fully supported. Declare `capabilities.inBandFence: true` when you implement all of the following:
 
 - **Two counters per run.** Next to whatever allocates event positions, keep `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band and is never fenced itself, so a new run holds `seq = 1, seqInBand = 1` (`IN_BAND_SEQ_AT_RUN_CREATION` from `@workflow/world`).
-- **List snapshot.** On every `events.list()` page of a slot-numbered run, return `snapshot: { seq, seqInBand }`, read before the listing. A full load, followed to `hasMore: false`, covers every position up to the first page's `seq`. A fenced writer takes its count from that first page, never from counting events, because a count cannot tell which positions were in-band.
+- **List snapshot, or counters on a refusal.** On every `events.list()` page of a slot-numbered run, return `snapshot: { seq, seqInBand }`, read before the listing. A full load, followed to `hasMore: false`, covers every position up to the first page's `seq`. A fenced writer takes its count from that first page, never from counting events, because a count cannot tell which positions were in-band. If your store cannot read the counters on a list, you may list no snapshot, as long as every refusal carries both counters, read together (see below).
 - **Fenced in-band creates.** An in-band write carries `expectedSeqInBand`. Accept it only when that equals `seqInBand`, and advance both counters by the positions it allocates in the same atomic operation as the allocation. On a mismatch, throw `InBandSupersededError` from `@workflow/errors` (HTTP 412, `in-band-superseded`) and write and allocate nothing, so a refusal never leaves a hole. A batch is one fenced allocation for the whole block.
 - **Fence first.** Decide the fence before anything else the write does. A stale writer must touch no entity row. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (in Postgres, one transaction that locks the run's counter row first).
 - **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
 - **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
 
-`world-local` and `world-postgres` declare the fence. The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the snapshot and a stale in-band write end to end when the World declares the capability.
+`world-local`, `world-postgres` and `world-vercel` declare the fence. `world-vercel`'s backend fences in-band writes on every run with an event sequencer (spec version 7 and later). On an older run it answers an in-band write with a 400 (`WorkflowWorldError`, `code: 'in-band-fence-unsupported'`) rather than writing it unfenced, so a writer decides whether to fence from the run's spec version. Its list responses carry the snapshot only where the backend reports one, so a writer there can find none.
+
+A writer that finds no snapshot takes its count from a refusal:
+
+1. **Get the counters.** On a run it has just created, before any other in-band write, the count is `IN_BAND_SEQ_AT_RUN_CREATION`. Otherwise, send an in-band write with a count no run holds, such as `Number.MAX_SAFE_INTEGER`. The World refuses it and writes and allocates nothing, and the `InBandSupersededError` carries `seq` and `seqInBand`, read together after the fence refused the write.
+2. **Load up to `seq`.** List the log until it holds position `seq` itself. A position can be allocated before its event is committed, so a listing that ends below `seq` is retried, not trusted.
+3. **Write at `seqInBand`.** That log holds every in-band write `seqInBand` counts, so the writer sends its next in-band write with `expectedSeqInBand: seqInBand`, and advances by the positions each accepted write allocated.
+
+A writer that was refused while writing stops writing from the log it held; only a writer that loads the log again, as above, takes up the refusal's counters.
+
+The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the counters (from the snapshot, or from a refusal where the World lists none) and a stale in-band write end to end when the World declares the capability.
 
 ## Queue interface
 

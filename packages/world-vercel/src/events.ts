@@ -46,6 +46,7 @@ import {
   type Event,
   type EventBatchResult,
   type EventDataPayloadField,
+  type EventListResponse,
   type EventResult,
   entityResolveData,
   type GetEventParams,
@@ -54,7 +55,6 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
-  type PaginatedResponse,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -495,7 +495,7 @@ export async function getEvent(
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
@@ -534,6 +534,9 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
+    // The in-band fence's counters, read before the listing, when the
+    // backend reports them (see `capabilities.inBandFence` in index.ts).
+    ...(result.snapshot ? { snapshot: result.snapshot } : {}),
   };
 }
 
