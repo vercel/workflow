@@ -106,25 +106,13 @@ describe('getStreamDispatcher', () => {
     expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
   });
 
-  // Stream writes (PUT) append chunks and are NOT idempotent. Retrying a write
-  // the server already applied would duplicate a chunk, so the retry policy is
-  // deliberately narrowed: only transient connection errors and HTTP 429 (both
-  // of which guarantee nothing was persisted) are retryable. A 5xx must never
-  // be retried — it can mean the chunk was written but the response failed.
-  it('retries stream writes only on transient errors and 429, never on 5xx', () => {
+  // Fresh fetch requests own append retries. This dispatcher must neither
+  // consume the 429 response nor resend a potentially persisted append.
+  it('disables dispatcher-level stream append retries', () => {
     expect(STREAM_RETRY_OPTIONS.methods).toEqual(['PUT']);
-    expect(STREAM_RETRY_OPTIONS.statusCodes).toEqual([429]);
-    for (const code of [500, 502, 503, 504]) {
-      expect(STREAM_RETRY_OPTIONS.statusCodes).not.toContain(code);
-    }
-  });
-
-  // The narrowed policy must also not inherit the timeout codes the default
-  // dispatcher retries: a headers/body timeout is ambiguous about whether the
-  // server persisted the chunk, so leaving errorCodes unset (undici's
-  // transient-network-error defaults) is the load-bearing part.
-  it('does not retry stream writes on transport timeouts', () => {
-    expect(STREAM_RETRY_OPTIONS.errorCodes).toBeUndefined();
+    expect(STREAM_RETRY_OPTIONS.maxRetries).toBe(0);
+    expect(STREAM_RETRY_OPTIONS.statusCodes).toEqual([]);
+    expect(STREAM_RETRY_OPTIONS.errorCodes).toEqual([]);
   });
 
   // Stream CLOSE is the one idempotent stream PUT: a duplicate close of a

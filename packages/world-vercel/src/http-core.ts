@@ -452,6 +452,12 @@ export interface InstrumentedFetchOptions {
   timeoutMs?: number | null;
   /** Optional caller abort signal, composed with the timeout. */
   signal?: AbortSignal;
+  /**
+   * Retry confirmed 429 append rejections and pre-connect failures with fresh
+   * requests. Only enable for the default stream dispatcher, whose own retries
+   * are disabled. Custom dispatchers and node:http keep their retry behavior.
+   */
+  retryStreamAppend?: boolean;
   /** Inject W3C trace context onto the request headers. Default true. */
   injectTraceContext?: boolean;
   /** Set the X-Request-Time cache-bust header. Default true. */
@@ -484,8 +490,102 @@ export interface InstrumentedFetchOptions {
   deferTransportSuccessUntilBody?: boolean;
 }
 
+const STREAM_APPEND_MAX_RETRIES = 5;
+// These failures happen before a connection is established, so no append was
+// sent. Resets, broken pipes and request timeouts can follow persistence.
+const STREAM_APPEND_CONNECT_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+/** Cumulative 429 wait for one append before the 429 surfaces. */
+const STREAM_APPEND_THROTTLE_BUDGET_MS = 30_000;
+/** Floor (and default when `Retry-After` is absent) for one 429 wait. */
+const STREAM_APPEND_MIN_THROTTLE_WAIT_MS = 1_000;
+
+/** Rejects with `signal.reason`, clearing the timer, when `signal` aborts. */
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
 /**
- * Issue a single instrumented request through the global `fetch` (so Vercel's
+ * Retry loop for one stream append. Each attempt is a fresh request, so the
+ * body is never a consumed reader. A 429 is retried only while its wait fits
+ * both the cumulative budget and the request deadline; otherwise the 429
+ * response is returned so the caller surfaces it.
+ */
+async function fetchStreamAppend(
+  request: () => Promise<Response>,
+  signal: AbortSignal | undefined,
+  deadlineMs: number | undefined
+): Promise<Response> {
+  let throttledMs = 0;
+  for (let retry = 0; ; retry++) {
+    let response: Response;
+    try {
+      response = await request();
+    } catch (error) {
+      const code = getTransientTransportCode(error);
+      if (
+        retry === STREAM_APPEND_MAX_RETRIES ||
+        !code ||
+        !STREAM_APPEND_CONNECT_ERROR_CODES.has(code)
+      ) {
+        throw error;
+      }
+      await sleep(500 * 2 ** retry, signal);
+      continue;
+    }
+    if (
+      response.status !== 429 ||
+      isFirewallChallenge429(
+        response.status,
+        response.headers.get('x-vercel-mitigated')
+      ) ||
+      retry === STREAM_APPEND_MAX_RETRIES
+    ) {
+      return response;
+    }
+    // The append service rejects 429s before persistence, so a fresh request
+    // cannot duplicate the chunk.
+    const retryAfter = parseRetryAfter(response.headers.get('Retry-After'));
+    const waitMs = Math.max(
+      STREAM_APPEND_MIN_THROTTLE_WAIT_MS,
+      (retryAfter ?? 0) * 1000
+    );
+    if (
+      throttledMs + waitMs > STREAM_APPEND_THROTTLE_BUDGET_MS ||
+      (deadlineMs !== undefined && Date.now() + waitMs >= deadlineMs)
+    ) {
+      return response;
+    }
+    throttledMs += waitMs;
+    console.warn(
+      `[workflow] Throttled (429) appending stream chunks; retrying in-process in ${waitMs / 1000}s`
+    );
+    // Release the connection before waiting, even if the diagnostic body
+    // never finishes. A failed body does not undo the rejection.
+    await response.body?.cancel().catch(() => {});
+    await sleep(waitMs, signal);
+  }
+}
+
+/**
+ * Issue an instrumented request through the global `fetch` (so Vercel's
  * observability "outgoing requests" view picks it up) with a caller-supplied
  * undici dispatcher.
  *
@@ -507,6 +607,7 @@ export async function instrumentedFetch(
     peerService = 'workflow-server',
     timeoutMs = REQUEST_TIMEOUT_MS,
     signal: callerSignal,
+    retryStreamAppend = false,
     injectTraceContext = true,
     cacheBust = true,
     logLabel,
@@ -516,6 +617,12 @@ export async function instrumentedFetch(
   } = opts;
   const label = logLabel ?? url;
   validateHttpUrl(url);
+  const retryAppend = retryStreamAppend && method === 'PUT' && !!dispatcher;
+  // Fetch turns materialized bytes into a one-shot reader. Keep our own bytes
+  // above fetch so each retry gets a new reader, even if the caller mutates a
+  // Buffer between attempts. Buffer.slice() would retain the caller's storage.
+  const requestBody =
+    retryAppend && body instanceof Uint8Array ? Uint8Array.from(body) : body;
 
   return trace(
     `http ${method}`,
@@ -529,11 +636,6 @@ export async function instrumentedFetch(
       // its spans to this client span — the custom undici dispatcher bypasses
       // ambient auto-instrumentation. No-ops when no OTEL SDK is registered.
       if (injectTraceContext) await injectTraceContextIntoHeaders(headers);
-
-      // Unique header per attempt to bypass RSC/Next fetch memoization (and to
-      // avoid replaying a memoized truncated body). See:
-      // https://github.com/vercel/workflow/issues/618
-      if (cacheBust) headers.set('X-Request-Time', Date.now().toString());
 
       const timeoutSignal =
         timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
@@ -559,12 +661,17 @@ export async function instrumentedFetch(
 
       const start = Date.now();
       let response: Response;
-      try {
-        response = nodeAgents
-          ? await nodeHttpFetch(url, {
+      const request = () => {
+        signal?.throwIfAborted();
+        // Unique header per attempt to bypass RSC/Next fetch memoization (and to
+        // avoid replaying a memoized truncated body). See:
+        // https://github.com/vercel/workflow/issues/618
+        if (cacheBust) headers.set('X-Request-Time', Date.now().toString());
+        return nodeAgents
+          ? nodeHttpFetch(url, {
               method,
               headers,
-              body,
+              body: requestBody,
               signal,
               agents: nodeAgents,
               // Same per-phase deadlines the undici agents are configured
@@ -573,14 +680,23 @@ export async function instrumentedFetch(
               // at all.
               ...getNodeHttpPhaseTimeouts(),
             })
-          : await fetch(url, {
+          : fetch(url, {
               method,
               headers,
-              body,
+              body: requestBody,
               signal,
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
             } as any);
+      };
+      try {
+        response = await (retryAppend
+          ? fetchStreamAppend(
+              request,
+              signal,
+              timeoutMs != null ? start + timeoutMs : undefined
+            )
+          : request());
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
