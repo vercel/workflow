@@ -1,5 +1,5 @@
 ---
-"@workflow/world-vercel": minor
+"@workflow/world-vercel": patch
 "@workflow/world": patch
 "@workflow/world-testing": patch
 ---
