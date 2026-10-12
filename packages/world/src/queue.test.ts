@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
   parseQueueName,
+  parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
@@ -327,5 +329,45 @@ describe('RunInputSchema environment', () => {
       runId: 'wrun_01ABC',
       runInput: { environment: 'production' },
     });
+  });
+});
+
+describe('parseQueueRoute', () => {
+  it('accepts an absolute path on the app', () => {
+    expect(parseQueueRoute('/api/agent/queue')).toBe('/api/agent/queue');
+    expect(parseQueueRoute('/.well-known/workflow/v1/flow')).toBe(
+      '/.well-known/workflow/v1/flow'
+    );
+  });
+
+  it.each([
+    'api/agent/queue',
+    '//evil.example/queue',
+    'https://example.com/queue',
+    '/api/queue?x=1',
+    '/api/queue#frag',
+    '/api/ queue',
+    '',
+  ])('rejects %j', (path) => {
+    expect(() => parseQueueRoute(path)).toThrow(TypeError);
+  });
+});
+
+describe('getRunQueueNamespace', () => {
+  it('reads the namespace a run recorded', () => {
+    expect(getRunQueueNamespace({ queueNamespace: 'agent' })).toBe('agent');
+  });
+
+  it.each([
+    undefined,
+    null,
+    'agent',
+    new Uint8Array([1, 2]),
+    {},
+    { queueNamespace: 7 },
+    { queueNamespace: 'Not-Valid' },
+    { queueNamespace: '' },
+  ])('is undefined for %j', (executionContext) => {
+    expect(getRunQueueNamespace(executionContext)).toBeUndefined();
   });
 });

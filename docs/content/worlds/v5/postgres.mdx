@@ -328,6 +328,10 @@ You can also pass an existing `pg.Pool` as `pool` instead of a connection string
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
+### Queue consumers other than the Workflow SDK
+
+The worker delivers every job over HTTP, and by default to the Workflow SDK's flow route, `/.well-known/workflow/v1/flow`. A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix (`__{namespace}_wkf_workflow_`) and registers where those go: `world.registerRoute(prefix, "/api/agent/queue")` to deliver them to its own route, or `world.registerHandler(prefix, handler)` to deliver them inside the process that took the job, without HTTP. A job keeps the prefix it was enqueued under and the route its producer had registered, so a worker in another process delivers it to the same place. Register before calling `start()`, which re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`).
+
 ### Application-managed shutdown
 
 Graphile Worker responds automatically when the application is asked to shut down. If your application or framework already coordinates a broader shutdown sequence, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package directly with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` in a programmatic World. Use the application's normal shutdown hook. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. The hook must handle cleanup errors and await resources in this order:
@@ -360,6 +364,8 @@ The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
 - `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
+
+A queue consumer that registered its own route with `registerRoute()` receives deliveries the same way, so protect that route like the flow route.
 
 ### Bringing your own auth
 

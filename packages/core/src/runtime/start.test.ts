@@ -2195,6 +2195,31 @@ async function workflow() {
       );
     });
 
+    it('records the namespace on the run so recovery re-enqueues it there', async () => {
+      await start(validWorkflow, [], { namespace: 'eve' });
+      const created = mockEventsCreate.mock.calls.find(
+        ([, event]) => event.eventType === 'run_created'
+      );
+      expect(created?.[1].eventData.executionContext).toMatchObject({
+        queueNamespace: 'eve',
+      });
+    });
+
+    it('records no namespace for the default topic', async () => {
+      vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
+      try {
+        await start(validWorkflow, []);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      const created = mockEventsCreate.mock.calls.find(
+        ([, event]) => event.eventType === 'run_created'
+      );
+      expect(created?.[1].eventData.executionContext).not.toHaveProperty(
+        'queueNamespace'
+      );
+    });
+
     it('probes the namespaced health-check topic on cross-deployment starts', async () => {
       // Cross-deployment starts (explicit deploymentId different from the
       // current one) run a capability probe before enqueueing. The probe

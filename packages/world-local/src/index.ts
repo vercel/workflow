@@ -41,6 +41,11 @@ export type { DirectHandler } from './queue.js';
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
+  /**
+   * Deliver a queue prefix's messages over HTTP to `path` on the app (for
+   * example `/api/agent/queue`) instead of the Workflow SDK's flow route.
+   */
+  registerRoute(prefix: QueuePrefix, path: string): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };

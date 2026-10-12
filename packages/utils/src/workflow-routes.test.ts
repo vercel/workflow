@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  createAppRouteUrl,
+  createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
   setWorkflowBasePath,
@@ -24,6 +26,23 @@ describe('workflow routes', () => {
 
     expect(createWorkflowHealthEndpoint()).toBe(
       '/base/.well-known/workflow/v1/flow?__health'
+    );
+  });
+
+  it('builds an app route URL under the same base path as the flow route', () => {
+    expect(createAppRouteUrl('http://localhost:3000', '/api/agent/queue')).toBe(
+      'http://localhost:3000/api/agent/queue'
+    );
+    setWorkflowBasePath('/base');
+    const baseUrl = createWorkflowBaseUrl('http://localhost:3000/');
+    expect(createAppRouteUrl(baseUrl, '/api/agent/queue')).toBe(
+      'http://localhost:3000/base/api/agent/queue'
+    );
+    expect(createWorkflowUrl(baseUrl, { type: 'flow' })).toBe(
+      'http://localhost:3000/base/.well-known/workflow/v1/flow'
+    );
+    expect(() => createAppRouteUrl(baseUrl, 'api/agent/queue')).toThrow(
+      TypeError
     );
   });
 
