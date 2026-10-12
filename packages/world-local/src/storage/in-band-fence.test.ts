@@ -214,6 +214,8 @@ describe('in-band fence (world-local)', () => {
         child,
         [testDir, runId, String(expected), String(SPEC)],
         {
+          // Node's own type stripping, nothing inherited from the test runner.
+          execArgv: [],
           stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
         }
       );
