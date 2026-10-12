@@ -12,6 +12,7 @@ import {
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
+  resolveQueueNamespace,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -1001,9 +1002,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
       const snapshotThreshold = getSnapshotThresholdFromEnv();
+      // The queue namespace the run's messages travel on, recorded so a World
+      // that re-enqueues active runs on restart (world-local, world-postgres)
+      // sends this run back to its own namespace's consumer.
+      const queueNamespace = resolveQueueNamespace(opts.namespace);
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
+        ...(queueNamespace ? { queueNamespace } : {}),
         ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
         features: { encryption: !!encryptionKey },
         ...(targetHookResumeInputVersion !== undefined

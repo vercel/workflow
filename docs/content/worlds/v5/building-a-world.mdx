@@ -309,6 +309,32 @@ interface Queue {
 
 `meta.messageId` should be stable across redeliveries of one message. The optional `meta.deliveryCount` is 1 on a message's first delivery and increments on every redelivery; leave it `undefined` when your queue cannot say. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries.
 
+### Queue prefixes and delivery routes
+
+A queue name is a prefix followed by an id. The Workflow SDK uses the prefix `__wkf_workflow_`, or `__{namespace}_wkf_workflow_` when a queue namespace is set. A library that keeps its own runs in a World and consumes its own messages, such as a durable agent harness, uses a namespace of its own (`__agent_wkf_workflow_session`) so that its messages never reach the Workflow SDK's handler, and the Workflow SDK's never reach it.
+
+Only the Workflow SDK's handler is mounted at `/.well-known/workflow/v1/flow` (`WORKFLOW_FLOW_ROUTE` from `@workflow/world`). A World decides where every other prefix's messages go:
+
+- **By subscription.** A World whose transport pushes each message to whatever subscribed to its topic, like the Vercel World, needs nothing more: the app subscribes the consumer's route to that prefix's topics.
+- **By path.** A World that POSTs deliveries to the app itself should implement the optional `registerRoute(prefix, path)`: messages of `prefix` go to `path` on the app's base URL, and a prefix without a route goes to the flow route. Read the route at each delivery attempt, so a route registered after a message was enqueued takes its next attempt.
+- **In process.** A World whose queue runs inside the app's process can also implement the optional `registerHandler(prefix, handler)`, which delivers a prefix's messages to `handler(request)` without HTTP. The request is the one a route serving `createQueueHandler(prefix, ...)` would receive, and it takes precedence over a route for the same prefix.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Queue {
+  // ...
+  registerHandler?(
+    prefix: QueuePrefix,
+    handler: (req: Request) => Promise<Response>
+  ): void;
+  registerRoute?(prefix: QueuePrefix, path: string): void;
+}
+```
+
+Keep a message's full queue name from `queue()` to its delivery, including its prefix. A World that delivers by path should also have `createQueueHandler(prefix, ...)` refuse a message outside `prefix` (the Local World answers 400), so a misrouted message is retried rather than run by the wrong consumer.
+
+If your World re-enqueues active runs when it starts, send each run back to the queue namespace it recorded at creation, `executionContext.queueNamespace` (read it with `getRunQueueNamespace()` from `@workflow/world`), rather than to the starting process's own namespace. `reenqueueActiveRuns()` from `@workflow/world` does this. The Workflow SDK's `start()` records the namespace when one is set, and a library that creates its own runs records its own.
+
 ### Invocation delivery
 
 Implement the optional `invoke` method to send an input to a workflow runner and
