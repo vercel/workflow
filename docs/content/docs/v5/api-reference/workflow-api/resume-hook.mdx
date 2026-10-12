@@ -164,6 +164,22 @@ export async function POST(request: Request) {
 }
 ```
 
+### Resuming a hook stored in a region
+
+Hook tokens are unique per region. A hook created with [`createHook({ region })`](/docs/api-reference/workflow/create-hook#storing-a-hook-in-a-region) is resumed by passing the same `region`. Without it, the lookup is in the default region (`iad1`) and does not find the hook:
+
+```typescript lineNumbers
+import { resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { documentId, approval } = await request.json();
+  await resumeHook(`approval:${documentId}`, approval, { region: "fra1" }); // [!code highlight]
+  return Response.json({ success: true });
+}
+```
+
+A webhook's token is resumed through its URL (or [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook)), not with `resumeHook()`: passing a webhook's token rejects with [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error).
+
 ### Resume or start
 
 A common endpoint shape is "resume or start": one route that resumes the active workflow run for a business key if one exists, or starts a new run otherwise. This comes up when the workflow uses a deterministic hook token as its idempotency key, for example, one active run per order or conversation.

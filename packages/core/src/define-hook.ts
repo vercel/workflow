@@ -2,7 +2,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { Hook as HookEntity } from '@workflow/world';
 import { throwNotInWorkflowContext } from './context-errors.js';
 import type { Hook, HookOptions } from './create-hook.js';
-import { resumeHook } from './runtime/resume-hook.js';
+import { type ResumeHookOptions, resumeHook } from './runtime/resume-hook.js';
 
 /**
  * A typed hook interface for type-safe hook creation and resumption.
@@ -23,10 +23,15 @@ export interface TypedHook<TInput, TOutput> {
    *
    * @param token - The unique token identifying the hook
    * @param payload - The payload to send; if a `schema` is configured it is validated/transformed before resuming
+   * @param options - Resume options, such as the `region` the hook was created in
    * @returns Promise resolving to the hook entity
    * @throws Error if the hook is not found or if there's an error during the process
    */
-  resume(token: string, payload: TInput): Promise<HookEntity>;
+  resume(
+    token: string,
+    payload: TInput,
+    options?: ResumeHookOptions
+  ): Promise<HookEntity>;
 }
 
 export namespace TypedHook {
@@ -86,9 +91,13 @@ export function defineHook<TInput, TOutput = TInput>({
 
   return {
     create,
-    async resume(token: string, payload: TInput): Promise<HookEntity> {
+    async resume(
+      token: string,
+      payload: TInput,
+      options?: ResumeHookOptions
+    ): Promise<HookEntity> {
       if (!schema?.['~standard']) {
-        return await resumeHook(token, payload);
+        return await resumeHook(token, payload, options);
       }
 
       let result = schema['~standard'].validate(payload);
@@ -115,7 +124,7 @@ export function defineHook<TInput, TOutput = TInput>({
         );
       }
 
-      return await resumeHook<TOutput>(token, result.value);
+      return await resumeHook<TOutput>(token, result.value, options);
     },
   };
 }

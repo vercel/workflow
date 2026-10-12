@@ -271,6 +271,32 @@ Senders on an older SDK release are not redirected. A `resumeHook()` from a depl
 Webhook requests are not redirected either. [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) streams the request body once, and buffering a copy of every webhook body on the chance that its token is being taken over at that moment would be a cost paid by everyone who never uses this option. A webhook delivery that lands inside the handoff window fails with a retryable error naming the takeover; nothing is delivered anywhere, and the sender's retry reaches the new owner. A forced `createHook()` can take over a token that a webhook holds, but the token then belongs to a Hook that is not a webhook, so `resumeWebhook()` answers every later request for it as not found, exactly as it does for any `createHook()` token, and never redirects one into it.
 </Callout>
 
+### Storing a hook in a region
+
+Pass `region` to store the hook, and its token, in a specific region, for example to keep it with the rest of your data. Hook tokens are unique per region, and hooks without a `region` are stored in `iad1`, so resume the hook with the same region:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+export async function approvalWorkflow(documentId: string) {
+  "use workflow";
+
+  const hook = createHook<{ approved: boolean }>({
+    token: `approval:${documentId}`,
+    region: "fra1", // [!code highlight]
+  });
+  const { approved } = await hook;
+  return approved;
+}
+```
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript
+await resumeHook(`approval:${documentId}`, { approved: true }, { region: "fra1" });
+```
+
+Creating and resuming a hook is fastest when it is stored in the region the run executes in. An unknown region code throws. Worlds without regions ignore `region`; see [Hook regions](/worlds/vercel#hook-regions) for the Vercel World.
+
 ### Waiting for multiple payloads
 
 You can also wait for multiple payloads by using the `for await...of` syntax.

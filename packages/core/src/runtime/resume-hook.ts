@@ -20,9 +20,14 @@ import {
 import { monotonicFactory } from 'ulid';
 import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
+import { webhookTokenRegion } from '../hook-region.js';
 import { runtimeLogger } from '../logger.js';
 import { decodeRunPublicKey } from '../sealed-box.js';
-import { deriveRunPayloadKeys } from '../serialization/encryption.js';
+import {
+  deriveRunPayloadKeys,
+  isRunPayloadKeys,
+  isSealTarget,
+} from '../serialization/encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -296,11 +301,95 @@ function asLazyMetadataHook(hook: ResumableHook): Hook {
  * A Hook kept by minimum retention remains available here after its run ends,
  * but cannot be resumed.
  *
+ * Hook tokens are unique per region: pass the `region` a hook was created in
+ * (`createHook({ region })`) to find it. By default the lookup is in `iad1`.
+ *
  * @param token - The unique token identifying the hook
+ * @param options - {@link GetHookByTokenOptions}, such as the hook's `region`
  */
-export async function getHookByToken(token: string): Promise<Hook> {
+export async function getHookByToken(
+  token: string,
+  options?: GetHookByTokenOptions
+): Promise<Hook> {
   const world = await getWorldLazy();
-  return withLazyMetadata(await world.hooks.getByToken(token)).hook;
+  return withLazyMetadata(
+    await world.hooks.getByToken(token, lookupParams(options?.region))
+  ).hook;
+}
+
+/**
+ * Options for {@link getHookByToken}.
+ */
+export interface GetHookByTokenOptions {
+  /**
+   * The region the hook was created in (`createHook({ region })`). Hook
+   * tokens are unique per region, so a hook created with a region is only
+   * found by a lookup in that region. Defaults to `iad1`.
+   */
+  region?: string;
+}
+
+/**
+ * Options for {@link resumeHook}.
+ */
+export interface ResumeHookOptions {
+  /**
+   * The region the hook was created in (`createHook({ region })`). Hook
+   * tokens are unique per region, so pass the same region the hook was
+   * created with; a lookup in any other region does not find it. Defaults to
+   * `iad1`.
+   *
+   * Ignored when resuming a hook object, which carries its own region.
+   */
+  region?: string;
+}
+
+/** `hooks.getByToken` params naming `region`, or none for the default. */
+function lookupParams(
+  region: string | undefined
+): { region: string } | undefined {
+  return region === undefined ? undefined : { region };
+}
+
+/**
+ * Whether `resumeHook()`'s third argument is the (internal) payload key it
+ * took before it took options. A key is a `CryptoKey` instance or a branded
+ * `SealTarget` / `RunPayloadKeys`; options are a plain object.
+ */
+function isPayloadKey(value: unknown): value is PayloadKey {
+  if (value === null || typeof value !== 'object') return false;
+  if (isSealTarget(value) || isRunPayloadKeys(value)) return true;
+  const proto = Object.getPrototypeOf(value);
+  return proto !== Object.prototype && proto !== null;
+}
+
+/**
+ * Which hooks a resume entry point may deliver to:
+ *
+ * - `hook`: `resumeHook(token)` — hooks created with `createHook()`. A webhook
+ *   is resumed through its URL (`resumeWebhook()`), whose token also carries
+ *   the webhook's region; `resumeHook()` never decodes tokens, so it refuses
+ *   them rather than look in the wrong region.
+ * - `webhook`: `resumeWebhook()` — webhooks only.
+ * - `any`: `resumeHook(hook)` — a hook object the caller already resolved
+ *   (observability tooling resolving any hook, webhooks included).
+ */
+type ResumeKind = 'hook' | 'webhook' | 'any';
+
+/** Where a resume looks its token up, and what it may deliver to. */
+interface ResumeTarget {
+  /** Region for by-token lookups; `undefined` is the World's default. */
+  region: string | undefined;
+  kind: ResumeKind;
+}
+
+function isRefusedKind(
+  kind: ResumeKind,
+  hook: Pick<ResumableHook, 'isWebhook'>
+): boolean {
+  if (kind === 'webhook') return hook.isWebhook === false;
+  if (kind === 'hook') return hook.isWebhook === true;
+  return false;
 }
 
 /**
@@ -340,10 +429,18 @@ export type ResumedHook = Hook & {
  * application level mints a fresh claim and can commit a second
  * `hook_received`.
  *
+ * A webhook (`createWebhook()`) is resumed by calling its URL, not by token
+ * here: passing a webhook's token rejects with {@link HookNotFoundError}.
+ *
+ * Hook tokens are unique per region. A hook created with
+ * `createHook({ region })` must be resumed with the same `region` option; by
+ * default the lookup is in `iad1`. A hook object carries its own region.
+ *
  * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
  * @param payload - The data payload to send to the hook
+ * @param options - {@link ResumeHookOptions}, such as the `region` the hook was created in
  * @returns Promise resolving to the {@link ResumedHook}
- * @throws {HookNotFoundError} If the Hook does not exist or its run has ended
+ * @throws {HookNotFoundError} If the Hook does not exist in the looked-up region, is a webhook, or its run has ended
  *
  * @example
  *
@@ -366,8 +463,16 @@ export type ResumedHook = Hook & {
 export async function resumeHook<T = any>(
   tokenOrHook: string | ResumableHook,
   payload: T,
-  encryptionKeyOverride?: PayloadKey
+  options?: ResumeHookOptions | PayloadKey
 ): Promise<ResumedHook> {
+  // The third parameter was an internal encryption-key override before it
+  // took options; both shapes are accepted.
+  const encryptionKeyOverride = isPayloadKey(options) ? options : undefined;
+  const resumeOptions = isPayloadKey(options) ? undefined : options;
+  const target: ResumeTarget =
+    typeof tokenOrHook === 'string'
+      ? { region: resumeOptions?.region, kind: 'hook' }
+      : { region: tokenOrHook.region, kind: 'any' };
   // Public entry point. It never attests hook freshness, so a Hook object
   // supplied here (which may carry a `resumeCapabilities` cached before a
   // server rollback or kill switch) is ignored by the dynamic-dedup gate and
@@ -385,7 +490,8 @@ export async function resumeHook<T = any>(
     payload,
     encryptionKeyOverride,
     false,
-    Date.now()
+    Date.now(),
+    target
   );
 }
 
@@ -405,9 +511,10 @@ export async function resumeHook<T = any>(
  *   resolution that hydrates hook metadata, and the `respondWith` setup) and
  *   stamping locally would silently exclude all of it, so the two entry points
  *   would report the same metric over different windows.
- * @param webhookOnly - Set by `resumeWebhook`: every hook the resume reaches,
- *   including one it is redirected to, must be a webhook; see
- *   `notFoundReasons`.
+ * @param target - The region by-token lookups use (a redirect after a
+ *   force-claim stays in it: tokens are unique per region, so the claimer is
+ *   homed there too), and which kind of hook every hook the resume reaches,
+ *   including one it is redirected to, must be; see `notFoundReasons`.
  */
 /**
  * How many times one `resumeHook()` follows a token to a new owner before
@@ -425,15 +532,16 @@ const MAX_FORCE_CLAIM_REDIRECTS = 3;
  *   same token up again straight away is the same question, so the miss is
  *   answered once, as it always was, instead of costing every caller of an
  *   unknown or expired token a second lookup.
- * - `not-webhook`: `resumeWebhook()` reached a hook that is not a webhook.
- *   That is final: the public webhook endpoint never delivers to a
- *   `createHook()` hook, whichever lookup (first or after a redirect) found
- *   it, and answering not-found keeps it from confirming the token exists.
+ * - `wrong-kind`: the resume reached a hook of a kind its entry point does
+ *   not deliver to (see `ResumeKind`): `resumeWebhook()` reached a
+ *   `createHook()` hook, or `resumeHook(token)` reached a webhook. That is
+ *   final whichever lookup (first or after a redirect) found it, and
+ *   answering not-found keeps it from confirming the token exists.
  */
 // per-copy-ok: an entry is written by `resumeHookAttempt` and read by the
 // redirect loop in `resumeHookImpl` around one error object thrown between
 // them, always within this module copy.
-const notFoundReasons = new WeakMap<object, 'lookup' | 'not-webhook'>();
+const notFoundReasons = new WeakMap<object, 'lookup' | 'wrong-kind'>();
 
 async function resumeHookImpl<T = any>(
   tokenOrHook: string | ResumableHook,
@@ -441,8 +549,9 @@ async function resumeHookImpl<T = any>(
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
-  webhookOnly = false
+  target: ResumeTarget
 ): Promise<ResumedHook> {
+  const { region } = target;
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
       const world = await getWorldLazy();
@@ -471,7 +580,7 @@ async function resumeHookImpl<T = any>(
       // owner. A Request whose body was not read yet (the attempt failed
       // before serializing, e.g. on a finished run's terminal check) is
       // re-sent as is.
-      let target: string | ResumableHook = tokenOrHook;
+      let resumeTarget: string | ResumableHook = tokenOrHook;
       let fresh = hookFreshlyLookedUp;
       // `resumeWebhook` resolved this key for the run it first looked up. A
       // redirect targets a different run with different payload keys, so the
@@ -512,19 +621,19 @@ async function resumeHookImpl<T = any>(
           return await resumeHookAttempt(
             world,
             span,
-            target,
+            resumeTarget,
             payload,
             keyOverride,
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            target
           );
         } catch (err) {
           if (
             err !== null &&
             typeof err === 'object' &&
-            notFoundReasons.get(err) === 'not-webhook'
+            notFoundReasons.get(err) === 'wrong-kind'
           ) {
             throw err;
           }
@@ -552,7 +661,7 @@ async function resumeHookImpl<T = any>(
               'workflow.hook.resume_redirects': redirects,
               'workflow.hook.resume_redirect_to_run': err.claimedByRunId,
             });
-            target = token;
+            resumeTarget = token;
             fresh = true;
             keyOverride = undefined;
             lookupsAfterRedirect = 0;
@@ -561,7 +670,7 @@ async function resumeHookImpl<T = any>(
           if (
             HookNotFoundError.is(err) &&
             redirects > 0 &&
-            typeof target === 'string' &&
+            typeof resumeTarget === 'string' &&
             lookupsAfterRedirect < MAX_LOOKUPS_AFTER_REDIRECT
           ) {
             assertResendable(err);
@@ -590,10 +699,15 @@ async function resumeHookImpl<T = any>(
             // the attempt's own lookup is not re-resolved (see
             // `notFoundReasons`).
             const attemptedHookId =
-              typeof target === 'string' ? undefined : target.hookId;
+              typeof resumeTarget === 'string'
+                ? undefined
+                : resumeTarget.hookId;
             let relocated: ResumableHook | undefined;
             try {
-              relocated = await world.hooks.getByToken(token);
+              relocated = await world.hooks.getByToken(
+                token,
+                lookupParams(region)
+              );
             } catch (lookupError) {
               if (!HookNotFoundError.is(lookupError)) {
                 runtimeLogger.warn(
@@ -613,7 +727,7 @@ async function resumeHookImpl<T = any>(
               relocated.hookId !== attemptedHookId &&
               (attemptedHookId === undefined ||
                 relocated.claimedFrom.hookId === attemptedHookId) &&
-              !(webhookOnly && relocated.isWebhook === false)
+              !isRefusedKind(target.kind, relocated)
             ) {
               assertResendable(err);
               redirects++;
@@ -621,7 +735,7 @@ async function resumeHookImpl<T = any>(
                 'workflow.hook.resume_redirects': redirects,
                 'workflow.hook.resume_redirect_to_run': relocated.runId,
               });
-              target = relocated;
+              resumeTarget = relocated;
               fresh = true;
               keyOverride = undefined;
               continue;
@@ -643,14 +757,17 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  target: ResumeTarget
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
     let hook: ResumableHook;
     if (suppliedToken) {
       try {
-        hook = await world.hooks.getByToken(tokenOrHook);
+        hook = await world.hooks.getByToken(
+          tokenOrHook,
+          lookupParams(target.region)
+        );
       } catch (lookupError) {
         if (HookNotFoundError.is(lookupError)) {
           notFoundReasons.set(lookupError, 'lookup');
@@ -660,13 +777,18 @@ async function resumeHookAttempt<T = any>(
     } else {
       hook = tokenOrHook;
     }
-    // `resumeWebhook()` checked the hook it looked up; a redirect lands on a
-    // different hook, and one taken over by `createHook({ experimental_force
-    // })` is never a webhook. Same answer as the entry-point check.
-    if (webhookOnly && hook.isWebhook === false) {
-      const notWebhook = new HookNotFoundError(hook.token);
-      notFoundReasons.set(notWebhook, 'not-webhook');
-      throw notWebhook;
+    // The entry point decides which kind of hook it may deliver to (see
+    // `ResumeKind`). `resumeWebhook()` checked the hook it looked up; a
+    // redirect lands on a different hook, and one taken over by
+    // `createHook({ experimental_force })` is never a webhook. The answer is a
+    // not-found either way, which does not confirm that the token exists.
+    if (isRefusedKind(target.kind, hook)) {
+      const wrongKind = new HookNotFoundError(
+        hook.token,
+        target.region === undefined ? undefined : { region: target.region }
+      );
+      notFoundReasons.set(wrongKind, 'wrong-kind');
+      throw wrongKind;
     }
     // The dynamic, response-only `resumeCapabilities` may only be trusted
     // when it came from a by-token lookup performed during this resume.
@@ -1041,8 +1163,12 @@ export async function resumeWebhook(
   // systematically shorter total than `resumeHook` ones into the same metric.
   const resumeRequestedAtMs = Date.now();
   const world = await getWorldLazy();
+  // A webhook's generated token carries the region the webhook is stored in
+  // (`wh.<region>.<id>`; see hook-region.ts). A legacy token carries none and
+  // lives in the World's default region.
+  const region = webhookTokenRegion(token);
   const { hook, metadataEncryptionKey } = withLazyMetadata(
-    await world.hooks.getByToken(token)
+    await world.hooks.getByToken(token, lookupParams(region))
   );
 
   // Only webhooks can be resumed via the public endpoint.
@@ -1099,7 +1225,7 @@ export async function resumeWebhook(
     metadataEncryptionKey(),
     true,
     resumeRequestedAtMs,
-    true
+    { region, kind: 'webhook' }
   );
 
   if (responseReadable) {

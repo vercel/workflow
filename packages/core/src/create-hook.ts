@@ -210,6 +210,36 @@ export interface HookOptions {
   experimental_force?: boolean;
 
   /**
+   * The region whose storage holds this hook and its token, for example
+   * `'fra1'`. Defaults to `iad1`.
+   *
+   * Hook tokens are unique per region, not globally: two hooks can hold the
+   * same token as long as they live in different regions. A hook created with
+   * a region must be resumed with the same one,
+   * `resumeHook(token, payload, { region })`; a lookup in any other region does
+   * not find it.
+   *
+   * Use it to keep a hook's data in a region you choose (data residency), or
+   * to store it next to the run (`createHook()` and resumes are faster when
+   * the hook is stored in the region the run executes in).
+   *
+   * Worlds without a regional dimension ignore this option.
+   *
+   * @example
+   *
+   * ```ts
+   * const hook = createHook<ApprovalInput>({
+   *   token: `approval:${documentId}`,
+   *   region: 'fra1',
+   * });
+   *
+   * // Elsewhere, outside the workflow:
+   * await resumeHook(`approval:${documentId}`, input, { region: 'fra1' });
+   * ```
+   */
+  region?: string;
+
+  /**
    * Additional user-defined data to include with the hook payload.
    *
    * Read it back outside the workflow with `getHookByToken()`, where
@@ -246,8 +276,25 @@ export interface HookOptions {
 export interface WebhookOptions
   extends Omit<
     HookOptions,
-    'token' | 'isWebhook' | 'experimental_minRetention' | 'experimental_force'
+    | 'token'
+    | 'isWebhook'
+    | 'experimental_minRetention'
+    | 'experimental_force'
+    | 'region'
   > {
+  /**
+   * The region whose storage holds this webhook, for example `'fra1'`.
+   * Defaults to the region the workflow run executes in, which keeps
+   * webhook deliveries fast.
+   *
+   * The region is encoded in the webhook's generated token (and therefore in
+   * `webhook.url`), so the webhook endpoint always finds it; there is nothing
+   * to pass when it is called.
+   *
+   * Worlds without a regional dimension ignore this option.
+   */
+  region?: string;
+
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.

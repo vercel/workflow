@@ -202,9 +202,8 @@ describe('resumeHook (resumeContext fast path)', () => {
   it('does not resolve the key again when one is passed in (resumeHook override)', async () => {
     const hook = { ...baseHook, resumeContext } satisfies Hook;
     const { runsGet, getEncryptionKeyForRun } = makeWorld(hook);
-    const override = {} as unknown as Awaited<
-      ReturnType<typeof import('../encryption.js').importKey>
-    >;
+    const { importKey } = await import('../encryption.js');
+    const override = await importKey(new Uint8Array(32));
 
     await resumeHook(hook, { foo: 'bar' }, override);
 
@@ -262,5 +261,88 @@ describe('resumeHook (resumeContext fast path)', () => {
       deploymentId: resumeContext.deploymentId,
     });
     expect(queue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('per-region hook lookups', () => {
+  afterEach(() => setWorld(undefined));
+
+  const resumeContext = {
+    deploymentId: 'deployment_region',
+    workflowName: 'processOrder',
+    runSpecVersion: SPEC_VERSION_CURRENT,
+    workflowCoreVersion: '5.0.0',
+  };
+  const hookFor = (overrides: Partial<Hook> = {}): Hook => ({
+    runId: 'wrun_region',
+    hookId: 'hook_region',
+    token: 'order:region',
+    ownerId: 'owner_1',
+    projectId: 'project_1',
+    environment: 'production',
+    createdAt: new Date(),
+    resumeContext,
+    ...overrides,
+  });
+
+  const makeWorld = (hook: Hook) => {
+    const getByToken = vi.fn().mockResolvedValue(hook);
+    const createEvent = vi.fn().mockResolvedValue({});
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+      runs: { get: vi.fn() },
+      events: { create: createEvent },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue: vi.fn().mockResolvedValue({}),
+    } as unknown as World);
+    return { getByToken, createEvent };
+  };
+
+  it('looks a token up in the region the caller names', async () => {
+    const { getByToken, createEvent } = makeWorld(hookFor());
+    await resumeHook('order:region', { ok: true }, { region: 'fra1' });
+    expect(getByToken).toHaveBeenCalledWith('order:region', {
+      region: 'fra1',
+    });
+    expect(createEvent).toHaveBeenCalled();
+  });
+
+  it('looks a token up in the default region without one', async () => {
+    const { getByToken } = makeWorld(hookFor());
+    await resumeHook('order:region', { ok: true });
+    expect(getByToken).toHaveBeenCalledWith('order:region', undefined);
+  });
+
+  it('refuses a webhook token', async () => {
+    const { createEvent } = makeWorld(hookFor({ isWebhook: true }));
+    const error = await resumeHook('order:region', { ok: true }).catch(
+      (err: unknown) => err
+    );
+    expect(HookNotFoundError.is(error)).toBe(true);
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('resumes a webhook passed as a hook object', async () => {
+    const { getByToken, createEvent } = makeWorld(hookFor());
+    await resumeHook(hookFor({ isWebhook: true, region: 'cle1' }), {
+      ok: true,
+    });
+    expect(getByToken).not.toHaveBeenCalled();
+    expect(createEvent).toHaveBeenCalled();
+  });
+
+  it("resumeWebhook() looks a regional token up in the token's region", async () => {
+    const token = 'wh.cle1.V1StGXR8_Z5jdHi6B-myT';
+    const { getByToken } = makeWorld(hookFor({ isWebhook: true, token }));
+    await resumeWebhook(token, new Request('http://x', { method: 'GET' }));
+    expect(getByToken).toHaveBeenCalledWith(token, { region: 'cle1' });
+  });
+
+  it('resumeWebhook() looks a legacy token up in the default region', async () => {
+    const token = 'V1StGXR8_Z5jdHi6B-myT';
+    const { getByToken } = makeWorld(hookFor({ isWebhook: true, token }));
+    await resumeWebhook(token, new Request('http://x', { method: 'GET' }));
+    expect(getByToken).toHaveBeenCalledWith(token, undefined);
   });
 });

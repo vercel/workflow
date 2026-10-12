@@ -484,6 +484,8 @@ export async function eventCollectorWorkflow() {
 | **Use Case** | Custom integrations, type-safe payloads | HTTP webhooks, standard REST APIs |
 | **Resuming** | [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) | Automatic via HTTP, or [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) |
 
+A webhook's token is resumed through its URL, not with `resumeHook()`: passing a webhook's token to `resumeHook()` throws `HookNotFoundError`.
+
 **Use hooks when:**
 - You need full control over the payload structure
 - You're integrating with custom event sources
@@ -644,6 +646,19 @@ When using custom tokens with `createHook()`:
 - **Make them deterministic**: Base them on data the external system can reconstruct, such as channel IDs or user IDs.
 - **Use namespacing**: Prefix tokens to avoid conflicts, such as `slack:${channelId}` or `github:${repoId}`.
 - **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance.
+
+### Token uniqueness and regions
+
+On Worlds that store hooks per region (the [Vercel World](/worlds/vercel#hook-regions)), hook tokens are unique **per region**. Hooks are stored in `iad1` by default unless you pass `region` to `createHook()`, so tokens of hooks without a region are unique across the project. A hook created with a region must be resumed with the same one:
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript
+const hook = createHook({ token: `order:${orderId}`, region: "fra1" }); // [!code highlight]
+
+await resumeHook(`order:${orderId}`, payload, { region: "fra1" }); // [!code highlight]
+```
+
+Webhooks are stored in their run's region by default, and the region is part of their generated token, so there is nothing to pass when the webhook URL is called. Worlds without regions ignore `region`.
 
 ### Response handling in webhooks
 

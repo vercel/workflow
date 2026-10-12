@@ -1,6 +1,7 @@
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import type {
   CreateHookRequest,
+  GetHookByTokenOptions,
   GetHookParams,
   Hook,
   ListHooksParams,
@@ -103,11 +104,16 @@ export async function createHook(
 
 export async function getHookByToken(
   token: string,
+  params?: GetHookByTokenOptions,
   config?: APIConfig
 ): Promise<Hook> {
+  const searchParams = new URLSearchParams({ token });
+  // Tokens are unique per region; without a region the server looks in the
+  // project's default hook home (iad1).
+  if (params?.region !== undefined) searchParams.set('region', params.region);
   try {
     return await makeRequest({
-      endpoint: `/v2/hooks/by-token?token=${encodeURIComponent(token)}`,
+      endpoint: `/v2/hooks/by-token?${searchParams.toString()}`,
       options: {
         method: 'GET',
       },
@@ -116,7 +122,10 @@ export async function getHookByToken(
     });
   } catch (error) {
     if (WorkflowWorldError.is(error) && error.status === 404) {
-      throw new HookNotFoundError(token);
+      throw new HookNotFoundError(
+        token,
+        params?.region === undefined ? undefined : { region: params.region }
+      );
     }
     throw error;
   }

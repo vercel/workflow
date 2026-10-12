@@ -186,9 +186,11 @@ export {
   healthCheck,
 } from './runtime/helpers.js';
 export {
+  type GetHookByTokenOptions,
   getHookByToken,
   type Hook,
   type ResumedHook,
+  type ResumeHookOptions,
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';

@@ -21,9 +21,11 @@ export {
   type WorkflowLifecycleHooks,
 } from '@workflow/core/runtime/lifecycle-hooks';
 export {
+  type GetHookByTokenOptions,
   getHookByToken,
   type Hook,
   type ResumedHook,
+  type ResumeHookOptions,
   resumeHook,
   resumeWebhook,
 } from '@workflow/core/runtime/resume-hook';

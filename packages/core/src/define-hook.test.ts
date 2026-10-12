@@ -70,7 +70,7 @@ describe('defineHook', () => {
     const payload = { approved: true, comment: 'Looks good' };
     await hook.resume('token', payload);
 
-    expect(resumeHookMock).toHaveBeenCalledWith('token', payload);
+    expect(resumeHookMock).toHaveBeenCalledWith('token', payload, undefined);
   });
 
   it('parses payload with schema before resuming', async () => {
@@ -84,10 +84,14 @@ describe('defineHook', () => {
 
     await hook.resume('token', { approved: true, comment: '  Ready!  ' });
 
-    expect(resumeHookMock).toHaveBeenCalledWith('token', {
-      approved: true,
-      comment: 'Ready!',
-    });
+    expect(resumeHookMock).toHaveBeenCalledWith(
+      'token',
+      {
+        approved: true,
+        comment: 'Ready!',
+      },
+      undefined
+    );
   });
 
   it('throws when schema validation fails', async () => {

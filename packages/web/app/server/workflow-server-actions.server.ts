@@ -1124,6 +1124,39 @@ export async function resumeHook(
   }
 }
 
+/**
+ * Resume a hook, looked up by its ID, by sending a payload.
+ *
+ * Resolves the hook object first and resumes that, which reaches any hook:
+ * webhooks included (`resumeHook(token)` refuses a webhook's token, since a
+ * webhook is resumed through its URL), and in whichever region the hook is
+ * stored (the hook object carries its region).
+ *
+ * @param worldEnv - Environment configuration for the World
+ * @param hookId - The hook ID
+ * @param payload - The JSON payload to send to the hook
+ */
+export async function resumeHookById(
+  worldEnv: EnvMap,
+  hookId: string,
+  payload: unknown
+): Promise<ServerActionResult<ResumeHookResult>> {
+  try {
+    const world = await getWorldFromEnv({ ...worldEnv });
+    const target = await world.hooks.get(hookId, { resolveData: 'none' });
+    const hook = await resumeHookRuntime(target, payload);
+
+    return createResponse({
+      hookId: hook.hookId,
+      runId: hook.runId,
+    });
+  } catch (error) {
+    return createServerActionError<ResumeHookResult>(error, 'resumeHookById', {
+      hookId,
+    });
+  }
+}
+
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,

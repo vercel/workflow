@@ -36,10 +36,9 @@ import {
 import { fetchEvents } from '~/lib/rpc-client';
 import type { EnvMap, HookListItem } from '~/lib/types';
 import {
-  fetchHookToken,
   getErrorMessage,
   getErrorTitle,
-  resumeHook,
+  resumeHookById,
   useWorkflowHooks,
 } from '~/lib/workflow-api-client';
 import { CopyableText } from './display-utils/copyable-text';
@@ -95,10 +94,10 @@ export function HooksTable({
   // Hook actions for resolve functionality
   const hookActions = useHookActions({
     onResolve: async (hook, payload) => {
-      // List rows are metadata-only; fetch the secret token on demand just
-      // before resuming, keyed by the hook's run/hook id.
-      const token = await fetchHookToken(env, hook.runId, hook.hookId);
-      await resumeHook(env, token, payload);
+      // List rows are metadata-only. Resume by hook ID: the server resolves
+      // the hook object, which reaches webhooks too and carries the region
+      // the hook is stored in (a token alone does neither).
+      await resumeHookById(env, hook.hookId, payload);
     },
     callbacks: {
       onSuccess: refresh,
