@@ -75,6 +75,10 @@ describe('Postgres dropped connections (integration)', () => {
   test('survives losing a checked-out client between statements', async () => {
     const { result, stderr } = await dropConnections('checked-out');
     expect(result).toEqual({ dropped: 1, heldQueryRejected: true });
+    // One line per lost connection, though pg reports this one twice.
+    expect(
+      stderr.match(/\[world-postgres\] Pooled PostgreSQL connection lost/g)
+    ).toEqual(['[world-postgres] Pooled PostgreSQL connection lost']);
     expect(stderr).toContain(
       '[world-postgres] Pooled PostgreSQL connection lost (57P01)'
     );

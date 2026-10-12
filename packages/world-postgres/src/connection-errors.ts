@@ -33,7 +33,16 @@ export function handleConnectionErrors(
       `[world-postgres] Pooled PostgreSQL connection lost${error.code ? ` (${error.code})` : ''}: ${error.message}`
     );
   };
-  pool.on('connect', (client: PoolClient) => client.on('error', log));
+  pool.on('connect', (client: PoolClient) => {
+    let lost = false;
+    client.on('error', (error) => {
+      // A client nobody has ended reports one drop twice: the server's error,
+      // then "Connection terminated unexpectedly" as the socket closes.
+      if (lost) return;
+      lost = true;
+      log(error);
+    });
+  });
   // pg-pool re-emits an idle client's error here after the listener above has
   // logged it, so this one only keeps the pool from throwing.
   pool.on('error', () => {});
