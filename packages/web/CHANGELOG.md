@@ -1,5 +1,12 @@
 # @workflow/web
 
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb)]:
+  - @workflow/world-local@5.1.1
+
 ## 5.0.3
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @workflow/nest
 
+## 5.1.2
+
+### Patch Changes
+
+- Updated dependencies [[`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/utils@5.0.2
+  - @workflow/builders@5.0.4
+
 ## 5.1.1
 
 ### Patch Changes
