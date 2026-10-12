@@ -56,6 +56,53 @@ const Invoke = z.compile(
     })
 );
 
+/** An `attr_set` for the fence routes below to send in-band. */
+const fenceAttrSet = (value: string) =>
+  ({
+    eventType: 'attr_set',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {
+      changes: [{ key: 'fence_probe', value }],
+      writer: { type: 'workflow' },
+    },
+  }) as AnyEventRequest;
+
+/**
+ * A run's in-band fence counters: the list snapshot where the World lists
+ * one, else the counters a refusal carries. The refused write expects a count
+ * no run holds, so the fence refuses it before writing or allocating
+ * anything. See the in-band fence section of the building-a-world guide.
+ */
+async function fenceCountersOf(
+  world: Awaited<ReturnType<typeof getWorld>>,
+  runId: string
+): Promise<EventLogSnapshot | null> {
+  const { snapshot } = await world.events.list({ runId });
+  if (snapshot) return snapshot;
+  // Without its overloads, so the probe can send any request.
+  const create = world.events.create.bind(world.events) as (
+    runId: string,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
+  const refusal = await create(runId, fenceAttrSet('count'), {
+    inBand: true,
+    expectedSeqInBand: Number.MAX_SAFE_INTEGER,
+  }).then(
+    () => null,
+    (error: unknown) =>
+      error as { name?: unknown; seq?: unknown; seqInBand?: unknown }
+  );
+  if (
+    refusal?.name === 'InBandSupersededError' &&
+    typeof refusal.seq === 'number' &&
+    typeof refusal.seqInBand === 'number'
+  ) {
+    return { seq: refusal.seq, seqInBand: refusal.seqInBand };
+  }
+  return null;
+}
+
 // Track flow handler invocations per run for testing inline execution
 // per-copy-ok: this file is a standalone test server entry (it calls `serve()`
 // below), so it runs as its own process with one module instance. There is no
@@ -194,6 +241,12 @@ const app = new Hono()
     const world = await getWorld();
     return ctx.json(world.capabilities ?? {});
   })
+  .get('/runs/:runId/fence-counters', async (ctx) => {
+    const world = await getWorld();
+    return ctx.json({
+      counters: await fenceCountersOf(world, ctx.req.param('runId')),
+    });
+  })
   .post('/_fence-probe', async (ctx) => {
     // Drives the in-band fence on a run of its own, created directly through
     // the World so no orchestrator writes to it concurrently.
@@ -215,22 +268,13 @@ const app = new Hono()
       },
     } as AnyEventRequest);
     const id = created.event?.runId ?? created.run?.runId ?? runId;
-    const snapshotOf = async () =>
-      (await world.events.list({ runId: id })).snapshot ?? null;
-    const attrSet = (value: string) =>
-      ({
-        eventType: 'attr_set',
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          changes: [{ key: 'fence_probe', value }],
-          writer: { type: 'workflow' },
-        },
-      }) as AnyEventRequest;
+    // The list snapshot, or a refusal's counters where the World lists none.
+    const countersOf = () => fenceCountersOf(world, id);
 
-    const atCreation = await snapshotOf();
+    const atCreation = await countersOf();
     const current = atCreation?.seqInBand ?? 0;
     // A count one behind the World's, as a superseded orchestrator holds.
-    const refusal = await create(id, attrSet('stale'), {
+    const refusal = await create(id, fenceAttrSet('stale'), {
       inBand: true,
       expectedSeqInBand: current - 1,
     }).then(
@@ -240,12 +284,12 @@ const app = new Hono()
         status: (error as { status?: unknown })?.status ?? null,
       })
     );
-    const afterRefusal = await snapshotOf();
-    const accepted = await create(id, attrSet('current'), {
+    const afterRefusal = await countersOf();
+    const accepted = await create(id, fenceAttrSet('current'), {
       inBand: true,
       expectedSeqInBand: current,
     });
-    const afterAccept = await snapshotOf();
+    const afterAccept = await countersOf();
     return ctx.json({
       atCreation,
       refusal,

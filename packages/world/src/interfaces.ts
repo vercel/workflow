@@ -618,11 +618,15 @@ export interface WorldCapabilities {
    *   in-band writes (`seqInBand`). A new run's `run_created` counts as
    *   in-band and is never fenced itself, so a fresh run holds
    *   `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
-   * - **A list snapshot.** `events.list` on a slot-numbered run returns
-   *   `snapshot: { seq, seqInBand }` on every page
-   *   ({@link EventListResponse.snapshot}), read before the listing.
-   *   world-vercel passes on the snapshot its backend reports, which it does
-   *   not on every run; its refusals carry both counters.
+   * - **The counters, from a list or a refusal.** `events.list` on a
+   *   slot-numbered run returns `snapshot: { seq, seqInBand }`
+   *   ({@link EventListResponse.snapshot}), read before the listing, on
+   *   every page where the World reads one. A World may list none
+   *   (world-vercel lists one only where its backend reports it); its
+   *   refusals then carry both counters, read together
+   *   (`InBandSupersededError.seq` and `.seqInBand`), and a writer takes its
+   *   count from a refusal instead. Building a World's in-band fence section
+   *   says how.
    * - **Fenced in-band creates.** A create with `inBand: true` carries
    *   {@link CreateEventParams.expectedSeqInBand}. The World checks it
    *   against `seqInBand` and advances both counters by the positions it
