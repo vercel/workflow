@@ -12,6 +12,7 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type {
   AnyEventRequest,
   CreateEventParams,
@@ -38,6 +39,7 @@ import {
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
   HookSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
@@ -59,6 +61,7 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
+import { lock as lockFile } from 'proper-lockfile';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
@@ -123,13 +126,6 @@ import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-/**
- * In-band positions a single-orchestrator run holds before its first fenced
- * write: `run_created`'s. The value the in-band fence and its list snapshot
- * report for a run no in-band write has advanced yet.
- */
-export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
 
 /**
  * Entry ceiling for the in-process event cache. A run whose log exceeds this
@@ -607,6 +603,35 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
+/**
+ * The in-band fence's in-process locks, keyed by data directory and run. On
+ * `globalThis` (see `globalSingleton`) so every storage instance and every
+ * bundled copy of this module in one process takes turns before any of them
+ * takes the file lock that orders writers across processes.
+ */
+function inBandFenceState() {
+  return globalSingleton('@workflow/world-local//inBandFence', 2, () => ({
+    locks: new Map<string, Promise<unknown>>(),
+  }));
+}
+
+/**
+ * A run's in-band count on disk, at `.locks/runs/<runId>.in-band[.tag]`:
+ * `seqInBand`, and while an in-band write is between its check and its
+ * publish, `pending` (the count it was accepted at). Written atomically
+ * (temp file and rename) under the run's fence lock; read without it.
+ */
+const InBandCountSchema = z.object({
+  seqInBand: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative().optional(),
+});
+type InBandCount = z.infer<typeof InBandCountSchema>;
+
+function inBandCountPath(basedir: string, runId: string, tag?: string) {
+  const name = tag ? `${runId}.in-band.${tag}` : `${runId}.in-band`;
+  return resolveWithinBase(basedir, '.locks', 'runs', name);
+}
+
 export type LocalEventsStorage = Storage['events'] & {
   clearCache(): void;
 };
@@ -3642,11 +3667,11 @@ export function createEventsStorage(
   }) as LocalEventsStorage['create'];
 
   // ------------------------------------------------------------------
-  // In-band writer fence (single-orchestrator runs, spec >= 9)
+  // In-band writer fence (WorldCapabilities.inBandFence)
   // ------------------------------------------------------------------
   //
-  // An in-process counter per run of the positions accepted from in-band
-  // writes (writes by the run's orchestrator). `list` reports it as
+  // A per-run count, on disk, of the positions accepted from in-band writes
+  // (writes by the run's orchestrator). `list` reports it as
   // `snapshot.seqInBand`, read before the listing; an in-band create is
   // accepted only when its `expectedSeqInBand` equals it, and otherwise
   // refused with `InBandSupersededError` before anything is written, so a
@@ -3659,16 +3684,116 @@ export function createEventsStorage(
   // so a snapshot never counts an in-band write whose event the listing
   // that follows could miss.
   //
-  // In-process, per storage instance, like the step and hook locks above:
-  // two instances sharing a directory (or a restarted process) do not share
-  // it. A restart starts every run back at `IN_BAND_SEQ_AT_RUN_CREATION`,
-  // which is safe: the old process's writers are gone, and the next
-  // delivery adopts the restarted value from its own snapshot.
-  const inBandSeq = new Map<string, number>();
-  const fenceLocks = new Map<string, Promise<unknown>>();
+  // The count lives in a file (`inBandCountPath`) and every check-and-advance
+  // runs under a lock file on it (proper-lockfile, like the hook token
+  // claim), after an in-process lock shared by every storage instance in the
+  // process: so two processes on one data directory fence each other, as two
+  // storage instances in one process do, and a restart keeps every count.
+  // Between its check and its publish an accepted write marks the count
+  // `pending`. A writer that died there (its lock goes stale) leaves the
+  // mark, and the next writer through the lock counts that write as if it
+  // landed: it may have, and counting a write that did not land only costs a
+  // superseded redelivery, while missing one that did would let a stale
+  // writer in. A snapshot reports the count without a pending write.
+  const fenceState = inBandFenceState();
+  const fenceKey = (runId: string) =>
+    `${path.resolve(basedir)}\0${slotStateKey(runId)}`;
 
-  const readInBandSeq = (runId: string) =>
-    inBandSeq.get(slotStateKey(runId)) ?? IN_BAND_SEQ_AT_RUN_CREATION;
+  const readInBandCount = async (runId: string): Promise<InBandCount> =>
+    (await readJSON(
+      inBandCountPath(basedir, runId, tag),
+      InBandCountSchema
+    )) ?? {
+      seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+    };
+
+  const writeInBandCount = (runId: string, count: InBandCount) =>
+    writeJSON(inBandCountPath(basedir, runId, tag), count, {
+      overwrite: true,
+    });
+
+  /** The highest slot published for `runId` as of now, or `undefined` for a ULID-numbered run. */
+  async function readTopSlot(runId: string): Promise<number | undefined> {
+    const state = runSlotState.get(slotStateKey(runId));
+    if (state === null) return undefined;
+    const scan = await scanRunEventIds(basedir, runId, tag);
+    if (state === undefined && scan.count > 0 && !scan.usesSlots) {
+      return undefined;
+    }
+    return Math.max(state?.published ?? 0, scan.maxSlot);
+  }
+
+  /**
+   * The count an in-band write is checked against, under the fence lock. A
+   * `pending` mark there was left by a writer that died between its check
+   * and its publish: it is counted now, and the mark cleared.
+   */
+  async function settledInBandCount(runId: string): Promise<number> {
+    const count = await readInBandCount(runId);
+    if (count.pending === undefined) return count.seqInBand;
+    const settled = Math.max(count.seqInBand, count.pending + 1);
+    await writeInBandCount(runId, { seqInBand: settled });
+    return settled;
+  }
+
+  async function supersededAt(
+    runId: string,
+    expected: number,
+    current: number
+  ): Promise<InBandSupersededError> {
+    const seq = await readTopSlot(runId).catch(() => undefined);
+    return new InBandSupersededError(
+      `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+      { seqInBand: current, ...(seq !== undefined ? { seq } : {}) }
+    );
+  }
+
+  /** Run `fn` holding the run's fence lock: in this process, then across processes. */
+  function withFenceLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    return withInProcessLock(fenceState.locks, fenceKey(runId), async () => {
+      const countPath = inBandCountPath(basedir, runId, tag);
+      await fs.mkdir(path.dirname(countPath), { recursive: true });
+      let compromised: Error | undefined;
+      let release: () => Promise<void>;
+      try {
+        release = await lockFile(countPath, {
+          realpath: false,
+          stale: 30_000,
+          update: 1_000,
+          retries: {
+            retries: 350,
+            factor: 1,
+            minTimeout: 100,
+            maxTimeout: 100,
+          },
+          onCompromised(error) {
+            compromised = error;
+          },
+        });
+      } catch (error) {
+        throw new WorkflowWorldError(
+          `Could not acquire the in-band fence lock of run ${runId}`,
+          { cause: error }
+        );
+      }
+      let result: T;
+      try {
+        result = await fn();
+      } finally {
+        if (!compromised) await release().catch(() => {});
+      }
+      // Held past its staleness (a stalled process): another writer may have
+      // taken the lock meanwhile, so this write's place in the count is not
+      // known. Not a 4xx, so a writer treats the outcome as unknown.
+      if (compromised) {
+        throw new WorkflowWorldError(
+          `The in-band fence lock of run ${runId} was lost while a write held it`,
+          { cause: compromised }
+        );
+      }
+      return result;
+    });
+  }
 
   const fencedCreate = (async (
     runId: string | null,
@@ -3693,19 +3818,11 @@ export function createEventsStorage(
       );
     }
     assertSafeEntityId('runId', runId);
-    const key = slotStateKey(runId);
-    return withInProcessLock(fenceLocks, key, async () => {
-      const current = readInBandSeq(runId);
-      if (current !== expected) {
-        const published = runSlotState.get(key)?.published;
-        throw new InBandSupersededError(
-          `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
-          {
-            seqInBand: current,
-            ...(published !== undefined ? { seq: published } : {}),
-          }
-        );
-      }
+    return withFenceLock(runId, async () => {
+      const current = await settledInBandCount(runId);
+      if (current !== expected)
+        throw await supersededAt(runId, expected, current);
+      await writeInBandCount(runId, { seqInBand: current, pending: current });
       let result: EventResult;
       try {
         result = await create(runId, data, params);
@@ -3714,11 +3831,17 @@ export function createEventsStorage(
         // published before failing; counting a write that did not land only
         // costs a superseded redelivery, while missing one that did would
         // let a stale writer in.
-        if (!isDefinitiveRefusal(error)) inBandSeq.set(key, current + 1);
+        await writeInBandCount(runId, {
+          seqInBand: isDefinitiveRefusal(error) ? current : current + 1,
+        });
         throw error;
       }
-      inBandSeq.set(key, current + 1);
-      return result;
+      // A create can succeed without appending (`run_started` on a run that
+      // is already running returns the run and no event); it allocated no
+      // position, so the count stays.
+      const allocated = result.event ? 1 : 0;
+      await writeInBandCount(runId, { seqInBand: current + allocated });
+      return { ...result, allocated };
     });
   }) as LocalEventsStorage['create'];
 
@@ -3730,7 +3853,7 @@ export function createEventsStorage(
   async function readEventLogSnapshot(
     runId: string
   ): Promise<EventLogSnapshot | undefined> {
-    const seqInBand = readInBandSeq(runId);
+    const { seqInBand } = await readInBandCount(runId);
     const state = runSlotState.get(slotStateKey(runId));
     if (state === null) return undefined;
     if (state !== undefined) return { seq: state.published, seqInBand };

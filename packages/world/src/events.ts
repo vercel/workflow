@@ -897,11 +897,11 @@ export interface CreateEventParams {
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
    *
-   * Advisory. Parallelizing a create with its publish is opt-in and off by
-   * default (`WORKFLOW_RESILIENT_STEP_DISPATCH`), precisely because a create
-   * can come back refused while the message carrying its payload is already
-   * out. A deployment that opts in accepts that window, and a backend MAY use
-   * this flag to narrow it: refuse the re-ensure (world-vercel surfaces the
+   * Advisory, and not set by the current `@workflow/core` runtime, which
+   * publishes a step's queue message only after its create. A producer that
+   * parallelizes the two accepts that a create can come back refused while
+   * the message carrying its payload is already out, and a backend MAY use
+   * this flag to narrow that window: refuse the re-ensure (world-vercel surfaces the
    * backend's 410 as `RunExpiredError`, which the consumer treats as "nothing
    * left to execute" and acks the message) when it has recorded a refusal for
    * this correlation id and no step entity exists. Best-effort by nature (a
@@ -1355,17 +1355,20 @@ export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
 /**
  * Result of {@link Storage.events.list}.
  *
- * `snapshot` is required on every page of a single-orchestrator run's log
- * (spec >= 9; see `WorldCapabilities.inBandFence`). A full load (following `cursor` until `hasMore` is false) then
- * covers every position up to `snapshot.seq` of its FIRST page, each one
- * committed or sealed as a `noop`. The runtime takes its
+ * `snapshot` is set by a World that implements the in-band writer fence
+ * (`WorldCapabilities.inBandFence`), on every page of a slot-numbered run's
+ * log where the World reads one. It is read before the listing, so a full
+ * load (following `cursor` until `hasMore` is false) covers every position
+ * up to the FIRST page's `snapshot.seq`, each one committed or sealed as a
+ * `noop`. A fenced writer takes its
  * {@link CreateEventParams.expectedSeqInBand} from the first page's
- * `snapshot.seqInBand` and never from counting events in the log: a count
- * cannot tell which positions were in-band. The runtime refuses to write
- * in-band from a full load whose first page has none.
+ * `snapshot.seqInBand`, never from counting events: a count cannot tell
+ * which positions were in-band.
  *
- * Optional in the type only because `list` also serves runs created before
- * spec 9, which have no in-band count.
+ * On a single-orchestrator run (spec >= 9) it is required on every page: the
+ * runtime refuses to write in-band from a full load whose first page has
+ * none. On earlier runs a fencing World that lists no snapshot reports the
+ * counters on a refusal (`InBandSupersededError`) instead.
  */
 export type EventListResponse = PaginatedResponse<Event> & {
   snapshot?: EventLogSnapshot;

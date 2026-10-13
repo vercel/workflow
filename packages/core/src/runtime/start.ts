@@ -12,6 +12,7 @@ import {
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
+  resolveQueueNamespace,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -422,6 +423,23 @@ export interface StartOptionsBase {
    * recognize the value keeps the data.
    */
   experimental_retention?: RunRetention;
+
+  /**
+   * Set to `false` to store the run's arguments uncompressed.
+   *
+   * Arguments are compressed by default when the target run can decode
+   * them. The attempt costs CPU proportional to the input size and is
+   * wasted on incompressible data (media, encrypted or random bytes),
+   * so callers that know their inputs will not shrink can skip it.
+   *
+   * `true` is the default and does not force compression: a target that
+   * cannot decode compressed payloads, or a process with
+   * `WORKFLOW_DISABLE_COMPRESSION=1` set, still stores them uncompressed.
+   * This option is the per-call counterpart of that environment variable
+   * and only affects the arguments; a dynamic workflow's code is
+   * compressed regardless.
+   */
+  compressArguments?: boolean;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -1005,9 +1023,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
       const snapshotThreshold = getSnapshotThresholdFromEnv();
+      // The queue namespace the run's messages travel on, recorded so a World
+      // that re-enqueues active runs on restart (world-local, world-postgres)
+      // sends this run back to its own namespace's consumer.
+      const queueNamespace = resolveQueueNamespace(opts.namespace);
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
+        ...(queueNamespace ? { queueNamespace } : {}),
         ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
         features: { encryption: !!encryptionKey },
         ...(targetHookResumeInputVersion !== undefined
@@ -1035,14 +1058,17 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
-      // Compress workflow arguments only when the run itself is marked as
-      // possibly containing compressed payloads (specVersion >= 5) AND the
-      // target deployment can decode them (same-deployment, or probed
-      // capability for cross-deployment starts).
+      // Compress only when the run itself is marked as possibly containing
+      // compressed payloads (specVersion >= 5) AND the target deployment can
+      // decode them (same-deployment, or probed capability for
+      // cross-deployment starts). The caller's `compressArguments: false` opt-out
+      // applies to the arguments alone, not to dynamic workflow code.
       const compression: CompressionMode =
         specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
           ? targetCompression
           : false;
+      const argumentCompression: CompressionMode =
+        opts.compressArguments === false ? false : compression;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -1051,7 +1077,7 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        compression
+        argumentCompression
       );
 
       // Dynamic workflow code goes through the same serialization pipeline as

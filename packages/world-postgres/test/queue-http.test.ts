@@ -3,11 +3,10 @@ import { createServer, type Server } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { getQueueTopicPrefix } from '@workflow/world';
-import { Pool } from 'pg';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue } from '../src/queue.js';
-import { tolerateTeardown } from './fixtures/pool.js';
+import { TestPool } from './pool.js';
 
 /**
  * Queue deliveries execute the workflow body inline, so response headers
@@ -27,27 +26,37 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   const originalDispatcher = getGlobalDispatcher();
   const shortDeadline = new Agent({ headersTimeout: 10, bodyTimeout: 10 });
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let connectionString: string;
   let server: Server;
-  let phase: 'headers' | 'body' | 'abort' | 'serial';
+  let phase: 'headers' | 'body' | 'abort' | 'serial' | 'reschedule';
   let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
   let disconnected = Promise.withResolvers<void>();
   let attempts: string[] = [];
+  let deliveryCounts: string[] = [];
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     connectionString = container.getConnectionUri();
-    pool = new Pool({ connectionString, max: 4 });
-    tolerateTeardown(pool);
+    pool = new TestPool({ connectionString, max: 4 });
     server = createServer(async (request, response) => {
       const body = (await request.toArray()) as Buffer[];
       attempts.push(String(request.headers['x-vqs-message-attempt']));
+      deliveryCounts.push(
+        String(request.headers['x-vqs-message-delivery-count'])
+      );
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
+      if (phase === 'reschedule') {
+        // Ask for the same message again twice, then acknowledge it.
+        response.end(
+          attempts.length < 3 ? JSON.stringify({ timeoutSeconds: 0 }) : '{}'
+        );
+        return;
+      }
       if (phase === 'serial') {
         const { stepId } = JSON.parse(Buffer.concat(body).toString()) as {
           stepId?: string;
@@ -128,6 +137,36 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         )
         .toBe(0);
       expect(attempts).toEqual(['1']);
+    } finally {
+      await queue.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  });
+
+  test('a { timeoutSeconds } redelivery reports the next delivery count', async () => {
+    phase = 'reschedule';
+    attempts = [];
+    deliveryCounts = [];
+    const queue = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    try {
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
+        runId: `run_${randomUUID()}`,
+      });
+      // Each replacement job is a new Graphile job whose own attempt count
+      // starts over. `deliveryCount` keeps counting the message's
+      // deliveries; `attempt`, which core counts against its max-deliveries
+      // cap, starts over with the job, so a step retried in place many times
+      // on one message is not failed by that cap.
+      await expect.poll(() => attempts, { timeout: 10_000 }).toHaveLength(3);
+      expect(deliveryCounts).toEqual(['1', '2', '3']);
+      expect(attempts).toEqual(['1', '1', '1']);
     } finally {
       await queue.close();
       await pool.query('TRUNCATE graphile_worker._private_jobs');

@@ -103,15 +103,18 @@ export {
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
   HealthCheckPayloadSchema,
   MessageId,
   orchestratorRunIdOf,
   parseQueueName,
+  parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
   resolveQueueNamespace,
   ValidQueueName,
+  WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
 export { reenqueueActiveRuns } from './recovery.js';

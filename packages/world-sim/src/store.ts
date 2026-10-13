@@ -34,6 +34,7 @@ import {
   entityResolveData,
   type Hook,
   type HookResumeContext,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isStepEventType,
@@ -59,12 +60,6 @@ import type { IdFactory } from './ids.js';
 const MAX_EVENTS_PER_RUN = 25_000;
 
 const DEFAULT_PAGE_LIMIT = 20;
-
-/**
- * In-band positions a new run holds: `run_created`'s. The in-band fence's
- * count starts here.
- */
-export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
 
 export interface SimStoreOptions {
   now(): number;
@@ -630,8 +625,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           );
         }
         const result = await create(runId, data, params);
-        seqInBandByRun.set(runId, current + 1);
-        return { ...result, allocated: 1 } as EventResult;
+        // A create can succeed without appending (`run_started` on a running
+        // run); it allocated no position, so the count stays.
+        const allocated = result.event ? 1 : 0;
+        if (allocated > 0) seqInBandByRun.set(runId, current + allocated);
+        return { ...result, allocated } as EventResult;
       });
     fenceLocks.set(runId, run);
     return run;

@@ -78,7 +78,6 @@ async function runWorkflowHandlerWithEvents(
     incomingStepId?: string;
     incomingStepName?: string;
     runContext?: WorkflowInvokePayload['runContext'];
-    stepInput?: WorkflowInvokePayload['stepInput'];
     hookResumeTiming?: WorkflowInvokePayload['hookResumeTiming'];
     runsGet?: () => Promise<WorkflowRun>;
     /** Lazy hook resume payload carried on the incoming queue message. */
@@ -138,7 +137,6 @@ async function runWorkflowHandlerWithEvents(
               stepId: options.incomingStepId,
               stepName: options.incomingStepName,
               runContext: options.runContext,
-              stepInput: options.stepInput,
               hookResumeTiming: options.hookResumeTiming,
               hookInput: options.hookInput,
             },
@@ -281,7 +279,6 @@ describe('workflowEntrypoint replay guards', () => {
           rootRunId: workflowRun.runId,
         }
       : undefined;
-    const stepInput = { input: new Uint8Array([1, 2, 3]) };
     const hookResumeTiming = {
       resumeRequestedAtMs: 1000,
       queuePublishRequestedAtMs: 1100,
@@ -301,7 +298,6 @@ describe('workflowEntrypoint replay guards', () => {
         incomingStepId: 'step_1',
         incomingStepName: 'myStep',
         runContext,
-        stepInput,
         hookResumeTiming,
         runsGet,
         queueCalls,
@@ -315,7 +311,6 @@ describe('workflowEntrypoint replay guards', () => {
       stepId: 'step_1',
       stepName: 'myStep',
       deploymentMismatchRetryCount: 1,
-      stepInput,
       hookResumeTiming,
     });
     expect(queueCalls[0].message.runContext).toEqual(runContext);
@@ -1128,13 +1123,8 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
      * published it).
      */
     retryingQueuedStep?: boolean;
-    /** `specVersion` to stamp on the run (gates resilient step dispatch). */
-    runSpecVersion?: number;
   }) {
     const workflowRun = await makeRunningRun(opts.runId);
-    if (opts.runSpecVersion !== undefined) {
-      (workflowRun as any).specVersion = opts.runSpecVersion;
-    }
     const order: string[] = [];
 
     // Start from a clean slate so the rejection check only observes promises
@@ -1537,7 +1527,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   });
 });
 
-describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', () => {
+describe('workflowEntrypoint queued step consumption (stepInput)', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();

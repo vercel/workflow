@@ -682,13 +682,16 @@ export interface WorldCapabilities {
    * - **A per-run in-band count.** Next to the position counter its sequencer
    *   allocates from (`seq`), the World counts the positions allocated to
    *   in-band writes (`seqInBand`, see {@link CreateEventParams.inBand}). A
-   *   new run's `run_created` counts as in-band, so a fresh run holds
-   *   `seq = 1, seqInBand = 1`.
-   * - **A list snapshot.** `events.list` on such a run returns
-   *   `snapshot: { seq, seqInBand }` on every page
-   *   ({@link EventListResponse.snapshot}), read before the listing. A full
-   *   load from the first page covers every position up to that `seq`, each
-   *   one committed or sealed.
+   *   new run's `run_created` counts as in-band and is never fenced itself,
+   *   so a fresh run holds `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
+   * - **A list snapshot.** `events.list` on a slot-numbered run returns
+   *   `snapshot: { seq, seqInBand }` ({@link EventListResponse.snapshot}),
+   *   read before the listing. A full load from the first page covers every
+   *   position up to that `seq`, each one committed or sealed. Required on
+   *   every page of a single-orchestrator run (spec >= 9). On earlier runs a
+   *   World may list none (world-vercel lists one only where its backend
+   *   reports it); its refusals then carry both counters, read together
+   *   (`InBandSupersededError.seq` and `.seqInBand`).
    * - **Fenced in-band creates.** A create or batch with `inBand: true`
    *   carries {@link CreateEventParams.expectedSeqInBand}. The World checks it
    *   against `seqInBand` and advances both counters by the positions it

@@ -12,7 +12,7 @@ import { createFetcher, startServer } from './util.mjs';
  */
 export function inBandFence(world: string) {
   test(
-    'declares the in-band fence and lists a snapshot',
+    "declares the in-band fence and reports a run's counters",
     { timeout: 30_000 },
     async () => {
       const server = await startServer({ world }).then(createFetcher);
@@ -32,15 +32,17 @@ export function inBandFence(world: string) {
         { interval: 200, timeout: 25_000 }
       );
 
-      // A full listing covers every position up to the snapshot's `seq`, and a
+      // A full listing covers every position up to the counters' `seq`, and a
       // settled run's log holds them all. `run_created` and the orchestrator's
       // own writes are in-band, so the count is at least 1 and at most `seq`.
+      // The counters come from the list snapshot, or from a refusal where the
+      // World lists none.
       const events = await server.getEvents(result.runId);
-      const snapshot = await server.getEventLogSnapshot(result.runId);
-      expect(snapshot).not.toBeNull();
-      expect(snapshot?.seq).toBe(eventIdToSlot(events.at(-1)?.eventId ?? ''));
-      expect(snapshot?.seqInBand).toBeGreaterThanOrEqual(1);
-      expect(snapshot?.seqInBand).toBeLessThanOrEqual(snapshot?.seq ?? 0);
+      const counters = await server.getFenceCounters(result.runId);
+      expect(counters).not.toBeNull();
+      expect(counters?.seq).toBe(eventIdToSlot(events.at(-1)?.eventId ?? ''));
+      expect(counters?.seqInBand).toBeGreaterThanOrEqual(1);
+      expect(counters?.seqInBand).toBeLessThanOrEqual(counters?.seq ?? 0);
     }
   );
 

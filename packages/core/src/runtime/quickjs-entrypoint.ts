@@ -207,11 +207,10 @@ async function queueStepMessage(params: {
    */
   purpose: 'dispatch' | `backstop:${string}` | `retry:${number}`;
   /**
-   * Resilient step dispatch: the serialized (possibly encrypted) step input
-   * to carry on the message as `stepInput`, so the consumer can idempotently
-   * re-ensure the `step_created` event if the producer's parallel direct
-   * write failed transiently. Only set on `dispatch` publishes that
-   * dispatchPendingOps parallelizes with the step_created write.
+   * The serialized (possibly encrypted) step input to carry on the message
+   * as `stepInput`, so the step handler need not read its `step_created`
+   * back. Only set on `dispatch` publishes of a step whose `step_created`
+   * this invocation already committed.
    */
   stepInput?: Uint8Array;
   /** The attempt the message starts with, when above 1. */
@@ -256,9 +255,9 @@ async function queueStepMessage(params: {
     {
       // The 'dispatch' key is step-identity-scoped (correlationId + hashed
       // step name), shared with the node engine's dispatch of the same step
-      // so the two stay mutually exclusive, without a revoked resilient
-      // message absorbing a reassigned correlation id's legitimate dispatch.
-      // See stepDispatchIdempotencyKey.
+      // so the two stay mutually exclusive, without a stale message for a
+      // reassigned correlation id absorbing its legitimate dispatch. See
+      // stepDispatchIdempotencyKey.
       idempotencyKey:
         purpose === 'dispatch'
           ? stepDispatchIdempotencyKey(step.correlationId, step.stepId)
@@ -274,7 +273,6 @@ async function queueStepMessage(params: {
     correlationId: step.correlationId,
     purpose,
     delaySeconds: delaySeconds ?? 0,
-    ...(stepInput !== undefined ? { resilient: true } : {}),
   });
 }
 
@@ -351,19 +349,11 @@ export function __resetSnapshotLatchesForTests(): void {
  * step_created (+ optional queueing), hook_created / hook_received (aborts),
  * attr_set, hook_disposed, and wait_created events.
  *
- * Steps are created but (usually) not queued here: queueing (or inline
- * execution) is the caller's decision. Used both for suspension
+ * Steps are created but never queued here: queueing (or inline execution)
+ * is the caller's decision. Used both for suspension
  * processing (the inline loop) and for the terminal drain (flushing
  * leftover side effects when the workflow completed or failed, mirroring
  * the node:vm engine's drainPendingQueueItems).
- *
- * The one exception is resilient step dispatch: for step cids named in
- * `queueStepCids` (the caller's overflow steps) that pass the eligibility
- * gates, the step_created write is parallelized with the step's queue
- * publish: the message carries the serialized input (`stepInput`) so the
- * consumer can idempotently re-ensure the event if the direct write failed
- * transiently. Steps queued this way are reported in `queuedStepCids`; the
- * caller queues the rest itself.
  */
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
@@ -410,13 +400,6 @@ async function dispatchPendingOps(params: {
   writtenOpIds?: Set<string>;
   /** Queue message id of this delivery, recorded on step and wait creates. */
   creatorMessageId?: string;
-  /**
-   * Step cids the caller intends to hand to the queue this turn (overflow
-   * steps beyond the inline cap). Eligible ones are published here, in
-   * parallel with their step_created write (resilient step dispatch), and
-   * reported back in `queuedStepCids`.
-   */
-  queueStepCids?: Set<string>;
   /** Queue namespace for all message publishes (see runtime.ts). */
   namespace: string | undefined;
   /**
@@ -449,8 +432,6 @@ async function dispatchPendingOps(params: {
    * the delivery could end before that.
    */
   createdHookConflict: boolean;
-  /** Step cids already published via resilient dispatch. See above. */
-  queuedStepCids: Set<string>;
   /**
    * Step cids finalized as failed because their input refused to
    * serialize (see `finalizeUnserializableSteps`). No execution message
@@ -476,24 +457,9 @@ async function dispatchPendingOps(params: {
   const createdStepInputs = new Map<string, Uint8Array>();
   const creatorMessageId = params.creatorMessageId;
   const wfdiag = params.wfdiag;
-  // Step cids published via resilient dispatch below (create + queue in
-  // parallel, message carrying `stepInput`). Reported to the caller so it
-  // skips them in its own queueing pass.
-  const queuedStepCids = new Set<string>();
   // Step cids finalized as step_created + step_failed because their input
   // refused to serialize. See the `finalizeUnserializableSteps` param.
   const failedSerializationStepCids = new Set<string>();
-  // Resilient step dispatch eligibility, shared by every step op below (the
-  // per-step input-size check is applied inside the op): feature enabled and
-  // a binary-safe (CBOR) queue transport for the run.
-  //
-  // Unlike the node:vm suspension handler's gate (see
-  // SuspensionHandlerParams.stepDispatch), there is NO precondition-guard
-  // gate here: this engine's step_created writes are unguarded (no snapshot
-  // is attached), so a guard-enforcing World can never 412-reject them:
-  // the consumer's re-ensure therefore cannot materialize a step the guard
-  // rejected. If this engine ever adopts guarded suspension writes, the
-  // capability gate from the node:vm handler must be added here too.
   // Set when a hook with a parked getConflict() awaiter had its
   // hook_created written this invocation. The workflow must be re-invoked
   // so replay can confirm creation and resolve the awaiter.
@@ -947,7 +913,6 @@ async function dispatchPendingOps(params: {
     createdAttributeEvent,
     createdGetConflictHook,
     createdHookConflict,
-    queuedStepCids,
     failedSerializationStepCids,
     createdStepEventIds,
     createdStepInputs,
@@ -2554,11 +2519,8 @@ export async function runWorkflowWithQuickJS(params: {
         }
       }
       // Steps beyond the inline cap are handed to the queue in the same
-      // turn their step_created is written. Where eligible, the dispatch
-      // below parallelizes each overflow step's step_created write with
-      // its queue publish (resilient step dispatch: the message carries
-      // `stepInput` so the consumer can re-ensure the event); the rest
-      // are queued right after, in parallel. This must all happen BEFORE
+      // turn their step_created is written: the dispatch below writes it,
+      // and they are queued right after, in parallel. This must all happen BEFORE
       // the event feed below: the feed always observes those
       // step_created writes as unseen events and `continue`s, so a
       // handoff placed after it is unreachable on the only iteration
@@ -2590,7 +2552,6 @@ export async function runWorkflowWithQuickJS(params: {
         ]),
         writtenOpIds,
         creatorMessageId: ownerMessageId,
-        queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
         finalizeUnserializableSteps: true,
         wfdiag,
       });
@@ -2615,13 +2576,8 @@ export async function runWorkflowWithQuickJS(params: {
         }
       }
 
-      for (const cid of dispatched.queuedStepCids) {
-        queuedStepIds.add(cid);
-      }
       await Promise.all(
-        overflowSteps
-          .filter((step) => !dispatched.queuedStepCids.has(step.correlationId))
-          .map((step) => {
+        overflowSteps.map((step) => {
             queuedStepIds.add(step.correlationId);
             const createdEventId = dispatched.createdStepEventIds.get(
               step.correlationId

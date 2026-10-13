@@ -288,6 +288,7 @@ What a snapshot contains, and how it is protected:
 - Default: compression enabled
 - Set `1` to disable compression when writing payloads.
 - Reads still decompress existing payloads.
+- To skip compression only for one run's arguments, pass `compressArguments: false` to [`start()`](/docs/api-reference/workflow-api/start) instead.
 
 ### `WORKFLOW_COMPRESSION_CODEC`
 

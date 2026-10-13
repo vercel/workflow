@@ -515,8 +515,12 @@ const CreateEventV4BodyBaseSchema = z.object({
   // Single-orchestrator in-band writes: the skipped-slot report in
   // `events` could not be completed within the backend's request budget.
   reportIncomplete: z.boolean().optional(),
-  // Positions the backend allocated for this write (single-orchestrator
-  // runs). Not declared on `EventResult`; passed through under this name.
+  // Positions the backend allocated for this write, when it reports them
+  // (`EventResult.allocated`): what an in-band writer advances its count by.
+  // Passed on for a single create answered with this body. A batch's item
+  // results reuse this schema, but a batch is one allocation for the whole
+  // block and its count is not passed on, nor is one on the streamed
+  // `run_started` and `hook_received` preload responses.
   allocated: z.number().int().nonnegative().optional(),
 });
 
@@ -581,37 +585,58 @@ const CreateEventV4BodySchemas: {
 };
 
 const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
+
 /**
- * The in-band fence's sequencer snapshot on a single-orchestrator run's list
- * response: read strongly consistently before the listing began, in slot
- * units. A load that follows the cursor to the end covers every slot up to
- * `seq`. Absent for runs created before spec 9.
+ * The in-band fence's counters as a list response carries them
+ * (`EventListResponse.snapshot`), in slot units: read by the backend before
+ * the listing began, so a load that follows the cursor to the end covers
+ * every slot up to `seq`. Sent by a backend that reads them; absent
+ * otherwise.
  */
 const EventLogSnapshotWireSchema = z.compile(
-  z.object({
-    seq: z.number().int().nonnegative(),
-    seqInBand: z.number().int().nonnegative(),
-  })
+  z
+    .object({
+      seq: z.number().int().nonnegative(),
+      seqInBand: z.number().int().nonnegative(),
+    })
+    // In-band positions are a subset of all positions.
+    .refine(({ seq, seqInBand }) => seqInBand <= seq)
 );
 
 const SNAPSHOT_SEQ_HEADER = 'x-wf-snapshot-seq';
 const SNAPSHOT_SEQ_IN_BAND_HEADER = 'x-wf-snapshot-seq-in-band';
 
+/** A header counter: decimal digits only, so `''`, `'0x2'` or `'1e1'` are not read as one. */
+const DECIMAL_COUNTER = /^\d+$/;
+
 /**
- * The fence snapshot from the list response's headers, which the backend
- * sends alongside the end frame's `snapshot`. Used only when the end frame
- * has none; `undefined` unless both headers parse.
+ * The snapshot from a list response's headers, for a response whose end
+ * frame carries none. `undefined` unless both headers parse.
  */
 function snapshotFromHeaders(headers: {
   get(name: string): string | null;
 }): EventLogSnapshot | undefined {
   const seq = headers.get(SNAPSHOT_SEQ_HEADER);
   const seqInBand = headers.get(SNAPSHOT_SEQ_IN_BAND_HEADER);
-  if (seq === null || seqInBand === null) return undefined;
+  if (
+    seq === null ||
+    seqInBand === null ||
+    !DECIMAL_COUNTER.test(seq) ||
+    !DECIMAL_COUNTER.test(seqInBand)
+  ) {
+    return undefined;
+  }
   const parsed = EventLogSnapshotWireSchema.safeParse({
     seq: Number(seq),
     seqInBand: Number(seqInBand),
   });
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** The snapshot an end frame carries, `undefined` when absent or malformed. */
+function snapshotFromEnd(snapshot: unknown): EventLogSnapshot | undefined {
+  if (snapshot === undefined) return undefined;
+  const parsed = EventLogSnapshotWireSchema.safeParse(snapshot);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -620,7 +645,9 @@ const EventStreamEndSchema = z.compile(
     _end: z.literal(1),
     next: z.string().optional(),
     hasMore: z.boolean(),
-    snapshot: EventLogSnapshotWireSchema.optional(),
+    // Read on its own (`snapshotFromEnd`): a malformed snapshot lists none
+    // rather than failing the page.
+    snapshot: z.unknown().optional(),
   })
 );
 
@@ -2016,11 +2043,11 @@ export interface ListEventsV4Result {
   /** Explicit "another page of results exists" flag from the sentinel. */
   hasMore: boolean;
   /**
-   * The fence snapshot the backend read before listing (single-orchestrator
-   * runs only). For a read that resumed a truncated stream, the snapshot of
-   * the first response that reached its sentinel: that response listed every
-   * slot up to its `seq` above the resume cursor, and the earlier partial
-   * response covered the slots below it.
+   * The in-band fence's counters the backend read before listing, when it
+   * reports them. For a read that resumed a truncated stream, those of the
+   * response that reached its sentinel: it listed every slot up to its `seq`
+   * above the resume cursor, and the earlier partial response covered the
+   * slots below it.
    */
   snapshot?: EventLogSnapshot;
 }
@@ -2118,7 +2145,9 @@ async function consumeEventFrameStream(
     for await (const frame of decodeFrames(response.body)) {
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
-        const snapshot = end.snapshot ?? snapshotFromHeaders(response.headers);
+        const snapshot =
+          snapshotFromEnd(end.snapshot) ??
+          snapshotFromHeaders(response.headers);
         return {
           kind: 'complete',
           events,

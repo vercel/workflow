@@ -286,8 +286,8 @@ async function forceClaimRefusal(
   );
 }
 
-/**
- * The in-band writer fence for single-orchestrator runs (spec >= 9).
+/*
+ * The in-band writer fence (`WorldCapabilities.inBandFence`).
  *
  * `workflow_event_slots.seq_in_band` counts the positions accepted from
  * in-band writes (writes by the run's orchestrator), `run_created` included,
@@ -322,7 +322,6 @@ async function forceClaimRefusal(
  *
  * Out-of-band writes never touch the count.
  */
-export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
 
 /** Postgres error code for a NOT NULL violation. */
 const NOT_NULL_VIOLATION = '23502';
@@ -446,7 +445,7 @@ async function insertEventRow(
   const runId = values.runId;
   const allocates = typeof values.eventId !== 'string';
   // The create's own event on a fenced run is the first slot-allocating
-  // insert for that run; see IN_BAND_SEQ_AT_RUN_CREATION.
+  // insert for that run; see the in-band writer fence above.
   const fence = pendingFence.getStore();
   const fenced =
     allocates && fence !== undefined && !fence.consumed && fence.runId === runId
@@ -1128,8 +1127,7 @@ async function handleLegacyEventPostgres(
 
 /**
  * The events storage, with the in-band writer fence (see
- * {@link IN_BAND_SEQ_AT_RUN_CREATION}) around `create` and the fence
- * snapshot on `list`.
+ * `fencedInsertAttempt`) around `create` and the fence snapshot on `list`.
  */
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   const events = createUnfencedEventsStorage(drizzle);

@@ -70,6 +70,58 @@ export function getQueueTopicPrefix(
   return '__wkf_workflow_' as QueuePrefix;
 }
 
+/**
+ * The route a World that delivers over HTTP sends a prefix's messages to when
+ * no other route or handler is registered for that prefix (see
+ * {@link Queue.registerRoute}): the Workflow SDK's generated flow route,
+ * relative to the app's base URL.
+ */
+export const WORKFLOW_FLOW_ROUTE = '/.well-known/workflow/v1/flow';
+
+/**
+ * Validates a delivery route for {@link Queue.registerRoute}: an absolute path
+ * on the app's base URL (`/api/agent/queue`), with no query or fragment.
+ * Returns it unchanged.
+ */
+export function parseQueueRoute(path: string): string {
+  if (
+    typeof path !== 'string' ||
+    !path.startsWith('/') ||
+    path.startsWith('//') ||
+    /[?#\s]/.test(path)
+  ) {
+    throw new TypeError(
+      `Invalid queue route "${String(path)}": must be an absolute path such as "/api/agent/queue", without a query or fragment`
+    );
+  }
+  return path;
+}
+
+/**
+ * The queue namespace a run's messages travel on, as recorded when the run was
+ * created (`executionContext.queueNamespace`), or `undefined` when it recorded
+ * none (or an invalid one), in which case the World's default namespace
+ * applies. A World uses this to re-enqueue a run to its own consumer (see
+ * `reenqueueActiveRuns`) rather than to the recovering process's prefix.
+ */
+export function getRunQueueNamespace(
+  executionContext: unknown
+): string | undefined {
+  if (
+    typeof executionContext !== 'object' ||
+    executionContext === null ||
+    executionContext instanceof Uint8Array
+  ) {
+    return undefined;
+  }
+  const namespace = (executionContext as { queueNamespace?: unknown })
+    .queueNamespace;
+  return typeof namespace === 'string' &&
+    QueueNamespace.safeParse(namespace).success
+    ? namespace
+    : undefined;
+}
+
 export function parseQueueName(name: ValidQueueName): {
   prefix: QueuePrefix;
   id: string;
@@ -187,6 +239,10 @@ export type RunInput = z.infer<typeof RunInputSchema>;
  *
  * The `input` is the already-serialized (and possibly encrypted) step input:
  * the identical bytes the producer also sent on the direct `events.create`.
+ *
+ * The current `@workflow/core` runtime neither attaches nor reads this field:
+ * it publishes a step message only after its `step_created` write. The schema
+ * keeps accepting it so a message that carries it still parses.
  */
 export const StepDispatchInputSchema = z.compile(
   z.object({
@@ -745,4 +801,39 @@ export interface Queue {
       }
     ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
+
+  /**
+   * Optional. Delivers every message whose queue name starts with `prefix` to
+   * `handler` inside this process, without HTTP. For Worlds whose queue runs
+   * in the app's own process (world-local, world-postgres). `handler` takes
+   * the same request a route serving `createQueueHandler(prefix, ...)` would,
+   * so passing that route handler works. Takes precedence over
+   * {@link Queue.registerRoute} for the prefix; a later registration for the
+   * same prefix replaces an earlier one.
+   *
+   * Keyed by the exact prefix: registering `__wkf_workflow_` also takes the
+   * Workflow SDK's own messages. A queue consumer other than the Workflow SDK
+   * uses a prefix of its own, `__{namespace}_wkf_workflow_`.
+   */
+  registerHandler?(
+    prefix: QueuePrefix,
+    handler: (req: Request) => Promise<Response>
+  ): void;
+
+  /**
+   * Optional. The route (a path on the app's base URL, such as
+   * `/api/agent/queue`) that this World's HTTP delivery POSTs the messages of
+   * `prefix` to. The app serves it with `createQueueHandler(prefix, ...)`.
+   * A prefix without a registered route goes to the Workflow SDK's flow route
+   * ({@link WORKFLOW_FLOW_ROUTE}), so only the Workflow SDK relies on that
+   * path, and a queue consumer of its own registers its route here, before
+   * the World's `start()` when it has one (`start()` re-enqueues active runs).
+   * An in-process handler for the prefix ({@link Queue.registerHandler})
+   * takes precedence; a later registration for the same prefix replaces an
+   * earlier one.
+   *
+   * Worlds that deliver by subscription rather than by path (world-vercel)
+   * do not implement this: subscribe the route to the prefix's topics there.
+   */
+  registerRoute?(prefix: QueuePrefix, path: string): void;
 }

@@ -561,7 +561,8 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
-    // The in-band fence's sequencer snapshot, on single-orchestrator runs.
+    // The in-band fence's counters, read before the listing, when the
+    // backend reports them (see `capabilities.inBandFence` in index.ts).
     ...(result.snapshot ? { snapshot: result.snapshot } : {}),
   };
 }

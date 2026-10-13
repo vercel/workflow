@@ -4,21 +4,19 @@ import { EntityConflictError, InBandSupersededError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   eventIdToSlot,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
 } from '@workflow/world';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { inBandFenceConformance } from '../../world/src/test-support/in-band-fence-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
 import { createWorld } from '../src/index.js';
 import { RUN_STATUS_TOPIC } from '../src/run-status.js';
-import {
-  createEventsStorage,
-  IN_BAND_SEQ_AT_RUN_CREATION,
-} from '../src/storage.js';
-import { tolerateTeardown } from './fixtures/pool.js';
+import { createEventsStorage } from '../src/storage.js';
+import { TestPool } from './pool.js';
 
 /**
  * The in-band writer fence for single-orchestrator runs: an in-band write is
@@ -49,8 +47,7 @@ describe('in-band fence (world-postgres)', () => {
       env: process.env,
     });
     // Enough connections for the concurrent writers to really overlap.
-    pool = new Pool({ connectionString: dbUrl, max: 16 });
-    tolerateTeardown(pool);
+    pool = new TestPool({ connectionString: dbUrl, max: 16 });
     events = createEventsStorage(createClient(pool));
   }, 120_000);
 
@@ -77,6 +74,7 @@ describe('in-band fence (world-postgres)', () => {
   inBandFenceConformance({
     name: 'world-postgres',
     events: () => events,
+    secondEvents: () => createEventsStorage(createClient(pool)),
     capabilities: () => createWorld({ pool }).capabilities,
     newRunId: () => `wrun_${ulid()}`,
     atRunCreation: IN_BAND_SEQ_AT_RUN_CREATION,

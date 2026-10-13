@@ -1,13 +1,23 @@
 import {
   EntityConflictError,
   RunExpiredError,
+  StreamError,
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { getDeadline } from './get-deadline.js';
 import {
   describeTransportFailure,
   errorForResponse,
@@ -15,14 +25,20 @@ import {
   getRequestTimeoutMs,
   getTransientTransportCode,
   getVercelDiagnostics,
+  type InstrumentedFetchOptions,
   instrumentedFetch,
   parseRetryAfter,
   REQUEST_TIMEOUT_MS,
   resolveVercelApiToken,
 } from './http-core.js';
+import { trace } from './telemetry.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
+}));
+
+vi.mock('./get-deadline.js', () => ({
+  getDeadline: vi.fn(async () => undefined),
 }));
 
 describe('getRequestTimeoutMs', () => {
@@ -239,6 +255,268 @@ describe('instrumentedFetch URL validation', () => {
   });
 });
 
+describe('instrumentedFetch stream append retries', () => {
+  const NOW = Date.UTC(2026, 9, 7, 12);
+
+  function append(overrides: Partial<InstrumentedFetchOptions> = {}) {
+    return instrumentedFetch({
+      method: 'PUT',
+      url: 'https://workflow.example/stream/test',
+      headers: new Headers(),
+      body: new Uint8Array([0, 128, 255]),
+      dispatcher: {},
+      retryStreamAppend: true,
+      timeoutMs: null,
+      transportErrorCode: 'STREAM_ERROR',
+      ...overrides,
+    });
+  }
+
+  function rejected(retryAfter?: string, body = 'rate limited') {
+    return new Response(body, {
+      status: 429,
+      headers: retryAfter ? { 'Retry-After': retryAfter } : undefined,
+    });
+  }
+
+  beforeAll(async () => {
+    // Complete the optional telemetry import before advancing a fake clock.
+    await trace('append policy test setup', async () => {});
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    vi.stubEnv('WORKFLOW_NODE_HTTP', '0');
+    vi.mocked(getDeadline).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['seconds', '2', 2000],
+    ['date', new Date(NOW + 4000).toUTCString(), 4000],
+    ['missing', undefined, 1000],
+  ])('uses the throttle policy for %s Retry-After', async (_label, value, delay) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(rejected(value))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+    const result = append();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(delay - 1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await result).status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('surfaces Retry-After beyond the wait budget without retrying early', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(rejected('3600'))
+      .mockResolvedValueOnce(new Response(null));
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(Date.now()).toBe(NOW);
+    expect(await outcome).toBeInstanceOf(ThrottleError);
+    expect(await outcome).toMatchObject({
+      message: expect.stringContaining('rate limited'),
+    });
+  });
+
+  it('stops after five retries even when throttle wait budget remains', async () => {
+    let attempts = 0;
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async () => rejected('1', `rejection ${++attempts}`));
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(Date.now() - NOW).toBe(5000);
+    expect(await outcome).toBeInstanceOf(ThrottleError);
+    expect(await outcome).toMatchObject({
+      message: expect.stringContaining('rejection 6'),
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'UND_ERR_CONNECT_TIMEOUT',
+  ])('bounds retries for pre-connect failure %s and preserves the final cause', async (code) => {
+    const cause = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('connection failed'), { code }),
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(cause);
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(Date.now() - NOW).toBe(15_500);
+    expect(await outcome).toMatchObject({ code: 'STREAM_ERROR', cause });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds cumulative throttle waits and preserves the final rejection body', async () => {
+    let attempts = 0;
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async () =>
+        rejected('10', `rejection ${++attempts}`)
+      );
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(Date.now() - NOW).toBe(30_000);
+    expect(await outcome).toBeInstanceOf(ThrottleError);
+    expect(await outcome).toMatchObject({
+      message: expect.stringContaining('rejection 4'),
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('surfaces a 429 when its wait would use the invocation deadline reserve', async () => {
+    vi.mocked(getDeadline).mockResolvedValue(new Date(NOW + 17_000));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async () => rejected('3'));
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(Date.now()).toBe(NOW);
+    expect(await outcome).toBeInstanceOf(ThrottleError);
+    expect(await outcome).toMatchObject({
+      message: expect.stringContaining('rate limited'),
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    [
+      'retry error without a response',
+      Object.assign(new Error('misleading 429'), {
+        code: 'UND_ERR_REQ_RETRY',
+        statusCode: 429,
+      }),
+    ],
+    ...['ECONNRESET', 'EPIPE', 'ETIMEDOUT'].map((code) => [
+      code,
+      new TypeError('fetch failed', {
+        cause: Object.assign(new Error(code), { code }),
+      }),
+    ]),
+  ])('does not retry transport failures: %s', async (_label, cause) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(cause);
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(await outcome).toBeInstanceOf(StreamError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops on a transport failure after a confirmed rejection', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(rejected('1'))
+      .mockRejectedValueOnce(new Error('response lost after retry'));
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append().catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(await outcome).toBeInstanceOf(StreamError);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('can retry a confirmed rejection whose diagnostic body already failed', async () => {
+    const response = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error('truncated diagnostic body'));
+        },
+      }),
+      { status: 429, headers: { 'Retry-After': '1' } }
+    );
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(new Response(null));
+    vi.stubGlobal('fetch', fetch);
+    const result = append();
+    await vi.runAllTimersAsync();
+    expect((await result).ok).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels a retry wait when the caller aborts', async () => {
+    const controller = new AbortController();
+    const response = rejected('30');
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append({ signal: controller.signal }).catch(
+      (error: unknown) => error
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(response.bodyUsed).toBe(true);
+    const reason = new DOMException('Request cancelled', 'AbortError');
+    controller.abort(reason);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await outcome).toMatchObject({
+      code: 'STREAM_ERROR',
+      cause: reason,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes the cache-busting header on retries but reports dispatch only once', async () => {
+    const requestTimes: (string | null)[] = [];
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(async (_url, options) => {
+        requestTimes.push(new Headers(options?.headers).get('X-Request-Time'));
+        return requestTimes.length === 1 ? rejected('1') : new Response(null);
+      });
+    vi.stubGlobal('fetch', fetch);
+    const onRequestDispatched = vi.fn();
+    const result = append({ onRequestDispatched });
+    await vi.runAllTimersAsync();
+    expect((await result).ok).toBe(true);
+    expect(requestTimes).toEqual([String(NOW), String(NOW + 1000)]);
+    expect(onRequestDispatched).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['no dispatcher is configured', { dispatcher: undefined }],
+    ['the method is POST', { method: 'POST' }],
+  ] as const)('does not retry when %s', async (_label, overrides) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(rejected('1'));
+    vi.stubGlobal('fetch', fetch);
+    const outcome = append(overrides).catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    expect(await outcome).toBeInstanceOf(ThrottleError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe('describeTransportFailure', () => {
   it('reports the allowlisted code when the cause chain carries one', () => {
     // Known codes keep naming themselves, so messages and the
@@ -304,7 +582,18 @@ describe('parseRetryAfter', () => {
     expect(parseRetryAfter('30')).toBe(30);
   });
 
-  it('returns undefined for missing or non-numeric values', () => {
+  it('parses HTTP dates relative to the current time', () => {
+    const now = Date.UTC(2026, 9, 11, 12);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      expect(parseRetryAfter(new Date(now + 30_000).toUTCString())).toBe(30);
+      expect(parseRetryAfter(new Date(now - 30_000).toUTCString())).toBe(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('returns undefined for missing or invalid values', () => {
     expect(parseRetryAfter(null)).toBeUndefined();
     expect(parseRetryAfter(undefined)).toBeUndefined();
     expect(parseRetryAfter('')).toBeUndefined();

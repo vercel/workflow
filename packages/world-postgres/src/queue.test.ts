@@ -966,6 +966,207 @@ describe('postgres queue http execution', () => {
     );
   });
 
+  it('keeps the queue prefix, and the route registered for it, on the job', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    queue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    await queue.start();
+
+    await queue.queue('__agent_wkf_workflow_session', {
+      runId: 'run_01ABC',
+    } as QueuePayload);
+    await queue.queue('__wkf_workflow_myWorkflow', { runId: 'run_01DEF' });
+
+    const jobs = vi
+      .mocked(workerUtilsMock.addJob)
+      .mock.calls.map(([, payload]) => MessageData.parse(payload));
+    expect(jobs).toEqual([
+      expect.objectContaining({
+        id: 'session',
+        prefix: '__agent_wkf_workflow_',
+        route: '/api/agent/queue',
+      }),
+      expect.objectContaining({ id: 'myWorkflow', prefix: '__wkf_workflow_' }),
+    ]);
+    expect(jobs[1]).not.toHaveProperty('route');
+  });
+
+  it("delivers a job under its own prefix to that prefix's route", async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/api/agent/queue'
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    // A worker whose own prefix is the Workflow SDK's default.
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    queue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(requests).toEqual([
+      expect.objectContaining({ method: 'POST', url: '/api/agent/queue' }),
+    ]);
+    expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
+      '__agent_wkf_workflow_session'
+    );
+  });
+
+  it('delivers to the route the producer recorded when this worker has none', async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const server = await startWorkflowHttpServer(
+      requests,
+      0,
+      '/api/agent/queue'
+    );
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__agent_wkf_workflow_session',
+        { runId: 'run_01ABC' },
+        { route: '/api/agent/queue' }
+      ),
+      { job: { attempts: 1 } }
+    );
+
+    expect(requests.map((r) => r.url)).toEqual(['/api/agent/queue']);
+  });
+
+  it("sends a prefix with no route to the Workflow SDK's flow route", async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const server = await startWorkflowHttpServer(requests);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(requests.map((r) => r.url)).toEqual([
+      '/.well-known/workflow/v1/flow',
+    ]);
+    // The queue name it was sent to, not rebuilt with the worker's prefix.
+    expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
+      '__agent_wkf_workflow_session'
+    );
+  });
+
+  it("rebuilds a job without a stored prefix with the worker's own, as before", async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const server = await startWorkflowHttpServer(requests);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', namespace: 'custom' },
+      pool
+    );
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__wkf_workflow_myWorkflow',
+        { runId: 'run_01ABC' },
+        { legacy: true }
+      ),
+      { job: { attempts: 1 } }
+    );
+
+    expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
+      '__custom_wkf_workflow_myWorkflow'
+    );
+  });
+
+  it('delivers to an in-process handler for the prefix without HTTP', async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const server = await startWorkflowHttpServer(requests, 0, '/any');
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const seen: { url: string; queueName: string | null; body: unknown }[] = [];
+    queue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    queue.registerHandler('__agent_wkf_workflow_', async (req) => {
+      seen.push({
+        url: new URL(req.url).pathname,
+        queueName: req.headers.get('x-vqs-queue-name'),
+        body: await req.json(),
+      });
+      return Response.json({ timeoutSeconds: 30 });
+    });
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(requests).toHaveLength(0);
+    expect(seen).toEqual([
+      {
+        url: '/api/agent/queue',
+        queueName: '__agent_wkf_workflow_session',
+        body: { runId: 'run_01ABC' },
+      },
+    ]);
+    // `{ timeoutSeconds }` reschedules the same message under its prefix.
+    const [, rescheduled, options] =
+      vi.mocked(workerUtilsMock.addJob).mock.calls[0] ?? [];
+    expect(MessageData.parse(rescheduled)).toMatchObject({
+      id: 'session',
+      prefix: '__agent_wkf_workflow_',
+    });
+    expect(options?.runAt).toBeInstanceOf(Date);
+  });
+
+  it('rejects an invalid prefix or route', () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    expect(() =>
+      queue.registerRoute('__agent_wkf_workflow_', 'api/agent/queue')
+    ).toThrow(TypeError);
+    expect(() =>
+      queue.registerRoute('agent' as never, '/api/agent/queue')
+    ).toThrow();
+    expect(() =>
+      queue.registerHandler('agent' as never, async () => Response.json({}))
+    ).toThrow();
+  });
+
   it('leaves job attempts for redeliveries past core max deliveries', async () => {
     // Core records MAX_DELIVERIES_EXCEEDED on delivery 49 and throws when that
     // terminal write fails transiently. The job must still have attempts left
@@ -998,12 +1199,17 @@ function buildMessageData(
     idempotencyKey?: string;
     messageId?: MessageId;
     createdAt?: string;
+    route?: string;
+    /** A job enqueued before the prefix was stored. */
+    legacy?: boolean;
   }
 ) {
-  const { id } = parseQueueName(queueName);
+  const { id, prefix } = parseQueueName(queueName as ValidQueueName);
 
   return MessageData.encode({
     id,
+    ...(opts?.legacy ? {} : { prefix }),
+    ...(opts?.route ? { route: opts.route } : {}),
     data: transport.serialize(payload),
     attempt: opts?.attempt ?? 1,
     headers: opts?.headers,

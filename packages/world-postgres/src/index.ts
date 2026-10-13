@@ -1,4 +1,4 @@
-import type { Storage, World } from '@workflow/world';
+import type { Queue, Storage, World } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
@@ -56,7 +56,10 @@ export function createWorld(
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
   }
-): World & { start(): Promise<void> } {
+): World &
+  Required<Pick<Queue, 'registerHandler' | 'registerRoute'>> & {
+    start(): Promise<void>;
+  } {
   const maxPoolSize =
     config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
   const pool = config.pool || createOwnedPool(config, maxPoolSize);
@@ -83,8 +86,8 @@ export function createWorld(
       // the hook_created branch of storage.ts.
       hookForceClaim: true,
       // A run's orchestrator deliveries share one Graphile named queue (see
-      // queue.ts), and the events storage fences in-band writes: the two
-      // halves of the single-writer guarantee.
+      // queue.ts), and the events storage fences in-band writes (see
+      // storage.ts): the two halves of the single-writer guarantee.
       maxConcurrency: true,
       // Required by the runtime; see in-band-fence.test.ts for conformance.
       inBandFence: true,

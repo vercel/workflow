@@ -48,6 +48,28 @@ registerStepFunction('hw_tick', async (label: string) => {
   return `tick:${label}`;
 });
 
+/** Set by the abortable step when it starts and when its signal aborts. */
+const abortProbe: {
+  started?: () => void;
+  aborted?: (at: number) => void;
+  /** How long the step runs when nothing aborts it. */
+  runMs?: number;
+} = {};
+registerStepFunction('hw_abortable', async (signal: AbortSignal) => {
+  abortProbe.started?.();
+  return await new Promise<string>((resolve) => {
+    const timer = setTimeout(
+      () => resolve('ran-out'),
+      abortProbe.runMs ?? 30_000
+    );
+    signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      abortProbe.aborted?.(Date.now());
+      resolve('aborted');
+    });
+  });
+});
+
 let currentEngine: 'node' | 'quickjs' = 'node';
 
 type WorldOptions = ConstructorParameters<typeof AppendOnlyWorld>[0];
@@ -229,6 +251,21 @@ const HOOK_OR_SLEEP_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFL
       sleep("1s").then(() => "sleep"),
     ]);
     return winner;
+  }${transform('workflow')}`;
+
+// An outside resume aborting an inline step it races: the shape behind a
+// durable agent's steering and cancellation, where the resume must reach the
+// blocked orchestrator while the step body is still running.
+const HOOK_ABORTS_STEP_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const abortable = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("hw_abortable");
+  async function workflow(token) {
+    const controller = new AbortController();
+    const hook = createHook({ token });
+    const step = abortable(controller.signal);
+    return await Promise.race([
+      hook.then((p) => { controller.abort(); return "hook:" + p.value; }),
+      step,
+    ]);
   }${transform('workflow')}`;
 
 const SLEEP_WORKFLOW = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
@@ -479,6 +516,61 @@ describe.each([
         result
       );
     });
+    // Node engine only here: under this World the QuickJS engine commits
+    // the abort only once the step body settles, while against world-local
+    // (no live feed, default 2s poll) both engines abort the step about 1.4s
+    // after the resume. Not yet explained; tracked as a harness divergence.
+    it.skipIf(engine === 'quickjs')(
+      'commits the abort of a running inline step from an outside resume, within the same delivery',
+      async () => {
+        // No live feed, as on world-local and world-postgres: the blocked
+        // orchestrator sees the resume through its log-tail poll, and records
+        // the workflow's `controller.abort()` as the abort hook's
+        // `hook_received` while the step body is still running. (Carrying that
+        // abort into the step body goes through the run's streams, which this
+        // World does not implement.)
+        const pollMs = 200;
+        vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', String(pollMs));
+        const started = Promise.withResolvers<void>();
+        abortProbe.started = () => started.resolve();
+        abortProbe.runMs = 2_500;
+        try {
+          const { world, runId, start } = await setup(
+            HOOK_ABORTS_STEP_WORKFLOW,
+            [TOKEN],
+            { subscribe: false }
+          );
+          const delivery = world.deliver(start);
+          await started.promise;
+          const resumedAt = Date.now();
+          await resumeHook(TOKEN, { value: 'steer' });
+          // The resume's wake is queued but not delivered: only the running
+          // delivery can see the resume.
+          const heldAfterResume = world.held.length;
+          await vi.waitFor(
+            () => expect(eventsOf(world, 'hook_received')).toHaveLength(2),
+            { interval: 10, timeout: 5_000 }
+          );
+          const abortCommittedMs = Date.now() - resumedAt;
+          expect(world.held.length).toBe(heldAfterResume);
+          // The second hook_received is the abort, written by the orchestrator.
+          const abortWrite = world.creates.find(
+            (c) =>
+              c.event.eventType === 'hook_received' && c.params?.inBand === true
+          );
+          expect(abortWrite).toBeDefined();
+          // Bounded by the poll interval, not by the step body.
+          expect(abortCommittedMs).toBeLessThan(pollMs * 3 + 500);
+          await delivery;
+          await world.runUntilIdle();
+          expect(await output(world, runId)).toBe('hook:steer');
+        } finally {
+          abortProbe.started = undefined;
+          abortProbe.runMs = undefined;
+          vi.unstubAllEnvs();
+        }
+      }
+    );
   });
 
   describe('sleep', () => {

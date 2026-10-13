@@ -4,9 +4,10 @@
  * world-postgres do.
  */
 
+import { IN_BAND_SEQ_AT_RUN_CREATION } from '@workflow/world';
 import { inBandFenceConformance } from '../../world/src/test-support/in-band-fence-conformance.js';
 import { createIdFactory } from './ids.js';
-import { createSimStore, IN_BAND_SEQ_AT_RUN_CREATION } from './store.js';
+import { createSimStore } from './store.js';
 import { createSimWorld } from './world.js';
 
 inBandFenceConformance({

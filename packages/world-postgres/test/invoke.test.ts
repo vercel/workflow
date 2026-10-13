@@ -41,7 +41,7 @@ import {
 import { createInvocations } from '../src/invocations.js';
 import { MessageData } from '../src/message.js';
 import { createQueue } from '../src/queue.js';
-import { tolerateTeardown } from './fixtures/pool.js';
+import { TestPool } from './pool.js';
 
 const code = `
 const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
@@ -97,11 +97,10 @@ describe.skipIf(process.platform === 'win32')(
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
-      pool = new Pool({
+      pool = new TestPool({
         connectionString: container.getConnectionUri(),
         max: 20,
       });
-      tolerateTeardown(pool);
       await migrate(drizzle(pool), {
         migrationsFolder: fileURLToPath(
           new URL('../src/drizzle/migrations', import.meta.url)

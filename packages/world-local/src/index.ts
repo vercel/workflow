@@ -41,6 +41,11 @@ export type { DirectHandler } from './queue.js';
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
+  /**
+   * Deliver a queue prefix's messages over HTTP to `path` on the app (for
+   * example `/api/agent/queue`) instead of the Workflow SDK's flow route.
+   */
+  registerRoute(prefix: QueuePrefix, path: string): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };
@@ -136,10 +141,12 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // branch of storage/events-storage.ts.
       hookForceClaim: true,
       // The queue delivers a run's orchestrator messages one at a time (an
-      // in-process per-run gate, see queue.ts), and the events storage fences
-      // in-band writes, the two halves of the single-writer guarantee.
+      // in-process per-run gate, see queue.ts): with the fence, the two
+      // halves of the single-writer guarantee.
       maxConcurrency: true,
-      // Required by the runtime; see in-band-fence.test.ts for conformance.
+      // A per-run in-band count on disk, under a lock file, so every process
+      // on the data directory shares it; see the in-band writer fence in
+      // storage/events-storage.ts.
       inBandFence: true,
       // An in-band write is stored at its `occurredAt` (events-storage.ts).
       inBandEventTime: true,

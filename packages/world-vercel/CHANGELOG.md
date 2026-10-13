@@ -1,5 +1,17 @@
 # @workflow/world-vercel
 
+## 5.2.1
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+
+- [#4833](https://github.com/vercel/workflow/pull/4833) [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3) Thanks [@pranaygp](https://github.com/pranaygp)! - `@workflow/world-vercel` declares the `inBandFence` capability (its backend refuses a stale in-band write on every run with an event sequencer, and answers an in-band write on an older run with a 400), and passes on the in-band counts its backend reports: `snapshot` on `events.list` and `allocated` on a single `events.create`. The `inBandFence` contract lets a World list no snapshot when its refusals carry both counters, and `@workflow/world-testing` takes the counters from a refusal for such a World.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/utils@5.0.2
+
 ## 5.2.0
 
 ### Minor Changes

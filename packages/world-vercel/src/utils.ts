@@ -107,7 +107,8 @@ export interface APIConfig {
   headers?: RequestInit['headers'];
   /**
    * Custom HTTP dispatcher passed to every `fetch()` call (e.g. an undici
-   * `Agent`/`RetryAgent`). Defaults to a shared undici `RetryAgent`.
+   * `Agent`/`RetryAgent`). Defaults to shared undici dispatchers with
+   * operation-specific retry policies.
    *
    * Typed as `unknown` on purpose: undici's `Dispatcher` type is nominally
    * version-specific (it differs across v6/v7/v8 and the `undici-types`
@@ -116,11 +117,12 @@ export interface APIConfig {
    * version's dispatcher, or any object implementing the dispatcher contract.
    *
    * Note: when provided, this dispatcher replaces *every* default, including
-   * the one used for stream writes (the `PUT` write/close path). Stream appends
-   * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
-   * default, which can duplicate a chunk the server already persisted. A custom
-   * dispatcher used with stream writes should therefore not retry `PUT` on 5xx
-   * (the built-in stream dispatcher retries only on transient errors and 429).
+   * those for stream writes and closes. Do not retry stream append PUTs in a
+   * dispatcher: fetch supplies a one-shot body, and retries after 5xx or
+   * uncertain network failures can duplicate an already-persisted append.
+   * The built-in append dispatcher disables retries; the SDK retries fresh
+   * requests above fetch for confirmed 429s and selected connection failures.
+   * A custom dispatcher disables that SDK append retry loop.
    */
   dispatcher?: unknown;
   projectConfig?: {

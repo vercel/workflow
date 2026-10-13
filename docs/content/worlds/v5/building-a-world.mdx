@@ -242,6 +242,20 @@ Every in-band write carries `eventCount`; out-of-band writes (a background step'
 
 Earlier releases let a World refuse a write made from a stale snapshot with `PreconditionFailedError`, and restarted the replay in response. The runtime no longer does that: on a spec 9 run the [in-band fence](#single-writer-guarantee-and-the-in-band-fence) is the only refusal it acts on, and a stale snapshot is answered with a skipped-slot report.
 
+### The in-band fence on runs before spec 9
+
+The [single-writer section](#single-writer-guarantee-and-the-in-band-fence) describes the fence a World must implement for single-orchestrator runs (spec 9). A World may also fence earlier runs, with the same rules, except that it may list no snapshot as long as every refusal carries both counters, read together.
+
+`world-local`, `world-postgres` and `world-vercel` declare the fence. `world-vercel`'s backend fences in-band writes on every run with an event sequencer (spec version 7 and later). On an older run it answers an in-band write with a 400 (`WorkflowWorldError`, `code: 'in-band-fence-unsupported'`) rather than writing it unfenced, so a writer decides whether to fence from the run's spec version. Its list responses carry the snapshot only where the backend reports one, so a writer there can find none.
+
+A writer that finds no snapshot takes its count from a refusal:
+
+1. **Get the counters.** On a run it has just created, before any other in-band write, the count is `IN_BAND_SEQ_AT_RUN_CREATION`. Otherwise, send an in-band write with a count no run holds, such as `Number.MAX_SAFE_INTEGER`. The World refuses it and writes and allocates nothing, and the `InBandSupersededError` carries `seq` and `seqInBand`, read together after the fence refused the write.
+2. **Load up to `seq`.** List the log until it holds position `seq` itself. A position can be allocated before its event is committed, so a listing that ends below `seq` is retried, not trusted.
+3. **Write at `seqInBand`.** That log holds every in-band write `seqInBand` counts, so the writer sends its next in-band write with `expectedSeqInBand: seqInBand`, and advances by the positions each accepted write allocated.
+
+A writer that was refused while writing stops writing from the log it held; only a writer that loads the log again, as above, takes up the refusal's counters.
+
 ## Queue interface
 
 The Queue interface handles asynchronous workflow execution, including queued step work:
@@ -288,13 +302,39 @@ The handler's result is queue control:
 - **Anything else**: acknowledge.
 - **A rejection**: retry the same message with your own backoff.
 
-`meta.messageId` must be stable across redeliveries of one message, and `meta.deliveryCount` must be 1 only on a message's first delivery (leave it `undefined` if your queue cannot say; the runtime then reads the log before every step body). A step with `maxRetries: 0` runs at most once only if a redelivery never reports 1.
+`meta.messageId` must be stable across redeliveries of one message, and `meta.deliveryCount` must be 1 only on a message's first delivery (leave it `undefined` if your queue cannot say; the runtime then reads the log before every step body). A step with `maxRetries: 0` runs at most once only if a redelivery never reports 1. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries.
 
-**Deliver a run's orchestrator messages one at a time.** This is the queue half of the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence), described there with the fence.
+**Deliver a run's orchestrator messages one at a time.** This is the queue half of the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence), described there with the fence. It applies to the Workflow SDK's own prefix only; a queue consumer's own messages on another prefix are delivered as they come.
 
 `QueueOptions.idempotencyKey` is set only on step messages, with a key stable for the step. Wakes of a run's orchestrator carry no key. Step messages also carry `retentionSeconds`, which you cap at what your queue supports.
 
 Optionally, implement `events.subscribe(runId, afterSlot, onEvent, options)` to push a run's newly committed events, in slot order, to a running orchestrator. It is best effort: the runtime also polls the log tail and drops any pushed event that is not the next slot it expects. Return an unsubscribe function, and report a dropped connection through `options.onError`.
+
+### Queue prefixes and delivery routes
+
+A queue name is a prefix followed by an id. The Workflow SDK uses the prefix `__wkf_workflow_`, or `__{namespace}_wkf_workflow_` when a queue namespace is set. A library that keeps its own runs in a World and consumes its own messages, such as a durable agent harness, uses a namespace of its own (`__agent_wkf_workflow_session`) so that its messages never reach the Workflow SDK's handler, and the Workflow SDK's never reach it.
+
+Only the Workflow SDK's handler is mounted at `/.well-known/workflow/v1/flow` (`WORKFLOW_FLOW_ROUTE` from `@workflow/world`). A World decides where every other prefix's messages go:
+
+- **By subscription.** A World whose transport pushes each message to whatever subscribed to its topic, like the Vercel World, needs nothing more: the app subscribes the consumer's route to that prefix's topics.
+- **By path.** A World that POSTs deliveries to the app itself should implement the optional `registerRoute(prefix, path)`: messages of `prefix` go to `path` on the app's base URL, and a prefix without a route goes to the flow route. Read the route at each delivery attempt, so a route registered after a message was enqueued takes its next attempt.
+- **In process.** A World whose queue runs inside the app's process can also implement the optional `registerHandler(prefix, handler)`, which delivers a prefix's messages to `handler(request)` without HTTP. The request is the one a route serving `createQueueHandler(prefix, ...)` would receive, and it takes precedence over a route for the same prefix.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Queue {
+  // ...
+  registerHandler?(
+    prefix: QueuePrefix,
+    handler: (req: Request) => Promise<Response>
+  ): void;
+  registerRoute?(prefix: QueuePrefix, path: string): void;
+}
+```
+
+Keep a message's full queue name from `queue()` to its delivery, including its prefix. A World that delivers by path should also have `createQueueHandler(prefix, ...)` refuse a message outside `prefix` (the Local World answers 400), so a misrouted message is retried rather than run by the wrong consumer.
+
+If your World re-enqueues active runs when it starts, send each run back to the queue namespace it recorded at creation, `executionContext.queueNamespace` (read it with `getRunQueueNamespace()` from `@workflow/world`), rather than to the starting process's own namespace. `reenqueueActiveRuns()` from `@workflow/world` does this. The Workflow SDK's `start()` records the namespace when one is set, and a library that creates its own runs records its own.
 
 ### Invocation delivery
 

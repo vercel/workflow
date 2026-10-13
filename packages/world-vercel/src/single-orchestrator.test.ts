@@ -538,7 +538,10 @@ describe('list snapshot', () => {
     expect(page.snapshot).toEqual({ seq: 1, seqInBand: 1 });
   });
 
-  it('rejects a malformed snapshot instead of handing the runtime a bad count', async () => {
+  // A malformed snapshot lists none rather than failing the page; on a
+  // single-orchestrator run the runtime then refuses to write in-band from
+  // that load, so a bad count never reaches a write.
+  it('lists no snapshot when the end frame carries a malformed one', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -562,9 +565,9 @@ describe('list snapshot', () => {
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
-    await expect(
-      getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent))
-    ).rejects.toThrow();
+    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    expect(page.data).toHaveLength(1);
+    expect(page.snapshot).toBeUndefined();
   });
 
   it('takes the snapshot of the response that completed a resumed full read', async () => {

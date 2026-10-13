@@ -1,11 +1,10 @@
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createStreamer } from '../src/streamer.js';
-import { tolerateTeardown } from './fixtures/pool.js';
+import { TestPool } from './pool.js';
 
 /**
  * `streams.get(runId, name, startIndex)` skips `startIndex` chunks before it
@@ -26,7 +25,7 @@ describe('Postgres stream offsets', () => {
   const applicationName = `stream_offset_${randomUUID().replaceAll('-', '')}`;
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let streamer: ReturnType<typeof createStreamer>;
 
   beforeAll(async () => {
@@ -41,12 +40,11 @@ describe('Postgres stream offsets', () => {
       env: process.env,
     });
 
-    pool = new Pool({
+    pool = new TestPool({
       connectionString: dbUrl,
       application_name: applicationName,
       max: 4,
     });
-    tolerateTeardown(pool);
     const drizzle = createClient(pool);
     streamer = createStreamer(pool, drizzle);
   }, 120_000);
