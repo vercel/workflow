@@ -51,7 +51,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../types.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { getComputeInstanceId } from './compute-instance.js';
 import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -403,7 +403,7 @@ export async function executeStep(
   // requestId as analytics `vercelId`, while computeInstanceId identifies the
   // worker that executed the step.
   const stepStartedEventParams: CreateEventParams = {
-    computeInstanceId: COMPUTE_INSTANCE_ID,
+    computeInstanceId: getComputeInstanceId(),
     ...(params.requestId ? { requestId: params.requestId } : {}),
   };
 

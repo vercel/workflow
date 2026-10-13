@@ -1,0 +1,36 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "workflow-cloudflare-poc",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    // Workers have no node:vm; core runs workflow code in its QuickJS engine.
+    "WORKFLOW_VM": "quickjs",
+    "WORKFLOW_CLOUDFLARE_DEBUG": "0",
+    // Local development only: the secret run encryption keys derive from.
+    // Use a Worker secret for anything real.
+    "WORKFLOW_ENCRYPTION_SECRET": "OaNSjmOvjuVrsuo5kdDXjb8lx6lucJKVAMrAGy2G1xs=",
+    // Snapshot the QuickJS VM often so the POC tests exercise restores
+    // (core's default is every 1000 events).
+    "WORKFLOW_SNAPSHOT_THRESHOLD": "4",
+    // workerd's node:zlib zstd fails on large inputs ("Unexpected end of
+    // file"); gzip uses the web-standard CompressionStream.
+    "WORKFLOW_COMPRESSION_CODEC": "gzip"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKFLOW_RUNS", "class_name": "RunObject" },
+      { "name": "WORKFLOW_TOKENS", "class_name": "TokenObject" },
+      { "name": "WORKFLOW_STREAMS", "class_name": "StreamObject" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RunObject", "TokenObject", "StreamObject"]
+    }
+  ],
+  // QuickJS native extensions ship as `.so` WebAssembly modules.
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.so"], "fallthrough": true }]
+}
