@@ -33,10 +33,10 @@ const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 // H2 multiplexing without hitting the duplex issues that keep the long-lived
 // live-read (GET) on the global dispatcher. The two mutations have different
 // retry policies because they differ in idempotency:
-//  - chunk appends are NOT idempotent, so getStreamDispatcher's policy (see
-//    STREAM_RETRY_OPTIONS) retries only on transient connection errors and
-//    HTTP 429 — both of which guarantee the chunk was never persisted — and
-//    never on 5xx, so a retry can't duplicate an already-applied write.
+//  - chunk appends are NOT idempotent. getStreamDispatcher has no
+//    dispatcher-level retries (see STREAM_RETRY_OPTIONS); instead the SDK
+//    retries only confirmed 429s and known pre-connect failures, above fetch
+//    with preserved bytes. Uncertain network outcomes and 5xx are never resent.
 //  - close IS idempotent, so getStreamCloseDispatcher's policy (see
 //    STREAM_CLOSE_RETRY_OPTIONS) also retries 5xx; the server's close-barrier
 //    protocol relies on that, surfacing transient reconciliation states as
@@ -98,6 +98,7 @@ async function fetchStreamMutation(
       operation === 'close'
         ? getStreamCloseDispatcher(config)
         : getStreamDispatcher(config),
+    retryStreamAppend: operation === 'write' && !config?.dispatcher,
     timeoutMs: getStreamMutationTimeoutMs(),
     logLabel: url.pathname,
     buildError: async (res) =>

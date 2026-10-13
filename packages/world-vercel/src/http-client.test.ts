@@ -3,6 +3,7 @@ import {
   createSecureServer,
   type Http2SecureServer,
   constants as http2Constants,
+  type ServerHttp2Session,
 } from 'node:http2';
 import {
   type AddressInfo,
@@ -106,25 +107,13 @@ describe('getStreamDispatcher', () => {
     expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
   });
 
-  // Stream writes (PUT) append chunks and are NOT idempotent. Retrying a write
-  // the server already applied would duplicate a chunk, so the retry policy is
-  // deliberately narrowed: only transient connection errors and HTTP 429 (both
-  // of which guarantee nothing was persisted) are retryable. A 5xx must never
-  // be retried — it can mean the chunk was written but the response failed.
-  it('retries stream writes only on transient errors and 429, never on 5xx', () => {
+  // Fresh fetch requests own append retries. This dispatcher must neither
+  // consume the 429 response nor resend a potentially persisted append.
+  it('disables dispatcher-level stream append retries', () => {
     expect(STREAM_RETRY_OPTIONS.methods).toEqual(['PUT']);
-    expect(STREAM_RETRY_OPTIONS.statusCodes).toEqual([429]);
-    for (const code of [500, 502, 503, 504]) {
-      expect(STREAM_RETRY_OPTIONS.statusCodes).not.toContain(code);
-    }
-  });
-
-  // The narrowed policy must also not inherit the timeout codes the default
-  // dispatcher retries: a headers/body timeout is ambiguous about whether the
-  // server persisted the chunk, so leaving errorCodes unset (undici's
-  // transient-network-error defaults) is the load-bearing part.
-  it('does not retry stream writes on transport timeouts', () => {
-    expect(STREAM_RETRY_OPTIONS.errorCodes).toBeUndefined();
+    expect(STREAM_RETRY_OPTIONS.maxRetries).toBe(0);
+    expect(STREAM_RETRY_OPTIONS.statusCodes).toEqual([]);
+    expect(STREAM_RETRY_OPTIONS.errorCodes).toEqual([]);
   });
 
   // Stream CLOSE is the one idempotent stream PUT: a duplicate close of a
@@ -382,6 +371,88 @@ TTVKDw9WMB6CyIX5kV0cOG/S8OO+1l3ZPaogkzj0P5OnJaYPvpp2kpGrlQ==
 // verify h2 survives that route. The server only speaks h2 (allowHTTP1 left at
 // its default of false), so a client that fell back to HTTP/1.1 would fail to
 // connect instead of silently passing.
+// The production append transport is the allowH2 stream agent over TLS, so the
+// fresh-request retry must resend the whole body there too, including when the
+// 429 arrives before the server has read the first body.
+describe('stream append retries over real TLS HTTP/2', () => {
+  it.each([
+    { label: 'a small payload', bytes: 0, early: false },
+    { label: 'a 4 MiB payload', bytes: 4 * 1024 * 1024, early: false },
+    { label: 'a 429 sent before the body is read', bytes: 0, early: true },
+  ])('resends the complete body after a 429 for $label', async ({
+    bytes,
+    early,
+  }) => {
+    const httpClient = await import('./http-client.js');
+    const { createStreamer } = await import('./streamer.js');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let attempts = 0;
+    const received: Buffer[] = [];
+    const saved: Buffer[] = [];
+    const protocols = new Set<string | false | null | undefined>();
+    const server = createSecureServer({ key: TEST_KEY, cert: TEST_CERT });
+    // close() waits for open sessions, and a failed append can leave one
+    // open. Track them so a regression fails fast instead of hanging cleanup.
+    const sessions = new Set<ServerHttp2Session>();
+    server.on('session', (session) => sessions.add(session));
+    server.on('stream', (stream) => {
+      stream.on('error', () => {});
+      const attempt = ++attempts;
+      protocols.add(
+        (stream.session?.socket as TLSSocket | undefined)?.alpnProtocol
+      );
+      if (attempt === 1 && early) {
+        stream.respond({ ':status': 429, 'retry-after': '1' });
+        stream.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => {
+        const body = Buffer.concat(chunks);
+        received.push(body);
+        if (attempt === 1) {
+          stream.respond({ ':status': 429, 'retry-after': '1' });
+        } else {
+          saved.push(body);
+          stream.respond({ ':status': 200 });
+        }
+        stream.end();
+      });
+    });
+    const dispatcher = createStreamDispatcher(STREAM_RETRY_OPTIONS, {
+      connect: { rejectUnauthorized: false },
+    });
+    vi.spyOn(httpClient, 'getStreamDispatcher').mockReturnValue(dispatcher);
+    try {
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve)
+      );
+      vi.stubEnv(
+        'VERCEL_WORKFLOW_SERVER_URL',
+        `https://127.0.0.1:${(server.address() as AddressInfo).port}`
+      );
+      const payload =
+        bytes > 0
+          ? new Uint8Array(bytes).map((_, i) => i % 251)
+          : new TextEncoder().encode('Hello, 世界 👋');
+      await createStreamer().writeToStream('data', 'wrun_test', payload);
+      const expected = Buffer.from(payload);
+      expect(protocols).toEqual(new Set(['h2']));
+      expect(attempts).toBe(2);
+      expect(received.at(-1)?.equals(expected)).toBe(true);
+      if (!early) expect(received[0].equals(expected)).toBe(true);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].equals(expected)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await dispatcher.destroy();
+      for (const session of sessions) session.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe('HTTP/2 over global fetch with an undici dispatcher', () => {
   let server: Http2SecureServer;
   let port: number;
