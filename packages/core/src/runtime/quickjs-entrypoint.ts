@@ -59,6 +59,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { getMaxInlineSteps } from './constants.js';
+import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
@@ -1603,6 +1604,13 @@ export async function runWorkflowWithQuickJS(params: {
       maxEventsLimit
     );
   }
+  maybeWarnApproachingEventLimit({
+    runId,
+    workflowName,
+    eventCount: restoredEventCount + events.length,
+    limit: maxEventsLimit,
+    isQuickJS: true,
+  });
 
   parentSpan?.setAttributes({
     ...Attribute.QuickJSEventsPreloaded(usePreloaded),

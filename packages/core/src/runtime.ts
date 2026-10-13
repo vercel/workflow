@@ -81,6 +81,7 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import { maybeWarnApproachingEventLimit } from './runtime/event-limit-warning.js';
 import {
   type EventCreator,
   findEventSlotGap,
@@ -3279,6 +3280,13 @@ export function workflowEntrypoint(
                                 maxEventsLimit
                               );
                             }
+                            maybeWarnApproachingEventLimit({
+                              runId,
+                              workflowName,
+                              eventCount: workflowEventCount,
+                              limit: maxEventsLimit,
+                              isQuickJS: false,
+                            });
                           }
 
                           runtimeLogger.debug('Starting workflow execution', {
