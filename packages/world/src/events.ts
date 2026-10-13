@@ -1292,12 +1292,13 @@ export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
  *
  * `snapshot` is set by a World that implements the in-band writer fence
  * (`WorldCapabilities.inBandFence`), on every page of a slot-numbered run's
- * log. It is read before the listing, so a full load (following `cursor`
- * until `hasMore` is false) covers every position up to the FIRST page's
- * `snapshot.seq`. A fenced writer takes its
+ * log where the World reads one. It is read before the listing, so a full
+ * load (following `cursor` until `hasMore` is false) covers every position
+ * up to the FIRST page's `snapshot.seq`. A fenced writer takes its
  * {@link CreateEventParams.expectedSeqInBand} from the first page's
  * `snapshot.seqInBand`, never from counting events: a count cannot tell
- * which positions were in-band.
+ * which positions were in-band. A fencing World that lists no snapshot
+ * reports the counters on a refusal (`InBandSupersededError`) instead.
  */
 export type EventListResponse = PaginatedResponse<Event> & {
   snapshot?: EventLogSnapshot;

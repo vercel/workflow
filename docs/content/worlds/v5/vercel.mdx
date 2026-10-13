@@ -150,6 +150,24 @@ Because uniqueness is per region, the same token can be held by one hook in each
 
 Creating and resuming a hook is fastest when the hook is stored in the region the run executes in. A hook stored in another region costs a cross-region round trip on `createHook()` and on each resume.
 
+## Queue consumers other than the Workflow SDK
+
+The Vercel World delivers each queue message to the functions subscribed to its topic, not to a fixed path. The Workflow SDK's build integration subscribes the generated flow route to `__wkf_workflow_*` (or `__{namespace}_wkf_workflow_*`). A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix and subscribes its own route to that prefix's topics:
+
+```json title="vercel.json"
+{
+  "functions": {
+    "app/api/agent/queue/route.ts": {
+      "experimentalTriggers": [
+        { "type": "queue/v2beta", "topic": "__agent_wkf_workflow_*" }
+      ]
+    }
+  }
+}
+```
+
+The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. Topic names replace characters other than letters, digits, `-` and `_` with `-`. The Vercel World has no `registerRoute()` or `registerHandler()`: a message reaches a function only through a subscription declared at deploy time. Every subscribed function receives its own copy of a message and runs it, whatever prefix its handler was created with, so subscribe each route only to its own prefix's topics.
+
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.

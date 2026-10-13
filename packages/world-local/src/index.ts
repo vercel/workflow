@@ -41,6 +41,11 @@ export type { DirectHandler } from './queue.js';
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
+  /**
+   * Deliver a queue prefix's messages over HTTP to `path` on the app (for
+   * example `/api/agent/queue`) instead of the Workflow SDK's flow route.
+   */
+  registerRoute(prefix: QueuePrefix, path: string): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };
@@ -135,7 +140,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // `createHook({ experimental_force: true })`; see the hook_created
       // branch of storage/events-storage.ts.
       hookForceClaim: true,
-      // An in-process per-run in-band count; see the in-band writer fence in
+      // A per-run in-band count on disk, under a lock file, so every process
+      // on the data directory shares it; see the in-band writer fence in
       // storage/events-storage.ts.
       inBandFence: true,
     },

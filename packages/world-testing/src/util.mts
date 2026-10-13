@@ -191,17 +191,17 @@ export function createFetcher(control: Control) {
       };
       return data.events;
     },
-    /** The in-band fence snapshot the first page of a run's log carried. */
-    async getEventLogSnapshot(
-      runId: string
-    ): Promise<{ seq: number; seqInBand: number } | null> {
+    /**
+     * A run's in-band fence counters: the snapshot the first page of its log
+     * carried, or a refusal's where the World lists none. See the
+     * `/runs/:runId/fence-counters` route in server.mts.
+     */
+    async getFenceCounters(runId: string): Promise<FenceSnapshot | null> {
       const x = await fetch(
-        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events`
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/fence-counters`
       );
-      const data = (await x.json()) as {
-        snapshot: { seq: number; seqInBand: number } | null;
-      };
-      return data.snapshot;
+      const data = (await x.json()) as { counters: FenceSnapshot | null };
+      return data.counters;
     },
     async getCapabilities(): Promise<Record<string, unknown>> {
       const x = await fetch(

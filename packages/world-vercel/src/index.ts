@@ -69,6 +69,17 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // The backend fences in-band writes on every sealed-log run (spec >= 7,
+      // the backend's event sequencer): a stale one is refused with 412
+      // `in-band-superseded`, carrying the run's `seq` and `seqInBand`
+      // (`InBandSupersededError`), and nothing is allocated for it. On an
+      // older run an in-band write is a 400 `in-band-fence-unsupported`,
+      // never an unfenced write, so a client fences by the run's spec
+      // version. A list response carries `snapshot` and a single create
+      // carries `allocated` where the backend reports them (events-v4.ts); a
+      // run whose list carries no snapshot is still fenced, and its refusals
+      // carry the counters.
+      inBandFence: true,
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })` (workflow-server
       // docs/hook-force-claim.md). Static rather than attested per lookup,
