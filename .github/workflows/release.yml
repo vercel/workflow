@@ -126,9 +126,12 @@ jobs:
         if: steps.publish.outputs.published == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUBLISHED_PACKAGES: ${{ steps.publish.outputs.published-packages }}
         run: |
-          # Generate release notes (PUBLISHED_PACKAGES filters to only include packages from this release)
+          # The notes cover every package bumped since the previous
+          # `workflow@<major>.*` tag, not only those this run published: a
+          # release that a registry error left half-published is finished,
+          # and written up, by a later run (5.0.0-beta.50 and 5.2.2 shipped
+          # with empty notes that way).
           RELEASE_JSON=$(node scripts/generate-release-notes.mjs)
           TAG=$(echo "$RELEASE_JSON" | jq -r '.tag')
           TITLE=$(echo "$RELEASE_JSON" | jq -r '.title')
@@ -182,7 +185,6 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_RELEASE_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
-          PUBLISHED_PACKAGES: ${{ steps.publish.outputs.published-packages }}
         run: |
           if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_RELEASE_CHANNEL_ID" ]; then
             echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_RELEASE_CHANNEL_ID"

@@ -13,9 +13,6 @@
  *   node scripts/generate-release-slack-payload.mjs --post
  *
  * Environment variables:
- *   PUBLISHED_PACKAGES - forwarded to scripts/generate-release-notes.mjs so the
- *                       payload matches the exact set of packages published.
- *
  *   SLACK_BOT_TOKEN   - Slack Bot User OAuth Token (starts with "xoxb-..."),
  *                      used to call `chat.postMessage`
  *   SLACK_RELEASE_CHANNEL_ID  - Slack Channel ID (e.g. "C0123456789")

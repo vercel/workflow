@@ -7,10 +7,13 @@
  *
  * Usage: node scripts/generate-release-notes.mjs
  *
- * Environment variables:
- *   PUBLISHED_PACKAGES - JSON array of published packages from changesets action
- *                        e.g. '[{"name":"@workflow/core","version":"4.0.1-beta.29"}]'
- *                        If not provided, includes all packages (may include duplicates)
+ * A package is included when its version differs from the one it had at the
+ * previous `workflow` release tag on the same major line, so the notes cover the
+ * whole release however many Release runs it took to publish. A run that
+ * publishes only part of a release (a registry error stops `changeset publish`
+ * partway) leaves the rest to a later run, and that later run is the one that
+ * writes the GitHub release. Without a previous tag (a shallow clone, or the
+ * first release on a line) every package's latest CHANGELOG entry is included.
  *
  * Output: JSON with { tag, title, body } for the GitHub release
  *
@@ -37,12 +40,6 @@ const GITHUB_REPO = 'vercel/workflow';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Parse published packages from environment variable (set by changesets action)
-// Format: [{"name":"@workflow/core","version":"4.0.1-beta.29"}, ...]
-const publishedPackagesEnv = process.env.PUBLISHED_PACKAGES;
-const publishedPackages = publishedPackagesEnv
-  ? new Map(JSON.parse(publishedPackagesEnv).map((p) => [p.name, p.version]))
-  : null;
 const ROOT_DIR = join(__dirname, '..');
 const PACKAGES_DIR = join(ROOT_DIR, 'packages');
 
@@ -236,10 +233,89 @@ function getWorkflowVersion() {
 }
 
 /**
+ * Compare two semver strings (`5.2.1`, `5.0.0-beta.48`). Returns a negative
+ * number, zero or a positive number, like a sort comparator.
+ */
+function compareVersions(a, b) {
+  const [aCore, aPre] = a.split('-', 2);
+  const [bCore, bPre] = b.split('-', 2);
+  const aParts = aCore.split('.').map(Number);
+  const bParts = bCore.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (aParts[i] !== bParts[i]) return aParts[i] - bParts[i];
+  }
+  if (aPre === bPre) return 0;
+  // A prerelease sorts before its release.
+  if (aPre === undefined) return 1;
+  if (bPre === undefined) return -1;
+  const aIds = aPre.split('.');
+  const bIds = bPre.split('.');
+  for (let i = 0; i < Math.max(aIds.length, bIds.length); i++) {
+    if (aIds[i] === undefined) return -1;
+    if (bIds[i] === undefined) return 1;
+    if (aIds[i] === bIds[i]) continue;
+    const aNum = /^\d+$/.test(aIds[i]);
+    const bNum = /^\d+$/.test(bIds[i]);
+    if (aNum && bNum) return Number(aIds[i]) - Number(bIds[i]);
+    if (aNum) return -1;
+    if (bNum) return 1;
+    return aIds[i] < bIds[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Find the tag of the previous `workflow` release on the current major line:
+ * the highest `workflow@<major>.*` version below the current one. This goes by
+ * version, not by ancestry, because a release can be published from a commit
+ * that is not on the branch (5.2.0 was published from its release PR's head).
+ */
+function getPreviousReleaseTag(workflowVersion) {
+  const major = workflowVersion.split('.')[0];
+  let tags;
+  try {
+    tags = execSync(`git tag --list 'workflow@${major}.*'`, {
+      cwd: ROOT_DIR,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+      .split('\n')
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+  let previous = null;
+  for (const tag of tags) {
+    const version = tag.slice('workflow@'.length);
+    if (compareVersions(version, workflowVersion) >= 0) continue;
+    if (!previous || compareVersions(version, previous) > 0) {
+      previous = version;
+    }
+  }
+  return previous ? `workflow@${previous}` : null;
+}
+
+/**
+ * Read a package's version at a git ref, or null if it did not exist there.
+ */
+function getVersionAtRef(ref, packageDir) {
+  try {
+    const content = execSync(
+      `git show '${ref}:packages/${packageDir}/package.json'`,
+      { cwd: ROOT_DIR, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    return JSON.parse(content).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Main function to generate release notes
  */
 function generateReleaseNotes() {
   const workflowVersion = getWorkflowVersion();
+  const previousTag = getPreviousReleaseTag(workflowVersion);
 
   // Collect changes from all packages
   const packageChanges = [];
@@ -265,6 +341,14 @@ function generateReleaseNotes() {
     const parsed = parseChangelog(changelogPath);
 
     if (parsed && parsed.changes.length > 0) {
+      // A package whose version is unchanged since the previous release would
+      // repeat that release's notes.
+      if (
+        previousTag &&
+        getVersionAtRef(previousTag, packageDir) === parsed.version
+      ) {
+        continue;
+      }
       packageChanges.push(parsed);
     }
   }
@@ -275,15 +359,6 @@ function generateReleaseNotes() {
   for (const pkg of packageChanges) {
     // Skip the main workflow package - it usually only has dependency updates
     if (pkg.packageName === 'workflow') continue;
-
-    // If we have published packages info, only include packages that were published
-    // This prevents duplicating changes from packages that weren't updated in this release
-    if (publishedPackages) {
-      const publishedVersion = publishedPackages.get(pkg.packageName);
-      if (!publishedVersion || publishedVersion !== pkg.version) {
-        continue;
-      }
-    }
 
     body += `## ${pkg.packageName}@${pkg.version}\n\n`;
     for (const change of pkg.changes) {
