@@ -1,4 +1,8 @@
-import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
+import {
+  PreconditionFailedError,
+  StreamError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -465,6 +469,88 @@ describe('healthCheck response parsing', () => {
 
     expect(result.healthy).toBe(false);
     expect(result.error).toMatch(/timed out/);
+  });
+});
+
+describe('healthCheck stream read failures', () => {
+  function healthyStream(): ReadableStream<Uint8Array> {
+    let delivered = false;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!delivered) {
+          controller.enqueue(
+            new TextEncoder().encode(JSON.stringify({ healthy: true }))
+          );
+          delivered = true;
+        } else {
+          controller.close();
+        }
+      },
+    });
+  }
+
+  function makeWorld(get: () => Promise<ReadableStream<Uint8Array>>): World {
+    return {
+      queue: vi.fn().mockResolvedValue(undefined),
+      streams: { get: vi.fn(get) },
+    } as unknown as World;
+  }
+
+  it.each([
+    [
+      'a 400',
+      () => new StreamError('Failed to fetch stream: 400', { status: 400 }),
+    ],
+    [
+      'a 401',
+      () => new StreamError('Failed to fetch stream: 401', { status: 401 }),
+    ],
+    ['a 403', () => new WorkflowWorldError('Forbidden', { status: 403 })],
+  ])('stops polling when the read is refused with %s', async (_, makeError) => {
+    const error = makeError();
+    const world = makeWorld(() => Promise.reject(error));
+
+    const startedAt = Date.now();
+    const result = await healthCheck(world, { timeout: 5_000 });
+
+    expect(result).toEqual({
+      healthy: false,
+      error: `Health check stream read was rejected: ${error.message}`,
+    });
+    expect(world.streams.get).toHaveBeenCalledTimes(1);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it.each([
+    404, 429, 503,
+  ])('keeps polling through a %s and returns the response once it is written', async (status) => {
+    let calls = 0;
+    const world = makeWorld(async () => {
+      calls++;
+      if (calls < 3) {
+        throw new StreamError(`Failed to fetch stream: ${status}`, { status });
+      }
+      return healthyStream();
+    });
+
+    const result = await healthCheck(world, { timeout: 5_000 });
+
+    expect(result.healthy).toBe(true);
+    expect(world.streams.get).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps polling through a read error that carries no status', async () => {
+    let calls = 0;
+    const world = makeWorld(async () => {
+      calls++;
+      if (calls < 2) throw new Error('socket hang up');
+      return healthyStream();
+    });
+
+    const result = await healthCheck(world, { timeout: 5_000 });
+
+    expect(result.healthy).toBe(true);
+    expect(world.streams.get).toHaveBeenCalledTimes(2);
   });
 });
 

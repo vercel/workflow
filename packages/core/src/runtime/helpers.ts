@@ -1,6 +1,7 @@
 import {
   PreconditionFailedError,
   RUN_ERROR_CODES,
+  StreamError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
@@ -279,6 +280,32 @@ const HEALTH_CHECK_POLL_INTERVAL = 100;
 const HEALTH_CHECK_READ_TIMEOUT = 500;
 
 /**
+ * 4xx statuses a health-check stream read can answer while the response is
+ * still on its way: the stream not written yet (404), a timeout or conflict
+ * (408, 409, 425), or a rate limit (429). Polling again is how those clear.
+ */
+const RETRYABLE_STREAM_READ_STATUSES = new Set([404, 408, 409, 425, 429]);
+
+/**
+ * True when the world refused the health-check stream read with a 4xx that
+ * polling cannot change, e.g. a 400 because the stream belongs to another
+ * environment, or a 401/403 for the caller's credentials. The poll loop stops
+ * on these instead of repeating the same refused read until its timeout.
+ */
+function isPermanentStreamReadError(
+  error: unknown
+): error is StreamError | WorkflowWorldError {
+  if (!StreamError.is(error) && !WorkflowWorldError.is(error)) return false;
+  const { status } = error;
+  return (
+    status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    !RETRYABLE_STREAM_READ_STATUSES.has(status)
+  );
+}
+
+/**
  * Read chunks from a stream with a timeout per read operation.
  * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
  */
@@ -396,6 +423,39 @@ function parseHealthCheckResponse(
   return parsed;
 }
 
+/**
+ * One poll of the health-check response stream: the parsed response once the
+ * target has written it, or `null` to poll again. Throws what the stream read
+ * throws, for the caller to decide whether polling can still help.
+ */
+async function pollHealthCheckResponse(
+  world: World,
+  correlationId: string,
+  streamName: string,
+  remainingMs: number
+): Promise<Omit<HealthCheckResult, 'latencyMs' | 'error'> | null> {
+  const stream = await withDeadline(
+    world.streams.get(generateHealthCheckRunId(correlationId), streamName),
+    remainingMs
+  );
+  const reader = stream.getReader();
+  const { chunks, timedOut } = await readStreamWithTimeout(
+    reader,
+    HEALTH_CHECK_READ_TIMEOUT
+  );
+
+  if (timedOut) {
+    try {
+      reader.cancel();
+    } catch {
+      // Ignore cancel errors
+    }
+    return null;
+  }
+
+  return parseHealthCheckResponse(chunks);
+}
+
 export async function healthCheck(
   world: World,
   options?: HealthCheckOptions
@@ -435,48 +495,31 @@ export async function healthCheck(
 
     while (Date.now() - startTime < timeout) {
       try {
-        const remainingMs = timeout - (Date.now() - startTime);
-        const stream = await withDeadline(
-          world.streams.get(
-            generateHealthCheckRunId(correlationId),
-            streamName
-          ),
-          remainingMs
+        const response = await pollHealthCheckResponse(
+          world,
+          correlationId,
+          streamName,
+          timeout - (Date.now() - startTime)
         );
-        const reader = stream.getReader();
-        const { chunks, timedOut } = await readStreamWithTimeout(
-          reader,
-          HEALTH_CHECK_READ_TIMEOUT
-        );
-
-        if (timedOut) {
-          try {
-            reader.cancel();
-          } catch {
-            // Ignore cancel errors
-          }
-          await new Promise((resolve) =>
-            setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-          );
-          continue;
-        }
-
-        const response = parseHealthCheckResponse(chunks);
         if (response) {
           return {
             ...response,
             latencyMs: Date.now() - startTime,
           };
         }
-
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
-      } catch {
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
+      } catch (error) {
+        // A read the world refuses outright is refused again on every poll,
+        // so report why now rather than as a timeout once the budget is gone.
+        if (isPermanentStreamReadError(error)) {
+          return {
+            healthy: false,
+            error: `Health check stream read was rejected: ${error.message}`,
+          };
+        }
       }
+      await new Promise((resolve) =>
+        setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
+      );
     }
     return {
       healthy: false,
