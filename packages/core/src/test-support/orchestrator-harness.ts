@@ -53,6 +53,17 @@ export const eventsOf = (world: AppendOnlyWorld, type: string) =>
 export const dataOf = (event: Event | undefined) =>
   (event as { eventData?: Record<string, unknown> } | undefined)?.eventData;
 
+/**
+ * Each step's creation: a background step's `step_created`, or an inline
+ * step's creation-bearing first `step_started` (`inline: true`).
+ */
+export const creationsOf = (world: AppendOnlyWorld) =>
+  world.events.filter(
+    (event) =>
+      event.eventType === 'step_created' ||
+      (event.eventType === 'step_started' && dataOf(event)?.inline === true)
+  );
+
 /** The hydrated return value of the run's `run_completed`, if any. */
 export async function runResult(world: AppendOnlyWorld): Promise<unknown> {
   const completed = eventsOf(world, 'run_completed')[0];

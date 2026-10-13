@@ -204,10 +204,8 @@ describe.each([
     expect(types(world.events)).toEqual([
       'run_created',
       'run_started',
-      'step_created',
       'step_started',
       'step_completed',
-      'step_created',
       'step_started',
       'step_completed',
       'run_completed',
@@ -267,7 +265,7 @@ describe.each([
     expect(types(world.events).slice(0, 3)).toEqual([
       'run_created',
       'run_started',
-      'step_created',
+      'step_started',
     ]);
   });
 
@@ -305,10 +303,8 @@ describe.each([
     expect(types(world.events)).toEqual([
       'run_created',
       'run_started',
-      'step_created',
       'step_started',
       'step_completed',
-      'step_created',
       'step_started',
       'step_completed',
       'run_completed',
@@ -352,12 +348,7 @@ describe.each([
     expect(world.deliveries).toHaveLength(1);
     expect(bodies[0]).toEqual({
       listCalls: 0,
-      eventTypes: [
-        'run_created',
-        'run_started',
-        'step_created',
-        'step_started',
-      ],
+      eventTypes: ['run_created', 'run_started', 'step_started'],
     });
   });
 
@@ -373,7 +364,6 @@ describe.each([
     expect(bodies[0]?.eventTypes).toEqual([
       'run_created',
       'run_started',
-      'step_created',
       'step_started',
     ]);
   });

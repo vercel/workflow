@@ -8,6 +8,7 @@ import { dehydrateStepReturnValue } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
+  creationsOf,
   dataOf,
   eventsOf,
   orchestratorMessagesOf,
@@ -185,8 +186,10 @@ describe.each([
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(1);
     expect(calls.iw_a).toBe(1);
-    expect(eventsOf(world, 'step_created')).toHaveLength(1);
-    expect(dataOf(eventsOf(world, 'step_created')[0])?.inline).toBe(true);
+    // The refused creation-bearing start left the step uncreated; the
+    // deferred delivery created it by its start alone.
+    expect(eventsOf(world, 'step_created')).toEqual([]);
+    expect(creationsOf(world)).toHaveLength(1);
     expect(
       eventsOf(world, 'step_started').map((e) => dataOf(e)?.attempt)
     ).toEqual([1]);
@@ -371,7 +374,10 @@ describe.each([
     await world.runUntilIdle(4 * FAN_OUT);
 
     expect(await runResult(world)).toBe(FAN_OUT);
-    expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
+    expect(creationsOf(world)).toHaveLength(FAN_OUT);
+    expect(eventsOf(world, 'step_created')).toHaveLength(
+      FAN_OUT - getMaxInlineSteps()
+    );
     expect(
       Math.max(...world.batches.map((batch) => batch.length))
     ).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
@@ -422,7 +428,7 @@ describe.each([
         await world.runUntilIdle(4 * FAN_OUT);
 
         expect(await runResult(world)).toBe(FAN_OUT);
-        expect(eventsOf(world, 'step_created')).toHaveLength(FAN_OUT);
+        expect(creationsOf(world)).toHaveLength(FAN_OUT);
       } finally {
         onStepA = undefined;
       }
@@ -463,9 +469,7 @@ describe.each([
 
       expect(refused).toBe(true);
       expect(await runResult(world)).toBe(FAN_OUT);
-      const created = eventsOf(world, 'step_created').map(
-        (e) => e.correlationId
-      );
+      const created = creationsOf(world).map((e) => e.correlationId);
       expect(new Set(created).size).toBe(FAN_OUT);
       expect(created).toHaveLength(FAN_OUT);
       // A failed write stops the delivery's later writes, the inline steps'

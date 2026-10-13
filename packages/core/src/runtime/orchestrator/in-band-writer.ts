@@ -526,6 +526,10 @@ export class InBandWriter {
         }
         return;
       }
+      if (group.length === 1 && first.events.length === 1) {
+        await this.sendBatchOfOne(first);
+        return;
+      }
       const events = group.flatMap((write) => write.events);
       // A batch resolves all or nothing; a write that asked for any resolved
       // data (a replay's `skip-step-inputs`) gets all of it.
@@ -643,6 +647,65 @@ export class InBandWriter {
       }
     } finally {
       this.pendingPositions -= total;
+    }
+  }
+
+  /**
+   * A lone run-ahead batch of one event goes out as a single write. A
+   * definite refusal reaches `verify` as the batch's refused item, the way a
+   * batch reports it.
+   */
+  private async sendBatchOfOne(write: AheadWrite): Promise<void> {
+    const item = write.events[0]!;
+    const params = write.params as Omit<CreateEventBatchParams, 'inBand'>;
+    let answer: EventBatchResult;
+    try {
+      const written = await this.sendSingle(
+        item.event,
+        {
+          ...(params.eventCount !== undefined
+            ? { eventCount: params.eventCount }
+            : {}),
+          ...(params.requestId !== undefined
+            ? { requestId: params.requestId }
+            : {}),
+          ...(item.occurredAt !== undefined
+            ? { occurredAt: item.occurredAt }
+            : {}),
+          ...(item.computeInstanceId !== undefined
+            ? { computeInstanceId: item.computeInstanceId }
+            : {}),
+        },
+        false
+      );
+      answer = {
+        results: written.event ? [{ status: 200, event: written.event }] : [],
+        ...(written.events !== undefined ? { events: written.events } : {}),
+        ...(written.reportIncomplete ? { reportIncomplete: true } : {}),
+        allocated: written.allocated ?? 1,
+      } as EventBatchResult;
+    } catch (error) {
+      if (this.stopped || !isDefiniteRefusal(error)) {
+        write.reject(error);
+        return;
+      }
+      const status = (error as { status?: unknown }).status;
+      answer = {
+        results: [
+          {
+            status: typeof status === 'number' ? status : 400,
+            error: (error as { name?: string }).name ?? 'refused',
+            message: (error as Error).message,
+          },
+        ],
+        allocated: 0,
+      } as EventBatchResult;
+    }
+    try {
+      write.verify(answer);
+      write.resolve(answer);
+    } catch (error) {
+      write.reject(this.stop(error, true));
     }
   }
 

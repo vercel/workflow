@@ -1,4 +1,5 @@
 import type { Event } from '@workflow/world';
+import { stepCreationOf } from './log-state.js';
 
 /**
  * Background steps this orchestrator delivery must enqueue again.
@@ -38,18 +39,20 @@ export function stepsToReenqueue(params: {
   for (const event of events) {
     const cid = event.correlationId;
     if (!cid) continue;
+    if (!steps.has(cid)) {
+      // An inline step's creation may be its first `step_started`.
+      const creation = stepCreationOf(event);
+      if (creation) {
+        steps.set(cid, {
+          inline: creation.inline,
+          creator: creation.creatorMessageId,
+          started: false,
+          terminal: false,
+          lastIsRetrying: false,
+        });
+      }
+    }
     switch (event.eventType) {
-      case 'step_created':
-        if (!steps.has(cid)) {
-          steps.set(cid, {
-            inline: event.eventData.inline === true,
-            creator: event.eventData.creatorMessageId,
-            started: false,
-            terminal: false,
-            lastIsRetrying: false,
-          });
-        }
-        break;
       case 'step_started': {
         const step = steps.get(cid);
         if (step) {

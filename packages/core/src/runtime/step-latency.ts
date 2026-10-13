@@ -346,9 +346,9 @@ export function computeStepLatencyEventData(params: {
   /** Whether the body ran optimistically, without awaiting step_started. */
   optimisticStart: boolean;
   /**
-   * Whether the step's `step_created` + `step_started` pair was pre-claimed
-   * inside the suspension handler's batched fan-out write (no start POST of
-   * its own at all).
+   * Whether the step's start was written by its creation (an inline step's
+   * creation-bearing `step_started`), so the executor sent no start POST of
+   * its own at all.
    */
   preclaimedStart?: boolean;
 }): StepLatencyEventData | undefined {

@@ -52,6 +52,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
@@ -1306,6 +1307,12 @@ export function createEventsStorage(
         const createsChildEntity = isChildEntityCreationEvent(data);
         const lazyStepStart =
           createsChildEntity && data.eventType === 'step_started';
+        // A single-orchestrator run (spec >= 9) records an inline step's
+        // creation on its `step_started` alone: no synthetic `step_created`,
+        // and the start keeps its input.
+        const creationOnStart = (): boolean =>
+          lazyStepStart &&
+          (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR;
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -1694,6 +1701,7 @@ export function createEventsStorage(
         // check (packages/core/src/step.ts).
         if (
           lazyStepStart &&
+          !creationOnStart() &&
           event.eventType === 'step_started' &&
           event.eventData
         ) {
@@ -2225,7 +2233,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              await storeEvent(stepCreatedEvent);
+              if (!creationOnStart()) await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }

@@ -265,6 +265,24 @@ export class AppendOnlyWorld {
         );
       }
     }
+    // An inline step's creation is its first `step_started`, carrying the
+    // input: world-vercel keys that input's payload ref by workflow name, and
+    // only the first attempt may carry it.
+    if (
+      data.eventType === 'step_started' &&
+      data.eventData?.input !== undefined
+    ) {
+      if (typeof data.eventData.workflowName !== 'string') {
+        throw new Error(
+          `A step_started carrying its step's input requires eventData.workflowName`
+        );
+      }
+      if (data.eventData.attempt !== 1) {
+        throw new Error(
+          'Only the first step_started of a step may carry its input'
+        );
+      }
+    }
   }
 
   private append(

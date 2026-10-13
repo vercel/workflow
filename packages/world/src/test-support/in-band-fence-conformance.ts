@@ -357,5 +357,58 @@ export function inBandFenceConformance(
         startReason: 'first',
       });
     });
+
+    test("records an inline step created by its first step_started alone, keeping the start's input", async () => {
+      const events = options.events();
+      const runId = await createRun(events);
+      const stepId = uniqueId('step');
+      await (events.create as CreateAny)(
+        runId,
+        {
+          eventType: 'step_started',
+          correlationId: stepId,
+          specVersion: SPEC,
+          eventData: {
+            stepName: 'add',
+            workflowName: 'fenceConformance',
+            input: new Uint8Array([7, 8]),
+            inline: true,
+            creatorMessageId: 'msg_creator',
+            attempt: 1,
+            startReason: 'first',
+          },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: atRunCreation }
+      );
+      // The step exists: its outcome is accepted.
+      await (events.create as CreateAny)(
+        runId,
+        {
+          eventType: 'step_completed',
+          correlationId: stepId,
+          specVersion: SPEC,
+          eventData: { stepName: 'add', result: new Uint8Array([9]) },
+        } as AnyEventRequest,
+        { inBand: false }
+      );
+      const page = await events.list({ runId, resolveData: 'all' });
+      expect(page.data.map((event) => event.eventType)).toEqual([
+        'run_created',
+        'step_started',
+        'step_completed',
+      ]);
+      expect(page.snapshot?.seqInBand).toBe(atRunCreation + 1);
+      const started = page.data[1];
+      expect(started?.eventData).toMatchObject({
+        stepName: 'add',
+        inline: true,
+        creatorMessageId: 'msg_creator',
+        attempt: 1,
+        startReason: 'first',
+      });
+      const input = (started?.eventData as { input?: unknown }).input;
+      expect(input).toBeDefined();
+      expect([...new Uint8Array(input as Uint8Array)]).toEqual([7, 8]);
+    });
   });
 }

@@ -23,7 +23,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { EntityConflictError } from '@workflow/errors';
+import { ThrottleError } from '@workflow/errors';
 import {
   type CreateEventParams,
   type CreateEventRequest,
@@ -286,11 +286,10 @@ interface ScenarioOptions {
    */
   pendingStepOwner?: string;
   /**
-   * Reject the first lazy `step_started` claim with `EntityConflictError`,
-   * modelling a concurrent invocation winning the atomic create-claim for the
-   * batch's first step while its sibling proceeds.
+   * Throttle the batch's first inline step's creation-bearing `step_started`,
+   * so that step never reaches user code while its sibling proceeds.
    */
-  failFirstLazyClaim?: boolean;
+  throttleFirstCreation?: boolean;
 }
 
 const WORKFLOW_SOURCES = {
@@ -460,7 +459,7 @@ async function runScenario(options: ScenarioOptions = {}) {
   } as Event);
 
   const createdEvents: CreateEventRequest[] = [];
-  let lazyClaimRejected = false;
+  let firstCreationThrottled = false;
 
   const listEvents = vi.fn(async () => ({
     data: [...durableEvents],
@@ -527,41 +526,21 @@ async function runScenario(options: ScenarioOptions = {}) {
         };
       }
 
-      // Lazy step start: synthesize the step_created the world would create.
-      const lazyStepStart =
+      // An inline step's creation: its first `step_started`, carrying the
+      // input.
+      const creationStart =
         request.eventType === 'step_started' &&
         !!request.eventData &&
         (request.eventData as { input?: unknown }).input !== undefined;
-      if (lazyStepStart && options.failFirstLazyClaim && !lazyClaimRejected) {
-        // A concurrent invocation won the atomic create-claim for this step.
-        // The real server answers the loser with a 409.
-        lazyClaimRejected = true;
-        throw new EntityConflictError('step already created');
+      if (
+        creationStart &&
+        options.throttleFirstCreation &&
+        !firstCreationThrottled
+      ) {
+        firstCreationThrottled = true;
+        throw new ThrottleError('throttled', { retryAfter: 1 });
       }
-      let effective: CreateEventRequest = request;
-      if (lazyStepStart) {
-        const lazy = request.eventData as {
-          stepName?: string;
-          input?: unknown;
-        };
-        durableEvents.push(
-          event({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: request.correlationId,
-            eventData: {
-              stepName: lazy.stepName,
-              workflowName,
-              input: lazy.input,
-            },
-          } as CreateEventRequest)
-        );
-        const { input: _input, ...startData } = lazy;
-        effective = {
-          ...request,
-          eventData: startData,
-        } as CreateEventRequest;
-      }
+      const effective: CreateEventRequest = request;
 
       const created = event(effective);
       durableEvents.push(created);
@@ -570,7 +549,7 @@ async function runScenario(options: ScenarioOptions = {}) {
         return {
           event: created,
           step: buildStepEntity(effective.correlationId),
-          ...(lazyStepStart ? { stepCreated: true } : {}),
+          ...(creationStart ? { stepCreated: true } : {}),
         };
       }
       return { event: created };
@@ -821,15 +800,15 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(stepSpans()).toHaveLength(0);
   });
 
-  it('still reports when the batch’s first step loses its create-claim', async () => {
-    // A concurrent invocation wins the first inline step's atomic
-    // create-claim; that step never reaches user code. Its sibling does, and
-    // the shared one-shot latch lets it take the measurement instead of the
-    // sample being pinned to — and lost with — the first step.
+  it('still reports when the batch’s first step is refused its creation', async () => {
+    // The World throttles the first inline step's creation-bearing start;
+    // that step never reaches user code. Its sibling does, and the shared
+    // one-shot latch lets it take the measurement instead of the sample being
+    // pinned to — and lost with — the first step.
     await runScenario({
       workflow: 'parallelInline',
       timing: PRODUCER_TIMING,
-      failFirstLazyClaim: true,
+      throttleFirstCreation: true,
     });
 
     const reporting = stepSpans().filter(

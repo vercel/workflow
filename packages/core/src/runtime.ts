@@ -22,6 +22,7 @@ import {
   type CreateEventParams,
   type CreateEventRequest,
   type Event,
+  type EventBatchResult,
   type EventResult,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
@@ -147,6 +148,7 @@ import {
   nextTimerAt,
   openWaits,
   type StepMessageSpec,
+  stepCreationOf,
 } from './runtime/orchestrator/log-state.js';
 import {
   admitBelowSpeculation,
@@ -2947,6 +2949,44 @@ export function workflowEntrypoint(
                       );
                       noteRunAheadContext(context);
                       const postSentAtMs = Date.now();
+                      const verifyCreation = (result: EventBatchResult) => {
+                        for (const below of result.events ?? []) {
+                          checkRunAheadHazard(below, 'skipped-slot report');
+                        }
+                        result.results.forEach((item, index) => {
+                          if (
+                            item.error === undefined &&
+                            item.event.eventType === 'step_started' &&
+                            item.event.correlationId
+                          ) {
+                            committedStarts.add(item.event.correlationId);
+                          }
+                          if (item.error !== undefined) {
+                            throw new RunAheadStopError(
+                              `a speculative ${events[index]?.eventType} was refused (${item.status}: ${item.message})`
+                            );
+                          }
+                          if (+new Date(item.event.createdAt) !== +occurredAt) {
+                            disableRunAheadFor(world);
+                            throw new RunAheadStopError(
+                              'the World does not record an in-band write at its occurredAt'
+                            );
+                          }
+                          if (
+                            eventIdToSlot(item.event.eventId) !==
+                            first + index
+                          ) {
+                            const predicted = speculative[index];
+                            if (predicted) {
+                              repairAliases.set(
+                                predicted.eventId,
+                                item.event.eventId
+                              );
+                            }
+                            markRunAheadRepair('creation');
+                          }
+                        });
+                      };
                       const commit = writer.createBatchAhead(
                         events.map((event) => ({
                           event,
@@ -2959,46 +2999,7 @@ export function workflowEntrypoint(
                           ...slotSnapshot(),
                           ...(requestId ? { requestId } : {}),
                         },
-                        (result) => {
-                          for (const below of result.events ?? []) {
-                            checkRunAheadHazard(below, 'skipped-slot report');
-                          }
-                          result.results.forEach((item, index) => {
-                            if (
-                              item.error === undefined &&
-                              item.event.eventType === 'step_started' &&
-                              item.event.correlationId
-                            ) {
-                              committedStarts.add(item.event.correlationId);
-                            }
-                            if (item.error !== undefined) {
-                              throw new RunAheadStopError(
-                                `a speculative ${events[index]?.eventType} was refused (${item.status}: ${item.message})`
-                              );
-                            }
-                            if (
-                              +new Date(item.event.createdAt) !== +occurredAt
-                            ) {
-                              disableRunAheadFor(world);
-                              throw new RunAheadStopError(
-                                'the World does not record an in-band write at its occurredAt'
-                              );
-                            }
-                            if (
-                              eventIdToSlot(item.event.eventId) !==
-                              first + index
-                            ) {
-                              const predicted = speculative[index];
-                              if (predicted) {
-                                repairAliases.set(
-                                  predicted.eventId,
-                                  item.event.eventId
-                                );
-                              }
-                              markRunAheadRepair('creation');
-                            }
-                          });
-                        }
+                        verifyCreation
                       );
                       const settled = commit.then(
                         (result) => {
@@ -3773,9 +3774,6 @@ export function workflowEntrypoint(
                         compression,
                         creatorMessageId,
                         inlineSlots,
-                        // The inline steps run right after this commit, so
-                        // their first start rides the same batch.
-                        startInlineSteps: mayInline,
                         requestId,
                       });
                       // Turbo: a suspension of only new inline steps starts
@@ -3906,7 +3904,7 @@ export function workflowEntrypoint(
                                     {
                                       correlationId: step.correlationId,
                                       stepName: step.stepName,
-                                      stepCreatedEventId: step.event.eventId,
+                                      stepCreatedEventId: step.event?.eventId,
                                       input: step.input,
                                     },
                                   ]
@@ -3957,7 +3955,7 @@ export function workflowEntrypoint(
                         toEnqueue.push({
                           correlationId: step.correlationId,
                           stepName: step.stepName,
-                          stepCreatedEventId: step.event.eventId,
+                          stepCreatedEventId: step.event?.eventId,
                           input: step.input,
                         });
                       }
@@ -4011,7 +4009,8 @@ export function workflowEntrypoint(
                               : {}),
                             ...(gate
                               ? {
-                                  // The batch's start, or its refusal.
+                                  // The creation-bearing start once the
+                                  // batch committed it, or its refusal.
                                   startAfter: observed(
                                     gate.then((steps) => {
                                       const committed = steps.get(
@@ -4033,9 +4032,12 @@ export function workflowEntrypoint(
                           const createdEvent = replayedEvents.find(
                             (event) => event.eventId === step.createdEventId
                           );
+                          // The creation is a `step_created`, or the first
+                          // `step_started` of a step it created inline.
                           const loadedInput =
-                            createdEvent?.eventType === 'step_created'
-                              ? createdEvent.eventData.input
+                            createdEvent?.eventType === 'step_created' ||
+                            createdEvent?.eventType === 'step_started'
+                              ? createdEvent.eventData?.input
                               : undefined;
                           inlineToRun.push({
                             correlationId: step.correlationId,
@@ -4270,7 +4272,10 @@ export function workflowEntrypoint(
                                   ? { startAfter: step.startAfter }
                                   : {}),
                                 beforeBody: () => writer.assertActive(),
-                                ...(isFirst && tracking
+                                // Every step of the batch shares it: the
+                                // first to reach user code reports, so a
+                                // refused first step does not lose it.
+                                ...(tracking
                                   ? { resumeTracking: tracking }
                                   : {}),
                                 ...(isFirst && latencyTracking
@@ -4454,13 +4459,17 @@ export function workflowEntrypoint(
                         : { type: 'continue', retainSession: true };
                     }
 
-                    /** Reads a step's input from its `step_created`. */
+                    /**
+                     * Reads a step's input from its creation: its
+                     * `step_created`, or the first `step_started` of a step
+                     * created inline.
+                     */
                     async function readStepInput(
                       createdEventId: string | undefined
                     ): Promise<SerializedData> {
                       if (createdEventId === undefined) {
                         throw new WorkflowRuntimeError(
-                          'An inline step has neither an input nor a step_created event'
+                          'An inline step has neither an input nor a creation event'
                         );
                       }
                       const created = await world.events.get(
@@ -4468,12 +4477,18 @@ export function workflowEntrypoint(
                         createdEventId,
                         { resolveData: 'all' }
                       );
-                      if (created.eventType !== 'step_created') {
+                      const input =
+                        created.eventType === 'step_created' ||
+                        (created.eventType === 'step_started' &&
+                          stepCreationOf(created) !== undefined)
+                          ? created.eventData?.input
+                          : undefined;
+                      if (input === undefined) {
                         throw new WorkflowRuntimeError(
-                          `Event "${createdEventId}" is not a step_created`
+                          `Event "${createdEventId}" is not a step's creation`
                         );
                       }
-                      return created.eventData.input;
+                      return input;
                     }
 
                     /**

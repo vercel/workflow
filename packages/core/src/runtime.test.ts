@@ -2389,7 +2389,9 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stepCompleted).toHaveLength(2);
     const [first] = stepCompleted;
     expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
-    expect(first.eventData.optimizations).toEqual([]);
+    // An inline step's creation is its start, so the start is always
+    // pre-claimed; nothing turbo-only is reported.
+    expect(first.eventData.optimizations).toEqual(['preclaimedStart']);
     // Non-turbo: rsfsAnchorMs is stamped right after the real (awaited)
     // run_started response, so rsfs is a small non-negative duration too.
     expect(first.eventData.rsfs).toBeGreaterThanOrEqual(0);
@@ -2494,8 +2496,8 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     // ULID time encoding is millisecond-exact, so this is deterministic.
     expect(ttfs).toBe(+attrOccurredAt - runCreatedAtMs);
     expect(stso).toBeUndefined();
-    // Continuation delivery is not turbo.
-    expect(optimizations).toEqual([]);
+    // Continuation delivery is not turbo. The creation pre-claims the start.
+    expect(optimizations).toEqual(['preclaimedStart']);
   });
 });
 

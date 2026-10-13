@@ -138,14 +138,20 @@ describe.each([
     await world.runUntilIdle();
 
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
-    const created = eventsOf(world, 'step_created')[0];
-    expect(data(created)).toMatchObject({
-      stepName: 'so_add',
-      inline: true,
-      creatorMessageId: world.deliveries[0]?.messageId,
-    });
+    // An inline step is created by its first start alone: one event before
+    // its outcome, carrying what a `step_created` would.
+    expect(eventsOf(world, 'step_created')).toEqual([]);
+    expect(
+      world.events
+        .filter((e) => e.eventType.startsWith('step_'))
+        .map((e) => e.eventType)
+    ).toEqual(['step_started', 'step_completed']);
     expect(data(eventsOf(world, 'step_started')[0])).toMatchObject({
       stepName: 'so_add',
+      workflowName: expect.any(String),
+      input: expect.anything(),
+      inline: true,
+      creatorMessageId: world.deliveries[0]?.messageId,
       attempt: 1,
       startReason: 'first',
     });
@@ -244,14 +250,22 @@ describe.each([
       await world.runUntilIdle();
 
       expect(eventsOf(world, 'run_completed')).toHaveLength(1);
-      const created = eventsOf(world, 'step_created');
-      // One inline step and two background ones (the engines may write
-      // them in different orders).
-      expect(created.map((e) => data(e)?.inline).sort()).toEqual([
-        false,
-        false,
-        true,
-      ]);
+      // One inline step, created by its start alone, and two background
+      // ones, each a `step_created` and then its own invocation's start.
+      expect(
+        eventsOf(world, 'step_created').map((e) => data(e)?.inline)
+      ).toEqual([false, false]);
+      const starts = eventsOf(world, 'step_started');
+      expect(starts.filter((e) => data(e)?.inline === true)).toHaveLength(1);
+      expect(starts).toHaveLength(3);
+      for (const created of eventsOf(world, 'step_created')) {
+        const createdAt = world.events.indexOf(created);
+        const start = starts.find(
+          (e) => e.correlationId === created.correlationId
+        );
+        expect(start && world.events.indexOf(start)).toBeGreaterThan(createdAt);
+        expect(data(start)?.input).toBeUndefined();
+      }
       const stepMessages = world.queueCalls.filter(
         (call) => (call.message as { stepId?: string }).stepId !== undefined
       );
@@ -283,7 +297,7 @@ describe.each([
         (c) =>
           c.event.eventType.startsWith('step_') &&
           c.event.correlationId !==
-            created.find((e) => data(e)?.inline === true)?.correlationId &&
+            starts.find((e) => data(e)?.inline === true)?.correlationId &&
           c.event.eventType !== 'step_created'
       );
       expect(bgWrites.length).toBe(4);

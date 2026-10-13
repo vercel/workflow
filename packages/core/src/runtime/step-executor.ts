@@ -188,18 +188,19 @@ export interface StepExecutorParams {
    * `stepStartedAt` is the step's first start, not this attempt's.
    */
   firstStartedAt?: Date;
-  /** The step's serialized input, as written on its `step_created`. */
+  /** The step's serialized input, as written on its creation. */
   input: SerializedData;
   /**
    * Set when the caller already wrote this attempt's `step_started` (an
-   * inline step created and started in one batch). The executor then writes
-   * no start of its own.
+   * inline step, created by that start). The executor then writes no start
+   * of its own.
    */
   started?: CallerStart;
   /**
-   * The World's refusal of a `step_started` the caller wrote for this
-   * attempt in a batch (a throttle, a finished run). Acted on as a refusal of
-   * the executor's own start; the executor writes no start.
+   * The World's refusal of the `step_started` the caller wrote for this
+   * attempt (an inline step's creation-bearing start, refused for a throttle
+   * or a finished run). Acted on as a refusal of the executor's own start;
+   * the executor writes no start.
    */
   startRefusal?: unknown;
   /** Params for the outcome write (`step_completed` / `step_failed`). */
@@ -238,12 +239,11 @@ export interface StepExecutorParams {
    */
   runReadyBarrier?: Promise<unknown>;
   /**
-   * Settles once this step's `step_created` has committed (rejects if it
-   * failed). Set when the caller wrote `step_created` without waiting for it
-   * (turbo's optimistic inline start). Resolves with the start when the
-   * caller's write committed this attempt's `step_started` too (one batch);
-   * otherwise the executor sends `step_started` after it. A failure is the
-   * start's failure.
+   * Settles once this step's creation has committed (rejects if it failed).
+   * Set when the caller wrote the creation without waiting for it (turbo's
+   * optimistic inline start). Resolves with the start when the creation was
+   * this attempt's `step_started` (an inline step); otherwise the executor
+   * sends `step_started` after it. A failure is the start's failure.
    */
   startAfter?: Promise<CallerStart | undefined | void>;
   /**

@@ -116,6 +116,25 @@ const eventsOf = (store: AppendOnlyWorld, type: string) =>
 const data = (event: Event | undefined) =>
   (event as { eventData?: Record<string, unknown> } | undefined)?.eventData;
 
+/**
+ * Whether a write creates a step: a `step_created`, or an inline step's
+ * creation-bearing `step_started`.
+ */
+const isCreation = (event: unknown) => {
+  const { eventType, eventData } = event as {
+    eventType: string;
+    eventData?: { inline?: boolean };
+  };
+  return (
+    eventType === 'step_created' ||
+    (eventType === 'step_started' && eventData?.inline === true)
+  );
+};
+
+/** Each step's creation in the log. */
+const creationsOf = (store: AppendOnlyWorld) =>
+  store.events.filter((event) => isCreation(event));
+
 async function output(store: AppendOnlyWorld, runId: string) {
   const completed = eventsOf(store, 'run_completed')[0];
   expect(completed).toBeDefined();
@@ -265,9 +284,9 @@ describe.each([
         await store.runUntilIdle();
 
         expect(await output(store, runId)).toBe(6);
-        // The inline step starts in the same batch as its creation.
+        // The inline step is created by its start, in the same batch as the
+        // background step's creation and the wait's.
         expect(batches).toContainEqual([
-          'step_created',
           'step_started',
           'step_created',
           'wait_created',
@@ -301,7 +320,8 @@ describe.each([
       await store.runUntilIdle();
 
       expect(await output(store, runId)).toBe(12);
-      expect(eventsOf(store, 'step_created')).toHaveLength(3);
+      expect(creationsOf(store)).toHaveLength(3);
+      expect(eventsOf(store, 'step_created')).toHaveLength(2);
       expect(calls.ss_add).toBe(3);
       // Serialized single writes all passed the fence.
       expect(
@@ -324,9 +344,11 @@ describe.each([
       await store.runUntilIdle();
 
       expect(await output(store, runId)).toBe(10);
-      expect(
-        eventsOf(store, 'step_created').map((e) => data(e)?.inline)
-      ).toEqual([true, true]);
+      expect(creationsOf(store).map((e) => data(e)?.inline)).toEqual([
+        true,
+        true,
+      ]);
+      expect(eventsOf(store, 'step_created')).toEqual([]);
       expect(stepMessages(store)).toEqual([]);
       expect(calls.ss_add).toBe(2);
     });
@@ -464,7 +486,7 @@ describe.each([
   });
 
   describe('failed writes and sends during a suspension', () => {
-    it('fails the delivery on a transient step_created failure, without an unhandled rejection', async () => {
+    it('fails the delivery on a transient step creation failure, without an unhandled rejection', async () => {
       let failNext = true;
       const { store, runId, start } = await setup(`return await add(4, 5);`, {
         tweak: (world) => {
@@ -474,10 +496,7 @@ describe.each([
             event: unknown,
             params?: never
           ) => {
-            if (
-              failNext &&
-              (event as { eventType: string }).eventType === 'step_created'
-            ) {
+            if (failNext && isCreation(event)) {
               failNext = false;
               throw new TypeError('terminated');
             }
@@ -486,10 +505,7 @@ describe.each([
           const createBatch = world.events.createBatch?.bind(world.events);
           if (createBatch) {
             world.events.createBatch = async (id, batch, params) => {
-              if (
-                failNext &&
-                batch.some(({ event }) => event.eventType === 'step_created')
-              ) {
+              if (failNext && batch.some(({ event }) => isCreation(event))) {
                 failNext = false;
                 throw new TypeError('terminated');
               }
@@ -504,7 +520,7 @@ describe.each([
 
       expect(await output(store, runId)).toBe(9);
       expect(calls.ss_add).toBe(1);
-      expect(eventsOf(store, 'step_created')).toHaveLength(1);
+      expect(creationsOf(store)).toHaveLength(1);
     });
 
     // A failed step-message send fails the delivery: the message is

@@ -6,6 +6,7 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
+  creationsOf,
   dataOf,
   eventsOf,
   expectReplaced,
@@ -176,10 +177,11 @@ describe.each([
     // The run finished before A's body did, so nothing ran s1 again.
     expect(calls.fo_s1).toBe(1);
     // Each step was created once, and none has two outcomes.
-    expect(
-      new Set(eventsOf(world, 'step_created').map((e) => e.correlationId)).size
-    ).toBe(2);
-    for (const created of eventsOf(world, 'step_created')) {
+    expect(new Set(creationsOf(world).map((e) => e.correlationId)).size).toBe(
+      2
+    );
+    expect(creationsOf(world)).toHaveLength(2);
+    for (const created of creationsOf(world)) {
       expect(
         world.events.filter(
           (e) =>

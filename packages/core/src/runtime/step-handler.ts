@@ -17,6 +17,7 @@ import {
   queueMessage,
   rootRunIdFrom,
 } from './helpers.js';
+import { stepCreationOf } from './orchestrator/log-state.js';
 import {
   decideStepDelivery,
   firstDeliveryDecision,
@@ -301,7 +302,12 @@ export async function wakeAfterCompletion(
   );
 }
 
-/** Whether a step other than `stepId` has a `step_created` and no outcome. */
+/**
+ * Whether a step other than `stepId` was created and has no outcome. A
+ * `step_started` counts as a creation: an inline step's creation may be its
+ * first start alone, and a World refuses a start for a step that does not
+ * exist.
+ */
 export function hasOtherPendingStep(
   events: readonly Event[],
   stepId: string
@@ -310,8 +316,12 @@ export function hasOtherPendingStep(
   for (const event of events) {
     const id = event.correlationId;
     if (!id || id === stepId) continue;
-    if (event.eventType === 'step_created') pending.add(id);
-    else if (
+    if (
+      event.eventType === 'step_created' ||
+      event.eventType === 'step_started'
+    ) {
+      pending.add(id);
+    } else if (
       event.eventType === 'step_completed' ||
       event.eventType === 'step_failed'
     ) {
@@ -387,22 +397,30 @@ async function resolveStepInput(
     const events = log ?? (await loadWorkflowRunEvents(ctx.runId)).events;
     eventId = events.find(
       (event) =>
-        event.eventType === 'step_created' &&
-        event.correlationId === ctx.payload.stepId
+        event.correlationId === ctx.payload.stepId &&
+        stepCreationOf(event) !== undefined
     )?.eventId;
   }
   if (eventId === undefined) {
     throw new Error(
-      `Step "${ctx.payload.stepId}" of run "${ctx.runId}" has no step_created event`
+      `Step "${ctx.payload.stepId}" of run "${ctx.runId}" has no creation event`
     );
   }
   const created = await ctx.world.events.get(ctx.runId, eventId, {
     resolveData: 'all',
   });
-  if (created.eventType !== 'step_created') {
+  // An inline step's creation may be its first `step_started`, which then
+  // carries the input.
+  const input =
+    created.eventType === 'step_created' ||
+    (created.eventType === 'step_started' &&
+      stepCreationOf(created) !== undefined)
+      ? created.eventData?.input
+      : undefined;
+  if (input === undefined) {
     throw new Error(
-      `Event "${eventId}" of run "${ctx.runId}" is not the step_created of "${ctx.payload.stepId}"`
+      `Event "${eventId}" of run "${ctx.runId}" is not the creation of "${ctx.payload.stepId}"`
     );
   }
-  return created.eventData.input;
+  return input;
 }

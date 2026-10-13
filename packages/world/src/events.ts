@@ -344,8 +344,22 @@ const StepStartedEventSchema = BaseEventSchema.extend({
       // backend can build the payload ref key without re-reading the run.
       workflowName: z.string().optional(),
       // Lazy-start: the dehydrated step input, present only when this
-      // step_started is also responsible for creating the step.
+      // step_started is also responsible for creating the step. On a
+      // single-orchestrator run (spec >= 9) an inline step has no
+      // `step_created`: its first `step_started` carries the input and is its
+      // creation.
       input: SerializedDataSchema.optional(),
+      /**
+       * A creation-bearing start's execution mode, as
+       * `step_created.eventData.inline` (spec >= 9): always `true`, since
+       * only an inline step is created by its start.
+       */
+      inline: z.boolean().optional(),
+      /**
+       * A creation-bearing start's creator, as
+       * `step_created.eventData.creatorMessageId` (spec >= 9).
+       */
+      creatorMessageId: z.string().optional(),
       // Inline step ownership: the queue message ID of the invocation whose
       // handler is executing this step's body inline. Stamped on the lazy
       // step_started (and re-stamped on an owner-recovery bare start) so

@@ -485,7 +485,8 @@ describe.each([
 
     it('takes the hook branch when hook_received lands between the load and the inline step it races', async () => {
       // The resume lands right before the orchestrator commits the inline
-      // step's step_created: below everything the delivery then writes.
+      // step's creation (its first step_started): below everything the
+      // delivery then writes.
       let injected = false;
       let runId = '';
       let world!: AppendOnlyWorld;
@@ -494,7 +495,7 @@ describe.each([
         [TOKEN],
         {},
         async (event) => {
-          if (event.eventType !== 'step_created' || injected) return;
+          if (event.eventType !== 'step_started' || injected) return;
           injected = true;
           const hookId = eventsOf(world, 'hook_created')[0]?.correlationId;
           world.appendOutOfBand({

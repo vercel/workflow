@@ -7,6 +7,7 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
+  creationsOf,
   dataOf,
   eventsOf,
   expectReplaced,
@@ -293,7 +294,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(
       world.batches.some((batch) => {
         const outcome = batch.indexOf('step_completed');
-        return outcome !== -1 && batch.indexOf('step_created', outcome) !== -1;
+        return outcome !== -1 && batch.indexOf('step_started', outcome) !== -1;
       })
     ).toBe(true);
     // Fewer round trips than one per write.
@@ -348,10 +349,12 @@ describe('run-ahead against an append-only World (node engine)', () => {
     await world.runUntilIdle();
 
     expect(await runResult(world)).toBe(STEPS);
+    // The first step's creation is one event and goes out as a single
+    // write; every later one rides a batch with the outcome before it.
     const lone = world.batches.filter(
       (batch) => !batch.includes('step_completed')
     );
-    expect(lone).toHaveLength(1);
+    expect(lone).toEqual([]);
     // The run's start, its completion, and its last outcome go alone.
     expect(world.createCalls).toBeLessThanOrEqual(STEPS + 3);
   });
@@ -389,7 +392,9 @@ describe('run-ahead against an append-only World (node engine)', () => {
       async beforeCreate(data, _params, source) {
         if (
           !injected &&
-          data.eventType === 'step_created' &&
+          data.eventType === 'step_started' &&
+          (data as { eventData?: { inline?: boolean } }).eventData?.inline ===
+            true &&
           source?.batch &&
           ++batchedCreations === 2
         ) {
@@ -408,9 +413,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
 
     expect(injected).toBe(true);
     expect(eventsOf(world, 'run_failed')).toHaveLength(0);
-    const created = new Set(
-      eventsOf(world, 'step_created').map((e) => e.correlationId)
-    );
+    const created = new Set(creationsOf(world).map((e) => e.correlationId));
     for (const completed of eventsOf(world, 'step_completed')) {
       expect(created.has(completed.correlationId)).toBe(true);
     }
@@ -532,9 +535,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
     // A World that refuses a cancelled run's creations but still takes its
     // outcomes leaves no outcome for a step it never created: a step's
     // creation and outcome never share a batch.
-    const created = new Set(
-      eventsOf(world, 'step_created').map((e) => e.correlationId)
-    );
+    const created = new Set(creationsOf(world).map((e) => e.correlationId));
     for (const completed of eventsOf(world, 'step_completed')) {
       expect(created.has(completed.correlationId)).toBe(true);
     }

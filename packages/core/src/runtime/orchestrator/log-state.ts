@@ -26,16 +26,16 @@ export interface InlineStepSpec {
   startReason: StepStartReason;
   firstStartedAt?: Date;
   /**
-   * The step's `step_started`, when the orchestrator wrote it together with
-   * `step_created` (one batch). The executor then writes no start.
+   * The step's creation-bearing `step_started`, when the orchestrator wrote
+   * it (its creation batch). The executor then writes no start.
    */
   started?: { startedAt: Date; postSentAtMs?: number; completedAtMs?: number };
-  /** The World's refusal of that batched start. */
+  /** The World's refusal of that creation-bearing start. */
   startRefusal?: Error;
   /**
-   * Settles once the step's `step_created` committed, when the body starts
-   * while that commit is in flight (turbo), with the start when the same
-   * batch committed it. Otherwise its `step_started` waits for it.
+   * Settles once the step's creation committed, when the body starts while
+   * that commit is in flight (turbo), with its creation-bearing start.
+   * Otherwise its `step_started` waits for it.
    */
   startAfter?: Promise<
     | { startedAt: Date; postSentAtMs?: number; completedAtMs?: number }
@@ -62,26 +62,61 @@ export interface LogStepState {
   runnableInline: boolean;
 }
 
+/**
+ * The creation a step event records: a `step_created`, or a creation-bearing
+ * `step_started`. A single-orchestrator run (spec >= 9) records an inline
+ * step by its first `step_started` alone, with what a `step_created` carries
+ * (stepName, workflowName, input, `inline: true`, `creatorMessageId`). It is
+ * told apart by `inline: true`, which no other start carries: a replay page
+ * may omit the start's input.
+ */
+export function stepCreationOf(
+  event: Event
+):
+  | { stepName: string; inline: boolean; creatorMessageId?: string }
+  | undefined {
+  if (event.eventType === 'step_created') {
+    return {
+      stepName: event.eventData.stepName,
+      inline: event.eventData.inline === true,
+      creatorMessageId: event.eventData.creatorMessageId,
+    };
+  }
+  if (
+    event.eventType === 'step_started' &&
+    event.eventData?.inline === true &&
+    event.eventData.stepName !== undefined
+  ) {
+    return {
+      stepName: event.eventData.stepName,
+      inline: event.eventData.inline === true,
+      creatorMessageId: event.eventData.creatorMessageId,
+    };
+  }
+  return undefined;
+}
+
 export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
   const steps = new Map<string, LogStepState>();
   for (const event of events) {
     const cid = event.correlationId;
     if (!cid) continue;
-    if (event.eventType === 'step_created') {
-      if (!steps.has(cid)) {
+    if (!steps.has(cid)) {
+      const creation = stepCreationOf(event);
+      if (creation) {
         steps.set(cid, {
           correlationId: cid,
-          stepName: event.eventData.stepName,
+          stepName: creation.stepName,
           createdEventId: event.eventId,
-          inline: event.eventData.inline === true,
+          inline: creation.inline,
           starts: 0,
           terminal: false,
           lastIsRetrying: false,
           runnableInline: false,
         });
       }
-      continue;
     }
+    if (event.eventType === 'step_created') continue;
     const step = steps.get(cid);
     if (!step || step.terminal) continue;
     switch (event.eventType) {

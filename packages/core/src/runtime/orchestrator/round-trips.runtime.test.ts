@@ -60,18 +60,20 @@ describe.each([
 
     expect(await runResult(world)).toBe(STEPS);
     expect(world.deliveries).toHaveLength(1);
-    // run_started, then per step one batch (step_created + step_started)
-    // and one step_completed, then run_completed.
+    // run_started, then per step its creation-bearing step_started and
+    // its step_completed, then run_completed.
     expect(afterSetup(world).creates).toBe(1 + 2 * STEPS + 1);
+    expect(eventsOf(world, 'step_created')).toEqual([]);
     for (const started of eventsOf(world, 'step_started')) {
       expect(dataOf(started)).toMatchObject({
         attempt: 1,
         startReason: 'first',
+        inline: true,
       });
     }
   });
 
-  it('writes the start on its own on a World without batch writes', async () => {
+  it('writes the same two events per inline step on a World without batch writes', async () => {
     const { world } = await setupOrchestratorRun(
       sequentialSteps,
       [STEPS],
@@ -81,7 +83,7 @@ describe.each([
     await world.runUntilIdle();
 
     expect(await runResult(world)).toBe(STEPS);
-    expect(afterSetup(world).creates).toBe(1 + 3 * STEPS + 1);
+    expect(afterSetup(world).creates).toBe(1 + 2 * STEPS + 1);
   });
 
   it('does not list the log per inline step', async () => {

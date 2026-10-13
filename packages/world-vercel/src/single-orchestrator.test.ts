@@ -260,6 +260,42 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
     expect(meta).not.toHaveProperty('expectedSeqInBand');
   });
 
+  // An inline step is created by its first start alone, so that start
+  // carries everything its `step_created` would.
+  it('carries an inline step creation on its in-band step_started, with the input as the body', async () => {
+    const input = new Uint8Array([4, 5, 6]);
+    const data = {
+      eventType: 'step_started',
+      correlationId: 'step_1',
+      specVersion: SPEC,
+      eventData: {
+        stepName: 'add',
+        workflowName: 'wf',
+        input,
+        inline: true,
+        creatorMessageId: 'msg_creator',
+        attempt: 1,
+        startReason: 'first',
+      },
+    } as AnyEventRequest;
+    const { meta } = await postAndCaptureMeta(data, {
+      inBand: true,
+      expectedSeqInBand: 3,
+    });
+    expect(meta).toMatchObject({
+      eventType: 'step_started',
+      stepName: 'add',
+      workflowName: 'wf',
+      inline: true,
+      creatorMessageId: 'msg_creator',
+      attempt: 1,
+      startReason: 'first',
+      inBand: true,
+      expectedSeqInBand: 3,
+    });
+    expect(splitEventDataForV4(data).payload).toEqual(input);
+  });
+
   it('drops an unknown startReason in the splitter instead of forwarding it', () => {
     const { meta } = splitEventDataForV4({
       eventType: 'step_started',

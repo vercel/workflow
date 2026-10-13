@@ -606,12 +606,19 @@ async function drive(
           createdAt: new Date(),
         });
       }
-      if (data.eventType === 'step_started' && mode.type === 'inject-wait') {
+      // An inline step's creation is its `step_started`, ahead of the
+      // suspension's `wait_created`: the wait completes once it exists, while
+      // the step runs.
+      if (data.eventType === 'wait_created' && mode.type === 'inject-wait') {
         mode = { type: 'normal' };
         const waitCreated = events.find(
           (candidate) => candidate.eventType === 'wait_created'
         );
-        assert(waitCreated, 'expected wait_created before step');
+        assert(waitCreated, 'expected wait_created');
+        assert(
+          events.some((candidate) => candidate.eventType === 'step_started'),
+          'expected the step started before its wait was created'
+        );
         events.push({
           eventId: slotToEventId(++seq),
           runId,

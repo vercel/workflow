@@ -19,10 +19,8 @@ import {
   HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
-  ThrottleError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
-  WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -96,6 +94,7 @@ import {
   awaitsExternalWork,
   type LogStepState,
   MAX_STEP_MESSAGE_INPUT_BYTES,
+  stepCreationOf,
 } from './orchestrator/log-state.js';
 import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
@@ -2059,9 +2058,12 @@ export async function runWorkflowWithQuickJS(params: {
     const created =
       events.find((e) => e.eventId === state.createdEventId) ??
       params.preloadedEvents?.find((e) => e.eventId === state.createdEventId);
+    // The creation is a `step_created`, or the first `step_started` of a
+    // step created inline.
     if (
-      created?.eventType === 'step_created' &&
-      created.eventData.input !== undefined
+      (created?.eventType === 'step_created' ||
+        created?.eventType === 'step_started') &&
+      created.eventData?.input !== undefined
     ) {
       return created.eventData.input;
     }
@@ -2069,102 +2071,59 @@ export async function runWorkflowWithQuickJS(params: {
     const read = await world.events.get(runId, state.createdEventId, {
       resolveData: 'all',
     });
-    if (read.eventType !== 'step_created') {
+    const input =
+      read.eventType === 'step_created' ||
+      (read.eventType === 'step_started' && stepCreationOf(read) !== undefined)
+        ? read.eventData?.input
+        : undefined;
+    if (input === undefined) {
       throw new WorkflowRuntimeError(
-        `Event "${state.createdEventId}" is not a step_created`
+        `Event "${state.createdEventId}" is not a step's creation`
       );
     }
-    return read.eventData.input;
+    return input;
   };
 
   /**
-   * Writes a new inline step's `step_created`, and with it the first
-   * attempt's `step_started` when the World takes batch writes: two plain
-   * appends in one fenced write. Resolves with the start when it committed;
-   * otherwise the executor writes it. Mirrors the node engine's creation
-   * batch (`planStepsAndWaits` with `startInlineSteps`).
+   * Writes a new inline step's creation: the first attempt's `step_started`,
+   * carrying what a `step_created` carries (stepName, workflowName, input,
+   * `inline: true`, `creatorMessageId`). A single-orchestrator run records an
+   * inline step by that start alone, so the executor writes no start of its
+   * own. A refusal is the start's refusal (a throttle defers the delivery, a
+   * finished run ends the attempt). Mirrors the node engine's creation batch
+   * (`planStepsAndWaits`).
    */
   const createInlineStep = async (
     step: PendingStep,
     input: SerializedData
-  ): Promise<CallerStart | undefined> => {
-    const created: CreateEventRequest = {
-      eventType: 'step_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: step.correlationId,
-      eventData: {
-        stepName: step.stepId,
-        workflowName: workflowRun.workflowName,
-        input,
-        inline: true,
-        ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
-      },
-    };
-    const writer = params.writer;
-    if (!writer?.supportsBatch) {
-      await createEvent(created);
-      return undefined;
-    }
+  ): Promise<CallerStart> => {
     const postSentAtMs = Date.now();
-    const batch = await writer.createBatch(
-      [
-        { event: created },
-        {
-          event: {
-            eventType: 'step_started',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: step.correlationId,
-            eventData: {
-              stepName: step.stepId,
-              attempt: 1,
-              startReason: 'first',
-            },
-          },
-          computeInstanceId: COMPUTE_INSTANCE_ID,
-        },
-      ],
+    const written = await createEvent(
       {
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: step.correlationId,
+        eventData: {
+          stepName: step.stepId,
+          workflowName: workflowRun.workflowName,
+          input,
+          inline: true,
+          ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
+          attempt: 1,
+          startReason: 'first',
+        },
+      },
+      {
+        computeInstanceId: COMPUTE_INSTANCE_ID,
         ...(requestId ? { requestId } : {}),
-        ...logView.snapshotParams(),
       }
     );
-    const completedAtMs = Date.now();
-    const [createdItem, startedItem] = batch.results;
-    // Positions of both writes, and the report of what landed below them.
-    let first = true;
-    for (const item of batch.results) {
-      if (item.error !== undefined) continue;
-      logView.absorb(
-        first
-          ? { event: item.event, events: batch.events }
-          : { event: item.event },
-        { deliverEvent: deliversOwnEvent(item.event.eventType) }
-      );
-      first = false;
-    }
-    if (createdItem?.error !== undefined) {
-      // The batch is not atomic on a single-orchestrator run; a refused
-      // creation fails this delivery the way a single write would.
-      const message = `Inline step creation failed with ${createdItem?.status}: ${createdItem?.message}`;
-      if (createdItem?.status === 429) throw new ThrottleError(message);
-      if (createdItem?.status === 410) throw new RunExpiredError(message);
-      throw new WorkflowWorldError(message, {
-        status: createdItem?.status ?? 500,
-      });
-    }
-    if (!startedItem) return undefined;
-    if (startedItem.error !== undefined) {
-      // Created, not started. A throttle or a finished run is the start's
-      // refusal; anything else leaves the start to the executor.
-      const message = `Inline step start failed with ${startedItem.status}: ${startedItem.message}`;
-      if (startedItem.status === 429) throw new ThrottleError(message);
-      if (startedItem.status === 410) throw new RunExpiredError(message);
-      return undefined;
-    }
     return {
-      startedAt: new Date(startedItem.event.createdAt),
+      startedAt: written.event
+        ? new Date(written.event.createdAt)
+        : new Date(postSentAtMs),
       postSentAtMs,
-      completedAtMs,
+      completedAtMs: Date.now(),
     };
   };
 
