@@ -32,6 +32,7 @@ import {
   ErrorType,
   getSpanKind,
   HttpRequestMethod,
+  HttpRequestResendCount,
   HttpResponseStatusCode,
   injectTraceContextIntoHeaders,
   PeerService,
@@ -286,13 +287,20 @@ export function logCurlRepro(
   );
 }
 
-/** Parse a `Retry-After` header value (seconds). Used by 425 and 429. */
+/**
+ * Parse `Retry-After` seconds or an HTTP date into whole seconds (a date is
+ * rounded up, so a wait never ends early). Used by 425 and 429.
+ */
 export function parseRetryAfter(
   value: string | null | undefined
 ): number | undefined {
   if (!value) return undefined;
   const parsed = parseInt(value, 10);
-  return Number.isNaN(parsed) ? undefined : parsed;
+  if (!Number.isNaN(parsed)) return parsed;
+  const date = Date.parse(value);
+  return Number.isNaN(date)
+    ? undefined
+    : Math.max(0, Math.ceil((date - Date.now()) / 1000));
 }
 
 /**
@@ -503,6 +511,32 @@ const STREAM_APPEND_CONNECT_ERROR_CODES = new Set([
 const STREAM_APPEND_THROTTLE_BUDGET_MS = 30_000;
 /** Floor (and default when `Retry-After` is absent) for one 429 wait. */
 const STREAM_APPEND_MIN_THROTTLE_WAIT_MS = 1_000;
+/**
+ * Upper bound on the time a resend must have left before the request deadline.
+ * A resend aborted mid-upload has an uncertain outcome, which is worse than
+ * surfacing the known-not-persisted failure that prompted it.
+ */
+export const STREAM_APPEND_DEADLINE_RESERVE_MS = 10_000;
+
+/**
+ * Time a resend must have left before a `timeoutMs` deadline: half the timeout,
+ * capped at STREAM_APPEND_DEADLINE_RESERVE_MS, so a short timeout can still
+ * retry while a long one keeps room for a multi-MB page.
+ */
+export function streamAppendDeadlineReserveMs(timeoutMs: number): number {
+  return Math.min(STREAM_APPEND_DEADLINE_RESERVE_MS, timeoutMs / 2);
+}
+
+/** @internal Exported for testing. */
+export interface StreamAppendRetryOptions {
+  signal?: AbortSignal;
+  /** Absolute request deadline (epoch ms); undefined when there is none. */
+  deadlineMs?: number;
+  /** Time each resend must have left before `deadlineMs`. */
+  reserveMs?: number;
+  /** Called before each resend with the resend count so far (1-based). */
+  onResend?: (resendCount: number) => void;
+}
 
 /** Rejects with `signal.reason`, clearing the timer, when `signal` aborts. */
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -524,30 +558,42 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
 
 /**
  * Retry loop for one stream append. Each attempt is a fresh request, so the
- * body is never a consumed reader. A 429 is retried only while its wait fits
- * both the cumulative budget and the request deadline; otherwise the 429
- * response is returned so the caller surfaces it.
+ * body is never a consumed reader. Only confirmed 429s and pre-connect failures
+ * are resent, at most STREAM_APPEND_MAX_RETRIES times in total. A wait happens
+ * only when the resend after it would still have `reserveMs` before the
+ * deadline; otherwise the failure that prompted it surfaces unchanged (the 429
+ * response is returned, the connect error rethrown). 429 waits also share a
+ * cumulative STREAM_APPEND_THROTTLE_BUDGET_MS.
+ *
+ * @internal Exported for testing.
  */
-async function fetchStreamAppend(
+export async function fetchStreamAppend(
   request: () => Promise<Response>,
-  signal: AbortSignal | undefined,
-  deadlineMs: number | undefined
+  { signal, deadlineMs, reserveMs = 0, onResend }: StreamAppendRetryOptions = {}
 ): Promise<Response> {
+  const resendFits = (waitMs: number) =>
+    deadlineMs === undefined || deadlineMs - (Date.now() + waitMs) >= reserveMs;
   let throttledMs = 0;
   for (let retry = 0; ; retry++) {
+    if (retry > 0) onResend?.(retry);
     let response: Response;
     try {
       response = await request();
     } catch (error) {
       const code = getTransientTransportCode(error);
+      const backoffMs = 500 * 2 ** retry;
       if (
         retry === STREAM_APPEND_MAX_RETRIES ||
         !code ||
-        !STREAM_APPEND_CONNECT_ERROR_CODES.has(code)
+        !STREAM_APPEND_CONNECT_ERROR_CODES.has(code) ||
+        !resendFits(backoffMs)
       ) {
         throw error;
       }
-      await sleep(500 * 2 ** retry, signal);
+      console.warn(
+        `[workflow] Stream append connection failed (${code}); retrying in-process in ${backoffMs / 1000}s`
+      );
+      await sleep(backoffMs, signal);
       continue;
     }
     if (
@@ -569,13 +615,13 @@ async function fetchStreamAppend(
     );
     if (
       throttledMs + waitMs > STREAM_APPEND_THROTTLE_BUDGET_MS ||
-      (deadlineMs !== undefined && Date.now() + waitMs >= deadlineMs)
+      !resendFits(waitMs)
     ) {
       return response;
     }
     throttledMs += waitMs;
     console.warn(
-      `[workflow] Throttled (429) appending stream chunks; retrying in-process in ${waitMs / 1000}s`
+      `[workflow] Throttled (429) appending stream chunks; retrying in-process in ${waitMs / 1000}s${formatVercelDiagnostics(response.headers)}`
     );
     // Release the connection before waiting, even if the diagnostic body
     // never finishes. A failed body does not undo the rejection.
@@ -691,11 +737,16 @@ export async function instrumentedFetch(
       };
       try {
         response = await (retryAppend
-          ? fetchStreamAppend(
-              request,
+          ? fetchStreamAppend(request, {
               signal,
-              timeoutMs != null ? start + timeoutMs : undefined
-            )
+              deadlineMs: timeoutMs != null ? start + timeoutMs : undefined,
+              reserveMs:
+                timeoutMs != null
+                  ? streamAppendDeadlineReserveMs(timeoutMs)
+                  : undefined,
+              onResend: (count) =>
+                span?.setAttributes({ ...HttpRequestResendCount(count) }),
+            })
           : request());
       } catch (error) {
         const elapsed = Date.now() - start;

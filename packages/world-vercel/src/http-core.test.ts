@@ -10,12 +10,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   describeTransportFailure,
   errorForResponse,
+  fetchStreamAppend,
   formatVercelDiagnostics,
   getTransientTransportCode,
   getVercelDiagnostics,
   instrumentedFetch,
   parseRetryAfter,
   resolveVercelApiToken,
+  STREAM_APPEND_DEADLINE_RESERVE_MS,
+  streamAppendDeadlineReserveMs,
 } from './http-core.js';
 
 vi.mock('@vercel/oidc', () => ({
@@ -237,11 +240,228 @@ describe('parseRetryAfter', () => {
     expect(parseRetryAfter('30')).toBe(30);
   });
 
-  it('returns undefined for missing or non-numeric values', () => {
+  it('parses HTTP dates into whole seconds from now, rounding up', () => {
+    const now = Date.UTC(2026, 9, 11, 12);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      expect(parseRetryAfter(new Date(now + 30_000).toUTCString())).toBe(30);
+      expect(parseRetryAfter(new Date(now - 30_000).toUTCString())).toBe(0);
+      clock.mockReturnValue(now - 500);
+      expect(parseRetryAfter(new Date(now + 30_000).toUTCString())).toBe(31);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('returns undefined for missing or invalid values', () => {
     expect(parseRetryAfter(null)).toBeUndefined();
     expect(parseRetryAfter(undefined)).toBeUndefined();
     expect(parseRetryAfter('')).toBeUndefined();
     expect(parseRetryAfter('soon')).toBeUndefined();
+  });
+});
+
+describe('fetchStreamAppend', () => {
+  const throttled = (headers: Record<string, string> = {}) =>
+    new Response('rate limited', { status: 429, headers });
+  const connectError = (code: string) =>
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error(code), { code }),
+    });
+
+  /** Drive the loop to completion under fake timers; returns elapsed ms. */
+  async function run(
+    responses: Array<Response | Error>,
+    options: Parameters<typeof fetchStreamAppend>[1] = {}
+  ) {
+    const request = vi.fn(async () => {
+      const next = responses.shift() ?? new Response('ok');
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    const start = Date.now();
+    const pending = fetchStreamAppend(request, options);
+    const settled = pending.then(
+      (response) => ({ response, error: undefined }),
+      (error: unknown) => ({ response: undefined, error })
+    );
+    await vi.runAllTimersAsync();
+    return {
+      ...(await settled),
+      calls: request.mock.calls.length,
+      elapsed: Date.now() - start,
+    };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('waits the 1s floor when Retry-After is absent, then surfaces the 6th 429', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { response, calls, elapsed } = await run(
+      Array.from({ length: 6 }, () => throttled())
+    );
+    expect(response?.status).toBe(429);
+    expect(calls).toBe(6);
+    expect(elapsed).toBe(5_000);
+  });
+
+  it('raises a short Retry-After to the 1s floor', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { response, calls, elapsed } = await run([
+      throttled({ 'Retry-After': '0' }),
+    ]);
+    expect(response?.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(elapsed).toBe(1_000);
+  });
+
+  it('stops waiting once the cumulative 30s throttle budget would be exceeded', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { response, calls, elapsed } = await run([
+      throttled({ 'Retry-After': '20' }),
+      throttled({ 'Retry-After': '20' }),
+    ]);
+    expect(response?.status).toBe(429);
+    expect(calls).toBe(2);
+    expect(elapsed).toBe(20_000);
+  });
+
+  it('honors an HTTP-date Retry-After', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { calls, elapsed } = await run([
+      throttled({ 'Retry-After': new Date(Date.now() + 3_000).toUTCString() }),
+    ]);
+    expect(calls).toBe(2);
+    expect(elapsed).toBe(3_000);
+  });
+
+  it('surfaces a firewall challenge without waiting', async () => {
+    vi.useFakeTimers();
+    const { response, calls } = await run([
+      throttled({ 'x-vercel-mitigated': 'challenge' }),
+    ]);
+    expect(response?.headers.get('x-vercel-mitigated')).toBe('challenge');
+    expect(calls).toBe(1);
+  });
+
+  it('surfaces the 429 when the resend would not keep the deadline reserve', async () => {
+    vi.useFakeTimers();
+    const deadlineMs = Date.now() + 5_000;
+    const { response, calls, elapsed } = await run(
+      [throttled({ 'Retry-After': '1' })],
+      { deadlineMs, reserveMs: 4_500 }
+    );
+    expect(response?.status).toBe(429);
+    expect(calls).toBe(1);
+    expect(elapsed).toBe(0);
+  });
+
+  it('waits when the resend still keeps the deadline reserve', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deadlineMs = Date.now() + 5_000;
+    const { response, calls } = await run([throttled({ 'Retry-After': '1' })], {
+      deadlineMs,
+      reserveMs: 4_000,
+    });
+    expect(response?.status).toBe(200);
+    expect(calls).toBe(2);
+  });
+
+  it('retries pre-connect failures with exponential backoff', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { response, calls, elapsed } = await run([
+      connectError('ECONNREFUSED'),
+      connectError('ENOTFOUND'),
+      connectError('UND_ERR_CONNECT_TIMEOUT'),
+    ]);
+    expect(response?.status).toBe(200);
+    expect(calls).toBe(4);
+    expect(elapsed).toBe(500 + 1_000 + 2_000);
+  });
+
+  it.each([
+    'ECONNRESET',
+    'EPIPE',
+    'UND_ERR_SOCKET',
+    'UND_ERR_HEADERS_TIMEOUT',
+  ])('surfaces %s without a resend, since the append may have persisted', async (code) => {
+    vi.useFakeTimers();
+    const { error, calls } = await run([connectError(code)]);
+    expect(getTransientTransportCode(error)).toBe(code);
+    expect(calls).toBe(1);
+  });
+
+  it('rethrows the connect error, not a timeout, when the backoff would cross the deadline reserve', async () => {
+    vi.useFakeTimers();
+    const deadlineMs = Date.now() + 3_000;
+    const { error, calls, elapsed } = await run(
+      [connectError('ECONNREFUSED')],
+      { deadlineMs, reserveMs: 2_600 }
+    );
+    expect(getTransientTransportCode(error)).toBe('ECONNREFUSED');
+    expect(calls).toBe(1);
+    expect(elapsed).toBe(0);
+  });
+
+  it('shares the 5-resend cap between 429s and connect failures', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { error, calls } = await run([
+      throttled(),
+      connectError('ECONNREFUSED'),
+      throttled(),
+      connectError('ECONNREFUSED'),
+      throttled(),
+      connectError('ECONNREFUSED'),
+    ]);
+    expect(getTransientTransportCode(error)).toBe('ECONNREFUSED');
+    expect(calls).toBe(6);
+  });
+
+  it('reports each resend and logs the throttled attempt diagnostics', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onResend = vi.fn();
+    await run(
+      [
+        throttled({ 'x-vercel-id': 'iad1::abc123' }),
+        connectError('ECONNREFUSED'),
+      ],
+      { onResend }
+    );
+    expect(onResend.mock.calls).toEqual([[1], [2]]);
+    expect(warn.mock.calls[0][0]).toContain('x-vercel-id=iad1::abc123');
+    expect(warn.mock.calls[1][0]).toContain('ECONNREFUSED');
+  });
+
+  it('rejects with the abort reason when aborted during a wait', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const controller = new AbortController();
+    const reason = new Error('stop');
+    const pending = fetchStreamAppend(async () => throttled(), {
+      signal: controller.signal,
+    });
+    const assertion = expect(pending).rejects.toBe(reason);
+    await vi.advanceTimersByTimeAsync(500);
+    controller.abort(reason);
+    await assertion;
+  });
+
+  it('reserves half the request timeout, capped at 10s', () => {
+    expect(streamAppendDeadlineReserveMs(3_000)).toBe(1_500);
+    expect(streamAppendDeadlineReserveMs(30_000)).toBe(
+      STREAM_APPEND_DEADLINE_RESERVE_MS
+    );
   });
 });
 

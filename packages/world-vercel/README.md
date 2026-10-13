@@ -14,7 +14,7 @@ See [Backend Connection Failures](https://useworkflow.dev/docs/foundations/error
 
 ## Custom dispatcher
 
-HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it — e.g. to tune undici on newer Node runtimes:
+HTTP requests (including the queue) use shared undici dispatchers for connection pooling. Pass a custom `dispatcher` to override them — e.g. to tune undici on newer Node runtimes:
 
 ```ts
 import { Agent } from 'undici';
