@@ -365,6 +365,8 @@ export default createWorld({
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
+Pass `dispatcher` (for example an undici `Agent`) to replace the World's HTTP dispatchers, including the queue's and the one for stream writes. The default stream writer retries a write that was rejected with a 429 (after its `Retry-After`) or that failed to connect, sending a fresh request each time. A custom dispatcher turns that retry off. Don't configure a custom dispatcher to retry stream write `PUT` requests itself, because a retry after a 5xx or a dropped connection can append a chunk the server already stored.
+
 ## Versioning
 
 On Vercel, workflow runs are pegged to the deployment that started them. This means:
