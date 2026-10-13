@@ -1,7 +1,6 @@
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import {
@@ -9,6 +8,7 @@ import {
   LISTEN_RECONNECT_DELAY_MS,
   listenChannel,
 } from '../src/streamer.js';
+import { TestPool } from './pool.js';
 
 const STREAM_TOPIC = 'workflow_event_chunk';
 const decode = (bytes?: Uint8Array) => new TextDecoder().decode(bytes);
@@ -26,7 +26,7 @@ describe('Postgres LISTEN connection drop', () => {
   }
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -40,7 +40,7 @@ describe('Postgres LISTEN connection drop', () => {
       env: process.env,
     });
 
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
   }, 120_000);
 
   afterAll(async () => {

@@ -128,6 +128,24 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 - Runs created by 4.x SDKs, including runs that existed before you upgraded, live in `iad1` and are unaffected by an upgrade. There is no migration.
 - **Hook tokens are currently stored in `iad1`** for every run, regardless of the run's region. The token-to-run mapping that powers [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) lives there so tokens without region information can always be resolved. Hook *payloads* are not affected. A received payload is recorded on the run's event log, which lives in the run's region like all other run data. This token placement may become a project-level setting in the future.
 
+## Queue consumers other than the Workflow SDK
+
+The Vercel World delivers each queue message to the functions subscribed to its topic, not to a fixed path. The Workflow SDK's build integration subscribes the generated flow route to `__wkf_workflow_*` (or `__{namespace}_wkf_workflow_*`). A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix and subscribes its own route to that prefix's topics:
+
+```json title="vercel.json"
+{
+  "functions": {
+    "app/api/agent/queue/route.ts": {
+      "experimentalTriggers": [
+        { "type": "queue/v2beta", "topic": "__agent_wkf_workflow_*" }
+      ]
+    }
+  }
+}
+```
+
+The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. Topic names replace characters other than letters, digits, `-` and `_` with `-`. The Vercel World has no `registerRoute()` or `registerHandler()`: a message reaches a function only through a subscription declared at deploy time. Every subscribed function receives its own copy of a message and runs it, whatever prefix its handler was created with, so subscribe each route only to its own prefix's topics.
+
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.
@@ -346,6 +364,8 @@ export default createWorld({
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
+
+Pass `dispatcher` (for example an undici `Agent`) to replace the World's HTTP dispatchers, including the queue's and the one for stream writes. The default stream writer retries a write that was rejected with a 429 (after its `Retry-After`) or that failed to connect, sending a fresh request each time. A custom dispatcher turns that retry off. Don't configure a custom dispatcher to retry stream write `PUT` requests itself, because a retry after a 5xx or a dropped connection can append a chunk the server already stored.
 
 ## Versioning
 

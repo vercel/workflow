@@ -33,6 +33,22 @@ export function createWorkflowUrl(
   return url.toString();
 }
 
+/**
+ * The URL of an app route `path` (such as `/api/agent/queue`) on `baseUrl`,
+ * which already carries the app's base path, so a queue consumer's own route
+ * resolves under the same base path as the flow route does.
+ */
+export function createAppRouteUrl(baseUrl: string, path: string): string {
+  if (!path.startsWith('/')) {
+    throw new TypeError(`App route "${path}" must start with "/"`);
+  }
+  const url = new URL(baseUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}${path}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 function getWorkflowRouteEndpoint(route: WorkflowUrlRoute): string {
   switch (route.type) {
     case 'flow':

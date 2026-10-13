@@ -1,5 +1,18 @@
 # @workflow/world-testing
 
+## 5.0.4
+
+### Patch Changes
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement the optional in-band writer fence and list snapshot in `@workflow/world-local` and `@workflow/world-postgres`, declared with the new `inBandFence` capability.
+
+- [#4833](https://github.com/vercel/workflow/pull/4833) [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3) Thanks [@pranaygp](https://github.com/pranaygp)! - `@workflow/world-vercel` declares the `inBandFence` capability (its backend refuses a stale in-band write on every run with an event sequencer, and answers an in-band write on an older run with a 400), and passes on the in-band counts its backend reports: `snapshot` on `events.list` and `allocated` on a single `events.create`. The `inBandFence` contract lets a World list no snapshot when its refusals carry both counters, and `@workflow/world-testing` takes the counters from a refusal for such a World.
+- Updated dependencies [[`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5), [`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/cli@5.0.4
+  - @workflow/core@5.2.1
+  - @workflow/world@5.0.4
+  - workflow@5.2.1
+
 ## 5.0.3
 
 ### Patch Changes

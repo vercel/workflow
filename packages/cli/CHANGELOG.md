@@ -1,5 +1,20 @@
 # @workflow/cli
 
+## 5.0.4
+
+### Patch Changes
+
+- [#4760](https://github.com/vercel/workflow/pull/4760) [`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve `workflow inspect` for long runs and scoped lookups: add `--all` for complete steps, events, and sleeps listings, print reusable cursor hints, and keep pagination on the read path that issued the cursor. Support event ID and short workflow-name lookups, require `--runId` for individual steps, events, and streams, fix `st` to mean streams, include run IDs in stream hints, and exit non-zero when a stream read fails.
+- Updated dependencies [[`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/core@5.2.1
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/world-vercel@5.2.1
+  - @workflow/world-local@5.1.1
+  - @workflow/utils@5.0.2
+  - @workflow/builders@5.0.4
+  - @workflow/web@5.0.4
+
 ## 5.0.3
 
 ### Patch Changes

@@ -226,6 +226,28 @@ describe('run retention (world-local)', () => {
       });
     });
 
+    // The purge finds a run's streams through the run's stream index, so a
+    // name the index dropped kept its chunks past the purge.
+    it('empties streams that first wrote at the same time', async () => {
+      const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+      const concurrent = ['stream-b', 'stream-c', 'stream-d'];
+      await Promise.all(
+        concurrent.map((name) =>
+          streamer.streams.write(run.runId, name, 'secret payload')
+        )
+      );
+      await complete(run.runId);
+
+      for (const name of ['stream-a', ...concurrent]) {
+        const chunks = await streamer.streams.getChunks(run.runId, name);
+        expect({ name, data: chunks.data, done: chunks.done }).toEqual({
+          name,
+          data: [],
+          done: true,
+        });
+      }
+    });
+
     it('scrubs the metadata of a hook that outlives the run', async () => {
       const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
       // Terminal cleanup deletes a run's hooks outright, except one whose
