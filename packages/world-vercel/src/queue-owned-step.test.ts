@@ -134,3 +134,41 @@ it("handles any other run's orchestration wake here", async () => {
   expect(mocks.wake).not.toHaveBeenCalled();
   expect(handler).toHaveBeenCalledOnce();
 });
+
+it('acknowledges a wake its owner rejects because the run has ended', async () => {
+  mocks.wake.mockRejectedValueOnce(
+    Object.assign(new Error('Workflow has expired'), { status: 410 })
+  );
+  const handler = vi.fn();
+  createQueue().createQueueHandler('__wkf_workflow_', handler);
+  await expect(
+    mocks.callback!(
+      {
+        queueName: '__wkf_workflow_test',
+        deploymentId: 'test',
+        payload: { runId: 'run' },
+      },
+      { messageId: 'wake', deliveryCount: 3 }
+    )
+  ).resolves.toBeUndefined();
+  expect(handler).not.toHaveBeenCalled();
+});
+
+it.each([
+  404, 503,
+])('keeps retrying a wake its owner answers with %i', async (status) => {
+  mocks.wake.mockRejectedValueOnce(
+    Object.assign(new Error('rejected'), { status })
+  );
+  createQueue().createQueueHandler('__wkf_workflow_', vi.fn());
+  await expect(
+    mocks.callback!(
+      {
+        queueName: '__wkf_workflow_test',
+        deploymentId: 'test',
+        payload: { runId: 'run' },
+      },
+      { messageId: 'wake', deliveryCount: 1 }
+    )
+  ).rejects.toThrow('rejected');
+});

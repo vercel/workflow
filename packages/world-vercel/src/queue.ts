@@ -928,6 +928,7 @@ export function createQueue(config?: APIConfig): Queue {
           receivedDeploymentId: context?.deployment ?? null,
         };
         const started = performance.now();
+        let forwarded = false;
         if (direct) logInvocationRouting('execution.received', observation);
         try {
           const wakeRunId = orchestrationRunId(payload);
@@ -949,6 +950,7 @@ export function createQueue(config?: APIConfig): Queue {
                 runInput?: { deploymentId?: string; workflowName?: string };
               }
             ).runInput;
+            forwarded = true;
             await forwardWake(wakeRunId, payload, {
               idempotencyKey: metadata.messageId,
               ...(startAttributes &&
@@ -982,6 +984,11 @@ export function createQueue(config?: APIConfig): Queue {
             forwardWake &&
             (error as { code?: string })?.code === 'RETAINED_RUNNER_FAILED'
           )
+            return;
+          // The owner answers 410 only for a run that has ended (or whose data
+          // has expired): no later delivery can be accepted, so retrying the
+          // wake would only redeliver it until its queue retention runs out.
+          if (forwarded && (error as { status?: number })?.status === 410)
             return;
           throw error;
         }
