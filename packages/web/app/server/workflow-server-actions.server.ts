@@ -1108,9 +1108,12 @@ export async function resumeHook(
   payload: unknown
 ): Promise<ServerActionResult<ResumeHookResult>> {
   try {
-    // Initialize the world so resumeHookRuntime can access it
-    await getWorldFromEnv({ ...worldEnv });
-
+    const world = await getWorldFromEnv({ ...worldEnv });
+    // resumeHookRuntime() reads the World from the runtime's global, which
+    // getWorldFromEnv() does not install (the Vercel World is built per
+    // request). Install the World configured for this request immediately
+    // before the call, with no await in between.
+    workflowRunHelpers.setWorld(world);
     const hook = await resumeHookRuntime(token, payload);
 
     return createResponse({
@@ -1120,6 +1123,45 @@ export async function resumeHook(
   } catch (error) {
     return createServerActionError<ResumeHookResult>(error, 'resumeHook', {
       token,
+    });
+  }
+}
+
+/**
+ * Resume a hook, looked up by its ID, by sending a payload.
+ *
+ * Resolves the hook object first and resumes that, which reaches any hook:
+ * webhooks included (`resumeHook(token)` refuses a webhook's token, since a
+ * webhook is resumed through its URL), and in whichever region the hook is
+ * stored (the hook object carries its region).
+ *
+ * @param worldEnv - Environment configuration for the World
+ * @param hookId - The hook ID
+ * @param payload - The JSON payload to send to the hook
+ */
+export async function resumeHookById(
+  worldEnv: EnvMap,
+  hookId: string,
+  payload: unknown
+): Promise<ServerActionResult<ResumeHookResult>> {
+  try {
+    const world = await getWorldFromEnv({ ...worldEnv });
+    const target = await world.hooks.get(hookId, { resolveData: 'none' });
+    // The lookup used this request's World; the resume must too.
+    // resumeHookRuntime() reads the World from the runtime's global, which
+    // getWorldFromEnv() does not install (the Vercel World is built per
+    // request), so install it immediately before the call, with no await in
+    // between.
+    workflowRunHelpers.setWorld(world);
+    const hook = await resumeHookRuntime(target, payload);
+
+    return createResponse({
+      hookId: hook.hookId,
+      runId: hook.runId,
+    });
+  } catch (error) {
+    return createServerActionError<ResumeHookResult>(error, 'resumeHookById', {
+      hookId,
     });
   }
 }

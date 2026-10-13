@@ -209,6 +209,14 @@ export async function resumeHook(
   return rpc('resumeHook', { worldEnv, token, payload });
 }
 
+export async function resumeHookById(
+  worldEnv: EnvMap,
+  hookId: string,
+  payload: unknown
+): Promise<ServerActionResult<ResumeHookResult>> {
+  return rpc('resumeHookById', { worldEnv, hookId, payload });
+}
+
 export async function fetchStreams(
   worldEnv: EnvMap,
   runId: string

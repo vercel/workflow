@@ -484,6 +484,8 @@ export async function eventCollectorWorkflow() {
 | **Use Case** | Custom integrations, type-safe payloads | HTTP webhooks, standard REST APIs |
 | **Resuming** | [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) | Automatic via HTTP, or [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) |
 
+A webhook's token is resumed through its URL, not with `resumeHook()`: passing a webhook's token to `resumeHook()` throws `HookNotFoundError`.
+
 **Use hooks when:**
 - You need full control over the payload structure
 - You're integrating with custom event sources
