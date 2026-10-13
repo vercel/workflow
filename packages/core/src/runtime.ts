@@ -75,6 +75,7 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import { maybeWarnApproachingEventLimit } from './runtime/event-limit-warning.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -3389,6 +3390,13 @@ export function workflowEntrypoint(
                             maxEventsLimit
                           );
                         }
+                        maybeWarnApproachingEventLimit({
+                          runId,
+                          workflowName,
+                          eventCount: workflowEventCount,
+                          limit: maxEventsLimit,
+                          isQuickJS: false,
+                        });
                       }
 
                       // Latency telemetry: judge TTFS eligibility against the

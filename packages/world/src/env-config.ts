@@ -126,6 +126,49 @@ export function getMaxEventsPerRun(): number {
 }
 
 /**
+ * Whether a run is exempt from the default per-run event ceiling: its
+ * persisted `executionContext` selects the QuickJS VM with a positive
+ * safe-integer `snapshotThreshold`. Snapshotting keeps resume cost bounded
+ * regardless of log length, so these runs don't need the ceiling.
+ *
+ * Mirrors the Vercel World's server-side policy so runs behave the same
+ * locally and in production.
+ */
+export function isEventLimitExemptRun(run?: {
+  executionContext?: unknown;
+}): boolean {
+  const context = run?.executionContext as
+    | { workflowVm?: unknown; snapshotThreshold?: unknown }
+    | null
+    | undefined;
+  if (context === null || typeof context !== 'object') return false;
+  const { workflowVm, snapshotThreshold } = context;
+  return (
+    workflowVm === 'quickjs' &&
+    typeof snapshotThreshold === 'number' &&
+    Number.isSafeInteger(snapshotThreshold) &&
+    snapshotThreshold > 0
+  );
+}
+
+/**
+ * The event ceiling a World advertises (as `maxEvents`) for a specific
+ * run. Exempt runs (see {@link isEventLimitExemptRun}) get
+ * `Number.MAX_SAFE_INTEGER`, which is effectively unlimited while staying a
+ * positive integer for SDKs that validate one. Other runs get
+ * {@link getMaxEventsPerRun}.
+ *
+ * Use {@link getMaxEventsPerRun} (not this) for page sizes and scan bounds.
+ */
+export function getMaxEventsForRun(run?: {
+  executionContext?: unknown;
+}): number {
+  return isEventLimitExemptRun(run)
+    ? Number.MAX_SAFE_INTEGER
+    : getMaxEventsPerRun();
+}
+
+/**
  * Reset the warn-once cache. Test-only, exported so unit tests can exercise
  * the warning path repeatedly without sharing state across cases.
  *

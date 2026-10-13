@@ -3,7 +3,9 @@ import {
   _resetEnvWarnCacheForTests,
   envFlag,
   envNumber,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
+  isEventLimitExemptRun,
 } from './env-config.js';
 
 const NAME = 'WORKFLOW_TEST_ENV_CONFIG_FIXTURE';
@@ -72,6 +74,48 @@ describe('getMaxEventsPerRun', () => {
   it.each(['0', '-1'])('uses the default for %s', (value) => {
     process.env[MAX_EVENTS_NAME] = value;
     expect(getMaxEventsPerRun()).toBe(25_000);
+  });
+});
+
+describe('getMaxEventsForRun / isEventLimitExemptRun', () => {
+  const run = (executionContext?: unknown) => ({ executionContext });
+
+  it('exempts QuickJS runs with a positive snapshot threshold', () => {
+    const r = run({ workflowVm: 'quickjs', snapshotThreshold: 1000 });
+    expect(isEventLimitExemptRun(r)).toBe(true);
+    expect(getMaxEventsForRun(r)).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it.each([
+    ['no run', undefined],
+    ['no executionContext', run()],
+    ['null executionContext', run(null)],
+    ['node VM', run({ workflowVm: 'node', snapshotThreshold: 1000 })],
+    ['QuickJS without threshold', run({ workflowVm: 'quickjs' })],
+    [
+      'snapshots disabled',
+      run({ workflowVm: 'quickjs', snapshotThreshold: 0 }),
+    ],
+    [
+      'non-integer threshold',
+      run({ workflowVm: 'quickjs', snapshotThreshold: 1.5 }),
+    ],
+    [
+      'string threshold',
+      run({ workflowVm: 'quickjs', snapshotThreshold: '1000' }),
+    ],
+    ['threshold without VM', run({ snapshotThreshold: 1000 })],
+  ])('keeps the default ceiling for %s', (_label, r) => {
+    expect(isEventLimitExemptRun(r)).toBe(false);
+    expect(getMaxEventsForRun(r)).toBe(25_000);
+  });
+
+  it('honors WORKFLOW_MAX_EVENTS for non-exempt runs', () => {
+    process.env[MAX_EVENTS_NAME] = '10';
+    expect(getMaxEventsForRun(run({ workflowVm: 'node' }))).toBe(10);
+    expect(
+      getMaxEventsForRun(run({ workflowVm: 'quickjs', snapshotThreshold: 5 }))
+    ).toBe(Number.MAX_SAFE_INTEGER);
   });
 });
 

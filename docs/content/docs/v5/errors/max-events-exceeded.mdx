@@ -1,0 +1,80 @@
+---
+title: max-events-exceeded
+description: A workflow run reached the World's per-run event limit and was failed.
+type: troubleshooting
+summary: Run long-running workflows on the QuickJS VM with snapshotting, which is exempt from the default event limit, or split the work into child workflows.
+prerequisites:
+  - /docs/how-it-works/event-sourcing
+related:
+  - /docs/configuration/runtime-tuning#workflow_vm
+  - /docs/errors/replay-timeout
+  - /cookbook/advanced/child-workflows
+---
+
+Every step, hook, sleep, and lifecycle transition adds events to a run's [event log](/docs/how-it-works/event-sourcing). The World supplies a per-run ceiling on that log, and the runtime fails a run whose log reaches it with the `MAX_EVENTS_EXCEEDED` error code. The ceiling is a backstop against runaway loops that would otherwise grow a log without bound.
+
+For the Vercel World's ceiling, see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits). The Local World's ceiling is set by [`WORKFLOW_MAX_EVENTS`](/docs/configuration/runtime-tuning#workflow_max_events).
+
+## Error message
+
+```text
+Workflow exceeded the maximum of <limit> events per run
+├▶ hint: Run long-running workflows on the QuickJS VM with snapshotting by setting WORKFLOW_VM=quickjs ...
+╰▶ docs: https://workflow-sdk.dev/err/max-events-exceeded
+```
+
+Before a run reaches the limit, the runtime logs a warning in your function logs at 50%, 80%, and 95% of the ceiling:
+
+```text
+Workflow run is approaching the per-run event limit (<count> of <limit> events, 50%). ...
+```
+
+## Why it happens
+
+- **The workflow is long-running by design.** Agents, chat sessions, and loops that wait on hooks or sleeps for days accumulate events with every iteration.
+- **The workflow has unbounded work.** For example, a loop that keeps creating steps without a termination condition.
+
+## How to fix it
+
+### Run on the QuickJS VM with snapshotting
+
+<Callout type="warn">
+The QuickJS engine is experimental, and its global surface differs from the default engine. Review the [differences](/docs/configuration/runtime-tuning#workflow_vm) before switching an existing deployment.
+</Callout>
+
+Runs that execute on the QuickJS VM with snapshotting enabled are exempt from the default per-run event limit. A snapshotted run restores its VM memory and replays only the events recorded since the last snapshot, so its resume cost doesn't grow with the length of the log.
+
+Set `WORKFLOW_VM=quickjs` in the environment that starts runs (the process that calls [`start()`](/docs/api-reference/workflow-api/start)). On Vercel that's your project's environment variables:
+
+```bash
+WORKFLOW_VM=quickjs
+```
+
+Snapshotting is on by default under QuickJS. Leave [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) unset, or set it to a positive integer. `WORKFLOW_SNAPSHOT_THRESHOLD=0` disables snapshotting, and those runs keep the limit.
+
+A run qualifies when its `executionContext` records `workflowVm: "quickjs"` and a positive `snapshotThreshold`. `start()` records both when the run is created, so:
+
+- Only runs started after the change are exempt. Runs keep the VM and snapshot policy they started with.
+- Runs that have already failed with `MAX_EVENTS_EXCEEDED` are not revived. Start them again.
+- On the Local World and Postgres World, snapshots are only stored when [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted) is set. Without it, exempt runs still replay the full log on every invocation.
+
+### Split the work into child workflows
+
+If a run doesn't need to be a single long-lived run, start [child workflows](/cookbook/advanced/child-workflows) for each batch or session and keep the parent's log small. This also works on the default engine.
+
+### Fix unbounded loops
+
+If the run wasn't expected to grow this large, check the workflow function for loops that create steps, hooks, or sleeps without terminating.
+
+## This error cannot be caught
+
+`MAX_EVENTS_EXCEEDED` is recorded by the runtime, not thrown into your workflow function. Check the run status from outside instead:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+const run = getRun("wrun_abc123");
+if ((await run.status) === "failed") {
+  console.error("Run failed");
+}
+```
