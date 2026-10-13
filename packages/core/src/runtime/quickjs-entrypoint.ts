@@ -2578,29 +2578,29 @@ export async function runWorkflowWithQuickJS(params: {
 
       await Promise.all(
         overflowSteps.map((step) => {
-            queuedStepIds.add(step.correlationId);
-            const createdEventId = dispatched.createdStepEventIds.get(
-              step.correlationId
-            );
-            const input = dispatched.createdStepInputs.get(step.correlationId);
-            return queueStepMessage({
-              world,
-              runId,
-              workflowRun,
-              step,
-              namespace,
-              nextTraceCarrier,
-              purpose: 'dispatch',
-              ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
-              ...(input &&
-              input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
-              (workflowRun.specVersion ?? 0) >=
-                SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-                ? { stepInput: input }
-                : {}),
-              wfdiag,
-            });
-          })
+          queuedStepIds.add(step.correlationId);
+          const createdEventId = dispatched.createdStepEventIds.get(
+            step.correlationId
+          );
+          const input = dispatched.createdStepInputs.get(step.correlationId);
+          return queueStepMessage({
+            world,
+            runId,
+            workflowRun,
+            step,
+            namespace,
+            nextTraceCarrier,
+            purpose: 'dispatch',
+            ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
+            ...(input &&
+            input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
+            (workflowRun.specVersion ?? 0) >=
+              SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+              ? { stepInput: input }
+              : {}),
+            wfdiag,
+          });
+        })
       );
 
       // Complete elapsed waits so their wait_completed events are picked
