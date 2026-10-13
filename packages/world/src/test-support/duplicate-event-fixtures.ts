@@ -117,7 +117,7 @@ export const DUPLICATE_EVENT_FIXTURES: readonly DuplicateEventFixture[] = [
   },
   {
     name: 'retry recorded after the outcome',
-    why: 'A retry with no earlier retry to repeat used to read as divergence. After the outcome it is inert like any other event for the step.',
+    why: 'A retry repeats no earlier retry, so only the closed step makes it inert: after the outcome nothing claims any event for the step.',
     events: [
       { eventType: 'step_created', entity: 'step_a' },
       { eventType: 'step_started', entity: 'step_a' },

@@ -146,8 +146,9 @@ function foldDuplicates(ordered: readonly Event[]): Set<string> {
 }
 
 /**
- * The IDs of the events in `events` that repeat a class the log already
- * records for the same entity, after that entity finished.
+ * The IDs of the events in `events` the run reads past: every event recorded
+ * for an entity after that entity's terminal event, and a repeat of a class
+ * that records once per run.
  *
  * `isCompleteHistory` must be false whenever the caller holds a subset of the
  * run's log: one page of a paginated list, or the result of a search. Which
@@ -155,10 +156,9 @@ function foldDuplicates(ordered: readonly Event[]): Set<string> {
  * subset the earlier event may be missing, and the fold would report
  * the surviving one. Nothing is classified in that case.
  *
- * Two other things make the answer unknowable and yield the same empty result:
- * a log whose order cannot be recovered from the events (see
- * {@link hasKnowableLogOrder}), and everything past the point the run
- * diverged, since the run exited there and read no further.
+ * A log whose order cannot be recovered from the events (see
+ * {@link hasKnowableLogOrder}) also makes the answer unknowable and yields the
+ * same empty result.
  */
 export function findDuplicateEventIds(
   events: readonly Event[],

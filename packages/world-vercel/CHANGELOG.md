@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.2.2
+
+### Patch Changes
+
+- [#4828](https://github.com/vercel/workflow/pull/4828) [`02993a2`](https://github.com/vercel/workflow/commit/02993a26cbabec8f00df1f8a3a758158d095008a) Thanks [@mmarufov](https://github.com/mmarufov)! - Fix `UND_ERR_REQ_CONTENT_LENGTH_MISMATCH` by retrying HTTP stream appends with fresh bodies after confirmed 429s, using the shared throttle wait policy. Retry only connection-refused, DNS, and connect-timeout failures; surface other transport errors without replay.
+
 ## 5.2.1
 
 ### Patch Changes

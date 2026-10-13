@@ -406,9 +406,10 @@ export class EventsConsumer {
       }
       if (!consumed) {
         // Nobody wanted it. If it repeats a class this walk already consumed
-        // for the same entity it is a straggler from a concurrent replay:
-        // step over it in this pass rather than paying the deferred window for
-        // a consumer that cannot come (see `firstEventTypeOfClass`).
+        // for the same entity, or its entity's terminal event was already
+        // consumed, it is a straggler from a concurrent writer: step over it
+        // in this pass rather than paying the deferred window for a consumer
+        // that cannot come (see `firstEventTypeOfClass`).
         const firstType = this.firstEventTypeOfClass(currentEvent);
         if (firstType !== undefined) {
           this.skipDuplicateEvent(currentEvent, firstType);

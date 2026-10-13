@@ -1,5 +1,17 @@
 # @workflow/core
 
+## 5.2.2
+
+### Patch Changes
+
+- [#4861](https://github.com/vercel/workflow/pull/4861) [`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa) Thanks [@pranaygp](https://github.com/pranaygp)! - Order `setAttributes()` resolution with the replay delivery barriers so a branch awaiting it can no longer resume out of event-log order, which could fail the run with `REPLAY_DIVERGENCE` or hand concurrent branches each other's step results
+
+- [#4856](https://github.com/vercel/workflow/pull/4856) [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658) Thanks [@http-samc](https://github.com/http-samc)! - Upgrade devalue to 6.0.3, which escapes large strings with native `JSON.stringify` instead of a per-character loop. Strings containing unpaired surrogates now round-trip exactly instead of being replaced with U+FFFD.
+
+- [#4818](https://github.com/vercel/workflow/pull/4818) [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the experimental `WORKFLOW_RESILIENT_STEP_DISPATCH` option
+- Updated dependencies [[`02993a2`](https://github.com/vercel/workflow/commit/02993a26cbabec8f00df1f8a3a758158d095008a)]:
+  - @workflow/world-vercel@5.2.2
+
 ## 5.2.1
 
 ### Patch Changes

@@ -1002,6 +1002,63 @@ describe('EventsConsumer', () => {
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
 
+    it('treats a payload behind a hook disposal as inert', async () => {
+      // `hook_received` belongs to no class, so only the closed entity covers
+      // it: the hook's consumer deregistered on `hook_disposed` and nothing
+      // can claim a payload under its id afterwards.
+      const corr = 'hook_A';
+      const events = [
+        realEvent('hook_created', corr),
+        realEvent('hook_received', corr),
+        realEvent('hook_disposed', corr),
+        realEvent('hook_received', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'hook_disposed'));
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(consumer.parkedSummary).toBeUndefined();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[3],
+          'hook_disposed'
+        );
+      });
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('leaves every attempt of a retried step to its consumer', async () => {
+      const corr = 'step_A';
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_started', corr),
+        realEvent('step_retrying', corr),
+        realEvent('step_started', corr),
+        realEvent('step_completed', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const onConsumedEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+        onConsumedEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'step_completed'));
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(onConsumedEvent).toHaveBeenCalledTimes(events.length);
+      });
+      expect(onDuplicateEvent).not.toHaveBeenCalled();
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
     it('skips a second attr_set for an id the walk already resolved', async () => {
       // Concurrent replays at the same body position draw the same attribute
       // id, and a World that commits both leaves two events under it. The
