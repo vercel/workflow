@@ -57,6 +57,7 @@ import {
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
 } from './constants.js';
+import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
@@ -1382,6 +1383,13 @@ export async function runWorkflowWithQuickJS(params: {
       maxEventsLimit
     );
   }
+  maybeWarnApproachingEventLimit({
+    runId,
+    workflowName,
+    eventCount: restoredEventCount + events.length,
+    limit: maxEventsLimit,
+    isQuickJS: true,
+  });
 
   parentSpan?.setAttributes({
     ...Attribute.QuickJSEventsPreloaded(usePreloaded),

@@ -117,6 +117,31 @@ export function getSnapshotThresholdFromEnv(
 }
 
 /**
+ * The snapshot threshold `start()` stamps into a new run's
+ * `executionContext`: the client's `WORKFLOW_SNAPSHOT_THRESHOLD` when set,
+ * otherwise {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD} for QuickJS runs.
+ *
+ * Stamping the default (rather than leaving it implicit) matters because
+ * the World keys the per-run event limit on the persisted policy: runs with
+ * `workflowVm: "quickjs"` and a positive `snapshotThreshold` are exempt
+ * from the default event-count ceiling. Without the stamp, a run started
+ * with only `WORKFLOW_VM=quickjs` would snapshot at runtime but still be
+ * failed at the ceiling.
+ *
+ * Throws {@link WorkflowRuntimeError} on an invalid env value.
+ */
+export function getSnapshotThresholdForStart(
+  workflowVm: WorkflowVmMode | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): number | undefined {
+  const fromEnv = getSnapshotThresholdFromEnv(env);
+  if (fromEnv !== undefined) return fromEnv;
+  return workflowVm === 'quickjs'
+    ? DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD
+    : undefined;
+}
+
+/**
  * Resolve the snapshot threshold for a run: the run's stamped
  * `executionContext.snapshotThreshold` (set by the SDK at `start()` when
  * `WORKFLOW_SNAPSHOT_THRESHOLD` is set on the client) wins so a run keeps
@@ -168,12 +193,20 @@ export function getConfiguredSnapshotThreshold(
  * Whether the run's snapshot threshold was explicitly configured rather
  * than falling back to {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD}. Never
  * throws: an invalid value counts as configured.
+ *
+ * `start()` stamps the default into QuickJS runs (see
+ * {@link getSnapshotThresholdForStart}), so a stamped value equal to the
+ * default is treated as unconfigured unless `WORKFLOW_SNAPSHOT_THRESHOLD`
+ * is also set on the handler.
  */
 export function isSnapshotThresholdConfigured(
   workflowRun: WorkflowRun
 ): boolean {
   try {
-    return getConfiguredSnapshotThreshold(workflowRun) !== undefined;
+    const configured = getConfiguredSnapshotThreshold(workflowRun);
+    if (configured === undefined) return false;
+    if (configured !== DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD) return true;
+    return getSnapshotThresholdFromEnv() !== undefined;
   } catch {
     return true;
   }

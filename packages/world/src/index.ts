@@ -41,7 +41,9 @@ export {
   type EnvNumberOptions,
   envFlag,
   envNumber,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
+  isEventLimitExemptRun,
 } from './env-config.js';
 export type * from './events.js';
 export {

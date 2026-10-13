@@ -37,6 +37,7 @@ import {
   entityResolveData,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
   HookSchema,
   IN_BAND_SEQ_AT_RUN_CREATION,
@@ -1321,7 +1322,9 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(stored, resolveData),
               run: currentRun,
-              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
+              ...(currentRun
+                ? { maxEvents: getMaxEventsForRun(currentRun) }
+                : {}),
             };
           }
 
@@ -1840,7 +1843,7 @@ export function createEventsStorage(
               if (params?.skipPreload) {
                 return {
                   run: currentRun,
-                  maxEvents: getMaxEventsPerRun(),
+                  maxEvents: getMaxEventsForRun(currentRun),
                 };
               }
               const preloaded = await queryRunEvents(effectiveRunId, {
@@ -1851,7 +1854,7 @@ export function createEventsStorage(
                 events: preloaded.data,
                 cursor: preloaded.cursor,
                 hasMore: preloaded.hasMore,
-                maxEvents: getMaxEventsPerRun(),
+                maxEvents: getMaxEventsForRun(currentRun),
               };
             }
 
@@ -3482,8 +3485,9 @@ export function createEventsStorage(
           hook,
           wait,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
-          // Per-run event ceiling (mirrors the Vercel World).
-          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
+          // Per-run event ceiling (mirrors the Vercel World, including the
+          // QuickJS-snapshot exemption).
+          ...(run ? { maxEvents: getMaxEventsForRun(run) } : {}),
         };
 
         if (!eventPage) return result;

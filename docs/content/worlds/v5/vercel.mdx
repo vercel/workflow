@@ -80,6 +80,8 @@ The Vercel World caps how large a single run can get. It caps the run's [event l
 
 Treat both caps as backstops, not budgets. Replay cost grows with the log, so a run slows down well before it fails. We recommend splitting a run into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Size for that recommendation rather than for the cap.
 
+Runs started on the QuickJS engine with snapshotting enabled (`WORKFLOW_VM=quickjs`) are exempt from the event cap. Snapshotting keeps their resume cost flat as the log grows. See [max-events-exceeded](/docs/errors/max-events-exceeded).
+
 Vercel raises the per-run event and step limits on request, so an unusually large run that genuinely cannot be split is worth raising with support rather than working around.
 
 ## Multi-region

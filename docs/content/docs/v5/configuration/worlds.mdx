@@ -129,6 +129,7 @@ The Local World is the default outside Vercel and is intended for development.
 
 - Default: `25000`
 - Per-run event ceiling reported to the runtime. A run whose event log reaches it fails with `MAX_EVENTS_EXCEEDED`, bounding a runaway loop. See [`WORKFLOW_MAX_EVENTS_OVERRIDE`](/docs/configuration/runtime-tuning#workflow_max_events_override) for the runtime-side clamp.
+- Runs started on the QuickJS engine with snapshotting enabled are exempt, matching the Vercel World. See [max-events-exceeded](/docs/errors/max-events-exceeded).
 
 ## Postgres World
 
