@@ -1,3 +1,4 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import type {
   CreateEventParams,
   CreateEventRequest,
@@ -377,4 +378,60 @@ it('fails a fresh session whose run already exists, as superseded', async () => 
       )
     ).rejects.toMatchObject({ code: 'OWNER_SUPERSEDED' })
   );
+});
+
+it('backs off on a throttled write, reconnects from its committed head and resends it', async () => {
+  const connected: number[] = [];
+  const resync = vi.fn(async () => {
+    connected.push(Date.now());
+    return { after: 0, head: 0, events: [], generation: connected.length };
+  });
+  const attempts: {
+    event: CreateEventRequest;
+    generation?: number;
+    at: number;
+  }[] = [];
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    async (event, _params, sent, generation) => {
+      sent?.();
+      attempts.push({ event, generation, at: Date.now() });
+      if (attempts.length === 1)
+        // The server ended the session as `throttled`: nothing was committed.
+        throw new WorkflowWorldError('Too Many Requests', {
+          status: 429,
+          retryAfter: 0.2,
+        });
+      return {
+        event: {
+          eventId: 'evnt_00000000000000000000000001',
+          runId: 'wrun_test',
+          eventType: event.eventType,
+          createdAt: new Date(),
+        },
+      } as unknown as EventResult;
+    },
+    vi.fn(async () => {}),
+    async () => {},
+    resync as never
+  );
+  await writer.catchUp();
+  const result = await writer.create(
+    {
+      eventType: 'hook_created',
+      specVersion: 6,
+      correlationId: 'hook_test',
+      eventData: { token: 't' },
+    },
+    { eventCount: 0 }
+  );
+  expect(result.event?.eventId).toBe('evnt_00000000000000000000000001');
+  // The same write, resent once on the reconnected session, after the advised wait.
+  expect(attempts.map((attempt) => attempt.event.eventType)).toEqual([
+    'hook_created',
+    'hook_created',
+  ]);
+  expect(attempts[1].generation).toBe(2);
+  expect(resync).toHaveBeenCalledTimes(2);
+  expect(connected[1] - attempts[0].at).toBeGreaterThanOrEqual(190);
 });

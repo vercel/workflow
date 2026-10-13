@@ -58,6 +58,31 @@ function isTransportFailure(error: unknown): boolean {
   return (error as { name?: unknown } | null)?.name === 'WsTransportError';
 }
 
+/** Bounds for waiting out a throttle before reconnecting. */
+const THROTTLE_MIN_WAIT_MS = 100;
+const THROTTLE_MAX_WAIT_MS = 30_000;
+const THROTTLE_MAX_JITTER_MS = 1_000;
+
+/**
+ * Write pacing turned an eventsync write away (the server ends the session as
+ * `throttled`, 429, before committing anything): backpressure, not a fault.
+ * Returns how long to wait before reconnecting and resending.
+ */
+function throttleWaitMs(error: unknown): number | undefined {
+  if (!WorkflowWorldError.is(error) || error.status !== 429) return undefined;
+  const advised = (error.retryAfter ?? 1) * 1000;
+  const base = Math.min(
+    THROTTLE_MAX_WAIT_MS,
+    Math.max(THROTTLE_MIN_WAIT_MS, Number.isFinite(advised) ? advised : 1000)
+  );
+  return base + Math.random() * Math.min(THROTTLE_MAX_JITTER_MS, base * 0.2);
+}
+
+/** A failure the writer recovers from by reconnecting and resending. */
+function isRecoverable(error: unknown): boolean {
+  return isTransportFailure(error) || throttleWaitMs(error) !== undefined;
+}
+
 function isPermanentTransportFailure(error: unknown): boolean {
   const cause =
     error instanceof WorkflowWorldError
@@ -119,6 +144,8 @@ export class BufferedEventWriter implements EventWriteSession {
   private disposed = false;
   private generation?: number;
   private recovery?: Promise<void>;
+  /** Not before this time may the next reconnect start (a throttle's wait). */
+  private backoffUntil = 0;
   /** Set while a fresh session's initial sync is unconfirmed (`startFresh`). */
   private connecting?: Promise<void>;
 
@@ -230,8 +257,15 @@ export class BufferedEventWriter implements EventWriteSession {
       onSent,
       this.generation
     );
-    entry.attempt = attempt.catch(() => {});
+    entry.attempt = attempt.catch((error: unknown) => this.noteThrottle(error));
     return attempt;
+  }
+
+  /** Record a throttle's wait before the reconnect that follows it reads it. */
+  private noteThrottle(error: unknown) {
+    const wait = throttleWaitMs(error);
+    if (wait !== undefined)
+      this.backoffUntil = Math.max(this.backoffUntil, Date.now() + wait);
   }
 
   /**
@@ -261,7 +295,7 @@ export class BufferedEventWriter implements EventWriteSession {
             );
           return entry.expected;
         }
-        if (!this.resync || !isTransportFailure(error) || this.failure)
+        if (!this.resync || !isRecoverable(error) || this.failure)
           throw this.fail(error);
         for (;;) {
           await this.recover();
@@ -310,6 +344,11 @@ export class BufferedEventWriter implements EventWriteSession {
     const outbox = this.pending;
     // Every send of the broken connection must settle before resending.
     await Promise.all(outbox.map((entry) => entry.attempt));
+    // Back off first when write pacing asked to (`throttled`): nothing of the
+    // rejected writes was committed, and the resend waits out the advice.
+    const wait = this.backoffUntil - Date.now();
+    this.backoffUntil = 0;
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
     const deadline = Date.now() + this.reconnectTimeoutMs;
     let catchUp: WriterCatchUp | undefined;
     for (let delay = 100; !catchUp; delay = Math.min(delay * 2, 2_000)) {
@@ -537,7 +576,7 @@ export class BufferedEventWriter implements EventWriteSession {
     void attempt.then(
       () => sent(),
       (error: unknown) =>
-        isTransportFailure(error) && this.resync ? sent() : sendFailed(error)
+        isRecoverable(error) && this.resync ? sent() : sendFailed(error)
     );
     entry.transmitted = transmitted.then(
       () => {
@@ -585,8 +624,9 @@ export class BufferedEventWriter implements EventWriteSession {
             await this.flushThrough(through, this.generation);
             return;
           } catch (error) {
-            if (!this.resync || !isTransportFailure(error) || this.failure)
+            if (!this.resync || !isRecoverable(error) || this.failure)
               throw error;
+            this.noteThrottle(error);
             await this.recover();
           }
         }

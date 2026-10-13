@@ -214,6 +214,10 @@ transaction. Queued progress is not a durability ACK. Terminal failure uses the
 same writer. If that writer is broken, diagnostics report
 `terminalPersisted=false`; no competing fallback writer is started.
 `WORKFLOW_EVENTSYNC_POOL` keeps that many connections open ahead of time.
+When write pacing turns a write away, the server ends the session as
+`throttled` (429, close 1013) without committing it: the owner treats this as
+backpressure, waits the advised `Retry-After` (bounded, with jitter), reconnects
+from its committed head and resends its unacknowledged events at the same slots.
 
 This requires guaranteed exclusive ownership, including handoff and unfinished
 storage requests. Other write paths to a single-owner run are not coordinated
