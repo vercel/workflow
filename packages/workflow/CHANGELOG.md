@@ -1,5 +1,40 @@
 # workflow
 
+## 5.2.2
+
+### Patch Changes
+
+- Updated dependencies [[`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa), [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658), [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd)]:
+  - @workflow/core@5.2.2
+  - @workflow/cli@5.0.5
+  - @workflow/next@5.0.5
+  - @workflow/nitro@5.0.5
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/astro@5.0.5
+  - @workflow/nest@5.1.3
+  - @workflow/rollup@5.0.5
+  - @workflow/sveltekit@5.0.5
+  - @workflow/nuxt@5.0.5
+
+## 5.2.1
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+- Updated dependencies [[`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5), [`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/cli@5.0.4
+  - @workflow/core@5.2.1
+  - @workflow/errors@5.0.4
+  - @workflow/utils@5.0.2
+  - @workflow/next@5.0.4
+  - @workflow/nitro@5.0.4
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/nest@5.1.2
+  - @workflow/astro@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/sveltekit@5.0.4
+  - @workflow/nuxt@5.0.4
+
 ## 5.2.0
 
 ### Patch Changes

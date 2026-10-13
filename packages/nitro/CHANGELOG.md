@@ -1,5 +1,27 @@
 # @workflow/nitro
 
+## 5.0.5
+
+### Patch Changes
+
+- Updated dependencies [[`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa), [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658), [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd)]:
+  - @workflow/core@5.2.2
+  - @workflow/builders@5.0.5
+  - @workflow/web@5.0.5
+  - @workflow/rollup@5.0.5
+  - @workflow/vite@5.0.5
+
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/core@5.2.1
+  - @workflow/builders@5.0.4
+  - @workflow/web@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/vite@5.0.4
+
 ## 5.0.3
 
 ### Patch Changes

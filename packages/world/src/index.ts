@@ -57,6 +57,7 @@ export {
   HOOK_EVENTS_REQUIRING_EXISTENCE,
   HOOK_LIFECYCLE_EVENT_TYPES,
   HookCreatedEventSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
@@ -101,14 +102,17 @@ export {
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
   HealthCheckPayloadSchema,
   MessageId,
   parseQueueName,
+  parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
   resolveQueueNamespace,
   ValidQueueName,
+  WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
 export { reenqueueActiveRuns } from './recovery.js';

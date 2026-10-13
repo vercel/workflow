@@ -123,6 +123,38 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('createQueueHandler reports a delivery-count header as deliveryCount, separate from attempt', async () => {
+    const metas: { attempt: number; deliveryCount?: number }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, meta) => {
+        metas.push({
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+        });
+        return undefined;
+      }
+    );
+    const request = (extra: Record<string, string>) =>
+      new Request('http://localhost/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__wkf_workflow_test',
+          'x-vqs-message-id': 'msg_01ABC',
+          'x-vqs-message-attempt': '1',
+          ...extra,
+        },
+        body: JSON.stringify(workflowPayload),
+      });
+    await handler(request({ 'x-vqs-message-delivery-count': '3' }));
+    await handler(request({}));
+    expect(metas).toEqual([
+      { attempt: 1, deliveryCount: 3 },
+      { attempt: 1, deliveryCount: 1 },
+    ]);
+  });
+
   it('treats invocation return values containing timeoutSeconds as data', async () => {
     const result = { timeoutSeconds: 123, value: 'data' };
     const handler = localQueue.createQueueHandler(
@@ -197,6 +229,102 @@ describe('queue timeout re-enqueue', () => {
     // The queue fires off processing asynchronously, so we need to wait
     await vi.waitFor(() => {
       expect(callCount).toBe(3);
+    });
+  });
+
+  it('redelivers the SAME message on timeoutSeconds: one id, one createdAt, increasing deliveryCount', async () => {
+    const metas: {
+      messageId: string;
+      deliveryCount?: number;
+      attempt: number;
+      createdAt?: Date;
+    }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_body, meta) => {
+        metas.push(meta);
+        return metas.length < 3 ? { timeoutSeconds: 1 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC', retentionSeconds: 3600 }
+    );
+
+    await vi.waitFor(() => {
+      expect(metas).toHaveLength(3);
+    });
+    expect(metas.map((meta) => meta.messageId)).toEqual([
+      messageId,
+      messageId,
+      messageId,
+    ]);
+    expect(metas.map((meta) => meta.deliveryCount)).toEqual([1, 2, 3]);
+    expect(metas.map((meta) => meta.attempt)).toEqual([1, 2, 3]);
+    expect(metas[0]?.createdAt).toBeInstanceOf(Date);
+    expect(new Set(metas.map((meta) => meta.createdAt?.getTime())).size).toBe(
+      1
+    );
+  });
+
+  it('dedupes a second send under the same idempotency key while the first message is retrying', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        if (calls === 1) {
+          await held;
+          return { timeoutSeconds: 1 };
+        }
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const first = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    await vi.waitFor(() => {
+      expect(calls).toBe(1);
+    });
+    const second = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    expect(second.messageId).toBe(first.messageId);
+    release();
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+  });
+
+  it('delivers a wake sent without an idempotency key every time', async () => {
+    let calls = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    const wake = { runId: 'run_01ABC' };
+    const a = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    const b = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    expect(a.messageId).not.toBe(b.messageId);
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
     });
   });
 
@@ -786,5 +914,206 @@ describe('node:http mode', () => {
     const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
     await expect(localQueue.close()).resolves.toBeUndefined();
     await expect(localQueue.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('per-prefix delivery routes', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      const toClose = server;
+      server = undefined;
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+    setWorkflowBasePath(undefined);
+  });
+
+  /** A server that answers `servedPaths` with 200 and anything else with 404, recording every request. */
+  async function startServer(servedPaths: Set<string>) {
+    const requests: { path: string; queueName: string }[] = [];
+    server = createServer((request, response) => {
+      requests.push({
+        path: request.url ?? '',
+        queueName: request.headers['x-vqs-queue-name'] as string,
+      });
+      request.resume();
+      const served = servedPaths.has(request.url ?? '');
+      response.statusCode = served ? 200 : 404;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(served ? { ok: true } : { error: 'nf' }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+    return { requests, origin: `http://127.0.0.1:${port}` };
+  }
+
+  it("sends a prefix with no registered route to the Workflow SDK's flow route", async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/.well-known/workflow/v1/flow'])
+    );
+    const localQueue = createQueue({ baseUrl: origin });
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]).toEqual({
+        path: '/.well-known/workflow/v1/flow',
+        queueName: '__agent_wkf_workflow_session',
+      });
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('delivers a prefix with a registered route there, and only that prefix', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/.well-known/workflow/v1/flow', '/api/agent/queue'])
+    );
+    const localQueue = createQueue({ baseUrl: origin });
+    localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await localQueue.queue(
+        '__wkf_workflow_myWorkflow' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      expect(requests).toEqual(
+        expect.arrayContaining([
+          {
+            path: '/api/agent/queue',
+            queueName: '__agent_wkf_workflow_session',
+          },
+          {
+            path: '/.well-known/workflow/v1/flow',
+            queueName: '__wkf_workflow_myWorkflow',
+          },
+        ])
+      );
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('resolves a route under the base URL, like the flow route', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/base/api/agent/queue'])
+    );
+    const localQueue = createQueue({ baseUrl: `${origin}/base` });
+    localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]?.path).toBe('/base/api/agent/queue');
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('prefers an in-process handler over a route for the same prefix', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/api/agent/queue'])
+    );
+    const localQueue = createQueue({ baseUrl: origin });
+    const handler = vi.fn(async (req: Request) => {
+      expect(new URL(req.url).pathname).toBe('/api/agent/queue');
+      return Response.json({ ok: true });
+    });
+    localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    localQueue.registerHandler('__agent_wkf_workflow_', handler);
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      expect(requests).toHaveLength(0);
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('a route registered after a message was enqueued takes its next attempt', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/api/agent/queue'])
+    );
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const localQueue = createQueue({ baseUrl: origin });
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      // The first attempt goes to the flow route, which this app doesn't have.
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0));
+      expect(requests[0]?.path).toBe('/.well-known/workflow/v1/flow');
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('HTTP 404'),
+        expect.objectContaining({
+          hint: expect.stringContaining('world.registerRoute'),
+        })
+      );
+
+      localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+      await vi.waitFor(() =>
+        expect(requests.at(-1)?.path).toBe('/api/agent/queue')
+      );
+      const settled = requests.length;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+      expect(requests).toHaveLength(settled);
+    } finally {
+      consoleError.mockRestore();
+      await localQueue.close();
+    }
+  });
+
+  it('rejects an invalid prefix or route', () => {
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    expect(() =>
+      localQueue.registerRoute('__agent_wkf_workflow_', 'api/agent/queue')
+    ).toThrow(TypeError);
+    expect(() =>
+      localQueue.registerRoute('agent' as never, '/api/agent/queue')
+    ).toThrow();
+  });
+
+  it("refuses a message outside the handler's prefix, naming both", async () => {
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    const handler = vi.fn();
+    const route = localQueue.createQueueHandler('__wkf_workflow_', handler);
+    const response = await route(
+      new Request('http://localhost:3000/.well-known/workflow/v1/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__agent_wkf_workflow_session',
+          'x-vqs-message-id': 'msg_01ABC',
+          'x-vqs-message-attempt': '1',
+        },
+        body: JSON.stringify(workflowPayload),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'Unhandled queue',
+      detail:
+        'This route handles queue prefix "__wkf_workflow_", not "__agent_wkf_workflow_session".',
+    });
+    expect(handler).not.toHaveBeenCalled();
+    await localQueue.close();
   });
 });

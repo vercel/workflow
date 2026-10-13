@@ -46,7 +46,11 @@ overrides:
   # spans were silently dropped this way while core's flowed (#2900).
   '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
-  devalue: 5.9.2
+  # Scoped to the 5.x line on purpose: SvelteKit, Svelte and Astro depend on
+  # `devalue: ^5` and call `uneval` with string-returning replacers, which
+  # devalue 6 rejects (replacers must return a `js`-tagged fragment).
+  # `@workflow/core` pins 6.x itself and is left out of this override.
+  'devalue@^5': 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
   # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
   # (arbitrary file read / .map disclosure via attacker-controlled
