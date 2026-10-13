@@ -992,6 +992,11 @@ describe('attr_set eventData size limit', () => {
       .mockRejectedValue(
         new WorkflowWorldError('Unexpected WS request', { status: 400 })
       );
+    // The write path only selects a socket whose handshake has completed;
+    // treat this fixture as connected so the ws case exercises that path.
+    const readySpy = vi
+      .spyOn(transport, 'isReadyForWrites', 'get')
+      .mockReturnValue(true);
 
     try {
       expect(resolveWsTransport('wrun_1', config)?.transport).toBe(transport);
@@ -1014,6 +1019,7 @@ describe('attr_set eventData size limit', () => {
       expect(retryTimer).not.toHaveBeenCalled();
     } finally {
       transport.close('test cleanup');
+      readySpy.mockRestore();
       requestSpy.mockRestore();
       fetchSpy.mockRestore();
       retryTimer.mockRestore();
