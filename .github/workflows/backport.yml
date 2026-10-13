@@ -216,7 +216,7 @@ jobs:
           echo "Resolved commit SHA: $SHA"
 
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ steps.resolve.outputs.sha }}
@@ -508,7 +508,7 @@ jobs:
           steps.existing-pr.outputs.exists != 'true' &&
           steps.decide.outputs.decision == 'no' &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           REASONING: ${{ steps.decide.outputs.reasoning }}
           SHA: ${{ steps.resolve.outputs.sha }}
@@ -766,7 +766,7 @@ jobs:
           steps.cherry-pick.outputs.status == 'clean' ||
           (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
         id: push-branch
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           BRANCH: ${{ steps.existing-pr.outputs.branch }}
           SHA: ${{ steps.resolve.outputs.sha }}
@@ -1031,7 +1031,7 @@ jobs:
         if: |
           steps.backport-pr.outputs.pr_url != '' &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
           PR_URL: ${{ steps.backport-pr.outputs.pr_url }}
@@ -1064,7 +1064,7 @@ jobs:
           steps.cherry-pick.outputs.status == 'conflict' &&
           steps.ai-resolve.outputs.resolved == 'false' &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
@@ -1113,7 +1113,7 @@ jobs:
         if: |
           failure() &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}

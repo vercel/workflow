@@ -29,7 +29,7 @@ jobs:
       fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Classify changed files
         id: scope
@@ -52,7 +52,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Find existing benchmark comment
         uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
@@ -64,7 +64,7 @@ jobs:
 
       - name: Save existing comment body
         if: steps.find-comment.outputs.comment-id != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -130,7 +130,7 @@ jobs:
             project-slug: "example-nextjs-workflow-turbopack"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -174,7 +174,7 @@ jobs:
       - name: Upload benchmark results
         # Partial results are still useful when a scenario failed
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ matrix.target.app }}-${{ matrix.target.world }}
           path: bench-results-*.json
@@ -194,11 +194,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download benchmark results
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bench-results-*
           path: benchmark-results
@@ -244,7 +244,7 @@ jobs:
 
       - name: Save existing comment body
         if: steps.find-comment.outputs.comment-id != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');

@@ -50,7 +50,7 @@ jobs:
       fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Classify changed files
         id: scope
@@ -101,7 +101,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -139,7 +139,7 @@ jobs:
       # every later PR compares against, so it must outlive the 1-day retention
       # used for the shared E2E package builds.
       - name: Upload size results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: size-results-${{ matrix.target.app }}
           path: size-results-*.json
@@ -157,11 +157,11 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download size results
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: size-results-*
           path: size-results

@@ -65,7 +65,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Start MongoDB
         if: ${{ inputs.service-type == 'mongodb' }}
@@ -236,7 +236,7 @@ jobs:
         run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests ($WORLD_NAME)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-results-community-${{ inputs.world-id }}
