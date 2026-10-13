@@ -95,6 +95,13 @@ import {
   SnapshotRejectedError,
   sealSnapshot,
 } from './quickjs-snapshot-codec.js';
+import {
+  __resetSnapshotPrefetchForTests,
+  forgetRunAtSnapshotThreshold,
+  type LoadedSnapshot,
+  noteRunAtSnapshotThreshold,
+  sliceSnapshotDelta,
+} from './quickjs-snapshot-resume.js';
 import { ReplayBudget } from './replay-budget.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
@@ -292,8 +299,12 @@ function noteSnapshotThresholdProgress(
 ): void {
   if (!belowThreshold) {
     runsBelowSnapshotThreshold.delete(runId);
+    // The next invocation's load gate will probe: let the queue handler
+    // start that read ahead of its setup request (quickjs-snapshot-resume).
+    noteRunAtSnapshotThreshold(runId);
     return;
   }
+  forgetRunAtSnapshotThreshold(runId);
   if (runsBelowSnapshotThreshold.size >= RUNS_BELOW_SNAPSHOT_THRESHOLD_MAX) {
     runsBelowSnapshotThreshold.clear();
   }
@@ -304,6 +315,7 @@ function noteSnapshotThresholdProgress(
 export function __resetSnapshotLatchesForTests(): void {
   oversizedSnapshotRuns.clear();
   runsBelowSnapshotThreshold.clear();
+  __resetSnapshotPrefetchForTests();
 }
 
 /**
@@ -1068,6 +1080,15 @@ export async function runWorkflowWithQuickJS(params: {
    */
   preloadedCursor?: string | null;
   /**
+   * This run's `experimental_snapshots.load`, already in flight: the queue
+   * handler starts it at handler entry when this process knows the load
+   * gate below will probe (`prefetchQuickJSSnapshot`), so it overlaps the
+   * setup request instead of following it. Used in place of a fresh load
+   * when the gate probes; ignored otherwise. A rejection is handled like a
+   * failed load.
+   */
+  snapshotPrefetch?: Promise<LoadedSnapshot>;
+  /**
    * Run input carried through the queue message on first delivery. Used
    * as a last-resort fallback for `run_created.eventData.input` when
    * the event log is incomplete.
@@ -1135,6 +1156,7 @@ export async function runWorkflowWithQuickJS(params: {
     preloadedEvents,
     preloadedEventsComplete,
     preloadedCursor,
+    snapshotPrefetch,
     runInput,
     parentSpan,
     maxEventsLimit,
@@ -1304,7 +1326,7 @@ export async function runWorkflowWithQuickJS(params: {
     !runsBelowSnapshotThreshold.has(runId)
   ) {
     try {
-      const loaded = await snapshotsStorage.load(runId);
+      const loaded = await (snapshotPrefetch ?? snapshotsStorage.load(runId));
       if (loaded) {
         const version = loaded.metadata.formatVersion;
         const outOfBounds = checkSnapshotMetadataBounds(loaded.metadata);
@@ -1378,8 +1400,10 @@ export async function runWorkflowWithQuickJS(params: {
   });
 
   // Load the event log. With a restored snapshot only the delta after
-  // its cursor is needed — preloads (which are full logs without a
-  // cursor) are ignored on that path. Otherwise load the FULL log — on
+  // its cursor is needed: taken out of a complete preload when the preload
+  // proves where the snapshot ends (see sliceSnapshotDelta), listed from the
+  // snapshot's cursor otherwise (no usable preload, or a snapshot saved after
+  // the preload was read). Otherwise load the FULL log — on
   // first invocation the preloaded events from the run_started response
   // are the complete log and save the events.list round-trips; a
   // caller-attested complete preload (lazy hook fast path) is trusted
@@ -1399,14 +1423,33 @@ export async function runWorkflowWithQuickJS(params: {
   // one the caller read the preload to. Seeds the incremental reads and the
   // inline-delta requests that follow.
   let loadedCursor: string | null = null;
+  const preloadComplete =
+    preloadedEventsComplete === true &&
+    Array.isArray(preloadedEvents) &&
+    preloadedEvents.length > 0;
   const usePreloaded =
     !existingSnapshot &&
-    ((preloadedEventsComplete === true &&
-      Array.isArray(preloadedEvents) &&
-      preloadedEvents.length > 0) ||
-      isFirstInvocation(preloadedEvents));
+    (preloadComplete || isFirstInvocation(preloadedEvents));
+  // The restored snapshot's delta, out of the preload. Needs the preload's
+  // cursor: it becomes the read position, and a `null` one would restart the
+  // next read at the top of the log and re-feed the restored VM everything.
+  const snapshotDeltaFromPreload =
+    existingSnapshot &&
+    preloadComplete &&
+    preloadedEvents &&
+    preloadedCursor != null &&
+    snapshotCursor !== null &&
+    existingSnapshot.metadata.eventCount !== undefined
+      ? sliceSnapshotDelta(
+          preloadedEvents,
+          existingSnapshot.metadata.eventCount
+        )
+      : undefined;
   if (usePreloaded && preloadedEvents) {
     events = preloadedEvents;
+    loadedCursor = preloadedCursor ?? null;
+  } else if (snapshotDeltaFromPreload) {
+    events = snapshotDeltaFromPreload;
     loadedCursor = preloadedCursor ?? null;
   } else {
     const read = await listRunLogFrom(world, runId, snapshotCursor);
@@ -1520,7 +1563,9 @@ export async function runWorkflowWithQuickJS(params: {
   }
 
   parentSpan?.setAttributes({
-    ...Attribute.QuickJSEventsPreloaded(usePreloaded),
+    ...Attribute.QuickJSEventsPreloaded(
+      usePreloaded || snapshotDeltaFromPreload !== undefined
+    ),
     ...Attribute.QuickJSEventsFetchedCount(events.length),
     ...Attribute.QuickJSEventsFetchedPages(eventsFetchedPages),
   });
@@ -1529,6 +1574,7 @@ export async function runWorkflowWithQuickJS(params: {
     eventCount: events.length,
     eventsFetchedPages,
     usePreloaded,
+    snapshotDeltaFromPreload: snapshotDeltaFromPreload !== undefined,
     eventTypes: events.reduce<Record<string, number>>((acc, e) => {
       acc[e.eventType] = (acc[e.eventType] ?? 0) + 1;
       return acc;
@@ -1656,10 +1702,14 @@ export async function runWorkflowWithQuickJS(params: {
   if (snapshotThreshold > 0) {
     parentSpan?.setAttributes({
       ...Attribute.QuickJSSnapshotRestored(!!existingSnapshot),
+      ...Attribute.QuickJSSnapshotPrefetched(snapshotPrefetch !== undefined),
       ...(existingSnapshot
         ? {
             ...Attribute.QuickJSSnapshotDeltaEvents(events.length),
             ...Attribute.QuickJSSnapshotRestoreMs(snapshotRestoreMs),
+            ...Attribute.QuickJSSnapshotDeltaSource(
+              snapshotDeltaFromPreload !== undefined ? 'preload' : 'list'
+            ),
           }
         : {}),
       ...(snapshotFallbackReason
@@ -2596,6 +2646,8 @@ export async function runWorkflowWithQuickJS(params: {
   // Runs that end with no invocation observing it (cancelled externally)
   // are left to the World: storage-side retention is the backstop there.
   const scheduleSnapshotDelete = (): void => {
+    // Nothing will resume this run: stop prefetching its snapshot.
+    forgetRunAtSnapshotThreshold(runId);
     if (!snapshotsStorage) return;
     const mayExist =
       snapshotStored ||
