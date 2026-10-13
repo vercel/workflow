@@ -1,6 +1,7 @@
 ---
-'@workflow/core': patch
-'@workflow/world-vercel': patch
+"@workflow/core": minor
+"@workflow/world": minor
+"@workflow/world-vercel": minor
 ---
 
-Experimental single-owner runs: a caller opts a run in at `start()` with the reserved run attribute `$experimentalSingleOwner` (and `allowReservedAttributes: true`). Its presence selects the single-owner runner and its single-writer event connection for that run alone; other runs on the same deployment execute as before. On Vercel, its JSON value's optional `vercelAffinity` places several runs of a deployment on one owner. The owner verifies from the run's history that it was invoked under the run's affinity.
+Experimental single-owner runs. Where the deployment can host a run's owner (a World that implements `invoke`, the current deployment, a static workflow), `start()` marks the run with the reserved attribute `$experimentalSingleOwner` (`'{}'` routes it by its own ID; a caller may pass `{"vercelAffinity": ...}`). Every input — the start, hook resumes, wakes, step results and cancellation — is invoked on one owner, which keeps the workflow resident, validates transitions locally and writes the run's history through one serialized writer. The owner runs up to three step bodies itself and delivers the rest directly to other invocations; their results return through `invoke`. The World contract gains `queue.invoke` and an optional single-writer event session (`events.createWriteSession`).

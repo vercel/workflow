@@ -182,8 +182,9 @@ rejected with 429. Timeout or instance loss is an unknown outcome. Retry the sam
 logical input with its original identity and payload; the adapter neither retries
 POST automatically nor falls back to a producer write or queue delivery.
 
-This opt-in increment covers hooks and mailbox delivery. Other journal mutation
-paths and existing consistency protections remain; it does not yet establish
+Direct invocation carries run starts, hook inputs, wakes and step results for
+single-owner runs. Other journal mutation paths and existing consistency
+protections remain; it does not yet establish
 complete single-writer enforcement or stale-writer fencing. Validate deployment
 pinning and real affinity placement before enabling it on a deployment.
 Acceptance confirms input processing, not eventual continuation success. A later

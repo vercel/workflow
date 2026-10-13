@@ -214,8 +214,6 @@ transaction. Queued progress is not a durability ACK. Terminal failure uses the
 same writer. If that writer is broken, diagnostics report
 `terminalPersisted=false`; no competing fallback writer is started.
 `WORKFLOW_EVENTSYNC_POOL` keeps that many connections open ahead of time.
-`VERCEL_WORKFLOW_SERVER_BYPASS` sends a Deployment Protection bypass token to a
-workflow-server named by `VERCEL_WORKFLOW_SERVER_URL` (for example a preview).
 
 This requires guaranteed exclusive ownership, including handoff and unfinished
 storage requests. Other write paths to a single-owner run are not coordinated
