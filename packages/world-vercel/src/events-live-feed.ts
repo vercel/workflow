@@ -21,6 +21,14 @@
  * every subscriber on it receives whatever the connection's latest
  * subscription pushes, filtered to slots it has not delivered yet.
  *
+ * When the backend ends a running feed (it is throttled for too long, an
+ * event is too large to send, a later read is refused) it pushes one last
+ *
+ *   { reqId, type: 'run_event', end: true, status, error, message }
+ *
+ * with no slot and an empty body; the feed then ends and `onError` gets that
+ * status, code and message.
+ *
  * The subscription lives on the connection. When the socket closes (drain,
  * transport failure, release) the feed ends and `onError` is called once; it
  * is not resumed on reconnect. Nothing depends on the feed for correctness:
@@ -49,10 +57,46 @@ export const SUBSCRIBE_FRAME_TYPE = 'subscribe';
 
 /** Raised through `onError` when the feed cannot start or stops. */
 export class LiveFeedError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  /** The backend's status, when the backend ended or refused the feed. */
+  readonly status?: number;
+  /** The backend's error code, when it sent one. */
+  readonly code?: string;
+
+  constructor(
+    message: string,
+    options?: { cause?: unknown; status?: number; code?: string }
+  ) {
     super(message, { cause: options?.cause });
     this.name = 'LiveFeedError';
+    this.status = options?.status;
+    this.code = options?.code;
   }
+}
+
+/** A push's slot: the frame's own, else the event id's. */
+function pushedSlot(frame: DecodedFrame, event: Event): number | null {
+  return typeof frame.meta.slot === 'number' &&
+    Number.isSafeInteger(frame.meta.slot)
+    ? frame.meta.slot
+    : eventIdToSlot(event.eventId);
+}
+
+/** The backend's terminal notice: a `run_event` that ends the feed. */
+function endedByBackend(
+  runId: string,
+  frame: DecodedFrame
+): LiveFeedError | undefined {
+  if (frame.meta.end !== true) return undefined;
+  const status =
+    typeof frame.meta.status === 'number' ? frame.meta.status : undefined;
+  const code =
+    typeof frame.meta.error === 'string' ? frame.meta.error : undefined;
+  const message =
+    typeof frame.meta.message === 'string' ? frame.meta.message : '';
+  return new LiveFeedError(
+    `world-vercel: live feed for ${runId} ended by the backend (status ${String(status ?? 'absent')}, ${code ?? 'no code'})${message ? `: ${message}` : ''}`,
+    { status, code }
+  );
 }
 
 /** The event a `run_event` push carries, or `undefined` if it is malformed. */
@@ -104,6 +148,11 @@ export function subscribeRunEvents(
 
   const deliver = (frame: DecodedFrame) => {
     if (!active) return;
+    const ended = endedByBackend(runId, frame);
+    if (ended) {
+      fail(ended);
+      return;
+    }
     const event = decodePushedEvent(frame);
     if (!event) {
       fail(
@@ -114,11 +163,7 @@ export function subscribeRunEvents(
       return;
     }
     if (event.runId !== runId) return;
-    const slot =
-      typeof frame.meta.slot === 'number' &&
-      Number.isSafeInteger(frame.meta.slot)
-        ? frame.meta.slot
-        : eventIdToSlot(event.eventId);
+    const slot = pushedSlot(frame, event);
     if (slot !== null) {
       // At most once per slot; the runtime discards anything else out of
       // order on its own.

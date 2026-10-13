@@ -282,4 +282,38 @@ describe('subscribeRunEvents', () => {
     socket.deliver(pushed(3));
     expect(events).toHaveLength(0);
   });
+
+  it('ends the feed once on the backend terminal notice, with its status and message', async () => {
+    const { events, onError, socket, meta } = await subscribed(2);
+    socket.deliver(
+      encodeFrame(
+        { reqId: meta?.reqId, type: 'subscribe_ack', status: 200 },
+        EMPTY
+      )
+    );
+    await tick();
+    socket.deliver(pushed(3));
+    const end = encodeFrame(
+      {
+        reqId: meta?.reqId,
+        type: RUN_EVENT_FRAME_TYPE,
+        end: true,
+        status: 429,
+        error: 'run-feed-unavailable',
+        message: 'run feed stopped: reads throttled',
+      },
+      EMPTY
+    );
+    socket.deliver(end);
+    socket.deliver(end);
+    socket.deliver(pushed(4));
+    expect(events.map((event) => event.eventId)).toEqual([slotToEventId(3)]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const [error] = onError.mock.calls[0] ?? [];
+    expect(error).toBeInstanceOf(LiveFeedError);
+    expect(error).toMatchObject({ status: 429, code: 'run-feed-unavailable' });
+    expect((error as Error).message).toContain(
+      'run feed stopped: reads throttled'
+    );
+  });
 });
