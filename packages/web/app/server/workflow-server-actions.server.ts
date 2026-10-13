@@ -1108,9 +1108,12 @@ export async function resumeHook(
   payload: unknown
 ): Promise<ServerActionResult<ResumeHookResult>> {
   try {
-    // Initialize the world so resumeHookRuntime can access it
-    await getWorldFromEnv({ ...worldEnv });
-
+    const world = await getWorldFromEnv({ ...worldEnv });
+    // resumeHookRuntime() reads the World from the runtime's global, which
+    // getWorldFromEnv() does not install (the Vercel World is built per
+    // request). Install the World configured for this request immediately
+    // before the call, with no await in between.
+    workflowRunHelpers.setWorld(world);
     const hook = await resumeHookRuntime(token, payload);
 
     return createResponse({
@@ -1144,6 +1147,12 @@ export async function resumeHookById(
   try {
     const world = await getWorldFromEnv({ ...worldEnv });
     const target = await world.hooks.get(hookId, { resolveData: 'none' });
+    // The lookup used this request's World; the resume must too.
+    // resumeHookRuntime() reads the World from the runtime's global, which
+    // getWorldFromEnv() does not install (the Vercel World is built per
+    // request), so install it immediately before the call, with no await in
+    // between.
+    workflowRunHelpers.setWorld(world);
     const hook = await resumeHookRuntime(target, payload);
 
     return createResponse({
