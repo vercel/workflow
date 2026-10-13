@@ -14,6 +14,11 @@ import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
+import {
+  newHookRegion,
+  regionalWebhookToken,
+  tagHookUlid,
+} from '../hook-region.js';
 import { webhookLogger } from '../logger.js';
 import {
   awaitEarlierDeliveries,
@@ -116,16 +121,33 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
     }
 
-    // Generate hook ID and token
-    const correlationId = `hook_${ctx.generateUlid()}`;
-    const token = options.token ?? ctx.generateNanoid();
+    const isWebhook = options.isWebhook ?? false;
+
+    // Where the hook is stored: a webhook's run region, or (undefined) the
+    // World's default region. See hook-region.ts.
+    const hookRegion = newHookRegion({
+      isWebhook,
+      runId: ctx.runId,
+      capabilities: ctx.worldCapabilities,
+    });
+
+    // Generate hook ID and token. Draw order (ULID, then nanoid) is part of
+    // replay determinism; the region only decorates the drawn values.
+    const ulid = ctx.generateUlid();
+    const correlationId = `hook_${
+      hookRegion === undefined ? ulid : tagHookUlid(ulid, hookRegion)
+    }`;
+    const token =
+      options.token ??
+      (hookRegion !== undefined
+        ? regionalWebhookToken(hookRegion, ctx.generateNanoid())
+        : ctx.generateNanoid());
     const tokenRetentionUntil =
       options.experimental_minRetention === undefined
         ? undefined
         : parseDurationToDate(options.experimental_minRetention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
-    const isWebhook = options.isWebhook ?? false;
 
     ctx.invocationsQueue.set(correlationId, {
       type: 'hook',
