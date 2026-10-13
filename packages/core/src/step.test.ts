@@ -514,6 +514,46 @@ describe('createUseStep', () => {
     expect(ctx.invocationsQueue.size).toBe(1);
   });
 
+  it('should mark hasCreatedEvent when the step_started has no step_created before it', async () => {
+    // A World may record an inline step's creation on its step_started alone.
+    // The suspension handler must then see the step as created, or it would
+    // write a step_created for a step that already exists.
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_started',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          stepName: 'add',
+          workflowName: 'workflow',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const workflowError = withResolvers<Error>();
+    ctx.onWorkflowError = workflowError.reject;
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+
+    let error: Error | undefined;
+    try {
+      await Promise.race([add(1, 2), workflowError.promise]);
+    } catch (err_) {
+      error = err_ as Error;
+    }
+
+    expect(error).toBeInstanceOf(WorkflowSuspension);
+    const queueItem = [...ctx.invocationsQueue.values()][0];
+    expect(queueItem).toMatchObject({
+      type: 'step',
+      stepName: 'add',
+      hasCreatedEvent: true,
+    });
+  });
+
   it('should consume step_retrying event and continue waiting', async () => {
     // step_retrying is just consumed, step continues to wait for next events
     const ctx = setupWorkflowContext([
