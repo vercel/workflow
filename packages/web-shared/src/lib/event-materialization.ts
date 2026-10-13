@@ -105,7 +105,9 @@ function getEventTimestamp(event: Event | undefined): Date | undefined {
  * Group step_* events by correlationId and build Step-like entities.
  *
  * Handles partial event lists gracefully: a step may only have a
- * step_created event with no completion yet.
+ * step_created event with no completion yet. A step whose creation the World
+ * recorded on its first `step_started` (no `step_created` in the log) is
+ * anchored on that start instead.
  *
  * The derived status and timestamps come from the events the run acted on. A
  * repeat of a class the log already records is read past by every replay, so
@@ -127,7 +129,12 @@ export function materializeSteps(
   const steps: MaterializedStep[] = [];
 
   for (const [correlationId, stepEvents] of groups) {
-    const created = stepEvents.find((e) => e.eventType === 'step_created');
+    // A World may record an inline step's creation on its `step_started`
+    // alone, with no `step_created` in the log. That start is then the step's
+    // creation event.
+    const created =
+      stepEvents.find((e) => e.eventType === 'step_created') ??
+      stepEvents.find((e) => e.eventType === 'step_started');
     if (!created) continue;
 
     let status: StepStatus = 'pending';
@@ -168,7 +175,8 @@ export function materializeSteps(
       stepId: correlationId,
       runId: created.runId,
       stepName:
-        created.eventType === 'step_created'
+        created.eventType === 'step_created' ||
+        created.eventType === 'step_started'
           ? (created.eventData?.stepName ?? correlationId)
           : correlationId,
       status,
