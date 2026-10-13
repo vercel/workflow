@@ -191,6 +191,13 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Use only when step side effects are idempotent.
 - Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
 
+### `WORKFLOW_DEFER_ABORT_HOOK_CREATION`
+
+- Default: enabled
+- Every `new AbortController()` in a workflow registers an internal hook. When that hook is created in the same suspension as a step this invocation runs inline, the step body starts as soon as the step is claimed instead of also waiting for the hook's write. The write goes out at the same time as before and the same events are recorded; the step's completion is still recorded after the hook.
+- An `abort()` called from inside a step on a controller passed to it, and the dispatch of queued steps created in the same suspension, still wait for the hook to be created.
+- Set `0` or `false` to wait for every hook write before running inline steps.
+
 ### `WORKFLOW_RETAINED_VM`
 
 - Default: enabled

@@ -288,6 +288,27 @@ export function isBatchTransitionsEnabled(): boolean {
 }
 
 /**
+ * Whether the suspension handler may let an inline step body start before the
+ * `hook_created` writes of the workflow's `AbortController` system hooks have
+ * committed. The writes still go out at the same moment as every other
+ * suspension write; only the point that waits for them moves, from "before the
+ * handler returns" to "before anything that depends on them": the step's
+ * terminal write (`step_completed` / `step_failed` / `step_retrying`), the
+ * step-execution dispatches, an in-process step-initiated abort of the same
+ * controller, and the delivery's ack. The event set and its order relative to
+ * the step's terminal event are unchanged.
+ *
+ * Reads `process.env.WORKFLOW_DEFER_ABORT_HOOK_CREATION` lazily. Default
+ * **ON**; disabled only by an explicit `'0'` / `'false'` (case-insensitive),
+ * which restores waiting for every hook write before the handler returns.
+ */
+export function isDeferAbortHookCreationEnabled(): boolean {
+  const raw = process.env.WORKFLOW_DEFER_ABORT_HOOK_CREATION;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
  * The server's transaction budgets are the hard limit: each fan-out event
  * costs 2 transaction items server-side (entity + event row) against the
