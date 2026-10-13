@@ -164,6 +164,10 @@ export async function POST(request: Request) {
 }
 ```
 
+### Webhook tokens
+
+A webhook's token is resumed through its URL (or [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook)), not with `resumeHook()`: passing a webhook's token rejects with [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error). Passing the hook object itself, as returned by [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token), resumes any hook, webhooks included.
+
 ### Resume or start
 
 A common endpoint shape is "resume or start": one route that resumes the active workflow run for a business key if one exists, or starts a new run otherwise. This comes up when the workflow uses a deterministic hook token as its idempotency key, for example, one active run per order or conversation.
