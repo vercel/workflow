@@ -466,5 +466,16 @@ export function getOpenWaitClockSkewMs(): number {
  * oversized one whole, so a suspension's creations go out in batches of at
  * most this many, with a margin under both. A step's `step_created` and the
  * `step_started` behind it stay in one batch.
+ *
+ * 16 rather than the World's limit because a smaller batch commits sooner,
+ * and the batch's queued branches publish only once it commits. This is the
+ * fan-out chunk size the queued-dispatch path was tuned to: on durabench, 16
+ * per chunk against 32 moved the queued branches' median `step_started` from
+ * ~570 to ~460 ms after `run_started` at 64 branches, and the last branch's
+ * first line from 967 to 875 ms, with no first-branch or join regression at
+ * 64 or 128 branches. It also keeps the inline steps' creation-bearing starts
+ * in one batch up to `MAX_MAX_INLINE_STEPS`, and bounds the speculative
+ * creation batch run-ahead sends ahead of a boundary (a larger fan-out
+ * commits in chunks on the awaited path).
  */
-export const MAX_BATCH_EVENTS = 32;
+export const MAX_BATCH_EVENTS = 16;
