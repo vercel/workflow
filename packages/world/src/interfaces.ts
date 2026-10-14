@@ -17,7 +17,12 @@ import type {
   ListEventsParams,
   RunCreatedEventRequest,
 } from './events.js';
-import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type {
+  GetHookByTokenOptions,
+  GetHookParams,
+  Hook,
+  ListHooksParams,
+} from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
@@ -488,7 +493,7 @@ export interface Storage {
      * Returns the Hook that owns a token, including a Hook kept by minimum
      * retention after its run ends.
      */
-    getByToken(token: string, params?: GetHookParams): Promise<Hook>;
+    getByToken(token: string, params?: GetHookByTokenOptions): Promise<Hook>;
     /**
      * Lists Hooks, including Hooks kept by minimum retention after their runs
      * end.
@@ -703,6 +708,23 @@ export interface WorldCapabilities {
    * rejects `experimental_force` at `createHook()` time.
    */
   hookForceClaim?: boolean;
+
+  /**
+   * Hooks are stored per region. A regional hook (every webhook, which is
+   * stored in its run's region) lives in that region's storage, token
+   * uniqueness is per region, and a by-token lookup names the region to look
+   * in (`hooks.getByToken(token, { region })`). A hook that is not regional
+   * lives in the World's default region.
+   *
+   * Declaring this commits the World to the `@workflow/world-vercel/run-id`
+   * region tagging: the runtime tags the ULID of a regional hook's ID with
+   * its region (an untagged hook ID means the World's default region), and
+   * prefixes generated webhook tokens with `wh.<region>.` so the webhook
+   * endpoint can recover the region from the token alone. Worlds without a
+   * regional dimension must leave this unset; the runtime then mints untagged
+   * hook IDs and plain webhook tokens.
+   */
+  hookRegions?: boolean;
 
   /**
    * Deployments are atomic and immutable: a deployment id names one fixed

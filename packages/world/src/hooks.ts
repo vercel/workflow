@@ -161,6 +161,11 @@ export const HookSchema = z.compile(
     // so the claimer's runtime can publish the victim's wake without reading
     // a run it may not be able to reach; see `HookClaimedFromSchema`.
     claimedFrom: HookClaimedFromSchema.optional(),
+    // The region whose storage holds the hook and its token, for Worlds with
+    // a regional dimension (world-vercel). Hook tokens are unique per region,
+    // so this is the `region` a by-token lookup of this hook must name.
+    // Absent from Worlds without regions and from older servers.
+    region: z.string().optional(),
   })
 );
 
@@ -194,4 +199,14 @@ export interface ListHooksParams {
 
 export interface GetHookParams {
   resolveData?: ResolveData;
+}
+
+export interface GetHookByTokenOptions extends GetHookParams {
+  /**
+   * The region whose storage holds the token, for Worlds with a regional
+   * dimension. Tokens are unique per region, so this names which region's
+   * hook to return. Omitted means the World's default (`iad1` for
+   * world-vercel). Worlds without regions ignore it.
+   */
+  region?: string;
 }

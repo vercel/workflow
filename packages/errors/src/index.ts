@@ -839,11 +839,23 @@ export class HookForceClaimedError extends WorkflowError {
  */
 export class HookNotFoundError extends WorkflowError {
   token: string;
+  /**
+   * The region the token was looked up in, when the lookup named one. Hook
+   * tokens are unique per region, so a regional hook (such as a webhook) is
+   * only found by a lookup in its region.
+   */
+  region?: string;
 
-  constructor(token: string) {
-    super('Hook not found', {});
+  constructor(token: string, options?: { region?: string }) {
+    super(
+      options?.region === undefined
+        ? 'Hook not found'
+        : `Hook not found in region '${options.region}'`,
+      {}
+    );
     this.name = 'HookNotFoundError';
     this.token = token;
+    if (options?.region !== undefined) this.region = options.region;
   }
 
   static is(value: unknown): value is HookNotFoundError {
