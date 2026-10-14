@@ -73,7 +73,7 @@ function envTimeoutMs(name: string, fallback: number): number {
  * POST). The PUTs that reach the default and events dispatchers are the legacy
  * v1/v2 entity updates (cancel run, update step), which are idempotent in
  * outcome; stream appends — the one non-idempotent PUT — get their own
- * dispatcher whose retry policy deliberately excludes these codes (see
+ * dispatcher with dispatcher-level retries disabled (see
  * STREAM_RETRY_OPTIONS). POST event writes get their own type-aware retry
  * instead (see event-retry.ts).
  *
@@ -500,11 +500,10 @@ export function getEventsAgentOptionsNoH2() {
  * connection.
  *
  * Stream appends are not idempotent. Multiplexing N appends onto one connection
- * makes a single RST_STREAM / GOAWAY / socket reset fail all N at once, and
- * STREAM_RETRY_OPTIONS retries PUT on exactly those transient `errorCodes` — so
- * a connection-level blip would resend chunks the server may already have
- * applied and duplicate them. Serializing keeps the existing
- * one-request-per-connection failure isolation that policy was written against.
+ * makes a single connection failure leave all N outcomes uncertain. Keep the
+ * existing one-request-per-connection failure isolation. Appends retry only
+ * confirmed 429s and known pre-connect failures; uncertain outcomes are not
+ * resent.
  *
  * Note this is currently belt-and-braces: undici's H2 `busy()` check already
  * serializes non-idempotent requests (`client-h2.js`: `if
@@ -571,29 +570,18 @@ export function getEventsRetryAgentOptions(): RetryHandler.RetryOptions {
 }
 
 /**
- * Retry options for stream writes (PUT). Stream appends are NOT idempotent, so
- * we must never retry a write the server may already have applied. We therefore
- * narrow undici's defaults to only the conditions that guarantee the request was
- * rejected *before* the chunk was persisted:
- *  - transient connection errors (undici's default `errorCodes`: ECONNRESET,
- *    ECONNREFUSED, ENOTFOUND, …) — the request never reached, or was not
- *    accepted by, the server, and
- *  - HTTP 429 — the server rejected the request outright (rate limited), so no
- *    chunk was written; honoring Retry-After backs off cleanly.
- *
- * Crucially, 5xx is excluded from the default `[500, 502, 503, 504, 429]`: a
- * 5xx can mean the chunk *was* written but the response failed, and a retry
- * would duplicate it. Other 4xx are client errors a retry can't fix. `methods`
- * is pinned to PUT (the only stream-write verb) for clarity; `errorCodes` is
- * left at undici's transient-network-error defaults — deliberately *without*
- * RETRY_ERROR_CODES' two timeout codes, which are ambiguous about whether the
- * server processed the request. Exported so a test can assert that 5xx never
- * sneaks back into the retryable set.
+ * Disable dispatcher-level append retries. Fetch supplies a one-shot reader,
+ * so retrying here would reuse a consumed body. instrumentedFetch owns the
+ * append retry loop and constructs each request from preserved bytes. Only
+ * confirmed 429s and known pre-connect failures can safely resend an append.
+ * maxRetries also excludes code-less errors, which errorCodes alone cannot.
+ * Empty statusCodes lets actual HTTP responses reach the fetch-level policy.
  */
 export const STREAM_RETRY_OPTIONS: RetryHandler.RetryOptions = {
-  retryAfter: true,
+  maxRetries: 0,
   methods: ['PUT'],
-  statusCodes: [429],
+  statusCodes: [],
+  errorCodes: [],
 };
 
 /**
@@ -1056,10 +1044,9 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
 
 /**
  * Resolves the dispatcher for stream writes (the PUT write/close path): the
- * caller's override, or the shared HTTP/2 stream agent. See
- * getDefaultStreamDispatcher (and STREAM_RETRY_OPTIONS) for its deliberately
- * narrowed retry policy — transient connection errors + HTTP 429 only, never
- * 5xx — chosen because stream appends are not idempotent.
+ * caller's override, or the shared HTTP/2 stream agent. The default has no
+ * dispatcher-level retries; instrumentedFetch owns fresh-request append
+ * retries instead.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
   return resolveDispatcher(config, getDefaultStreamDispatcher);
@@ -1253,16 +1240,14 @@ function getDefaultDispatcher(): RetryAgent {
 /**
  * Returns the shared HTTP/2 RetryAgent used for stream writes (PUT write/close).
  *
- * Stream writes append chunks and are NOT idempotent, so this dispatcher uses a
- * deliberately narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only
- * on transient connection errors and HTTP 429 — both of which guarantee the
- * chunk was not persisted — and never on 5xx or other 4xx, where a retry could
- * duplicate an already-applied write. It opts into H2 (the write/close requests
+ * Append retries are disabled here (see STREAM_RETRY_OPTIONS). The streamer
+ * opts into fresh-request retries above fetch only for this default
+ * dispatcher. It opts into H2 (the write/close requests
  * send a fully-buffered body, or none, so they don't hit the duplex-streaming H2
  * issues that keep the long-lived live-read on plain `fetch`) via
  * getStreamAgentOptions() — which, unlike the events agent, keeps multiplexing
- * off so one connection-level failure cannot fail (and thus retry) several
- * appends at once.
+ * off so a connection-level failure cannot leave several append outcomes
+ * uncertain at once.
  */
 function getDefaultStreamDispatcher(): RetryAgent {
   _streamDispatcher ??= createStreamDispatcher(STREAM_RETRY_OPTIONS);
