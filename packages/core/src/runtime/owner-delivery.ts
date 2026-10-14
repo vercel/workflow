@@ -15,23 +15,7 @@ export function isRetryableOwnerDelivery(error: unknown): boolean {
   );
 }
 
-/** First wait after a failed delivery: 1 s plus up to 1 s of jitter. */
-const FIRST_RETRY_MS = 1000;
-const RETRY_JITTER_MS = 1000;
-/** Longest wait between deliveries. */
-const MAX_RETRY_MS = 120_000;
-
-/**
- * Retry delivery, never the step body. The caller retains payload and identity.
- *
- * The first wait is 1 s plus up to 1 s of jitter (e.g. 1.4 s), then doubles
- * after every failure up to 120 s, until the deadline. A busy owner (its
- * affinity instance answering 503) therefore sees the retry rate of a large
- * fan-out fall instead of being refilled every couple of seconds.
- *
- * Future: after a shorter direct-retry window, hand the result to the queue
- * (VQS) and let this worker finish, instead of holding it until the deadline.
- */
+/** Retry delivery, never the step body. The caller retains payload and identity. */
 export async function retryOwnerDelivery<T>(
   deadline: number,
   deliver: (timeoutMs: number) => Promise<T>,
@@ -41,7 +25,7 @@ export async function retryOwnerDelivery<T>(
     retryInMs: number;
   }) => void
 ): Promise<T> {
-  let delay = FIRST_RETRY_MS + Math.random() * RETRY_JITTER_MS;
+  let delay = 100;
   let lastError: unknown;
   for (let attempt = 1; ; attempt++) {
     const remaining = deadline - Date.now();
@@ -58,9 +42,13 @@ export async function retryOwnerDelivery<T>(
       if (!isRetryableOwnerDelivery(error)) throw error;
       lastError = error;
     }
-    const retryInMs = Math.min(Math.max(0, deadline - Date.now()), delay);
+    // Equal jitter avoids synchronized retry waves without a zero-delay spin.
+    const retryInMs = Math.min(
+      Math.max(0, deadline - Date.now()),
+      delay / 2 + (Math.random() * delay) / 2
+    );
     onRetry?.({ attempt, error: lastError, retryInMs });
     await new Promise<void>((resolve) => setTimeout(resolve, retryInMs));
-    delay = Math.min(MAX_RETRY_MS, delay * 2);
+    delay = Math.min(2000, delay * 2);
   }
 }

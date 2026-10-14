@@ -152,14 +152,6 @@ interface MailboxBatch {
   finish(): Promise<void>;
 }
 const MAX_MAILBOX_BATCH = 100;
-/** Steps one run may have started and not yet finished. Independent branches of
- * a fan-out start without waiting for each other up to this bound; remote
- * deliveries the platform refuses under load (503) retry. */
-const MAX_RUNNING_STEPS = 250;
-/** See `attemptTimeoutMs`: the bound for attempts with no observable owner. */
-const ABANDONED_ATTEMPT_MS = 15 * 60_000;
-/** Backstop wake for a step waiting to start (e.g. behind MAX_RUNNING_STEPS). */
-const PENDING_RECHECK_MS = 60_000;
 /** Durable step starts committed (then dispatched) per prefix. */
 const START_PREFIX_SIZE = 50;
 // Extend deliberately: shared-resource operations and failure/retry decisions
@@ -370,14 +362,8 @@ export class RetainedRunner {
     private readonly metadata: Metadata,
     private readonly retire: () => void,
     private readonly idleMs = 60_000,
-    /**
-     * How long an attempt whose liveness this owner cannot observe stays open
-     * before recovery supersedes it: one inherited from a previous owner, or a
-     * dispatch that ended without a known outcome. Above any function's
-     * maxDuration, so a long-running body is never re-run while it may still
-     * run. A body running here, or a dispatch still in flight, has no limit.
-     */
-    private readonly attemptTimeoutMs = ABANDONED_ATTEMPT_MS,
+    /** How long an admitted body may run before recovery supersedes it. */
+    private readonly attemptTimeoutMs = 60_000,
     /** Step bodies this owner runs itself; the rest are dispatched. */
     private readonly localStepSlots = 3
   ) {
@@ -1425,7 +1411,7 @@ export class RetainedRunner {
         await this.dispatchSteps(admittedRemote, policy.attemptTimeoutMs);
       };
       let available =
-        MAX_RUNNING_STEPS -
+        100 -
         [...this.steps.values()].filter((step) => step.status === 'running')
           .length;
       for (const step of this.steps.values()) {
@@ -1895,14 +1881,13 @@ export class RetainedRunner {
     const now = Date.now();
     const due = [...this.steps.values()].flatMap((step) => {
       if (step.status === 'running') {
-        // A body running here, or a dispatch still in flight, is alive.
-        if (this.localWorkers.has(step.stepId) || this.workers.has(step.stepId))
-          return [];
         const start = this.stepStarts.get(step.stepId);
         return start ? [+start.event.createdAt + policy.attemptTimeoutMs] : [];
       }
       if (step.status === 'pending')
-        return [step.retryAfter ? +step.retryAfter : now + PENDING_RECHECK_MS];
+        return [
+          step.retryAfter ? +step.retryAfter : now + policy.attemptTimeoutMs,
+        ];
       return [];
     });
     if (explicitAt !== undefined) due.push(explicitAt);
@@ -1931,10 +1916,8 @@ export class RetainedRunner {
       if (
         step.status !== 'running' ||
         !start ||
-        // A step running in this owner, or dispatched over a request still
-        // in flight, is alive; only lost attempts expire.
+        // A step running in this owner is alive; only lost attempts expire.
         this.localWorkers.has(step.stepId) ||
-        this.workers.has(step.stepId) ||
         (+start.event.createdAt + policy.attemptTimeoutMs > Date.now() &&
           !(undeliveredAt !== undefined && undeliveredAt <= Date.now()))
       )

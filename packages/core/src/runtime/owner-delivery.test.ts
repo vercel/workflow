@@ -7,32 +7,26 @@ import {
 
 afterEach(() => vi.useRealTimers());
 
-it('backs off from 1 s plus jitter, doubling after each failure up to 120 s', async () => {
+it('backs off transient/unknown outcomes with a bounded per-call timeout', async () => {
   vi.useFakeTimers();
-  vi.spyOn(Math, 'random').mockReturnValue(0.4);
   const calls: number[] = [];
   const attempt = vi.fn(async (timeout: number) => {
     calls.push(Date.now());
     expect(timeout).toBeGreaterThan(0);
     expect(timeout).toBeLessThanOrEqual(30_000);
     if (calls.length === 1)
+      throw new WorkflowWorldError('Back off', { status: 503 });
+    if (calls.length === 2)
       throw new WorkflowWorldError('Lost response', {
         code: 'INVOCATION_OUTCOME_UNKNOWN',
       });
-    if (calls.length < 12)
-      throw new WorkflowWorldError('Back off', { status: 503 });
     return 'accepted';
   });
-  const work = retryOwnerDelivery(Date.now() + 3_600_000, attempt);
-  await vi.advanceTimersByTimeAsync(3_600_000);
+  const work = retryOwnerDelivery(Date.now() + 60_000, attempt);
+  await vi.advanceTimersByTimeAsync(1000);
   expect(await work).toBe('accepted');
-  const waits = calls.slice(1).map((at, i) => at - calls[i]!);
-  // 1.4 s, doubling: 2.8, 5.6, 11.2, 22.4, 44.8, 89.6, then capped at 120 s.
-  expect(waits).toEqual([
-    1400, 2800, 5600, 11_200, 22_400, 44_800, 89_600, 120_000, 120_000, 120_000,
-    120_000,
-  ]);
-  vi.mocked(Math.random).mockRestore();
+  expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(50);
+  expect(calls[2] - calls[1]).toBeGreaterThanOrEqual(100);
 });
 
 it('stops at the attempt deadline rather than renewing the retry budget', async () => {
@@ -96,7 +90,7 @@ it('reports each failed attempt before retrying the identical delivery', async (
         status: (error as WorkflowWorldError).status,
       })
   );
-  await vi.advanceTimersByTimeAsync(10_000);
+  await vi.advanceTimersByTimeAsync(1000);
   expect(await work).toBe('ok');
   expect(retries.map((r) => [r.attempt, r.status])).toEqual([
     [1, 503],
