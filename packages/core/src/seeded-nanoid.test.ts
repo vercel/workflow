@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { createSeededNanoid } from './seeded-nanoid.js';
 
 describe('createSeededNanoid', () => {
-  // Recorded with nanoid@5.1.6's customRandom(urlAlphabet, 21, ...), which
-  // runs recorded before this generator existed used for default hook tokens.
+  // Golden values recorded with nanoid@5.1.6's
+  // customRandom(urlAlphabet, 21, ...), the generator that earlier versions
+  // used for default hook tokens.
   it('matches the ids and PRNG consumption of nanoid@5.1.6', () => {
     const rng = seedrandom('wrun_test:seed');
     const generate = createSeededNanoid(rng);
