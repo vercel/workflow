@@ -2286,89 +2286,90 @@ function createUnfencedEventsStorage(
         }, SLOT_INSERT_TRANSACTION);
       }
 
-      // Handle step_completed event: update step status
-      // Uses conditional UPDATE to prevent completing an already-terminal step.
-      if (data.eventType === 'step_completed') {
-        const eventData = (data as any).eventData as { result?: any };
-        const [stepValue] = await drizzle
-          .update(Schema.steps)
-          .set({
-            status: 'completed',
-            output: eventData.result as SerializedContent | undefined,
-            completedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!),
-              notInArray(Schema.steps.status, terminalStepStatuses)
-            )
-          )
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        } else {
-          // Step not updated - check if it exists and why
-          const [existing] = await getStepForValidation.execute({
-            runId: effectiveRunId,
-            stepId: data.correlationId!,
-          });
-          if (!existing) {
-            throw new WorkflowWorldError(
-              `Step "${data.correlationId}" not found`
-            );
-          }
-          if (isTerminalStepStatus(existing.status)) {
-            throw new EntityConflictError(
-              `Cannot modify step in terminal state "${existing.status}"`
-            );
-          }
-        }
-      }
-
-      // Handle step_failed event: terminal state with error
-      // Uses conditional UPDATE to prevent failing an already-terminal step.
-      if (data.eventType === 'step_failed') {
-        const eventData = (data as any).eventData as {
-          error?: unknown;
-        };
-        // The error field is SerializedData (Uint8Array) produced by
+      // Handle step_completed and step_failed events: move the step to its
+      // terminal state and write the matching event log entry in ONE
+      // transaction, as step_started does. Committed separately, a process
+      // that dies between the two leaves a terminal step with no terminal
+      // event: the replayed step_started is then refused as terminal and the
+      // run never advances past the step. The guarded UPDATE also takes the
+      // step row lock, so the event position is allocated behind it.
+      if (
+        data.eventType === 'step_completed' ||
+        data.eventType === 'step_failed'
+      ) {
+        // step_failed's error field is SerializedData (Uint8Array) produced by
         // dehydrateStepError. We store it verbatim in the error_cbor column;
         // consumers hydrate via hydrateStepError.
-        const [stepValue] = await drizzle
-          .update(Schema.steps)
-          .set({
-            status: 'failed',
-            error: eventData.error as SerializedData,
-            completedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!),
-              notInArray(Schema.steps.status, terminalStepStatuses)
+        const terminalSet =
+          data.eventType === 'step_completed'
+            ? {
+                status: 'completed' as const,
+                output: (data as any).eventData.result as
+                  | SerializedContent
+                  | undefined,
+                completedAt: now,
+              }
+            : {
+                status: 'failed' as const,
+                error: (data as any).eventData.error as SerializedData,
+                completedAt: now,
+              };
+        value = await drizzle.transaction(async (tx) => {
+          const [stepValue] = await tx
+            .update(Schema.steps)
+            .set(terminalSet)
+            .where(
+              and(
+                eq(Schema.steps.runId, effectiveRunId),
+                eq(Schema.steps.stepId, data.correlationId!),
+                notInArray(Schema.steps.status, terminalStepStatuses)
+              )
             )
-          )
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        } else {
-          // Step not updated - check if it exists and why
-          const [existing] = await getStepForValidation.execute({
+            .returning();
+
+          if (stepValue) {
+            step = deserializeStepError(compact(stepValue));
+          } else {
+            // Step not updated - check if it exists and why
+            const [existing] = await tx
+              .select({ status: Schema.steps.status })
+              .from(Schema.steps)
+              .where(
+                and(
+                  eq(Schema.steps.runId, effectiveRunId),
+                  eq(Schema.steps.stepId, data.correlationId!)
+                )
+              )
+              .limit(1);
+            if (!existing) {
+              throw new WorkflowWorldError(
+                `Step "${data.correlationId}" not found`
+              );
+            }
+            if (isTerminalStepStatus(existing.status)) {
+              throw new EntityConflictError(
+                `Cannot modify step in terminal state "${existing.status}"`
+              );
+            }
+          }
+
+          const eventValue = await insertEventRow(tx, {
             runId: effectiveRunId,
-            stepId: data.correlationId!,
+            eventId: await allocateEventId(tx, effectiveRunId),
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
           });
-          if (!existing) {
-            throw new WorkflowWorldError(
-              `Step "${data.correlationId}" not found`
-            );
-          }
-          if (isTerminalStepStatus(existing.status)) {
+
+          if (!eventValue) {
             throw new EntityConflictError(
-              `Cannot modify step in terminal state "${existing.status}"`
+              `Event for step "${data.correlationId}" could not be created`
             );
           }
-        }
+          eventId = eventValue.eventId;
+          return { createdAt: eventValue.createdAt };
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle step_retrying event: sets status back to 'pending', records error
