@@ -2,6 +2,7 @@ import type { Queue, Storage, World } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
+import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
 import {
@@ -62,7 +63,9 @@ export function createWorld(
   } {
   const maxPoolSize =
     config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
-  const pool = config.pool || createOwnedPool(config, maxPoolSize);
+  let closing = false;
+  const pool =
+    config.pool || createOwnedPool(config, maxPoolSize, () => closing);
 
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
@@ -104,6 +107,7 @@ export function createWorld(
       );
     },
     async close() {
+      closing = true;
       await queue.close();
       await streamer.close();
       await runStatusListener.close();
@@ -117,27 +121,26 @@ export function createWorld(
 /**
  * The pool the World creates when the caller passes none.
  *
- * It listens for `error`: pg-pool re-emits an idle client's connection error
- * (a database restart, `pg_terminate_backend`) on the pool, and an
- * EventEmitter with no `error` listener throws it as an uncaught exception.
+ * It listens for connection errors on the pool and on every client it
+ * connects (see `handleConnectionErrors`): a database restart or
+ * `pg_terminate_backend` emits `error` on an idle client, which pg-pool
+ * re-emits on the pool, and on a checked-out client, which pg-pool does not
+ * listen on at all. With no listener either is an uncaught exception.
  * Graphile Worker listens only while the queue runs, and `pool.end()`
  * resolves before its idle clients have closed, so without this a backend
- * terminated during or after `close()` ends the process. The dropped client is
- * already out of the pool, and the next query opens a new one.
+ * terminated during or after `close()` ends the process. The dropped client
+ * leaves the pool, and the next query opens a new one.
  */
 function createOwnedPool(
   config: PostgresWorldConfig,
-  maxPoolSize: number | undefined
+  maxPoolSize: number | undefined,
+  isClosing: () => boolean
 ): Pool {
   const pool = new Pool({
     connectionString: config.connectionString || getDefaultConnectionString(),
     ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
   });
-  pool.on('error', (error) => {
-    console.warn(
-      `[world-postgres] idle database connection closed: ${error.message}`
-    );
-  });
+  handleConnectionErrors(pool, isClosing);
   return pool;
 }
 

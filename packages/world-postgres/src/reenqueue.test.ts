@@ -371,6 +371,23 @@ describe('re-enqueue active runs on start', () => {
     expect(internalPool?.end).toHaveBeenCalledOnce();
   });
 
+  it('listens for connection errors on a pool it creates, not on a caller-owned one', () => {
+    createWorld({ connectionString: 'postgres://test' });
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+    expect(internalPool?.on).toHaveBeenCalledWith(
+      'connect',
+      expect.any(Function)
+    );
+    expect(internalPool?.on).toHaveBeenCalledWith(
+      'error',
+      expect.any(Function)
+    );
+
+    const callerPool = { ...pool, on: vi.fn() };
+    createWorld({ pool: callerPool });
+    expect(callerPool.on).not.toHaveBeenCalled();
+  });
+
   it('does not close a caller-owned pool', async () => {
     const world = createWorld({ pool });
     await world.start();
