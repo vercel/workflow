@@ -18,7 +18,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
@@ -29,6 +28,7 @@ import {
   type WorkflowOrchestratorContext,
 } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
@@ -82,9 +82,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     get mintCount() {
       return mintCount;
     },
-    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
-    ),
+    generateNanoid: createSeededNanoid(() => context.globalThis.Math.random()),
     onWorkflowError: () => {},
     get promiseQueue() {
       return promiseQueueHolder.current;
