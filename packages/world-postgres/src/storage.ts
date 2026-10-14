@@ -334,7 +334,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const getEventId = () => (eventId ??= `wevt_${ulid()}`);
       // Populated by the branches below that write their own event log entry in
       // the same transaction as the guarded entity mutation (run_created,
-      // step_started, hook_disposed, hook_received); the shared insert further
+      // step_started, step_completed, step_failed, hook_disposed,
+      // hook_received); the shared insert further
       // down is skipped when this is already set.
       let value: { createdAt: Date } | undefined;
 
@@ -1011,95 +1012,107 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         });
       }
 
-      // Handle step_completed event: update step status
-      // Uses conditional UPDATE to prevent completing an already-terminal step.
-      if (data.eventType === 'step_completed') {
-        const eventData = (data as any).eventData as { result?: any };
-        const [stepValue] = await drizzle
-          .update(Schema.steps)
-          .set({
-            status: 'completed',
-            output: eventData.result as SerializedContent | undefined,
-            completedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!),
-              notInArray(Schema.steps.status, terminalStepStatuses)
-            )
-          )
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        } else {
-          // Step not updated - check if it exists and why
-          const [existing] = await getStepForValidation.execute({
-            runId: effectiveRunId,
-            stepId: data.correlationId!,
-          });
-          if (!existing) {
-            throw new WorkflowWorldError(
-              `Step "${data.correlationId}" not found`
-            );
-          }
-          if (isStepTerminal(existing.status)) {
-            throw new EntityConflictError(
-              `Cannot modify step in terminal state "${existing.status}"`
-            );
-          }
-        }
-      }
-
-      // Handle step_failed event: terminal state with error
-      // Uses conditional UPDATE to prevent failing an already-terminal step.
-      if (data.eventType === 'step_failed') {
-        const eventData = (data as any).eventData as {
+      // Handle step_completed and step_failed events: move the step to its
+      // terminal state and write the matching event log entry in ONE
+      // transaction, as step_started does. Committed separately, a process
+      // that dies between the two leaves a terminal step with no terminal
+      // event: the replayed step_started is then refused as terminal and the
+      // run never advances past the step. The guarded UPDATE also takes the
+      // step row lock, so the event id is allocated behind it.
+      if (
+        data.eventType === 'step_completed' ||
+        data.eventType === 'step_failed'
+      ) {
+        const terminalEventData = (data as any).eventData as {
+          result?: any;
           error?: any;
           stack?: string;
         };
         const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
+          typeof terminalEventData.error === 'string'
+            ? terminalEventData.error
+            : (terminalEventData.error?.message ?? 'Unknown error');
+        const terminalSet =
+          data.eventType === 'step_completed'
+            ? {
+                status: 'completed' as const,
+                output: terminalEventData.result as
+                  | SerializedContent
+                  | undefined,
+                completedAt: now,
+              }
+            : {
+                status: 'failed' as const,
+                error: {
+                  message: errorMessage,
+                  stack: terminalEventData.stack,
+                },
+                completedAt: now,
+              };
 
-        const [stepValue] = await drizzle
-          .update(Schema.steps)
-          .set({
-            status: 'failed',
-            error: {
-              message: errorMessage,
-              stack: eventData.stack,
-            },
-            completedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!),
-              notInArray(Schema.steps.status, terminalStepStatuses)
+        value = await drizzle.transaction(async (tx) => {
+          const [stepValue] = await tx
+            .update(Schema.steps)
+            .set(terminalSet)
+            .where(
+              and(
+                eq(Schema.steps.runId, effectiveRunId),
+                eq(Schema.steps.stepId, data.correlationId!),
+                notInArray(Schema.steps.status, terminalStepStatuses)
+              )
             )
-          )
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        } else {
-          // Step not updated - check if it exists and why
-          const [existing] = await getStepForValidation.execute({
-            runId: effectiveRunId,
-            stepId: data.correlationId!,
-          });
-          if (!existing) {
-            throw new WorkflowWorldError(
-              `Step "${data.correlationId}" not found`
-            );
+            .returning();
+
+          if (stepValue) {
+            step = deserializeStepError(compact(stepValue));
+          } else {
+            // Step not updated - check if it exists and why
+            const [existing] = await tx
+              .select({ status: Schema.steps.status })
+              .from(Schema.steps)
+              .where(
+                and(
+                  eq(Schema.steps.runId, effectiveRunId),
+                  eq(Schema.steps.stepId, data.correlationId!)
+                )
+              )
+              .limit(1);
+            if (!existing) {
+              throw new WorkflowWorldError(
+                `Step "${data.correlationId}" not found`
+              );
+            }
+            if (isStepTerminal(existing.status)) {
+              throw new EntityConflictError(
+                `Cannot modify step in terminal state "${existing.status}"`
+              );
+            }
           }
-          if (isStepTerminal(existing.status)) {
+
+          // Allocated only after the guarded UPDATE has acquired and passed the
+          // step row lock, matching step_started's ordering guarantee: a writer
+          // blocked on the row must not carry an earlier id into a later insert.
+          const terminalEventId = `wevt_${ulid()}`;
+          eventId = terminalEventId;
+          const [eventValue] = await tx
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId: terminalEventId,
+              correlationId: data.correlationId,
+              eventType: data.eventType,
+              eventData: storedEventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: events.createdAt });
+
+          if (!eventValue) {
             throw new EntityConflictError(
-              `Cannot modify step in terminal state "${existing.status}"`
+              `Event for step "${data.correlationId}" could not be created`
             );
           }
-        }
+          return eventValue;
+        });
       }
 
       // Handle step_retrying event: sets status back to 'pending', records error
