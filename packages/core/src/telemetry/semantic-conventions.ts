@@ -646,26 +646,6 @@ export const HookResumeSetupSource = SemanticConvention<string>(
 );
 
 /**
- * Producer-side signal (on the suspension span) counting steps whose direct
- * `step_created` write failed transiently while their `stepInput`-carrying
- * queue publish succeeded, so step creation is recovered via the consumer's
- * re-ensure. Mirrors {@link HookResilientResume}.
- */
-export const StepResilientDispatchRecovered = SemanticConvention<number>(
-  'workflow.step.resilient_dispatch_recovered'
-);
-
-/**
- * Consumer-side signal (on the workflow execution span) that this delivery
- * materialized the `step_created` event from the queue message's `stepInput`
- * because the producer's direct write had not landed, which completes the
- * recovery path {@link StepResilientDispatchRecovered} began.
- */
-export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
-  'workflow.step.resilient_dispatch_materialized'
-);
-
-/**
  * How the queued-step consumer resolved the run identity for this execution:
  * `run_context` — carried on the dispatch message, no `runs.get` before the
  * step (the fetch-free prologue); `runs_get` — the legacy blocking fetch

@@ -25,6 +25,7 @@ vi.mock('pg', () => ({
     return {
       query: vi.fn(async () => ({ rows: [{ exists: false }] })),
       end: vi.fn(),
+      on: vi.fn(),
     };
   }),
 }));

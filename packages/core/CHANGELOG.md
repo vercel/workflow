@@ -1,5 +1,33 @@
 # @workflow/core
 
+## 5.2.2
+
+### Patch Changes
+
+- [#4861](https://github.com/vercel/workflow/pull/4861) [`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa) Thanks [@pranaygp](https://github.com/pranaygp)! - Order `setAttributes()` resolution with the replay delivery barriers so a branch awaiting it can no longer resume out of event-log order, which could fail the run with `REPLAY_DIVERGENCE` or hand concurrent branches each other's step results
+
+- [#4856](https://github.com/vercel/workflow/pull/4856) [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658) Thanks [@http-samc](https://github.com/http-samc)! - Upgrade devalue to 6.0.3, which escapes large strings with native `JSON.stringify` instead of a per-character loop. Strings containing unpaired surrogates now round-trip exactly instead of being replaced with U+FFFD.
+
+- [#4818](https://github.com/vercel/workflow/pull/4818) [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the experimental `WORKFLOW_RESILIENT_STEP_DISPATCH` option
+- Updated dependencies [[`02993a2`](https://github.com/vercel/workflow/commit/02993a26cbabec8f00df1f8a3a758158d095008a)]:
+  - @workflow/world-vercel@5.2.2
+
+## 5.2.1
+
+### Patch Changes
+
+- [#4669](https://github.com/vercel/workflow/pull/4669) [`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741) Thanks [@http-samc](https://github.com/http-samc)! - Compress workflow arguments on the libuv threadpool when starting a run, so large inputs no longer block the caller's event loop during zstd compression.
+
+- [#4670](https://github.com/vercel/workflow/pull/4670) [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353) Thanks [@http-samc](https://github.com/http-samc)! - Add a `compressArguments` option to `start()`; pass `false` to store the run's arguments uncompressed when the inputs are known to be incompressible.
+
+- [#4835](https://github.com/vercel/workflow/pull/4835) [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349) Thanks [@pranaygp](https://github.com/pranaygp)! - Record the queue namespace on a run's `executionContext.queueNamespace` in `start()`, so restart recovery re-enqueues the run to its own namespace.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/world-vercel@5.2.1
+  - @workflow/world-local@5.1.1
+  - @workflow/utils@5.0.2
+
 ## 5.2.0
 
 ### Patch Changes
