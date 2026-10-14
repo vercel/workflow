@@ -161,7 +161,7 @@ interface Storage {
 
 **Inline steps are created by their first `step_started` (spec 9).** A step the orchestrator runs inline has no `step_created`: its first `step_started` (`attempt: 1`) carries what a `step_created` carries, `stepName`, `workflowName`, `input`, `inline: true` and `creatorMessageId`, and is the step's creation. Store it as one event, keep its `input` (as for a `step_created`), and write no `step_created` beside it. A background step keeps `step_created` followed by its invocation's own `step_started`. Only a step's first start carries an input; later starts are ordinary starts. The runtime still reads logs with a `step_created` for an inline step, so a World does not rewrite older runs.
 
-Persist the fields the runtime adds to `eventData` and return them from `events.list()`: `inline` and `creatorMessageId` on `step_created` and on an inline step's first `step_started`, `creatorMessageId` on `wait_created`, `attempt` and `startReason` on `step_started`, `attempt` on `step_retrying` and `step_failed`, and `stepName` on every step event.
+Persist the fields the runtime adds to `eventData` and return them from `events.list()`: `inline` and `creatorMessageId` on `step_created` and on an inline step's first `step_started`, `creatorMessageId` on `wait_created`, `attempt` on `step_started`, `attempt` on `step_retrying` and `step_failed`, and `stepName` on every step event.
 
 **In-band and out-of-band writes.** Every write says whether the run's orchestrator made it (`params.inBand`). In-band writes also carry `params.expectedSeqInBand` and `params.eventCount`, and your World must fence them: see [Single-writer guarantee and the in-band fence](#single-writer-guarantee-and-the-in-band-fence).
 

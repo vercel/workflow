@@ -165,13 +165,13 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
     expect(meta.inline).toBe(false);
   });
 
-  it('carries stepName, attempt and startReason on an out-of-band step_started, and no expected count', async () => {
+  it('carries stepName and attempt on an out-of-band step_started, and no expected count', async () => {
     const { meta, result } = await postAndCaptureMeta(
       {
         eventType: 'step_started',
         correlationId: 'step_1',
         specVersion: SPEC,
-        eventData: { stepName: 'add', attempt: 2, startReason: 'retry' },
+        eventData: { stepName: 'add', attempt: 2 },
       } as AnyEventRequest,
       { inBand: false }
     );
@@ -179,7 +179,6 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
       eventType: 'step_started',
       stepName: 'add',
       attempt: 2,
-      startReason: 'retry',
       inBand: false,
     });
     expect(meta).not.toHaveProperty('expectedSeqInBand');
@@ -275,7 +274,6 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
         inline: true,
         creatorMessageId: 'msg_creator',
         attempt: 1,
-        startReason: 'first',
       },
     } as AnyEventRequest;
     const { meta } = await postAndCaptureMeta(data, {
@@ -289,21 +287,10 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
       inline: true,
       creatorMessageId: 'msg_creator',
       attempt: 1,
-      startReason: 'first',
       inBand: true,
       expectedSeqInBand: 3,
     });
     expect(splitEventDataForV4(data).payload).toEqual(input);
-  });
-
-  it('drops an unknown startReason in the splitter instead of forwarding it', () => {
-    const { meta } = splitEventDataForV4({
-      eventType: 'step_started',
-      correlationId: 'step_1',
-      specVersion: SPEC,
-      eventData: { stepName: 'add', startReason: 'because' },
-    } as unknown as AnyEventRequest);
-    expect(meta).not.toHaveProperty('startReason');
   });
 
   it('parses reportIncomplete and the skipped-slot report off an in-band write', async () => {

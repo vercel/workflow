@@ -260,10 +260,6 @@ const stepLatencyTelemetryFields = {
   optimizations: z.array(z.string()).optional(),
 };
 
-/** Why a step attempt started; see `step_started.eventData.startReason`. */
-export const StepStartReasonSchema = z.enum(['first', 'retry', 'redelivery']);
-export type StepStartReason = z.infer<typeof StepStartReasonSchema>;
-
 const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
@@ -331,15 +327,6 @@ const StepStartedEventSchema = BaseEventSchema.extend({
     .object({
       stepName: z.string().optional(),
       attempt: z.number().optional(),
-      /**
-       * Why this attempt started (spec >= 9): `first` for the step's first
-       * attempt, `retry` for an attempt after a `step_retrying`, and
-       * `redelivery` for an attempt started because an earlier one ended
-       * without an outcome (its invocation died or stalled past its queue
-       * lease). The share of `redelivery` starts is the platform-caused
-       * re-execution rate.
-       */
-      startReason: StepStartReasonSchema.optional(),
       // Carried on the lazy-start path (where `input` is present) so the
       // backend can build the payload ref key without re-reading the run.
       workflowName: z.string().optional(),

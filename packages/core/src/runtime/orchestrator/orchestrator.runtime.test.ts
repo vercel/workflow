@@ -153,7 +153,6 @@ describe.each([
       inline: true,
       creatorMessageId: world.deliveries[0]?.messageId,
       attempt: 1,
-      startReason: 'first',
     });
     expect(calls.so_add).toBe(1);
     // Every write after run_created came from the orchestrator.
@@ -344,10 +343,6 @@ describe.each([
       });
       const starts = eventsOf(world, 'step_started');
       expect(starts.map((e) => data(e)?.attempt)).toEqual([1, 2]);
-      expect(starts.map((e) => data(e)?.startReason)).toEqual([
-        'first',
-        'retry',
-      ]);
       expect(data(eventsOf(world, 'step_retrying')[0])).toMatchObject({
         attempt: 1,
         retryAfter: expect.any(Date),
@@ -397,8 +392,8 @@ describe.each([
       // Only two attempts ran: the early hops ran no body.
       expect(calls.so_long_retry).toBe(2);
       expect(
-        eventsOf(world, 'step_started').map((e) => data(e)?.startReason)
-      ).toEqual(['first', 'retry']);
+        eventsOf(world, 'step_started').map((e) => data(e)?.attempt)
+      ).toEqual([1, 2]);
       // One message for the whole retry span.
       expect(new Set(stepDeliveries.map((d) => d.messageId)).size).toBe(1);
     } finally {
@@ -427,7 +422,7 @@ describe.each([
       world.appendOutOfBand({
         eventType: 'step_started',
         correlationId: (stepMessage!.message as { stepId: string }).stepId,
-        eventData: { stepName: 'so_once', attempt: 1, startReason: 'first' },
+        eventData: { stepName: 'so_once', attempt: 1 },
       } as Partial<Event>);
       await world.deliver({ ...stepMessage!, deliveryCount: 2 });
 

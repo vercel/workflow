@@ -143,7 +143,7 @@ describe('in-band fence (world-local)', () => {
           eventType: 'step_started',
           correlationId: 'step_missing',
           specVersion: SPEC,
-          eventData: { stepName: 'add', attempt: 1, startReason: 'first' },
+          eventData: { stepName: 'add', attempt: 1 },
         } as AnyEventRequest,
         { inBand: true, expectedSeqInBand: before.snapshot?.seqInBand }
       )

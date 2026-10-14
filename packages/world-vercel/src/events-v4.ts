@@ -41,7 +41,6 @@ import {
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
-  type StepStartReason,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -401,8 +400,6 @@ interface CreateEventV4InputBase {
   /** step_created / wait_created: queue message id of the orchestrator
    *  delivery that wrote the event. */
   creatorMessageId?: string;
-  /** step_started: why this attempt started. */
-  startReason?: StepStartReason;
   /** Content digest of the serialized resume payload. Forwarded alongside
    *  `resumeId` so the direct write and the queue re-ensure record an identical
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
@@ -807,7 +804,6 @@ function buildPostFrameMeta(
   if (input.creatorMessageId !== undefined) {
     meta.creatorMessageId = input.creatorMessageId;
   }
-  if (input.startReason !== undefined) meta.startReason = input.startReason;
   return meta;
 }
 

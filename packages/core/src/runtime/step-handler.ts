@@ -192,7 +192,6 @@ export async function handleStepMessage(
       stepName,
       runSpecVersion: runIdentity.specVersion,
       attempt: decision.attempt,
-      startReason: decision.startReason,
       ...(decision.firstStartedAt
         ? { firstStartedAt: decision.firstStartedAt }
         : {}),

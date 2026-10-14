@@ -18,6 +18,7 @@ import {
   vi,
 } from 'vitest';
 import { runtimeLogger } from './logger.js';
+import { GUEST_CODE_EXECUTION_SAMPLE_LIMIT } from './serialization/hardened.js';
 import { acceptingFenceSnapshot } from './test-support/fence-snapshot.js';
 
 // Spy on VM-context construction while preserving the real implementation, so
@@ -330,6 +331,24 @@ const digestWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// A step argument with more getters than the diagnostics sample, one of
+// them with a name longer than a logged detail.
+const manySerializationBlockersWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    const longKey = "x".repeat(300);
+    await s1({
+      get [longKey]() { return 0; },
+      get a() { return 1; },
+      get b() { return 2; },
+      get c() { return 3; },
+      get d() { return 4; },
+      get e() { return 5; },
+      get f() { return 6; },
+    });
+    return 0;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 registerStepFunction('r_s1', async () => 10);
 registerStepFunction('r_s2', async () => 20);
 registerStepFunction('r_echo', async (value) => value);
@@ -476,11 +495,17 @@ type DriveWorldOptions = {
    */
   conflictToken?: string;
   /**
-   * Serve the read that follows the initial load short of the newest event,
-   * the way an eventually-consistent replica can. Combined with
-   * `withholdDelta` this is the one shape a continuation cannot get anywhere
-   * from: the pass runs over a log that still does not hold the event it is
-   * continuing over.
+   * Answer a hook create with `reportIncomplete`, the way a World does when
+   * it could not report every slot below the write. The delivery then cannot
+   * fold the write into its log and reads before its next pass.
+   */
+  hookReportIncomplete?: boolean;
+  /**
+   * Serve the first incremental read (one from a cursor) short of the newest
+   * event, the way an eventually-consistent replica can. Combined with
+   * `hookReportIncomplete` this is the one shape a hook continuation cannot
+   * get anywhere from: the pass runs over a log that still does not hold the
+   * event it is continuing over.
    */
   staleFirstReload?: boolean;
   /**
@@ -670,27 +695,36 @@ async function drive(
       return {
         ...(startedStepResult(runId, data, event) ?? { event }),
         ...delta,
+        ...(options.hookReportIncomplete && data.eventType === 'hook_created'
+          ? { reportIncomplete: true }
+          : {}),
       };
     }
   );
 
-  let listCallCount = 0;
-  const eventsList = vi.fn(async (params?: { resolveData?: string }) => {
-    listCallCount++;
-    // The cursor is positioned at what the read actually showed, so a stale
-    // read hands back a short log AND a cursor that still covers the events it
-    // withheld — a prefix, the way a replica behind on replication serves one.
-    const visible =
-      options.staleFirstReload && listCallCount === 2
-        ? events.slice(0, -1)
-        : [...events];
-    return {
-      data: served(visible, params),
-      hasMore: false,
-      cursor: nextCursor(visible.length),
-      snapshot: acceptingFenceSnapshot(visible),
-    };
-  });
+  let staleReadServed = false;
+  const eventsList = vi.fn(
+    async (params?: {
+      resolveData?: string;
+      pagination?: { cursor?: string };
+    }) => {
+      // The cursor is positioned at what the read actually showed, so a stale
+      // read hands back a short log AND a cursor that still covers the events it
+      // withheld — a prefix, the way a replica behind on replication serves one.
+      const stale =
+        options.staleFirstReload &&
+        !staleReadServed &&
+        params?.pagination?.cursor !== undefined;
+      if (stale) staleReadServed = true;
+      const visible = stale ? events.slice(0, -1) : [...events];
+      return {
+        data: served(visible, params),
+        hasMore: false,
+        cursor: nextCursor(visible.length),
+        snapshot: acceptingFenceSnapshot(visible),
+      };
+    }
+  );
   const queueSend = vi.fn(async () => ({ messageId: null }));
 
   setWorld({
@@ -1005,6 +1039,57 @@ describe('retained VM through the inline replay loop', () => {
     expect(vmBuilds).toBe(1);
   });
 
+  it('caps serialization-blocker diagnostics without changing the retention decision', async () => {
+    const debugSpy = vi
+      .spyOn(runtimeLogger, 'debug')
+      .mockImplementation(() => {});
+    try {
+      const result = await drive(
+        'wrun_retained_blocker_diagnostics',
+        manySerializationBlockersWorkflow
+      );
+      expect(result.result).toBe(0);
+      expect(result.vmBuilds).toBeGreaterThan(1);
+
+      const demotion = debugSpy.mock.calls.find(
+        ([message, metadata]) =>
+          message === 'Retained VM not kept' &&
+          (metadata as Record<string, unknown> | undefined)
+            ?.serializationBlockerCount !== undefined
+      );
+      expect(demotion).toBeDefined();
+      const metadata = demotion?.[1] as Record<string, unknown>;
+      expect(metadata.workflowVmRetentionReason).toBe(
+        'serialization_executed_workflow_code'
+      );
+      const blockers = metadata.serializationBlockers as Array<{
+        source: string;
+        correlationId: string;
+        kind: string;
+        detail?: string;
+      }>;
+      // One execution per getter on the step's argument.
+      expect(metadata.serializationBlockerCount).toBe(7);
+      expect(metadata.serializationBlockersTruncated).toBe(true);
+      expect(blockers).toHaveLength(GUEST_CODE_EXECUTION_SAMPLE_LIMIT);
+      for (const blocker of blockers) {
+        expect(blocker).toEqual({
+          source: expect.any(String),
+          correlationId: expect.any(String),
+          kind: expect.any(String),
+          ...(blocker.detail === undefined
+            ? {}
+            : { detail: expect.any(String) }),
+        });
+      }
+      // The 300-character getter name is cut short.
+      expect(blockers[0]?.detail).toMatch(/^x+…$/);
+      expect(blockers[0]?.detail?.length).toBeLessThan(300);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
   /**
    * A hook's awaiter is settled by the event its own create commits, so the
    * parked VM is one `await` away from continuing. These pin that it continues
@@ -1017,6 +1102,47 @@ describe('retained VM through the inline replay loop', () => {
    * visibility timeout to the queue and leaves the run unfinished.
    */
   describe('hook write continuation', () => {
+    it('resolves the awaiter in-process, off the hook write response', async () => {
+      const { result, listParams, queueSends, createParams } = await drive(
+        'wrun_retained_hook_conflict',
+        hookConflictWorkflow
+      );
+
+      // The awaiter saw a clean registration and the step after it ran, all
+      // within this one delivery.
+      expect(result).toBe(10);
+      // The hook create asked for the delta that made that possible.
+      expect(
+        createParams.find((p) => p.eventType === 'hook_created')?.sinceCursor
+      ).toEqual(expect.any(String));
+      // The hook write carried the log forward, so the continuation read
+      // nothing: every list is a setup load, none reads from a cursor.
+      expect(
+        listParams.every(
+          (p) =>
+            (p as { pagination?: { cursor?: string } } | undefined)?.pagination
+              ?.cursor === undefined
+        )
+      ).toBe(true);
+      // Nothing was enqueued: no re-invocation, and the run's only step ran
+      // inline after the awaiter had already settled.
+      expect(queueSends).toBe(0);
+    });
+
+    it('continues in the same delivery with a fresh VM under the kill switch', async () => {
+      // With retention off there is no parked VM to resume, so the next pass
+      // replays from scratch, still within this delivery.
+      process.env.WORKFLOW_RETAINED_VM = '0';
+      const { result, vmBuilds, queueSends } = await drive(
+        'wrun_retained_hook_conflict_off',
+        hookConflictWorkflow
+      );
+
+      expect(result).toBe(10);
+      expect(vmBuilds).toBeGreaterThan(1);
+      expect(queueSends).toBe(0);
+    });
+
     it('reads from its cursor and still continues when the World returns no delta', async () => {
       // `sinceCursor` is optional by contract. Without a delta the log is
       // short of the hook_created, so the continuation must load from the
@@ -1057,6 +1183,52 @@ describe('retained VM through the inline replay loop', () => {
         expect(result).toBe('rejected:10');
         expect(listCalls).toBeGreaterThan(1);
         expect(queueSends).toBe(0);
+      });
+
+      it('continues in the same delivery with a fresh VM under the kill switch', async () => {
+        process.env.WORKFLOW_RETAINED_VM = '0';
+        const { result, vmBuilds, queueSends, committedTypes } = await drive(
+          'wrun_retained_taken_off',
+          conflictingAwaitWorkflow,
+          { type: 'normal' },
+          { conflictToken: CONFLICTING_TOKEN }
+        );
+
+        expect(committedTypes).toContain('hook_conflict');
+        expect(result).toBe('rejected:10');
+        expect(vmBuilds).toBeGreaterThan(1);
+        expect(queueSends).toBe(0);
+      });
+
+      it('re-invokes instead of spinning when a repeat pass still cannot see the conflict', async () => {
+        // The repeat guard. The World could not report the slots below the
+        // create, so the delivery reads before its next pass, and that read
+        // has not caught up: the pass runs over a log that still does not
+        // hold the `hook_conflict`, so the same hook comes back wanting the
+        // same continuation. Continuing again could not change that, so the
+        // run goes to the queue, which is what keeps this bounded rather
+        // than a loop.
+        const { result, createParams, queueSends } = await drive(
+          'wrun_retained_taken_stale_read',
+          conflictingAwaitWorkflow,
+          { type: 'normal' },
+          {
+            conflictToken: CONFLICTING_TOKEN,
+            withholdDelta: true,
+            hookReportIncomplete: true,
+            staleFirstReload: true,
+          }
+        );
+
+        // Handed back: the run finishes on a delivery this single-invocation
+        // harness never makes.
+        expect(result).toBeUndefined();
+        expect(queueSends).toBe(1);
+        // Two create attempts for the hook: the first pass, and the one
+        // repeat the guard then refuses to continue.
+        expect(
+          createParams.filter((p) => p.eventType === 'hook_created')
+        ).toHaveLength(2);
       });
     });
   });

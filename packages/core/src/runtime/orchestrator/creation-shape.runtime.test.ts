@@ -252,11 +252,8 @@ describe.each([
     // Run again inline as a redelivery attempt of the same step, never
     // created a second time and never moved to its own message.
     const starts = eventsOf(cold, 'step_started');
-    expect(starts.map((e) => dataOf(e)?.startReason)).toEqual([
-      'first',
-      'redelivery',
-    ]);
     expect(starts.map((e) => dataOf(e)?.attempt)).toEqual([1, 2]);
+    expect(eventsOf(cold, 'step_retrying')).toHaveLength(0);
     expect(dataOf(starts[1])?.input).toBeUndefined();
     expect(creationsOf(cold)).toHaveLength(1);
     expect(stepMessagesOf(cold)).toEqual([]);

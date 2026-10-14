@@ -84,14 +84,13 @@ const base = {
 };
 
 describe('executeStep', () => {
-  it('writes stepName, attempt and startReason on step_started and the outcome', async () => {
+  it('writes stepName and attempt on step_started and the outcome', async () => {
     const { written, createEvent } = recordingWriter();
     const result = await executeStep({
       ...base,
       createEvent,
       stepName: 'exec_ok',
       attempt: 2,
-      startReason: 'redelivery',
       input: await input([21]),
     });
     expect(result.type).toBe('completed');
@@ -100,7 +99,7 @@ describe('executeStep', () => {
       'step_completed',
     ]);
     expect(written[0]).toMatchObject({
-      eventData: { stepName: 'exec_ok', attempt: 2, startReason: 'redelivery' },
+      eventData: { stepName: 'exec_ok', attempt: 2 },
     });
     expect(written[1]).toMatchObject({ eventData: { stepName: 'exec_ok' } });
   });
@@ -112,7 +111,6 @@ describe('executeStep', () => {
       createEvent,
       stepName: 'exec_ok',
       attempt: 1,
-      startReason: 'first',
       input: await input([1]),
       started: { startedAt: new Date() },
     });
@@ -126,7 +124,6 @@ describe('executeStep', () => {
       createEvent,
       stepName: 'exec_retry',
       attempt: 1,
-      startReason: 'first',
       input: await input([]),
     });
     expect(result.type).toBe('retry');
@@ -150,7 +147,6 @@ describe('executeStep', () => {
       createEvent,
       stepName: 'exec_retry',
       attempt: 1,
-      startReason: 'first',
       input: await input([]),
       retryOutlivesMessage: () => true,
     });
@@ -170,7 +166,6 @@ describe('executeStep', () => {
         createEvent,
         stepName: 'exec_ok',
         attempt: 1,
-        startReason: 'first',
         input: await input([1]),
       })
     ).rejects.toThrow(EntityConflictError);
@@ -186,7 +181,6 @@ describe('executeStep', () => {
         createEvent,
         stepName: 'exec_guarded',
         attempt: 1,
-        startReason: 'first',
         input: await input([]),
         beforeBody: () => {
           throw new Error('superseded');
@@ -286,7 +280,6 @@ async function setupStep(
       stepId,
       stepName,
       attempt: 1,
-      startReason: 'first' as const,
       input: stepInput,
     },
   };
@@ -721,7 +714,6 @@ describe('executeStep — the last allowed attempt', () => {
     const result = await executeStep({
       ...params,
       attempt: MAX_RETRIES + 1,
-      startReason: 'retry',
     });
     expect(result.type).toBe('failed');
     expect(bodyRuns).toBe(1);
@@ -748,7 +740,6 @@ describe('executeStep — the last allowed attempt', () => {
     const result = await executeStep({
       ...params,
       attempt: MAX_RETRIES,
-      startReason: 'retry',
     });
     expect(result.type).toBe('retry');
     expect(bodyRuns).toBe(1);
@@ -786,7 +777,6 @@ describe('executeStep — request and compute provenance', () => {
       requestId: 'req_step_executor',
       stepName: 'exec_ok',
       attempt: 1,
-      startReason: 'first',
       input: await input([1]),
     });
     const started = calls.find((c) => c.data.eventType === 'step_started');
@@ -807,7 +797,6 @@ describe('executeStep — request and compute provenance', () => {
       requestId,
       stepName: 'exec_ok',
       attempt: 1,
-      startReason: 'first',
       input: await input([1]),
     });
     const started = calls.find((c) => c.data.eventType === 'step_started');
@@ -827,7 +816,6 @@ describe('executeStep — request and compute provenance', () => {
       createEvent,
       stepName: 'exec_ok',
       attempt: 1,
-      startReason: 'first',
       input: await input([1]),
     });
     expect(calls.length).toBe(2);
@@ -841,7 +829,6 @@ describe('executeStep — request and compute provenance', () => {
       createEvent,
       stepName: 'step//./step-executor-test//neverRegistered',
       attempt: 2,
-      startReason: 'retry',
       input: await input([]),
     });
     expect(result.type).toBe('failed');
@@ -1047,7 +1034,6 @@ describe('executeStep — turbo run-ready barrier', () => {
         stepId,
         stepName,
         attempt: 1,
-        startReason: 'first' as const,
         input,
         runReadyBarrier,
         startAfter,
@@ -1264,7 +1250,6 @@ describe('executeStep — turbo run-ready barrier', () => {
       stepId,
       stepName,
       attempt: 1,
-      startReason: 'first',
       input,
       forceOptimisticStart: true,
       runReadyBarrier,

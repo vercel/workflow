@@ -57,8 +57,6 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
-  type StepStartReason,
-  StepStartReasonSchema,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -196,8 +194,6 @@ interface SplitEventData {
     /** step_created / wait_created: the creating orchestrator delivery's
      *  queue message id (spec >= 9). */
     creatorMessageId?: string;
-    /** step_started: why this attempt started (spec >= 9). */
-    startReason?: StepStartReason;
   };
 }
 
@@ -247,8 +243,7 @@ type MetaSourceField =
   | 'finalSchedulingReplay'
   | 'optimizations'
   | 'inline'
-  | 'creatorMessageId'
-  | 'startReason';
+  | 'creatorMessageId';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -457,18 +452,13 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     meta.optimizations = eventData.optimizations as string[];
   }
   // Single-orchestrator (spec >= 9) step and wait bookkeeping. The backend
-  // persists all three into the stored eventData, so a log reader sees the
-  // step's execution mode, which delivery created it, and why each attempt
-  // started.
+  // persists both into the stored eventData, so a log reader sees the
+  // step's execution mode and which delivery created it.
   if (typeof eventData.inline === 'boolean') {
     meta.inline = eventData.inline;
   }
   if (typeof eventData.creatorMessageId === 'string') {
     meta.creatorMessageId = eventData.creatorMessageId;
-  }
-  const startReason = StepStartReasonSchema.safeParse(eventData.startReason);
-  if (startReason.success) {
-    meta.startReason = startReason.data;
   }
 
   let payload: Uint8Array | undefined;

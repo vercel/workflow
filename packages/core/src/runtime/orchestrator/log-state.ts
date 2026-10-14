@@ -1,4 +1,4 @@
-import type { Event, SerializedData, StepStartReason } from '@workflow/world';
+import type { Event, SerializedData } from '@workflow/world';
 
 /**
  * Upper bound on a step input carried on its queue message. Larger inputs are
@@ -23,7 +23,6 @@ export interface InlineStepSpec {
   input?: SerializedData;
   createdEventId?: string;
   attempt: number;
-  startReason: StepStartReason;
   firstStartedAt?: Date;
   /**
    * The step's creation-bearing `step_started`, when the orchestrator wrote

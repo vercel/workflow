@@ -294,9 +294,11 @@ describe.each([
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(1);
     expect(calls.iw_a).toBe(2);
+    // A redelivery attempt: two starts with no step_retrying between.
     expect(
-      eventsOf(world, 'step_started').map((e) => dataOf(e)?.startReason)
-    ).toEqual(['first', 'redelivery']);
+      eventsOf(world, 'step_started').map((e) => dataOf(e)?.attempt)
+    ).toEqual([1, 2]);
+    expect(eventsOf(world, 'step_retrying')).toHaveLength(0);
     expect(stepMessagesOf(world)).toEqual([]);
   });
 

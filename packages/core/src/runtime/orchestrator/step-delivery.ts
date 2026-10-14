@@ -1,8 +1,4 @@
-import {
-  type Event,
-  isTerminalRunEventType,
-  type StepStartReason,
-} from '@workflow/world';
+import { type Event, isTerminalRunEventType } from '@workflow/world';
 
 /**
  * What a background step's queue handler does with one delivery of the step's
@@ -17,14 +13,13 @@ export type StepDeliveryDecision =
   /** Write `step_failed` for exceeding the retry budget, then acknowledge. */
   | { action: 'fail'; attempt: number; reason: 'max-retries' }
   /**
-   * Write `step_started` with this attempt and reason, then run the body.
+   * Write `step_started` with this attempt, then run the body.
    * `firstStartedAt` is when the step's first attempt started, when the log
    * shows one: the step's `stepStartedAt` stays that of its first attempt.
    */
   | {
       action: 'run';
       attempt: number;
-      startReason: StepStartReason;
       firstStartedAt?: Date;
     };
 
@@ -51,12 +46,7 @@ export function stepDeliveryNeedsLogRead(params: {
 export function firstDeliveryDecision(
   stepAttempt: number | undefined
 ): StepDeliveryDecision {
-  const attempt = stepAttempt ?? 1;
-  return {
-    action: 'run',
-    attempt,
-    startReason: attempt > 1 ? 'retry' : 'first',
-  };
+  return { action: 'run', attempt: stepAttempt ?? 1 };
 }
 
 /**
@@ -74,11 +64,6 @@ export function firstDeliveryDecision(
  * Attempt is the number of `step_started` events for the step plus one. With
  * one owner per step that count is exact, so a `maxRetries: 0` step that
  * already started once is failed instead of run again (at most once).
- *
- * `startReason` is `first` with no prior start, `retry` when the latest
- * event of the step is a `step_retrying`, and `redelivery` when a prior
- * attempt started and recorded nothing after it (its invocation died or
- * stalled past its lease).
  */
 export function decideStepDelivery(params: {
   events: readonly Event[];
@@ -133,13 +118,7 @@ export function decideStepDelivery(params: {
   if (attempt > maxRetries + 1) {
     return { action: 'fail', attempt, reason: 'max-retries' };
   }
-  const startReason: StepStartReason =
-    starts === 0
-      ? 'first'
-      : lastStepEvent?.eventType === 'step_retrying'
-        ? 'retry'
-        : 'redelivery';
   return firstStartedAt
-    ? { action: 'run', attempt, startReason, firstStartedAt }
-    : { action: 'run', attempt, startReason };
+    ? { action: 'run', attempt, firstStartedAt }
+    : { action: 'run', attempt };
 }

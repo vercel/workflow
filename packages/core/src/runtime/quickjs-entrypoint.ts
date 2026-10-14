@@ -2118,7 +2118,6 @@ export async function runWorkflowWithQuickJS(params: {
           inline: true,
           ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
           attempt: 1,
-          startReason: 'first',
         },
       },
       {
@@ -2196,7 +2195,6 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           runSpecVersion: workflowRun.specVersion,
           attempt: resume ? resume.starts + 1 : 1,
-          startReason: resume && resume.starts > 0 ? 'redelivery' : 'first',
           ...(resume?.firstStartedAt
             ? { firstStartedAt: resume.firstStartedAt }
             : {}),

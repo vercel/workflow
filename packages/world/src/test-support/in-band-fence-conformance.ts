@@ -28,7 +28,7 @@ import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
  *   wins.
  * - An in-band write with no expected count is refused with a 400.
  * - The single-orchestrator step bookkeeping (`inline`, `creatorMessageId`,
- *   `stepName`, `attempt`, `startReason`) survives the round trip.
+ *   `stepName`, `attempt`) survives the round trip.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -340,7 +340,7 @@ export function inBandFenceConformance(
           eventType: 'step_started',
           correlationId: stepId,
           specVersion: SPEC,
-          eventData: { stepName: 'add', attempt: 1, startReason: 'first' },
+          eventData: { stepName: 'add', attempt: 1 },
         } as AnyEventRequest,
         { inBand: false }
       );
@@ -354,7 +354,6 @@ export function inBandFenceConformance(
       expect(started?.eventData).toMatchObject({
         stepName: 'add',
         attempt: 1,
-        startReason: 'first',
       });
     });
 
@@ -375,7 +374,6 @@ export function inBandFenceConformance(
             inline: true,
             creatorMessageId: 'msg_creator',
             attempt: 1,
-            startReason: 'first',
           },
         } as AnyEventRequest,
         { inBand: true, expectedSeqInBand: atRunCreation }
@@ -404,7 +402,6 @@ export function inBandFenceConformance(
         inline: true,
         creatorMessageId: 'msg_creator',
         attempt: 1,
-        startReason: 'first',
       });
       const input = (started?.eventData as { input?: unknown }).input;
       expect(input).toBeDefined();

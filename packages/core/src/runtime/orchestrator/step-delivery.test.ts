@@ -45,7 +45,6 @@ describe('stepDeliveryNeedsLogRead', () => {
     expect(firstDeliveryDecision(undefined)).toEqual({
       action: 'run',
       attempt: 1,
-      startReason: 'first',
     });
   });
 });
@@ -95,7 +94,6 @@ describe('decideStepDelivery', () => {
     ).toMatchObject({
       action: 'run',
       attempt: 2,
-      startReason: 'retry',
       firstStartedAt: expect.any(Date),
     });
   });
@@ -104,7 +102,7 @@ describe('decideStepDelivery', () => {
     const events = [ev('step_created'), ev('step_started')];
     expect(
       decideStepDelivery({ events, stepId: STEP, maxRetries: 3, nowMs: NOW })
-    ).toMatchObject({ action: 'run', attempt: 2, startReason: 'redelivery' });
+    ).toMatchObject({ action: 'run', attempt: 2 });
   });
 
   it('runs a never-started step as its first attempt', () => {
@@ -115,7 +113,7 @@ describe('decideStepDelivery', () => {
         maxRetries: 0,
         nowMs: NOW,
       })
-    ).toEqual({ action: 'run', attempt: 1, startReason: 'first' });
+    ).toEqual({ action: 'run', attempt: 1 });
   });
 
   it('fails a maxRetries: 0 step that already started (at most once)', () => {
@@ -146,6 +144,6 @@ describe('decideStepDelivery', () => {
         maxRetries: 3,
         nowMs: NOW,
       })
-    ).toEqual({ action: 'run', attempt: 1, startReason: 'first' });
+    ).toEqual({ action: 'run', attempt: 1 });
   });
 });

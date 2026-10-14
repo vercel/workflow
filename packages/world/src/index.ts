@@ -73,7 +73,6 @@ export {
   RUN_ENTITY_KEY,
   RUN_EVENT_TYPES,
   STEP_EVENT_TYPES,
-  StepStartReasonSchema,
   stripEventDataRefs,
   TERMINAL_EVENT_CLASSES,
   TERMINAL_RUN_EVENT_TYPES,

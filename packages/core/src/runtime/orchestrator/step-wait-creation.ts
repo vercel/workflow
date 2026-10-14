@@ -118,6 +118,8 @@ export interface StepWaitCreationPlan {
   failedCount: number;
   /** Guest-code executions while serializing step inputs. */
   serializationBlockerCount: number;
+  /** A sample of those executions, for diagnostics. */
+  serializationBlockers: SuspensionSerializationBlocker[];
   /**
    * The events the commit writes, in order: each step's creation (an
    * inline step's `step_started`, a background step's `step_created`), then
@@ -251,7 +253,6 @@ export async function planStepsAndWaits(
           inline: true,
           creatorMessageId: params.creatorMessageId,
           attempt: 1,
-          startReason: 'first',
         },
       });
     } else {
@@ -286,6 +287,7 @@ export async function planStepsAndWaits(
     waitCount: waitItems.length,
     failedCount: prepared.length - createdSteps.length,
     serializationBlockerCount,
+    serializationBlockers,
     events,
     commit: () =>
       commitPlan(params, prepared, events, createdSteps, {
@@ -293,12 +295,10 @@ export async function planStepsAndWaits(
         serializationBlockers,
       }),
     commitInChunks: () =>
-      commitPlanInChunks(
-        params,
-        events,
-        createdSteps,
-        serializationBlockerCount
-      ),
+      commitPlanInChunks(params, events, createdSteps, {
+        serializationBlockerCount,
+        serializationBlockers,
+      }),
   };
 }
 
@@ -306,7 +306,10 @@ function commitPlanInChunks(
   params: StepWaitCreationParams,
   events: CreateEventRequest[],
   createdSteps: Omit<CreatedStep, 'event'>[],
-  serializationBlockerCount: number
+  stats: {
+    serializationBlockerCount: number;
+    serializationBlockers: SuspensionSerializationBlocker[];
+  }
 ): {
   first: Promise<StepWaitCreationResult>;
   rest: Promise<StepWaitCreationResult>;
@@ -318,8 +321,7 @@ function commitPlanInChunks(
   ): StepWaitCreationResult => ({
     ...stepResults(steps, written, postSentAtMs, Date.now()),
     failedStepCorrelationIds: new Set(),
-    serializationBlockerCount,
-    serializationBlockers: [],
+    ...stats,
   });
   let resolveFirst!: (result: StepWaitCreationResult) => void;
   const firstBatch = new Promise<StepWaitCreationResult>((resolve) => {

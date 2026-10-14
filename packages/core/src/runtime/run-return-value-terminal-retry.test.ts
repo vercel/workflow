@@ -119,7 +119,6 @@ describe('run.returnValue on a terminal run is not retried', () => {
       createEvent: (data, params) =>
         world.events.create(callerId, data, params),
       attempt: 1,
-      startReason: 'first',
       input: input as Uint8Array,
     });
 

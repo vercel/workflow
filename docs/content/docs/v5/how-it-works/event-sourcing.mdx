@@ -107,7 +107,7 @@ flowchart TD
 The `step_retrying` event is optional. Steps can retry without it, regardless of whether the event is emitted. You may see consecutive `step_started` events when a step retries after a timeout, when the error isn't explicitly captured, or when concurrent replays each commit one. See [Duplicate events](#duplicate-events) and [Errors and retries](/docs/foundations/errors-and-retries) for more information.
 </Callout>
 
-Each `step_started` records the attempt it starts (`attempt`) and why (`startReason`): `first`, `retry` after a `step_retrying`, or `redelivery` when an earlier attempt started and recorded nothing after it (its invocation died or stalled). A step's attempt count is the number of `step_started` events in the log.
+Each `step_started` records the attempt it starts (`attempt`). A step's attempt count is the number of `step_started` events in the log. An attempt that follows a `step_retrying` is a retry; one that follows another `step_started` with nothing recorded in between is a redelivery (the earlier attempt's invocation died or stalled).
 
 When present, the `step_retrying` event moves a step back to `pending` state and records the error that caused the retry. This provides two benefits:
 

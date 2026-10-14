@@ -992,7 +992,7 @@ describe('hook-resume TTR telemetry across a dispatched step', () => {
     world.appendOutOfBand({
       eventType: 'step_started',
       correlationId: stepId,
-      eventData: { stepName: 'firstStep', attempt: 1, startReason: 'first' },
+      eventData: { stepName: 'firstStep', attempt: 1 },
     } as Partial<Event>);
 
     await world.deliver({ ...stepMessage, deliveryCount: 2 });

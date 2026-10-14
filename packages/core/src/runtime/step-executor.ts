@@ -18,7 +18,6 @@ import type {
   CreateEventRequest,
   EventResult,
   SerializedData,
-  StepStartReason,
   World,
 } from '@workflow/world';
 import {
@@ -181,8 +180,6 @@ export interface StepExecutorParams {
    * after a log read, or the orchestrator's own count for an inline step.
    */
   attempt: number;
-  /** Why this attempt starts; written on `step_started`. */
-  startReason: StepStartReason;
   /**
    * When the step's first attempt started, for a retry. The step context's
    * `stepStartedAt` is the step's first start, not this attempt's.
@@ -460,7 +457,6 @@ export async function executeStep(
       eventData: {
         stepName,
         attempt,
-        startReason: params.startReason,
       },
     };
     // A start refused for load or by a World that still keeps step rows

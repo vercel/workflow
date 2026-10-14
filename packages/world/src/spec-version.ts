@@ -109,8 +109,7 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
  *   this fence (`WorldCapabilities.inBandFence`).
  * - `step_created` records how the step executes (`eventData.inline`) and
  *   which queue message's invocation created it (`creatorMessageId`). Step
- *   events carry `stepName`, and `step_started` carries `attempt` and
- *   `startReason`.
+ *   events carry `stepName`, and `step_started` carries `attempt`.
  * - Replay treats any event for an entity after its terminal event as inert.
  *
  * Structural: positions are counted against an in-band head, and step state

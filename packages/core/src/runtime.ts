@@ -185,10 +185,14 @@ import {
 import { handleStepMessage } from './runtime/step-handler.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
-import { handleSuspension } from './runtime/suspension-handler.js';
+import {
+  handleSuspension,
+  type SuspensionSerializationBlocker,
+} from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld } from './runtime/world.js';
+import { GUEST_CODE_EXECUTION_SAMPLE_LIMIT } from './serialization/hardened.js';
 import {
   dehydrateRunError,
   hydrateDynamicWorkflowCode,
@@ -686,6 +690,30 @@ function getRetentionDecision({
     return { retain: false, reason: 'no_replay_driver' };
   }
   return { retain: true };
+}
+
+const SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT = 160;
+
+/** Keep retention diagnostics useful without emitting unbounded guest data. */
+function serializationBlockerLogMetadata(
+  blockers: SuspensionSerializationBlocker[],
+  count: number
+) {
+  return {
+    serializationBlockerCount: count,
+    serializationBlockers: blockers.map(
+      ({ source, correlationId, kind, detail }) => ({
+        source,
+        correlationId,
+        kind,
+        detail:
+          detail && detail.length > SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT
+            ? `${detail.slice(0, SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT)}…`
+            : detail,
+      })
+    ),
+    serializationBlockersTruncated: count > blockers.length,
+  };
 }
 
 /**
@@ -3695,8 +3723,10 @@ export function workflowEntrypoint(
                       // A hook write settles awaiters in the workflow itself
                       // (a conflict, an awaited registration). The workflow
                       // observes that before anything else this suspension
-                      // would start, so continue over a reloaded log while
-                      // each pass makes progress.
+                      // would start, so continue while each pass makes
+                      // progress. The hook write is already folded into the
+                      // log (a fold that left a hole reads first, see
+                      // `logBehind`), so the next pass reads nothing more.
                       if (hookResult?.hasHookConflict) {
                         const fresh =
                           hookResult.hookConflictCorrelationIds.filter(
@@ -3704,7 +3734,7 @@ export function workflowEntrypoint(
                           );
                         if (fresh.length > 0) {
                           for (const id of fresh) continuedHookIds.add(id);
-                          return { type: 'reload', retainSession: true };
+                          return { type: 'continue', retainSession: true };
                         }
                         await wakeSelf();
                         return { type: 'return', result: undefined };
@@ -3722,7 +3752,7 @@ export function workflowEntrypoint(
                           );
                         if (fresh.length > 0) {
                           for (const id of fresh) continuedHookIds.add(id);
-                          return { type: 'reload', retainSession: true };
+                          return { type: 'continue', retainSession: true };
                         }
                       }
 
@@ -3840,7 +3870,7 @@ export function workflowEntrypoint(
                           createdWaits: [],
                           serializationBlockerCount:
                             plan.serializationBlockerCount,
-                          serializationBlockers: [],
+                          serializationBlockers: plan.serializationBlockers,
                         };
                         newInline = plan.steps.map((step) => {
                           const started = starts.get(step.correlationId);
@@ -3881,7 +3911,7 @@ export function workflowEntrypoint(
                           createdWaits: [],
                           serializationBlockerCount:
                             plan.serializationBlockerCount,
-                          serializationBlockers: [],
+                          serializationBlockers: plan.serializationBlockers,
                         };
                         newInline = plan.steps;
                       } else if (
@@ -3939,13 +3969,30 @@ export function workflowEntrypoint(
                       if (created.failedStepCorrelationIds.size > 0) {
                         return { type: 'reload', retainSession: false };
                       }
-                      const retain = getRetentionDecision({
+                      const serializationBlockerCount =
+                        created.serializationBlockerCount +
+                        (hookResult?.serializationBlockerCount ?? 0);
+                      const retention = getRetentionDecision({
                         suspension,
-                        serializationBlockerCount:
-                          created.serializationBlockerCount +
-                          (hookResult?.serializationBlockerCount ?? 0),
+                        serializationBlockerCount,
                         invocationContinuation: true,
-                      }).retain;
+                      });
+                      const retain = retention.retain;
+                      if (!retention.retain) {
+                        runtimeLogger.debug('Retained VM not kept', {
+                          workflowRunId: runId,
+                          workflowVmRetentionReason: retention.reason,
+                          ...(serializationBlockerCount > 0
+                            ? serializationBlockerLogMetadata(
+                                [
+                                  ...created.serializationBlockers,
+                                  ...(hookResult?.serializationBlockers ?? []),
+                                ].slice(0, GUEST_CODE_EXECUTION_SAMPLE_LIMIT),
+                                serializationBlockerCount
+                              )
+                            : {}),
+                        });
+                      }
 
                       // Background steps: enqueue the ones created now, and
                       // re-enqueue the ones a crashed earlier delivery of
@@ -4010,7 +4057,6 @@ export function workflowEntrypoint(
                             stepName: step.stepName,
                             input: step.input,
                             attempt: 1,
-                            startReason: 'first',
                             ...(started ? { started } : {}),
                             ...(step.startRefusal
                               ? { startRefusal: step.startRefusal }
@@ -4057,8 +4103,6 @@ export function workflowEntrypoint(
                               ? { input: loadedInput }
                               : {}),
                             attempt: step.starts + 1,
-                            startReason:
-                              step.starts === 0 ? 'first' : 'redelivery',
                             ...(step.firstStartedAt
                               ? { firstStartedAt: step.firstStartedAt }
                               : {}),
@@ -4260,7 +4304,6 @@ export function workflowEntrypoint(
                                 encryptionKey: stepEncryptionKey,
                                 runSpecVersion: run.specVersion,
                                 attempt: step.attempt,
-                                startReason: step.startReason,
                                 ...(step.firstStartedAt
                                   ? { firstStartedAt: step.firstStartedAt }
                                   : {}),
@@ -4274,7 +4317,7 @@ export function workflowEntrypoint(
                                 // Turbo: optimistic for a step's first
                                 // attempt while turbo still allows it.
                                 forceOptimisticStart:
-                                  optimistic && step.startReason === 'first',
+                                  optimistic && step.attempt === 1,
                                 ...(runReadyBarrier ? { runReadyBarrier } : {}),
                                 ...(step.startAfter
                                   ? { startAfter: step.startAfter }

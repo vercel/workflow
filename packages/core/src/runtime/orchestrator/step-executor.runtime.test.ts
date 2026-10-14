@@ -77,7 +77,6 @@ function dieAfterStart(world: AppendOnlyWorld, held: HeldMessage, n: number) {
     eventData: {
       stepName: STEP,
       attempt: n,
-      startReason: n === 1 ? 'first' : 'redelivery',
     },
   } as Partial<Event>);
 }
@@ -123,7 +122,8 @@ describe.each([
     expect(bodyRuns).toBe(1);
     const starts = eventsOf(world, 'step_started');
     expect(starts.map((e) => data(e)?.attempt)).toEqual([1, 2]);
-    expect(data(starts[1])?.startReason).toBe('redelivery');
+    // A redelivery: the second start follows the first with nothing between.
+    expect(eventsOf(world, 'step_retrying')).toHaveLength(0);
     await world.runUntilIdle();
     expect(await runResult(world, runId)).toBe('ok');
   });

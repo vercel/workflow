@@ -67,7 +67,6 @@ describe.each([
     for (const started of eventsOf(world, 'step_started')) {
       expect(dataOf(started)).toMatchObject({
         attempt: 1,
-        startReason: 'first',
         inline: true,
       });
     }
