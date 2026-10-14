@@ -93,6 +93,16 @@ async function queuedFixture() {
   return { ...fixture, queue, invoke, messages };
 }
 
+/** The same step delivered through the queue: the worker answers only after
+ * its result is acknowledged, so a test can await the worker's completion. */
+function asQueued<T>(message: T): T {
+  const delivery = message as { input: Record<string, unknown> };
+  return {
+    ...delivery,
+    input: { ...delivery.input, executionMode: 'queued' },
+  } as T;
+}
+
 it.each([
   5, 100,
 ])('keeps three local bodies in a %i-step batch and processes remote invoke results without deadlock', async (count) => {
@@ -135,8 +145,8 @@ it.each([
         expect(
           (await fixture.world.steps.get(fixture.runId, message.stepId!)).status
         ).toBe('running');
-        // Model a synchronous HTTP function call which cannot finish until its
-        // step_result callback is accepted by the same owner's mailbox.
+        // A direct HTTP dispatch: the worker answers once the body starts and
+        // returns the result through the same owner's mailbox.
         await executeOwnedStep(fixture.world, message, fixture.metadata);
       }
       return { messageId: null };
@@ -209,7 +219,7 @@ it('dispatches admitted steps, executes concurrent workers without worker writes
   }
   const write = vi.spyOn(fixture.world.events, 'create');
   const workers = fixture.messages.map((message) =>
-    executeOwnedStep(fixture.world, message, fixture.metadata)
+    executeOwnedStep(fixture.world, asQueued(message), fixture.metadata)
   );
   await vi.waitFor(() => expect(started).toEqual([0, 1]));
   expect(write).not.toHaveBeenCalled();
@@ -238,6 +248,49 @@ it('dispatches admitted steps, executes concurrent workers without worker writes
   ).toHaveLength(2);
 });
 
+it('answers a direct dispatch once the body starts and returns its result through invoke', async () => {
+  const gate = Promise.withResolvers<void>();
+  const body = vi.fn(async (n) => {
+    await gate.promise;
+    return n;
+  });
+  registerStepFunction('queuedWork', body);
+  const fixture = await queuedFixture();
+  // Dispatches start one event-loop turn apart, outside the owner's turn.
+  const dispatched = () =>
+    fixture.queue.mock.calls
+      .map((call) => call[1])
+      .filter((message) => 'stepId' in message);
+  await vi.waitFor(() => expect(dispatched()).toHaveLength(2));
+  const [first, second] = dispatched();
+  expect(
+    (first as { input: { executionMode?: string } }).input.executionMode
+  ).toBe('remote');
+  // The dispatch request is answered while the body is still running.
+  await executeOwnedStep(fixture.world, first, fixture.metadata);
+  await vi.waitFor(() => expect(body).toHaveBeenCalledTimes(1));
+  expect(
+    fixture.invoke.mock.calls.filter(
+      ([, input]) => input.type === 'step_result'
+    )
+  ).toHaveLength(0);
+  // A duplicate dispatch of the running attempt neither waits nor reruns it.
+  await executeOwnedStep(fixture.world, first, fixture.metadata);
+  expect(body).toHaveBeenCalledTimes(1);
+  await executeOwnedStep(fixture.world, second, fixture.metadata);
+  gate.resolve();
+  await fixture.finished;
+  expect(body).toHaveBeenCalledTimes(2);
+  expect(
+    fixture.invoke.mock.calls.filter(
+      ([, input]) => input.type === 'step_result'
+    )
+  ).toHaveLength(2);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
 it('retries a lost result acknowledgement with the original outcome, without rerunning the body', async () => {
   const body = vi.fn(async (n) => n);
   registerStepFunction('queuedWork', body);
@@ -252,8 +305,12 @@ it('retries a lost result acknowledgement with the original outcome, without rer
     }
     return reply;
   };
-  await executeOwnedStep(fixture.world, fixture.messages[0], fixture.metadata);
-  await executeOwnedStep(fixture.world, fixture.messages[0], {
+  await executeOwnedStep(
+    fixture.world,
+    asQueued(fixture.messages[0]),
+    fixture.metadata
+  );
+  await executeOwnedStep(fixture.world, asQueued(fixture.messages[0]), {
     ...fixture.metadata,
     attempt: 2,
   });
@@ -267,7 +324,11 @@ it('retries a lost result acknowledgement with the original outcome, without rer
   expect(
     fixture.owner.events.filter((event) => event.eventType === 'step_completed')
   ).toHaveLength(1);
-  await executeOwnedStep(fixture.world, fixture.messages[1], fixture.metadata);
+  await executeOwnedStep(
+    fixture.world,
+    asQueued(fixture.messages[1]),
+    fixture.metadata
+  );
   await fixture.finished;
 });
 
@@ -315,7 +376,7 @@ it('holds a queued result acknowledgement behind the owner flush barrier', async
   let settled = false;
   const worker = executeOwnedStep(
     fixture.world,
-    fixture.messages[0],
+    asQueued(fixture.messages[0]),
     fixture.metadata
   ).then(() => {
     settled = true;
@@ -324,7 +385,11 @@ it('holds a queued result acknowledgement behind the owner flush barrier', async
   expect(settled).toBe(false);
   gate.resolve();
   await worker;
-  await executeOwnedStep(fixture.world, fixture.messages[1], fixture.metadata);
+  await executeOwnedStep(
+    fixture.world,
+    asQueued(fixture.messages[1]),
+    fixture.metadata
+  );
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
     'completed'
   );
@@ -805,7 +870,11 @@ it('does not publish queued bodies before the start prefix is durable', async ()
 it('rejects a contradictory result while another fan-out branch remains active', async () => {
   registerStepFunction('queuedWork', async (n) => n);
   const fixture = await queuedFixture();
-  await executeOwnedStep(fixture.world, fixture.messages[0], fixture.metadata);
+  await executeOwnedStep(
+    fixture.world,
+    asQueued(fixture.messages[0]),
+    fixture.metadata
+  );
   const original = fixture.invoke.mock.calls.find(
     ([, input]) => input.type === 'step_result'
   )![1];

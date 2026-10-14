@@ -18,6 +18,7 @@ import { withTraceContext } from '../telemetry.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { retryOwnerDelivery } from './owner-delivery.js';
 import { executeStep } from './step-executor.js';
+import { safeWaitUntil } from './wait-until.js';
 import { withScopedWorld } from './world.js';
 
 export const OwnedStepExecutionSchema = z.compile(
@@ -193,8 +194,11 @@ export async function executeOwnedStep(
       'Step execution identity reused with different input',
       { status: 409 }
     );
+  // A direct dispatch from the owner is acknowledged once its body has started
+  // (see below); a duplicate of one still running needs no second answer.
+  const direct = input.executionMode === 'remote';
   if (entry?.done) return;
-  if (entry?.work) return entry.work;
+  if (entry?.work) return direct ? undefined : entry.work;
   const prior = !!entry;
   if (!entry) {
     if (cache.size >= 256)
@@ -373,7 +377,25 @@ export async function executeOwnedStep(
       throw error;
     }
   };
+  const firstAttempt =
+    !prior && metadata.attempt <= 1 && Date.now() < input.deadline;
   current.work = withTraceContext(envelope.traceCarrier, run);
+  // A direct dispatch's first admission answers once the body has started:
+  // the result returns separately through `invoke`, so holding the owner's
+  // request open for the body and its result delivery adds nothing. The body
+  // keeps running under waitUntil, bounded by this function's maxDuration.
+  if (direct && firstAttempt) {
+    const work = current.work;
+    safeWaitUntil(
+      work.finally(() => {
+        if (current.work === work) current.work = undefined;
+      }),
+      () => {
+        // Unknown outcome: the owner recovers the attempt when it expires.
+      }
+    );
+    return;
+  }
   try {
     return await current.work;
   } finally {
