@@ -426,6 +426,32 @@ The experimental implementation has these remaining limitations:
 The database integration tests use the built core runtime. Build core before
 running `pnpm exec vitest run test/invoke.test.ts` from `packages/world-postgres`.
 
+## Troubleshooting
+
+### A run stays `running` after a crash
+
+Earlier versions wrote a step's `step_completed` or `step_failed` event
+separately from the step row. A process that died between the two left the step
+finished with no matching event, and the run never advanced. This query lists
+those steps for runs still `running`:
+
+```sql
+select s.run_id, s.step_id, s.step_name, s.status
+from workflow.workflow_steps s
+join workflow.workflow_runs r on r.id = s.run_id
+where r.status = 'running'
+  and s.status in ('completed', 'failed')
+  and not exists (
+    select 1 from workflow.workflow_events e
+    where e.run_id = s.run_id
+      and e.correlation_id = s.step_id
+      and e.type = 'step_' || s.status
+  );
+```
+
+Upgrading does not recover these runs. Cancel each one with
+`workflow cancel <run-id>`.
+
 ## Development
 
 For local development, you can use the included Docker Compose configuration:

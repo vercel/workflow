@@ -3305,6 +3305,97 @@ describe('Storage (Postgres integration)', () => {
         ).rejects.toThrow(/terminal/i);
       });
     });
+
+    describe('terminal write atomicity', () => {
+      it.each([
+        {
+          eventType: 'step_completed' as const,
+          eventData: { result: new Uint8Array([1]) },
+        },
+        {
+          eventType: 'step_failed' as const,
+          eventData: { error: new Uint8Array([1]) },
+        },
+      ])('rolls back the $eventType step update when the matching event insert fails', async ({
+        eventType,
+        eventData,
+      }) => {
+        const stepId = `step_partial_${eventType}`;
+        await createStep(events, testRunId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(events, testRunId, stepId, 'step_started');
+
+        // Stands in for a process that dies after the step UPDATE and
+        // before the event INSERT.
+        await pool.query(`
+            CREATE FUNCTION workflow.reject_step_terminal_event_for_test()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+              IF NEW.type = '${eventType}'
+                AND NEW.correlation_id = '${stepId}'
+              THEN
+                RAISE EXCEPTION 'forced ${eventType} event insert failure';
+              END IF;
+              RETURN NEW;
+            END;
+            $$;
+
+            CREATE TRIGGER reject_step_terminal_event_for_test
+            BEFORE INSERT ON workflow.workflow_events
+            FOR EACH ROW
+            EXECUTE FUNCTION workflow.reject_step_terminal_event_for_test();
+          `);
+
+        try {
+          await expect(
+            updateStep(events, testRunId, stepId, eventType, eventData)
+          ).rejects.toMatchObject({
+            cause: {
+              message: expect.stringMatching(
+                new RegExp(`forced ${eventType} event insert failure`)
+              ),
+            },
+          });
+        } finally {
+          await pool.query(`
+              DROP TRIGGER reject_step_terminal_event_for_test
+                ON workflow.workflow_events;
+              DROP FUNCTION workflow.reject_step_terminal_event_for_test();
+            `);
+        }
+
+        const [stepRow] = await drizzle
+          .select({ status: DrizzleSchema.steps.status })
+          .from(DrizzleSchema.steps)
+          .where(eq(DrizzleSchema.steps.stepId, stepId));
+        expect(stepRow?.status).toBe('running');
+
+        // Recovery replays step_started; it must not be refused as terminal.
+        const restarted = await updateStep(
+          events,
+          testRunId,
+          stepId,
+          'step_started'
+        );
+        expect(restarted.attempt).toBe(2);
+        await updateStep(events, testRunId, stepId, eventType, eventData);
+
+        const evts = await events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          evts.data
+            .filter((event) => event.correlationId === stepId)
+            .map((event) => event.eventType)
+        ).toEqual(['step_created', 'step_started', 'step_started', eventType]);
+      });
+    });
   });
 
   describe('entity and event atomicity', () => {
