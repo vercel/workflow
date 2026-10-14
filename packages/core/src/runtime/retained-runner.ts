@@ -2044,11 +2044,13 @@ export class RetainedRunner {
               // No outcome is not evidence of a failed body. Keep the
               // admitted attempt running until recovery supersedes it. A
               // platform refusal before any worker received the invocation
-              // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED) retries soon as a
-              // new attempt; other unknown outcomes wait for the timeout. A
-              // late result from the superseded attempt is ignored.
+              // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED, or a 508 the proxy's
+              // loop detection returns) retries soon as a new attempt; other
+              // unknown outcomes wait for the timeout. A late result from the
+              // superseded attempt is ignored.
               const status = (cause as { status?: unknown })?.status;
-              const refused = status === 500 || status === 502;
+              const refused =
+                status === 500 || status === 502 || status === 508;
               const retryAt = refused
                 ? Date.now() + 1000
                 : message.input.deadline;

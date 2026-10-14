@@ -21,6 +21,7 @@ import { regionForRunId } from './create-run-id.js';
 import { logInvocationRouting } from './invocation-diagnostics.js';
 import { createInvocationMailbox } from './invocation-mailbox.js';
 import { observeInvocation } from './invocation-observer.js';
+import { fetchOutsideRequest } from './outside-request.js';
 import {
   forgetRunAffinity,
   freshRunAffinity,
@@ -361,14 +362,15 @@ export function createInvoker(
           logInvocationRouting('direct.send', requestObservation);
           return observeInvocation('http', identity, async () => {
             const responseStarted = performance.now();
-            const response = await fetch(url, init as RequestInit).catch(
-              (cause) => {
-                throw new WorkflowWorldError(
-                  'Invocation transport failed; outcome is unknown',
-                  { status: 502, code: 'INVOCATION_OUTCOME_UNKNOWN', cause }
-                );
-              }
-            );
+            const response = await fetchOutsideRequest(
+              url,
+              init as RequestInit
+            ).catch((cause) => {
+              throw new WorkflowWorldError(
+                'Invocation transport failed; outcome is unknown',
+                { status: 502, code: 'INVOCATION_OUTCOME_UNKNOWN', cause }
+              );
+            });
             span?.setAttributes({
               'http.response.status_code': response.status,
             });
@@ -541,7 +543,7 @@ export function createStepDelivery(config: APIConfig | undefined) {
       targetHost: url.hostname,
     };
     logInvocationRouting('step.send', observation);
-    const response = await fetch(url, {
+    const response = await fetchOutsideRequest(url, {
       method: 'POST',
       headers,
       body,

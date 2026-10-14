@@ -678,7 +678,9 @@ it('recovers an uncertain remote dispatch by timing out its admitted attempt, wi
   expect(body).toHaveBeenCalledTimes(4);
 });
 
-it('retries a dispatch the platform refused before any worker received it, well before the attempt timeout', async () => {
+it.each([
+  500, 508,
+])('retries a dispatch the platform refused (%i) before any worker received it, well before the attempt timeout', async (status) => {
   const body = vi.fn(async (n) => n);
   registerStepFunction('queuedWork', body);
   const f = await setup(
@@ -703,7 +705,7 @@ it('retries a dispatch the platform refused before any worker received it, well 
         if (!uncertain) {
           uncertain = message.input as OwnedStepExecution;
           throw new WorkflowWorldError('Direct step HTTP delivery failed', {
-            status: 500,
+            status,
           });
         }
         await executeOwnedStep(f.world, message, f.metadata);
