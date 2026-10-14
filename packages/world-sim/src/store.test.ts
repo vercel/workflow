@@ -172,19 +172,18 @@ describe('sim store', () => {
       });
       expect(result.stepCreated).toBe(true);
 
+      // A single-orchestrator run records the step by its start alone, which
+      // keeps the input.
       const events = store.allEvents(RUN).slice(-2);
       expect(events.map((e) => e.eventType)).toEqual([
-        'step_created',
+        'run_started',
         'step_started',
       ]);
       expect(events[0].eventId < events[1].eventId).toBe(true);
-      // The input belongs to the synthetic step_created, not the started row.
-      expect(
-        (events[0] as { eventData: { input: unknown } }).eventData.input
-      ).toEqual(new Uint8Array([7]));
       expect(
         (events[1] as { eventData?: { input?: unknown } }).eventData?.input
-      ).toBeUndefined();
+      ).toEqual(new Uint8Array([7]));
+      expect((await store.steps.get(RUN, 'step_1')).status).toBe('running');
     });
 
     it('treats a lazy step_started for an existing step as a lost create race', async () => {
@@ -612,8 +611,8 @@ describe('sim store', () => {
         correlationId: 'step_1',
         eventData: { result: new Uint8Array([2]) },
       });
-      // A lazy start, so the seeded fold has to pick up the synthetic
-      // `step_created` the write path wrote alongside it.
+      // A creation-bearing start, so the seeded fold has to create the step
+      // from the start alone.
       await store.events.create(RUN, {
         eventType: 'step_started',
         specVersion: SPEC,

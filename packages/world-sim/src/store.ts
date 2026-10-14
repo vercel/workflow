@@ -47,6 +47,7 @@ import {
   type ResolveData,
   requireEventSlot,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type Step,
   type Storage,
   slotToEventId,
@@ -468,7 +469,23 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       case 'step_retrying': {
         if (!correlationId) return {};
         const key = stepKey(runId, correlationId);
-        const existing = steps.get(key);
+        // An inline step on a spec >= 9 run is created by its first
+        // `step_started`, which carries the input.
+        const existing =
+          steps.get(key) ??
+          (event.eventType === 'step_started' && data?.input !== undefined
+            ? ({
+                runId,
+                stepId: correlationId,
+                stepName: data?.stepName as string,
+                status: 'pending',
+                input: data?.input as Uint8Array,
+                attempt: 0,
+                createdAt: at,
+                updatedAt: at,
+                specVersion: event.specVersion,
+              } as Step)
+            : undefined);
         if (!existing) return {};
         const step: Step =
           event.eventType === 'step_started'
@@ -992,15 +1009,19 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         },
       } as Event;
       applyEvent(created, now);
-      append(created);
       stepCreatedLazily = true;
-
-      // The input now lives on the synthetic `step_created`; keep only the
-      // metadata on the `step_started` row. The synthetic is committed first,
-      // so `step_started` takes the next position.
-      const { input: _dropped, ...rest } = data.eventData;
-      position = eventPosition(runId, inBandAt);
-      event = { ...event, ...position, eventData: rest } as Event;
+      // A single-orchestrator run (spec >= 9) records an inline step's
+      // creation on its `step_started` alone, which keeps its input. Only the
+      // step entity is created here.
+      if ((currentRun?.specVersion ?? 0) < SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        append(created);
+        // The input now lives on the synthetic `step_created`; keep only the
+        // metadata on the `step_started` row. The synthetic is committed
+        // first, so `step_started` takes the next position.
+        const { input: _dropped, ...rest } = data.eventData;
+        position = eventPosition(runId, inBandAt);
+        event = { ...event, ...position, eventData: rest } as Event;
+      }
     }
 
     // ---- The fold ----------------------------------------------------------

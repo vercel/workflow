@@ -2238,7 +2238,17 @@ describe.concurrent('e2e', () => {
 
       expect(events.some((e) => e.eventType === 'hook_created')).toBe(true);
       expect(events.some((e) => e.eventType === 'hook_received')).toBe(false);
-      expect(events.some((e) => e.eventType === 'step_created')).toBe(true);
+      // The step was created: by a `step_created`, or, for a step run inline,
+      // by its first `step_started` alone.
+      expect(
+        events.some(
+          (e) =>
+            e.eventType === 'step_created' ||
+            (e.eventType === 'step_started' &&
+              (e.eventData as { inline?: boolean } | undefined)?.inline ===
+                true)
+        )
+      ).toBe(true);
       expect(events.some((e) => e.eventType === 'step_completed')).toBe(true);
     }
   );
