@@ -2304,14 +2304,12 @@ function createUnfencedEventsStorage(
           data.eventType === 'step_completed'
             ? {
                 status: 'completed' as const,
-                output: (data as any).eventData.result as
-                  | SerializedContent
-                  | undefined,
+                output: data.eventData.result as SerializedContent | undefined,
                 completedAt: now,
               }
             : {
                 status: 'failed' as const,
-                error: (data as any).eventData.error as SerializedData,
+                error: data.eventData.error as SerializedData,
                 completedAt: now,
               };
         value = await drizzle.transaction(async (tx) => {
