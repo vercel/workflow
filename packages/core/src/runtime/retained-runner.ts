@@ -155,7 +155,7 @@ const MAX_MAILBOX_BATCH = 100;
 /** Steps one run may have started and not yet finished. Independent branches of
  * a fan-out start without waiting for each other up to this bound; remote
  * deliveries the platform refuses under load (503) retry. */
-const MAX_RUNNING_STEPS = 2000;
+const MAX_RUNNING_STEPS = 250;
 /** See `attemptTimeoutMs`: the bound for attempts with no observable owner. */
 const ABANDONED_ATTEMPT_MS = 15 * 60_000;
 /** Backstop wake for a step waiting to start (e.g. behind MAX_RUNNING_STEPS). */
