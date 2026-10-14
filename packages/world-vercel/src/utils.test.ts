@@ -12,6 +12,7 @@ import {
   getHttpUrl,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
+  WORKFLOW_SERVER_URL_OVERRIDE,
 } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
@@ -431,48 +432,50 @@ describe('makeRequest URL validation', () => {
     vi.restoreAllMocks();
   });
 
-  it.each([
-    'http',
-    'https',
-  ])('preserves Fetch port-blocking errors for %s backend URLs', async (scheme) => {
-    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
-    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', `${scheme}://127.0.0.1:21`);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const rejection = await makeRequest({
-      endpoint: '/v3/runs/wrun_test/events',
-      options: { method: 'GET' },
-      schema: z.unknown(),
-      config: { token: 'test-token' },
-    }).catch((error: unknown) => error);
-
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
-    expect(rejection).toMatchObject({
-      name: 'TypeError',
-      message: 'fetch failed',
-      cause: { message: 'bad port' },
-    });
-    expect(isRetryableEventPostError(rejection)).toBe(false);
-  });
-
-  it.each([
-    '0',
-    '1',
-  ])('rejects unsupported backend protocols before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {
-    vi.stubEnv(NODE_HTTP_ENV_VAR, mode);
-    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'ftp://localhost');
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-
-    await expect(
-      makeRequest({
+  // These pin the backend URL through the environment, which the override
+  // takes precedence over.
+  it.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '').each(['http', 'https'])(
+    'preserves Fetch port-blocking errors for %s backend URLs',
+    async (scheme) => {
+      vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+      vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', `${scheme}://127.0.0.1:21`);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const rejection = await makeRequest({
         endpoint: '/v3/runs/wrun_test/events',
         options: { method: 'GET' },
         schema: z.unknown(),
         config: { token: 'test-token' },
-      })
-    ).rejects.toThrow(TypeError);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
+      }).catch((error: unknown) => error);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+      expect(rejection).toMatchObject({
+        name: 'TypeError',
+        message: 'fetch failed',
+        cause: { message: 'bad port' },
+      });
+      expect(isRetryableEventPostError(rejection)).toBe(false);
+    }
+  );
+
+  it.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '').each(['0', '1'])(
+    'rejects unsupported backend protocols before dispatch (WORKFLOW_NODE_HTTP=%s)',
+    async (mode) => {
+      vi.stubEnv(NODE_HTTP_ENV_VAR, mode);
+      vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'ftp://localhost');
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+      await expect(
+        makeRequest({
+          endpoint: '/v3/runs/wrun_test/events',
+          options: { method: 'GET' },
+          schema: z.unknown(),
+          config: { token: 'test-token' },
+        })
+      ).rejects.toThrow(TypeError);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe('makeRequest transport errors', () => {
