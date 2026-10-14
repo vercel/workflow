@@ -67,8 +67,8 @@ const parallelCode = `
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
 
-async function queuedFixture() {
-  const fixture = await setup(parallelCode, false, true);
+async function queuedFixture(idleMs?: number) {
+  const fixture = await setup(parallelCode, false, true, idleMs);
   fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
   const queue = vi
     .spyOn(fixture.world, 'queue')
@@ -241,7 +241,8 @@ it('dispatches admitted steps, executes concurrent workers without worker writes
 it('retries a lost result acknowledgement with the original outcome, without rerunning the body', async () => {
   const body = vi.fn(async (n) => n);
   registerStepFunction('queuedWork', body);
-  const fixture = await queuedFixture();
+  // The owner must stay retained through the delivery backoff.
+  const fixture = await queuedFixture(10_000);
   let lose = true;
   const invoke = fixture.world.invoke!;
   fixture.world.invoke = async (...args) => {
@@ -269,7 +270,8 @@ it('retries a lost result acknowledgement with the original outcome, without rer
   ).toHaveLength(1);
   await executeOwnedStep(fixture.world, fixture.messages[1], fixture.metadata);
   await fixture.finished;
-});
+  // Waits through one real delivery backoff (1–2 s).
+}, 15_000);
 
 it('holds a queued result acknowledgement behind the owner flush barrier', async () => {
   registerStepFunction('queuedWork', async (n) => n);
@@ -1582,7 +1584,7 @@ async function setup(
     metadata,
     retired,
     idleMs,
-    attemptTimeoutMs ?? (queued === true ? 1000 : 60_000),
+    attemptTimeoutMs ?? (queued === true ? 5000 : 60_000),
     // The former all-dispatched mode: every body goes to another invocation.
     queued === true ? 0 : 3
   );
