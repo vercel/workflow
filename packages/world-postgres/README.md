@@ -145,8 +145,16 @@ const world = createWorld({
 // Or pass an existing pg.Pool (shared with your app Drizzle, etc.); `world.close()` will not end it.
 import { Pool } from "pg";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// The World leaves a pool you pass to you: listen for errors, or a connection
+// the server ends (a restart, a failover, an idle timeout) ends the process.
+pool.on("connect", (client) =>
+  client.on("error", (error) => console.error(error.message))
+);
+pool.on("error", () => {}); // An idle client's error, logged just above
 const worldFromPool = createWorld({ pool });
 ```
+
+A connection the server ends emits an `'error'` event, and an `'error'` event with no listener ends the process. When `createWorld()` creates the pool, it listens on the pool and on every client it connects, and logs one `[world-postgres] Pooled PostgreSQL connection lost` line per lost connection. It doesn't add listeners to a pool you pass, so add both yourself, as above: pg-pool listens only on idle clients, and the World holds a checked-out client across a transaction's statements.
 
 ## Configuration Options
 
@@ -154,7 +162,7 @@ const worldFromPool = createWorld({ pool });
 | ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
-| `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
+| `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it, and the World adds no `'error'` listeners to it (see above). |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `10`                                                                                   | Number of concurrent active step executions per process                                              |
 

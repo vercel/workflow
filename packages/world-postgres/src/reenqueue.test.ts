@@ -6,6 +6,7 @@ import {
   run,
   type WorkerUtils,
 } from 'graphile-worker';
+import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
 import {
@@ -22,6 +23,16 @@ vi.mock('graphile-worker', () => ({
   },
   makeWorkerUtils: vi.fn(),
   run: vi.fn(),
+}));
+
+vi.mock('pg', () => ({
+  Pool: vi.fn(function Pool() {
+    return {
+      query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+      end: vi.fn(),
+      on: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock('@workflow/utils/get-port', () => ({
@@ -185,5 +196,22 @@ describe('re-enqueue active runs on start', () => {
     expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
 
     await world.close();
+  });
+
+  it('listens for connection errors on a pool it creates, not on a caller-owned one', () => {
+    createWorld({ connectionString: 'postgres://test' });
+    const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
+    expect(internalPool?.on).toHaveBeenCalledWith(
+      'connect',
+      expect.any(Function)
+    );
+    expect(internalPool?.on).toHaveBeenCalledWith(
+      'error',
+      expect.any(Function)
+    );
+
+    const callerPool = { ...pool, on: vi.fn() };
+    createWorld({ pool: callerPool });
+    expect(callerPool.on).not.toHaveBeenCalled();
   });
 });
