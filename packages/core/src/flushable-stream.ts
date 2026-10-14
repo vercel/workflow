@@ -403,6 +403,16 @@ export function trackFlushableWritable<T>(
     return settlement;
   };
 
+  // The same durability barrier a group-commit sink exposes, at the producer
+  // boundary: resolves once every frame written through this handle is
+  // durable, rejects with the pipe's or sink's failure. A step can await it
+  // mid-body without releasing its writer lock.
+  Object.defineProperty(tracked, STREAM_DRAIN_SYMBOL, {
+    value: (): Promise<void> => drainFlushableSnapshot(state),
+    enumerable: false,
+    writable: false,
+  });
+
   return tracked;
 }
 

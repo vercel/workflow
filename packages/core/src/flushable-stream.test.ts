@@ -509,6 +509,64 @@ describe('flushablePipe drain barrier (group-commit sinks)', () => {
     await pipe;
   });
 
+  it('exposes the snapshot barrier on the tracked writable while its lock is held', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const sink = new WritableStream<Uint8Array>({
+      async write() {
+        await writeGate;
+      },
+    });
+    const transform = new TransformStream<Uint8Array, Uint8Array>();
+    const state = createFlushableState();
+    const pipe = flushablePipe(transform.readable, sink, state).catch(() => {});
+    const writable = trackFlushableWritable(transform.writable, state);
+    const writer = writable.getWriter();
+
+    await writer.write(new Uint8Array([1]));
+    let durable = false;
+    const drain = (
+      writable as unknown as { [STREAM_DRAIN_SYMBOL]: () => Promise<void> }
+    )
+      [STREAM_DRAIN_SYMBOL]()
+      .then(() => {
+        durable = true;
+      });
+    await tick();
+    expect(durable).toBe(false);
+
+    releaseWrite();
+    await drain;
+    expect(durable).toBe(true);
+
+    await writer.close();
+    await pipe;
+  });
+
+  it('rejects the tracked writable barrier when the sink rejects the frame', async () => {
+    const sink = new WritableStream<Uint8Array>({
+      write() {
+        throw new Error('append rejected');
+      },
+    });
+    const transform = new TransformStream<Uint8Array, Uint8Array>();
+    const state = createFlushableState();
+    const pipe = flushablePipe(transform.readable, sink, state).catch(() => {});
+    const writable = trackFlushableWritable(transform.writable, state);
+    const writer = writable.getWriter();
+
+    await writer.write(new Uint8Array([1])).catch(() => {});
+    await expect(
+      (writable as unknown as { [STREAM_DRAIN_SYMBOL]: () => Promise<void> })[
+        STREAM_DRAIN_SYMBOL
+      ]()
+    ).rejects.toThrow('append rejected');
+    writer.releaseLock();
+    await pipe;
+  });
+
   it('propagates an idle downstream failure through the tracked writable', async () => {
     const downstreamError = new Error('downstream failed while producer idle');
     const transform = new TransformStream<Uint8Array, Uint8Array>();
