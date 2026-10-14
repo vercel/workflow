@@ -42,6 +42,12 @@ import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
 /**
+ * The transaction handle passed to `drizzle.transaction(...)` callbacks.
+ * Used by helpers that have to run as a statement of an existing transaction.
+ */
+type DrizzleTx = Parameters<Parameters<Drizzle['transaction']>[0]>[0];
+
+/**
  * Parse legacy errorJson (text column with JSON-stringified StructuredError).
  * Used for backwards compatibility when reading from deprecated error column.
  */
@@ -318,15 +324,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     )
     .limit(1)
     .prepare('events_get_hook_created_for_run_correlation');
-
-  const getWaitForValidation = drizzle
-    .select({
-      status: Schema.waits.status,
-    })
-    .from(Schema.waits)
-    .where(eq(Schema.waits.waitId, sql.placeholder('waitId')))
-    .limit(1)
-    .prepare('events_get_wait_for_validation');
 
   return {
     async create(runId, data, params): Promise<EventResult> {
@@ -717,6 +714,82 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         run = deserializeRunError(compact(created.runValue));
       }
 
+      // Strip eventData from run_started — it belongs on run_created only.
+      // Computed here (rather than further down) so the run branches below
+      // can write their own event with it.
+      const storedEventData =
+        data.eventType === 'run_started'
+          ? undefined
+          : 'eventData' in data
+            ? data.eventData
+            : undefined;
+
+      // Writes this create's own event on `tx`, as the last statement of the
+      // transaction that made the entity change the event records. The entity
+      // row and its event then commit together: committed separately, a
+      // process that dies between the two leaves an entity in a state its
+      // event log does not explain, which replay cannot repair. Allocating the
+      // position last, after the change has taken its row locks, also keeps a
+      // writer that had to wait from carrying an earlier position into a later
+      // insert. Sets `eventId`, so the generic insert below is skipped.
+      const insertOwnEvent = async (
+        tx: DrizzleTx
+      ): Promise<{ createdAt: Date }> => {
+        const ownEventId = `wevt_${ulid()}`;
+        eventId = ownEventId;
+        const [eventValue] = await tx
+          .insert(events)
+          .values({
+            runId: effectiveRunId,
+            eventId: ownEventId,
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          })
+          .returning({ createdAt: events.createdAt });
+        if (!eventValue) {
+          throw new EntityConflictError(
+            `${data.eventType} for run "${effectiveRunId}" could not be created`
+          );
+        }
+        return eventValue;
+      };
+
+      // Translate unique-violation on the entity-creation partial index
+      // (workflow_events_entity_creation_unique) into EntityConflictError
+      // so the runtime's existing dedup catch path can handle it. Without
+      // this, two concurrent invocations producing identical
+      // correlationIds (e.g. snapshot runtime deterministic ULIDs) would
+      // surface as unhandled DB errors instead of dedup signals.
+      // Drizzle wraps the underlying pg error in DrizzleQueryError; the
+      // pg error (with .code === '23505') lives on .cause. We additionally
+      // gate on the violated constraint name so other 23505 violations on
+      // these event types (e.g. the events primary key, or any future
+      // unique constraint we might add) don't get misclassified as a
+      // correlationId conflict.
+      const asCorrelationConflict = (err: unknown): unknown => {
+        const isEntityCreatingEvent =
+          data.eventType === 'step_created' ||
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created';
+        const pgErr = (err as { code?: string; constraint?: string } | null)
+          ?.code
+          ? (err as { code?: string; constraint?: string })
+          : ((err as { cause?: { code?: string; constraint?: string } } | null)
+              ?.cause ?? {});
+        if (
+          isEntityCreatingEvent &&
+          pgErr.code === '23505' &&
+          pgErr.constraint === 'workflow_events_entity_creation_unique'
+        ) {
+          return new EntityConflictError(
+            `${data.eventType} for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+          );
+        }
+        return err;
+      };
+
       // Handle run_started event: update run status
       if (data.eventType === 'run_started') {
         // If the run is already running, return it without inserting a
@@ -736,18 +809,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           }
         }
 
-        const [runValue] = await drizzle
-          .update(Schema.runs)
-          .set({
-            status: 'running',
-            startedAt: now,
-            updatedAt: now,
-          })
-          .where(eq(Schema.runs.runId, effectiveRunId))
-          .returning();
-        if (runValue) {
-          run = deserializeRunError(compact(runValue));
-        }
+        // One transaction with its event: a run left `running` without its
+        // run_started would take the early return above on every later
+        // delivery, so the event would never be written.
+        value = await drizzle.transaction(async (tx) => {
+          const [runValue] = await tx
+            .update(Schema.runs)
+            .set({
+              status: 'running',
+              startedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .returning();
+          if (runValue) {
+            run = deserializeRunError(compact(runValue));
+          }
+          return insertOwnEvent(tx);
+        });
       }
 
       // Terminal run statuses for use in SQL WHERE clauses (atomic guard).
@@ -756,159 +835,90 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const terminalRunStatuses: (typeof Schema.runs.status.enumValues)[number][] =
         ['completed', 'failed', 'cancelled'];
 
-      // Handle run_completed event: update run status and cleanup hooks
-      // Uses conditional UPDATE to prevent completing an already-terminal run.
-      if (data.eventType === 'run_completed') {
-        const eventData = (data as any).eventData as { output?: any };
-        const [runValue] = await drizzle
-          .update(Schema.runs)
-          .set({
+      // Handle run_completed, run_failed and run_cancelled: move the run to
+      // its terminal state, remove its hooks and waits, and write the terminal
+      // event, all in ONE transaction. Committed separately, a process that
+      // dies after the UPDATE leaves a terminal run with no terminal event,
+      // and every redelivery is then refused as terminal.
+      // The guarded UPDATE prevents transitioning an already-terminal run.
+      // Note: idempotent run_cancelled on already-cancelled runs is handled
+      // earlier in the pre-validation block (creates event and returns early).
+      if (
+        data.eventType === 'run_completed' ||
+        data.eventType === 'run_failed' ||
+        data.eventType === 'run_cancelled'
+      ) {
+        let terminalSet: Partial<typeof Schema.runs.$inferInsert>;
+        if (data.eventType === 'run_completed') {
+          const eventData = (data as any).eventData as { output?: any };
+          terminalSet = {
             status: 'completed',
             output: eventData.output as SerializedContent | undefined,
-            completedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
-            )
-          )
-          .returning();
-        if (runValue) {
-          run = deserializeRunError(compact(runValue));
-        } else {
-          const [existing] = await getRunForValidation.execute({
-            runId: effectiveRunId,
-          });
-          if (!existing) {
-            throw new WorkflowRunNotFoundError(effectiveRunId);
-          }
-          if (isRunTerminal(existing.status)) {
-            throw new EntityConflictError(
-              `Cannot transition run from terminal state "${existing.status}"`
-            );
-          }
-        }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
-      }
-
-      // Handle run_failed event: update run status and cleanup hooks
-      // Uses conditional UPDATE to prevent failing an already-terminal run.
-      if (data.eventType === 'run_failed') {
-        const eventData = (data as any).eventData as {
-          error: any;
-          errorCode?: string;
-        };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
-        const [runValue] = await drizzle
-          .update(Schema.runs)
-          .set({
+          };
+        } else if (data.eventType === 'run_failed') {
+          const eventData = (data as any).eventData as {
+            error: any;
+            errorCode?: string;
+          };
+          const errorMessage =
+            typeof eventData.error === 'string'
+              ? eventData.error
+              : (eventData.error?.message ?? 'Unknown error');
+          terminalSet = {
             status: 'failed',
             error: {
               message: errorMessage,
               stack: eventData.error?.stack,
               code: eventData.errorCode,
             },
-            completedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
-            )
-          )
-          .returning();
-        if (runValue) {
-          run = deserializeRunError(compact(runValue));
+          };
         } else {
-          const [existing] = await getRunForValidation.execute({
-            runId: effectiveRunId,
-          });
-          if (!existing) {
-            throw new WorkflowRunNotFoundError(effectiveRunId);
-          }
-          if (isRunTerminal(existing.status)) {
-            throw new EntityConflictError(
-              `Cannot transition run from terminal state "${existing.status}"`
-            );
-          }
+          terminalSet = { status: 'cancelled' };
         }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
-      }
-
-      // Handle run_cancelled event: update run status and cleanup hooks
-      // Uses conditional UPDATE to prevent cancelling an already-terminal run.
-      // Note: idempotent run_cancelled on already-cancelled runs is handled
-      // earlier in the pre-validation block (creates event and returns early).
-      if (data.eventType === 'run_cancelled') {
-        const [runValue] = await drizzle
-          .update(Schema.runs)
-          .set({
-            status: 'cancelled',
-            completedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+        value = await drizzle.transaction(async (tx) => {
+          const [runValue] = await tx
+            .update(Schema.runs)
+            .set({ ...terminalSet, completedAt: now, updatedAt: now })
+            .where(
+              and(
+                eq(Schema.runs.runId, effectiveRunId),
+                notInArray(Schema.runs.status, terminalRunStatuses)
+              )
             )
-          )
-          .returning();
-        if (runValue) {
-          run = deserializeRunError(compact(runValue));
-        } else {
-          const [existing] = await getRunForValidation.execute({
-            runId: effectiveRunId,
-          });
-          if (!existing) {
-            throw new WorkflowRunNotFoundError(effectiveRunId);
+            .returning();
+          if (runValue) {
+            run = deserializeRunError(compact(runValue));
+          } else {
+            const [existing] = await tx
+              .select({ status: Schema.runs.status })
+              .from(Schema.runs)
+              .where(eq(Schema.runs.runId, effectiveRunId))
+              .limit(1);
+            if (!existing) {
+              throw new WorkflowRunNotFoundError(effectiveRunId);
+            }
+            if (isRunTerminal(existing.status)) {
+              throw new EntityConflictError(
+                `Cannot transition run from terminal state "${existing.status}"`
+              );
+            }
           }
-          if (isRunTerminal(existing.status)) {
-            throw new EntityConflictError(
-              `Cannot transition run from terminal state "${existing.status}"`
-            );
-          }
-        }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
-      }
 
-      // Strip eventData from run_started — it belongs on run_created only.
-      const storedEventData =
-        data.eventType === 'run_started'
-          ? undefined
-          : 'eventData' in data
-            ? data.eventData
-            : undefined;
+          // Delete all hooks and waits for this run to allow token reuse.
+          // Before the event insert, so every row lock this transaction needs
+          // is held before it takes a position: a hook_disposed holding a
+          // hook's lock while it inserts must never wait on a position this
+          // transaction holds.
+          await tx
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.runId, effectiveRunId));
+          await tx
+            .delete(Schema.waits)
+            .where(eq(Schema.waits.runId, effectiveRunId));
+
+          return insertOwnEvent(tx);
+        });
+      }
 
       // Handle step_started event: increment attempt and set the step to
       // running, then write the matching event log entry in the same
@@ -1115,43 +1125,55 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ? eventData.error
             : (eventData.error?.message ?? 'Unknown error');
 
-        const [stepValue] = await drizzle
-          .update(Schema.steps)
-          .set({
-            status: 'pending',
-            error: {
-              message: errorMessage,
-              stack: eventData.stack,
-            },
-            retryAfter: eventData.retryAfter,
-          })
-          .where(
-            and(
-              eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!),
-              notInArray(Schema.steps.status, terminalStepStatuses)
+        // One transaction with its event, as step_started does: a step put
+        // back to pending without its step_retrying would retry with no
+        // record of the failed attempt in the log.
+        value = await drizzle.transaction(async (tx) => {
+          const [stepValue] = await tx
+            .update(Schema.steps)
+            .set({
+              status: 'pending',
+              error: {
+                message: errorMessage,
+                stack: eventData.stack,
+              },
+              retryAfter: eventData.retryAfter,
+            })
+            .where(
+              and(
+                eq(Schema.steps.runId, effectiveRunId),
+                eq(Schema.steps.stepId, data.correlationId!),
+                notInArray(Schema.steps.status, terminalStepStatuses)
+              )
             )
-          )
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        } else {
-          // Step not updated - check if it exists and why
-          const [existing] = await getStepForValidation.execute({
-            runId: effectiveRunId,
-            stepId: data.correlationId!,
-          });
-          if (!existing) {
-            throw new WorkflowWorldError(
-              `Step "${data.correlationId}" not found`
-            );
+            .returning();
+          if (stepValue) {
+            step = deserializeStepError(compact(stepValue));
+          } else {
+            // Step not updated - check if it exists and why
+            const [existing] = await tx
+              .select({ status: Schema.steps.status })
+              .from(Schema.steps)
+              .where(
+                and(
+                  eq(Schema.steps.runId, effectiveRunId),
+                  eq(Schema.steps.stepId, data.correlationId!)
+                )
+              )
+              .limit(1);
+            if (!existing) {
+              throw new WorkflowWorldError(
+                `Step "${data.correlationId}" not found`
+              );
+            }
+            if (isStepTerminal(existing.status)) {
+              throw new EntityConflictError(
+                `Cannot modify step in terminal state "${existing.status}"`
+              );
+            }
           }
-          if (isStepTerminal(existing.status)) {
-            throw new EntityConflictError(
-              `Cannot modify step in terminal state "${existing.status}"`
-            );
-          }
-        }
+          return insertOwnEvent(tx);
+        });
       }
 
       // Handle hook_created event: create hook entity
@@ -1397,85 +1419,157 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         });
       }
 
-      // Handle wait_created event: create wait entity
+      // Handle wait_created event: create the wait entity and its event in ONE
+      // transaction. Committed separately, a process that dies between the
+      // two leaves a wait row with no wait_created, and every redelivery is
+      // then refused as a duplicate, so the event is never written.
       if (data.eventType === 'wait_created') {
         const eventData = (data as any).eventData as {
           resumeAt?: Date;
         };
         const waitId = `${effectiveRunId}-${data.correlationId}`;
-        const [waitValue] = await drizzle
-          .insert(Schema.waits)
-          .values({
-            waitId,
-            runId: effectiveRunId,
-            status: 'waiting',
-            resumeAt: eventData.resumeAt,
-            specVersion: effectiveSpecVersion,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (waitValue) {
-          wait = {
-            waitId: waitValue.waitId,
-            runId: waitValue.runId,
-            status: waitValue.status,
-            resumeAt: waitValue.resumeAt ?? undefined,
-            completedAt: waitValue.completedAt ?? undefined,
-            createdAt: waitValue.createdAt,
-            updatedAt: waitValue.updatedAt,
-            specVersion: waitValue.specVersion ?? undefined,
-          };
-        } else {
-          throw new EntityConflictError(
-            `Wait "${data.correlationId}" already exists`
-          );
+        try {
+          value = await drizzle.transaction(async (tx) => {
+            let [waitValue] = await tx
+              .insert(Schema.waits)
+              .values({
+                waitId,
+                runId: effectiveRunId,
+                status: 'waiting',
+                resumeAt: eventData.resumeAt,
+                specVersion: effectiveSpecVersion,
+              })
+              .onConflictDoNothing()
+              .returning();
+            if (!waitValue) {
+              const [existingEvent] = await tx
+                .select({ eventId: events.eventId })
+                .from(events)
+                .where(
+                  and(
+                    eq(events.runId, effectiveRunId),
+                    eq(events.correlationId, data.correlationId!),
+                    eq(events.eventType, 'wait_created')
+                  )
+                )
+                .limit(1);
+              if (!existingEvent) {
+                // A waiting row without its event was left by the old
+                // non-transactional path. Keep the row and complete the
+                // missing event, as step_created does, so existing orphans
+                // recover while new partial writes cannot happen. A row that
+                // already completed is not touched: its wait_created would
+                // land behind its completion.
+                [waitValue] = await tx
+                  .select()
+                  .from(Schema.waits)
+                  .where(
+                    and(
+                      eq(Schema.waits.waitId, waitId),
+                      eq(Schema.waits.status, 'waiting')
+                    )
+                  )
+                  .for('update')
+                  .limit(1);
+              }
+              if (!waitValue) {
+                throw new EntityConflictError(
+                  `Wait "${data.correlationId}" already exists`
+                );
+              }
+            }
+            wait = {
+              waitId: waitValue.waitId,
+              runId: waitValue.runId,
+              status: waitValue.status,
+              resumeAt: waitValue.resumeAt ?? undefined,
+              completedAt: waitValue.completedAt ?? undefined,
+              createdAt: waitValue.createdAt,
+              updatedAt: waitValue.updatedAt,
+              specVersion: waitValue.specVersion ?? undefined,
+            };
+            return insertOwnEvent(tx);
+          });
+        } catch (err) {
+          throw asCorrelationConflict(err);
         }
       }
 
-      // Handle wait_completed event: transition wait to 'completed'
-      // Uses conditional UPDATE to reject duplicate completions (same pattern as step_completed)
+      // Handle wait_completed event: transition the wait to 'completed' and
+      // write its event in ONE transaction. Committed separately, a process
+      // that dies between the two leaves a completed wait with no
+      // wait_completed: every later completion is refused as a duplicate,
+      // while replay still sees an elapsed, uncompleted wait and schedules
+      // another attempt, forever. The conditional UPDATE rejects duplicate
+      // completions (same pattern as step_completed).
       if (data.eventType === 'wait_completed') {
         const waitId = `${effectiveRunId}-${data.correlationId}`;
-        const [waitValue] = await drizzle
-          .update(Schema.waits)
-          .set({
-            status: 'completed',
-            completedAt: now,
-          })
-          .where(
-            and(
-              eq(Schema.waits.waitId, waitId),
-              eq(Schema.waits.status, 'waiting')
+        value = await drizzle.transaction(async (tx) => {
+          let [waitValue] = await tx
+            .update(Schema.waits)
+            .set({
+              status: 'completed',
+              completedAt: now,
+            })
+            .where(
+              and(
+                eq(Schema.waits.waitId, waitId),
+                eq(Schema.waits.status, 'waiting')
+              )
             )
-          )
-          .returning();
-        if (waitValue) {
-          wait = {
-            waitId: waitValue.waitId,
-            runId: waitValue.runId,
-            status: waitValue.status,
-            resumeAt: waitValue.resumeAt ?? undefined,
-            completedAt: waitValue.completedAt ?? undefined,
-            createdAt: waitValue.createdAt,
-            updatedAt: waitValue.updatedAt,
-            specVersion: waitValue.specVersion ?? undefined,
-          };
-        } else {
-          // Wait not updated - check if it exists and why
-          const [existing] = await getWaitForValidation.execute({
-            waitId,
-          });
-          if (!existing) {
-            throw new WorkflowWorldError(
-              `Wait "${data.correlationId}" not found`
-            );
+            .returning();
+          if (!waitValue) {
+            // Wait not updated - check if it exists and why. Locked, so that
+            // of two writers completing an orphan below only the first
+            // writes: the second waits here, then finds its event.
+            const [existing] = await tx
+              .select()
+              .from(Schema.waits)
+              .where(eq(Schema.waits.waitId, waitId))
+              .for('update')
+              .limit(1);
+            if (!existing) {
+              throw new WorkflowWorldError(
+                `Wait "${data.correlationId}" not found`
+              );
+            }
+            if (existing.status === 'completed') {
+              const [existingEvent] = await tx
+                .select({ eventId: events.eventId })
+                .from(events)
+                .where(
+                  and(
+                    eq(events.runId, effectiveRunId),
+                    eq(events.correlationId, data.correlationId!),
+                    eq(events.eventType, 'wait_completed')
+                  )
+                )
+                .limit(1);
+              if (existingEvent) {
+                throw new EntityConflictError(
+                  `Wait "${data.correlationId}" already completed`
+                );
+              }
+              // A completed row without its event was left by the old
+              // non-transactional path. Write the missing event rather than
+              // refusing, so the run that is looping on it recovers.
+              waitValue = existing;
+            }
           }
-          if (existing.status === 'completed') {
-            throw new EntityConflictError(
-              `Wait "${data.correlationId}" already completed`
-            );
+          if (waitValue) {
+            wait = {
+              waitId: waitValue.waitId,
+              runId: waitValue.runId,
+              status: waitValue.status,
+              resumeAt: waitValue.resumeAt ?? undefined,
+              completedAt: waitValue.completedAt ?? undefined,
+              createdAt: waitValue.createdAt,
+              updatedAt: waitValue.updatedAt,
+              specVersion: waitValue.specVersion ?? undefined,
+            };
           }
-        }
+          return insertOwnEvent(tx);
+        });
       }
 
       try {
@@ -1579,38 +1673,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           }
         }
       } catch (err) {
-        // Translate unique-violation on the entity-creation partial index
-        // (workflow_events_entity_creation_unique) into EntityConflictError
-        // so the runtime's existing dedup catch path can handle it. Without
-        // this, two concurrent invocations producing identical
-        // correlationIds (e.g. snapshot runtime deterministic ULIDs) would
-        // surface as unhandled DB errors instead of dedup signals.
-        // Drizzle wraps the underlying pg error in DrizzleQueryError; the
-        // pg error (with .code === '23505') lives on .cause. We additionally
-        // gate on the violated constraint name so other 23505 violations on
-        // these event types (e.g. the events primary key, or any future
-        // unique constraint we might add) don't get misclassified as a
-        // correlationId conflict.
-        const isEntityCreatingEvent =
-          data.eventType === 'step_created' ||
-          data.eventType === 'hook_created' ||
-          data.eventType === 'wait_created';
-        const pgErr = (err as { code?: string; constraint?: string }).code
-          ? (err as { code?: string; constraint?: string })
-          : ((err as { cause?: { code?: string; constraint?: string } })
-              .cause ?? {});
-        const pgCode = pgErr.code;
-        const pgConstraint = pgErr.constraint;
-        if (
-          isEntityCreatingEvent &&
-          pgCode === '23505' &&
-          pgConstraint === 'workflow_events_entity_creation_unique'
-        ) {
-          throw new EntityConflictError(
-            `${data.eventType} for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
-          );
-        }
-        throw err;
+        throw asCorrelationConflict(err);
       }
       if (!value) {
         throw new EntityConflictError(
