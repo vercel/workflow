@@ -152,6 +152,10 @@ interface MailboxBatch {
   finish(): Promise<void>;
 }
 const MAX_MAILBOX_BATCH = 100;
+/** Steps one run may have started and not yet finished. Independent branches of
+ * a fan-out start without waiting for each other up to this bound; remote
+ * deliveries the platform refuses under load (503) retry. */
+const MAX_RUNNING_STEPS = 2000;
 /** Durable step starts committed (then dispatched) per prefix. */
 const START_PREFIX_SIZE = 50;
 // Extend deliberately: shared-resource operations and failure/retry decisions
@@ -1411,7 +1415,7 @@ export class RetainedRunner {
         await this.dispatchSteps(admittedRemote, policy.attemptTimeoutMs);
       };
       let available =
-        100 -
+        MAX_RUNNING_STEPS -
         [...this.steps.values()].filter((step) => step.status === 'running')
           .length;
       for (const step of this.steps.values()) {
