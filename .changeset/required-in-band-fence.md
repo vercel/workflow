@@ -7,4 +7,4 @@
 "@workflow/world-testing": patch
 ---
 
-Every World must implement the in-band writer fence and declare `capabilities.inBandFence`; the runtime refuses a World that does not.
+A World that declares spec 9 must implement the in-band writer fence; Worlds that declare spec 8 keep working unchanged.

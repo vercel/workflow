@@ -11,4 +11,4 @@
 "workflow": minor
 ---
 
-Runs use a single orchestrator: steps retry in place on one queue message and `maxRetries: 0` steps run at most once. Inline ownership and precondition settings are removed; `WORKFLOW_OPTIMISTIC_INLINE_START` only opts out of turbo mode's early step start.
+Spec 9 runs use a single orchestrator: steps retry in place on one queue message and `maxRetries: 0` steps run at most once. Spec 8 runs keep the previous orchestrator and its settings; `WORKFLOW_SPEC_VERSION=8` creates spec 8 runs.

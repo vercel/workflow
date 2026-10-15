@@ -210,14 +210,30 @@ An out-of-band terminal event has these effects, all of them benign:
 - Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, `RegExp`, typed arrays, `ArrayBuffer`, `URL`, `Headers`) keep the VM retained. Patching or polyfilling built-in prototypes doesn't change that because serialization never calls them. A boundary falls back to a full replay only when serializing its arguments runs code the workflow controls, such as a getter, a proxy, or a custom class serializer, or computes an `Error`'s stack trace.
 - Set `0` or `false` to replay the Node.js workflow from scratch in a fresh VM on every iteration.
 
+### `WORKFLOW_SPEC_VERSION`
+
+- Default: unset (new runs use spec version 9, the single orchestrator)
+- Values: `8`. Any other value is ignored.
+- Set `8` to make the Vercel, Local and Postgres Worlds create spec version 8 runs, which the runtime drives with the spec 8 orchestrator: several orchestrator invocations may write at once, steps keep entities, and no in-band fence is needed. Use it as the kill switch if the single orchestrator turns out to be at fault.
+- A run keeps the version it was created with, so the setting changes only what new runs get. A run in flight keeps its orchestrator either way.
+- A custom World chooses the version by what it declares as `specVersion` (see [Building a World](/worlds/building-a-world#declaring-the-spec-version)).
+
+### Settings for spec 8 runs
+
+Only the spec 8 orchestrator reads these. Spec 9 runs ignore them.
+
+- `WORKFLOW_INLINE_OWNERSHIP` (default enabled), `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (default `860`, `1` to `900`): record which queue message owns an inline step execution, so a wake that replays the run mid-step schedules a delayed backstop instead of running the step again. See [Inline step message ownership](/docs/changelog/step-message-ownership).
+- `WORKFLOW_BATCH_TRANSITIONS` (default enabled): writes a suspension's step creations in batches. `0` or `false` writes one event at a time.
+- `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS` (default `3`), `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS` (default `5`), `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS` (default `2`): bound how a run recovers from an event creation the World rejects as stale.
+- `WORKFLOW_OPTIMISTIC_INLINE_START`: on spec 8 runs, `1` also starts inline step bodies before their `step_started` is confirmed outside turbo's first delivery.
+- `WORKFLOW_MAX_INLINE_STEPS=0` is read as unset on spec 8 runs.
+
 ### Removed settings
 
 These no longer exist. Remove them if you set them.
 
-- `WORKFLOW_INLINE_OWNERSHIP`, `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`: there are no ownership leases or backstop wakes. A step's execution mode, fixed on `step_created`, decides who runs it.
-- `WORKFLOW_RESILIENT_STEP_DISPATCH`, `WORKFLOW_BATCH_TRANSITIONS`: a background step's message is enqueued once, after its `step_created` commits.
-- `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`, `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS`, `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS`: the precondition guard is replaced by the [in-band fence](#one-orchestrator-per-run-and-the-in-band-fence).
-- `WORKFLOW_SEALED_LOG`: new runs always use the sealed log, which the single-orchestrator spec version requires.
+- `WORKFLOW_RESILIENT_STEP_DISPATCH`: a background step's message is enqueued once, after its `step_created` commits.
+- `WORKFLOW_SEALED_LOG`: new runs always use the sealed log. Use `WORKFLOW_SPEC_VERSION=8` to create runs of the previous spec version.
 - `WORKFLOW_SEQUENTIAL_REPLAYS` (Vercel World): one orchestrator at a time per run is now the default.
 
 A trade-off follows from one orchestrator per run: a hook payload, an abort or a cancellation that arrives while the orchestrator is busy with a long inline step is seen by the running workflow through the live feed or the tail poll. Without either it waits for the next delivery, which queues behind the busy one.

@@ -42,7 +42,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
-  inBandFence?: boolean; // required, see Single-writer guarantee
+  inBandFence?: boolean; // required to declare spec 9, see Single-writer guarantee
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
 }
@@ -63,7 +63,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The `capabilities` object advertises additional behavior, and every capability **fails closed**. One member is required rather than optional: `inBandFence`, which declares the [in-band writer fence](#single-writer-guarantee-and-the-in-band-fence). The runtime refuses a World that does not declare it. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue delivers a run's orchestrator messages one at a time (see [Single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence)); the runtime takes no fast path from it. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions.
+The `capabilities` object advertises additional behavior, and every capability **fails closed**. One member is required for a World that declares spec version 9: `inBandFence`, which declares the [in-band writer fence](#single-writer-guarantee-and-the-in-band-fence). The runtime refuses such a World without it. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue delivers a run's orchestrator messages one at a time (see [Single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence)); the runtime takes no fast path from it. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -95,6 +95,14 @@ export function createWorld(): World {
 The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
 
 Using the constant keeps that check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number leaves your World a version behind the next bump, and the runtime rejects it. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
+
+The runtime drives runs of spec version 8 and 9, each with its own orchestrator, and picks it from the version stamped on the run, never from what your World declares now:
+
+- A World that declares 9 (`SPEC_VERSION_CURRENT`) creates single-orchestrator runs and must implement the [in-band fence](#single-writer-guarantee-and-the-in-band-fence).
+- A World that declares 8 (`SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`) keeps creating spec 8 runs, which need no fence. A spec 8 World upgrades the `workflow` package without changes.
+- A World that moves from 8 to 9 must keep serving the spec 8 runs it already created: they keep running on the spec 8 orchestrator. Decide from each run's stored `specVersion`, as world-local, world-postgres and world-vercel do. A World that drops what spec 8 needs fails those runs.
+
+The first-party Worlds declare 9, or 8 when `WORKFLOW_SPEC_VERSION=8` is set (see [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version)); `mintedSpecVersion()` from `@workflow/world` reads it.
 
 ## The event log model
 
@@ -457,7 +465,7 @@ Declare `capabilities.maxConcurrency` when your queue does this. world-vercel us
 
 ### Storage: the in-band fence
 
-Declare `capabilities.inBandFence: true`. The runtime checks it in `start()` and at the start of every orchestrator delivery, and throws a `WorkflowRuntimeError` naming the capability when it is missing, before anything is written. There is no unfenced mode.
+Declare `capabilities.inBandFence: true`. A World that declares spec 9 must: the runtime checks it in `start()` and at the start of every spec 9 orchestrator delivery, and throws a `WorkflowRuntimeError` naming the capability when it is missing, before anything is written. A spec 9 run has no unfenced mode.
 
 Keep, per run, two counters next to whatever allocates event positions: `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band, so a new run holds `seq = 1, seqInBand = 1`. Then:
 

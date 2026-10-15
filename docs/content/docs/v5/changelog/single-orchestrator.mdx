@@ -22,7 +22,7 @@ The backend used to keep step and wait rows, written in the same transaction as 
 
 ## The fence
 
-The queue delivers a run's orchestrator messages one at a time, but an invocation whose event loop stalls past its lease can be redelivered while it is still alive. The World counts the positions allocated to in-band (orchestrator) writes. A log load returns that count, the orchestrator sends it with each in-band write, and the World refuses a stale one with `InBandSupersededError`. Every World must implement the fence and declare `capabilities.inBandFence`; the runtime refuses one that does not ([Building a World](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). The refused invocation stops writing and running inline steps, does not acknowledge its message, and is delivered again. A write that resolves a promise (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports below it, so the workflow sees events in log order.
+The queue delivers a run's orchestrator messages one at a time, but an invocation whose event loop stalls past its lease can be redelivered while it is still alive. The World counts the positions allocated to in-band (orchestrator) writes. A log load returns that count, the orchestrator sends it with each in-band write, and the World refuses a stale one with `InBandSupersededError`. A World that declares spec 9 must implement the fence and declare `capabilities.inBandFence`; the runtime refuses one that does not ([Building a World](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). The refused invocation stops writing and running inline steps, does not acknowledge its message, and is delivered again. A write that resolves a promise (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind the events its response reports below it, so the workflow sees events in log order.
 
 ## Run-ahead
 
@@ -34,9 +34,13 @@ When no writer other than the orchestrator could change what the workflow does n
 
 [Turbo mode](/docs/changelog/turbo-mode) still fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from the count after the run's creation instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery and redelivers it like any fence refusal.
 
-## What is removed
+## Spec 8 runs
 
-Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, resilient step dispatch, and the precondition guard. Their settings are listed under [Removed settings](/docs/configuration/runtime-tuning#removed-settings).
+Runs created at spec version 8 and below keep the previous orchestrator, which this runtime still includes. A run keeps the orchestrator of the version it was created with, so in-flight runs are unaffected when a World starts creating spec 9 runs. A World that declares spec 8 keeps creating spec 8 runs and needs no fence, and the first-party Worlds create them under [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version).
+
+## What spec 9 runs no longer use
+
+Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs, and their settings are listed under [Settings for spec 8 runs](/docs/configuration/runtime-tuning#settings-for-spec-8-runs). Resilient step dispatch is removed.
 
 ## Costs
 
