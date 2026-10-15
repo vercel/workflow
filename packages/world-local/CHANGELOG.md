@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.4.4
+
+### Patch Changes
+
+- [#4754](https://github.com/vercel/workflow/pull/4754) [`12cf587`](https://github.com/vercel/workflow/commit/12cf587db0403e24eb2c3a918004b1816769ea74) Thanks [@pranaygp](https://github.com/pranaygp)! - Register a run's stream names under a lock so `listStreamsByRunId` no longer drops a stream when several of the run's streams first write at once. A stream written again after `clear()` is listed again.
+
 ## 4.4.3
 
 ### Patch Changes

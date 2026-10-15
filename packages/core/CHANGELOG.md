@@ -1,5 +1,15 @@
 # @workflow/core
 
+## 4.8.14
+
+### Patch Changes
+
+- [#4336](https://github.com/vercel/workflow/pull/4336) [`79796a0`](https://github.com/vercel/workflow/commit/79796a006e971a785e0c97316567bd11169b5bb9) Thanks [@pranaygp](https://github.com/pranaygp)! - Security: remove the `nanoid` dependency (pinned at 5.1.6, affected by [GHSA-28wg-ghj8-5hjv](https://github.com/advisories/GHSA-28wg-ghj8-5hjv)). Default hook tokens now come from a built-in copy of the same generator, so tokens and seeded random values stay identical for runs recorded on earlier versions. Upgrading `nanoid` itself would have changed them, because `nanoid@5.1.16` draws a different number of random bytes per id.
+
+- Updated dependencies [[`9fc7ee2`](https://github.com/vercel/workflow/commit/9fc7ee2328c3d61282c835dc0b2a1e7ffbd853fd), [`12cf587`](https://github.com/vercel/workflow/commit/12cf587db0403e24eb2c3a918004b1816769ea74)]:
+  - @workflow/world-vercel@4.7.8
+  - @workflow/world-local@4.4.4
+
 ## 4.8.13
 
 ### Patch Changes
