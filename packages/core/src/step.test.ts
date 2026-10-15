@@ -1,7 +1,6 @@
 import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
@@ -9,6 +8,7 @@ import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import {
   dehydrateStepError,
   dehydrateStepReturnValue,
@@ -60,9 +60,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
-    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
-    ),
+    generateNanoid: createSeededNanoid(() => context.globalThis.Math.random()),
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
