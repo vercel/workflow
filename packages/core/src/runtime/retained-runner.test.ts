@@ -174,6 +174,70 @@ it.each([
   ).toHaveLength(count - 3);
 });
 
+it('starts the first steps of a wide fan-out before every step is created', async () => {
+  const count = 300;
+  const createdAtFirstBody: number[] = [];
+  let fixture!: Awaited<ReturnType<typeof setup>>;
+  registerStepFunction('wideWork', async (n) => {
+    if (!createdAtFirstBody.length)
+      createdAtFirstBody.push(
+        fixture.owner.events.filter((e) => e.eventType === 'step_created')
+          .length
+      );
+    return n;
+  });
+  fixture = await setup(
+    `
+      const work = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('wideWork');
+      async function workflow() {
+        return Promise.all(Array.from({ length: ${count} }, (_, i) => work(i)));
+      }
+      globalThis.__private_workflows = new Map([['workflow', workflow]]);
+    `,
+    false,
+    'hybrid'
+  );
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  fixture.world.invoke = vi.fn(async (runId, input, options) =>
+    fixture.owner.submit(
+      { runId, invoke: true, input, requestId: options?.idempotencyKey },
+      fixture.metadata
+    )
+  );
+  vi.spyOn(fixture.world, 'queue').mockImplementation(async (_n, message) => {
+    if ('stepId' in message)
+      await executeOwnedStep(fixture.world, message, fixture.metadata);
+    return { messageId: null };
+  });
+  // A serial writer: each step_created lands 2 ms after the previous one, so
+  // creating the whole fan-out takes a while.
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  let writes: Promise<unknown> = Promise.resolve();
+  fixture.world.events.create = ((runId, event, params) => {
+    if (event.eventType !== 'step_created') return create(runId, event, params);
+    const write = writes.then(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      return create(runId, event, params);
+    });
+    writes = write.catch(() => {});
+    return write;
+  }) as typeof fixture.world.events.create;
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  // The first body runs while most of the fan-out is still being created.
+  await vi.waitFor(() => expect(createdAtFirstBody).toHaveLength(1));
+  expect(createdAtFirstBody[0]).toBeLessThan(count / 2);
+  // Creates and starts alternate a prefix at a time on the ordered stream.
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.filter((e) => e.eventType === 'step_created')
+    ).toHaveLength(count)
+  );
+  const types = fixture.owner.events.map((e) => e.eventType);
+  expect(types.indexOf('step_started')).toBeLessThan(
+    types.lastIndexOf('step_created')
+  );
+});
+
 it('keeps the retained session when a wake brings no new events', async () => {
   const values: unknown[] = [];
   registerStepFunction('retainedWrite', async (value) => {

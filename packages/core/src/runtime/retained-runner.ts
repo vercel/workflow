@@ -56,6 +56,7 @@ import { isRetryableOwnerDelivery } from './owner-delivery.js';
 import { ownerLog, trackOwner } from './owner-diagnostics.js';
 import { reduceStep, runFromCreation } from './owner-state.js';
 import { isSingleOwnerRun } from './single-owner.js';
+import { type AdmittedStart, StepDispatcher } from './step-dispatcher.js';
 import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
 import { useQuickJSVm } from './vm-mode.js';
@@ -333,6 +334,39 @@ export class RetainedRunner {
   private timerWakeups = new Set<string>();
   private localTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private lifetime?: Promise<void>;
+  /** `step_created` events applied so far, and a waiter for the next one. */
+  private stepsCreated = 0;
+  private stepCreatedSignal?: () => void;
+  /** `step_created` commits queued and not yet applied, and their waiters. */
+  private creationsInFlight = 0;
+  private readonly creationWaiters: Array<() => void> = [];
+  /** An admission round is committing starts; creates wait for it. */
+  private admitting = false;
+  private readonly dispatcher = new StepDispatcher({
+    localSlotsFree: () => this.localStepSlots - this.localWorkers.size,
+    startLocal: (step, claimed) => this.startStep(step, claimed),
+    flush: () => this.flushWriter(),
+    durableStart: ({ step, claimed }) => {
+      // Flush may replace tentative entities with the native materialization.
+      const canonical = claimed ? this.steps.get(step.stepId) : undefined;
+      if (claimed && !canonical?.startedAt)
+        throw new RunnerFault(
+          'persistence',
+          new Error('Missing committed step start')
+        );
+      const admitted = canonical?.startedAt
+        ? { ...canonical, startedAt: canonical.startedAt }
+        : claimed;
+      if (!admitted)
+        throw new RunnerFault(
+          'persistence',
+          new Error('Missing queued step admission')
+        );
+      return admitted;
+    },
+    dispatchRemote: (steps, attemptTimeoutMs) =>
+      this.dispatchSteps(steps, attemptTimeoutMs),
+  });
   private closing = false;
   private deadline = Infinity;
   private currentTurnId?: string;
@@ -431,6 +465,11 @@ export class RetainedRunner {
                 event.correlationId,
                 new Date(event.eventData.resumeAt)
               ).then(() => this.commit(event, options));
+            // A suspension queues its creates a prefix at a time, so the
+            // admission rounds' step_started commits are not queued behind
+            // the whole fan-out.
+            if (event.eventType === 'step_created')
+              return this.creationGate(() => this.commit(event, options));
             return this.commit(event, options);
           }
           return this.enqueue(`event:${event.eventType}`, async () => {
@@ -1076,6 +1115,10 @@ export class RetainedRunner {
 
   private apply(event: Event) {
     this.events.push(event);
+    if (event.eventType === 'step_created') {
+      this.stepsCreated++;
+      this.stepCreatedSignal?.();
+    }
     if (event.eventType === 'step_started') {
       this.stepStarts.set(event.correlationId, {
         event,
@@ -1422,14 +1465,20 @@ export class RetainedRunner {
           return;
         }
         this.session = result.session;
-        const handled = await handleSuspension({
+        const handling = handleSuspension({
           suspension: result.suspension,
           world: this.facade,
           run: this.runState,
           requestId: this.metadata.requestId,
           deferInlineSteps: false,
+        }).then(async (handled) => {
+          await handled.deferredBatchWork;
+          return handled;
         });
-        await handled.deferredBatchWork;
+        // Start steps as their own step_created commits, while the rest of a
+        // wide suspension is still being persisted.
+        await this.admitWhilePersisting(handling);
+        const handled = await handling;
         if (this.fault) throw this.fault;
         if (handled.waitTimeout) {
           // The durable wake was enqueued before wait_created committed; a
@@ -1441,94 +1490,108 @@ export class RetainedRunner {
           }
         }
       }
-      let starts: Array<{
-        step: Step;
-        claimed?: Step & { startedAt: Date };
-      }> = [];
-      const policy = this.queuedSteps;
-      await this.armStepRecovery();
-      // Make each start prefix available as soon as it is staged, so a large
-      // fan-out dispatches its first bodies while later starts persist.
-      const launch = async () => {
-        const chunk = starts;
-        starts = [];
-        if (!chunk.length) return;
-        // Eager local start: a body this process runs begins as soon as its
-        // `step_started` is staged on the single writer's ordered stream, while
-        // the durability barrier below completes in parallel. The stream is
-        // ordered and pinned, so the start commits before anything the body
-        // produces; if persistence fails, the runner faults and the body's
-        // result is never acknowledged. Bodies dispatched to other invocations
-        // still wait for the durable start prefix.
-        const remote: Array<{
-          step: Step;
-          claimed?: Step & { startedAt: Date };
-        }> = [];
-        let localSlots = this.localStepSlots - this.localWorkers.size;
-        for (const entry of chunk) {
-          if (localSlots-- <= 0) remote.push(entry);
-          else this.startStep(entry.step, entry.claimed);
-        }
-        await this.flushWriter();
-        if (!remote.length) return;
-        const admittedRemote: Array<Step & { startedAt: Date }> = [];
-        for (const { step, claimed } of remote) {
-          // Flush may replace tentative entities with the native materialization.
-          const canonical = claimed ? this.steps.get(step.stepId) : undefined;
-          if (claimed && !canonical?.startedAt)
-            throw new RunnerFault(
-              'persistence',
-              new Error('Missing committed step start')
-            );
-          const admitted = canonical?.startedAt
-            ? { ...canonical, startedAt: canonical.startedAt }
-            : claimed;
-          if (!admitted)
-            throw new RunnerFault(
-              'persistence',
-              new Error('Missing queued step admission')
-            );
-          admittedRemote.push(admitted);
-        }
-        await this.dispatchSteps(admittedRemote, policy.attemptTimeoutMs);
-      };
-      let available =
-        MAX_RUNNING_STEPS -
-        [...this.steps.values()].filter((step) => step.status === 'running')
-          .length;
-      for (const step of this.steps.values()) {
-        if (
-          'retryAfter' in step &&
-          step.retryAfter &&
-          +step.retryAfter > Date.now()
-        )
-          continue;
-        if (
-          (step.status === 'pending' || step.status === 'running') &&
-          !this.workers.has(step.stepId)
-        ) {
-          if (step.status === 'running' || available-- <= 0) continue;
-          const result = await this.commit({
-            eventType: 'step_started',
-            correlationId: step.stepId,
-            specVersion: SPEC_VERSION_CURRENT,
-            eventData: { stepName: step.stepName },
-          });
-          if (!result.step?.startedAt)
-            throw new RunnerFault(
-              'persistence',
-              new Error('Step start did not return its started state')
-            );
-          starts.push({
-            step,
-            claimed: { ...result.step, startedAt: result.step.startedAt },
-          });
-          if (starts.length >= START_PREFIX_SIZE) await launch();
-        }
-      }
-      await launch();
+      await this.admitSteps();
       if (this.events.length === before) return;
     }
+  }
+
+  /** Admit at most one start prefix of step_created commits at a time, and
+   * none while an admission round is committing starts. */
+  private async creationGate<T>(commit: () => Promise<T>): Promise<T> {
+    while (this.admitting || this.creationsInFlight >= START_PREFIX_SIZE)
+      await new Promise<void>((resolve) => this.creationWaiters.push(resolve));
+    this.creationsInFlight++;
+    try {
+      return await commit();
+    } finally {
+      this.creationsInFlight--;
+      this.creationWaiters.shift()?.();
+    }
+  }
+
+  /**
+   * Admission rounds while a suspension's writes are still in flight: each
+   * time new step_created events have been applied, start what the window
+   * allows. The final round runs once the suspension is fully persisted.
+   */
+  private async admitWhilePersisting(handling: Promise<unknown>) {
+    let settled = false;
+    handling
+      .then(
+        () => {},
+        () => {}
+      )
+      .then(() => {
+        settled = true;
+        this.stepCreatedSignal?.();
+      });
+    let seen = this.stepsCreated;
+    while (!settled && !this.fault) {
+      if (this.stepsCreated === seen)
+        await new Promise<void>((resolve) => {
+          this.stepCreatedSignal = resolve;
+          if (settled || this.stepsCreated !== seen) resolve();
+        });
+      this.stepCreatedSignal = undefined;
+      if (settled || this.fault) return;
+      seen = this.stepsCreated;
+      this.admitting = true;
+      try {
+        await this.admitSteps();
+      } finally {
+        this.admitting = false;
+        // Release every waiting create; the gate re-applies its prefix bound.
+        for (const wake of this.creationWaiters.splice(0)) wake();
+      }
+    }
+  }
+
+  /** Commit `step_started` for pending steps up to the running-step window, in
+   * prefixes, handing each prefix to the dispatcher. */
+  private async admitSteps() {
+    const policy = this.queuedSteps;
+    await this.armStepRecovery();
+    let starts: AdmittedStart[] = [];
+    const launch = () => {
+      const chunk = starts;
+      starts = [];
+      return this.dispatcher.launch(chunk, policy.attemptTimeoutMs);
+    };
+    let available =
+      MAX_RUNNING_STEPS -
+      [...this.steps.values()].filter((step) => step.status === 'running')
+        .length;
+    for (const step of this.steps.values()) {
+      if (
+        'retryAfter' in step &&
+        step.retryAfter &&
+        +step.retryAfter > Date.now()
+      )
+        continue;
+      if (
+        (step.status === 'pending' || step.status === 'running') &&
+        !this.workers.has(step.stepId)
+      ) {
+        if (step.status === 'running' || available-- <= 0) continue;
+        const result = await this.commit({
+          eventType: 'step_started',
+          correlationId: step.stepId,
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: step.stepName },
+        });
+        if (!result.step?.startedAt)
+          throw new RunnerFault(
+            'persistence',
+            new Error('Step start did not return its started state')
+          );
+        starts.push({
+          step,
+          claimed: { ...result.step, startedAt: result.step.startedAt },
+        });
+        if (starts.length >= START_PREFIX_SIZE) await launch();
+      }
+    }
+    await launch();
   }
 
   private flushChain: Promise<unknown> = Promise.resolve();
