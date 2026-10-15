@@ -34,7 +34,7 @@ import {
   executeStep,
   failStepForExhaustedRetries,
 } from './step-executor.js';
-import { runStepSingleFlight } from '../step-single-flight.js';
+import { runStepSingleFlight } from './step-single-flight.js';
 
 type Span = { setAttributes(attributes: Record<string, unknown>): void };
 
@@ -53,6 +53,8 @@ export interface StepMessageContext {
     | 'stepCreatedEventId'
     | 'runContext'
   > & { stepId: string; stepName: string };
+  /** The run, when routing the delivery already read it. */
+  prefetchedRun?: WorkflowRun;
   meta: {
     deliveryCount?: number;
     createdAt?: Date;
@@ -364,9 +366,11 @@ async function resolveRunIdentity(
   ctx: StepMessageContext
 ): Promise<RunIdentity | 'terminal'> {
   if (ctx.payload.runContext) return ctx.payload.runContext;
-  const run = (await ctx.world.runs.get(ctx.runId, {
-    resolveData: 'none',
-  })) as WorkflowRun;
+  const run =
+    ctx.prefetchedRun ??
+    ((await ctx.world.runs.get(ctx.runId, {
+      resolveData: 'none',
+    })) as WorkflowRun);
   if (run.status !== 'running') {
     runtimeLogger.debug('Run already finished, skipping background step', {
       workflowRunId: ctx.runId,

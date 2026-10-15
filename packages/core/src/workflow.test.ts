@@ -8,14 +8,20 @@ import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { compileDynamicWorkflow } from './runtime/dynamic-workflow.js';
-import { setWorld } from './runtime/world.js';
+import { handleSuspension } from './runtime/spec9/suspension-handler.js';
+import { getWorld, setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
 import { createContext } from './vm/index.js';
-import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
+import {
+  type PendingQueueDrain,
+  replayWorkflow,
+  resumeWorkflow,
+  runWorkflow,
+} from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
@@ -5946,7 +5952,7 @@ async function workflow() {
       );
     });
 
-    it('writes the drain through the writer it is given', async () => {
+    it('records the drain through the drain it is given', async () => {
       const create = vi.fn();
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
@@ -5956,6 +5962,15 @@ async function workflow() {
       const writeEvent = vi.fn(async (data: { eventType: string }) => ({
         event: { eventType: data.eventType },
       }));
+      // The single-orchestrator drain, as its delivery wires it.
+      const drainPendingQueue: PendingQueueDrain = async (suspension, run) => {
+        await handleSuspension({
+          suspension,
+          world: (await getWorld()) as never,
+          run,
+          writeEvent: writeEvent as never,
+        });
+      };
 
       await runWorkflow(
         `${FIRE_AND_FORGET_HOOK}${getWorkflowTransformCode('workflow')}`,
@@ -5963,7 +5978,7 @@ async function workflow() {
         [],
         noEncryptionKey,
         undefined,
-        writeEvent as never
+        drainPendingQueue
       );
       await runWorkflow(
         `${FIRE_AND_FORGET_WAIT}${getWorkflowTransformCode('workflow')}`,
@@ -5971,7 +5986,7 @@ async function workflow() {
         [],
         noEncryptionKey,
         undefined,
-        writeEvent as never
+        drainPendingQueue
       );
 
       // The orchestrator's in-band writer marks and fences these writes, so

@@ -10,7 +10,7 @@ import type {
   PaginationOptions,
   ResolveData,
 } from './shared.js';
-import type { Step } from './steps.js';
+import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
 export * from './event-metadata.js';
@@ -1189,7 +1189,16 @@ export type EventResult<T extends EventType = EventType> = {
     ? { run: WorkflowRun }
     : T extends 'run_started'
       ? { run: StartedWorkflowRun }
-      : unknown);
+      : T extends 'step_started'
+        ? {
+            /**
+             * The started step, on a run that keeps step entities (spec 8 and
+             * below). A single-orchestrator run (spec >= 9) keeps none, so
+             * its start returns no step.
+             */
+            step?: StartedStep;
+          }
+        : unknown);
 
 /**
  * One event of a batch write ({@link Storage.events.createBatch}), in request

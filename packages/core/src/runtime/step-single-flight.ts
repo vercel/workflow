@@ -1,23 +1,17 @@
 import { globalSingleton } from '@workflow/utils';
 import { runtimeLogger } from '../logger.js';
-import type { StepExecutionResult } from './spec9/step-executor.js';
 
 /**
  * In-process single-flight for step body execution, keyed by
- * `runId:correlationId`.
+ * `runId:correlationId`: two executions of one step in one process are two
+ * deliveries racing for its body. The loser awaits the winner's settlement
+ * (success or failure) and then returns what its caller chose for a loser,
+ * without running the body. Each orchestrator wraps this with its own loser
+ * outcome; see `spec8/step-single-flight.ts` and `spec9/step-single-flight.ts`.
  *
- * A step has one queue message, so two executions of one step in one process
- * are two deliveries of that message: the queue redelivered it while the
- * first delivery was still running the body (an event loop stalled past the
- * lease, or a world without an invocation kill bound). The second delivery
- * awaits the first one's settlement and then asks for the same message again
- * after a short delay instead of running the body. It never acknowledges on
- * the first one's behalf: the message is acknowledged only once a terminal
- * step event is committed, and the redelivery confirms that from the log.
- *
+ * The loser must not return early (before the winner settles): its caller
+ * would act on its message while the winner's outcome is still unknown.
  * Cross-instance duplicates (two processes racing one step) are not covered.
- * Background step invocations are not fenced; such a duplicate runs the body
- * twice and is recorded as a `redelivery` start.
  */
 // On `globalThis` (see `globalSingleton`), not module scope: a per-copy map is
 // not single-flight. Two invocations reaching this module through different
@@ -27,24 +21,21 @@ import type { StepExecutionResult } from './spec9/step-executor.js';
 const singleFlight = globalSingleton(
   '@workflow/core//stepSingleFlight',
   1,
-  () => ({ inFlight: new Map<string, Promise<StepExecutionResult>>() })
+  () => ({ inFlight: new Map<string, Promise<unknown>>() })
 );
-
-/** Delay before a delivery that lost the single-flight is redelivered. */
-export const STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS = 1;
 
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
- * already in flight in this process. A loser awaits the winner's settlement
- * (success OR failure) and then returns a `throttled` result, so its caller
- * redelivers the message and the redelivery re-checks the log.
+ * already in flight in this process; a loser gets `loserResult()` once the
+ * winner settled.
  */
-export async function runStepSingleFlight(
+export async function runSingleFlight<R>(
   runId: string,
   correlationId: string,
-  execute: () => Promise<StepExecutionResult>,
+  execute: () => Promise<R>,
+  loserResult: () => R,
   logLevel: 'debug' | 'warn' = 'warn'
-): Promise<StepExecutionResult> {
+): Promise<R> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
@@ -57,13 +48,10 @@ export async function runStepSingleFlight(
     try {
       await existing;
     } catch {
-      // The winner failed (typically a transient world error). The
-      // redelivery below re-checks the log either way.
+      // The winner failed (typically a transient world error). The loser's
+      // outcome does not depend on how the winner settled.
     }
-    return {
-      type: 'throttled',
-      timeoutSeconds: STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,
-    };
+    return loserResult();
   }
 
   const promise = execute();

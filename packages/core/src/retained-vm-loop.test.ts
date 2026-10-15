@@ -545,6 +545,7 @@ async function drive(
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'test-deployment',
+    specVersion: SPEC_VERSION_CURRENT,
   };
   const events: Event[] = [];
   // What a replay read hands back: the log, minus step inputs when the caller

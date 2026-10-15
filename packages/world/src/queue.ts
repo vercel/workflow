@@ -381,6 +381,14 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 export const WorkflowInvokePayloadSchema = z.compile(
   z.object({
     runId: z.string(),
+    /**
+     * The run's persisted spec version (`WorkflowRun.specVersion`), which picks
+     * the orchestrator that drives it. A routing hint only: a message without
+     * it (from a producer that predates the field, or one the World sends
+     * itself) is routed off the run instead, and a step message's
+     * `runContext` or a first delivery's `runInput` carries the same value.
+     */
+    runSpecVersion: z.number().int().optional().catch(undefined),
     /** Process this input and return the handler's result as response data. */
     invoke: z.literal(true).optional(),
     /** Identifies one input across retries, separately from the queue delivery ID. */

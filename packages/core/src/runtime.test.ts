@@ -2682,7 +2682,11 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
             await handler(
-              { runId, requestedAt: new Date() },
+              {
+                runId,
+                requestedAt: new Date(),
+                runSpecVersion: SPEC_VERSION_CURRENT,
+              },
               {
                 requestId: 'req',
                 // One past the default MAX_QUEUE_DELIVERIES (48).

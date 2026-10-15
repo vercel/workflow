@@ -25,10 +25,7 @@ import { isDeliveryIdle } from './private.js';
 import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
-import type { EventCreator } from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
-import { handleSuspension } from './runtime/spec9/suspension-handler.js';
-import { getWorld } from './runtime/world.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
@@ -84,13 +81,9 @@ async function drainPendingQueueItems(
   vmGlobalThis: typeof globalThis,
   workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed',
-  /**
-   * Writes the drain's events. The orchestrator passes its in-band writer;
-   * without one the events go straight to the World.
-   */
-  writeEvent?: EventCreator
+  drainPendingQueue: PendingQueueDrain | undefined
 ): Promise<void> {
-  if (pendingQueue.size === 0) return;
+  if (pendingQueue.size === 0 || !drainPendingQueue) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
   // workflow completion so they don't leak rows in the hooks table for the
   // run's lifetime. Skip hooks that already have an abort in flight; those
@@ -108,14 +101,8 @@ async function drainPendingQueueItems(
     }
   }
   try {
-    const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
-    await handleSuspension({
-      suspension: synthesized,
-      world,
-      run: workflowRun,
-      writeEvent,
-    });
+    await drainPendingQueue(synthesized, workflowRun);
   } catch (err) {
     runtimeLogger.warn(
       `Failed to drain pending queue items for ${outcome} workflow run`,
@@ -127,6 +114,16 @@ async function drainPendingQueueItems(
   }
 }
 
+/**
+ * Records the items a finished run's workflow left queued, as the
+ * orchestrator records any suspension (see `drainPendingQueueItems`). Each
+ * orchestrator passes its own; without one nothing is drained.
+ */
+export type PendingQueueDrain = (
+  suspension: WorkflowSuspension,
+  workflowRun: WorkflowRun
+) => Promise<void>;
+
 /** Everything needed to cold-start a workflow VM over an event log. */
 interface WorkflowSessionOptions {
   readonly workflowCode: string;
@@ -135,8 +132,8 @@ interface WorkflowSessionOptions {
   readonly encryptionKey: PayloadKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
-  /** Writes the end-of-run drain's events (the orchestrator's in-band writer). */
-  readonly writeEvent?: EventCreator;
+  /** Records the end-of-run drain. */
+  readonly drainPendingQueue?: PendingQueueDrain;
   readonly worldCapabilities?: WorldCapabilities;
 }
 
@@ -382,8 +379,8 @@ export async function runWorkflow(
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
     encryptionKey
   ),
-  /** Writes the end-of-run drain's events. */
-  writeEvent?: EventCreator,
+  /** Records the end-of-run drain. */
+  drainPendingQueue?: PendingQueueDrain,
   /**
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
@@ -396,7 +393,7 @@ export async function runWorkflow(
     events,
     encryptionKey,
     replayPayloadCache,
-    writeEvent,
+    drainPendingQueue,
     worldCapabilities,
   });
   if (result.type === 'suspended') throw result.suspension;
@@ -419,7 +416,7 @@ async function createWorkflowSessionInner(
     encryptionKey,
     replayPayloadCache,
     compiledWorkflowScripts,
-    writeEvent,
+    drainPendingQueue,
     worldCapabilities,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
@@ -1264,7 +1261,7 @@ async function createWorkflowSessionInner(
       vmGlobalThis,
       workflowRun,
       'failed',
-      writeEvent
+      drainPendingQueue
     );
 
     throw error;
@@ -1325,7 +1322,7 @@ async function createWorkflowSessionInner(
         vmGlobalThis,
         workflowRun,
         'completed',
-        writeEvent
+        drainPendingQueue
       );
 
       return { type: 'completed', output, resultType: typeof result };

@@ -124,7 +124,7 @@ import {
   executeStep,
   type StepExecutionResult,
 } from './step-executor.js';
-import { runStepSingleFlight } from '../step-single-flight.js';
+import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getSnapshotThresholdForHandler,
