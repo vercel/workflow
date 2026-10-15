@@ -42,6 +42,7 @@ import {
 } from '../../serialization.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../../util.js';
+import type { PendingQueueDrain } from '../../workflow.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   absorbSkippedSlotReport,
@@ -2048,4 +2049,20 @@ function isWorldValidationFailure(err: unknown): boolean {
     return true;
   }
   return WorkflowWorldError.is(err) && err.status === 400;
+}
+
+/**
+ * The end-of-run drain of the spec 8 orchestrator (see `PendingQueueDrain`):
+ * the queued items are written like any suspension's. In turbo the writes
+ * wait on `runReadyBarrier`, the backgrounded `run_started`, so they never
+ * reach the World before the run exists; a rejected barrier only orders them
+ * (the write itself surfaces a run that does not exist).
+ */
+export function pendingQueueDrain(
+  world: World,
+  runReadyBarrier?: Promise<unknown>
+): PendingQueueDrain {
+  return async (suspension, run) => {
+    await handleSuspension({ suspension, world, run, runReadyBarrier });
+  };
 }

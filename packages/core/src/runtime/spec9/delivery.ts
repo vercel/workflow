@@ -195,7 +195,7 @@ import {
   planStepsAndWaits,
   type StartedInBatch,
 } from './step-wait-creation.js';
-import { handleSuspension } from './suspension-handler.js';
+import { handleSuspension, pendingQueueDrain } from './suspension-handler.js';
 
 /**
  * Apply the optional client-side event-limit override.
@@ -2343,13 +2343,9 @@ export async function runSpec9Delivery(
                   }
                 : {}),
               worldCapabilities: world.capabilities,
-              drainPendingQueue: (suspension, workflowRun) =>
-                handleSuspension({
-                  suspension,
-                  world,
-                  run: workflowRun,
-                  writeEvent: (data, params) => writeInBand(data, params),
-                }).then(() => {}),
+              drainPendingQueue: pendingQueueDrain(world, (data, params) =>
+                writeInBand(data, params)
+              ),
             });
           }
           await payloadPrewarm;

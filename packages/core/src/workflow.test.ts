@@ -8,7 +8,7 @@ import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { compileDynamicWorkflow } from './runtime/dynamic-workflow.js';
-import { handleSuspension } from './runtime/spec9/suspension-handler.js';
+import { pendingQueueDrain } from './runtime/spec9/suspension-handler.js';
 import { getWorld, setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -16,12 +16,7 @@ import {
   hydrateWorkflowReturnValue,
 } from './serialization.js';
 import { createContext } from './vm/index.js';
-import {
-  type PendingQueueDrain,
-  replayWorkflow,
-  resumeWorkflow,
-  runWorkflow,
-} from './workflow.js';
+import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
@@ -5963,14 +5958,10 @@ async function workflow() {
         event: { eventType: data.eventType },
       }));
       // The single-orchestrator drain, as its delivery wires it.
-      const drainPendingQueue: PendingQueueDrain = async (suspension, run) => {
-        await handleSuspension({
-          suspension,
-          world: (await getWorld()) as never,
-          run,
-          writeEvent: writeEvent as never,
-        });
-      };
+      const drainPendingQueue = pendingQueueDrain(
+        await getWorld(),
+        writeEvent as never
+      );
 
       await runWorkflow(
         `${FIRE_AND_FORGET_HOOK}${getWorkflowTransformCode('workflow')}`,

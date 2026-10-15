@@ -35,6 +35,7 @@ import {
 import { dehydrateStepArguments } from '../../serialization.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../../util.js';
+import type { PendingQueueDrain } from '../../workflow.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
@@ -1076,4 +1077,18 @@ function isWorldValidationFailure(err: unknown): boolean {
     return true;
   }
   return WorkflowWorldError.is(err) && err.status === 400;
+}
+
+/**
+ * The end-of-run drain of the spec 9 orchestrator (see `PendingQueueDrain`):
+ * the queued items are written like any suspension's, through the
+ * orchestrator's in-band writer.
+ */
+export function pendingQueueDrain(
+  world: World,
+  writeEvent: EventCreator
+): PendingQueueDrain {
+  return async (suspension, run) => {
+    await handleSuspension({ suspension, world, run, writeEvent });
+  };
 }

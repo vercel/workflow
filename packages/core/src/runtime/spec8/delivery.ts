@@ -151,7 +151,7 @@ import {
   stepLeaseRemainingSeconds,
 } from './step-ownership.js';
 import { runStepSingleFlight } from './step-single-flight.js';
-import { handleSuspension } from './suspension-handler.js';
+import { handleSuspension, pendingQueueDrain } from './suspension-handler.js';
 
 type ReplayEventLog =
   | { type: 'loadAll' }
@@ -2506,13 +2506,7 @@ export async function runSpec8Delivery(
           // Turbo: the end-of-run drain inside workflow
           // execution commits fire-and-forget `*_created`
           // events before the terminal `awaitRunReady()` below.
-          drainPendingQueue: (suspension, workflowRun) =>
-            handleSuspension({
-              suspension,
-              world,
-              run: workflowRun,
-              runReadyBarrier,
-            }).then(() => {}),
+          drainPendingQueue: pendingQueueDrain(world, runReadyBarrier),
           worldCapabilities: world.capabilities,
         });
       }
