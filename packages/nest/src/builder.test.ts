@@ -209,6 +209,13 @@ describe('NestLocalBuilder CommonJS steps bundle', () => {
     rmSync(workingDir, { recursive: true, force: true });
   });
 
+  it('forwards the after-bundle hook to the builder config', () => {
+    const onAfterBundle = () => {};
+    const builder = new NestLocalBuilder({ onAfterBundle });
+
+    expect((builder as any).config.onAfterBundle).toBe(onAfterBundle);
+  });
+
   it(
     'declares `require` exactly once',
     { timeout: BUILD_TIMEOUT },

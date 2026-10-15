@@ -11,7 +11,11 @@ type StubOptions = {
   preset?: string;
   rootDir?: string;
   workspaceDir?: string;
-  workflow?: { dirs?: string[]; runtime?: string };
+  workflow?: {
+    dirs?: string[];
+    runtime?: string;
+    onAfterBundle?: (...args: any[]) => unknown;
+  };
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
   };
@@ -120,6 +124,18 @@ describe('@workflow/nitro virtual handlers', () => {
 });
 
 describe('@workflow/nitro builder lifecycle', () => {
+  it('forwards the after-bundle hook with the Nitro build target', () => {
+    const onAfterBundle = vi.fn();
+    const nitro = createNitroStub({
+      routing: true,
+      workflow: { onAfterBundle },
+    });
+    const builder = new LocalBuilder(nitro);
+
+    expect((builder as any).config.buildTarget).toBe('nitro');
+    expect((builder as any).config.onAfterBundle).toBe(onAfterBundle);
+  });
+
   it('closes a development Nitro instance with its Vite plugin container', async () => {
     const nitro = createNitroStub({ routing: true, dev: true });
     nitro.close = vi.fn(async () => {});

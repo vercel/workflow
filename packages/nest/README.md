@@ -144,6 +144,12 @@ WorkflowModule.forRoot({
   // Only used when moduleType is 'commonjs'
   // Should match the outDir in your tsconfig.json
   distDir: 'dist',
+
+  // Derive deployment metadata after each successful build.
+  onAfterBundle: ({ artifacts }) => {
+    // Derive deployment metadata from artifacts here.
+    void artifacts;
+  },
 });
 ```
 

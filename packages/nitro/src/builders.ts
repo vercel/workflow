@@ -44,6 +44,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs: getNitroWorkflowDirs(nitro),
         runtime: nitro.options.workflow?.runtime,
         sourcemap: nitro.options.workflow?.sourcemap,
+        onAfterBundle: nitro.options.workflow?.onAfterBundle,
         externalPackages: getNitroStringExternals(nitro),
       }),
       buildTarget: 'vercel-build-output-api',
@@ -73,9 +74,10 @@ export class LocalBuilder extends BaseBuilder {
         watch: nitro.options.dev,
         dirs: getNitroWorkflowDirs(nitro),
         sourcemap: nitro.options.workflow?.sourcemap,
+        onAfterBundle: nitro.options.workflow?.onAfterBundle,
         externalPackages: getNitroStringExternals(nitro),
       }),
-      buildTarget: 'next', // Placeholder, not actually used
+      buildTarget: 'nitro',
     });
     this.#outDir = outDir;
   }

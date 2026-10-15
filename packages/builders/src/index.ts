@@ -72,10 +72,16 @@ export {
 export type {
   AstroConfig,
   BuildTarget,
+  NitroConfig,
   NextConfig,
   StandaloneConfig,
   SvelteKitConfig,
   VercelBuildOutputConfig,
+  WorkflowAfterBundleHook,
+  WorkflowBundleArtifact,
+  WorkflowBundleArtifactKind,
+  WorkflowBundleArtifacts,
+  WorkflowBundleResult,
   WorkflowConfig,
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';

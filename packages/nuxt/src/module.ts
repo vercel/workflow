@@ -9,9 +9,14 @@ export interface ModuleOptions {
    * @default true
    */
   typescriptPlugin: boolean;
+
+  /**
+   * Runs after the workflow bundles and manifest have been written.
+   */
+  onAfterBundle?: NitroModuleOptions['onAfterBundle'];
 }
 
-const module: NuxtModule<ModuleOptions> = defineNuxtModule({
+const module: NuxtModule<ModuleOptions> = defineNuxtModule<ModuleOptions>({
   meta: {
     name: 'workflow',
     configKey: 'workflow',
@@ -28,10 +33,16 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
     if (!nuxt.options.nitro.modules.includes('@workflow/nitro')) {
       nuxt.options.nitro.workflow ||= {} as NitroModuleOptions;
       nuxt.options.nitro.workflow.typescriptPlugin = options.typescriptPlugin;
+      nuxt.options.nitro.workflow.onAfterBundle = options.onAfterBundle;
       // Signal to @workflow/nitro that Vite handles SSR externalization,
       // so the Nitro module should not override Nitro externals config.
       nuxt.options.nitro.workflow._vite = true;
       nuxt.options.nitro.modules.push('@workflow/nitro');
+    } else if (options.onAfterBundle) {
+      // Preserve an existing Nitro module registration while still forwarding
+      // the hook configured through the Nuxt module.
+      nuxt.options.nitro.workflow ||= {} as NitroModuleOptions;
+      nuxt.options.nitro.workflow.onAfterBundle = options.onAfterBundle;
     }
 
     // Force Vite to bundle workflow SDK packages in SSR mode rather than

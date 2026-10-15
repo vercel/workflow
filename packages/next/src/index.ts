@@ -6,6 +6,7 @@ import {
   resolveProjectRoot,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
+import type { WorkflowAfterBundleHook } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -467,6 +468,13 @@ export function withWorkflow(
        * environment variable.
        */
       sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+      /**
+       * Runs after the workflow bundles and manifest have been written.
+       *
+       * This is useful for integrations that derive deployment metadata from
+       * the authoritative Workflow SDK manifest.
+       */
+      onAfterBundle?: WorkflowAfterBundleHook;
     };
   } = {}
 ) {
@@ -626,6 +634,7 @@ export function withWorkflow(
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
             sourcemap: workflows?.sourcemap,
+            onAfterBundle: workflows?.onAfterBundle,
             externalPackages: [
               // server-only and client-only are pseudo-packages handled by Next.js
               // during its build process. We mark them as external to prevent esbuild
