@@ -153,6 +153,10 @@ interface MailboxBatch {
   finish(): Promise<void>;
 }
 const MAX_MAILBOX_BATCH = 100;
+/** Steps of one run that may be running at once (local and dispatched). A
+ * sliding window: each committed outcome frees a slot for the next pending
+ * step on the owner's next pass. */
+const MAX_RUNNING_STEPS = 200;
 /** Phases logged on every owner start (see `owner-diagnostics.ts`). */
 const STARTUP_PHASES = new Set([
   'initialize',
@@ -1489,7 +1493,7 @@ export class RetainedRunner {
         await this.dispatchSteps(admittedRemote, policy.attemptTimeoutMs);
       };
       let available =
-        100 -
+        MAX_RUNNING_STEPS -
         [...this.steps.values()].filter((step) => step.status === 'running')
           .length;
       for (const step of this.steps.values()) {
