@@ -62,10 +62,20 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // Vercel Queues supports maxConcurrency-limited consumers, which
-      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
-      // flow topics (see queue.ts and @workflow/builders).
+      // Vercel Queues supports maxConcurrency-limited consumers: every run's
+      // orchestrator messages go to a per-run topic consumed with
+      // `maxConcurrency: 1` (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // The backend stores a single-orchestrator event's `occurredAt` as its
+      // `createdAt` (clamped only for clock skew beyond an hour ahead or a
+      // week behind), on creates and batch items alike, so run-ahead may
+      // hand an outcome to the workflow before its write commits. The
+      // runtime checks every speculative write's stored time anyway.
+      inBandEventTime: true,
+      // A spec-9 batch is ordered per entity: once the backend refuses an
+      // item, it refuses the batch's later items of the same correlation id
+      // (409 `batch-earlier-item-failed`).
+      inBandBatchEntityOrder: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
@@ -78,7 +88,8 @@ export function createWorld(config?: APIConfig): World {
       // version. A list response carries `snapshot` and a single create
       // carries `allocated` where the backend reports them (events-v4.ts); a
       // run whose list carries no snapshot is still fenced, and its refusals
-      // carry the counters.
+      // carry the counters. Single-orchestrator runs (spec >= 9) always list
+      // one, which the runtime requires.
       inBandFence: true,
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })` (workflow-server

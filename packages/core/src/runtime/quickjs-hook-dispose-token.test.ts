@@ -68,7 +68,9 @@ async function disposeWith(op: Record<string, unknown>) {
     dispose: vi.fn(),
   });
 
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',

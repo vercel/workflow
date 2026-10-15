@@ -103,7 +103,9 @@ async function replayWith(events: Event[]) {
     dispose: vi.fn(),
   });
 
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -124,10 +126,12 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queue).toHaveBeenCalledTimes(1);
     const [queueName, message, options] = queue.mock.calls[0];
     expect(queueName).toContain('victim-workflow');
-    expect(message).toEqual({ runId: 'wrun_victim' });
+    expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
-      idempotencyKey: 'hook-force-claim-hook_claimer',
     });
   });
 
@@ -159,9 +163,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
       event(6, 'wait_completed', {}, 'wait_1'),
     ]);
     expect(queue).toHaveBeenCalledTimes(1);
-    expect(queue.mock.calls[0][2]).toMatchObject({
-      idempotencyKey: 'hook-force-claim-hook_claimer',
-    });
+    expect(queue.mock.calls[0][2]).toMatchObject({});
   });
 
   it("repays the victim's wake when a later claimer took the token from this run (the chain)", async () => {
@@ -177,7 +179,10 @@ describe('QuickJS force-claim victim wake on replay', () => {
       ),
     ]);
     expect(queue).toHaveBeenCalledTimes(1);
-    expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+    expect(queue.mock.calls[0][1]).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
   });
 
   it('stops republishing once the forced creation is outside the window', async () => {
@@ -233,6 +238,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
                 runId: `wrun_victim_${letter}`,
                 hookId: `hook_victim_${letter}`,
                 workflowName: 'victim-workflow',
+                runSpecVersion: SPEC_VERSION_CURRENT,
               },
             },
           };
@@ -259,7 +265,9 @@ describe('QuickJS force-claim victim wake on replay', () => {
       dispose: vi.fn(),
     });
 
-    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import(
+      './spec9/quickjs-entrypoint.js'
+    );
     await runWorkflowWithQuickJS({
       workflowCode: '// not evaluated: the VM is mocked',
       workflowName: 'workflow',
@@ -267,10 +275,10 @@ describe('QuickJS force-claim victim wake on replay', () => {
       preloadedEvents: [],
     });
 
-    // Each victim is still woken once, under its own claimer hook's key.
+    // Each victim is still woken once, with no idempotency key.
     expect(wakes.sort()).toEqual([
-      'wrun_victim_a:hook-force-claim-hook_forced_a',
-      'wrun_victim_b:hook-force-claim-hook_forced_b',
+      'wrun_victim_a:undefined',
+      'wrun_victim_b:undefined',
     ]);
   });
 
@@ -345,7 +353,9 @@ describe('QuickJS force-claim victim wake on replay', () => {
       dispose: vi.fn(),
     });
 
-    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import(
+      './spec9/quickjs-entrypoint.js'
+    );
     await runWorkflowWithQuickJS({
       workflowCode: '// not evaluated: the VM is mocked',
       workflowName: 'workflow',

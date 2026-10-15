@@ -29,7 +29,7 @@ describe('start() compressArguments option', () => {
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-      capabilities: { dynamicWorkflowCode: true },
+      capabilities: { dynamicWorkflowCode: true, inBandFence: true },
       events: { create: eventsCreate },
       runs: { get: vi.fn() },
       queue: vi.fn().mockResolvedValue(undefined),

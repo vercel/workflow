@@ -32,10 +32,12 @@
 import { SerializationError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
+  classifyEntityEvent,
   type Event,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
+  TERMINAL_EVENT_CLASSES,
   type WorkflowRun,
   type WorldCapabilities,
 } from '@workflow/world';
@@ -2279,7 +2281,14 @@ async function processEvents(
   encryptionKey?: DecryptionKey
 ): Promise<boolean> {
   let resolved = false;
-  for (const event of events) {
+  const terminals = terminalEventIds(vm);
+  const batchIndexOf = new Map<string, number>();
+  for (let i = 0; i < events.length; i++) {
+    const id = events[i].eventId;
+    if (id && !batchIndexOf.has(id)) batchIndexOf.set(id, i);
+  }
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
     // A sealed-log noop occupies a slot whose writer died; the run never
     // observed it. Step over it BEFORE the clock line below, not at the
     // switch: its `createdAt` is the sealer's wall clock and can postdate
@@ -2308,10 +2317,43 @@ async function processEvents(
     const cid = event.correlationId;
     if (!cid) continue;
 
-    // JSON.stringify handles quotes, backslashes and control characters;
-    // correlation ids are host-generated ULIDs today, but the eval-string
-    // safety shouldn't depend on that invariant being asserted nowhere.
+    // Terminal-inert, the rule `EventsConsumer` applies on the node:vm
+    // engine: once an entity's terminal event (step outcome, wait
+    // completion, hook disposal, workflow attribute write) is in the log,
+    // every event AFTER it under the same correlation id is inert. The test
+    // is a log position, not "this VM has seen the terminal": the fixed-point
+    // loop re-scans the same batch, and the entity's earlier events must
+    // still reach `markCreated` on a re-scan (a terminal buffered before the
+    // VM called the step leaves the step's pending op to be marked then).
     const cidJs = JSON.stringify(cid);
+    const terminalId = terminals.get(cid);
+    if (terminalId !== undefined) {
+      const terminalIndex = batchIndexOf.get(terminalId);
+      // A terminal from an earlier batch precedes everything in this one.
+      if (terminalIndex === undefined || index > terminalIndex) {
+        // Inert for the workflow, but the pending-op bookkeeping still
+        // applies, exactly as before the rule: an op under this id has
+        // its creation in the log either way.
+        markCreated(vm, cidJs);
+        if (event.eventType === 'hook_disposed') {
+          markCreated(vm, cidJs, 'hook_dispose');
+        }
+        continue;
+      }
+    } else if (event.eventId) {
+      const entityClass = classifyEntityEvent(event);
+      if (
+        entityClass !== undefined &&
+        TERMINAL_EVENT_CLASSES.has(entityClass.eventClass)
+      ) {
+        recordTerminal(vm, terminals, cid, event.eventId);
+      }
+    }
+
+    // JSON.stringify (above) handles quotes, backslashes and control
+    // characters; correlation ids are host-generated ULIDs today, but the
+    // eval-string safety shouldn't depend on that invariant being asserted
+    // nowhere.
     const eventData =
       'eventData' in event
         ? (event.eventData as Record<string, unknown>)
@@ -2967,6 +3009,43 @@ async function processEvents(
     }
   }
   return resolved;
+}
+
+/**
+ * The first terminal event's id per correlation id, for the terminal-inert
+ * rule in {@link processEvents}. The VM heap holds the record
+ * (`globalThis.__terminalEventIds`), so it travels with a VM snapshot: a
+ * restored VM is fed only the events after the snapshot, and a straggler
+ * among them is recognized against a terminal it saw before. This map is a
+ * host-side read cache of that record, filled from the heap the first time a
+ * VM instance is seen and written through on every addition.
+ */
+// per-copy-ok: keyed by a VM instance this copy of the module created, so no
+// other copy ever looks it up.
+const terminalEventIdsByVm = new WeakMap<QuickJS, Map<string, string>>();
+
+function terminalEventIds(vm: QuickJS): Map<string, string> {
+  let terminals = terminalEventIdsByVm.get(vm);
+  if (!terminals) {
+    const stored = vm.dump(
+      vm.evalCode('globalThis.__terminalEventIds || {}')
+    ) as Record<string, string>;
+    terminals = new Map(Object.entries(stored));
+    terminalEventIdsByVm.set(vm, terminals);
+  }
+  return terminals;
+}
+
+function recordTerminal(
+  vm: QuickJS,
+  terminals: Map<string, string>,
+  cid: string,
+  eventId: string
+): void {
+  terminals.set(cid, eventId);
+  vm.evalCode(
+    `(globalThis.__terminalEventIds = globalThis.__terminalEventIds || {})[${JSON.stringify(cid)}] = ${JSON.stringify(eventId)};`
+  ).dispose();
 }
 
 /**

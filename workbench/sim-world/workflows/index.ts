@@ -565,6 +565,32 @@ export async function stepVsStepForkWorkflow(documentId: string) {
     : await afterSlow(documentId);
 }
 
+async function loopA(documentId: string) {
+  'use step';
+  return `a:${documentId}`;
+}
+
+async function loopB(previous: string) {
+  'use step';
+  return `b:${previous}`;
+}
+
+async function loopC(previous: string) {
+  'use step';
+  return `c:${previous}`;
+}
+
+/**
+ * Three inline steps in sequence and nothing else open: every boundary is
+ * inert, so the orchestrator runs ahead of each step's outcome.
+ */
+export async function runAheadLoopWorkflow(documentId: string) {
+  'use workflow';
+  const a = await loopA(documentId);
+  const b = await loopB(a);
+  return await loopC(b);
+}
+
 async function heldRaceStep(documentId: string) {
   'use step';
   return `step:${documentId}`;

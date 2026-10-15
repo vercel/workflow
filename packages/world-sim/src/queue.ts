@@ -12,10 +12,19 @@
  * scheduled 23 hours out is delivered by jumping the clock, not by waiting),
  * which is what lets a scenario containing `sleep('30d')` finish in
  * microseconds.
+ *
+ * A run's orchestrator deliveries (see `orchestratorRunIdOf`) go one at a
+ * time, as on a per-run topic consumed with `maxConcurrency: 1`: a delivery
+ * holds its run's lease from the moment it is handed to the handler until the
+ * handler responds, and no other orchestrator message of that run is handed
+ * out meanwhile. Step messages are never gated. The one way past the gate is
+ * `expireLeases`, which models a delivery that outlived its lease: the queue
+ * treats the run as free while that delivery keeps running.
  */
 
 import {
   MessageId,
+  orchestratorRunIdOf,
   parseQueueName,
   type Queue,
   type QueueOptions,
@@ -40,13 +49,59 @@ export interface QueuedMessage {
 
 export type DirectHandler = (req: Request) => Promise<Response>;
 
+/** One orchestrator delivery holding its run's lease. */
+export interface DeliveryLease {
+  runId: string;
+  messageId: string;
+  /** The message being delivered. */
+  message: QueuedMessage;
+  /** Set by `expireLeases`: the delivery runs on, but no longer holds the run. */
+  expired: boolean;
+}
+
 export interface SimQueue extends Queue {
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
   handlerFor(queueName: string): DirectHandler | undefined;
   /** Pending messages in delivery order. */
   pending(): QueuedMessage[];
-  /** Remove and return the next message to deliver, or undefined when idle. */
+  /**
+   * Remove and return the next message that may be delivered now, or
+   * undefined when there is none. An orchestrator message whose run holds a
+   * live lease is skipped, not returned.
+   */
   takeNext(): QueuedMessage | undefined;
+  /** Whether `message` may be delivered now (see `takeNext`). */
+  isDeliverable(message: QueuedMessage): boolean;
+  /**
+   * Take the run's lease for an orchestrator delivery, waiting for the
+   * current holder first. Resolves `undefined` at once for a message that is
+   * not an orchestrator delivery. `onWait` is called once if it has to wait.
+   */
+  acquireLease(
+    message: QueuedMessage,
+    onWait?: (holder: DeliveryLease) => void
+  ): Promise<DeliveryLease | undefined>;
+  /** Give a lease back when its delivery has responded. */
+  releaseLease(lease: DeliveryLease | undefined): void;
+  /**
+   * Expire the live lease of `runId`, as if its delivery had stalled past its
+   * visibility timeout: it keeps running, and the run's next orchestrator
+   * message can be delivered alongside it. With `redeliver`, the expired
+   * message is also pending again (same `messageId`, the next delivery
+   * count), which is what a queue does with a message whose lease lapsed.
+   * Returns the leases it expired.
+   */
+  expireLeases(
+    runId: string,
+    options?: { redeliver?: boolean }
+  ): DeliveryLease[];
+  /**
+   * Resolves the next time the set of deliverable messages may have grown:
+   * a lease is released or expired, or a message is enqueued.
+   */
+  nextChange(): Promise<void>;
+  /** Pending messages that only a live lease is holding back. */
+  gated(): QueuedMessage[];
   /** Take a specific pending message, for scenario-chosen delivery order. */
   takeById(messageId: string): QueuedMessage | undefined;
   /** Put a message back for a later delivery attempt, preserving its messageId. */
@@ -105,6 +160,23 @@ export function createSimQueue(opts: {
   const inflightKeys = new Map<string, string>();
   let seq = 0;
 
+  /** Live (unexpired) leases by run. At most one per run. */
+  const leases = new Map<string, DeliveryLease>();
+  let changeWaiters: (() => void)[] = [];
+  const notifyChange = () => {
+    const waiters = changeWaiters;
+    changeWaiters = [];
+    for (const wake of waiters) wake();
+  };
+  const nextChange = () =>
+    new Promise<void>((resolve) => {
+      changeWaiters.push(resolve);
+    });
+  const isDeliverable = (message: QueuedMessage) => {
+    const runId = orchestratorRunIdOf(message.payload);
+    return runId === undefined || !leases.has(runId);
+  };
+
   const queue: Queue['queue'] = async (
     queueName: ValidQueueName,
     message: QueuePayload,
@@ -135,6 +207,7 @@ export function createSimQueue(opts: {
       inflightKeys.set(options.idempotencyKey, messageId);
     }
     messages.push(entry);
+    notifyChange();
     return { messageId: MessageId.parse(messageId) };
   };
 
@@ -202,11 +275,51 @@ export function createSimQueue(opts: {
     },
     pending: orderPending,
     takeNext() {
-      const ordered = orderPending();
-      const next = ordered[0];
+      const next = orderPending().find(isDeliverable);
       if (!next) return undefined;
       messages.splice(messages.indexOf(next), 1);
       return next;
+    },
+    isDeliverable,
+    async acquireLease(message, onWait) {
+      const runId = orchestratorRunIdOf(message.payload);
+      if (runId === undefined) return undefined;
+      let waited = false;
+      for (let holder = leases.get(runId); holder; holder = leases.get(runId)) {
+        if (!waited) {
+          waited = true;
+          onWait?.(holder);
+        }
+        await nextChange();
+      }
+      const lease: DeliveryLease = {
+        runId,
+        messageId: message.messageId,
+        message,
+        expired: false,
+      };
+      leases.set(runId, lease);
+      return lease;
+    },
+    releaseLease(lease) {
+      if (!lease || lease.expired) return;
+      if (leases.get(lease.runId) === lease) leases.delete(lease.runId);
+      notifyChange();
+    },
+    expireLeases(runId, options) {
+      const lease = leases.get(runId);
+      if (!lease) return [];
+      lease.expired = true;
+      leases.delete(runId);
+      if (options?.redeliver) {
+        messages.push({ ...lease.message, readyAtMs: opts.now(), seq: seq++ });
+      }
+      notifyChange();
+      return [lease];
+    },
+    nextChange,
+    gated() {
+      return orderPending().filter((m) => !isDeliverable(m));
     },
     takeById(messageId) {
       const index = messages.findIndex((m) => m.messageId === messageId);
@@ -215,6 +328,7 @@ export function createSimQueue(opts: {
     },
     requeue(message, readyAtMs) {
       messages.push({ ...message, readyAtMs, seq: seq++ });
+      notifyChange();
     },
     settle(message) {
       if (

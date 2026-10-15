@@ -97,3 +97,75 @@ describe('sim queue', () => {
     expect([...payload.runInput.input]).toEqual([1, 2, 3]);
   });
 });
+
+describe('sim queue: one orchestrator delivery per run', () => {
+  it('skips a run’s orchestrator message while that run holds a lease', async () => {
+    const { queue } = setup();
+    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, {
+      runId: 'wrun_a',
+      stepId: 'step_1',
+      stepName: 'add',
+    });
+    await queue.queue(TOPIC, { runId: 'wrun_b' });
+
+    const first = queue.takeNext();
+    const lease = await queue.acquireLease(first!);
+    expect(lease).toMatchObject({ runId: 'wrun_a', expired: false });
+
+    // The second orchestrator message of wrun_a waits; the step message and
+    // the other run do not.
+    expect(queue.takeNext()?.payload).toMatchObject({ stepId: 'step_1' });
+    expect(queue.takeNext()?.payload).toMatchObject({ runId: 'wrun_b' });
+    expect(queue.takeNext()).toBeUndefined();
+    expect(queue.gated()).toHaveLength(1);
+
+    queue.releaseLease(lease);
+    expect(queue.takeNext()?.payload).toMatchObject({ runId: 'wrun_a' });
+  });
+
+  it('makes a second lease of the run wait for the first', async () => {
+    const { queue } = setup();
+    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    const first = await queue.acquireLease(queue.takeNext()!);
+    const waitedFor: string[] = [];
+    const second = queue.acquireLease(queue.pending()[0]!, (holder) =>
+      waitedFor.push(holder.messageId)
+    );
+    let acquired = false;
+    void second.then(() => {
+      acquired = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(acquired).toBe(false);
+    expect(waitedFor).toEqual([first?.messageId]);
+    queue.releaseLease(first);
+    await expect(second).resolves.toMatchObject({ runId: 'wrun_a' });
+  });
+
+  it('frees the run when a lease expires, and can redeliver its message', async () => {
+    const { queue } = setup();
+    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, { runId: 'wrun_a' }, { delaySeconds: 60 });
+    const message = queue.takeNext()!;
+    message.deliveries++;
+    const lease = await queue.acquireLease(message);
+    expect(queue.isDeliverable(queue.pending()[0]!)).toBe(false);
+
+    expect(queue.expireLeases('wrun_a', { redeliver: true })).toEqual([lease]);
+    // The stalled delivery keeps running; releasing its expired lease later
+    // must not free a lease someone else now holds.
+    const redelivery = queue.takeNext();
+    expect(redelivery).toMatchObject({
+      messageId: message.messageId,
+      deliveries: 1,
+    });
+    const successor = await queue.acquireLease(redelivery!);
+    queue.releaseLease(lease);
+    expect(queue.isDeliverable(queue.pending()[0]!)).toBe(false);
+    queue.releaseLease(successor);
+    expect(queue.isDeliverable(queue.pending()[0]!)).toBe(true);
+  });
+});

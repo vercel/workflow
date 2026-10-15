@@ -1,35 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
   getWorkflowQueueTrigger,
+  isSequentialReplaysEnabled,
 } from './constants.js';
 
 describe('getWorkflowQueueTrigger', () => {
-  let originalStrict: string | undefined;
-
-  beforeEach(() => {
-    originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-  });
-
   afterEach(() => {
-    if (originalStrict !== undefined) {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
-    } else {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    }
+    vi.unstubAllEnvs();
   });
 
-  it('omits maxConcurrency by default', () => {
-    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    const trigger = getWorkflowQueueTrigger();
-    expect(trigger.topic).toBe('__wkf_workflow_*');
-    expect('maxConcurrency' in trigger).toBe(false);
-  });
-
-  it('sets maxConcurrency: 1 when WORKFLOW_SEQUENTIAL_REPLAYS=1', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+  it('always sets maxConcurrency: 1', () => {
     const trigger = getWorkflowQueueTrigger();
     expect(trigger).toMatchObject({
       topic: '__wkf_workflow_*',
@@ -37,14 +20,17 @@ describe('getWorkflowQueueTrigger', () => {
     });
   });
 
-  it('does not set maxConcurrency for non-"1" values', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
-    const trigger = getWorkflowQueueTrigger();
-    expect('maxConcurrency' in trigger).toBe(false);
+  it.each([
+    '0',
+    'false',
+    '',
+  ])('ignores the removed WORKFLOW_SEQUENTIAL_REPLAYS=%j', (value) => {
+    vi.stubEnv('WORKFLOW_SEQUENTIAL_REPLAYS', value);
+    expect(getWorkflowQueueTrigger().maxConcurrency).toBe(1);
+    expect(isSequentialReplaysEnabled()).toBe(true);
   });
 
   it('composes with an explicit namespace option', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
     expect(getWorkflowQueueTrigger({ namespace: 'custom' })).toMatchObject({
       topic: '__custom_wkf_workflow_*',
       maxConcurrency: 1,
@@ -52,13 +38,8 @@ describe('getWorkflowQueueTrigger', () => {
   });
 
   it('resolves WORKFLOW_QUEUE_NAMESPACE at call time', () => {
-    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    process.env.WORKFLOW_QUEUE_NAMESPACE = 'callns';
-    try {
-      expect(getWorkflowQueueTrigger().topic).toBe('__callns_wkf_workflow_*');
-    } finally {
-      delete process.env.WORKFLOW_QUEUE_NAMESPACE;
-    }
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'callns');
+    expect(getWorkflowQueueTrigger().topic).toBe('__callns_wkf_workflow_*');
   });
 });
 

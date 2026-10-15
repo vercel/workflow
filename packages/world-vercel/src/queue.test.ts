@@ -73,7 +73,11 @@ vi.mock('./utils.js', () => ({
 }));
 
 import { missingDeploymentIdMessage } from './deployment-id.js';
-import { createQueue, recordStepExecution } from './queue.js';
+import {
+  createQueue,
+  recordStepExecution,
+  resolveMessageLifetime,
+} from './queue.js';
 import { getHttpUrl } from './utils.js';
 
 describe('createQueue', () => {
@@ -449,33 +453,29 @@ describe('createQueue', () => {
     });
   });
 
-  describe('strict concurrency (WORKFLOW_SEQUENTIAL_REPLAYS)', () => {
-    let originalDeploymentId: string | undefined;
-    let originalStrict: string | undefined;
-
+  describe('per-run orchestrator topics', () => {
     beforeEach(() => {
-      originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
-      originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_test');
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
     });
-
     afterEach(() => {
-      if (originalDeploymentId !== undefined) {
-        process.env.VERCEL_DEPLOYMENT_ID = originalDeploymentId;
-      } else {
-        delete process.env.VERCEL_DEPLOYMENT_ID;
-      }
-      if (originalStrict !== undefined) {
-        process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
-      } else {
-        delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-      }
+      vi.unstubAllEnvs();
+    });
+
+    it('routes orchestrator messages to a per-run topic with no opt-in', async () => {
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
+    });
+
+    it('ignores the removed WORKFLOW_SEQUENTIAL_REPLAYS=0', async () => {
+      vi.stubEnv('WORKFLOW_SEQUENTIAL_REPLAYS', '0');
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
     });
 
     it('appends runId to the physical flow topic while keeping the logical queueName', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
       const queue = createQueue();
       await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
 
@@ -486,47 +486,7 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][1].queueName).toBe('__wkf_workflow_test');
     });
 
-    it('re-enqueues delayed flow messages to the same per-run physical topic', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
-      let capturedHandler: (
-        message: unknown,
-        metadata: unknown
-      ) => Promise<void>;
-      mockHandleCallback.mockImplementation((handler) => {
-        capturedHandler = handler;
-        return async () => new Response('ok');
-      });
-
-      const queue = createQueue();
-      queue.createQueueHandler('__wkf_workflow_', async () => ({
-        timeoutSeconds: 300,
-      }));
-
-      await capturedHandler!(
-        {
-          payload: { runId: 'wrun_abc' },
-          queueName: '__wkf_workflow_test',
-          deploymentId: 'dpl_original',
-        },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
-      );
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test_wrun_abc');
-    });
-
-    it('does not rewrite the topic when the flag is unset', async () => {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test');
-    });
-
     it('gives inline step executions (flow topic + stepId) a per-step topic for full parallelism', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
       const queue = createQueue();
       // Inline step executions ride the flow topic as WorkflowInvokePayload
       // with a stepId. They must NOT share the per-run serialized topic, or
@@ -551,8 +511,6 @@ describe('createQueue', () => {
     });
 
     it('gives each health check its own physical topic so concurrent probes never serialize', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
       const queue = createQueue();
       // Concurrent probes: with maxConcurrency: 1 applied per concrete topic,
       // a single shared `…_health_check` topic would process probes one at a
@@ -580,8 +538,6 @@ describe('createQueue', () => {
     });
 
     it('keeps a per-probe topic for a health check that carries a runId', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
       const queue = createQueue();
       // A probe issued to prepare a cross-deployment `start()` carries the run
       // id it is about to create. It must still get its per-probe topic rather
@@ -605,21 +561,7 @@ describe('createQueue', () => {
       });
     });
 
-    it('does not rewrite health check topics when the flag is unset', async () => {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_health_check', {
-        __healthCheck: true as const,
-        correlationId: 'corr_123',
-      });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_health_check');
-    });
-
     it('appends runId to namespaced flow topics so it composes with WORKFLOW_QUEUE_NAMESPACE', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
       const queue = createQueue();
       await queue.queue('__custom_wkf_workflow_test', { runId: 'wrun_abc' });
 
@@ -629,6 +571,100 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][1].queueName).toBe(
         '__custom_wkf_workflow_test'
       );
+    });
+  });
+
+  describe('message keys and lifetime', () => {
+    beforeEach(() => {
+      vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_test');
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('sends a wake with no idempotency key and no retention', async () => {
+      const queue = createQueue();
+      await queue.queue('__wkf_workflow_test', { runId: 'wrun_abc' });
+      const sendOpts = mockSend.mock.calls[0][2];
+      expect(sendOpts.idempotencyKey).toBeUndefined();
+      expect(sendOpts).not.toHaveProperty('retentionSeconds');
+      expect(sendOpts).not.toHaveProperty('delaySeconds');
+    });
+
+    it('sends a step message with its stable key and retention', async () => {
+      const queue = createQueue();
+      const retentionSeconds = 3 * 24 * 60 * 60;
+      await queue.queue(
+        '__wkf_workflow_test',
+        { runId: 'wrun_abc', stepId: 'step_1', stepName: 'add' },
+        { idempotencyKey: 'step_1', retentionSeconds }
+      );
+      const [topic, , sendOpts] = mockSend.mock.calls[0];
+      expect(topic).toBe('__wkf_workflow_test_wrun_abc_step_1');
+      expect(sendOpts).toMatchObject({
+        idempotencyKey: 'step_1',
+        retentionSeconds,
+      });
+    });
+
+    it('sends the same key for every send of one step, so a re-enqueue dedupes', async () => {
+      const queue = createQueue();
+      const payload = { runId: 'wrun_abc', stepId: 'step_1', stepName: 'add' };
+      await queue.queue('__wkf_workflow_test', payload, {
+        idempotencyKey: 'step_1',
+      });
+      await queue.queue('__wkf_workflow_test', payload, {
+        idempotencyKey: 'step_1',
+      });
+      expect(mockSend.mock.calls[0][0]).toBe(mockSend.mock.calls[1][0]);
+      expect(mockSend.mock.calls[0][2].idempotencyKey).toBe(
+        mockSend.mock.calls[1][2].idempotencyKey
+      );
+    });
+  });
+
+  describe('resolveMessageLifetime', () => {
+    const SEVEN_DAYS = 7 * 24 * 60 * 60;
+    const DEFAULT_MAX_DELAY = resolveMessageLifetime({
+      delaySeconds: Number.MAX_SAFE_INTEGER,
+    }).delaySeconds as number;
+
+    it('sends neither field when the caller sets neither', () => {
+      expect(resolveMessageLifetime()).toEqual({});
+      expect(resolveMessageLifetime({ delaySeconds: 0 })).toEqual({});
+    });
+
+    it('keeps a timer inside the default retention when no retention is set', () => {
+      expect(DEFAULT_MAX_DELAY).toBeLessThan(24 * 60 * 60);
+      expect(resolveMessageLifetime({ delaySeconds: 300 })).toEqual({
+        delaySeconds: 300,
+      });
+      expect(
+        resolveMessageLifetime({ delaySeconds: DEFAULT_MAX_DELAY + 1 })
+      ).toEqual({ delaySeconds: DEFAULT_MAX_DELAY });
+    });
+
+    it('caps retention at the queue maximum and floors it at the minimum', () => {
+      expect(
+        resolveMessageLifetime({ retentionSeconds: SEVEN_DAYS * 2 })
+      ).toEqual({ retentionSeconds: SEVEN_DAYS });
+      expect(resolveMessageLifetime({ retentionSeconds: 1 })).toEqual({
+        retentionSeconds: 60,
+      });
+      expect(resolveMessageLifetime({ retentionSeconds: 90.2 })).toEqual({
+        retentionSeconds: 91,
+      });
+    });
+
+    it('lets a delayed message with retention use the retention, keeping the delay below it', () => {
+      const lifetime = resolveMessageLifetime({
+        retentionSeconds: SEVEN_DAYS,
+        delaySeconds: SEVEN_DAYS,
+      });
+      expect(lifetime.retentionSeconds).toBe(SEVEN_DAYS);
+      expect(lifetime.delaySeconds).toBeGreaterThan(DEFAULT_MAX_DELAY);
+      expect(lifetime.delaySeconds).toBeLessThan(SEVEN_DAYS);
     });
   });
 
@@ -813,107 +849,57 @@ describe('createQueue', () => {
       }
     });
 
-    it('should send new message with delaySeconds when handler returns timeoutSeconds', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+    it('redelivers the SAME message when the handler returns timeoutSeconds, sending nothing new', async () => {
+      const handler = setupHandler({ timeoutSeconds: 300 });
+      const thrown = await handler(
+        {
+          payload: { runId: 'run-123', stepId: 'step-1', stepName: 'myStep' },
+          queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
+        },
+        { messageId: 'msg-123', deliveryCount: 2, createdAt: new Date() }
+      ).catch((err: unknown) => err);
 
-      let capturedHandler: (
-        message: unknown,
-        metadata: unknown
-      ) => Promise<void>;
-      mockHandleCallback.mockImplementation((handler) => {
-        capturedHandler = handler;
-        return async () => new Response('ok');
-      });
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
+      // No replacement message: the current one stays unacknowledged.
+      expect(mockSend).not.toHaveBeenCalled();
+      // The callback's retry hook turns the signal into a redelivery of the
+      // same message after the requested delay, without the failure log.
+      const options = mockHandleCallback.mock.calls[0][1];
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
       try {
-        const queue = createQueue();
-        queue.createQueueHandler('__wkf_workflow_', async () => ({
-          timeoutSeconds: 300,
-        }));
-
-        await capturedHandler!(
-          {
-            payload: { runId: 'run-123' },
-            queueName: '__wkf_workflow_test',
-            deploymentId: 'dpl_original',
-          },
-          {
-            messageId: 'msg-123',
-            deliveryCount: 1,
-            createdAt: new Date(),
-            topicName: '__wkf_workflow_test',
-            consumerGroup: 'test',
-          }
-        );
-
-        expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const sendOpts = mockSend.mock.calls[0][2];
-        expect(sendOpts.delaySeconds).toBe(300);
+        expect(
+          options.retry(thrown, { messageId: 'msg-123', deliveryCount: 2 })
+        ).toEqual({ afterSeconds: 300 });
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
       } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
+        consoleErrorSpy.mockRestore();
       }
     });
 
-    it('should clamp delaySeconds to max 23 hours for long sleeps', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
-
-      let capturedHandler: (
-        message: unknown,
-        metadata: unknown
-      ) => Promise<void>;
-      mockHandleCallback.mockImplementation((handler) => {
-        capturedHandler = handler;
-        return async () => new Response('ok');
-      });
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const queue = createQueue();
-        queue.createQueueHandler('__wkf_workflow_', async () => ({
-          timeoutSeconds: 100000,
-        }));
-
-        await capturedHandler!(
-          {
-            payload: { runId: 'run-123' },
-            queueName: '__wkf_workflow_test',
-            deploymentId: 'dpl_original',
-          },
-          {
-            messageId: 'msg-123',
-            deliveryCount: 1,
-            createdAt: new Date(),
-            topicName: '__wkf_workflow_test',
-            consumerGroup: 'test',
-          }
-        );
-
-        expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const sendOpts = mockSend.mock.calls[0][2];
-        expect(sendOpts.delaySeconds).toBe(82800); // MAX_DELAY_SECONDS
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
-      }
+    it.each([
+      { timeoutSeconds: 0, afterSeconds: 0 },
+      { timeoutSeconds: 2.2, afterSeconds: 3 },
+      { timeoutSeconds: -5, afterSeconds: 0 },
+      { timeoutSeconds: 100000, afterSeconds: 100000 },
+    ])('asks for a redelivery after $afterSeconds s for timeoutSeconds $timeoutSeconds', async ({
+      timeoutSeconds,
+      afterSeconds,
+    }) => {
+      const handler = setupHandler({ timeoutSeconds });
+      const thrown = await handler(
+        { payload: { runId: 'run-123' }, queueName: '__wkf_workflow_test' },
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
+      ).catch((err: unknown) => err);
+      const options = mockHandleCallback.mock.calls[0][1];
+      expect(
+        options.retry(thrown, { messageId: 'msg-123', deliveryCount: 1 })
+      ).toEqual({ afterSeconds });
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should send new message without delaySeconds when handler returns timeoutSeconds: 0', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
-
+    it('acknowledges an invoke request even when its result carries timeoutSeconds', async () => {
       let capturedHandler: (
         message: unknown,
         metadata: unknown
@@ -922,42 +908,47 @@ describe('createQueue', () => {
         capturedHandler = handler;
         return async () => new Response('ok');
       });
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const queue = createQueue();
-        queue.createQueueHandler('__wkf_workflow_', async () => ({
-          timeoutSeconds: 0,
-        }));
-
-        await capturedHandler!(
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => ({
+        timeoutSeconds: 5,
+      }));
+      await expect(
+        capturedHandler!(
           {
-            payload: { runId: 'run-123' },
+            payload: { runId: 'run-123', invoke: true },
             queueName: '__wkf_workflow_test',
-            deploymentId: 'dpl_original',
           },
-          {
-            messageId: 'msg-123',
-            deliveryCount: 1,
-            createdAt: new Date(),
-            topicName: '__wkf_workflow_test',
-            consumerGroup: 'test',
-          }
-        );
+          { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
+        )
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
 
-        expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const sendOpts = mockSend.mock.calls[0][2];
-        expect(sendOpts.delaySeconds).toBeUndefined();
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
-      }
+    it('passes messageId, deliveryCount and createdAt through to the handler', async () => {
+      let capturedMeta: Record<string, unknown> | undefined;
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async (_message, meta) => {
+        capturedMeta = meta as unknown as Record<string, unknown>;
+      });
+      const createdAt = new Date('2026-10-05T00:00:00.000Z');
+      await capturedHandler!(
+        { payload: { runId: 'run-123' }, queueName: '__wkf_workflow_test' },
+        { messageId: 'msg-123', deliveryCount: 3, createdAt }
+      );
+      expect(capturedMeta).toMatchObject({
+        messageId: 'msg-123',
+        deliveryCount: 3,
+        attempt: 3,
+        createdAt,
+      });
     });
 
     it('should not send new message when handler returns void', async () => {
@@ -1006,63 +997,6 @@ describe('createQueue', () => {
       await capturedHandler!(null, null);
 
       expect(mockSend).not.toHaveBeenCalled();
-    });
-
-    it('should auto-inject x-vercel-workflow-run-id header on delayed re-enqueue', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
-      const handler = setupHandler({ timeoutSeconds: 300 });
-
-      await handler(
-        {
-          payload: { runId: 'wrun_abc123' },
-          queueName: '__wkf_workflow_test',
-          deploymentId: 'dpl_original',
-        },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
-      );
-
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      // send(topicName, payload, options)
-      const sendOpts = mockSend.mock.calls[0][2];
-      expect(sendOpts).toEqual(
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'x-vercel-workflow-run-id': 'wrun_abc123',
-          }),
-        })
-      );
-    });
-
-    it('should auto-inject step headers on delayed inline-step re-enqueue', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
-      const handler = setupHandler({ timeoutSeconds: 300 });
-
-      const stepPayload = {
-        runId: 'wrun_abc123',
-        stepId: 'step_xyz789',
-        stepName: 'myStep',
-      };
-
-      await handler(
-        {
-          payload: stepPayload,
-          queueName: '__wkf_workflow_test',
-          deploymentId: 'dpl_original',
-        },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
-      );
-
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      // send(topicName, payload, options)
-      const sendOpts = mockSend.mock.calls[0][2];
-      expect(sendOpts).toEqual(
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'x-vercel-workflow-run-id': 'wrun_abc123',
-            'x-vercel-workflow-step-id': 'step_xyz789',
-          }),
-        })
-      );
     });
 
     it('should pass x-vercel-id as requestId in handler metadata', async () => {
@@ -1272,63 +1206,6 @@ describe('createQueue', () => {
         response.headers.get('x-vercel-internal-workflow-step-ids')
       ).toBeNull();
     });
-
-    it('should re-enqueue inline step payloads correctly', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
-
-      let capturedHandler: (
-        message: unknown,
-        metadata: unknown
-      ) => Promise<void>;
-      mockHandleCallback.mockImplementation((handler) => {
-        capturedHandler = handler;
-        return async () => new Response('ok');
-      });
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const stepPayload = {
-          runId: 'run-123',
-          stepId: 'step-456',
-          stepName: 'myStep',
-        };
-
-        const queue = createQueue();
-        queue.createQueueHandler('__wkf_workflow_', async () => ({
-          timeoutSeconds: 3600,
-        }));
-
-        await capturedHandler!(
-          {
-            payload: stepPayload,
-            queueName: '__wkf_workflow_test',
-            deploymentId: 'dpl_original',
-          },
-          {
-            messageId: 'msg-123',
-            deliveryCount: 1,
-            createdAt: new Date(),
-            topicName: '__wkf_workflow_test',
-            consumerGroup: 'test',
-          }
-        );
-
-        expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, wrapper, options) — CborTransport encodes
-        // inside serialize(), but the mock bypasses the transport.
-        const wrapper = mockSend.mock.calls[0][1];
-        expect(wrapper.payload).toEqual(stepPayload);
-        expect(wrapper.queueName).toBe('__wkf_workflow_test');
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
-      }
-    });
   });
 
   describe('region routing', () => {
@@ -1518,11 +1395,34 @@ describe('queueBatch', () => {
     delete process.env.VERCEL_DEPLOYMENT_ID;
   });
 
+  // Messages for one run's orchestrator topic, so they share a physical
+  // topic and can be grouped into one batch request.
   const entries = (n: number, runId = RUN) =>
     Array.from({ length: n }, (_, i) => ({
-      message: { runId, stepId: `step-${i}`, stepName: 'myStep' },
+      message: { runId },
       opts: { idempotencyKey: `key-${i}` },
     }));
+
+  it('sends each step message of a fan-out to its own per-step topic', async () => {
+    mockSendBatch.mockResolvedValue([sent('m')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    await queue.queueBatch(
+      '__wkf_workflow_test',
+      Array.from({ length: 3 }, (_, i) => ({
+        message: { runId: RUN, stepId: `step-${i}`, stepName: 'myStep' },
+        opts: { idempotencyKey: `step-${i}` },
+      }))
+    );
+
+    expect(mockSendBatch).toHaveBeenCalledTimes(3);
+    expect(mockSendBatch.mock.calls.map(([topic]) => topic).sort()).toEqual([
+      `__wkf_workflow_test_${RUN}_step-0`,
+      `__wkf_workflow_test_${RUN}_step-1`,
+      `__wkf_workflow_test_${RUN}_step-2`,
+    ]);
+  });
 
   it('publishes a whole fan-out in one request and preserves input order', async () => {
     mockSendBatch.mockResolvedValueOnce(
@@ -1536,7 +1436,7 @@ describe('queueBatch', () => {
     expect(mockSendBatch).toHaveBeenCalledTimes(1);
     expect(mockSend).not.toHaveBeenCalled();
     const [topic, messages] = mockSendBatch.mock.calls[0];
-    expect(topic).toBe('__wkf_workflow_test');
+    expect(topic).toBe(`__wkf_workflow_test_${RUN}`);
     expect(messages).toHaveLength(5);
     // Each message keeps its own idempotency key: the recovery for a failed
     // batch is to republish it, which must not redeliver what already landed.
@@ -1697,11 +1597,14 @@ describe('queueBatch trace propagation', () => {
   ): Promise<
     { headers: Record<string, string> | undefined; spanId: string }[]
   > {
-    mockSendBatch.mockResolvedValueOnce(
-      Array.from({ length: count }, (_, i) => ({
-        status: 'sent' as const,
-        messageId: `m${i}`,
-      }))
+    // Each step message has its own per-step topic, so a fan-out is one
+    // batch request per step; answer each with one result per message.
+    mockSendBatch.mockImplementation(
+      async (_topic: string, messages: unknown[]) =>
+        messages.map((_, i) => ({
+          status: 'sent' as const,
+          messageId: `m${i}`,
+        }))
     );
     const queue = createQueue();
     assert(queue.queueBatch);
@@ -1711,10 +1614,10 @@ describe('queueBatch trace propagation', () => {
       await queue.queueBatch?.('__wkf_workflow_test', entries(count));
     });
     span.end();
-    const sent = mockSendBatch.mock.calls[0]?.[1] as
-      | { headers?: Record<string, string> }[]
-      | undefined;
-    return (sent ?? []).map((m) => ({ headers: m.headers, spanId }));
+    const sent = mockSendBatch.mock.calls.flatMap(
+      (call) => call[1] as { headers?: Record<string, string> }[]
+    );
+    return sent.map((m) => ({ headers: m.headers, spanId }));
   }
 
   it('puts the producer traceparent on EVERY message in the batch', async () => {

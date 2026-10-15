@@ -1,4 +1,4 @@
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import { getWorkflowQueueTrigger } from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
@@ -237,7 +237,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
     const flowRule =
       nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow'];
     expect(flowRule.maxDuration).toBe('max');
-    expect(flowRule.experimentalTriggers).toEqual([WORKFLOW_QUEUE_TRIGGER]);
+    expect(flowRule.experimentalTriggers).toEqual([getWorkflowQueueTrigger()]);
   });
 
   it('uses the handler route pattern (`:token`, not `**`) for the webhook functionRule', async () => {
@@ -333,7 +333,7 @@ describe('@workflow/nitro Vercel functionRules', () => {
     expect(flowRule.memory).toBe(3008);
     // Workflow-required fields win
     expect(flowRule.maxDuration).toBe('max');
-    expect(flowRule.experimentalTriggers).toEqual([WORKFLOW_QUEUE_TRIGGER]);
+    expect(flowRule.experimentalTriggers).toEqual([getWorkflowQueueTrigger()]);
   });
 
   it('routes Nitro v2 Vercel deploys through the legacy build-output builder, not functionRules', async () => {

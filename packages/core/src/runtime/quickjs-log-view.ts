@@ -96,9 +96,37 @@ export class QuickJSLogView {
     return this.unfed.size;
   }
 
+  /**
+   * The highest position this invocation knows exists, fed to the VM or not:
+   * where a live feed started now picks up. `undefined` while none is known.
+   */
+  get highestKnownSlot(): number | undefined {
+    if (this.knownMaxSlot === undefined) return this.fedMaxSlot;
+    if (this.fedMaxSlot === undefined) return this.knownMaxSlot;
+    return Math.max(this.knownMaxSlot, this.fedMaxSlot);
+  }
+
   /** Whether positions are being tracked (see class doc). */
   get tracking(): boolean {
     return this.slotTracking;
+  }
+
+  /**
+   * Whether the VM is short of a position this invocation knows exists: a
+   * write whose event was not delivered off its response, or a queued event
+   * above a position nothing has filled. Only then does the next turn need a
+   * listing; otherwise everything this invocation knows of is fed or
+   * deliverable from the queue. Always true without position tracking.
+   *
+   * Events other writers append without this invocation hearing of them
+   * reach it through the live feed while it runs, or through their own wake
+   * once it exits.
+   */
+  get behind(): boolean {
+    if (!this.slotTracking) return true;
+    if (this.knownMaxSlot === undefined) return false;
+    const fed = this.fedMaxSlot ?? FIRST_EVENT_SLOT - 1;
+    return this.knownMaxSlot > fed;
   }
 
   /**

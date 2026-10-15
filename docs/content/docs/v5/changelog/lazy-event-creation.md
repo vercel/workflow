@@ -5,6 +5,9 @@ description: Defer step_created for the inline step and fold it into a single st
 
 # Lazy inline step start
 
+> Superseded by the [single orchestrator](/docs/changelog/single-orchestrator) model: runs at spec version 9 no longer use this mechanism.
+
+
 ## Motivation
 
 The owned-inline runtime path used to write two separate world events for a step it already owns and is about to run inline:
