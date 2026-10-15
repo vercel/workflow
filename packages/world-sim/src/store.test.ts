@@ -503,6 +503,37 @@ describe('sim store', () => {
         )
       ).resolves.toBeTruthy();
     });
+
+    // No book scenario reaches this half at a decision: with commit-time slots
+    // an in-flight write lands above the caller's watermark, where the
+    // watermark half sees it first. Only a hole below the watermark gets here.
+    it('fences a snapshot missing an event below its own watermark, only with the count guard', async () => {
+      const writeStep = (target: SimStore, maxSlot: number, count: number) =>
+        target.events.create(
+          RUN,
+          {
+            eventType: 'step_created',
+            specVersion: SPEC,
+            correlationId: 'step_1',
+            eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
+          },
+          { snapshot: { maxSlot, count } }
+        );
+
+      const counted = setup({ preconditionGuard: true, countGuard: true });
+      await createRun(counted.store, RUN);
+      const tail = counted.store.allEvents(RUN).length;
+      await expect(writeStep(counted.store, tail, tail - 1)).rejects.toThrow(
+        /at or below the caller's watermark/
+      );
+      await expect(writeStep(counted.store, tail, tail)).resolves.toBeTruthy();
+
+      const watermarkOnly = setup({ preconditionGuard: true });
+      await createRun(watermarkOnly.store, RUN);
+      await expect(
+        writeStep(watermarkOnly.store, tail, tail - 1)
+      ).resolves.toBeTruthy();
+    });
   });
 
   describe('event log ordering', () => {

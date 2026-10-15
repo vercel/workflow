@@ -38,6 +38,10 @@ export const streamToConsole = async (
       }
     }
   } catch (err) {
+    // The command printed what it could and failed: say so in the exit code.
+    // It used to exit 0, so a script reading a stream it could not decode
+    // saw an empty, successful read.
+    process.exitCode = 1;
     // Provide a clear message when the stream is encrypted and --decrypt wasn't used
     if (err instanceof Error && err.message.includes('no encryption key')) {
       logger.error(

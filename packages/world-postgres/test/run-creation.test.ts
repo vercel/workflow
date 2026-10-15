@@ -3,11 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { EntityConflictError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { Pool } from 'pg';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createEventsStorage } from '../src/storage.js';
+import { TestPool } from './pool.js';
 
 /**
  * A run row, its slot marker and its run_created event have to become visible
@@ -28,8 +28,8 @@ describe('atomic run creation', () => {
   const applicationName = `run_creation_${randomUUID().replaceAll('-', '')}`;
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
-  let observer: Pool;
+  let pool: TestPool;
+  let observer: TestPool;
   let events: ReturnType<typeof createEventsStorage>;
 
   beforeAll(async () => {
@@ -44,7 +44,7 @@ describe('atomic run creation', () => {
       env: process.env,
     });
 
-    pool = new Pool({
+    pool = new TestPool({
       connectionString: dbUrl,
       application_name: applicationName,
       max: 1,
@@ -52,7 +52,7 @@ describe('atomic run creation', () => {
     // The observer's connections are separate from the storage's so that a
     // lock the observer holds does not starve the creation of a connection,
     // and its reads see exactly what another writer would.
-    observer = new Pool({ connectionString: dbUrl, max: 2 });
+    observer = new TestPool({ connectionString: dbUrl, max: 2 });
     events = createEventsStorage(createClient(pool));
   }, 120_000);
 

@@ -107,7 +107,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 
 - Environment variable: none
 - Default: unset
-- Pagination cursor for list commands.
+- Pagination cursor for list commands. A `workflow inspect` listing that stops with more rows prints the next page's cursor: in its `--json` page object for `runs`, `hooks`, and `attributes`, and on stderr for `steps`, `events`, and `sleeps`, whose `--json` output is an array.
 
 ### `--interactive` / `-i`
 
@@ -125,12 +125,20 @@ per flag.
 - Command: `workflow inspect`
 - Default: unset
 - Scopes the listing to one run. Required for `steps`, `events`, and `sleeps`; optional for `hooks`. Must be a run ID: `wrun_` followed by a 26-character ULID.
+- Also required to read one step, event, or stream, as in `workflow inspect step <step-id> --runId=<run-id>`: their IDs and names are scoped to their run.
 
 ### `--limit` (inspect)
 
 - Command: `workflow inspect`
 - Default: `20`
-- Must be an integer between 1 and 100, the smallest page any inspect listing accepts. Larger pages are reachable by paging: pass `--cursor`, or `--interactive` to walk them.
+- Must be an integer between 1 and 100, the smallest page any inspect listing accepts. Larger pages are reachable by paging: pass `--cursor`, `--all` to read every page, or `--interactive` to walk them.
+
+### `--all`
+
+- Command: `workflow inspect steps`, `workflow inspect events`, `workflow inspect sleeps`
+- Default: disabled
+- Follows cursors to the last page and prints every row: one table, or with `--json` one array. `--limit` sets the size of each page it fetches and `--cursor` where it starts.
+- Cannot be combined with `--interactive`, an ID, or `--url`/`--web`. The `runs`, `hooks`, and `attributes` listings take `--cursor` instead: their `--json` output carries it.
 
 ### `--stepId` / `-s`
 
@@ -187,8 +195,8 @@ per flag.
 
 - Command: `workflow cancel`
 - Default: unset
-- Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs`, not the short function name.
-- Also filters `workflow inspect runs` and `workflow inspect attributes`.
+- Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs --json`, not the short function name.
+- Also filters `workflow inspect runs` and `workflow inspect attributes`. These also accept the short name the runs table shows, such as `processOrder`: it is looked up among the workflows of the 500 most recent runs (in the `--since` window when given) and replaced by the full name. A short name that more than one of those workflows share is rejected with the candidates, and one that none of them has is used as given.
 
 ### `--limit` (cancel)
 

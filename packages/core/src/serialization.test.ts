@@ -190,6 +190,23 @@ describe('workflow arguments', () => {
     expect(hydrated.getTime()).toEqual(date.getTime());
   });
 
+  it('should round-trip strings with unpaired surrogates', async () => {
+    const value = ['a\ud800b', 'c\udfffd', '😀'];
+    const serialized = await dehydrateWorkflowArguments(
+      value,
+      mockRunId,
+      noEncryptionKey,
+      []
+    );
+    const hydrated = await hydrateWorkflowArguments(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+    expect(hydrated).toEqual(value);
+  });
+
   it('should work with invalid Date', async () => {
     const date = new Date('asdf');
     const serialized = await dehydrateWorkflowArguments(

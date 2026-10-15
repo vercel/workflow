@@ -132,6 +132,49 @@ describe('re-enqueue active runs on start', () => {
     await world2.close();
   });
 
+  it("re-enqueues a run to the namespace it recorded, not this process's", async () => {
+    // A run of a queue consumer other than the Workflow SDK (namespace
+    // `agent`), sharing the data directory with a Workflow app.
+    const world1 = createWorld({ dataDir });
+    await world1.start();
+    const agentRun = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'workflow//agent//session',
+      input: new Uint8Array([1]),
+      executionContext: { queueNamespace: 'agent' },
+    });
+    await updateRun(world1, agentRun.runId, 'run_started');
+    const workflowRun = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'myWorkflow',
+      input: new Uint8Array([2]),
+    });
+    await world1.close();
+
+    const world2 = createWorld({ dataDir });
+    const received: Record<string, string[]> = { agent: [], workflow: [] };
+    const capture = (into: string[]) => async (req: Request) => {
+      const body = await req.json();
+      into.push(`${req.headers.get('x-vqs-queue-name')} ${body.runId}`);
+      return Response.json({ ok: true });
+    };
+    world2.registerHandler('__agent_wkf_workflow_', capture(received.agent));
+    world2.registerHandler('__wkf_workflow_', capture(received.workflow));
+
+    await world2.start();
+
+    await vi.waitFor(() => {
+      expect(received.agent).toEqual([
+        `__agent_wkf_workflow_workflow//agent//session ${agentRun.runId}`,
+      ]);
+      expect(received.workflow).toEqual([
+        `__wkf_workflow_myWorkflow ${workflowRun.runId}`,
+      ]);
+    });
+
+    await world2.close();
+  });
+
   it('does nothing when there are no active runs', async () => {
     // Create a world with only completed runs
     const world1 = createWorld({ dataDir });

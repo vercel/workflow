@@ -38,7 +38,7 @@ const MIGRATIONS = fileURLToPath(
   new URL('../src/drizzle/migrations', import.meta.url)
 );
 /** The last migration that shipped with `timestamp without time zone`. */
-const LAST_NAIVE_MIGRATION = 25;
+const LAST_NAIVE_MIGRATION = 26;
 /** Host and container clocks may disagree a little; the bug is hours. */
 const CLOCK_SKEW_MS = 30_000;
 
@@ -498,13 +498,13 @@ if (process.platform === 'win32') {
         await runMigrations(url, { migrationsFolder: naiveMigrations });
         const legacy = await writeLegacyRows(openPool(url));
 
-        // The drizzle migrator takes no lock, so both can apply 0026.
+        // The drizzle migrator takes no lock, so both can apply 0027.
         await Promise.all([runMigrations(url), runMigrations(url)]);
 
         await expectRepaired(openPool(url), legacy);
       }, 60_000);
 
-      it('changes nothing when 0026 runs again on a converted database', async () => {
+      it('changes nothing when 0027 runs again on a converted database', async () => {
         const url = await createDatabase(
           'upgrade_reapplied',
           'America/Los_Angeles'
@@ -515,7 +515,7 @@ if (process.platform === 'win32') {
 
         await openPool(url).query(
           readFileSync(
-            join(MIGRATIONS, '0026_timestamps_with_time_zone.sql'),
+            join(MIGRATIONS, '0027_timestamps_with_time_zone.sql'),
             'utf8'
           )
         );

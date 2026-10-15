@@ -27,6 +27,7 @@ import {
   isExpiredRef,
 } from './hydration.js';
 import { resolveTimeWindow } from './time-window.js';
+import { resolveWorkflowNameFilter } from './workflow-name.js';
 
 /**
  * Create an EncryptionKeyResolver from a World instance.
@@ -53,6 +54,8 @@ function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
 
 import {
   type AnalyticsPageInfo,
+  fetchAllPages,
+  moreResultsMessage,
   type PageData,
   setupListPagination,
 } from './pagination.js';
@@ -469,6 +472,31 @@ const safeWorldFields = async (
   return safe;
 };
 
+/**
+ * JSON output for the listings that print a bare array (steps, events,
+ * sleeps). The array shape is a published contract, so the next page's
+ * cursor goes to stderr instead of into the output: without it a script
+ * could not get past the first page, since `--interactive` does not apply
+ * to `--json`.
+ */
+const showJsonArrayPage = <T>(page: PageData<T>) => {
+  showJson(page.data);
+  if (page.hasMore) {
+    logger.warn(moreResultsMessage(page, { supportsAll: true, json: true }));
+  }
+};
+
+/**
+ * Fetch the page `--cursor` names, or with `--all` every page from it on.
+ */
+const fetchListing = <T>(
+  fetchPage: (cursor: string | undefined) => Promise<PageData<T>>,
+  opts: InspectCLIOptions
+): Promise<PageData<T>> =>
+  opts.all
+    ? fetchAllPages(fetchPage, opts.cursor)
+    : fetchPage(opts.cursor || undefined);
+
 const showJsonPage = <T>(page: PageData<T>) => {
   showJson({
     data: page.data,
@@ -524,12 +552,46 @@ const truncateIdToLastChars = (id: string, chars: number = 4): string => {
   return `...${id.substring(id.length - chars)}`;
 };
 
-const showInspectInfoBox = (resource: string) => {
+/**
+ * The command that reads one stream. A stream name is scoped to its run
+ * (`world.streams.get(runId, name)`), so `--runId` is part of it; the hint
+ * used to leave it out and the command it suggested failed.
+ */
+const streamCommand = (runId: string | undefined) =>
+  `workflow inspect stream <stream-id> --runId=${runId ?? '<run-id>'}`;
+
+/**
+ * The command that shows one event. Event ids are slots within their run
+ * (`evnt_<position>`), so the lookup is `world.events.get(runId, eventId)`.
+ */
+const eventCommand = (runId: string | undefined) =>
+  `workflow inspect event <event-id> --runId=${runId ?? '<run-id>'}`;
+
+/**
+ * The command that shows one step. Step ids are unique within a run, and
+ * the lookup is `world.steps.get(runId, stepId)`.
+ */
+const stepCommand = (runId: string | undefined) =>
+  `workflow inspect step <step-id> --runId=${runId ?? '<run-id>'}`;
+
+/**
+ * The command that shows one item of `resource`. Items whose ids are scoped
+ * to a run need `--runId` in it.
+ */
+const detailCommand = (resource: string, runId: string | undefined) =>
+  resource === 'event'
+    ? eventCommand(runId)
+    : resource === 'step'
+      ? stepCommand(runId)
+      : `workflow inspect ${resource} <${resource}-id>`;
+
+const showInspectInfoBox = (resource: string, runId?: string) => {
+  const article = /^[aeiou]/.test(resource) ? 'an' : 'a';
   logger.info(
-    `To view details for a ${resource}, use \`workflow inspect ${resource}\` <id>`
+    `To view details for ${article} ${resource}, use \`${detailCommand(resource, runId)}\``
   );
   logger.info(
-    `To view the content of any stream, use \`workflow inspect stream <stream-id>\``
+    `To view the content of any stream, use \`${streamCommand(runId)}\``
   );
 };
 
@@ -657,6 +719,21 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     logger.warn(`--since/--until are ${ignoredBecause}.`);
   }
 
+  // The runs table shows a workflow's short name; the backends match the
+  // full one. A full name costs no request here.
+  let workflowName: string | undefined;
+  try {
+    workflowName = await resolveWorkflowNameFilter(world, opts.workflowName, {
+      useAnalytics,
+      timeWindow,
+    });
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+
   // Determine which props to show based on withData flag
   const baseProps = opts.withData
     ? WORKFLOW_RUN_LISTED_PROPS
@@ -704,7 +781,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     };
     if (useAnalytics && world.analytics) {
       const runs = await world.analytics.runs.list({
-        workflowName: opts.workflowName,
+        workflowName,
         status,
         ...(opts.attributes ? { attributes: opts.attributes } : {}),
         ...(timeWindow ?? {}),
@@ -720,7 +797,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       };
     }
     const runs = await world.runs.list({
-      workflowName: opts.workflowName,
+      workflowName,
       status,
       pagination,
       resolveData,
@@ -877,6 +954,11 @@ export const listSteps = async (
     ? STEP_LISTED_PROPS
     : STEP_LISTED_PROPS.filter((prop) => !STEP_IO_PROPS.includes(prop));
 
+  // The read path that served the first page. Every later page follows a
+  // cursor that path issued, so it must go back to the same one: when
+  // analytics had no rows yet and the first page came from storage, page two
+  // used to send that storage cursor to analytics.
+  let source: 'analytics' | 'storage' | undefined;
   const fetchStepsPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
@@ -886,7 +968,7 @@ export const listSteps = async (
       cursor,
       limit: opts.limit || DEFAULT_PAGE_SIZE,
     };
-    if (useAnalytics && world.analytics) {
+    if (source !== 'storage' && useAnalytics && world.analytics) {
       const steps = await world.analytics.steps.list({ runId, pagination });
       const page = {
         data: steps.data as unknown as Record<string, unknown>[],
@@ -894,13 +976,20 @@ export const listSteps = async (
         hasMore: steps.hasMore,
         pageInfo: getPageInfo(steps),
       };
-      if (cursor || page.data.length > 0 || page.hasMore) {
+      if (
+        source === 'analytics' ||
+        cursor ||
+        page.data.length > 0 ||
+        page.hasMore
+      ) {
+        source = 'analytics';
         return page;
       }
       logger.debug(
         `No analytics steps found for run ${runId}; falling back to storage`
       );
     }
+    source = 'storage';
     const stepChunks = await world.steps.list({
       runId,
       pagination,
@@ -914,14 +1003,15 @@ export const listSteps = async (
       cursor: stepChunks.cursor,
       hasMore: stepChunks.hasMore,
       pageInfo: getPageInfo(stepChunks),
+      // A new invocation given this cursor would send it to analytics.
+      cursorReusable: !useAnalytics,
     };
   };
 
-  // For JSON output, fetch once and return
+  // For JSON output, fetch once (or every page with --all) and return
   if (opts.json) {
     try {
-      const page = await fetchStepsPage(opts.cursor);
-      showJson(page.data);
+      showJsonArrayPage(await fetchListing(fetchStepsPage, opts));
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -934,6 +1024,8 @@ export const listSteps = async (
   await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
+    all: opts.all,
+    supportsAll: true,
     fetchPage: async (cursor) => {
       try {
         return await fetchStepsPage(cursor);
@@ -946,7 +1038,7 @@ export const listSteps = async (
     },
     displayPage: async (steps) => {
       logger.log(showTable(steps, props, opts));
-      showInspectInfoBox('step');
+      showInspectInfoBox('step', runId);
     },
   });
 };
@@ -967,11 +1059,16 @@ export const showStep = async (
     );
   }
 
-  const runId = opts.runId ?? (await getRecentRun(world, opts))?.runId;
+  // No fallback to the latest run: a step id names a step within its own
+  // run, and looking it up in another one reported "Step ... in run <other>
+  // not found". The command rejects this before backend setup; kept for
+  // direct callers.
+  const runId = opts.runId;
   if (!runId) {
     logger.error(
-      'run-id is required for showing a step. Usage: `workflow inspect step <STEP_ID> --runId=<RUN_ID>`'
+      `run-id is required for showing a step: a step id names a step within its run. Usage: \`${stepCommand(undefined)}\``
     );
+    process.exitCode = 1;
     return;
   }
 
@@ -1014,7 +1111,10 @@ export const showStream = async (
     );
   }
   if (!opts.runId) {
-    throw new Error('--run is required when showing a stream');
+    // The command rejects this before backend setup; kept for direct callers.
+    throw new Error(
+      `--runId is required when showing a stream. Usage: \`${streamCommand(undefined)}\``
+    );
   }
   const rawStream = await world.streams.get(opts.runId, streamId);
 
@@ -1051,6 +1151,55 @@ export const showStream = async (
     'Use --json to output the stream as newline-delimited JSON without info logs.\n'
   );
   await streamToConsole(stream, streamId, opts);
+};
+
+/**
+ * Show one event of a run, with its payload resolved.
+ *
+ * The command used to reject an event id ("Event-ID is not supported"),
+ * though the events table hint suggested `inspect event <id>`. Every World
+ * implements `events.get(runId, eventId)`.
+ */
+export const showEvent = async (
+  world: World,
+  eventId: string,
+  opts: InspectCLIOptions = {}
+) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
+  if (opts.withData) {
+    logger.warn('`withData` flag is ignored when showing individual resources');
+  }
+  if (opts.stepId || opts.hookId) {
+    logger.warn(
+      'Filtering by step-id or hook-id is not supported when showing an event, ignoring filter.'
+    );
+  }
+  if (!opts.runId) {
+    // The command rejects this before backend setup; kept for direct callers.
+    logger.error(
+      `run-id is required for showing an event: an event id names a slot in its run. Usage: \`${eventCommand(undefined)}\``
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const event = await world.events.get(opts.runId, eventId, {
+      resolveData: 'all',
+    });
+    const hydrated = await hydrateResourceIO(event, resolveKey);
+    if (opts.json) {
+      showJson(hydrated);
+      return;
+    }
+    logger.log(hydrated);
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
 };
 
 /**
@@ -1101,6 +1250,11 @@ export const listStreamsByRunId = async (
       return;
     }
     logger.log(showTable(matchingStreams, ['runId', 'streamId']));
+    if (matchingStreams.length > 0) {
+      logger.info(
+        `To view the content of a stream, use \`${streamCommand(runId)}\``
+      );
+    }
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);
@@ -1138,6 +1292,9 @@ export const listEvents = async (
     ? EVENT_LISTED_PROPS
     : EVENT_LISTED_PROPS.filter((prop) => !EVENT_IO_PROPS.includes(prop));
 
+  // Pinned after the first page, as in listSteps: later pages follow that
+  // page's cursor and must go to the read path that issued it.
+  let source: 'analytics' | 'storage' | undefined;
   const fetchEventsPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
@@ -1147,7 +1304,7 @@ export const listEvents = async (
       cursor,
       limit: opts.limit || DEFAULT_PAGE_SIZE,
     };
-    if (useAnalytics && world.analytics) {
+    if (source !== 'storage' && useAnalytics && world.analytics) {
       const events = await world.analytics.events.list({
         runId,
         correlationId: correlationIdFilter,
@@ -1159,13 +1316,20 @@ export const listEvents = async (
         hasMore: events.hasMore,
         pageInfo: getPageInfo(events),
       };
-      if (cursor || page.data.length > 0 || page.hasMore) {
+      if (
+        source === 'analytics' ||
+        cursor ||
+        page.data.length > 0 ||
+        page.hasMore
+      ) {
+        source = 'analytics';
         return page;
       }
       logger.debug(
         `No analytics events found for run ${runId}; falling back to storage`
       );
     }
+    source = 'storage';
     const result = await world.events.list({
       runId,
       pagination,
@@ -1182,14 +1346,15 @@ export const listEvents = async (
       cursor: result.cursor,
       hasMore: result.hasMore,
       pageInfo: getPageInfo(result),
+      // A new invocation given this cursor would send it to analytics.
+      cursorReusable: !useAnalytics,
     };
   };
 
-  // For JSON output, fetch once and return
+  // For JSON output, fetch once (or every page with --all) and return
   if (opts.json) {
     try {
-      const page = await fetchEventsPage(opts.cursor);
-      showJson(page.data);
+      showJsonArrayPage(await fetchListing(fetchEventsPage, opts));
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -1202,6 +1367,8 @@ export const listEvents = async (
   await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
+    all: opts.all,
+    supportsAll: true,
     fetchPage: async (cursor) => {
       try {
         return await fetchEventsPage(cursor);
@@ -1214,7 +1381,7 @@ export const listEvents = async (
     },
     displayPage: async (events) => {
       logger.log(showTable(events, props, opts));
-      showInspectInfoBox('event');
+      showInspectInfoBox('event', runId);
     },
   });
 };
@@ -1293,7 +1460,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
     },
     displayPage: async (hooks) => {
       logger.log(showTable(hooks, HOOK_LISTED_PROPS, opts));
-      showInspectInfoBox('hook');
+      showInspectInfoBox('hook', runId);
     },
   });
 };
@@ -1364,14 +1531,15 @@ const listSleepsViaAnalytics = async (
   };
 
   if (opts.json) {
-    const page = await fetchSleepsPage(opts.cursor);
-    showJson(page.data);
+    showJsonArrayPage(await fetchListing(fetchSleepsPage, opts));
     return;
   }
 
   await setupListPagination<Record<string, unknown>>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
+    all: opts.all,
+    supportsAll: true,
     fetchPage: fetchSleepsPage,
     displayPage: async (waits) => {
       logger.log(
@@ -1425,8 +1593,9 @@ export const listSleeps = async (
   //
   // Only a whole-listing failure reaches this catch, so the fallback cannot
   // reprint under a partial table: the non-interactive and JSON paths fetch
-  // exactly one page, and under `--interactive` pages after the first are
-  // fetched inside the keypress listener, whose rejection never lands here.
+  // exactly one page, or with `--all` every page before printing any, and
+  // under `--interactive` pages after the first are fetched inside the
+  // keypress listener, whose rejection never lands here.
   if (world.analytics) {
     try {
       await listSleepsViaAnalytics(world.analytics, opts);
@@ -1443,20 +1612,27 @@ export const listSleeps = async (
   }
 
   try {
-    // Fetch all events for the run with resolveData='all' to get wait eventData
-    const events = await world.events.list({
-      runId: opts.runId,
-      pagination: {
-        sortOrder: opts.sort || 'desc',
-        limit: 1000,
-      },
-      resolveData: 'all',
-    });
+    // Fetch the run's events with resolveData='all' to get wait eventData:
+    // the first 1000, or with --all every one.
+    const runId = opts.runId;
+    const fetchEventsPage = (cursor: string | undefined) =>
+      world.events.list({
+        runId,
+        pagination: {
+          sortOrder: opts.sort || 'desc',
+          limit: 1000,
+          cursor,
+        },
+        resolveData: 'all',
+      });
+    const events = opts.all
+      ? await fetchAllPages(fetchEventsPage)
+      : await fetchEventsPage(undefined);
 
     // Show info message if there might be more sleeps
     if (events.hasMore) {
       logger.info(
-        'Warning: This run has more than 1000 events. Some sleeps might not be shown. Please use the web UI to ensure getting a complete list.'
+        'Warning: This run has more than 1000 events. Some sleeps might not be shown. Pass --all to read every event.'
       );
     }
 
@@ -1606,11 +1782,24 @@ export const listAttributes = async (
 
   const timeWindow = resolveTimeWindow(opts);
 
+  let workflowName: string | undefined;
+  try {
+    workflowName = await resolveWorkflowNameFilter(world, opts.workflowName, {
+      useAnalytics: true,
+      timeWindow,
+    });
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+
   const fetchPage = async (
     cursor: string | undefined
   ): Promise<PageData<Record<string, unknown>>> => {
     const page = await analytics.attributes.list({
-      workflowName: opts.workflowName,
+      workflowName,
       ...(timeWindow ?? {}),
       pagination: {
         cursor,

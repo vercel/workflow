@@ -8,6 +8,8 @@ import {
 import { EventConsumerResult } from '../events-consumer.js';
 import type { AttributeInvocationQueueItem } from '../global.js';
 import {
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
   scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
@@ -77,9 +79,35 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
       }
 
       ctx.invocationsQueue.delete(correlationId);
-      ctx.promiseQueue = ctx.promiseQueue.then(() => {
-        resolve();
+      // Resolving setAttributes() resumes a branch that may draw the next
+      // correlation ID, so it is branch-deciding like a step result: register
+      // it with the delivery barriers at its log index and resolve only once
+      // every earlier delivery it defers behind has been handed to the
+      // workflow. Otherwise it resolves on microtasks while an earlier step
+      // result is still parked behind its barrier, and the two branches draw
+      // their next IDs in an order that differs between replays (#4770).
+      // The ordering is captured here, at consumption time, for the same
+      // reason as in step.ts and sleep.ts.
+      const eventIndex = ctx.eventsConsumer.eventIndex;
+      const barrier = registerDeliveryBarrier(ctx, eventIndex, 'attribute', {
+        // Attribute writes have never moved the workflow clock.
+        deliveredAt: null,
       });
+      const earlierDelivered = awaitEarlierDeliveries(
+        ctx,
+        eventIndex,
+        'attribute'
+      );
+      // Detached from the serial `promiseQueue` (anchored to its tail so
+      // queued hydration still runs in log order): an earlier delivery may
+      // need the queue to drain before it can resolve, so blocking a queue
+      // slot on it would deadlock.
+      void ctx.promiseQueue
+        .then(() => earlierDelivered)
+        .then(() => {
+          barrier.markDelivered();
+          resolve();
+        });
       return EventConsumerResult.Finished;
     });
 

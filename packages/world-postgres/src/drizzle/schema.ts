@@ -33,7 +33,7 @@ export const schema = pgSchema('workflow');
  * Every timestamp column is `timestamp with time zone`, so it stores an
  * instant. With `timestamp without time zone`, `DEFAULT now()` stored the
  * session's local wall time while drizzle read every value back as UTC, which
- * put `createdAt` hours off on servers not running in UTC (migration 0026).
+ * put `createdAt` hours off on servers not running in UTC (migration 0027).
  */
 function timestamptz(name: string) {
   return timestamp(name, { withTimezone: true });
@@ -218,6 +218,14 @@ export const events = schema.table(
  */
 export const eventSlots = schema.table('workflow_event_slots', {
   runId: varchar('run_id').primaryKey(),
+  /**
+   * The in-band writer fence of a single-orchestrator run: positions
+   * accepted from in-band (orchestrator) writes, `run_created` included. An
+   * in-band insert advances it in the same statement that inserts the event,
+   * and only when it equals the writer's `expectedSeqInBand`. See
+   * `fencedInsert` in storage.ts.
+   */
+  seqInBand: integer('seq_in_band').notNull().default(1),
 });
 
 export const steps = schema.table(

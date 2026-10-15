@@ -1,5 +1,58 @@
 # workflow
 
+## 5.2.2
+
+### Patch Changes
+
+- Updated dependencies [[`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa), [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658), [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd)]:
+  - @workflow/core@5.2.2
+  - @workflow/cli@5.0.5
+  - @workflow/next@5.0.5
+  - @workflow/nitro@5.0.5
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/astro@5.0.5
+  - @workflow/nest@5.1.3
+  - @workflow/rollup@5.0.5
+  - @workflow/sveltekit@5.0.5
+  - @workflow/nuxt@5.0.5
+
+## 5.2.1
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+- Updated dependencies [[`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5), [`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/cli@5.0.4
+  - @workflow/core@5.2.1
+  - @workflow/errors@5.0.4
+  - @workflow/utils@5.0.2
+  - @workflow/next@5.0.4
+  - @workflow/nitro@5.0.4
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/nest@5.1.2
+  - @workflow/astro@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/sveltekit@5.0.4
+  - @workflow/nuxt@5.0.4
+
+## 5.2.0
+
+### Patch Changes
+
+- [#4438](https://github.com/vercel/workflow/pull/4438) [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Reject lifecycle registration inside steps, preserve reporting diagnostics for unreadable errors, and document executor registration and stream-lifetime constraints.
+- Updated dependencies [[`2036247`](https://github.com/vercel/workflow/commit/203624721d76f0e01be3e62ce352483185ca0543), [`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc)]:
+  - @workflow/cli@5.0.3
+  - @workflow/core@5.2.0
+  - @workflow/next@5.0.3
+  - @workflow/nitro@5.0.3
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/errors@5.0.3
+  - @workflow/astro@5.0.3
+  - @workflow/nest@5.1.1
+  - @workflow/rollup@5.0.3
+  - @workflow/sveltekit@5.0.3
+  - @workflow/nuxt@5.0.3
+
 ## 5.1.0
 
 ### Minor Changes

@@ -207,7 +207,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 
 Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two, and a hook at least two.
 
-A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events.
+A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. How much the growth costs depends on how often the run replays; [Steps and long runs](/docs/performance#steps-and-long-runs) shows how step-to-step overhead changes through a 1,020-step run.
 
 ## Terminal states
 
@@ -373,3 +373,11 @@ An event ID is a **slot number**: the event's 1-based position in the run's even
 Density is what lets a reader tell a complete log from an incomplete one by its length alone. A replay that loads a log with a position missing below the highest one it can see cannot tell an event that was never written from one it failed to read, so it fails the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across the hole. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
 
 A slot ID carries no timestamp. Zero-padded decimal digits are a subset of the ULID alphabet, so a slot ID passes ULID validation and sorts correctly, but decoding its first 48 bits yields the Unix epoch instead of a creation time. Read `createdAt` on the event when you need to know when it was written, and don't decode the time from an `evnt_` ID you get back from an API, a log line, or a cursor.
+
+## Performance
+
+Step-to-step overhead (STSO) measures the time the runtime adds between two steps: from one step finishing until the next one starts, which covers recording the step's result, resuming the workflow, and starting the next step. The work inside each step isn't counted. The animation shows where that gap starts and stops.
+
+<MetricVideo metric="stso" />
+
+See [Step-to-step overhead](/docs/performance#step-to-step-overhead-stso) on the Performance page for how it's measured and the latest results.
