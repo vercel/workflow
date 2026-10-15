@@ -6,16 +6,6 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
-## Optional system hook batches
-
-`events.createHooks(runId, registrations, params?)` coalesces 2–32 distinct,
-metadata-free generated system hook registrations. Its per-item outcomes
-represent independent commits, not a group transaction. Implementations must
-settle all launched writes before reporting failure. When returning a shared
-history suffix, use the caller's `eventCount` as the slot frontier and return
-complete ordered history or accurate pagination. An incomplete suffix must
-never be presented as complete. Omit the method to retain individual writes.
-
 ## Stream writer transport lifetime
 
 A stateful `StreamWriteSession` may implement `release()` to retire an idle
@@ -62,6 +52,16 @@ without first fetching the run. Run status is not carried on the message: World
 implementations must reject `step_started` on terminal runs, including redelivery
 for a step that still has `running` status. In-flight steps may still record
 `step_completed` or `step_failed` after the run ends.
+
+## Committed event cursors
+
+`EventResult.eventCursor` optionally identifies the ascending `events.list`
+position immediately after the returned `event`. The World owns its encoding;
+the runtime must not derive a cursor from an event ID. A committed-event cursor
+does not prove that earlier history is loaded. The Node.js runtime uses it only
+after all concurrent hook registrations settle and their returned events prove
+a complete consecutive suffix of its loaded log. Missing events or cursors keep
+the normal reload path. Registrations use the existing single-event API.
 
 ## Implementation constraint: no mutable module state
 

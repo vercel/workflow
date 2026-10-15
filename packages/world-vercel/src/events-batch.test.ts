@@ -3,10 +3,7 @@ import type { BatchEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
-import {
-  createWorkflowRunEventBatch,
-  createWorkflowRunHooks,
-} from './events.js';
+import { createWorkflowRunEventBatch } from './events.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
@@ -209,8 +206,7 @@ describe('createWorkflowRunEventBatch', () => {
     });
     expect(requestBody).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: asserted above
-    if (!requestBody) throw new Error('No batch request was sent');
-    const frames = decodeBatchFrames(requestBody);
+    const frames = decodeBatchFrames(requestBody!);
     expect(frames).toHaveLength(3);
     expect(frames.map((frame) => frame.meta.eventType)).toEqual([
       'step_completed',
@@ -695,131 +691,5 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
         dispatcher: agent,
       })
     ).rejects.toMatchObject({ code: 'SCHEMA_VALIDATION' });
-  });
-});
-
-describe('createWorkflowRunHooks', () => {
-  function hooks(): BatchEventRequest[] {
-    return [1, 2].map((n) => ({
-      event: {
-        eventType: 'hook_created',
-        specVersion: 6,
-        correlationId: `hook_${n}`,
-        eventData: { token: `abrt_${n}`, isSystem: true, isWebhook: false },
-      },
-    }));
-  }
-  function body() {
-    const events = hooks().map(({ event }, i) => ({
-      ...event,
-      eventId: slotEventId(6 + i),
-      runId: RUN_ID,
-      createdAt: CREATED_AT,
-    }));
-    return {
-      results: events.map((event) => ({ status: 200, event })),
-      events,
-      cursor: `eid:${slotEventId(7)}`,
-      hasMore: false,
-    };
-  }
-  it('sends both registrations in one request with one shared frontier', async () => {
-    const agent = mockAgent();
-    let requestBody: Uint8Array | undefined;
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/hooks/batch`,
-        method: 'POST',
-        body: (raw) => {
-          requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
-          return true;
-        },
-      })
-      .reply(200, encode(body()));
-    const result = await createWorkflowRunHooks(
-      RUN_ID,
-      hooks(),
-      { eventCount: 5, requestId: 'test-request', replayDivergenceCount: 2 },
-      { token: 'test', dispatcher: agent }
-    );
-    const frames = decodeBatchFrames(requestBody!);
-    expect(frames).toHaveLength(2);
-    expect(frames.map((f) => f.meta.maxSlot)).toEqual([5, 5]);
-    expect(frames.map((f) => f.meta.vercelId)).toEqual([
-      'test-request',
-      'test-request',
-    ]);
-    expect(frames.every((f) => f.payload.byteLength === 0)).toBe(true);
-    expect(result.results).toHaveLength(2);
-    expect(result.events?.map((e) => e.eventId)).toEqual([
-      slotEventId(6),
-      slotEventId(7),
-    ]);
-    expect(result.events?.[0].createdAt).toBeInstanceOf(Date);
-    agent.assertNoPendingInterceptors();
-  });
-  it('preserves hook_conflict and duplicate outcomes', async () => {
-    const agent = mockAgent();
-    const response = body();
-    response.results[0].event = {
-      ...response.results[0].event,
-      eventType: 'hook_conflict',
-      eventData: {
-        token: 'abrt_1',
-        conflictingRunId: 'wrun_other',
-      },
-    } as any;
-    response.results[1] = {
-      status: 409,
-      error: 'conflict',
-      message: 'already exists',
-    } as any;
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/hooks/batch`,
-        method: 'POST',
-      })
-      .reply(200, encode(response));
-    const result = await createWorkflowRunHooks(RUN_ID, hooks(), undefined, {
-      token: 'test',
-      dispatcher: agent,
-    });
-    expect(result.results[0].result?.event?.eventType).toBe('hook_conflict');
-    expect(result.results[1].error).toBe('conflict');
-  });
-  it('does not turn an ambiguous failure into individual writes', async () => {
-    const agent = mockAgent();
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/hooks/batch`,
-        method: 'POST',
-      })
-      .reply(503, 'unavailable');
-    await expect(
-      createWorkflowRunHooks(RUN_ID, hooks(), undefined, {
-        token: 'test',
-        dispatcher: agent,
-      })
-    ).rejects.toThrow();
-    agent.assertNoPendingInterceptors();
-  });
-  it('rejects malformed shared history', async () => {
-    const agent = mockAgent();
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: `/api/v4/runs/${RUN_ID}/events/hooks/batch`,
-        method: 'POST',
-      })
-      .reply(200, encode({ ...body(), events: [{ bad: true }] }));
-    await expect(
-      createWorkflowRunHooks(RUN_ID, hooks(), undefined, {
-        token: 'test',
-        dispatcher: agent,
-      })
-    ).rejects.toThrow('invalid shared history');
   });
 });

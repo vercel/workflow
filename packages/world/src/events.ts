@@ -1075,6 +1075,14 @@ export interface CreateEventParams {
 export type EventResult<T extends EventType = EventType> = {
   /** The created event (optional for legacy compatibility) */
   event?: Event;
+  /**
+   * Optional ascending events.list cursor immediately after `event`, minted
+   * by the World that owns the cursor format. This does not attest that the
+   * caller holds any earlier events. The runtime may advance to it only after
+   * proving that its loaded prefix plus committed responses covers every slot
+   * through this event. Worlds that omit it retain the normal reload path.
+   */
+  eventCursor?: string;
   /** The workflow run entity (for run_* events) */
   run?: WorkflowRun;
   /** The step entity (for step_* events) */
@@ -1261,33 +1269,6 @@ export type BatchEventItemResult =
       step?: undefined;
       wait?: undefined;
     };
-
-/** Parameters for coalescing independent system-hook registrations. */
-export type CreateHookBatchParams = Pick<
-  CreateEventParams,
-  'eventCount' | 'requestId' | 'replayDivergenceCount'
->;
-
-/**
- * Hook registrations commit independently, with the same per-hook atomicity
- * and retry semantics as `create`. This is request coalescing, not a transaction
- * across hooks (hook storage and the run log may live in different regions).
- */
-export interface HookBatchResult {
-  results: (
-    | {
-        status: 200;
-        error?: undefined;
-        message?: undefined;
-        result: EventResult;
-      }
-    | { status: number; error: string; message: string; result?: undefined }
-  )[];
-  /** One shared, dense suffix after the requested eventCount, when available. */
-  events?: Event[];
-  cursor?: string | null;
-  hasMore?: boolean;
-}
 
 /** Result of {@link Storage.events.createBatch}. */
 export interface EventBatchResult {

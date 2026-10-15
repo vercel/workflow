@@ -140,12 +140,6 @@ export interface APIConfig {
    * @internal
    */
   mintedSpecVersion?: number;
-  /**
-   * Observe server support on replay responses, before scheduling writes.
-   * Scoped to one storage instance; absent headers disable hook batching.
-   * @internal
-   */
-  onHookBatchSupport?: (supported: boolean) => void;
 }
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';

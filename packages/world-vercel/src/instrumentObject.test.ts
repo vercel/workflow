@@ -84,29 +84,4 @@ describe('instrumentObject', () => {
       'workflow.run.id': 'wrun_test',
     });
   });
-  it('tags system hook batches with their run and composition', async () => {
-    const events = instrumentObject('world.events', {
-      createHooks: vi.fn(async (_runId: string, _items: unknown[]) => ({
-        results: [],
-      })),
-    });
-    await events.createHooks('wrun_batch', [
-      { event: { eventType: 'hook_created' } },
-      { event: { eventType: 'hook_created' } },
-    ]);
-    expect(mocks.trace).toHaveBeenCalledWith(
-      'world.events.createHooks',
-      expect.anything(),
-      expect.any(Function)
-    );
-    expect(mocks.span.setAttributes).toHaveBeenCalledWith(
-      expect.objectContaining({ 'workflow.run.id': 'wrun_batch' })
-    );
-    expect(mocks.span.setAttributes).toHaveBeenCalledWith(
-      expect.objectContaining({
-        'workflow.batch.size': 2,
-        'workflow.batch.shape': 'hook_created:2',
-      })
-    );
-  });
 });

@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+Concurrent independent hook registrations use the existing single-event
+requests. The Node.js runtime defers per-request history catch-up and reconciles
+the committed events after all requests settle. The adapter supplies an optional
+`eventCursor` in Vercel's cursor format and honors resolved hook metadata for this
+path. A consecutive suffix needs no history read; missing or intervening events
+retain the normal reload before continuation. No server upgrade or batch
+registration endpoint is required.
+
 Production workflow backend for Vercel platform deployments.
 
 Integrates with Vercel's infrastructure for storage, queuing, and authentication. Handles workflow persistence and scaling in production environments.
@@ -37,24 +45,6 @@ try {
 It returns `undefined`, and writes stay on HTTP, when the transport is
 disabled or the World cannot hold a socket (a `projectConfig` World, as the
 CLI uses).
-
-## System hook registration batches
-
-The runtime coalesces independent generated cancellation and steering hooks into
-one `POST /v4/runs/:runId/events/hooks/batch` request (2–32 hooks). Each hook
-keeps its existing commit and cross-region recovery protocol; this is not an
-all-or-nothing transaction across the group. The response shares one history
-suffix: consecutive new events need no history query, and intervening writes
-require at most one shared catch-up query. Redis indexing remains awaited.
-
-The adapter exposes the optional `world.events.createHooks` method only after
-an existing replay response advertises `x-wf-hook-batch-version: 1`, with no
-additional request. Older servers and unknown versions retain individual
-writes, including after a rollback. The optimization applies to slot-identity
-runs; worlds without it, legacy runs, and `WORKFLOW_BATCH_TRANSITIONS=0` retain
-individual writes. User hooks, metadata-bearing hooks, forced claims, and
-same-token lifecycle operations retain their existing ordering. A failed batch
-is not retried as individual writes while its outcome may still be unknown.
 
 ## Stream writer sockets
 

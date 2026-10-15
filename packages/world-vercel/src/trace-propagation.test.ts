@@ -22,7 +22,6 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
-import { createWorkflowRunHooks } from './events.js';
 import {
   createHookReceivedPreloadEventV4,
   getWorkflowRunEventsV4,
@@ -611,52 +610,3 @@ describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
     });
   }
 );
-
-describe('system hook batch trace propagation', () => {
-  it('parents the shared registration HTTP request to the active workflow trace', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      cborResponse({
-        results: [
-          { status: 409, error: 'conflict', message: 'already registered' },
-          { status: 409, error: 'conflict', message: 'already registered' },
-        ],
-      })
-    );
-    vi.stubGlobal('fetch', fetchMock);
-    const tracer = otelTrace.getTracer('test');
-    let traceId = '';
-    let parentId = '';
-    await tracer.startActiveSpan('flow-invocation', async (span) => {
-      traceId = span.spanContext().traceId;
-      parentId = span.spanContext().spanId;
-      await createWorkflowRunHooks(
-        'wrun_trace',
-        ['cancel', 'steer'].map((name) => ({
-          event: {
-            eventType: 'hook_created' as const,
-            specVersion: 6,
-            correlationId: `hook_${name}`,
-            eventData: {
-              token: `abrt_${name}`,
-              isSystem: true,
-              isWebhook: false,
-            },
-          },
-        })),
-        undefined,
-        { token: 'test-token' }
-      );
-      span.end();
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toContain('/events/hooks/batch');
-    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
-    const client = exporter
-      .getFinishedSpans()
-      .find((s) => s.name === 'http POST');
-    expect(client?.parentSpanId).toBe(parentId);
-    expect(headers.get('traceparent')).toBe(
-      `00-${traceId}-${client?.spanContext().spanId}-01`
-    );
-  });
-});

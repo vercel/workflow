@@ -8,13 +8,11 @@ import type {
   CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
-  CreateHookBatchParams,
   Event,
   EventBatchResult,
   EventListResponse,
   EventResult,
   GetEventParams,
-  HookBatchResult,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
   RunCreatedEventRequest,
@@ -467,22 +465,6 @@ export interface Storage {
       events: BatchEventRequest[],
       params?: CreateEventBatchParams
     ): Promise<EventBatchResult>;
-
-    /**
-     * Optional request coalescing for distinct, generated system hooks. Each
-     * registration uses `create`'s lifecycle protocol; the group is NOT atomic.
-     * All writes settle before returning or rejecting. A shared history suffix
-     * avoids each registration reading back its siblings' events. Worlds
-     * without this method keep using individual registrations.
-     *
-     * Only hook_created, isSystem:true, non-webhook, non-force, metadata-free
-     * registrations with distinct tokens and correlation IDs are accepted.
-     */
-    createHooks?(
-      runId: string,
-      events: BatchEventRequest[],
-      params?: CreateHookBatchParams
-    ): Promise<HookBatchResult>;
 
     get(
       runId: string,
