@@ -272,19 +272,35 @@ off by the server's UTC offset (for example 7 hours early on
 `America/Los_Angeles`).
 
 Migration 0027 converts the columns. On a server in UTC it only changes the
-catalog, without rewriting tables. Otherwise it also rewrites every
-`created_at` row (and `updated_at` on rows never updated) from the server's
-local time to the correct instant, holding the tables' locks until it
-finishes. It assumes those values were written in the time zone of the
-session that runs the migration. If your application's pool set a different
-session time zone, pass it to the migration, for example with
-`?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the connection
-string.
+catalog and rebuilds one small partial index, `workflow_invocations_pending`;
+no table is rewritten. On a server in another time zone it also moves the
+values that came from `now()` (every `created_at`, `updated_at` on rows never
+updated, and `workflow_invocations.responded_at`) from the server's local time
+to the instant they recorded. That costs about one rewrite of each table (new
+row versions, WAL, and bloat until vacuum), with the tables' locks held until
+it finishes, so plan a maintenance window for a large database.
 
-On a server outside UTC, stop the previous version's workers, run the
-migration, then start the upgraded app. Older versions read the converted
-columns shifted by the server's UTC offset, which can skip or stretch step
-retry backoffs.
+The migration waits at most 10 seconds for its locks (unless the session sets
+its own `lock_timeout`), so a long-running transaction makes `bootstrap` fail
+instead of queueing every query behind it. Run `bootstrap` again once that
+transaction ends.
+
+It assumes the `now()` values were written in the time zone of the session
+that runs the migration. If your application's pool set a different session
+time zone, set `workflow.legacy_timezone` to that zone for the migration. Use
+`?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the connection
+string, or, where a pooler drops startup `options` (PgBouncer and several
+hosted poolers), `ALTER DATABASE mydb SET workflow.legacy_timezone =
+'Europe/Berlin'` or `ALTER ROLE myuser SET ...` before running `bootstrap`.
+
+On a server in UTC the upgrade order does not matter: the upgraded World reads
+unconverted columns correctly in any Node.js time zone, and older versions read
+converted ones correctly. On a server outside UTC, stop the previous version's
+workers, run the migration, then start the upgraded app. Older versions read
+the converted columns shifted by the server's UTC offset, which can skip or
+stretch step retry backoffs. For the same reason there is no rolling back past
+0027 on such a server: the migration has no down step, and an older version
+would read every converted value shifted.
 
 ### Data retention
 

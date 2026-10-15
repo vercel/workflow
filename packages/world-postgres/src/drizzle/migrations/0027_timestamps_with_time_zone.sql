@@ -19,8 +19,14 @@
 --    recorded. That zone is the session's TimeZone, or
 --    `workflow.legacy_timezone` when set (for example
 --    `options=-c workflow.legacy_timezone=Europe/Berlin` in the connection
---    string), for apps whose pool ran in a different session time zone than
---    this migration.
+--    string, or `ALTER DATABASE ... SET workflow.legacy_timezone = ...`), for
+--    apps whose pool ran in a different session time zone than this migration.
+--    Each value is moved by the offset that zone had on its own date, so rows
+--    from winter and summer both come out right. The one exception is the hour
+--    repeated when clocks go back (01:00-02:00 on the first Sunday of November
+--    in America/Los_Angeles): a naive value from it is ambiguous and is taken
+--    as standard time, so a row written in the first pass lands an hour late.
+--    This rewrites every row it moves, about one rewrite of each table.
 --
 -- `workflow_invocations.expired_at` mixes `now()` with JavaScript dates and is
 -- only ever checked for NULL, so its values are left as they are. Snapshot
@@ -30,14 +36,21 @@
 -- by the offset a second time. The drizzle migrator takes no lock, so two
 -- `bootstrap` processes started together can both apply this migration. Lock
 -- the tables first, then skip everything if the columns are already converted.
+-- Waiting for the locks queues every other query on these tables behind this
+-- one, so give up after 10 seconds (unless the session set its own
+-- `lock_timeout`) and let `bootstrap` fail rather than stall the World.
 DO $$
 DECLARE
   session_zone text := current_setting('TimeZone');
+  session_lock_timeout text := current_setting('lock_timeout');
   legacy_zone text := coalesce(
     nullif(current_setting('workflow.legacy_timezone', true), ''),
     current_setting('TimeZone')
   );
 BEGIN
+  IF session_lock_timeout = '0' THEN
+    PERFORM set_config('lock_timeout', '10s', true);
+  END IF;
   LOCK TABLE
     "workflow"."workflow_runs",
     "workflow"."workflow_events",
@@ -48,6 +61,7 @@ BEGIN
     "workflow"."workflow_snapshots",
     "workflow"."workflow_stream_chunks"
   IN ACCESS EXCLUSIVE MODE;
+  PERFORM set_config('lock_timeout', session_lock_timeout, true);
   IF (
     SELECT atttypid FROM pg_attribute
     WHERE attrelid = '"workflow"."workflow_runs"'::regclass
@@ -88,6 +102,8 @@ BEGIN
   ALTER TABLE "workflow"."workflow_stream_chunks"
     ALTER COLUMN "created_at" TYPE timestamp with time zone;
 
+  -- Only a shortcut: in any zone with no offset the `WHERE` clauses below
+  -- match no rows, so a UTC alias missing from this list is still correct.
   IF lower(legacy_zone) NOT IN (
     'utc', 'etc/utc', 'uct', 'etc/uct', 'universal', 'etc/universal',
     'zulu', 'etc/zulu', 'gmt', 'etc/gmt', 'gmt0', 'etc/gmt0', 'gmt+0',

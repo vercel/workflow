@@ -117,6 +117,22 @@ function naiveMigrationsFolder(): string {
   return dir;
 }
 
+describe('migration journal', () => {
+  it('orders every migration after the one before it', () => {
+    // The drizzle migrator applies a migration only when its `when` is later
+    // than the last one applied, so a duplicate or earlier `when` is skipped
+    // silently on databases that already ran its predecessor.
+    const { entries } = JSON.parse(
+      readFileSync(join(MIGRATIONS, 'meta', '_journal.json'), 'utf8')
+    ) as { entries: { idx: number; when: number; tag: string }[] };
+    entries.forEach((entry, i) => {
+      expect(entry.idx).toBe(i);
+      expect(entry.tag.startsWith(String(i).padStart(4, '0'))).toBe(true);
+      if (i > 0) expect(entry.when).toBeGreaterThan(entries[i - 1].when);
+    });
+  });
+});
+
 if (process.platform === 'win32') {
   // These tests rely on a docker container.
   test.skip('skipped on Windows since it relies on a docker container', () => {});
@@ -323,6 +339,18 @@ if (process.platform === 'win32') {
             `INSERT INTO workflow.workflow_events (id, type, run_id)
              VALUES ('evnt_legacy', 'run_created', 'wrun_started')`
           );
+          // A `now()` from another season: written under that day's offset,
+          // which the repair has to use instead of today's.
+          const {
+            rows: [{ winter }],
+          } = await client.query<{ winter: Date }>(
+            `SELECT timestamptz '2026-01-15 10:00:00' AS winter`
+          );
+          await client.query(
+            `INSERT INTO workflow.workflow_events (id, type, run_id, created_at)
+             VALUES ('evnt_winter', 'run_created', 'wrun_started', $1::timestamptz)`,
+            [winter.toISOString()]
+          );
           await client.query(
             `INSERT INTO workflow.workflow_steps (run_id, step_id, step_name, status, attempt)
              VALUES ('wrun_started', 'step_fresh', 'legacy', 'pending', 0),
@@ -375,7 +403,7 @@ if (process.platform === 'win32') {
             rows: [{ now }],
           } = await client.query<{ now: Date }>('SELECT now() AS now');
           await client.query('COMMIT');
-          return { now, js };
+          return { now, js, winter };
         } catch (error) {
           await client.query('ROLLBACK');
           throw error;
@@ -387,7 +415,7 @@ if (process.platform === 'win32') {
       /** Reads every timestamp back through the World's drizzle schema. */
       async function expectRepaired(
         pool: Pool,
-        { now, js }: { now: Date; js: Date }
+        { now, js, winter }: { now: Date; js: Date; winter: Date }
       ) {
         const db = createClient(pool);
         const run = async (id: string) => {
@@ -420,8 +448,15 @@ if (process.platform === 'win32') {
         expectSameInstant(startedRun.updatedAt, js);
         expectSameInstant(startedRun.startedAt, js);
 
-        const [event] = await db.select().from(Schema.events);
-        expectSameInstant(event.createdAt, now);
+        const event = async (id: string) => {
+          const rows = await db
+            .select()
+            .from(Schema.events)
+            .where(eq(Schema.events.eventId, id));
+          return defined(rows[0]);
+        };
+        expectSameInstant((await event('evnt_legacy')).createdAt, now);
+        expectSameInstant((await event('evnt_winter')).createdAt, winter);
 
         const freshStep = await step('step_fresh');
         expectSameInstant(freshStep.createdAt, now);
@@ -454,13 +489,21 @@ if (process.platform === 'win32') {
         expectSameInstant(snapshot.createdAt, js);
       }
 
-      async function heapFiles(pool: Pool) {
-        const { rows } = await pool.query<{ table: string; file: string }>(
-          `SELECT t AS table, pg_relation_filenode(format('workflow.%I', t)::regclass)::text AS file
-           FROM unnest($1::text[]) AS t`,
+      /** The storage file of every table and index in the 8 tables. */
+      async function storageFiles(pool: Pool) {
+        const { rows } = await pool.query<{ relation: string; file: string }>(
+          `SELECT c.relname AS relation, pg_relation_filenode(c.oid)::text AS file
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           LEFT JOIN pg_index i ON i.indexrelid = c.oid
+           WHERE n.nspname = 'workflow'
+             AND coalesce(i.indrelid, c.oid) IN (
+               SELECT format('workflow.%I', t)::regclass FROM unnest($1::text[]) AS t
+             )
+           ORDER BY c.relname`,
           [TABLES]
         );
-        return rows;
+        return Object.fromEntries(rows.map((row) => [row.relation, row.file]));
       }
 
       it('converts local wall times written on a non-UTC server', async () => {
@@ -476,17 +519,23 @@ if (process.platform === 'win32') {
         await expectRepaired(openPool(url), legacy);
       }, 60_000);
 
-      it('converts in place without rewriting tables on a UTC server', async () => {
+      it('converts without rewriting tables on a UTC server', async () => {
         // The container's default time zone.
         const url = await createDatabase('upgrade_utc');
         await runMigrations(url, { migrationsFolder: naiveMigrations });
         const pool = openPool(url);
         const legacy = await writeLegacyRows(pool);
-        const before = await heapFiles(pool);
+        const before = await storageFiles(pool);
 
         await runMigrations(url);
 
-        expect(await heapFiles(pool)).toEqual(before);
+        // Only the partial index whose predicate reads `responded_at` is
+        // rebuilt; tables and every other index keep their storage.
+        const after = await storageFiles(pool);
+        expect(Object.keys(after)).toEqual(Object.keys(before));
+        expect(
+          Object.keys(after).filter((name) => after[name] !== before[name])
+        ).toEqual(['workflow_invocations_pending']);
         await expectRepaired(pool, legacy);
       }, 60_000);
 
@@ -523,6 +572,61 @@ if (process.platform === 'win32') {
         await expectRepaired(openPool(url), legacy);
       }, 60_000);
 
+      it('gives up waiting for its locks instead of stalling the World', async () => {
+        const url = await createDatabase('upgrade_lock_timeout');
+        await runMigrations(url, { migrationsFolder: naiveMigrations });
+        const legacy = await writeLegacyRows(openPool(url));
+
+        // A long transaction still holding a lock on one of the tables.
+        const holder = await openPool(url).connect();
+        try {
+          await holder.query('BEGIN');
+          await holder.query('SELECT 1 FROM workflow.workflow_events LIMIT 1');
+          const started = Date.now();
+          await expect(runMigrations(url)).rejects.toMatchObject({
+            cause: { code: '55P03' },
+          });
+          expect(Date.now() - started).toBeLessThan(30_000);
+        } finally {
+          await holder.query('ROLLBACK');
+          holder.release();
+        }
+
+        await runMigrations(url);
+        await expectRepaired(openPool(url), legacy);
+      }, 60_000);
+
+      it('reads unconverted columns as UTC in a Node process outside UTC', async () => {
+        // The upgraded app can start before `bootstrap` runs 0027. The
+        // unconverted columns print without an offset; reading them in
+        // Node's local time zone would move a `retryAfter` by hours.
+        const url = await createDatabase('upgrade_node_los_angeles');
+        await runMigrations(url, { migrationsFolder: naiveMigrations });
+        const pool = openPool(url);
+        const legacy = await writeLegacyRows(pool);
+        await pool.query(
+          `UPDATE workflow.workflow_steps SET retry_after = $1
+           WHERE step_id = 'step_started'`,
+          [legacy.js.toISOString()]
+        );
+
+        const tz = process.env.TZ;
+        process.env.TZ = 'America/Los_Angeles';
+        try {
+          expect(new Date(2026, 0, 15).getTimezoneOffset()).toBe(480);
+          const [step] = await createClient(pool)
+            .select()
+            .from(Schema.steps)
+            .where(eq(Schema.steps.stepId, 'step_started'));
+          expectSameInstant(defined(step).retryAfter, legacy.js);
+          expectSameInstant(defined(step).startedAt, legacy.js);
+          expectSameInstant(defined(step).createdAt, legacy.now);
+        } finally {
+          if (tz === undefined) delete process.env.TZ;
+          else process.env.TZ = tz;
+        }
+      }, 60_000);
+
       it('honors workflow.legacy_timezone when the app wrote in another session time zone', async () => {
         const url = await createDatabase('upgrade_session_tokyo');
         await runMigrations(url, { migrationsFolder: naiveMigrations });
@@ -533,6 +637,22 @@ if (process.platform === 'win32') {
         await runMigrations(url, {
           pool: { options: '-c workflow.legacy_timezone=Asia/Tokyo' },
         });
+
+        await expectRepaired(openPool(url), legacy);
+      }, 60_000);
+
+      it('honors workflow.legacy_timezone set with ALTER DATABASE', async () => {
+        // For poolers that drop startup `options`.
+        const url = await createDatabase('upgrade_database_setting');
+        await runMigrations(url, { migrationsFolder: naiveMigrations });
+        const legacy = await writeLegacyRows(
+          openPool(url, { options: '-c TimeZone=Asia/Tokyo' })
+        );
+        await admin.query(
+          `ALTER DATABASE "upgrade_database_setting" SET workflow.legacy_timezone = 'Asia/Tokyo'`
+        );
+
+        await runMigrations(url);
 
         await expectRepaired(openPool(url), legacy);
       }, 60_000);
