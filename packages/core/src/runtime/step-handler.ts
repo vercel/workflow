@@ -364,19 +364,21 @@ const stepHandler = createQueueHandler(
                 { requestId }
               );
             } catch (stepFailErr) {
-              if (EntityConflictError.is(stepFailErr)) {
-                runtimeLogger.info(
-                  'Tried failing step for missing function, but step has already finished.',
-                  {
-                    workflowRunId,
-                    stepId,
-                    stepName,
-                    message: stepFailErr.message,
-                  }
-                );
-                return;
+              if (!EntityConflictError.is(stepFailErr)) {
+                throw stepFailErr;
               }
-              throw stepFailErr;
+              // The step is already terminal, possibly from this
+              // invocation's own write whose response was lost. Fall through
+              // and re-queue the workflow: an extra wake only costs a replay.
+              runtimeLogger.info(
+                'Tried failing step for missing function, but step has already finished. Re-queueing workflow.',
+                {
+                  workflowRunId,
+                  stepId,
+                  stepName,
+                  message: stepFailErr.message,
+                }
+              );
             }
 
             span?.setAttributes({
@@ -435,19 +437,20 @@ const stepHandler = createQueueHandler(
                 { requestId }
               );
             } catch (err) {
-              if (EntityConflictError.is(err)) {
-                runtimeLogger.info(
-                  'Tried failing step, but step has already finished.',
-                  {
-                    workflowRunId,
-                    stepId,
-                    stepName,
-                    message: err.message,
-                  }
-                );
-                return;
+              if (!EntityConflictError.is(err)) {
+                throw err;
               }
-              throw err;
+              // Already terminal, possibly from our own lost-response write.
+              // Fall through and re-queue the workflow.
+              runtimeLogger.info(
+                'Tried failing step, but step has already finished. Re-queueing workflow.',
+                {
+                  workflowRunId,
+                  stepId,
+                  stepName,
+                  message: err.message,
+                }
+              );
             }
 
             span?.setAttributes({
@@ -501,10 +504,11 @@ const stepHandler = createQueueHandler(
                 { requestId }
               );
             } catch (failErr) {
-              if (EntityConflictError.is(failErr)) {
-                return;
+              // EntityConflictError: already terminal, possibly from our own
+              // lost-response write. Fall through and re-queue the workflow.
+              if (!EntityConflictError.is(failErr)) {
+                throw failErr;
               }
-              throw failErr;
             }
             // Re-queue the workflow so it can process the step failure
             await queueMessage(
@@ -691,19 +695,20 @@ const stepHandler = createQueueHandler(
                   { requestId }
                 );
               } catch (stepFailErr) {
-                if (EntityConflictError.is(stepFailErr)) {
-                  runtimeLogger.info(
-                    'Tried failing step, but step has already finished.',
-                    {
-                      workflowRunId,
-                      stepId,
-                      stepName,
-                      message: stepFailErr.message,
-                    }
-                  );
-                  return;
+                if (!EntityConflictError.is(stepFailErr)) {
+                  throw stepFailErr;
                 }
-                throw stepFailErr;
+                // Already terminal, possibly from our own lost-response write.
+                // Fall through and re-queue the workflow.
+                runtimeLogger.info(
+                  'Tried failing step, but step has already finished. Re-queueing workflow.',
+                  {
+                    workflowRunId,
+                    stepId,
+                    stepName,
+                    message: stepFailErr.message,
+                  }
+                );
               }
 
               span?.setAttributes({
@@ -752,19 +757,20 @@ const stepHandler = createQueueHandler(
                     { requestId }
                   );
                 } catch (stepFailErr) {
-                  if (EntityConflictError.is(stepFailErr)) {
-                    runtimeLogger.info(
-                      'Tried failing step, but step has already finished.',
-                      {
-                        workflowRunId,
-                        stepId,
-                        stepName,
-                        message: stepFailErr.message,
-                      }
-                    );
-                    return;
+                  if (!EntityConflictError.is(stepFailErr)) {
+                    throw stepFailErr;
                   }
-                  throw stepFailErr;
+                  // Already terminal, possibly from our own lost-response write.
+                  // Fall through and re-queue the workflow.
+                  runtimeLogger.info(
+                    'Tried failing step, but step has already finished. Re-queueing workflow.',
+                    {
+                      workflowRunId,
+                      stepId,
+                      stepName,
+                      message: stepFailErr.message,
+                    }
+                  );
                 }
 
                 span?.setAttributes({
@@ -911,7 +917,6 @@ const stepHandler = createQueueHandler(
 
           // Run step_completed and trace serialization concurrently;
           // the trace carrier is used in the final queueMessage call below
-          let stepCompleted409 = false;
           const [, traceCarrier] = await Promise.all([
             world.events
               .create(
@@ -929,27 +934,27 @@ const stepHandler = createQueueHandler(
                 { requestId }
               )
               .catch((err: unknown) => {
-                if (EntityConflictError.is(err)) {
-                  runtimeLogger.info(
-                    'Tried completing step, but step has already finished.',
-                    {
-                      workflowRunId,
-                      stepId,
-                      stepName,
-                      message: err.message,
-                    }
-                  );
-                  stepCompleted409 = true;
-                  return;
+                if (!EntityConflictError.is(err)) {
+                  throw err;
                 }
-                throw err;
+                // The step is already terminal. That may be this
+                // invocation's own step_completed: the world retries the
+                // POST when a response is lost, and the retry then conflicts
+                // with the write that landed. Nobody else will wake the
+                // workflow in that case, so fall through and queue the
+                // continuation. An extra wake only costs one replay.
+                runtimeLogger.info(
+                  'Tried completing step, but step has already finished. Re-queueing workflow.',
+                  {
+                    workflowRunId,
+                    stepId,
+                    stepName,
+                    message: err.message,
+                  }
+                );
               }),
             serializeTraceCarrier(),
           ]);
-
-          if (stepCompleted409) {
-            return;
-          }
 
           span?.setAttributes({
             ...Attribute.StepStatus('completed'),

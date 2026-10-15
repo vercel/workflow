@@ -259,8 +259,11 @@ describe('step-handler 409 handling', () => {
   });
 
   describe('step_completed 409', () => {
-    it('should warn and return when step_completed gets a 409', async () => {
-      // step_started succeeds, step function succeeds, step_completed returns 409
+    it('should queue the workflow continuation when step_completed gets a 409', async () => {
+      // step_started succeeds, step function succeeds, step_completed returns
+      // 409. In production this is what the world surfaces when the first
+      // step_completed POST landed but its response was lost and the
+      // in-process retry conflicted with it: nobody else wakes the workflow.
       let callCount = 0;
       mockEventsCreate.mockImplementation(
         (_runId: string, event: { eventType: string }) => {
@@ -293,23 +296,26 @@ describe('step-handler 409 handling', () => {
         createMetadata('myStep')
       );
 
-      // Should not throw, should return undefined (early return)
       expect(result).toBeUndefined();
-      // Should have logged a warning, not an error
+      expect(callCount).toBe(1);
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
-        'Tried completing step, but step has already finished.',
+        'Tried completing step, but step has already finished. Re-queueing workflow.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
           stepId: 'step_abc',
         })
       );
-      // Should NOT have queued a workflow continuation
-      expect(mockQueueMessage).not.toHaveBeenCalled();
+      expect(mockQueueMessage).toHaveBeenCalledTimes(1);
+      expect(mockQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('test-workflow'),
+        expect.objectContaining({ runId: 'wrun_test123' })
+      );
     });
   });
 
   describe('step_failed 409 (max retries exhausted path)', () => {
-    it('should warn and return when step_failed gets a 409 after max retries', async () => {
+    it('should re-queue the workflow when step_failed gets a 409 after max retries', async () => {
       // step_started succeeds with attempt > maxRetries+1, step function throws, step_failed returns 409
       mockStepFn.mockRejectedValue(new Error('step error'));
       mockStepFn.maxRetries = 2;
@@ -346,17 +352,23 @@ describe('step-handler 409 handling', () => {
 
       expect(result).toBeUndefined();
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
-        'Tried failing step, but step has already finished.',
+        'Tried failing step, but step has already finished. Re-queueing workflow.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
           stepId: 'step_abc',
         })
       );
+      expect(mockQueueMessage).toHaveBeenCalledTimes(1);
+      expect(mockQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('test-workflow'),
+        expect.objectContaining({ runId: 'wrun_test123' })
+      );
     });
   });
 
   describe('step_failed 409 (pre-execution max retries guard)', () => {
-    it('should warn and return when step_failed gets a 409 on pre-execution guard', async () => {
+    it('should re-queue the workflow when step_failed gets a 409 on pre-execution guard', async () => {
       // step_started returns attempt > maxRetries+1 (pre-execution guard triggers)
       mockStepFn.maxRetries = 2;
       mockEventsCreate.mockImplementation(
@@ -392,11 +404,17 @@ describe('step-handler 409 handling', () => {
 
       expect(result).toBeUndefined();
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
-        'Tried failing step, but step has already finished.',
+        'Tried failing step, but step has already finished. Re-queueing workflow.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
           stepId: 'step_abc',
         })
+      );
+      expect(mockQueueMessage).toHaveBeenCalledTimes(1);
+      expect(mockQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('test-workflow'),
+        expect.objectContaining({ runId: 'wrun_test123' })
       );
       // Step function should NOT have been called (pre-execution guard)
       expect(mockStepFn).not.toHaveBeenCalled();
@@ -797,18 +815,18 @@ describe('step-handler step not found', () => {
       createMetadata('missingStep')
     );
 
-    // Should return without throwing - step was already finished
     expect(result).toBeUndefined();
     expect(callCount).toBe(1);
     expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
-      'Tried failing step for missing function, but step has already finished.',
+      'Tried failing step for missing function, but step has already finished. Re-queueing workflow.',
       expect.objectContaining({
         workflowRunId: 'wrun_test123',
         stepId: 'step_abc',
       })
     );
-    // Should NOT re-queue the workflow since step was already resolved
-    expect(mockQueueMessage).not.toHaveBeenCalled();
+    // The terminal write may be this invocation's own, so the workflow is
+    // re-queued rather than left without a wake.
+    expect(mockQueueMessage).toHaveBeenCalledTimes(1);
   });
 });
 
