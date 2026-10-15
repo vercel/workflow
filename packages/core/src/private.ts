@@ -19,10 +19,16 @@ export type StepFunction<
   stepId?: string;
 };
 
+export type StepFunctionLoader = () => Promise<unknown> | unknown;
+
 const RegisteredStepsKey = Symbol.for('@workflow/core//registeredSteps');
+const RegisteredStepLoadersKey = Symbol.for(
+  '@workflow/core//registeredStepLoaders'
+);
 
 const globalSymbols: typeof globalThis & {
   [RegisteredStepsKey]?: Map<string, StepFunction>;
+  [RegisteredStepLoadersKey]?: Map<string, StepFunctionLoader>;
 } = globalThis;
 
 // biome-ignore lint/suspicious/noAssignInExpressions: /
@@ -30,6 +36,9 @@ const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
   string,
   StepFunction
 >());
+// biome-ignore lint/suspicious/noAssignInExpressions: /
+const registeredStepLoaders = (globalSymbols[RegisteredStepLoadersKey] ??=
+  new Map<string, StepFunctionLoader>());
 
 const BUILTIN_RESPONSE_STEP_NAMES = new Set([
   '__builtin_response_array_buffer',
@@ -87,6 +96,23 @@ function getBuiltinResponseStepAlias(stepId: string): StepFunction | undefined {
   return undefined;
 }
 
+function getStepIdMatch<T>(registry: Map<string, T>, stepId: string) {
+  const directMatch = registry.get(stepId);
+  if (directMatch) {
+    return directMatch;
+  }
+
+  // Support equivalent workflow path aliases in mixed symlink environments.
+  for (const aliasStepId of getStepIdAliasCandidates(stepId)) {
+    const aliasMatch = registry.get(aliasStepId);
+    if (aliasMatch) {
+      return aliasMatch;
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * Register a step function to be served in the server bundle.
  * Also sets the stepId property on the function for serialization support.
@@ -102,21 +128,26 @@ export function registerStepFunction(stepId: string, stepFn: StepFunction) {
 }
 
 /**
+ * Register a lazy module loader for a step function.
+ *
+ * Framework integrations can use this to keep step modules out of route
+ * initialization. If importing the module fails, the runtime can record that
+ * failure against the specific step instead of failing the whole route before
+ * the queue message has step context.
+ */
+export function registerStepFunctionLoader(
+  stepId: string,
+  loader: StepFunctionLoader
+) {
+  registeredStepLoaders.set(stepId, loader);
+}
+
+/**
  * Find a registered step function by name
  */
 export function getStepFunction(stepId: string): StepFunction | undefined {
-  const directMatch = registeredSteps.get(stepId);
-  if (directMatch) {
-    return directMatch;
-  }
-
-  // Support equivalent workflow path aliases in mixed symlink environments.
-  for (const aliasStepId of getStepIdAliasCandidates(stepId)) {
-    const aliasMatch = registeredSteps.get(aliasStepId);
-    if (aliasMatch) {
-      return aliasMatch;
-    }
-  }
+  const registeredMatch = getStepIdMatch(registeredSteps, stepId);
+  if (registeredMatch) return registeredMatch;
 
   const builtinAliasMatch = getBuiltinResponseStepAlias(stepId);
   if (builtinAliasMatch) {
@@ -124,6 +155,21 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
   }
 
   return undefined;
+}
+
+/**
+ * Load the module that registers a step function, then return the registered
+ * function. If no loader is known, this behaves like getStepFunction().
+ */
+export async function loadStepFunction(
+  stepId: string
+): Promise<StepFunction | undefined> {
+  const loader = getStepIdMatch(registeredStepLoaders, stepId);
+  if (loader) {
+    await loader();
+  }
+
+  return getStepFunction(stepId);
 }
 
 // Note: __private_getClosureVars is no longer re-exported here.
