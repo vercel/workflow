@@ -53,6 +53,7 @@ import {
   stepOutcomeDigest,
 } from './owned-step.js';
 import { isRetryableOwnerDelivery } from './owner-delivery.js';
+import { ownerLog, trackOwner } from './owner-diagnostics.js';
 import { reduceStep, runFromCreation } from './owner-state.js';
 import { isSingleOwnerRun } from './single-owner.js';
 import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
@@ -152,6 +153,20 @@ interface MailboxBatch {
   finish(): Promise<void>;
 }
 const MAX_MAILBOX_BATCH = 100;
+/** Phases logged on every owner start (see `owner-diagnostics.ts`). */
+const STARTUP_PHASES = new Set([
+  'initialize',
+  'create_run',
+  'catch_up',
+  'apply_history',
+  'load_run',
+  'load_events',
+  'load_steps',
+  'replay_prewarm',
+  'workflow_replay',
+]);
+/** Any other phase is logged only when it takes at least this long. */
+const SLOW_PHASE_MS = 1000;
 /** Durable step starts committed (then dispatched) per prefix. */
 const START_PREFIX_SIZE = 50;
 // Extend deliberately: shared-resource operations and failure/retry decisions
@@ -708,6 +723,48 @@ export class RetainedRunner {
     return ack ? Promise.race([ack.promise, done]) : done;
   }
 
+  /** Start-up phases always; anything else only when slow. */
+  private logPhase(
+    phase: string,
+    status: string,
+    elapsedMs: number,
+    details: Record<string, unknown>
+  ) {
+    if (!STARTUP_PHASES.has(phase) && elapsedMs < SLOW_PHASE_MS) return;
+    const { parentSpanId: _parent, ...fields } = details;
+    ownerLog('phase', {
+      runId: this.runId,
+      ownerId: this.id,
+      phase,
+      status,
+      elapsedMs: Math.round(elapsedMs),
+      ...fields,
+    });
+  }
+
+  diagnostics() {
+    let running = 0;
+    let pendingSteps = 0;
+    for (const step of this.steps.values()) {
+      if (step.status === 'running') running++;
+      else if (step.status === 'pending') pendingSteps++;
+    }
+    return {
+      runId: this.runId,
+      ownerId: this.id,
+      initialized: this.initialized,
+      closing: this.closing,
+      fault: this.fault?.kind,
+      inputs: this.pending.length,
+      dispatches: this.workers.size,
+      localBodies: this.localWorkers.size,
+      runningSteps: running,
+      pendingSteps,
+      events: this.events.length,
+      heads: this.eventWriter?.heads,
+    };
+  }
+
   private async observed<T>(
     phase: string,
     operation: () => Promise<T>,
@@ -718,13 +775,16 @@ export class RetainedRunner {
     this.observe(phase, 'begin', spanId, details);
     try {
       const result = await operation();
+      const elapsedMs = performance.now() - started;
       this.observe(phase, 'end', spanId, {
         ...details,
         status: 'completed',
-        elapsedMs: performance.now() - started,
+        elapsedMs,
       });
+      this.logPhase(phase, 'completed', elapsedMs, details);
       return result;
     } catch (error) {
+      this.logPhase(phase, 'error', performance.now() - started, details);
       this.observe(phase, 'end', spanId, {
         ...details,
         status: 'error',
@@ -1303,6 +1363,8 @@ export class RetainedRunner {
           );
         else await this.replayCache.prewarm(this.runState, this.events);
         const mode = this.session ? 'retained' : 'replay';
+        const passStarted = performance.now();
+        const passEvents = this.events.length;
         const result = await observeWorkflowPass(
           {
             runId: this.runId,
@@ -1324,6 +1386,12 @@ export class RetainedRunner {
                   worldCapabilities: this.facade.capabilities,
                 });
           }
+        );
+        this.logPhase(
+          `workflow_${mode}`,
+          result.type,
+          performance.now() - passStarted,
+          mode === 'replay' ? { eventCount: passEvents } : {}
         );
         if (result.type === 'replay')
           throw new RunnerFault(
@@ -2191,6 +2259,21 @@ export class RetainedRunner {
   }
 
   private async runOwnerLoop() {
+    const untrack = trackOwner(this);
+    ownerLog('owner_start', { runId: this.runId, ownerId: this.id });
+    try {
+      await this.runOwnerLoopBody();
+    } finally {
+      untrack();
+      ownerLog('owner_end', {
+        runId: this.runId,
+        ownerId: this.id,
+        fault: this.fault?.kind,
+      });
+    }
+  }
+
+  private async runOwnerLoopBody() {
     while (!this.closing && !this.fault) {
       if (this.handoffDue()) break;
       const item = this.pending.shift();
