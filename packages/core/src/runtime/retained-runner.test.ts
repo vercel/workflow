@@ -175,7 +175,9 @@ it.each([
 });
 
 it('starts the first steps of a wide fan-out before every step is created', async () => {
-  const count = 300;
+  // Above the old 128-input mailbox; below this test process's shared
+  // 256-entry worker cache (each worker is its own invocation in production).
+  const count = 250;
   const createdAtFirstBody: number[] = [];
   let fixture!: Awaited<ReturnType<typeof setup>>;
   registerStepFunction('wideWork', async (n) => {
@@ -235,6 +237,11 @@ it('starts the first steps of a wide fan-out before every step is created', asyn
   const types = fixture.owner.events.map((e) => e.eventType);
   expect(types.indexOf('step_started')).toBeLessThan(
     types.lastIndexOf('step_created')
+  );
+  // Every result of the running-step window fits the owner's mailbox.
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
   );
 });
 

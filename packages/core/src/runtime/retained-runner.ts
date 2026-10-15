@@ -158,6 +158,9 @@ const MAX_MAILBOX_BATCH = 100;
  * sliding window: each committed outcome frees a slot for the next pending
  * step on the owner's next pass. */
 const MAX_RUNNING_STEPS = 200;
+/** Inputs an owner queues before refusing more (429): a full window of step
+ * results plus room for other inputs (hook resumes, wakes, status probes). */
+const MAILBOX_CAPACITY = MAX_RUNNING_STEPS + 128;
 /** Phases logged on every owner start (see `owner-diagnostics.ts`). */
 const STARTUP_PHASES = new Set([
   'initialize',
@@ -550,7 +553,7 @@ export class RetainedRunner {
         // Retryable: the next delivery reaches a fresh owner.
         new WorkflowWorldError('Runner is retiring', { status: 503 })
       );
-    if (this.pending.length >= 128)
+    if (this.pending.length >= MAILBOX_CAPACITY)
       return Promise.reject(
         new WorkflowWorldError('Runner mailbox is full', { status: 429 })
       );
