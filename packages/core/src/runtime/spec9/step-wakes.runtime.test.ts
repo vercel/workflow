@@ -7,13 +7,13 @@ import {
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
+import { setWorld } from '../world.js';
 import {
   hasOtherPendingStep,
   WAKE_COALESCE_MARGIN_SECONDS,
   WAKE_COALESCE_WINDOW_MS,
   wakeAfterCompletion,
 } from './step-handler.js';
-import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 

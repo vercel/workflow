@@ -51,6 +51,28 @@ import type { WorkflowSuspension } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import { ReplayPayloadCache } from '../../replay-payload-cache.js';
+import { GUEST_CODE_EXECUTION_SAMPLE_LIMIT } from '../../serialization/hardened.js';
+import { dehydrateRunError, type PayloadKey } from '../../serialization.js';
+import { setErrorStack } from '../../set-error-stack.js';
+import { remapErrorStack } from '../../source-map.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { bindActiveTraceContext } from '../../telemetry.js';
+import {
+  formatErrorCauseChain,
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from '../../types.js';
+import { buildWorkflowSuspensionMessage } from '../../util.js';
+import {
+  compileDynamicWorkflowBundle,
+  compileWorkflowBundle,
+  replayWorkflow,
+  resumeWorkflow,
+  type WorkflowResumeResult,
+  type WorkflowSession,
+  type WorkflowSessionRebase,
+} from '../../workflow.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   getMaxInlineSteps,
@@ -62,6 +84,20 @@ import {
   MAX_BATCH_EVENTS,
   MAX_MESSAGE_REPLACEMENTS,
 } from '../constants.js';
+import {
+  clampMaxEvents,
+  type DeliveryResult,
+  getMaxInlineDurationMs,
+  getRetentionDecision,
+  getWorkflowSetupErrorCode,
+  hasRecordedTerminalRunEvent,
+  type Orchestrator,
+  type ResolvedWorkflowCode,
+  recordFatalRunError,
+  resolveWorkflowCodeForRun,
+  serializationBlockerLogMetadata,
+  type WorkflowDelivery,
+} from '../delivery.js';
 import {
   type DeploymentAffinityOutcome,
   guardDeploymentAffinity,
@@ -90,11 +126,18 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from '../lifecycle-hooks.js';
+import { observeOutOfBandWriters } from '../out-of-band-observation.js';
+import { handleReplayBudgetExhausted } from '../replay-budget.js';
+import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
+import { resumeTimingForMessage } from '../resume-latency.js';
+import { runIdCreatedAt } from '../run-id-time.js';
+import { computeStepLatencyTracking } from '../step-latency.js';
+import { useQuickJSVm } from '../vm-mode.js';
+import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { consumeOwnResolvingWrite } from './consume-after-commit.js';
 import {
   forgetConsumedPosition,
@@ -139,65 +182,20 @@ import {
   runAheadContextFor,
   runAheadHazard,
 } from './run-ahead.js';
-import { stepMessageRetentionSeconds } from './step-retention.js';
-import {
-  type CreatedStep,
-  planStepsAndWaits,
-  type StartedInBatch,
-} from './step-wait-creation.js';
-import { observeOutOfBandWriters } from '../out-of-band-observation.js';
-import { handleReplayBudgetExhausted } from '../replay-budget.js';
-import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
-import { resumeTimingForMessage } from '../resume-latency.js';
-import { runIdCreatedAt } from '../run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   mayRunBeforeItsStart,
 } from './step-executor.js';
 import { handleStepMessage } from './step-handler.js';
-import { computeStepLatencyTracking } from '../step-latency.js';
+import { stepMessageRetentionSeconds } from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
+import {
+  type CreatedStep,
+  planStepsAndWaits,
+  type StartedInBatch,
+} from './step-wait-creation.js';
 import { handleSuspension } from './suspension-handler.js';
-import { useQuickJSVm } from '../vm-mode.js';
-import { getWaitContinuationDispatch } from '../wait-continuation.js';
-
-import { GUEST_CODE_EXECUTION_SAMPLE_LIMIT } from '../../serialization/hardened.js';
-import { dehydrateRunError, type PayloadKey } from '../../serialization.js';
-import { setErrorStack } from '../../set-error-stack.js';
-import { remapErrorStack } from '../../source-map.js';
-import * as Attribute from '../../telemetry/semantic-conventions.js';
-import { bindActiveTraceContext } from '../../telemetry.js';
-import {
-  formatErrorCauseChain,
-  getErrorName,
-  getErrorStack,
-  normalizeUnknownError,
-} from '../../types.js';
-import { buildWorkflowSuspensionMessage } from '../../util.js';
-import {
-  compileDynamicWorkflowBundle,
-  compileWorkflowBundle,
-  replayWorkflow,
-  resumeWorkflow,
-  type WorkflowResumeResult,
-  type WorkflowSession,
-  type WorkflowSessionRebase,
-} from '../../workflow.js';
-import {
-  ResolvedWorkflowCode,
-  getRetentionDecision,
-  serializationBlockerLogMetadata,
-  clampMaxEvents,
-  hasRecordedTerminalRunEvent,
-  getMaxInlineDurationMs,
-  getWorkflowSetupErrorCode,
-  recordFatalRunError,
-  resolveWorkflowCodeForRun,
-  type DeliveryResult,
-  type Orchestrator,
-  type WorkflowDelivery,
-} from '../delivery.js';
 
 /**
  * Apply the optional client-side event-limit override.

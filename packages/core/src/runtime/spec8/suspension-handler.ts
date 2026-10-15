@@ -43,14 +43,7 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../../util.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
-import {
-  getMaxInlineSteps,
-} from '../constants.js';
-import {
-  isBatchTransitionsEnabled,
-  MAX_BATCH_FANOUT_EVENTS,
-  SPEC8_EVENT_SPEC_VERSION,
-} from './constants.js';
+import { getMaxInlineSteps } from '../constants.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
@@ -67,8 +60,13 @@ import {
   republishOwedForceClaimVictimWakes,
 } from '../hook-wake.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
-import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
+import {
+  isBatchTransitionsEnabled,
+  MAX_BATCH_FANOUT_EVENTS,
+  SPEC8_EVENT_SPEC_VERSION,
+} from './constants.js';
+import type { PreclaimedInlineStart } from './step-executor.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;

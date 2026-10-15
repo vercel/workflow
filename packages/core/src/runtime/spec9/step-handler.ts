@@ -17,6 +17,7 @@ import {
   queueMessage,
   rootRunIdFrom,
 } from '../helpers.js';
+import type { ResumeTtrTracking } from '../resume-latency.js';
 import { stepCreationOf } from './log-state.js';
 import {
   decideStepDelivery,
@@ -25,15 +26,14 @@ import {
   stepDeliveryNeedsLogRead,
 } from './step-delivery.js';
 import {
-  retryOutlivesMessage,
-  stepMessageRetentionSeconds,
-} from './step-retention.js';
-import type { ResumeTtrTracking } from '../resume-latency.js';
-import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   failStepForExhaustedRetries,
 } from './step-executor.js';
+import {
+  retryOutlivesMessage,
+  stepMessageRetentionSeconds,
+} from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 
 type Span = { setAttributes(attributes: Record<string, unknown>): void };

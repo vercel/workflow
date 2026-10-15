@@ -21,13 +21,10 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import type { Queue } from '@workflow/world';
-import type { RunInputActivity } from './invocations.js';
-import type { ResumeTtrTracking } from './resume-latency.js';
-
 import {
   type CreateEventRequest,
   type Event,
-  resolveQueueNamespace,
+  type resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
@@ -35,38 +32,33 @@ import {
   type World,
 } from '@workflow/world';
 import ms from 'ms';
-
 import { isWorldContractError } from '../classify-error.js';
-
 import type { WorkflowSuspension } from '../global.js';
 import { type Logger, runtimeLogger } from '../logger.js';
-
+import {
+  dehydrateRunError,
+  hydrateDynamicWorkflowCode,
+  type PayloadKey,
+} from '../serialization.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
   isDynamicWorkflowsEnabled,
   isVmRetentionEnabled,
 } from './constants.js';
-
 import {
   type DynamicWorkflowMetadata,
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './dynamic-workflow.js';
-
 import { memoizeEncryptionKey } from './helpers.js';
+import type { RunInputActivity } from './invocations.js';
 
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 
-import { ReplayBudget } from './replay-budget.js';
-
-import { type SuspensionSerializationBlocker } from './spec9/suspension-handler.js';
-
-import {
-  dehydrateRunError,
-  hydrateDynamicWorkflowCode,
-  type PayloadKey,
-} from '../serialization.js';
+import type { ReplayBudget } from './replay-budget.js';
+import type { ResumeTtrTracking } from './resume-latency.js';
+import type { SuspensionSerializationBlocker } from './spec9/suspension-handler.js';
 
 type QueueHandler = Parameters<Queue['createQueueHandler']>[1];
 

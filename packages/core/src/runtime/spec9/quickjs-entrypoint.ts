@@ -77,27 +77,6 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from '../lifecycle-hooks.js';
-import {
-  schedulesWaitTimer,
-  stepsToReenqueue,
-} from './creator-rules.js';
-import {
-  type InBandWriter,
-  OrchestratorSupersededError,
-} from './in-band-writer.js';
-import {
-  getOrchestratorLingerMs,
-  getOrchestratorPollIntervalMs,
-  LiveLogFeed,
-} from './live-feed.js';
-import {
-  analyzeLogSteps,
-  awaitsExternalWork,
-  type LogStepState,
-  MAX_STEP_MESSAGE_INPUT_BYTES,
-  stepCreationOf,
-} from './log-state.js';
-import { stepMessageRetentionSeconds } from './step-retention.js';
 import { quickjsWasiVersion } from '../quickjs-assets.generated.js';
 import { QuickJSLogView } from '../quickjs-log-view.js';
 import {
@@ -118,13 +97,6 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import {
-  type CallerStart,
-  DEFAULT_STEP_MAX_RETRIES,
-  executeStep,
-  type StepExecutionResult,
-} from './step-executor.js';
-import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getSnapshotThresholdForHandler,
@@ -134,6 +106,31 @@ import {
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
+import { schedulesWaitTimer, stepsToReenqueue } from './creator-rules.js';
+import {
+  type InBandWriter,
+  OrchestratorSupersededError,
+} from './in-band-writer.js';
+import {
+  getOrchestratorLingerMs,
+  getOrchestratorPollIntervalMs,
+  LiveLogFeed,
+} from './live-feed.js';
+import {
+  analyzeLogSteps,
+  awaitsExternalWork,
+  type LogStepState,
+  MAX_STEP_MESSAGE_INPUT_BYTES,
+  stepCreationOf,
+} from './log-state.js';
+import {
+  type CallerStart,
+  DEFAULT_STEP_MAX_RETRIES,
+  executeStep,
+  type StepExecutionResult,
+} from './step-executor.js';
+import { stepMessageRetentionSeconds } from './step-retention.js';
+import { runStepSingleFlight } from './step-single-flight.js';
 
 /** An `events.create` bound to the run; see `dispatchPendingOps.createEvent`. */
 type EventCreator = (
@@ -1125,7 +1122,7 @@ export async function runWorkflowWithQuickJS(params: {
     /** Whether inline bodies may start ahead of their start. */
     optimistic: boolean;
   };
-}): Promise<{ timeoutSeconds?: number } | void> {
+}): Promise<{ timeoutSeconds?: number } | undefined> {
   const {
     workflowCode,
     workflowName,

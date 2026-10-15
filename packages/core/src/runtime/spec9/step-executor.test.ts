@@ -20,22 +20,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../../flushable-stream.js';
 import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
-import { dehydrateStepArguments, hydrateStepError } from '../../serialization.js';
+import {
+  dehydrateStepArguments,
+  hydrateStepError,
+} from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import { contextStorage } from '../../step/context-storage.js';
 import { getWritable } from '../../step/writable-stream.js';
-import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../../symbols.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
-  executeStep,
-  failStepForExhaustedRetries,
-  type StepEventWriter,
-} from './step-executor.js';
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from '../../symbols.js';
+import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
 } from '../unserializable-step.js';
 import { setWorld } from '../world.js';
+import {
+  executeStep,
+  failStepForExhaustedRetries,
+  type StepEventWriter,
+} from './step-executor.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -248,7 +254,7 @@ async function setupStep(
       input: await dehydrateStepArguments([], 'run', undefined),
     },
   });
-  const runId = created.run!.runId;
+  const runId = created.run?.runId;
   await world.events.create(runId, {
     eventType: 'run_started',
     specVersion: SPEC_VERSION_CURRENT,
@@ -511,7 +517,7 @@ describe('executeStep — stream durability barrier', () => {
       // waiting for the World close. Observe the executor entering that wait.
       const ctx = contextStorage.getStore()!;
       if (hasBackgroundOp) ctx.ops.push(backgroundOp.promise);
-      const state = ctx.streamStates![0];
+      const state = ctx.streamStates?.[0];
       const settle = state.settleReleasedWrites!;
       vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
         settlementStarted.resolve();
@@ -566,7 +572,7 @@ describe('executeStep — stream durability barrier', () => {
       const writer = getWritable<string>().getWriter();
       await writer.write('accepted prefix');
       writer.releaseLock();
-      const state = contextStorage.getStore()!.streamStates![0];
+      const state = contextStorage.getStore()?.streamStates?.[0];
       const settle = state.settleReleasedWrites!;
       vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
         settlementStarted.resolve();
@@ -984,7 +990,7 @@ describe('executeStep — turbo run-ready barrier', () => {
         input: await dehydrateStepArguments([], 'run', undefined),
       },
     });
-    const runId = created.run!.runId;
+    const runId = created.run?.runId;
     const stepId = `step_${ulid()}`;
     const input = (await dehydrateStepArguments(
       { args: [], closureVars: undefined, thisVal: undefined },

@@ -515,7 +515,7 @@ export class InBandWriter {
         try {
           first.resolve(
             await this.sendSingle(
-              first.events[0]!.event,
+              first.events[0]?.event,
               first.params as CreateEventParams,
               true,
               first.verify
@@ -544,7 +544,7 @@ export class InBandWriter {
       const position = this.sendPosition(first.params.eventCount);
       let result: EventBatchResult;
       try {
-        result = await this.world.events.createBatch!.call(
+        result = await this.world.events.createBatch?.call(
           this.world.events,
           this.runId,
           events,

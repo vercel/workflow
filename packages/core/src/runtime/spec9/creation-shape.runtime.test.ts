@@ -107,7 +107,7 @@ async function seededWorld(
 ) {
   const run = (await source
     .asWorld()
-    .runs.get(source.events[0]!.runId)) as WorkflowRun;
+    .runs.get(source.events[0]?.runId)) as WorkflowRun;
   const cold = new AppendOnlyWorld(options);
   cold.seedLog({ ...run, status: 'running' }, events);
   setWorld(cold.asWorld());

@@ -47,20 +47,45 @@ import {
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import { ReplayPayloadCache } from '../../replay-payload-cache.js';
-
+import { dehydrateRunError, type PayloadKey } from '../../serialization.js';
+import { setErrorStack } from '../../set-error-stack.js';
+import { remapErrorStack } from '../../source-map.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { bindActiveTraceContext, trace } from '../../telemetry.js';
+import {
+  formatErrorCauseChain,
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from '../../types.js';
+import { buildWorkflowSuspensionMessage } from '../../util.js';
+import {
+  compileDynamicWorkflowBundle,
+  compileWorkflowBundle,
+  replayWorkflow,
+  resumeWorkflow,
+  type WorkflowResumeResult,
+  type WorkflowSession,
+} from '../../workflow.js';
 import {
   getOpenWaitClockSkewMs,
   getReplayDivergenceMaxRetries,
   isTurboEnabled,
 } from '../constants.js';
 import {
-  getPreconditionMaxInProcessRestarts,
-  getPreconditionMaxReinvocations,
-  getPreconditionReinvokeDelaySeconds,
-  isInlineOwnershipEnabled,
-  SPEC8_EVENT_SPEC_VERSION,
-} from './constants.js';
-import { countStepStartedEvents } from './count-step-started-events.js';
+  clampMaxEvents,
+  type DeliveryResult,
+  getMaxInlineDurationMs,
+  getRetentionDecision,
+  getWorkflowSetupErrorCode,
+  hasRecordedTerminalRunEvent,
+  type Orchestrator,
+  type ResolvedWorkflowCode,
+  recordFatalRunError,
+  resolveWorkflowCodeForRun,
+  serializationBlockerLogMetadata,
+  type WorkflowDelivery,
+} from '../delivery.js';
 import {
   type DeploymentAffinityOutcome,
   guardDeploymentAffinity,
@@ -87,15 +112,10 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from '../lifecycle-hooks.js';
-import {
-  hasOpenWaitDueBy,
-  openHookAndWaitState,
-} from './open-hook-wait-state.js';
 import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
@@ -104,12 +124,26 @@ import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { computeStepLatencyTracking } from '../step-latency.js';
+import { useQuickJSVm } from '../vm-mode.js';
+import { getWaitContinuationDispatch } from '../wait-continuation.js';
+import {
+  getPreconditionMaxInProcessRestarts,
+  getPreconditionMaxReinvocations,
+  getPreconditionReinvokeDelaySeconds,
+  isInlineOwnershipEnabled,
+  SPEC8_EVENT_SPEC_VERSION,
+} from './constants.js';
+import { countStepStartedEvents } from './count-step-started-events.js';
+import {
+  hasOpenWaitDueBy,
+  openHookAndWaitState,
+} from './open-hook-wait-state.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   type PreclaimedInlineStart,
 } from './step-executor.js';
-import { computeStepLatencyTracking } from '../step-latency.js';
 import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
@@ -118,43 +152,6 @@ import {
 } from './step-ownership.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import { handleSuspension } from './suspension-handler.js';
-import { useQuickJSVm } from '../vm-mode.js';
-import { getWaitContinuationDispatch } from '../wait-continuation.js';
-
-import { dehydrateRunError, type PayloadKey } from '../../serialization.js';
-import { setErrorStack } from '../../set-error-stack.js';
-import { remapErrorStack } from '../../source-map.js';
-import * as Attribute from '../../telemetry/semantic-conventions.js';
-import { bindActiveTraceContext, trace } from '../../telemetry.js';
-import {
-  formatErrorCauseChain,
-  getErrorName,
-  getErrorStack,
-  normalizeUnknownError,
-} from '../../types.js';
-import { buildWorkflowSuspensionMessage } from '../../util.js';
-import {
-  compileDynamicWorkflowBundle,
-  compileWorkflowBundle,
-  replayWorkflow,
-  resumeWorkflow,
-  type WorkflowResumeResult,
-  type WorkflowSession,
-} from '../../workflow.js';
-import {
-  ResolvedWorkflowCode,
-  getRetentionDecision,
-  serializationBlockerLogMetadata,
-  clampMaxEvents,
-  hasRecordedTerminalRunEvent,
-  getMaxInlineDurationMs,
-  getWorkflowSetupErrorCode,
-  recordFatalRunError,
-  resolveWorkflowCodeForRun,
-  type DeliveryResult,
-  type Orchestrator,
-  type WorkflowDelivery,
-} from '../delivery.js';
 
 type ReplayEventLog =
   | { type: 'loadAll' }

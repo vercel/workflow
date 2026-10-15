@@ -242,7 +242,7 @@ export interface StepExecutorParams {
    * this attempt's `step_started` (an inline step); otherwise the executor
    * sends `step_started` after it. A failure is the start's failure.
    */
-  startAfter?: Promise<CallerStart | undefined | void>;
+  startAfter?: Promise<CallerStart | undefined | undefined>;
   /**
    * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
    * by the orchestrator. See runtime/step-latency.ts.

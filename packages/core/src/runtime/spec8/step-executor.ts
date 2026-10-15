@@ -24,9 +24,7 @@ import type {
   StartedStep,
   World,
 } from '@workflow/world';
-import {
-  SPEC_VERSION_SUPPORTS_COMPRESSION,
-} from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
@@ -51,13 +49,7 @@ import {
   promoteAbortErrorToFatal,
 } from '../../types.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
-import {
-  isOptimisticInlineStartExplicitlyDisabled,
-} from '../constants.js';
-import {
-  isOptimisticInlineStartEnabled,
-  SPEC8_EVENT_SPEC_VERSION,
-} from './constants.js';
+import { isOptimisticInlineStartExplicitlyDisabled } from '../constants.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import { memoizeEncryptionKey, withReplayDelta } from '../helpers.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -72,6 +64,10 @@ import {
 } from '../step-latency.js';
 import { isUnserializableStepInputPlaceholder } from '../unserializable-step.js';
 import { safeWaitUntil } from '../wait-until.js';
+import {
+  isOptimisticInlineStartEnabled,
+  SPEC8_EVENT_SPEC_VERSION,
+} from './constants.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
 export const STEP_STREAM_DRAIN_TIMEOUT_MS = 30_000;

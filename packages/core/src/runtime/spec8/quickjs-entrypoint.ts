@@ -52,13 +52,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
-import {
-  getMaxInlineSteps,
-} from '../constants.js';
-import {
-  getInlineOwnershipLeaseSeconds,
-  SPEC8_EVENT_SPEC_VERSION,
-} from './constants.js';
+import { getMaxInlineSteps } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import {
@@ -96,8 +90,6 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import { executeStep, type StepExecutionResult } from './step-executor.js';
-import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getSnapshotThresholdForHandler,
@@ -107,6 +99,12 @@ import {
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
+import {
+  getInlineOwnershipLeaseSeconds,
+  SPEC8_EVENT_SPEC_VERSION,
+} from './constants.js';
+import { executeStep, type StepExecutionResult } from './step-executor.js';
+import { runStepSingleFlight } from './step-single-flight.js';
 
 /** An `events.create` bound to the run; see `dispatchPendingOps.createEvent`. */
 type EventCreator = (
@@ -994,7 +992,7 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
-}): Promise<{ timeoutSeconds?: number } | void> {
+}): Promise<{ timeoutSeconds?: number } | undefined> {
   const {
     workflowCode,
     workflowName,

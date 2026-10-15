@@ -10,8 +10,8 @@ import {
   AppendOnlyWorld,
   type HeldMessage,
 } from '../../test-support/append-only-world.js';
-import { exceededMaxRetriesMessage } from './step-executor.js';
 import { setWorld } from '../world.js';
+import { exceededMaxRetriesMessage } from './step-executor.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 

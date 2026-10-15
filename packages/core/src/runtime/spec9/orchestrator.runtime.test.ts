@@ -421,7 +421,7 @@ describe.each([
       // outcome: append the start, then redeliver the same message.
       world.appendOutOfBand({
         eventType: 'step_started',
-        correlationId: (stepMessage!.message as { stepId: string }).stepId,
+        correlationId: (stepMessage?.message as { stepId: string }).stepId,
         eventData: { stepName: 'so_once', attempt: 1 },
       } as Partial<Event>);
       await world.deliver({ ...stepMessage!, deliveryCount: 2 });
