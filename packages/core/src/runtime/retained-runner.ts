@@ -762,6 +762,9 @@ export class RetainedRunner {
       pendingSteps,
       events: this.events.length,
       heads: this.eventWriter?.heads,
+      deadlineInMs: Number.isFinite(this.deadline)
+        ? this.deadline - Date.now()
+        : null,
     };
   }
 
@@ -1054,8 +1057,15 @@ export class RetainedRunner {
       throw new InputRejected('Pinned deployment mismatch', {
         status: 409,
       });
-    this.deadline =
-      (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
+    const reported = await this.backend.getRuntimeDeadline?.();
+    this.deadline = reported?.getTime() ?? Infinity;
+    ownerLog('deadline', {
+      runId: this.runId,
+      ownerId: this.id,
+      supported: Boolean(this.backend.getRuntimeDeadline),
+      deadlineAt: reported ? reported.toISOString() : null,
+      remainingMs: reported ? reported.getTime() - Date.now() : null,
+    });
     this.key = await resolveRunEncryptionKey(this.backend, this.runState!);
     this.payloadCache = new ReplayPayloadCache(this.key);
   }
