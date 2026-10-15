@@ -18,35 +18,35 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import { importKey } from '../../encryption.js';
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
   WorkflowSuspension,
-} from '../global.js';
-import { runtimeLogger } from '../logger.js';
+} from '../../global.js';
+import { runtimeLogger } from '../../logger.js';
 import {
   GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
   type GuestCodeExecution,
   type GuestCodeStats,
-} from '../serialization/hardened.js';
-import { dehydrateStepArguments } from '../serialization.js';
-import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getAbortStreamIdFromToken } from '../util.js';
+} from '../../serialization/hardened.js';
+import { dehydrateStepArguments } from '../../serialization.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { getAbortStreamIdFromToken } from '../../util.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
   type LoadedEventLog,
   mergeReportedEvents,
   slotSnapshotParams,
-} from './helpers.js';
+} from '../helpers.js';
 import {
   publishForceClaimVictimWake,
   republishOwedForceClaimVictimWakes,
-} from './hook-wake.js';
-import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
+} from '../hook-wake.js';
+import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;

@@ -27,7 +27,7 @@ import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import type { EventCreator } from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
-import { handleSuspension } from './runtime/suspension-handler.js';
+import { handleSuspension } from './runtime/spec9/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';

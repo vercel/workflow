@@ -7,34 +7,34 @@ import type {
   WorkflowRun,
   World,
 } from '@workflow/world';
-import { runtimeLogger } from '../logger.js';
-import { getStepFunction } from '../private.js';
-import * as Attribute from '../telemetry/semantic-conventions.js';
+import { runtimeLogger } from '../../logger.js';
+import { getStepFunction } from '../../private.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
 import {
   getWorkflowQueueName,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
   queueMessage,
   rootRunIdFrom,
-} from './helpers.js';
-import { stepCreationOf } from './orchestrator/log-state.js';
+} from '../helpers.js';
+import { stepCreationOf } from './log-state.js';
 import {
   decideStepDelivery,
   firstDeliveryDecision,
   type StepDeliveryDecision,
   stepDeliveryNeedsLogRead,
-} from './orchestrator/step-delivery.js';
+} from './step-delivery.js';
 import {
   retryOutlivesMessage,
   stepMessageRetentionSeconds,
-} from './orchestrator/step-retention.js';
-import type { ResumeTtrTracking } from './resume-latency.js';
+} from './step-retention.js';
+import type { ResumeTtrTracking } from '../resume-latency.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   failStepForExhaustedRetries,
 } from './step-executor.js';
-import { runStepSingleFlight } from './step-single-flight.js';
+import { runStepSingleFlight } from '../step-single-flight.js';
 
 type Span = { setAttributes(attributes: Record<string, unknown>): void };
 

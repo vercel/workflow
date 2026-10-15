@@ -12,13 +12,13 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type QueueItem, WorkflowSuspension } from '../global.js';
-import { maxEventSlot } from './helpers.js';
-import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from './hook-wake.js';
-import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
+import { type QueueItem, WorkflowSuspension } from '../../global.js';
+import { maxEventSlot } from '../helpers.js';
+import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from '../hook-wake.js';
+import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
 
-vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
+vi.mock('../../version.js', () => ({ version: '0.0.0-test' }));
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn(),

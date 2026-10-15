@@ -25,42 +25,42 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
-import type { FlushableStreamState } from '../flushable-stream.js';
-import { runtimeLogger, stepLogger } from '../logger.js';
-import { getStepFunction } from '../private.js';
-import type { PayloadKey } from '../serialization/encryption.js';
-import { formatSerializationError } from '../serialization/errors.js';
+import type { FlushableStreamState } from '../../flushable-stream.js';
+import { runtimeLogger, stepLogger } from '../../logger.js';
+import { getStepFunction } from '../../private.js';
+import type { PayloadKey } from '../../serialization/encryption.js';
+import { formatSerializationError } from '../../serialization/errors.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
-} from '../serialization.js';
-import { setErrorStack } from '../set-error-stack.js';
-import { contextStorage } from '../step/context-storage.js';
-import * as Attribute from '../telemetry/semantic-conventions.js';
-import { recordStepExecutionDuration, trace } from '../telemetry.js';
+} from '../../serialization.js';
+import { setErrorStack } from '../../set-error-stack.js';
+import { contextStorage } from '../../step/context-storage.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { recordStepExecutionDuration, trace } from '../../telemetry.js';
 import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
   promoteAbortErrorToFatal,
-} from '../types.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
-import { isOptimisticInlineStartExplicitlyDisabled } from './constants.js';
-import { getPortLazy } from './get-port-lazy.js';
-import { memoizeEncryptionKey } from './helpers.js';
+} from '../../types.js';
+import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { isOptimisticInlineStartExplicitlyDisabled } from '../constants.js';
+import { getPortLazy } from '../get-port-lazy.js';
+import { memoizeEncryptionKey } from '../helpers.js';
 import {
   computeResumeTtrAttributes,
   type ResumeTtrTracking,
-} from './resume-latency.js';
+} from '../resume-latency.js';
 import {
   computeStepLatencyEventData,
   type StepLatencyEventData,
   type StepLatencyTracking,
-} from './step-latency.js';
-import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
-import { safeWaitUntil } from './wait-until.js';
+} from '../step-latency.js';
+import { isUnserializableStepInputPlaceholder } from '../unserializable-step.js';
+import { safeWaitUntil } from '../wait-until.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
 

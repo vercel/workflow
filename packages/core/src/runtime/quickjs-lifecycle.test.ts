@@ -18,7 +18,7 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
-import { runWorkflowWithQuickJS } from './quickjs-entrypoint.js';
+import { runWorkflowWithQuickJS } from './spec9/quickjs-entrypoint.js';
 import { startQuickJSWorkflow } from './quickjs-runtime.js';
 import { setWorld } from './world.js';
 

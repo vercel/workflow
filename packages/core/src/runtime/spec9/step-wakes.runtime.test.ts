@@ -12,7 +12,7 @@ import {
   WAKE_COALESCE_MARGIN_SECONDS,
   WAKE_COALESCE_WINDOW_MS,
   wakeAfterCompletion,
-} from '../step-handler.js';
+} from './step-handler.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));

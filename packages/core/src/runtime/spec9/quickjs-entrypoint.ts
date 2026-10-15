@@ -39,28 +39,28 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
-import { classifyRunError } from '../classify-error.js';
-import { runtimeLogger } from '../logger.js';
-import { getStepFunction } from '../private.js';
+import { classifyRunError } from '../../classify-error.js';
+import { runtimeLogger } from '../../logger.js';
+import { getStepFunction } from '../../private.js';
 import {
   deriveRunPayloadKeys,
   encrypt as encryptSerializedData,
   type RunPayloadKeys,
-} from '../serialization/encryption.js';
+} from '../../serialization/encryption.js';
 import {
   dehydrateRunError,
   dehydrateStepArguments,
   dehydrateStepError,
   hydrateRunError,
   maybeEncrypt,
-} from '../serialization.js';
-import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
-import * as Attribute from '../telemetry/semantic-conventions.js';
-import { serializeTraceCarrier, trace } from '../telemetry.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
-import { getMaxInlineSteps } from './constants.js';
-import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
-import { getPortLazy } from './get-port-lazy.js';
+} from '../../serialization.js';
+import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { serializeTraceCarrier, trace } from '../../telemetry.js';
+import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getMaxInlineSteps } from '../constants.js';
+import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
+import { getPortLazy } from '../get-port-lazy.js';
 import {
   getWorkflowQueueName,
   maxEventSlot,
@@ -68,38 +68,38 @@ import {
   REPLAY_RESOLVE_DATA,
   runDispatchContext,
   stepDispatchIdempotencyKey,
-} from './helpers.js';
+} from '../helpers.js';
 import {
   publishForceClaimVictimWake,
   republishOwedForceClaimVictimWakes,
-} from './hook-wake.js';
+} from '../hook-wake.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
-} from './lifecycle-hooks.js';
+} from '../lifecycle-hooks.js';
 import {
   schedulesWaitTimer,
   stepsToReenqueue,
-} from './orchestrator/creator-rules.js';
+} from './creator-rules.js';
 import {
   type InBandWriter,
   OrchestratorSupersededError,
-} from './orchestrator/in-band-writer.js';
+} from './in-band-writer.js';
 import {
   getOrchestratorLingerMs,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
-} from './orchestrator/live-feed.js';
+} from './live-feed.js';
 import {
   analyzeLogSteps,
   awaitsExternalWork,
   type LogStepState,
   MAX_STEP_MESSAGE_INPUT_BYTES,
   stepCreationOf,
-} from './orchestrator/log-state.js';
-import { stepMessageRetentionSeconds } from './orchestrator/step-retention.js';
-import { quickjsWasiVersion } from './quickjs-assets.generated.js';
-import { QuickJSLogView } from './quickjs-log-view.js';
+} from './log-state.js';
+import { stepMessageRetentionSeconds } from './step-retention.js';
+import { quickjsWasiVersion } from '../quickjs-assets.generated.js';
+import { QuickJSLogView } from '../quickjs-log-view.js';
 import {
   BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
@@ -109,31 +109,31 @@ import {
   type PendingStep,
   type PendingWait,
   startQuickJSWorkflow,
-} from './quickjs-runtime.js';
+} from '../quickjs-runtime.js';
 import {
   checkSnapshotMetadataBounds,
   MAX_SNAPSHOT_PLAINTEXT_BYTES,
   openSnapshot,
   SnapshotRejectedError,
   sealSnapshot,
-} from './quickjs-snapshot-codec.js';
-import { ReplayBudget } from './replay-budget.js';
+} from '../quickjs-snapshot-codec.js';
+import { ReplayBudget } from '../replay-budget.js';
 import {
   type CallerStart,
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   type StepExecutionResult,
 } from './step-executor.js';
-import { runStepSingleFlight } from './step-single-flight.js';
-import { unserializableStepInputPlaceholder } from './unserializable-step.js';
+import { runStepSingleFlight } from '../step-single-flight.js';
+import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getSnapshotThresholdForHandler,
   isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
-} from './vm-mode.js';
-import { getWaitContinuationDispatch } from './wait-continuation.js';
-import { safeWaitUntil } from './wait-until.js';
-import { getWorld } from './world.js';
+} from '../vm-mode.js';
+import { getWaitContinuationDispatch } from '../wait-continuation.js';
+import { safeWaitUntil } from '../wait-until.js';
+import { getWorld } from '../world.js';
 
 /** An `events.create` bound to the run; see `dispatchPendingOps.createEvent`. */
 type EventCreator = (

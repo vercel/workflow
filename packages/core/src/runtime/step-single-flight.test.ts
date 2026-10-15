@@ -1,6 +1,6 @@
 import { withResolvers } from '@workflow/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { StepExecutionResult } from './step-executor.js';
+import type { StepExecutionResult } from './spec9/step-executor.js';
 import {
   runStepSingleFlight,
   STEP_SINGLE_FLIGHT_REDELIVERY_SECONDS,

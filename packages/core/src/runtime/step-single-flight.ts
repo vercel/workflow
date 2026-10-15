@@ -1,6 +1,6 @@
 import { globalSingleton } from '@workflow/utils';
 import { runtimeLogger } from '../logger.js';
-import type { StepExecutionResult } from './step-executor.js';
+import type { StepExecutionResult } from './spec9/step-executor.js';
 
 /**
  * In-process single-flight for step body execution, keyed by

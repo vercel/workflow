@@ -103,7 +103,7 @@ async function replayWith(events: Event[]) {
     dispose: vi.fn(),
   });
 
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -256,7 +256,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
       dispose: vi.fn(),
     });
 
-    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
     await runWorkflowWithQuickJS({
       workflowCode: '// not evaluated: the VM is mocked',
       workflowName: 'workflow',
@@ -342,7 +342,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
       dispose: vi.fn(),
     });
 
-    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
     await runWorkflowWithQuickJS({
       workflowCode: '// not evaluated: the VM is mocked',
       workflowName: 'workflow',

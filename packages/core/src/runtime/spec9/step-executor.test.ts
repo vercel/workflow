@@ -17,15 +17,15 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
-import { runtimeLogger } from '../logger.js';
-import { registerStepFunction } from '../private.js';
-import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
-import { setAttributes } from '../set-attributes.js';
-import { contextStorage } from '../step/context-storage.js';
-import { getWritable } from '../step/writable-stream.js';
-import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { LOCK_POLL_INTERVAL_MS } from '../../flushable-stream.js';
+import { runtimeLogger } from '../../logger.js';
+import { registerStepFunction } from '../../private.js';
+import { dehydrateStepArguments, hydrateStepError } from '../../serialization.js';
+import { setAttributes } from '../../set-attributes.js';
+import { contextStorage } from '../../step/context-storage.js';
+import { getWritable } from '../../step/writable-stream.js';
+import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../../symbols.js';
+import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   executeStep,
   failStepForExhaustedRetries,
@@ -34,8 +34,8 @@ import {
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
-} from './unserializable-step.js';
-import { setWorld } from './world.js';
+} from '../unserializable-step.js';
+import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 

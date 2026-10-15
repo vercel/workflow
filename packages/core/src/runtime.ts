@@ -113,33 +113,33 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './runtime/lifecycle-hooks.js';
-import { consumeOwnResolvingWrite } from './runtime/orchestrator/consume-after-commit.js';
+import { consumeOwnResolvingWrite } from './runtime/spec9/consume-after-commit.js';
 import {
   forgetConsumedPosition,
   hasConsumedPosition,
   isNoopDelivery,
   recordConsumedPosition,
-} from './runtime/orchestrator/consumed-position.js';
+} from './runtime/spec9/consumed-position.js';
 import {
   schedulesWaitTimer,
   stepsToReenqueue,
-} from './runtime/orchestrator/creator-rules.js';
+} from './runtime/spec9/creator-rules.js';
 import {
   getInlineStepDeadlineMarginMs,
   mayStartInlineStep,
-} from './runtime/orchestrator/deadline.js';
+} from './runtime/spec9/deadline.js';
 import {
   getFenceRedeliveryDelaySeconds,
   InBandWriter,
   OrchestratorSupersededError,
   RESILIENT_START_SNAPSHOT,
   requireLoadSnapshot,
-} from './runtime/orchestrator/in-band-writer.js';
+} from './runtime/spec9/in-band-writer.js';
 import {
   getOrchestratorLingerMs,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
-} from './runtime/orchestrator/live-feed.js';
+} from './runtime/spec9/live-feed.js';
 import {
   analyzeLogSteps,
   awaitsExternalWork,
@@ -150,7 +150,7 @@ import {
   openWaits,
   type StepMessageSpec,
   stepCreationOf,
-} from './runtime/orchestrator/log-state.js';
+} from './runtime/spec9/log-state.js';
 import {
   admitBelowSpeculation,
   disableRunAheadFor,
@@ -159,13 +159,13 @@ import {
   RunAheadStopError,
   runAheadContextFor,
   runAheadHazard,
-} from './runtime/orchestrator/run-ahead.js';
-import { stepMessageRetentionSeconds } from './runtime/orchestrator/step-retention.js';
+} from './runtime/spec9/run-ahead.js';
+import { stepMessageRetentionSeconds } from './runtime/spec9/step-retention.js';
 import {
   type CreatedStep,
   planStepsAndWaits,
   type StartedInBatch,
-} from './runtime/orchestrator/step-wait-creation.js';
+} from './runtime/spec9/step-wait-creation.js';
 import { observeOutOfBandWriters } from './runtime/out-of-band-observation.js';
 import {
   handleReplayBudgetExhausted,
@@ -181,14 +181,14 @@ import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   mayRunBeforeItsStart,
-} from './runtime/step-executor.js';
-import { handleStepMessage } from './runtime/step-handler.js';
+} from './runtime/spec9/step-executor.js';
+import { handleStepMessage } from './runtime/spec9/step-handler.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import {
   handleSuspension,
   type SuspensionSerializationBlocker,
-} from './runtime/suspension-handler.js';
+} from './runtime/spec9/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld } from './runtime/world.js';
@@ -2225,7 +2225,7 @@ export function workflowEntrypoint(
                     // --- QuickJS VM engine dispatch ---
                     if (useQuickJSVm(workflowRun)) {
                       const { runWorkflowWithQuickJS } = await import(
-                        './runtime/quickjs-entrypoint.js'
+                        './runtime/spec9/quickjs-entrypoint.js'
                       );
                       try {
                         const quickjsResult = await runWorkflowWithQuickJS({

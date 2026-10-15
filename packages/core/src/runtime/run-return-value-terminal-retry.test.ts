@@ -21,7 +21,7 @@ import {
   hydrateStepError,
 } from '../serialization.js';
 import { getRun, Run } from './run.js';
-import { executeStep } from './step-executor.js';
+import { executeStep } from './spec9/step-executor.js';
 import { setWorld } from './world.js';
 
 /**
