@@ -47,8 +47,10 @@ all-or-nothing transaction across the group. The response shares one history
 suffix: consecutive new events need no history query, and intervening writes
 require at most one shared catch-up query. Redis indexing remains awaited.
 
-Deploy the server route before releasing this adapter. The optional
-`world.events.createHooks` method enables the optimization for slot-identity
+The adapter exposes the optional `world.events.createHooks` method only after
+an existing replay response advertises `x-wf-hook-batch-version: 1`, with no
+additional request. Older servers and unknown versions retain individual
+writes, including after a rollback. The optimization applies to slot-identity
 runs; worlds without it, legacy runs, and `WORKFLOW_BATCH_TRANSITIONS=0` retain
 individual writes. User hooks, metadata-bearing hooks, forced claims, and
 same-token lifecycle operations retain their existing ordering. A failed batch

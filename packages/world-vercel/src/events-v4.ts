@@ -163,6 +163,15 @@ async function fetchV4(
       ),
   });
 
+  // Replay setup already contacts the server before the runtime schedules
+  // hooks. Negotiate here without a probe or a speculative batch write.
+  // A missing/unknown version keeps older servers on individual writes.
+  if (response.headers.get('content-type')?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    config?.onHookBatchSupport?.(
+      response.headers.get('x-wf-hook-batch-version') === '1'
+    );
+  }
+
   if (!response.body) {
     noteEventsTransportOutcome(dispatcher);
     return response;
@@ -1313,9 +1322,10 @@ const BatchItemFailureSchema = z.compile(
  * Slot-identity runs only: an older server 404s the route and a pre-slot
  * run is rejected with a 400. There is NO automatic fallback to single-event
  * posts on either: the runtime never sends a batch for a pre-slot run (it
- * gates on the run's spec version), and against a backend without the route
- * the batch fails and the suspension redelivers until the operator disables
- * batching via `WORKFLOW_BATCH_TRANSITIONS=0`. Ambiguous failures (timeouts,
+ * gates on the run's spec version). For hook-only batches the storage adapter
+ * also requires support attested by the server's preceding replay response,
+ * so an older server keeps individual registrations without a failed POST.
+ * Ambiguous failures after a batch is sent (timeouts,
  * resets, 5xx, malformed responses) never convert to single posts either;
  * the wrapper either re-sends the SAME batch (only when its shape is
  * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error

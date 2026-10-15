@@ -25,6 +25,13 @@ import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
 
 export function createStorage(config?: APIConfig): Storage {
+  let hookBatchSupported = false;
+  config = {
+    ...config,
+    onHookBatchSupport: (supported) => {
+      hookBatchSupported = supported;
+    },
+  };
   const snapshots = createSnapshotsStorage(config);
   const storage: Storage = {
     // Storage interface with namespaced methods
@@ -74,11 +81,20 @@ export function createStorage(config?: APIConfig): Storage {
   };
 
   // Instrument all storage methods with tracing
+  const events = instrumentObject('world.events', storage.events);
+  const createHooks = events.createHooks;
+  // Keep the capability dynamic: replay responses can enable it, while an
+  // older/rolled-back server disables it on the next setup response. Do not
+  // retry individual writes after an ambiguous batch failure.
+  Object.defineProperty(events, 'createHooks', {
+    enumerable: true,
+    get: () => (hookBatchSupported ? createHooks : undefined),
+  });
   // NOTE: Span names are lowercase per OTEL semantic conventions
   return {
     runs: instrumentObject('world.runs', storage.runs),
     steps: instrumentObject('world.steps', storage.steps),
-    events: instrumentObject('world.events', storage.events),
+    events,
     hooks: instrumentObject('world.hooks', storage.hooks),
     experimental_snapshots: instrumentObject(
       'world.experimental_snapshots',
