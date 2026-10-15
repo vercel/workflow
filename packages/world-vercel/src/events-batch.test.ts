@@ -540,6 +540,32 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
     agent.assertNoPendingInterceptors();
   });
 
+  it('does NOT retry a transient 5xx for an in-band batch, even an entity-conditioned one', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+      })
+      .reply(503, JSON.stringify({ message: 'unavailable' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+
+    // The same batch the convergence test above retries. Fenced, a re-send of
+    // a committed attempt is refused by that attempt's own allocation
+    // (in-band-superseded) instead of converging on 409, so it runs once.
+    await expect(
+      createWorkflowRunEventBatch(
+        RUN_ID,
+        transitionEvents().slice(0, 2),
+        { inBand: true, expectedSeqInBand: 2 },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({ status: 503 });
+    agent.assertNoPendingInterceptors();
+  });
+
   it('does NOT retry a transient 5xx when the batch carries a bare step_started', async () => {
     const agent = mockAgent();
     agent

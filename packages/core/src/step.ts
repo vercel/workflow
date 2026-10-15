@@ -131,6 +131,14 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // its body (vercel/workflow#2780).
           const queueItem = ctx.invocationsQueue.get(correlationId);
           if (queueItem && queueItem.type === 'step') {
+            // Every World refuses a `step_started` for a step that does not
+            // exist, so one in the log proves the step was created, whether or
+            // not a `step_created` precedes it. A World may record an inline
+            // step's creation on its `step_started` alone (the event carries
+            // the step input), leaving no separate `step_created` in the log.
+            // Without this the suspension handler would treat the step as
+            // never created and write a `step_created` for it.
+            queueItem.hasCreatedEvent = true;
             const ownerMessageId =
               'eventData' in event &&
               event.eventData &&

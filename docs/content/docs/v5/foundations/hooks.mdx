@@ -670,6 +670,14 @@ for await (const event of hook) {
 
 This pattern allows a single workflow instance to handle multiple events over time, maintaining state between events.
 
+## Performance
+
+Time to resume (TTR) measures how quickly a workflow that is waiting on a hook continues once your app calls `resumeHook()`: the clock starts at that call and stops when the first line of the workflow's next step runs. The animation shows where it starts and stops in a run.
+
+<MetricVideo metric="resume" />
+
+See [Time to resume](/docs/performance#time-to-resume-ttr) on the Performance page for how it's measured and the latest results.
+
 ## Related documentation
 
 - [Serialization](/docs/foundations/serialization) - Understanding what data can be passed through hooks

@@ -2,7 +2,6 @@ import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
-import { Pool } from 'pg';
 import {
   afterAll,
   afterEach,
@@ -19,6 +18,7 @@ import {
   type RunStatusListener,
 } from '../src/run-status.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
+import { TestPool } from './pool.js';
 
 /**
  * `runs.waitForTerminalStatus` on world-postgres.
@@ -38,7 +38,7 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
   const originalPollInterval = process.env[pollIntervalEnv];
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
   let listener: RunStatusListener;
   let runs: ReturnType<typeof createRunsStorage>;
@@ -58,7 +58,7 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
 
     // >1 connection: the wait holds a read while the completing writer needs
     // its own, and the LISTEN client is separate from the pool entirely.
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
     drizzle = createClient(pool);
     listener = createRunStatusListener(pool);
     runs = createRunsStorage(drizzle, listener);

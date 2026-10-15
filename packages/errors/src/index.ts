@@ -74,6 +74,33 @@ function buildFramedDetails(
 
 /**
  * @internal
+ * Format an error message with framed `hint:` / `docs:` details, for errors
+ * raised as plain classes (e.g. `FatalError`) that can't take a slug.
+ */
+export function formatErrorMessageWithDetails(
+  title: string,
+  details: { hint?: string; slug?: ErrorSlug }
+): string {
+  return appendFramedDetails(
+    title,
+    buildFramedDetails(details.hint, details.slug)
+  );
+}
+
+/**
+ * @internal
+ * Shared remediation text for runs that outgrow the default event-count
+ * ceiling or replay budget. QuickJS runs with snapshotting are exempt from
+ * the default ceiling, and resume from a snapshot instead of replaying the
+ * full event log.
+ */
+export const QUICKJS_SNAPSHOT_REMEDIATION =
+  'Run long-running workflows on the QuickJS VM with snapshotting by setting WORKFLOW_VM=quickjs ' +
+  'in the environment that starts runs. Snapshotted QuickJS runs resume without replaying the full ' +
+  'event log and are exempt from the default per-run event limit. Runs keep the VM they started with.';
+
+/**
+ * @internal
  * All the slugs of the errors used for documentation links.
  */
 export const ERROR_SLUGS = {
@@ -92,6 +119,8 @@ export const ERROR_SLUGS = {
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
   RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
   DEPLOYMENT_MISMATCH: 'deployment-mismatch',
+  MAX_EVENTS_EXCEEDED: 'max-events-exceeded',
+  REPLAY_TIMEOUT: 'replay-timeout',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -387,7 +416,18 @@ export class MaxEventsExceededError extends WorkflowError {
     limit: number,
     options?: WorkflowErrorOptions
   ) {
-    super(`Workflow exceeded the maximum of ${limit} events per run`, options);
+    // Frame hint + docs here (instead of passing `slug` through) so the
+    // hint sits above the docs link.
+    super(
+      formatErrorMessageWithDetails(
+        `Workflow exceeded the maximum of ${limit} events per run`,
+        {
+          hint: `${QUICKJS_SNAPSHOT_REMEDIATION} Alternatively, split the work into child workflows.`,
+          slug: options?.slug ?? ERROR_SLUGS.MAX_EVENTS_EXCEEDED,
+        }
+      ),
+      { cause: options?.cause }
+    );
     this.name = 'MaxEventsExceededError';
     this.eventCount = eventCount;
     this.limit = limit;
@@ -996,6 +1036,43 @@ export class PreconditionFailedError extends WorkflowWorldError {
 
   static is(value: unknown): value is PreconditionFailedError {
     return isError(value) && value.name === 'PreconditionFailedError';
+  }
+}
+
+/** Error code a World uses for an {@link InBandSupersededError} refusal. */
+export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
+
+/**
+ * Thrown when a World refuses an in-band write (a write made by the run's
+ * orchestrator) because another orchestrator invocation of the same run has
+ * written in-band since this one loaded the log (HTTP 412,
+ * `in-band-superseded`).
+ *
+ * The in-band fence keeps a run to one orchestrator writer: the World counts
+ * the positions it allocated to in-band writes, and accepts an in-band write
+ * only when the writer's expected count matches. Nothing is written or
+ * allocated for a refused write.
+ *
+ * @property seq - The run's allocated position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only.
+ * @property seqInBand - The run's in-band position count at the time of the
+ *   refusal, when the World reports it. Diagnostic only: a client must never
+ *   adopt it as its own count, since that would make it a writer without
+ *   having seen the events the count stands for.
+ */
+export class InBandSupersededError extends WorkflowWorldError {
+  readonly seq?: number;
+  readonly seqInBand?: number;
+
+  constructor(message: string, options?: { seq?: number; seqInBand?: number }) {
+    super(message, { status: 412, code: IN_BAND_SUPERSEDED_CODE });
+    this.name = 'InBandSupersededError';
+    this.seq = options?.seq;
+    this.seqInBand = options?.seqInBand;
+  }
+
+  static is(value: unknown): value is InBandSupersededError {
+    return isError(value) && value.name === 'InBandSupersededError';
   }
 }
 

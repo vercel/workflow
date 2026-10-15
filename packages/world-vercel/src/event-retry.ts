@@ -47,7 +47,7 @@
  * applies to EVERY event type: a genuine application 429 means the server
  * rejected the write outright (nothing landed), so none of the duplicate-row /
  * attempt-double-count hazards above apply (the same definitive-no-write
- * reasoning `STREAM_RETRY_OPTIONS` uses to retry 429 on stream PUTs). Firewall
+ * reasoning `retryStreamAppend` uses to retry 429 on stream PUTs). Firewall
  * challenges never reach here as `ThrottleError`: `errorForResponse` maps a
  * 429 + `x-vercel-mitigated: challenge` to a transport `WorkflowWorldError`
  * instead (see isFirewallChallenge429), so throttle retries cannot hot-loop
@@ -384,7 +384,7 @@ export function isRetryableEventPostError(err: unknown): boolean {
 }
 
 /** Rejects with `signal.reason`, clearing the timer, when `signal` aborts. */
-const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+export const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
@@ -464,6 +464,16 @@ export interface EventPostRetryOptions {
    * `step_failed` needs it.
    */
   afterStepBody?: boolean;
+  /**
+   * The write carries the in-band writer fence (`CreateEventParams.inBand`).
+   * It gets no transient retry, whatever its event type: the backend checks
+   * the fence when it allocates, before any entity condition, so a re-send of
+   * an attempt that committed but lost its response is refused as
+   * `InBandSupersededError` by its own first attempt instead of converging on
+   * 409. Recovery is left to queue redelivery, which reloads the log. A 429
+   * is still waited out, since a throttled write was never processed.
+   */
+  inBand?: boolean;
 }
 
 /**
@@ -502,7 +512,7 @@ async function resolveDeadlineMs(): Promise<number | undefined> {
 
 /**
  * Cumulative 429 wait accounting for one logical request: an event POST, an
- * event-log read, or a stream WebSocket write/close (`ws-stream-session.ts`).
+ * event-log read, or a stream write/close.
  * Each call waits out one 429's `retryAfter` (seconds;
  * DEFAULT_THROTTLE_RETRY_AFTER_SECONDS when absent) so the caller can
  * re-attempt, or rethrows the 429 without waiting once the wait would exceed
@@ -510,11 +520,13 @@ async function resolveDeadlineMs(): Promise<number | undefined> {
  * reason. `target` completes the log line "Throttled (429) <target>".
  *
  * The deadline is read on the first 429 only, so the unthrottled path never
- * pays for it.
+ * pays for it. `beforeWait` runs only when a retry fits, allowing HTTP callers
+ * to cancel a rejected body while preserving the final response on exhaustion.
  */
 export function createThrottleWaiter(
   target: string,
-  budget: ThrottleBudget
+  budget: ThrottleBudget,
+  beforeWait?: () => Promise<void>
 ): (err: { retryAfter?: number }, signal?: AbortSignal) => Promise<void> {
   let waitedMs = 0;
   let limit: { budgetMs: number; deadlineMs: number | undefined } | undefined;
@@ -555,6 +567,7 @@ export function createThrottleWaiter(
     console.warn(
       `[workflow] Throttled (429) ${target}; retrying in-process in ${waitMs / 1000}s`
     );
+    await beforeWait?.();
     await sleep(waitMs, signal);
   };
 }
@@ -577,6 +590,7 @@ function isEligibleForTransientRetry(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): boolean {
+  if (options?.inBand === true) return false;
   // A batch call always carries an explicit verdict derived from every event
   // it contains; the per-type matrix (keyed on the batch's FIRST event) must
   // not override it in either direction.

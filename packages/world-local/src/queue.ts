@@ -1,13 +1,19 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowUrl, debugLog } from '@workflow/utils';
+import {
+  createAppRouteUrl,
+  createWorkflowUrl,
+  debugLog,
+} from '@workflow/utils';
 import {
   isNodeHttpEnabled,
   MessageId,
   parseQueueName,
+  parseQueueRoute,
   type Queue,
-  type QueuePrefix,
+  QueuePrefix,
   ValidQueueName,
+  WORKFLOW_FLOW_ROUTE,
 } from '@workflow/world';
 import {
   createNodeHttpAgents,
@@ -119,6 +125,11 @@ export type LocalQueue = Queue & {
   close(): Promise<void>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
+  /**
+   * Route a queue prefix's HTTP deliveries to `path` on the app instead of
+   * the Workflow SDK's flow route (see `Queue.registerRoute`).
+   */
+  registerRoute(prefix: QueuePrefix, path: string): void;
 };
 
 const DETACHED_ARRAYBUFFER_ERROR =
@@ -176,6 +187,19 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const inflightMessages = new Map<string, MessageId>();
   /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
   const directHandlers = new Map<string, DirectHandler>();
+  /**
+   * HTTP delivery routes by queue prefix. A prefix without one is delivered
+   * to the Workflow SDK's flow route. Read on every delivery attempt, so a
+   * route registered after a message was enqueued (a consumer whose module
+   * loads after `start()` re-enqueued its runs) takes the next attempt.
+   */
+  const routes = new Map<string, string>();
+  const deliveryUrl = (baseUrl: string, prefix: string) => {
+    const route = routes.get(prefix);
+    return route
+      ? createAppRouteUrl(baseUrl, route)
+      : createWorkflowUrl(baseUrl, { type: 'flow' });
+  };
 
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
@@ -190,6 +214,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
+    // One message for its whole life: every delivery below, including the
+    // `{ timeoutSeconds }` redeliveries, reuses this id and creation time.
+    const createdAt = new Date().toISOString();
 
     // Extract identifiers from the message for structured logging.
     // Combined workflow messages carry `runId` and may include `stepId`.
@@ -246,6 +273,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(delivery + 1),
+            'x-vqs-message-created-at': createdAt,
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
@@ -254,15 +282,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           try {
             if (directHandler) {
               const req = new Request(
-                createWorkflowUrl(resolveDirectBaseUrl(config), {
-                  type: 'flow',
-                }),
+                deliveryUrl(resolveDirectBaseUrl(config), prefix),
                 { method: 'POST', headers, body }
               );
               response = await directHandler(req);
             } else {
               const baseUrl = await resolveBaseUrl(config);
-              const url = createWorkflowUrl(baseUrl, { type: 'flow' });
+              const url = deliveryUrl(baseUrl, prefix);
               response = nodeHttpAgents
                 ? await nodeHttpFetch(url, {
                     method: 'POST',
@@ -347,6 +373,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               ...(runId && { runId }),
               ...(stepId && { stepId }),
               handlerError: text,
+              ...(!directHandler &&
+                !routes.has(prefix) &&
+                (response.status === 400 || response.status === 404) && {
+                  hint:
+                    `No route or handler is registered for queue prefix "${prefix}", ` +
+                    `so its messages go to the Workflow SDK's flow route (${WORKFLOW_FLOW_ROUTE}). ` +
+                    `A queue consumer of its own registers one with world.registerRoute(prefix, path) or world.registerHandler(prefix, handler).`,
+                }),
             }
           );
 
@@ -409,6 +443,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       'x-vqs-queue-name': ValidQueueName,
       'x-vqs-message-id': MessageId,
       'x-vqs-message-attempt': z.coerce.number(),
+      // Sent by world-postgres, whose `attempt` restarts on a reschedule.
+      'x-vqs-message-delivery-count': z.coerce
+        .number()
+        .int()
+        .positive()
+        .optional(),
+      // Absent on a delivery from a sender that predates it.
+      'x-vqs-message-created-at': z.iso.datetime().optional(),
     })
   );
 
@@ -430,14 +472,30 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       const queueName = headers.data['x-vqs-queue-name'];
       const messageId = headers.data['x-vqs-message-id'];
       const attempt = headers.data['x-vqs-message-attempt'];
+      const deliveryCountHeader = headers.data['x-vqs-message-delivery-count'];
+      const createdAtHeader = headers.data['x-vqs-message-created-at'];
 
       if (!queueName.startsWith(prefix)) {
-        return Response.json({ error: 'Unhandled queue' }, { status: 400 });
+        return Response.json(
+          {
+            error: 'Unhandled queue',
+            detail: `This route handles queue prefix "${prefix}", not "${queueName}".`,
+          },
+          { status: 400 }
+        );
       }
 
       const body = await new TypedJsonTransport().deserialize(req.body);
       try {
-        const result = await handler(body, { attempt, queueName, messageId });
+        const result = await handler(body, {
+          attempt,
+          // Counts every delivery of this message that reached a handler,
+          // starting at 1, including `{ timeoutSeconds }` redeliveries.
+          deliveryCount: deliveryCountHeader ?? attempt,
+          ...(createdAtHeader ? { createdAt: new Date(createdAtHeader) } : {}),
+          queueName,
+          messageId,
+        });
 
         if (
           typeof body === 'object' &&
@@ -483,6 +541,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     getDeploymentId,
     registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
+    },
+    registerRoute(prefix: QueuePrefix, path: string) {
+      routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
     },
     async close() {
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)

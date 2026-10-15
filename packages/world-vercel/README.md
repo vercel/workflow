@@ -59,7 +59,7 @@ until the burst finishes. Call `releaseLock()` when finished contributing, not
 
 ## Custom dispatcher
 
-HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:
+HTTP requests (including the queue) use shared undici dispatchers for connection pooling. Pass a custom `dispatcher` to override them, for example, to tune undici on newer Node.js runtimes:
 
 ```ts
 import { Agent } from 'undici';
