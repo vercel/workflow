@@ -437,6 +437,30 @@ Ensure your deployment has:
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
 </Callout>
 
+## Troubleshooting
+
+### A run stays `running` after a process crash
+
+Earlier versions of the Postgres World wrote some events separately from the row they update. A process killed between the two writes (SIGKILL, OOM, or host loss) could leave a step `completed` or `failed` with no matching event, and the run never advanced past that step. Current versions write each event in the same transaction as its row change, and a wait left in this state gets its missing `wait_completed` event on the run's next attempt.
+
+Upgrading doesn't recover stuck steps. This query lists them for runs that are still `running`:
+
+```sql
+select s.run_id, s.step_id, s.step_name, s.status
+from workflow.workflow_steps s
+join workflow.workflow_runs r on r.id = s.run_id
+where r.status = 'running'
+  and s.status in ('completed', 'failed')
+  and not exists (
+    select 1 from workflow.workflow_events e
+    where e.run_id = s.run_id
+      and e.correlation_id = s.step_id
+      and e.type = 'step_' || s.status
+  );
+```
+
+Cancel each of these runs with `workflow cancel <run-id>`, then start it again.
+
 ## Limitations
 
 - **Reference implementation**: Tested and implements the complete World spec, but is not optimized for scale, speed, or security; a production deployment typically clones it and adapts it, or runs workers in separate processes with a more robust queuing system

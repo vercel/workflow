@@ -23,6 +23,8 @@ Workflow exceeded the maximum of <limit> events per run
 ╰▶ docs: https://workflow-sdk.dev/err/max-events-exceeded
 ```
 
+The [web UI](/docs/observability#web-ui) shows the same recommendation on the failed run's detail page, unless the run was already on the QuickJS VM with snapshotting.
+
 Before a run reaches the limit, the runtime logs a warning in your function logs at 50%, 80%, and 95% of the ceiling:
 
 ```text
@@ -52,7 +54,7 @@ WORKFLOW_VM=quickjs
 
 Snapshotting is on by default under QuickJS. Leave [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) unset, or set it to a positive integer. `WORKFLOW_SNAPSHOT_THRESHOLD=0` disables snapshotting, and those runs keep the limit.
 
-A run qualifies when its `executionContext` records `workflowVm: "quickjs"` and a positive `snapshotThreshold`. `start()` records both when the run is created, so:
+A run qualifies when its `executionContext` records `workflowVm: "quickjs"` and a positive `snapshotThreshold`. The web UI's run sidebar shows the recorded engine as **Workflow VM**. `start()` records both when the run is created, so:
 
 - Only runs started after the change are exempt. Runs keep the VM and snapshot policy they started with.
 - Runs that have already failed with `MAX_EVENTS_EXCEEDED` are not revived. Start them again.
