@@ -199,7 +199,7 @@ function shape(events: readonly Event[]): string[] {
 /** Replays `world`'s committed log, up to its terminal event, in a fresh World. */
 async function coldReplay(world: AppendOnlyWorld, code: string) {
   const cold = new AppendOnlyWorld();
-  const run = await world.asWorld().runs.get(world.events[0]?.runId);
+  const run = await world.asWorld().runs.get(world.events[0]!.runId);
   const terminal = world.events.findIndex(
     (event) => event.eventType === 'run_completed'
   );

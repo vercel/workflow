@@ -4,6 +4,7 @@ import {
   type Hook,
   type HookClaimedFrom,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowInvokePayload,
   type World,
 } from '@workflow/world';
@@ -102,10 +103,14 @@ export async function publishHookWakeWithRetry(
  * a publish that still fails is logged rather than failing the claimer —
  * nothing of the claimer's is wrong, every later replay of the claimer inside
  * the republish window tries again ({@link forcedCreationsOwingWake}), and
- * the victim reads the row on its next invocation for any reason. Like every
- * orchestrator wake it carries no idempotency key, so a republish costs the
- * victim one more delivery, which exits without a replay when its log holds
- * nothing new.
+ * the victim reads the row on its next invocation for any reason.
+ *
+ * On a spec 9 victim the wake, like every orchestrator wake, carries no
+ * idempotency key: a key could be absorbed by an orchestrator delivery that is
+ * already exiting and lose the wakeup, while a republish costs the victim one
+ * more delivery, which exits without a replay when its log holds nothing new.
+ * On an older victim every delivery is a full replay, so the key is the
+ * claimer's hook id and the republishes collapse into one wake.
  *
  * Skipped when the victim is the claimer itself (a run taking over its own
  * earlier hook is already running) and when the World recorded no
@@ -131,12 +136,19 @@ export async function publishForceClaimVictimWake(
       () =>
         world.queue(
           getWorkflowQueueName(from.workflowName as string),
-          { runId: from.runId } satisfies WorkflowInvokePayload,
+          {
+            runId: from.runId,
+            runSpecVersion: from.runSpecVersion ?? SPEC_VERSION_LEGACY,
+          } satisfies WorkflowInvokePayload,
           {
             ...(from.deploymentId !== undefined && {
               deploymentId: from.deploymentId,
             }),
             specVersion: from.runSpecVersion ?? SPEC_VERSION_LEGACY,
+            ...((from.runSpecVersion ?? SPEC_VERSION_LEGACY) <
+              SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+              idempotencyKey: `hook-force-claim-${hook.hookId}`,
+            }),
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

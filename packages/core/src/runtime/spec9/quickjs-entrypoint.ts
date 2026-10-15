@@ -1122,7 +1122,7 @@ export async function runWorkflowWithQuickJS(params: {
     /** Whether inline bodies may start ahead of their start. */
     optimistic: boolean;
   };
-}): Promise<{ timeoutSeconds?: number } | undefined> {
+}): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
     workflowName,

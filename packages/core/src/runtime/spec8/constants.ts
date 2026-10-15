@@ -7,6 +7,10 @@ import {
   envNumber,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
 } from '@workflow/world';
+import {
+  getMaxInlineSteps as getSharedMaxInlineSteps,
+  MAX_INLINE_STEPS,
+} from '../constants.js';
 
 /**
  * The spec version the spec 8 orchestrator stamps on the events it writes:
@@ -223,4 +227,15 @@ export function getPreconditionReinvokeDelaySeconds(): number {
     PRECONDITION_REINVOKE_DELAY_SECONDS,
     { integer: true }
   );
+}
+
+/**
+ * The max number of inline steps for the spec 8 orchestrator. The setting is
+ * shared (see `../constants.ts`), but the spec 8 orchestrator reads
+ * `WORKFLOW_MAX_INLINE_STEPS=0` as unset and uses the default, as it always
+ * has; only the spec 9 orchestrator enqueues every step at 0.
+ */
+export function getMaxInlineSteps(): number {
+  const maxInlineSteps = getSharedMaxInlineSteps();
+  return maxInlineSteps === 0 ? MAX_INLINE_STEPS : maxInlineSteps;
 }

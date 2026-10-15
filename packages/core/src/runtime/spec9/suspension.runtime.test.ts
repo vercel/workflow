@@ -365,7 +365,7 @@ describe.each([
          return a + b;`,
           {
             tweak: (world, s) => {
-              const createBatch = world.events.createBatch?.bind(world.events);
+              const createBatch = world.events.createBatch!.bind(world.events);
               world.events.createBatch = (async (
                 id: string,
                 batch: BatchEventRequest[],
@@ -408,7 +408,7 @@ describe.each([
          return a + b;`,
           {
             tweak: (world, s) => {
-              const createBatch = world.events.createBatch?.bind(world.events);
+              const createBatch = world.events.createBatch!.bind(world.events);
               world.events.createBatch = (async (
                 id: string,
                 batch: BatchEventRequest[],
@@ -450,7 +450,7 @@ describe.each([
          return a + b;`,
           {
             tweak: (world, s) => {
-              const createBatch = world.events.createBatch?.bind(world.events);
+              const createBatch = world.events.createBatch!.bind(world.events);
               world.events.createBatch = (async (
                 id: string,
                 batch: BatchEventRequest[],
@@ -574,7 +574,7 @@ describe.each([
       expect(calls.ss_add).toBeUndefined();
       expect(eventsOf(store, 'step_started')).toEqual([]);
       expect(
-        store.held.some((h) => h.messageId === stepMessage?.messageId)
+        store.held.some((h) => h.messageId === stepMessage!.messageId)
       ).toBe(false);
     });
   });

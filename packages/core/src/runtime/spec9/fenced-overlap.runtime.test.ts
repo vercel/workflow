@@ -73,7 +73,7 @@ async function replayFromCold(
   world: AppendOnlyWorld,
   code: string
 ): Promise<AppendOnlyWorld> {
-  const run = (await world.asWorld().runs.get(world.events[0]?.runId)) as
+  const run = (await world.asWorld().runs.get(world.events[0]!.runId)) as
     | WorkflowRun
     | undefined;
   const cold = new AppendOnlyWorld({});
@@ -83,7 +83,7 @@ async function replayFromCold(
   );
   setWorld(cold.asWorld());
   await workflowEntrypoint(code)(new Request('https://example.test'));
-  await cold.deliver(cold.enqueue(ORCHESTRATOR_QUEUE, { runId: run?.runId }));
+  await cold.deliver(cold.enqueue(ORCHESTRATOR_QUEUE, { runId: run!.runId }));
   return cold;
 }
 

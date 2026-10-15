@@ -103,7 +103,9 @@ async function replayWith(events: Event[]) {
     dispose: vi.fn(),
   });
 
-  const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -124,7 +126,10 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queue).toHaveBeenCalledTimes(1);
     const [queueName, message, options] = queue.mock.calls[0];
     expect(queueName).toContain('victim-workflow');
-    expect(message).toEqual({ runId: 'wrun_victim' });
+    expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
     });
@@ -174,7 +179,10 @@ describe('QuickJS force-claim victim wake on replay', () => {
       ),
     ]);
     expect(queue).toHaveBeenCalledTimes(1);
-    expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+    expect(queue.mock.calls[0][1]).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
   });
 
   it('stops republishing once the forced creation is outside the window', async () => {
@@ -230,6 +238,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
                 runId: `wrun_victim_${letter}`,
                 hookId: `hook_victim_${letter}`,
                 workflowName: 'victim-workflow',
+                runSpecVersion: SPEC_VERSION_CURRENT,
               },
             },
           };
@@ -256,7 +265,9 @@ describe('QuickJS force-claim victim wake on replay', () => {
       dispose: vi.fn(),
     });
 
-    const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import(
+      './spec9/quickjs-entrypoint.js'
+    );
     await runWorkflowWithQuickJS({
       workflowCode: '// not evaluated: the VM is mocked',
       workflowName: 'workflow',
@@ -342,7 +353,9 @@ describe('QuickJS force-claim victim wake on replay', () => {
       dispose: vi.fn(),
     });
 
-    const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import(
+      './spec9/quickjs-entrypoint.js'
+    );
     await runWorkflowWithQuickJS({
       workflowCode: '// not evaluated: the VM is mocked',
       workflowName: 'workflow',

@@ -11,6 +11,7 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   type World,
 } from '@workflow/world';
@@ -1747,10 +1748,31 @@ async function workflow() {
       vi.clearAllMocks();
     });
 
-    it('refuses a World without the in-band fence before any write', async () => {
+    it('starts a spec 8 run on a World that declares spec 8, which needs no fence', async () => {
+      const world = createWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+        capabilities: {},
+      });
+      await start(validWorkflow, [], {
+        deploymentId: 'dpl_target_456',
+        world,
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      });
+      expect(mockEventsCreate.mock.calls[0]?.[1]).toMatchObject({
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      });
+      // The first delivery routes to the spec 8 orchestrator off its runInput.
+      expect(mockQueue.mock.calls[0]?.[1]).toMatchObject({
+        runInput: { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM },
+      });
+    });
+
+    it('refuses a World without the in-band fence for a spec 9 run, before any write', async () => {
       await expect(
         start(validWorkflow, [], {
           deploymentId: 'dpl_target_456',
+          specVersion: SPEC_VERSION_CURRENT,
           world: createWorld({ capabilities: { maxConcurrency: true } }),
         })
       ).rejects.toThrow(/capabilities\.inBandFence/);

@@ -59,19 +59,21 @@ export function assertWorldSupportsRuntimeProtocol(
  * Rejects a World that does not declare the in-band writer fence
  * (`WorldCapabilities.inBandFence`).
  *
- * Every run this runtime creates and drives is a single-orchestrator run
- * (spec >= 9), and on those the fence is what keeps a run to one writer when
- * two orchestrator deliveries overlap: the runtime takes its in-band count
- * from the `snapshot` of a log load and sends it on every in-band write, and
- * it has no unfenced mode. Against a World without the fence two overlapping
- * deliveries could both write decisions into the log, so the runtime refuses
- * the World instead of running unprotected.
+ * On a single-orchestrator run (spec >= 9) the fence is what keeps the run to
+ * one writer when two orchestrator deliveries overlap: the spec 9
+ * orchestrator takes its in-band count from the `snapshot` of a log load and
+ * sends it on every in-band write, and it has no unfenced mode. Against a
+ * World without the fence two overlapping deliveries could both write
+ * decisions into the log, so the runtime refuses the World instead of
+ * running unprotected. Runs of spec 8 and below have their own orchestrator
+ * (`./spec8/`), which needs no fence: a World that declares spec 8 creates
+ * spec 8 runs and is not checked.
  *
- * Checked where a run is created (`start()`) and where an orchestrator
- * delivery begins writing (the `InBandWriter`), so a misconfigured World
- * fails the first `start()` and never writes an unfenced decision. Reads
- * (streams, run and hook lookups) do not need the fence and are not
- * checked.
+ * Checked where a spec 9 run is created (`start()`) and where its
+ * orchestrator delivery begins writing (the `InBandWriter`), so a
+ * misconfigured World fails the first `start()` and never writes an unfenced
+ * decision. Reads (streams, run and hook lookups) do not need the fence and
+ * are not checked.
  */
 export function assertWorldSupportsInBandFence(
   world: Pick<World, 'capabilities'>

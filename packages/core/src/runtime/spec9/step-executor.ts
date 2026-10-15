@@ -242,7 +242,7 @@ export interface StepExecutorParams {
    * this attempt's `step_started` (an inline step); otherwise the executor
    * sends `step_started` after it. A failure is the start's failure.
    */
-  startAfter?: Promise<CallerStart | undefined | undefined>;
+  startAfter?: Promise<CallerStart | undefined | void>;
   /**
    * Latency telemetry (TTFS / STSO): eligibility and anchor timestamps decided
    * by the orchestrator. See runtime/step-latency.ts.
@@ -760,6 +760,7 @@ export async function executeStep(
               // writes (`setAttributes`) wait on the barrier, which is
               // undefined outside turbo and already settled once it landed.
               runReadyBarrier: params.runReadyBarrier,
+              runSpecVersion: params.runSpecVersion,
             },
             () => {
               // The last instant before user code: T7 of the resume window.

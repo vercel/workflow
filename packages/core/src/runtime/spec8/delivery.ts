@@ -2083,6 +2083,7 @@ export async function runSpec8Delivery(
         attempt: metadata.attempt,
         limitMs: replayBudget.configuredLimitMs,
         slotSnapshot: slotSnapshot(),
+        runSpecVersion: workflowRun?.specVersion,
       });
       // Only the terminal attempt returns, after run_failed is
       // durable. Earlier attempts reject for queue redelivery.

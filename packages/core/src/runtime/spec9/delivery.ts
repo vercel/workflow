@@ -2170,6 +2170,7 @@ export async function runSpec9Delivery(
             attempt: metadata.attempt,
             limitMs: replayBudget.configuredLimitMs,
             slotSnapshot: slotSnapshot(),
+            runSpecVersion: run.specVersion,
             writeEvent: (data, params) => writeInBand(data, params),
           });
           return undefined;

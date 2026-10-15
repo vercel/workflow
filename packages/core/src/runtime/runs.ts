@@ -170,7 +170,11 @@ export async function wakeRunAfterOutOfBandWrite(
   try {
     await world.queue(
       getWorkflowQueueName(run.workflowName),
-      { runId: run.runId, requestedAt: new Date() },
+      {
+        runId: run.runId,
+        requestedAt: new Date(),
+        runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+      },
       {
         deploymentId: run.deploymentId,
         ...(run.specVersion !== undefined
@@ -344,6 +348,7 @@ export async function reenqueueRun(
       getWorkflowQueueName(run.workflowName, options?.namespace),
       {
         runId,
+        runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
       },
       {
         deploymentId: run.deploymentId,
@@ -457,7 +462,11 @@ export async function wakeUpRun(
         rememberWakeUp(runId, correlationIds);
         await world.queue(
           getWorkflowQueueName(run.workflowName, options?.namespace),
-          { runId, completeWaits: correlationIds },
+          {
+            runId,
+            runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+            completeWaits: correlationIds,
+          },
           {
             deploymentId: run.deploymentId,
             specVersion: specVersionForRunWrite(
@@ -508,6 +517,7 @@ export async function wakeUpRun(
         getWorkflowQueueName(run.workflowName, options?.namespace),
         {
           runId,
+          runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
         },
         {
           deploymentId: run.deploymentId,

@@ -839,17 +839,24 @@ export async function handleSuspension({
     ops.push(
       (async () => {
         let dehydratedInput: SerializedData;
-        dehydratedInput = await dehydrateInput(
-          {
-            args: queueItem.args,
-            closureVars: queueItem.closureVars,
-            thisVal: queueItem.thisVal,
-          },
-          {
-            source: 'step_input',
-            correlationId: queueItem.correlationId,
-          }
-        );
+        try {
+          dehydratedInput = await dehydrateInput(
+            {
+              args: queueItem.args,
+              closureVars: queueItem.closureVars,
+              thisVal: queueItem.thisVal,
+            },
+            {
+              source: 'step_input',
+              correlationId: queueItem.correlationId,
+            }
+          );
+        } catch (err) {
+          // The drain has nothing to observe a finalization, so an input
+          // that does not serialize leaves no rows (the drain's own catch
+          // swallows the error).
+          throw err;
+        }
         try {
           await createGuarded(
             {

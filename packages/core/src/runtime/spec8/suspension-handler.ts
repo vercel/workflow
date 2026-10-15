@@ -43,7 +43,6 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../../util.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
-import { getMaxInlineSteps } from '../constants.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
@@ -62,6 +61,7 @@ import {
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
+  getMaxInlineSteps,
   isBatchTransitionsEnabled,
   MAX_BATCH_FANOUT_EVENTS,
   SPEC8_EVENT_SPEC_VERSION,

@@ -1163,9 +1163,15 @@ export async function executeStep(
               // durable. Expose the barrier so a direct step-body world write
               // (e.g. `setAttributes`) can order itself after the
               // run exists. Undefined on the await path (run already durable).
+              // A rejected barrier is not surfaced here: the body's write
+              // fails on its own if the run never came to exist.
               runReadyBarrier: optimisticStart
-                ? params.runReadyBarrier
+                ? params.runReadyBarrier?.then(
+                    () => {},
+                    () => {}
+                  )
                 : undefined,
+              runSpecVersion: params.runSpecVersion,
             },
             () => {
               // The last instant before user code: T7 of the resume window.

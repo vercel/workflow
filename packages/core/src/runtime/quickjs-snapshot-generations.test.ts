@@ -238,7 +238,9 @@ async function runToCompletion(options: {
 }) {
   const env = makeWorld(options.threshold);
   setWorld(env.world);
-  const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   let heldFrom: number | undefined;
   for (let invocation = 0; invocation < options.hooks + 5; invocation++) {
     if (invocation === options.holdSaveAt) env.holdNextSave();
@@ -303,7 +305,9 @@ describe('QuickJS snapshots across many generations', () => {
     const { world, run, log, append, saves, loads } = makeWorld();
     const workflowCode = hookWorkflow(1000);
     setWorld(world);
-    const { runWorkflowWithQuickJS } = await import('./spec9/quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import(
+      './spec9/quickjs-entrypoint.js'
+    );
     const maxEventsLimit = 40;
 
     let exceeded: unknown;

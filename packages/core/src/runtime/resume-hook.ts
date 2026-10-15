@@ -12,6 +12,7 @@ import {
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -962,6 +963,7 @@ async function resumeHookAttempt<T = any>(
           queueName,
           {
             runId: hook.runId,
+            runSpecVersion: queueOptions.specVersion,
             traceCarrier: resumeContext.traceCarrier ?? undefined,
             hookResumeTiming: {
               resumeRequestedAtMs,
@@ -971,10 +973,17 @@ async function resumeHookAttempt<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             ...queueOptions,
-            // No idempotency key: a key could be absorbed by an
-            // orchestrator delivery that is already exiting and lose the
-            // wakeup. A duplicate wake from a retried publish only costs
-            // a cheap delivery.
+            // A spec 9 wake carries no idempotency key: a key could be
+            // absorbed by an orchestrator delivery that is already exiting
+            // and lose the wakeup, and a duplicate wake from a retried
+            // publish only costs a cheap delivery. An older run replays in
+            // full on every delivery, so its retried publishes whose
+            // response was lost dedupe on the resume (claim-less writes have
+            // no resumeId and keep the previous behavior).
+            ...(resumeId &&
+              queueOptions.specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+                idempotencyKey: `hook-${resumeId}`,
+              }),
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

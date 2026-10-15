@@ -39,6 +39,7 @@ import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { withRunSpecVersion } from './run-spec-routing.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -1377,8 +1378,12 @@ export async function queueMessage(
   world: World,
   ...args: Parameters<typeof world.queue>
 ) {
-  const queueName = args[0];
-  await queueMessageTraced(world, queueName, args).catch(markQueueSendFailure);
+  const [queueName, message, opts] = args;
+  await queueMessageTraced(world, queueName, [
+    queueName,
+    withRunSpecVersion(message, opts?.specVersion),
+    opts,
+  ]).catch(markQueueSendFailure);
 }
 
 async function queueMessageTraced(
@@ -1431,9 +1436,14 @@ export async function queueMessages(
   }[]
 ): Promise<void> {
   if (messages.length === 0) return;
-  await queueMessagesTraced(world, queueName, messages).catch(
-    markQueueSendFailure
-  );
+  await queueMessagesTraced(
+    world,
+    queueName,
+    messages.map((entry) => ({
+      ...entry,
+      message: withRunSpecVersion(entry.message, entry.opts?.specVersion),
+    }))
+  ).catch(markQueueSendFailure);
 }
 
 async function queueMessagesTraced(

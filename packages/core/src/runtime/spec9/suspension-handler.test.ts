@@ -338,7 +338,10 @@ describe('handleSuspension', () => {
       expect(queue).toHaveBeenCalledTimes(1);
       const [queueName, message, options] = queue.mock.calls[0];
       expect(queueName).toContain('victim-workflow');
-      expect(message).toEqual({ runId: 'wrun_victim' });
+      expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
       expect(options).toMatchObject({ deploymentId: 'dpl_victim' });
       expect(options.idempotencyKey).toBeUndefined();
     });
@@ -358,7 +361,10 @@ describe('handleSuspension', () => {
         ownRow(6, 'wait_completed', 'wait_1'),
       ]);
       expect(queue).toHaveBeenCalledTimes(1);
-      expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+      expect(queue.mock.calls[0][1]).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
     });
 
     it('republishes every recent forced creation in the log, each to its own victim', async () => {
@@ -412,7 +418,10 @@ describe('handleSuspension', () => {
         ownRow(5, 'step_completed', 'step_after', { result: [] }),
       ]);
       expect(queue).toHaveBeenCalledTimes(1);
-      expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+      expect(queue.mock.calls[0][1]).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
     });
 
     it("still republishes after the run's own hook_disposed", async () => {

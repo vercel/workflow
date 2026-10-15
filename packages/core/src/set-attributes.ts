@@ -1,7 +1,7 @@
 import { FatalError } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { normalizeAttributeChanges } from './attribute-changes.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
+import { specVersionForRunWrite } from './runtime/run-spec-version.js';
 import { contextStorage } from './step/context-storage.js';
 import type { SetAttributesOptions } from './workflow/set-attributes.js';
 
@@ -55,7 +55,7 @@ export async function setAttributes(
     runId,
     {
       eventType: 'attr_set',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: specVersionForRunWrite(store.runSpecVersion),
       eventData: {
         changes,
         writer,

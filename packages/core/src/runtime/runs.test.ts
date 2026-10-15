@@ -170,7 +170,8 @@ describe('reenqueueRun', () => {
 
     expect(world.queue).toHaveBeenCalledWith(
       '__wkf_workflow_test-workflow',
-      { runId: 'wrun_123' },
+      // The routing hint is the run's own spec version.
+      { runId: 'wrun_123', runSpecVersion: 2 },
       expect.anything()
     );
   });
@@ -181,7 +182,8 @@ describe('reenqueueRun', () => {
 
     expect(world.queue).toHaveBeenCalledWith(
       '__eve_wkf_workflow_test-workflow',
-      { runId: 'wrun_123' },
+      // The routing hint is the run's own spec version.
+      { runId: 'wrun_123', runSpecVersion: 2 },
       expect.anything()
     );
   });

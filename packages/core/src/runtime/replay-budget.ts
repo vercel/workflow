@@ -5,7 +5,6 @@ import {
   QUICKJS_SNAPSHOT_REMEDIATION,
   RUN_ERROR_CODES,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
@@ -16,6 +15,7 @@ import {
   type SlotSnapshotParams,
 } from './helpers.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import { getWorld } from './world.js';
 
 /**
@@ -137,6 +137,8 @@ export async function handleReplayBudgetExhausted(args: {
    * World should be told which view.
    */
   slotSnapshot?: SlotSnapshotParams;
+  /** The run's spec version, which the terminal event is stamped with. */
+  runSpecVersion: number | undefined;
   /**
    * Writes the terminal event. The orchestrator passes its in-band writer;
    * without one the event goes straight to the World.
@@ -194,7 +196,7 @@ export async function handleReplayBudgetExhausted(args: {
   );
   const runFailed = {
     eventType: 'run_failed',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: specVersionForRunWrite(args.runSpecVersion),
     eventData: {
       error: dehydratedError,
       errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,

@@ -13,6 +13,7 @@ import {
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -648,7 +649,11 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
-      assertWorldSupportsInBandFence(world);
+      // A World that mints single-orchestrator runs must provide their fence,
+      // so a misconfigured one fails before anything is read or written.
+      if (world.specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        assertWorldSupportsInBandFence(world);
+      }
       // `undefined` when this process is not itself a deployment and the
       // caller named a concrete target; see below.
       let currentDeploymentId: string | undefined;
@@ -859,6 +864,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // explicit `specVersion` still wins.
       const specVersion = opts.specVersion ?? targetSpecVersion;
       if (opts.specVersion !== undefined) specVersionSource = 'explicit';
+      // A single-orchestrator run is kept to one writer by the World's
+      // in-band fence; an older run's orchestrator needs none. Also covers an
+      // explicit `specVersion` above what the World declares.
+      if (specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        assertWorldSupportsInBandFence(world);
+      }
       span?.setAttributes({
         ...Attribute.WorkflowRunSpecVersion(specVersion),
         ...Attribute.WorkflowRunSpecVersionSource(specVersionSource),

@@ -254,7 +254,7 @@ async function setupStep(
       input: await dehydrateStepArguments([], 'run', undefined),
     },
   });
-  const runId = created.run?.runId;
+  const runId = created.run!.runId;
   await world.events.create(runId, {
     eventType: 'run_started',
     specVersion: SPEC_VERSION_CURRENT,
@@ -517,7 +517,7 @@ describe('executeStep — stream durability barrier', () => {
       // waiting for the World close. Observe the executor entering that wait.
       const ctx = contextStorage.getStore()!;
       if (hasBackgroundOp) ctx.ops.push(backgroundOp.promise);
-      const state = ctx.streamStates?.[0];
+      const state = ctx.streamStates![0];
       const settle = state.settleReleasedWrites!;
       vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
         settlementStarted.resolve();
@@ -572,7 +572,7 @@ describe('executeStep — stream durability barrier', () => {
       const writer = getWritable<string>().getWriter();
       await writer.write('accepted prefix');
       writer.releaseLock();
-      const state = contextStorage.getStore()?.streamStates?.[0];
+      const state = contextStorage.getStore()!.streamStates![0];
       const settle = state.settleReleasedWrites!;
       vi.spyOn(state, 'settleReleasedWrites').mockImplementation(() => {
         settlementStarted.resolve();
@@ -990,7 +990,7 @@ describe('executeStep — turbo run-ready barrier', () => {
         input: await dehydrateStepArguments([], 'run', undefined),
       },
     });
-    const runId = created.run?.runId;
+    const runId = created.run!.runId;
     const stepId = `step_${ulid()}`;
     const input = (await dehydrateStepArguments(
       { args: [], closureVars: undefined, thisVal: undefined },

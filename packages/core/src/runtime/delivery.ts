@@ -25,7 +25,6 @@ import {
   type CreateEventRequest,
   type Event,
   type resolveQueueNamespace,
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -58,6 +57,7 @@ import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import type { SuspensionSerializationBlocker } from './spec9/suspension-handler.js';
 
 type QueueHandler = Parameters<Queue['createQueueHandler']>[1];
@@ -378,7 +378,7 @@ export async function recordFatalRunError({
       runId,
       {
         eventType: 'run_failed',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: specVersionForRunWrite(workflowRun?.specVersion),
         eventData: {
           error: dehydratedError,
           errorCode,

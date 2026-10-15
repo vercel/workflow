@@ -28,7 +28,11 @@ beforeEach(() => {
     },
     createQueueHandler: (_prefix, handler) => async () => {
       await handler(
-        { runId, requestedAt: new Date(), runSpecVersion: SPEC_VERSION_CURRENT },
+        {
+          runId,
+          requestedAt: new Date(),
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        },
         {
           requestId: 'req_test',
           attempt: 2,

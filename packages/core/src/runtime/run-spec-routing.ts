@@ -78,3 +78,22 @@ export async function resolveRunSpec(
     throw error;
   }
 }
+
+/**
+ * `payload` with its run's spec version as the routing hint
+ * (`runSpecVersion`), for an orchestrator message: `specVersion` when the
+ * producer passed the run's version as a queue option, else the version this
+ * process remembers for the run. Unchanged when neither is known, when it is
+ * not a run's message, or when it already carries the hint.
+ */
+export function withRunSpecVersion<T>(payload: T, specVersion?: number): T {
+  if (typeof payload !== 'object' || payload === null) return payload;
+  const message = payload as Record<string, unknown>;
+  if (typeof message.runId !== 'string' || 'runSpecVersion' in message) {
+    return payload;
+  }
+  const runSpecVersion = specVersion ?? remembered.get(message.runId);
+  return runSpecVersion === undefined
+    ? payload
+    : ({ ...message, runSpecVersion } as T);
+}

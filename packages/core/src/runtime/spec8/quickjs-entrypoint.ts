@@ -52,7 +52,6 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
-import { getMaxInlineSteps } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import {
@@ -101,6 +100,7 @@ import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
 import {
   getInlineOwnershipLeaseSeconds,
+  getMaxInlineSteps,
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
@@ -992,7 +992,7 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
-}): Promise<{ timeoutSeconds?: number } | undefined> {
+}): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
     workflowName,
