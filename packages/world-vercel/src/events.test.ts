@@ -9,6 +9,7 @@ import {
   SEALED_LOG_ENV_VAR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  slotToEventId,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
@@ -34,6 +35,110 @@ import {
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 const STARTED_AT = new Date('2026-06-10T00:00:00.000Z');
+
+describe('committed event cursors on existing single-event requests', () => {
+  it('returns World-owned cursors and resolved metadata without catch-up directives or a new endpoint', async () => {
+    const agent = mockAgent();
+    const posted: Record<string, unknown>[] = [];
+    const events = [0, 1].map((i) => ({
+      eventId: slotToEventId(4 + i),
+      runId: 'wrun_1',
+      eventType: 'hook_created' as const,
+      correlationId: `hook_${i}`,
+      specVersion: 6,
+      createdAt: STARTED_AT,
+      eventData: {
+        token: `customer:${i}`,
+        metadata: new Uint8Array([i, 42]),
+        isWebhook: i === 1,
+      },
+    }));
+    for (const event of events) {
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events/hook_created',
+          method: 'POST',
+        })
+        .reply(
+          200,
+          (opts: { body?: unknown }) => {
+            posted.push(decodePostedMeta(opts.body));
+            return encode({ event });
+          },
+          { headers: { 'content-type': 'application/cbor' } }
+        );
+    }
+    const results = await Promise.all(
+      events.map((event) =>
+        createWorkflowRunEvent(
+          'wrun_1',
+          event,
+          { resolveData: 'all' },
+          { token: 'test-token', dispatcher: agent }
+        )
+      )
+    );
+    expect(results.map((result) => result.eventCursor)).toEqual(
+      events.map((event) => `eid:${event.eventId}`)
+    );
+    expect(results.map((result) => result.event)).toEqual(events);
+    for (const meta of posted) {
+      expect(meta.maxSlot).toBeUndefined();
+      expect(meta.sinceCursor).toBeUndefined();
+      expect(meta.remoteRefBehavior).toBe('resolve');
+    }
+    expect(posted).toHaveLength(2);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('preserves a server history page separately from the committed event cursor', async () => {
+    const agent = mockAgent();
+    const event = {
+      eventId: slotToEventId(5),
+      runId: 'wrun_1',
+      eventType: 'hook_conflict',
+      correlationId: 'hook_1',
+      specVersion: 6,
+      createdAt: STARTED_AT,
+      eventData: { token: 'customer:1', conflictingRunId: 'wrun_owner' },
+    };
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          event,
+          events: [event],
+          cursor: 'page-cursor',
+          hasMore: true,
+        }),
+        {
+          headers: { 'content-type': 'application/cbor' },
+        }
+      );
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'hook_created',
+        correlationId: 'hook_1',
+        specVersion: 6,
+        eventData: { token: 'customer:1' },
+      },
+      { eventCount: 3 },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(result.eventCursor).toBe(`eid:${event.eventId}`);
+    expect(result.events).toEqual([event]);
+    expect(result.cursor).toBe('page-cursor');
+    expect(result.hasMore).toBe(true);
+    agent.assertNoPendingInterceptors();
+  });
+});
 
 function createEventBody(
   event: AnyEventRequest,
