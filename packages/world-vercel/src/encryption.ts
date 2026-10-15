@@ -14,17 +14,37 @@ import { webcrypto } from 'node:crypto';
 import type { WorkflowRun, World } from '@workflow/world';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
-import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
+import {
+  formatVercelDiagnostics,
+  instrumentedFetch,
+  resolveVercelApiToken,
+} from './http-core.js';
+import {
+  getRunKeyRateLimit,
+  type RunKeyRateLimit,
+  RunKeyRateLimitRetry,
+} from './run-key-retry.js';
+import { HttpRequestResendCount } from './telemetry.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
 class RunKeyFetchError extends Error {
   readonly status: number;
+  /** Set when the run-key rate limiter itself returned the 429. */
+  readonly rateLimit?: RunKeyRateLimit;
 
-  constructor(message: string, status: number) {
-    super(message);
+  constructor(
+    message: string,
+    status: number,
+    options?: { rateLimit?: RunKeyRateLimit; cause?: unknown }
+  ) {
+    super(
+      message,
+      options?.cause === undefined ? undefined : { cause: options.cause }
+    );
     this.name = 'RunKeyFetchError';
     this.status = status;
+    this.rateLimit = options?.rateLimit;
   }
 }
 
@@ -82,6 +102,49 @@ export async function deriveRunKey(
 }
 
 /**
+ * Send one run-key request. A non-2xx response throws a RunKeyFetchError,
+ * carrying the rate limit when the run-key limiter itself returned the 429.
+ */
+function requestRunKey(args: {
+  url: string;
+  token: string;
+  dispatcher: unknown;
+  runId: string;
+  deploymentId: string;
+  resendCount: number;
+}): Promise<Response> {
+  const { url, token, dispatcher, runId, deploymentId, resendCount } = args;
+  // One client span per attempt. Headers are built per attempt because
+  // instrumentedFetch writes the trace context and cache-bust header into
+  // them. It also adds the DEBUG logging the v3/v4 paths have.
+  return instrumentedFetch({
+    method: 'GET',
+    url,
+    headers: new Headers({ Authorization: `Bearer ${token}` }),
+    dispatcher,
+    peerService: 'vercel-api',
+    attributes:
+      resendCount > 0 ? HttpRequestResendCount(resendCount) : undefined,
+    // Preserve the prior no-timeout behavior for this Vercel-API call; the
+    // shared RetryAgent still handles transient/5xx retries.
+    timeoutMs: null,
+    buildError: async (res) => {
+      let body: string;
+      try {
+        body = await res.text();
+      } catch {
+        body = '<unable to read response body>';
+      }
+      return new RunKeyFetchError(
+        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}${formatVercelDiagnostics(res.headers)}`,
+        res.status,
+        { rateLimit: getRunKeyRateLimit(res) }
+      );
+    },
+  });
+}
+
+/**
  * Fetch the per-run encryption key from the Vercel API.
  *
  * The API performs HKDF-SHA256 derivation server-side, so the raw
@@ -123,31 +186,40 @@ export async function fetchRunKey(
   if (options?.teamId) {
     params.set('teamId', options.teamId);
   }
-  // 429/5xx retries are handled by the shared RetryAgent from getDispatcher().
-  // instrumentedFetch adds the OpenTelemetry client span + DEBUG logging the
-  // v3/v4 paths have.
-  const response = await instrumentedFetch({
-    method: 'GET',
-    url: `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
-    headers: new Headers({ Authorization: `Bearer ${token}` }),
-    dispatcher: getDispatcher({ dispatcher: options?.dispatcher }),
-    peerService: 'vercel-api',
-    // Preserve the prior no-timeout behavior for this Vercel-API call; the
-    // shared RetryAgent still handles transient/5xx retries.
-    timeoutMs: null,
-    buildError: async (res) => {
-      let body: string;
-      try {
-        body = await res.text();
-      } catch {
-        body = '<unable to read response body>';
+  const url = `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`;
+  const dispatcher = getDispatcher({ dispatcher: options?.dispatcher });
+  // The shared RetryAgent from getDispatcher() retries transport errors and
+  // 5xx, but deliberately not 429 (see RETRY_AGENT_OPTIONS in http-client.ts).
+  // A 429 from the run-key rate limiter is retried here instead, within the
+  // bounds RunKeyRateLimitRetry describes; a firewall 429 is not retried.
+  const rateLimitRetry = new RunKeyRateLimitRetry(
+    `fetching run key for ${runId}`
+  );
+  let response: Response;
+  for (let resendCount = 0; ; resendCount++) {
+    try {
+      response = await requestRunKey({
+        url,
+        token,
+        dispatcher,
+        runId,
+        deploymentId,
+        resendCount,
+      });
+      break;
+    } catch (error) {
+      if (!(error instanceof RunKeyFetchError) || !error.rateLimit) {
+        throw error;
       }
-      return new RunKeyFetchError(
-        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`,
-        res.status
-      );
-    },
-  });
+      if (!(await rateLimitRetry.wait(error.rateLimit))) {
+        throw new RunKeyFetchError(
+          `${error.message} (rate limited; ${rateLimitRetry.stopReason})`,
+          error.status,
+          { rateLimit: error.rateLimit, cause: error }
+        );
+      }
+    }
+  }
 
   const data = await response.json();
   const result = z
