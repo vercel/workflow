@@ -20,13 +20,36 @@ import {
   pgSchema,
   primaryKey,
   text,
-  timestamp,
   uniqueIndex,
   varchar,
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
 
 export const schema = pgSchema('workflow');
+
+/** A UTC offset (`+00`, `-07`, `+05:30`) or `Z` at the end of a timestamp. */
+const UTC_OFFSET = /(?:[+-]\d\d(?::?\d\d){0,2}|Z)$/;
+
+/**
+ * Every timestamp column is `timestamp with time zone`, so it stores an
+ * instant. With `timestamp without time zone`, `DEFAULT now()` stored the
+ * session's local wall time while drizzle read every value back as UTC, which
+ * put `createdAt` hours off on servers not running in UTC (migration 0027).
+ *
+ * Postgres prints `timestamptz` values with their offset. A value without one
+ * comes from a column migration 0027 has not converted yet, which held UTC
+ * wall times for everything written from JavaScript, so read it as UTC, as
+ * earlier versions did. Drizzle's own `withTimezone` reader would parse it in
+ * the Node process's local time zone instead.
+ */
+const timestamptz = customType<{ data: Date; driverData: string | Date }>({
+  dataType: () => 'timestamp with time zone',
+  toDriver: (value) => value.toISOString(),
+  fromDriver: (value) => {
+    if (value instanceof Date) return value;
+    return new Date(UTC_OFFSET.test(value) ? value : `${value}Z`);
+  },
+});
 
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
@@ -83,14 +106,14 @@ export const runs = schema.table(
     /** @deprecated - use error instead */
     errorJson: text('error'),
     error: Cbor<StructuredError>()('error_cbor'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
-      .defaultNow()
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    updatedAt: timestamptz('updated_at')
+      .default(sql`now()`)
       .$onUpdateFn(() => new Date())
       .notNull(),
-    completedAt: timestamp('completed_at'),
-    startedAt: timestamp('started_at'),
-    expiredAt: timestamp('expired_at'),
+    completedAt: timestamptz('completed_at'),
+    startedAt: timestamptz('started_at'),
+    expiredAt: timestamptz('expired_at'),
   } satisfies DrizzlishOfType<
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
@@ -106,7 +129,7 @@ export const events = schema.table(
     eventId: varchar('id').primaryKey(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     runId: varchar('run_id').notNull(),
     /** @deprecated */
     eventDataJson: jsonb('payload'),
@@ -150,14 +173,14 @@ export const steps = schema.table(
     error: Cbor<StructuredError>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
-    startedAt: timestamp('started_at'),
-    completedAt: timestamp('completed_at'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
-      .defaultNow()
+    startedAt: timestamptz('started_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    updatedAt: timestamptz('updated_at')
+      .default(sql`now()`)
       .$onUpdateFn(() => new Date())
       .notNull(),
-    retryAfter: timestamp('retry_after'),
+    retryAfter: timestamptz('retry_after'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
     Cborized<
@@ -179,7 +202,7 @@ export const hooks = schema.table(
     ownerId: varchar('owner_id').notNull(),
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
@@ -195,11 +218,11 @@ export const waits = schema.table(
     waitId: varchar('wait_id').primaryKey(),
     runId: varchar('run_id').notNull(),
     status: waitStatus('status').notNull(),
-    resumeAt: timestamp('resume_at'),
-    completedAt: timestamp('completed_at'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
-      .defaultNow()
+    resumeAt: timestamptz('resume_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    updatedAt: timestamptz('updated_at')
+      .default(sql`now()`)
       .$onUpdateFn(() => new Date())
       .notNull(),
     specVersion: integer('spec_version'),
@@ -220,7 +243,7 @@ export const streams = schema.table(
     streamId: varchar('stream_id').notNull(),
     runId: varchar('run_id'),
     chunkData: bytea('data').notNull(),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     eof: boolean('eof').notNull(),
   },
   (tb) => [
