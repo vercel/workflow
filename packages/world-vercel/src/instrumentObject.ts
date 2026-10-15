@@ -25,6 +25,7 @@ const RUN_ID_ARG_INDEX_BY_METHOD: Record<string, number> = {
   'world.runs.experimentalSetAttributes': 0,
   'world.steps.get': 0,
   'world.events.create': 0,
+  'world.events.createHooks': 0,
   'world.events.get': 0,
 };
 
@@ -141,7 +142,10 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
         // event. These live here (the world.events.createBatch span), not on
         // the transport span underneath.
         let batchAttributes: Record<string, string | number> | undefined;
-        if (prefix === 'world.events' && methodName === 'createBatch') {
+        if (
+          prefix === 'world.events' &&
+          (methodName === 'createBatch' || methodName === 'createHooks')
+        ) {
           const events = args[1];
           if (Array.isArray(events)) {
             const counts = new Map<string, number>();

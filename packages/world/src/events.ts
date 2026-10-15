@@ -1262,6 +1262,33 @@ export type BatchEventItemResult =
       wait?: undefined;
     };
 
+/** Parameters for coalescing independent system-hook registrations. */
+export type CreateHookBatchParams = Pick<
+  CreateEventParams,
+  'eventCount' | 'requestId' | 'replayDivergenceCount'
+>;
+
+/**
+ * Hook registrations commit independently, with the same per-hook atomicity
+ * and retry semantics as `create`. This is request coalescing, not a transaction
+ * across hooks (hook storage and the run log may live in different regions).
+ */
+export interface HookBatchResult {
+  results: (
+    | {
+        status: 200;
+        error?: undefined;
+        message?: undefined;
+        result: EventResult;
+      }
+    | { status: number; error: string; message: string; result?: undefined }
+  )[];
+  /** One shared, dense suffix after the requested eventCount, when available. */
+  events?: Event[];
+  cursor?: string | null;
+  hasMore?: boolean;
+}
+
 /** Result of {@link Storage.events.createBatch}. */
 export interface EventBatchResult {
   /** One entry per submitted event, in request order. */
