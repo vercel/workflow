@@ -10,9 +10,11 @@ import {
 } from '@workflow/errors';
 import {
   AttributeValidationError,
+  type BatchEventRequest,
   type CreateEventParams,
   type CreateEventRequest,
   type EventResult,
+  type HookBatchResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -799,6 +801,109 @@ export async function handleSuspension({
       ? eventLog.cursor
       : undefined;
 
+  // Generated abort hooks have independent tokens. User hooks, forced
+  // claims and same-token create/dispose sequences keep the existing path.
+  const createHooks = world.events.createHooks?.bind(world.events);
+  const batchableHooks =
+    isBatchTransitionsEnabled() &&
+    createHooks !== undefined &&
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      ? hooksNeedingCreation.filter(
+          (item) =>
+            item.isSystem === true &&
+            item.token.startsWith('abrt_') &&
+            !item.isWebhook &&
+            !item.force &&
+            !item.disposed &&
+            !item.abortRequested &&
+            item.metadata === undefined &&
+            hookItemsByToken.get(item.token)?.length === 1
+        )
+      : [];
+  const hookBatchById = new Map<string, () => Promise<EventResult>>();
+  for (let offset = 0; offset < batchableHooks.length; offset += 32) {
+    const items = batchableHooks.slice(offset, offset + 32);
+    if (!createHooks || items.length < 2) continue;
+    let pending: Promise<HookBatchResult> | undefined;
+    const start = () => {
+      if (!pending) {
+        eventWrites++;
+        const frontier = eventLog ? maxEventSlot(eventLog.events) : undefined;
+        const registrations: BatchEventRequest[] = items.map((item) => ({
+          event: {
+            eventType: 'hook_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: item.correlationId,
+            eventData: {
+              token: item.token,
+              tokenRetentionUntil: item.tokenRetentionUntil,
+              isSystem: true,
+              isWebhook: false,
+            },
+          },
+        }));
+        pending = reporter
+          .withEventCreate(
+            {
+              requestId,
+              ...(frontier !== undefined ? { eventCount: frontier } : {}),
+            },
+            (params) => createHooks(runId, registrations, params)
+          )
+          .then((batch) => {
+            if (batch.results.length !== items.length) {
+              throw new WorkflowWorldError(
+                'createHooks returned the wrong number of outcomes',
+                { code: 'SCHEMA_VALIDATION' }
+              );
+            }
+            if (
+              eventLog &&
+              batch.events !== undefined &&
+              batch.hasMore === false
+            ) {
+              reportedEvents += absorbSkippedSlotReport(
+                eventLog.events,
+                batch
+              ).added;
+              // Carry forward only when the shared suffix covers every
+              // outcome; any other write still invalidates it at return.
+              if (
+                batch.results.every(
+                  (item) =>
+                    item.error === undefined &&
+                    item.result.event &&
+                    eventLog.events.some(
+                      (event) => event.eventId === item.result.event?.eventId
+                    )
+                )
+              ) {
+                eventLog.cursor = batch.cursor ?? eventLog.cursor;
+                deltaAbsorbed = true;
+              }
+            }
+            return batch;
+          });
+      }
+      return pending;
+    };
+    for (const [index, item] of items.entries()) {
+      hookBatchById.set(item.correlationId, async () => {
+        const outcome = (await start()).results[index];
+        if (outcome.error === undefined) return outcome.result;
+        if (outcome.status === 409 && outcome.error === 'conflict') {
+          throw new EntityConflictError(outcome.message);
+        }
+        if (outcome.status === 410)
+          throw new RunExpiredError(outcome.message, runId);
+        throw new WorkflowWorldError(outcome.message, {
+          status: outcome.status,
+          code: outcome.error,
+        });
+      });
+    }
+  }
+
   const processHookGroup = async (
     items: HookInvocationQueueItem[]
   ): Promise<void> => {
@@ -832,7 +937,8 @@ export async function handleSuspension({
           queueItem,
           requestId,
           sinceCursor: hookDeltaCursor,
-          createEvent: createGuarded,
+          createEvent:
+            hookBatchById.get(queueItem.correlationId) ?? createGuarded,
           world,
           forceClaimVictimWakes,
         });

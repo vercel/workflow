@@ -43,6 +43,7 @@ import {
   type BatchEventRequest,
   type CreateEventBatchParams,
   type CreateEventParams,
+  type CreateHookBatchParams,
   type Event,
   type EventBatchResult,
   type EventDataPayloadField,
@@ -51,6 +52,7 @@ import {
   entityResolveData,
   type GetEventParams,
   getEventDataPayloadField,
+  type HookBatchResult,
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
@@ -659,6 +661,87 @@ export async function createWorkflowRunEventBatch(
         ...(item.wait ? { wait: item.wait } : {}),
       };
     }),
+  };
+}
+
+/** Coalesce system-hook registrations; storage commits remain per hook. */
+export async function createWorkflowRunHooks(
+  runId: string,
+  events: BatchEventRequest[],
+  params?: CreateHookBatchParams,
+  config?: APIConfig
+): Promise<HookBatchResult> {
+  const tokens = new Set<string>();
+  const ids = new Set<string>();
+  if (events.length < 2 || events.length > 32) {
+    throw new WorkflowWorldError('createHooks requires 2–32 registrations', {
+      status: 400,
+    });
+  }
+  for (const { event } of events) {
+    if (
+      event.eventType !== 'hook_created' ||
+      event.eventData.isSystem !== true ||
+      !event.eventData.token.startsWith('abrt_') ||
+      event.eventData.isWebhook ||
+      event.eventData.force ||
+      event.eventData.metadata !== undefined ||
+      tokens.has(event.eventData.token) ||
+      ids.has(event.correlationId)
+    ) {
+      throw new WorkflowWorldError(
+        'createHooks requires distinct, metadata-free system hooks',
+        { status: 400 }
+      );
+    }
+    tokens.add(event.eventData.token);
+    ids.add(event.correlationId);
+  }
+  // One attempt. An ambiguous transport failure redelivers the suspension;
+  // it never falls back to individual writes while siblings may still commit.
+  const wire = await createWorkflowRunEventsBatchV4(
+    {
+      runId,
+      kind: 'hooks',
+      events: events.map(({ event, occurredAt }, index) => {
+        const { payload, meta } = splitEventDataForV4(event);
+        return {
+          runId,
+          eventType: event.eventType,
+          specVersion: event.specVersion ?? 2,
+          correlationId: event.correlationId,
+          occurredAt: occurredAt ?? new Date(),
+          ...(params?.requestId ? { vercelId: params.requestId } : {}),
+          ...(index === 0 && params?.replayDivergenceCount !== undefined
+            ? { replayDivergenceCount: params.replayDivergenceCount }
+            : {}),
+          ...(params?.eventCount !== undefined
+            ? { maxSlot: params.eventCount }
+            : {}),
+          remoteRefBehavior: 'resolve' as const,
+          payload,
+          ...meta,
+        };
+      }),
+    },
+    config
+  );
+  return {
+    results: wire.results.map((item) =>
+      item.error !== undefined
+        ? item
+        : {
+            status: 200 as const,
+            result: item,
+          }
+    ),
+    ...(wire.events !== undefined
+      ? {
+          events: wire.events,
+          cursor: wire.cursor,
+          hasMore: wire.hasMore,
+        }
+      : {}),
   };
 }
 

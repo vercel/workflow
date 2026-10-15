@@ -1267,7 +1267,9 @@ export type CreateEventBatchV4Event = CreateEventV4InputBase & {
 
 export interface CreateEventBatchV4Input {
   runId: string;
-  /** Events in request order: the order they land in the run's log. */
+  /** Hook-only request coalescing, with independent per-hook commits. */
+  kind?: 'hooks';
+  /** Request order. Hook-only registrations may commit in a different order. */
   events: CreateEventBatchV4Event[];
 }
 
@@ -1284,6 +1286,9 @@ export type CreateEventBatchV4ItemResult =
 
 export interface CreateEventBatchV4Result {
   results: CreateEventBatchV4ItemResult[];
+  events?: Event[];
+  cursor?: string | null;
+  hasMore?: boolean;
 }
 
 const BatchItemFailureSchema = z.compile(
@@ -1297,8 +1302,10 @@ const BatchItemFailureSchema = z.compile(
 /**
  * POST /api/v4/runs/:runId/events/batch
  *
- * Appends an ordered batch of events to one run's log in a single durable
- * write with per-event outcomes. The body is the events' single-POST frames
+ * The default kind appends an ordered transactional batch to one run's log.
+ * The hook-only kind coalesces independent registrations and shares their
+ * history catch-up; it does not make the group atomic. Both return per-event
+ * outcomes. The body is the events' single-POST frames
  * back-to-back (byte-identical framing, no batch-level meta); the response is
  * HTTP 200 CBOR `{ results }` whenever the batch was processed, one entry per
  * frame in request order.
@@ -1341,7 +1348,8 @@ export async function createWorkflowRunEventsBatchV4(
     offset += frame.byteLength;
   }
 
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  const batchPath = input.kind === 'hooks' ? 'hooks/batch' : 'batch';
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${batchPath}`;
   // Batch identity attributes (size, per-type shape) live on the
   // world.events.createBatch span (see instrumentObject); this transport
   // span carries only wire-level facts. workflow.event.type is deliberately
@@ -1375,7 +1383,12 @@ export async function createWorkflowRunEventsBatchV4(
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const decoded =
     bodyBytes.byteLength > 0
-      ? (decode(bodyBytes) as { results?: unknown[] })
+      ? (decode(bodyBytes) as {
+          results?: unknown[];
+          events?: unknown;
+          cursor?: unknown;
+          hasMore?: unknown;
+        })
       : {};
   // A 200 MUST carry exactly one outcome per submitted frame, in request
   // order: callers index `results` positionally. A missing / non-array /
@@ -1425,7 +1438,13 @@ export async function createWorkflowRunEventsBatchV4(
       // Results are consumed positionally; an item whose committed event is
       // of a different type than the frame submitted at this index is a
       // server protocol violation, same as a wrong-length results array.
-      if (parsed.data.event.eventType !== eventType) {
+      if (
+        parsed.data.event.eventType !== eventType &&
+        !(
+          input.kind === 'hooks' &&
+          parsed.data.event.eventType === 'hook_conflict'
+        )
+      ) {
         throw new WorkflowWorldError(
           `v4 createEventBatch: result at index ${index} carries a ` +
             `${parsed.data.event.eventType} event, expected ${eventType}`,
@@ -1436,6 +1455,25 @@ export async function createWorkflowRunEventsBatchV4(
     }
   );
 
+  if (input.kind === 'hooks' && decoded.events !== undefined) {
+    const page = z
+      .object({
+        events: z.array(VercelEventWireSchema),
+        cursor: z.string().nullable(),
+        hasMore: z.boolean(),
+      })
+      .safeParse(decoded);
+    if (!page.success) {
+      throw new WorkflowWorldError(
+        'v4 createHooks: invalid shared history page',
+        {
+          code: 'SCHEMA_VALIDATION',
+          cause: page.error,
+        }
+      );
+    }
+    return { results, ...page.data };
+  }
   return { results };
 }
 

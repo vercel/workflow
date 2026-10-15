@@ -6,6 +6,16 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
+## Optional system hook batches
+
+`events.createHooks(runId, registrations, params?)` coalesces 2–32 distinct,
+metadata-free generated system hook registrations. Its per-item outcomes
+represent independent commits, not a group transaction. Implementations must
+settle all launched writes before reporting failure. When returning a shared
+history suffix, use the caller's `eventCount` as the slot frontier and return
+complete ordered history or accurate pagination. An incomplete suffix must
+never be presented as complete. Omit the method to retain individual writes.
+
 ## Stream writer transport lifetime
 
 A stateful `StreamWriteSession` may implement `release()` to retire an idle

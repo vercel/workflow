@@ -38,6 +38,22 @@ It returns `undefined`, and writes stay on HTTP, when the transport is
 disabled or the World cannot hold a socket (a `projectConfig` World, as the
 CLI uses).
 
+## System hook registration batches
+
+The runtime coalesces independent generated cancellation and steering hooks into
+one `POST /v4/runs/:runId/events/hooks/batch` request (2–32 hooks). Each hook
+keeps its existing commit and cross-region recovery protocol; this is not an
+all-or-nothing transaction across the group. The response shares one history
+suffix: consecutive new events need no history query, and intervening writes
+require at most one shared catch-up query. Redis indexing remains awaited.
+
+Deploy the server route before releasing this adapter. The optional
+`world.events.createHooks` method enables the optimization for slot-identity
+runs; worlds without it, legacy runs, and `WORKFLOW_BATCH_TRANSITIONS=0` retain
+individual writes. User hooks, metadata-bearing hooks, forced claims, and
+same-token lifecycle operations retain their existing ordering. A failed batch
+is not retried as individual writes while its outcome may still be unknown.
+
 ## Stream writer sockets
 
 Stream writes upgrade to a WebSocket by default; set
