@@ -53,6 +53,16 @@ implementations must reject `step_started` on terminal runs, including redeliver
 for a step that still has `running` status. In-flight steps may still record
 `step_completed` or `step_failed` after the run ends.
 
+## Committed event cursors
+
+`EventResult.eventCursor` optionally identifies the ascending `events.list`
+position immediately after the returned `event`. The World owns its encoding;
+the runtime must not derive a cursor from an event ID. A committed-event cursor
+does not prove that earlier history is loaded. The Node.js runtime uses it only
+after all concurrent hook registrations settle and their returned events prove
+a complete consecutive suffix of its loaded log. Missing events or cursors keep
+the normal reload path. Registrations use the existing single-event API.
+
 ## Implementation constraint: no mutable module state
 
 A World implementation must not keep mutable state at module scope. Hold it on

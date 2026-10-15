@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+Concurrent independent hook registrations use the existing single-event
+requests. The Node.js runtime defers per-request history catch-up and reconciles
+the committed events after all requests settle. The adapter supplies an optional
+`eventCursor` in Vercel's cursor format and honors resolved hook metadata for this
+path. A consecutive suffix needs no history read; missing or intervening events
+retain the normal reload before continuation. No server upgrade or batch
+registration endpoint is required.
+
 Production workflow backend for Vercel platform deployments.
 
 Integrates with Vercel's infrastructure for storage, queuing, and authentication. Handles workflow persistence and scaling in production environments.

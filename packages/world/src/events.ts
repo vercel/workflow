@@ -1075,6 +1075,14 @@ export interface CreateEventParams {
 export type EventResult<T extends EventType = EventType> = {
   /** The created event (optional for legacy compatibility) */
   event?: Event;
+  /**
+   * Optional ascending events.list cursor immediately after `event`, minted
+   * by the World that owns the cursor format. This does not attest that the
+   * caller holds any earlier events. The runtime may advance to it only after
+   * proving that its loaded prefix plus committed responses covers every slot
+   * through this event. Worlds that omit it retain the normal reload path.
+   */
+  eventCursor?: string;
   /** The workflow run entity (for run_* events) */
   run?: WorkflowRun;
   /** The step entity (for step_* events) */

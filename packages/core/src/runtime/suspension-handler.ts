@@ -12,7 +12,9 @@ import {
   AttributeValidationError,
   type CreateEventParams,
   type CreateEventRequest,
+  type Event,
   type EventResult,
+  eventIdToSlot,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -52,6 +54,7 @@ import {
 import {
   absorbSkippedSlotReport,
   type EventCreator,
+  findEventSlotGap,
   type LoadedEventLog,
   maxEventSlot,
   mergeReportedEvents,
@@ -75,14 +78,17 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
-   * The runtime's loaded event log. Every event creation this suspension makes
-   * names the position it was derived from, so a backend that has recorded
+   * The runtime's loaded event log. Event creations normally name the position
+   * they were derived from, so a backend that has recorded
    * events the replay did not see can report them back on the write, or, if
    * it would rather refuse than report, reject it with a 412. A rejection is
    * not retried here: the event's correlation id was minted by *this* replay's
    * seeded sequence, so re-committing it against a corrected log would persist
    * an event no correct replay produces. The caller restarts the replay
    * instead.
+   * Independent concurrent hook registrations defer advisory catch-up until
+   * all of their existing single-event requests settle; a gap in their returned
+   * committed positions retains the caller's normal reload path.
    *
    * Extended in place by what those writes report back — the events on slots
    * they skipped over, and (on the hook create) the inline delta since its
@@ -308,12 +314,10 @@ export interface SuspensionHandlerResult {
    * committed, so a caller that continues in this process can replay — or
    * resume a retained VM — straight off it with no read.
    *
-   * True only when the hook create's inline delta came back complete and was
-   * folded in (see `hookDeltaCursor` below), and nothing else in this
-   * suspension wrote an event. False whenever a read is needed first: no
-   * delta was asked for or returned, it was truncated, or a step / wait /
-   * attribute / abort write (single or batched) also committed and may not be
-   * in it.
+   * True when a lone hook create returns a complete inline delta, or when
+   * concurrent hook responses prove a complete consecutive suffix. In either
+   * case every write in this suspension must be accounted for. Missing events,
+   * intervening writers, or other suspension writes retain the reload path.
    *
    * Indifferent to which event the create committed: the delta is the slice
    * of the log after the caller's cursor either way, so it carries a
@@ -799,6 +803,40 @@ export async function handleSuspension({
       ? eventLog.cursor
       : undefined;
 
+  // Independent registrations share history reconciliation, not a new write
+  // API. Keep their existing requests parallel, but omit each request's
+  // advisory catch-up position: a sibling's commit is not unknown history.
+  // Actual write fencing, validation, and token ownership remain the World's.
+  // Same-token lifecycle operations and forced claims keep their original path.
+  const concurrentHooks =
+    eventLog && (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      ? hooksNeedingCreation.filter(
+          (item) =>
+            !item.force &&
+            !item.disposed &&
+            !item.abortRequested &&
+            hookItemsByToken.get(item.token)?.length === 1
+        )
+      : [];
+  const hookFrontier =
+    concurrentHooks.length > 1 && eventLog
+      ? maxEventSlot(eventLog.events)
+      : undefined;
+  const concurrentHookIds = new Set(
+    hookFrontier === undefined
+      ? []
+      : concurrentHooks.map((item) => item.correlationId)
+  );
+  const hookResults = new Map<string, EventResult>();
+  const createConcurrentHook: EventCreator = async (data, params) => {
+    eventWrites++;
+    // Replay needs actual metadata bytes, not a lazy payload reference. This
+    // uses the existing single-event API's resolution option.
+    const result = await createEvent(data, { ...params, resolveData: 'all' });
+    if (data.correlationId) hookResults.set(data.correlationId, result);
+    return result;
+  };
+
   const processHookGroup = async (
     items: HookInvocationQueueItem[]
   ): Promise<void> => {
@@ -832,7 +870,9 @@ export async function handleSuspension({
           queueItem,
           requestId,
           sinceCursor: hookDeltaCursor,
-          createEvent: createGuarded,
+          createEvent: concurrentHookIds.has(queueItem.correlationId)
+            ? createConcurrentHook
+            : createGuarded,
           world,
           forceClaimVictimWakes,
         });
@@ -1953,6 +1993,59 @@ export async function handleSuspension({
     await owedVictimWakes;
   }
 
+  // Reconcile only after every write has settled. All responses must match
+  // their requests and fill exactly frontier+1..frontier+N. A missing response,
+  // duplicate old event, or a foreign event between these commits requires the
+  // caller's existing incremental reload; never advance a cursor across a gap.
+  let concurrentHooksCarriedForward = false;
+  if (
+    eventLog &&
+    hookFrontier !== undefined &&
+    concurrentHookIds.size > 1 &&
+    hookResults.size === concurrentHookIds.size &&
+    eventWrites === hookResults.size &&
+    maxEventSlot(eventLog.events) === hookFrontier &&
+    findEventSlotGap(eventLog.events) === undefined
+  ) {
+    const committed: { event: Event; cursor?: string }[] = [];
+    for (const item of concurrentHooks) {
+      const result = hookResults.get(item.correlationId)!;
+      const event = result.event;
+      if (
+        !event ||
+        result.hasMore === true ||
+        event.runId !== runId ||
+        event.correlationId !== item.correlationId ||
+        (event.eventType !== 'hook_created' &&
+          event.eventType !== 'hook_conflict') ||
+        event.eventData.token !== item.token ||
+        (event.eventType === 'hook_created' &&
+          ((event.eventData.metadata !== undefined &&
+            !(event.eventData.metadata instanceof Uint8Array)) ||
+            (item.metadata !== undefined &&
+              event.eventData.metadata === undefined))) ||
+        eventIdToSlot(event.eventId) === null
+      ) {
+        break;
+      }
+      committed.push({ event, cursor: result.eventCursor });
+    }
+    committed.sort((a, b) => a.event.eventId.localeCompare(b.event.eventId));
+    const last = committed.at(-1);
+    if (
+      committed.length === concurrentHookIds.size &&
+      last?.cursor &&
+      committed.every(
+        ({ event }, index) =>
+          eventIdToSlot(event.eventId) === hookFrontier + index + 1
+      )
+    ) {
+      eventLog.events.push(...committed.map(({ event }) => event));
+      eventLog.cursor = last.cursor;
+      concurrentHooksCarriedForward = true;
+    }
+  }
+
   // The hook writes' share of this suspension's wall time: only the stretch
   // they held it after every other write had settled, since until then the
   // suspension was waiting on those writes too.
@@ -2020,10 +2113,10 @@ export async function handleSuspension({
     hookConflictCorrelationIds,
     hasAwaitedHookCreation: awaitedHookCorrelationIds.length > 0,
     awaitedHookCorrelationIds,
-    // The delta accounts for the whole log only if the write that returned it
-    // was this suspension's only one — any other write may have landed above
-    // the delta and be missing from the caller's log.
-    eventLogCarriedForward: deltaAbsorbed && eventWrites === 1,
+    // A lone delta or a proven consecutive suffix must account for every
+    // suspension write; otherwise the caller reloads before continuing.
+    eventLogCarriedForward:
+      (deltaAbsorbed && eventWrites === 1) || concurrentHooksCarriedForward,
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
