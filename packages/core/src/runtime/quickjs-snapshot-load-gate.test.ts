@@ -150,7 +150,7 @@ describe('QuickJS snapshot load gate', () => {
     // so the load gate is what's under test.
     process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
     const { __resetSnapshotLatchesForTests } = await import(
-      './spec9/quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });

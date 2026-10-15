@@ -143,25 +143,27 @@ export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
 
 /**
- * The spec version a World should stamp on the runs it creates: always
- * {@link SPEC_VERSION_CURRENT}.
+ * The spec version a World should stamp on the runs it creates:
+ * {@link SPEC_VERSION_CURRENT}, or {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}
+ * when `WORKFLOW_SPEC_VERSION=8`.
  *
- * There is no opt-out. Earlier releases read `WORKFLOW_SEALED_LOG=0` here to
- * mint slot-identity runs instead of sealed-log runs. The single-orchestrator
- * version requires the sealed log (its fence counts sequencer allocations), and
- * this runtime only implements the single-orchestrator model, so minting a
- * lower version would create runs this runtime does not know how to drive.
- * The variable is no longer read. A deployment that has to stay on an earlier
- * scheme stays on the SDK release that implements it; skew protection keeps
- * every in-flight run on the deployment that created it.
+ * The runtime drives runs of both versions, each with its own orchestrator:
+ * spec 9 runs are kept to one writer by the World's in-band fence, spec 8 runs
+ * allow several orchestrator invocations to write at once and need no fence.
+ * A run keeps the version it was created with, so changing the setting only
+ * affects new runs. Any other value is ignored. Earlier releases read
+ * `WORKFLOW_SEALED_LOG=0` here instead; it is no longer read.
  *
- * Kept a function, and the `env` parameter kept, so Worlds that call it in
- * `createWorld()` keep compiling and keep moving with this package.
+ * A function rather than a constant so a World reads the setting where it is
+ * created.
  */
 export function mintedSpecVersion(
-  _env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env
 ): SpecVersion {
-  return SPEC_VERSION_CURRENT;
+  return env.WORKFLOW_SPEC_VERSION ===
+    String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM)
+    ? SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+    : SPEC_VERSION_CURRENT;
 }
 
 /**

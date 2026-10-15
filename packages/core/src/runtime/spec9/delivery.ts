@@ -75,6 +75,7 @@ import {
 } from '../../workflow.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
+  DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
   getOpenWaitClockSkewMs,
   getReplayDivergenceMaxRetries,
@@ -182,11 +183,7 @@ import {
   runAheadContextFor,
   runAheadHazard,
 } from './run-ahead.js';
-import {
-  DEFAULT_STEP_MAX_RETRIES,
-  executeStep,
-  mayRunBeforeItsStart,
-} from './step-executor.js';
+import { executeStep, mayRunBeforeItsStart } from './step-executor.js';
 import { handleStepMessage } from './step-handler.js';
 import { stepMessageRetentionSeconds } from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
@@ -3712,10 +3709,20 @@ export const spec9Orchestrator: Orchestrator = {
     const loaded = await loadWorkflowRunEvents(runId);
     const writer = new InBandWriter(world, runId);
     writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
-    await writer.create(
-      { eventType: 'run_failed', specVersion: SPEC_VERSION_CURRENT, eventData },
-      { requestId, ...slotSnapshotParams(loaded.events) }
-    );
+    try {
+      await writer.create(
+        {
+          eventType: 'run_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData,
+        },
+        { requestId, ...slotSnapshotParams(loaded.events) }
+      );
+    } catch (err) {
+      if (OrchestratorSupersededError.is(err)) return 'superseded';
+      throw err;
+    }
+    return 'written';
   },
   runDelivery: runSpec9Delivery,
 };

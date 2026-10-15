@@ -99,6 +99,17 @@ describe('spec version constants', () => {
       }
     });
 
+    it('stamps spec 8 when WORKFLOW_SPEC_VERSION=8, and ignores other values', () => {
+      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '8' })).toBe(
+        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+      );
+      for (const raw of ['7', '9', '10', '', 'eight']) {
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw })).toBe(
+          SPEC_VERSION_CURRENT
+        );
+      }
+    });
+
     it('never stamps a version this build cannot read back', () => {
       expect(mintedSpecVersion({})).toBeLessThanOrEqual(
         SPEC_VERSION_MAX_SUPPORTED

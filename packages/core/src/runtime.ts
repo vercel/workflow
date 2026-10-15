@@ -36,7 +36,6 @@ import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
 import { spec8Orchestrator } from './runtime/spec8/delivery.js';
 import { spec9Orchestrator } from './runtime/spec9/delivery.js';
-import { OrchestratorSupersededError } from './runtime/spec9/in-band-writer.js';
 
 import { getWorld } from './runtime/world.js';
 
@@ -386,7 +385,7 @@ export function workflowEntrypoint(
               runId,
               encryptionKey
             );
-            await orchestrator.writeMaxDeliveriesFailure(
+            const written = await orchestrator.writeMaxDeliveriesFailure(
               world,
               runId,
               {
@@ -395,8 +394,7 @@ export function workflowEntrypoint(
               },
               requestId
             );
-          } catch (err) {
-            if (OrchestratorSupersededError.is(err)) {
+            if (written === 'superseded') {
               // Another orchestrator invocation is writing this run, so it
               // is not stuck; leave the run to it and consume this message.
               runLogger.info(
@@ -405,6 +403,7 @@ export function workflowEntrypoint(
               );
               return;
             }
+          } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
               return;

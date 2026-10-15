@@ -68,6 +68,7 @@ import {
   type WorkflowSession,
 } from '../../workflow.js';
 import {
+  DEFAULT_STEP_MAX_RETRIES,
   getOpenWaitClockSkewMs,
   getReplayDivergenceMaxRetries,
   isTurboEnabled,
@@ -139,11 +140,7 @@ import {
   hasOpenWaitDueBy,
   openHookAndWaitState,
 } from './open-hook-wait-state.js';
-import {
-  DEFAULT_STEP_MAX_RETRIES,
-  executeStep,
-  type PreclaimedInlineStart,
-} from './step-executor.js';
+import { executeStep, type PreclaimedInlineStart } from './step-executor.js';
 import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
@@ -4541,6 +4538,7 @@ export const spec8Orchestrator: Orchestrator = {
       },
       { requestId }
     );
+    return 'written';
   },
   runDelivery: runSpec8Delivery,
 };

@@ -34,6 +34,7 @@ import ms from 'ms';
 import { isWorldContractError } from '../classify-error.js';
 import type { WorkflowSuspension } from '../global.js';
 import { type Logger, runtimeLogger } from '../logger.js';
+import type { GuestCodeExecution } from '../serialization/hardened.js';
 import {
   dehydrateRunError,
   hydrateDynamicWorkflowCode,
@@ -52,13 +53,10 @@ import {
 } from './dynamic-workflow.js';
 import { memoizeEncryptionKey } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
-
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
-
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
-import type { SuspensionSerializationBlocker } from './spec9/suspension-handler.js';
 
 type QueueHandler = Parameters<Queue['createQueueHandler']>[1];
 
@@ -104,16 +102,28 @@ export interface Orchestrator {
   countsTowardMaxDeliveries(message: WorkflowInvokePayload): boolean;
   /**
    * Writes the `run_failed` that ends a run past its max queue deliveries.
-   * Throws what the World threw.
+   * Resolves `'superseded'` when another orchestrator invocation is writing
+   * the run, which is then not stuck and is left to it. Otherwise throws what
+   * the World threw.
    */
   writeMaxDeliveriesFailure(
     world: World,
     runId: string,
     eventData: RunFailedEventRequest['eventData'],
     requestId: string | undefined
-  ): Promise<void>;
+  ): Promise<'written' | 'superseded'>;
   /** Runs one delivery of the run's queue message. */
   runDelivery(delivery: WorkflowDelivery): Promise<DeliveryResult>;
+}
+
+/**
+ * A workflow-code execution observed while a suspension serialized its
+ * writes, which keeps the retained VM from being reused (see
+ * `getRetentionDecision`).
+ */
+export interface SuspensionSerializationBlocker extends GuestCodeExecution {
+  source: 'step_input' | 'hook_metadata' | 'hook_abort';
+  correlationId: string;
 }
 
 /** The max-deliveries `run_failed` request. */

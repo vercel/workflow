@@ -479,3 +479,6 @@ export function getOpenWaitClockSkewMs(): number {
  * commits in chunks on the awaited path).
  */
 export const MAX_BATCH_EVENTS = 16;
+
+/** A step's `maxRetries` when its function declares none. */
+export const DEFAULT_STEP_MAX_RETRIES = 3;

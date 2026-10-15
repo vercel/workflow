@@ -16,23 +16,18 @@
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
-  HookNotFoundError,
   MaxEventsExceededError,
   RunExpiredError,
   WorkflowNotRegisteredError,
 } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
+
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
-  type CreateEventParams,
-  type CreateEventRequest,
   type Event,
-  type EventResult,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
-  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
 import { classifyRunError } from '../../classify-error.js';
@@ -40,12 +35,9 @@ import { runtimeLogger } from '../../logger.js';
 import {
   deriveRunPayloadKeys,
   encrypt as encryptSerializedData,
-  type RunPayloadKeys,
 } from '../../serialization/encryption.js';
 import {
   dehydrateRunError,
-  dehydrateStepArguments,
-  dehydrateStepError,
   hydrateRunError,
   maybeEncrypt,
 } from '../../serialization.js';
@@ -61,21 +53,28 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-import {
-  publishForceClaimVictimWake,
-  republishOwedForceClaimVictimWakes,
-} from '../hook-wake.js';
+import { republishOwedForceClaimVictimWakes } from '../hook-wake.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from '../lifecycle-hooks.js';
 import { quickjsWasiVersion } from '../quickjs-assets.generated.js';
+import {
+  type EventCreator,
+  isFirstInvocation,
+  latchOversizedSnapshotRun,
+  listRunLogFrom,
+  noteSnapshotThresholdProgress,
+  oversizedSnapshotRuns,
+  runsBelowSnapshotThreshold,
+  tick,
+  warnOnce,
+} from '../quickjs-delivery-shared.js';
 import { QuickJSLogView } from '../quickjs-log-view.js';
+import { dispatchPendingOps } from '../quickjs-pending-ops.js';
 import {
   BASELINE_BUNDLE_FILENAME,
-  type PendingAttribute,
   type PendingHook,
-  type PendingHookDispose,
   type PendingOperation,
   type PendingStep,
   type PendingWait,
@@ -89,7 +88,6 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getSnapshotThresholdForHandler,
   isSnapshotThresholdConfigured,
@@ -105,45 +103,6 @@ import {
 } from './constants.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
-
-/** An `events.create` bound to the run; see `dispatchPendingOps.createEvent`. */
-type EventCreator = (
-  data: CreateEventRequest,
-  params?: CreateEventParams
-) => Promise<EventResult>;
-
-/** Tiny ms timer using performance.now(), already monotonic on Node. */
-function tick(): number {
-  return performance.now();
-}
-
-/**
- * Returns true when the supplied preloaded events indicate this is the
- * first workflow handler invocation for the run, i.e. the log contains
- * nothing beyond `run_created` / `run_started`. In that case the
- * preloaded events ARE the complete event log and the `events.list`
- * round-trips can be skipped entirely.
- *
- * Crucially, if the world backfilled a missing `run_created` via the
- * resilient start path, `preloadedEvents` contains it even when a fresh
- * `events.list` might not (eventual consistency), so preferring the
- * preloaded events on first invocation is also the more correct choice.
- *
- * Returns false when `preloadedEvents` is missing/empty so the caller
- * falls back to the normal fetch path.
- *
- * Exported for unit testing.
- */
-export function isFirstInvocation(
-  preloadedEvents: readonly Event[] | undefined
-): boolean {
-  if (!Array.isArray(preloadedEvents) || preloadedEvents.length === 0) {
-    return false;
-  }
-  return preloadedEvents.every(
-    (e) => e.eventType === 'run_created' || e.eventType === 'run_started'
-  );
-}
 
 /**
  * Queue a step for background execution via the unified workflow queue
@@ -223,686 +182,6 @@ async function queueStepMessage(params: {
     purpose,
     delaySeconds: delaySeconds ?? 0,
   });
-}
-
-/**
- * Runs whose heap exceeded {@link MAX_SNAPSHOT_PLAINTEXT_BYTES} at some
- * suspension. WASM linear memory never shrinks, so a run that crossed
- * the ceiling once will exceed it at EVERY later suspension — without
- * this latch each of those would re-pay `session.snapshot()` (two full
- * copies of the heap) just to discard the result. Process-local by
- * design: the warm instance replaying the same run repeatedly is where
- * the repeated cost lives; a cold instance pays one probe and re-latches.
- * Bounded defensively (a process rarely sees many distinct oversized
- * runs).
- */
-const oversizedSnapshotRuns = globalSingleton(
-  '@workflow/core//quickjsOversizedSnapshotRuns',
-  1,
-  () => new Set<string>()
-);
-const OVERSIZED_SNAPSHOT_RUNS_MAX = 1024;
-
-function latchOversizedSnapshotRun(runId: string): void {
-  if (oversizedSnapshotRuns.size >= OVERSIZED_SNAPSHOT_RUNS_MAX) {
-    oversizedSnapshotRuns.clear();
-  }
-  oversizedSnapshotRuns.add(runId);
-}
-
-/**
- * Runs this process has observed with a log still below the snapshot
- * threshold at the end of an invocation, and no snapshot restored or
- * saved. A snapshot is only ever saved once a run's log has reached the
- * threshold (the save gate counts every event the saving VM processed),
- * so for these runs the next invocation's `snapshots.load` would be a
- * guaranteed miss: an awaited round-trip on the resume's critical path
- * that short runs, by design, should never pay. The next invocation in
- * this process skips the probe instead.
- *
- * Staleness is safe in the only direction it can go: another instance may
- * have grown the log past the threshold and saved a snapshot since, and
- * skipping the load then costs one full replay (always correct). That
- * invocation sees a log at or above the threshold and clears the entry,
- * so the next one probes again. Bounded like the oversized latch.
- */
-const runsBelowSnapshotThreshold = globalSingleton(
-  '@workflow/core//quickjsRunsBelowSnapshotThreshold',
-  1,
-  () => new Set<string>()
-);
-const RUNS_BELOW_SNAPSHOT_THRESHOLD_MAX = 4096;
-
-function noteSnapshotThresholdProgress(
-  runId: string,
-  belowThreshold: boolean
-): void {
-  if (!belowThreshold) {
-    runsBelowSnapshotThreshold.delete(runId);
-    return;
-  }
-  if (runsBelowSnapshotThreshold.size >= RUNS_BELOW_SNAPSHOT_THRESHOLD_MAX) {
-    runsBelowSnapshotThreshold.clear();
-  }
-  runsBelowSnapshotThreshold.add(runId);
-}
-
-/** Test-only: forget the process-local snapshot latches. */
-export function __resetSnapshotLatchesForTests(): void {
-  oversizedSnapshotRuns.clear();
-  runsBelowSnapshotThreshold.clear();
-}
-
-/**
- * Dispatch durable side effects for a set of pending VM operations:
- * step_created (+ optional queueing), hook_created / hook_received (aborts),
- * attr_set, hook_disposed, and wait_created events.
- *
- * Steps are created but never queued here: queueing (or inline execution)
- * is the caller's decision. Used both for suspension
- * processing (the inline loop) and for the terminal drain (flushing
- * leftover side effects when the workflow completed or failed, mirroring
- * the node:vm engine's drainPendingQueueItems).
- */
-async function dispatchPendingOps(params: {
-  world: Awaited<ReturnType<typeof getWorld>>;
-  runId: string;
-  /**
-   * The seam every event write in this pass goes through. The inline loop
-   * passes a create that names the log position this invocation holds
-   * (`eventCount`) and queues what the World hands back for the live VM; see
-   * {@link QuickJSLogView}. The terminal drain passes a plain create, since
-   * the run is ending and nothing reads its log afterwards.
-   */
-  createEvent: EventCreator;
-  /**
-   * The cursor this invocation's log was read to, when the caller wants a lone
-   * `hook_created` to ask for the inline delta against it (`sinceCursor`).
-   * The hook's awaiters are settled by the event that write commits and by
-   * nothing else (a `hook_created`, or the `hook_conflict` a claimed token
-   * commits instead), so the delta hands the VM that event, plus anything
-   * another writer landed meanwhile, without a listing. Same gate as the node
-   * engine's `hookDeltaCursor`: asked for only when exactly one hook needs
-   * creating, since two creates diffing against one cursor would produce two
-   * deltas of which only the first could be taken. Omitted by the terminal
-   * drain.
-   */
-  deltaCursor?: string;
-  workflowRun: WorkflowRun;
-  encryptionKey: RunPayloadKeys | undefined;
-  pendingOperations: PendingOperation[];
-  /**
-   * Step cids whose `step_created` must NOT be written here: the inline
-   * loop claims these atomically via a lazy `step_started` (carrying the
-   * input), so a concurrent claimant loses with EntityConflictError
-   * instead of both invocations bare-starting the same step.
-   */
-  skipStepCreation?: Set<string>;
-  /** Queue namespace for all message publishes (see runtime.ts). */
-  namespace: string | undefined;
-  /**
-   * Run-origin trace carrier accessor from runtime.ts. In the default
-   * `linked` trace mode this returns the carrier of the run's ORIGIN
-   * context (workflow.start), so every invocation links back to the
-   * start in a star. Capturing the current context here instead would
-   * chain invocations to each other and fragment the run view on async
-   * queues.
-   */
-  nextTraceCarrier: () => Promise<Record<string, string>>;
-  /**
-   * When true (the inline loop), a step carrying `serializationError` is
-   * finalized as step_created (placeholder input) + step_failed so the
-   * live-VM feed rejects the step's promise and workflow code can catch
-   * it, mirroring the node:vm engine's finalizeUnserializableStep. When
-   * false (the terminal drain), such steps are skipped entirely: the run
-   * is already completing/failing, no replay follows the drain to observe
-   * the failure, and a completed run carrying a failed step would read as
-   * a bug from the dashboard, matching the node:vm drain's behavior.
-   */
-  finalizeUnserializableSteps?: boolean;
-  wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
-}): Promise<{
-  createdAttributeEvent: boolean;
-  createdGetConflictHook: boolean;
-  /**
-   * Step cids finalized as failed because their input refused to
-   * serialize (see `finalizeUnserializableSteps`). No execution message
-   * exists for these; the caller must ensure the run observes the
-   * terminal event (the inline loop's feed, or the requeue signal).
-   */
-  failedSerializationStepCids: Set<string>;
-}> {
-  const {
-    world,
-    runId,
-    workflowRun,
-    encryptionKey,
-    pendingOperations,
-    namespace,
-    nextTraceCarrier,
-    createEvent,
-  } = params;
-  const skipStepCreation = params.skipStepCreation;
-  const wfdiag = params.wfdiag;
-  // Step cids finalized as step_created + step_failed because their input
-  // refused to serialize. See the `finalizeUnserializableSteps` param.
-  const failedSerializationStepCids = new Set<string>();
-  // Set when a hook with a parked getConflict() awaiter had its
-  // hook_created written this invocation. The workflow must be re-invoked
-  // so replay can confirm creation and resolve the awaiter.
-  let createdGetConflictHook = false;
-  // Set when a new attr_set event is written this invocation. The
-  // workflow must be re-invoked to consume it (resolving the pending
-  // setAttributes() promise), so the entrypoint requeues immediately,
-  // same pattern as an elapsed wait.
-  let createdAttributeEvent = false;
-  const opsPromises: Promise<void>[] = [];
-  const hooksNeedingCreation = pendingOperations.filter(
-    (op) => op.type === 'hook' && !op.hasCreatedEvent
-  ).length;
-  const hookDeltaCursor =
-    hooksNeedingCreation === 1 ? params.deltaCursor : undefined;
-
-  const processHookOp = async (hook: PendingHook): Promise<void> => {
-    runtimeLogger.debug('QuickJS runtime: processing hook op', {
-      workflowRunId: runId,
-      correlationId: hook.correlationId,
-      token: hook.token,
-      tokenType: typeof hook.token,
-      isWebhook: hook.isWebhook,
-      isSystem: hook.isSystem,
-      hasCreatedEvent: hook.hasCreatedEvent,
-      abortRequested: hook.abortRequested,
-    });
-
-    if (!hook.hasCreatedEvent) {
-      // `hook.metadata` is the format-prefixed devalue bytes
-      // produced by `globalThis[Symbol.for('workflow-serialize')]
-      // (options.metadata)` inside the VM. Encrypt on the host
-      // side before writing, which matches the node:vm engine's
-      // `dehydrateStepArguments` flow.
-      //
-      // No pre-check via hooks.list: with deterministic correlationIds
-      // (same VM seed across replays) and per-(runId, correlationId)
-      // uniqueness in worlds, the storage layer rejects duplicates as
-      // EntityConflictError, which we swallow below. This drops one
-      // network round-trip per pending hook.
-      try {
-        const encryptedMetadata =
-          typeof hook.metadata === 'undefined'
-            ? undefined
-            : await encryptSerializedData(hook.metadata, encryptionKey);
-        const result = await createEvent(
-          {
-            eventType: 'hook_created',
-            specVersion: SPEC8_EVENT_SPEC_VERSION,
-            correlationId: hook.correlationId,
-            eventData: {
-              token: hook.token,
-              tokenRetentionUntil:
-                hook.tokenRetentionUntil === undefined
-                  ? undefined
-                  : new Date(hook.tokenRetentionUntil),
-              metadata: encryptedMetadata,
-              // Always include isWebhook explicitly. Worlds default it to
-              // `true` when absent, which would break the public webhook
-              // endpoint's 404 guard for hooks created via createHook().
-              isWebhook: hook.isWebhook,
-              // System hooks (AbortController) are exempt from user
-              // token namespace conflict checks.
-              ...(hook.isSystem ? { isSystem: true } : {}),
-              ...(hook.force ? { force: true } : {}),
-            } as any,
-          },
-          hookDeltaCursor !== undefined
-            ? { sinceCursor: hookDeltaCursor }
-            : undefined
-        );
-
-        // A forced creation that took the token over: wake the run it was
-        // taken from so its replay reads the hook_disposed the World
-        // journaled there. Same contract as the node:vm suspension handler;
-        // see `publishForceClaimVictimWake`.
-        if (result.hook?.claimedFrom) {
-          const outcome = await publishForceClaimVictimWake(
-            world,
-            runId,
-            result.hook
-          );
-          runtimeLogger.info('Hook token force-claimed from another run', {
-            workflowRunId: runId,
-            hookId: hook.correlationId,
-            victimRunId: result.hook.claimedFrom.runId,
-            victimWake: outcome,
-          });
-        }
-
-        // If storage detected a real token conflict with another
-        // workflow's hook, re-queue so the workflow handler can
-        // process the conflict event and fail gracefully.
-        if (result.event?.eventType === 'hook_conflict') {
-          await queueMessage(
-            world,
-            getWorkflowQueueName(workflowRun.workflowName, namespace),
-            {
-              runId,
-              traceCarrier: await nextTraceCarrier(),
-              requestedAt: new Date(),
-            },
-            { idempotencyKey: `hook_conflict_${hook.correlationId}` }
-          );
-        }
-      } catch (err) {
-        // Already created by a concurrent invocation, so fall through
-        // to abort processing below (if any) instead of bailing.
-        if (!EntityConflictError.is(err)) throw err;
-      }
-      if (hook.hasGetConflictAwaiter) {
-        createdGetConflictHook = true;
-      }
-    }
-
-    if (hook.abortRequested) {
-      // Record the abort durably: a hook_received event carrying
-      // the VM-serialized `{ aborted: true, reason }` payload,
-      // plus a best-effort stream packet for real-time step
-      // propagation. Mirrors the node:vm engine's suspension
-      // handler (hooksNeedingAbort).
-      const abortPayload =
-        hook.abortPayload instanceof Uint8Array
-          ? ((await encryptSerializedData(
-              hook.abortPayload,
-              encryptionKey
-            )) as Uint8Array)
-          : undefined;
-      try {
-        await createEvent({
-          eventType: 'hook_received',
-          specVersion: SPEC8_EVENT_SPEC_VERSION,
-          correlationId: hook.correlationId,
-          eventData: {
-            token: hook.token,
-            payload: abortPayload,
-          } as any,
-        });
-      } catch (err) {
-        if (!EntityConflictError.is(err)) throw err;
-      }
-      // streamName is derived from the abort hook token
-      // (`abrt_{id}` → `strm_{id}_system_abort`).
-      if (hook.token.startsWith('abrt_') && abortPayload) {
-        const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
-        try {
-          await world.streams.write(runId, streamName, abortPayload);
-          await world.streams.close(runId, streamName);
-        } catch {
-          // Best-effort: the hook event provides the durable
-          // fallback.
-          runtimeLogger.debug(
-            'QuickJS runtime: failed to write abort stream packet',
-            {
-              workflowRunId: runId,
-              correlationId: hook.correlationId,
-            }
-          );
-        }
-      }
-      wfdiag('abort_recorded', {
-        correlationId: hook.correlationId,
-        token: hook.token,
-      });
-    }
-  };
-
-  const processHookDisposeOp = async (
-    op: PendingHookDispose
-  ): Promise<void> => {
-    try {
-      await createEvent({
-        eventType: 'hook_disposed',
-        specVersion: SPEC8_EVENT_SPEC_VERSION,
-        correlationId: op.correlationId,
-        // The hook's token, which the node:vm engine has always sent. A world
-        // that keys a hook's token claim separately from the hook itself needs
-        // it to release both, and the only alternative is for it to look the
-        // token up first. Omitted rather than sent as undefined when the op
-        // carries none, so a world that reads it cannot tell the difference
-        // between this engine and a client too old to send one.
-        ...(op.token === undefined ? {} : { eventData: { token: op.token } }),
-      });
-    } catch (err) {
-      if (EntityConflictError.is(err)) return;
-      // Disposing a hook whose entity no longer (or never) exists is an
-      // idempotent no-op: the entity may have been torn down by a
-      // concurrent run cancellation, or the hook may have lost its
-      // token claim to a conflict. There is nothing left to release.
-      if (HookNotFoundError.is(err)) return;
-      throw err;
-    }
-  };
-
-  // Hook operations are grouped by token and processed SEQUENTIALLY in
-  // code order within each group, mirroring the node:vm suspension
-  // handler (hookItemsByToken): a dispose() of an earlier hook must
-  // release the token before a later same-token hook's creation is
-  // validated by the world: parallel dispatch would otherwise record a
-  // spurious hook_conflict against the run's own disposed hook (e.g. a
-  // dispose→recreate loop reusing one token). Different tokens have no
-  // claim interaction, so token groups run in parallel with each other
-  // and with the non-hook ops below.
-  const hookOpsByToken = new Map<
-    string,
-    (PendingHook | PendingHookDispose)[]
-  >();
-  for (const op of pendingOperations) {
-    let key: string | undefined;
-    if (
-      op.type === 'hook' &&
-      (!op.hasCreatedEvent || (op as PendingHook).abortRequested)
-    ) {
-      key = (op as PendingHook).token;
-    } else if (op.type === 'hook_dispose' && !op.hasCreatedEvent) {
-      // Per-op fallback group when the token is unknown: no ordering
-      // guarantees, matching the previous parallel behavior.
-      key = (op as PendingHookDispose).token ?? `__cid:${op.correlationId}`;
-    }
-    if (key === undefined) continue;
-    const group = hookOpsByToken.get(key);
-    if (group) {
-      group.push(op as PendingHook | PendingHookDispose);
-    } else {
-      hookOpsByToken.set(key, [op as PendingHook | PendingHookDispose]);
-    }
-  }
-  const runHookGroup = async (
-    group: (PendingHook | PendingHookDispose)[]
-  ): Promise<void> => {
-    for (const op of group) {
-      if (op.type === 'hook') {
-        await processHookOp(op);
-      } else {
-        await processHookDisposeOp(op);
-      }
-    }
-  };
-  // Token groups run in parallel with every other op, forced creations
-  // included. A forced creation publishes its victim's wake before its group's
-  // next write, but nothing else waits for it, and nothing needs to: a crash
-  // before the wake is repaid by the next replay from the forced
-  // `hook_created` itself, which `forcedCreationsOwingWake` finds wherever it
-  // sits in the log, so no row written after it can hide the debt.
-  for (const group of hookOpsByToken.values()) {
-    opsPromises.push(runHookGroup(group));
-  }
-
-  for (const op of pendingOperations) {
-    if (
-      op.type === 'step' &&
-      !op.hasCreatedEvent &&
-      !skipStepCreation?.has(op.correlationId)
-    ) {
-      const step = op as PendingStep;
-      opsPromises.push(
-        (async () => {
-          // The step's input refused to serialize while dumping the VM's
-          // pending ops (see PendingStep.serializationError). Finalize it
-          // as step_created (placeholder input, since the world requires the
-          // step entity before a terminal event) + step_failed carrying
-          // the SerializationError, so the live-VM feed rejects the
-          // step's promise and workflow code can catch it. Never queue an
-          // execution message for it. Mirrors the node:vm engine's
-          // finalizeUnserializableStep. In the terminal drain
-          // (finalizeUnserializableSteps unset), skip entirely: see the
-          // param docs.
-          if (step.serializationError) {
-            if (!params.finalizeUnserializableSteps) {
-              return;
-            }
-            runtimeLogger.warn(
-              'Step arguments failed to serialize; failing the step so ' +
-                'the workflow can observe the error',
-              {
-                workflowRunId: runId,
-                correlationId: step.correlationId,
-                stepName: step.stepId,
-                error: step.serializationError.message,
-              }
-            );
-            try {
-              await createEvent({
-                eventType: 'step_created',
-                specVersion: SPEC8_EVENT_SPEC_VERSION,
-                correlationId: step.correlationId,
-                eventData: {
-                  stepName: step.stepId,
-                  input: (await dehydrateStepArguments(
-                    unserializableStepInputPlaceholder(),
-                    runId,
-                    encryptionKey,
-                    globalThis,
-                    false,
-                    (workflowRun.specVersion ?? 0) >=
-                      SPEC_VERSION_SUPPORTS_COMPRESSION
-                  )) as Uint8Array,
-                },
-              });
-            } catch (err) {
-              // Concurrent invocation hit the same deterministic failure
-              // and created it first, or the run already finished.
-              if (RunExpiredError.is(err)) return;
-              if (!EntityConflictError.is(err)) throw err;
-            }
-            try {
-              await createEvent({
-                eventType: 'step_failed',
-                specVersion: SPEC8_EVENT_SPEC_VERSION,
-                correlationId: step.correlationId,
-                eventData: {
-                  stepName: step.stepId,
-                  error: await dehydrateStepError(
-                    step.serializationError,
-                    runId,
-                    encryptionKey,
-                    [],
-                    globalThis,
-                    (workflowRun.specVersion ?? 0) >=
-                      SPEC_VERSION_SUPPORTS_COMPRESSION
-                  ),
-                },
-              });
-            } catch (err) {
-              // Step already terminal or run already finished.
-              if (!EntityConflictError.is(err) && !RunExpiredError.is(err)) {
-                throw err;
-              }
-            }
-            failedSerializationStepCids.add(step.correlationId);
-            wfdiag('step_serialization_failed', {
-              stepId: step.stepId,
-              correlationId: step.correlationId,
-            });
-            return;
-          }
-
-          // Create step_created event. `step.input` is the
-          // format-prefixed devalue bytes ("devl" + devalue) produced
-          // by `globalThis[Symbol.for('workflow-serialize')]({args,
-          // closureVars, thisVal})` inside the VM. The VM has no
-          // access to the CryptoKey, so encryption is applied here
-          // on the host side, matching what
-          // `dehydrateStepArguments` does in the node:vm engine.
-          const encryptedInput = await encryptSerializedData(
-            step.input,
-            encryptionKey
-          );
-
-          try {
-            await createEvent({
-              eventType: 'step_created',
-              specVersion: SPEC8_EVENT_SPEC_VERSION,
-              correlationId: step.correlationId,
-              eventData: {
-                stepName: step.stepId,
-                input: encryptedInput,
-              },
-            });
-          } catch (err) {
-            if (EntityConflictError.is(err)) return;
-            throw err;
-          }
-
-          // NOTE: step queueing is otherwise the caller's decision: the
-          // inline loop executes fresh steps in the live VM and only
-          // queues the overflow / retry / backstop cases (see
-          // queueStepMessage).
-        })()
-      );
-    } else if (op.type === 'attribute' && !op.hasCreatedEvent) {
-      const attr = op as PendingAttribute;
-      opsPromises.push(
-        (async () => {
-          try {
-            await createEvent({
-              eventType: 'attr_set',
-              specVersion: SPEC8_EVENT_SPEC_VERSION,
-              correlationId: attr.correlationId,
-              eventData: {
-                changes: attr.changes,
-                writer: { type: 'workflow' },
-                ...(attr.allowReservedAttributes
-                  ? { allowReservedAttributes: true }
-                  : {}),
-              } as any,
-            });
-            createdAttributeEvent = true;
-          } catch (err) {
-            if (EntityConflictError.is(err)) {
-              // Event already exists (concurrent invocation), but the
-              // replay still needs to consume it, so requeue.
-              createdAttributeEvent = true;
-              return;
-            }
-            throw err;
-          }
-        })()
-      );
-    } else if (op.type === 'wait' && !op.hasCreatedEvent) {
-      const wait = op as PendingWait;
-      opsPromises.push(
-        (async () => {
-          try {
-            await createEvent({
-              eventType: 'wait_created',
-              specVersion: SPEC8_EVENT_SPEC_VERSION,
-              correlationId: wait.correlationId,
-              eventData: {
-                resumeAt: new Date(wait.resumeAt),
-              },
-            });
-          } catch (err) {
-            if (EntityConflictError.is(err)) return;
-            throw err;
-          }
-        })()
-      );
-    }
-  }
-
-  // Per-op dispatch runs in parallel.
-  await Promise.all(opsPromises);
-
-  return {
-    createdAttributeEvent,
-    createdGetConflictHook,
-    failedSerializationStepCids,
-  };
-}
-
-/**
- * Run a workflow using the QuickJS WASM VM engine.
- *
- * This replaces the `node:vm` replay path (runWorkflow + EventsConsumer)
- * with a QuickJS VM invocation that performs the same full event replay.
- *
- * Log position on writes. This engine follows the same rule as the node:vm
- * replay loop for which writes tell the World where the writer stood (see the
- * "Who names a position" table above `slotSnapshotParams` in `helpers.ts`):
- *
- * - Writes made from this invocation's view of the log (`step_created`,
- *   `wait_created`, `hook_created`, `hook_disposed`, `attr_set`, the abort
- *   `hook_received`, `wait_completed`, and the `step_created` + `step_failed`
- *   pair for an unserializable input) carry `eventCount`, and the page a
- *   World hands back is queued for the live VM through {@link QuickJSLogView}.
- * - A single inline step's terminal write asks for the inline delta
- *   (`sinceCursor`) through `executeStep`, and so does a lone `hook_created`
- *   (see `dispatchPendingOps.deltaCursor`); the delta is queued the same
- *   way. The step executor's other writes carry nothing: it holds no log.
- * - Run-terminal writes (`run_completed`, `run_failed`) and the terminal drain
- *   of pending ops carry nothing: nothing reads the log afterwards.
- *
- * What differs from the node engine is what "merge into the log" means. The
- * node engine merges a returned page into the array it replays from. This
- * engine holds a live VM that consumes events exactly once, in position
- * order, so a returned page is queued and delivered ahead of the next
- * `events.list`, which then only runs when the queue cannot account for the
- * next position. Both engines fall back to a list for anything a page did
- * not carry.
- */
-/**
- * Read a run's event log in order from `cursor` (the start when `null`) to
- * its end. Returns the events, the cursor after the last page (`cursor` when
- * nothing new was read), and how many pages it took.
- */
-async function listRunLogFrom(
-  world: Awaited<ReturnType<typeof getWorld>>,
-  runId: string,
-  cursor: string | null
-): Promise<{
-  events: Event[];
-  cursor: string | null;
-  pages: number;
-  /** Whether every returned event is covered by the returned cursor. */
-  covered: boolean;
-}> {
-  const events: Event[] = [];
-  let pages = 0;
-  let covered = true;
-  let hasMore = true;
-  while (hasMore) {
-    const response = await world.events.list({
-      runId,
-      pagination: {
-        sortOrder: 'asc',
-        cursor: cursor ?? undefined,
-        limit: 1000,
-      },
-      resolveData: REPLAY_RESOLVE_DATA,
-    });
-    pages++;
-    events.push(...response.data);
-    // Only move on a page that returned a cursor: the final empty page
-    // returns `null`, which would reset the read position.
-    if (response.cursor) {
-      cursor = response.cursor;
-    } else if (response.data.length > 0) {
-      covered = false;
-    }
-    hasMore = response.data.length > 0 && response.cursor != null;
-  }
-  return { events, cursor, pages, covered };
-}
-
-const snapshotWarnings = globalSingleton(
-  '@workflow/core//quickjsSnapshotWarnings',
-  1,
-  () => new Set<string>()
-);
-
-/** Log a snapshot-configuration warning once per process per key. */
-function warnOnce(key: string, log: () => void): void {
-  if (snapshotWarnings.has(key)) return;
-  snapshotWarnings.add(key);
-  log();
 }
 
 export async function runWorkflowWithQuickJS(params: {
@@ -1834,6 +1113,9 @@ export async function runWorkflowWithQuickJS(params: {
       // step-identity-scoped idempotency key makes repeats harmless.
       const overflowSteps = healthySteps.slice(inlineCandidates.length);
       const dispatched = await dispatchPendingOps({
+        eventSpecVersion: SPEC8_EVENT_SPEC_VERSION,
+        stampCreations: false,
+        requeueOnHookConflict: true,
         world,
         runId,
         workflowRun,
@@ -2493,6 +1775,9 @@ export async function runWorkflowWithQuickJS(params: {
     if (result.completed.drainOperations?.length) {
       try {
         await dispatchPendingOps({
+          eventSpecVersion: SPEC8_EVENT_SPEC_VERSION,
+          stampCreations: false,
+          requeueOnHookConflict: true,
           world,
           runId,
           workflowRun,
@@ -2772,6 +2057,9 @@ export async function runWorkflowWithQuickJS(params: {
     if (result.failed.drainOperations?.length) {
       try {
         await dispatchPendingOps({
+          eventSpecVersion: SPEC8_EVENT_SPEC_VERSION,
+          stampCreations: false,
+          requeueOnHookConflict: true,
           world,
           runId,
           workflowRun,

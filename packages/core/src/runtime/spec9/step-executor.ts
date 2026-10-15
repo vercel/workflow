@@ -6,7 +6,6 @@ import {
   SerializationError,
   ThrottleError,
   TooEarlyError,
-  WorkflowRuntimeError,
 } from '@workflow/errors';
 import {
   createWorkflowBaseUrl,
@@ -24,7 +23,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
-import { envNumber } from '@workflow/world/env-config';
+
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -47,7 +46,10 @@ import {
   promoteAbortErrorToFatal,
 } from '../../types.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
-import { isOptimisticInlineStartExplicitlyDisabled } from '../constants.js';
+import {
+  DEFAULT_STEP_MAX_RETRIES,
+  isOptimisticInlineStartExplicitlyDisabled,
+} from '../constants.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import { memoizeEncryptionKey } from '../helpers.js';
 import {
@@ -59,10 +61,12 @@ import {
   type StepLatencyEventData,
   type StepLatencyTracking,
 } from '../step-latency.js';
+import {
+  isClientDisconnectError,
+  settleReleasedStepStreams,
+} from '../step-streams.js';
 import { isUnserializableStepInputPlaceholder } from '../unserializable-step.js';
 import { safeWaitUntil } from '../wait-until.js';
-
-export const DEFAULT_STEP_MAX_RETRIES = 3;
 
 /**
  * Whether a step's body may start before its `step_started` is durable: on
@@ -76,61 +80,6 @@ export function mayRunBeforeItsStart(stepName: string): boolean {
   return (
     (getStepFunction(stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES) > 0
   );
-}
-export const STEP_STREAM_DRAIN_TIMEOUT_MS = 30_000;
-
-export function getStepStreamDrainTimeoutMs(): number {
-  return envNumber(
-    'WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS',
-    STEP_STREAM_DRAIN_TIMEOUT_MS,
-    { integer: true, min: 1 }
-  );
-}
-
-function isClientDisconnectError(error: unknown): boolean {
-  const name = (error as { name?: unknown })?.name;
-  return name === 'AbortError' || name === 'ResponseAborted';
-}
-
-async function settleReleasedStepStreams(
-  states: FlushableStreamState[]
-): Promise<void> {
-  if (states.length === 0) return;
-
-  const timeoutMs = getStepStreamDrainTimeoutMs();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      Promise.all(
-        states.map((state) =>
-          (state.settleReleasedWrites?.() ?? Promise.resolve(false)).catch(
-            (error) => {
-              // A disconnected client may abandon one response stream, but it
-              // must not let that rejection bypass durability waits for other
-              // streams written by the same step.
-              if (!isClientDisconnectError(error)) throw error;
-              return false;
-            }
-          )
-        )
-      ),
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(
-          () =>
-            reject(
-              new WorkflowRuntimeError(
-                `Timed out draining step stream writes after ${timeoutMs}ms`
-              )
-            ),
-          timeoutMs
-        );
-      }),
-    ]);
-  } catch (error) {
-    if (!isClientDisconnectError(error)) throw error;
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
 }
 
 /**

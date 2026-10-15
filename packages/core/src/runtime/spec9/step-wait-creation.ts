@@ -29,9 +29,9 @@ import {
 } from '../../serialization.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import { MAX_BATCH_EVENTS } from '../constants.js';
+import type { SuspensionSerializationBlocker } from '../delivery.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import type { InBandWriter } from './in-band-writer.js';
-import type { SuspensionSerializationBlocker } from './suspension-handler.js';
 
 /** A step this suspension created, and how it executes. */
 export interface CreatedStep {

@@ -291,7 +291,7 @@ async function runToCompletion(options: {
 describe('QuickJS snapshots across many generations', () => {
   beforeEach(async () => {
     const { __resetSnapshotLatchesForTests } = await import(
-      './spec9/quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });

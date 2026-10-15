@@ -2,23 +2,17 @@ import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
   FatalError,
-  HookNotFoundError,
-  PreconditionFailedError,
   RunExpiredError,
-  WorkflowWorldError,
 } from '@workflow/errors';
 import {
-  AttributeValidationError,
   type CreateEventParams,
   type CreateEventRequest,
-  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../../encryption.js';
+
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
@@ -27,15 +21,11 @@ import type {
   WorkflowSuspension,
 } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
-import {
-  GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
-  type GuestCodeExecution,
-  type GuestCodeStats,
-} from '../../serialization/hardened.js';
-import { dehydrateStepArguments } from '../../serialization.js';
+
 import * as Attribute from '../../telemetry/semantic-conventions.js';
-import { getAbortStreamIdFromToken } from '../../util.js';
+
 import type { PendingQueueDrain } from '../../workflow.js';
+import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
@@ -43,11 +33,10 @@ import {
   mergeReportedEvents,
   slotSnapshotParams,
 } from '../helpers.js';
-import {
-  publishForceClaimVictimWake,
-  republishOwedForceClaimVictimWakes,
-} from '../hook-wake.js';
+import { isWorldValidationFailure } from '../hook-creation.js';
+import { republishOwedForceClaimVictimWakes } from '../hook-wake.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
+import { settlePhase, startSuspensionHookWrites } from '../suspension-hooks.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -218,130 +207,6 @@ export interface SuspensionHandlerResult {
   serializationBlockers: SuspensionSerializationBlocker[];
 }
 
-export interface SuspensionSerializationBlocker extends GuestCodeExecution {
-  source: 'step_input' | 'hook_metadata' | 'hook_abort';
-  correlationId: string;
-}
-
-async function createHookEvent({
-  runId,
-  hookEvent,
-  queueItem,
-  requestId,
-  sinceCursor,
-  createEvent,
-  world,
-  forceClaimVictimWakes,
-}: {
-  runId: string;
-  hookEvent: CreateEventRequest;
-  queueItem: HookInvocationQueueItem;
-  requestId?: string;
-  /**
-   * Needed only to wake the run a forced creation took its token from; see
-   * `publishForceClaimVictimWake`.
-   */
-  world: World;
-  /** See {@link SuspensionHandlerParams.forceClaimVictimWakes}. */
-  forceClaimVictimWakes?: Set<string>;
-  /**
-   * Cursor to ask the World for the event-log delta against, or undefined to
-   * not ask. See `hookDeltaCursor` in {@link handleSuspension} for when it is
-   * set and why it is at most one write per suspension.
-   */
-  sinceCursor?: string;
-  createEvent: (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ) => Promise<EventResult>;
-}): Promise<{
-  hasHookConflict: boolean;
-  hasAwaitedHookCreation: boolean;
-}> {
-  try {
-    const result = await createEvent(hookEvent, {
-      requestId,
-      ...(sinceCursor === undefined ? {} : { sinceCursor }),
-    });
-
-    // Check if the world returned a hook_conflict event instead of hook_created.
-    // The hook_conflict event is stored in the event log and is what the next
-    // pass consumes to settle the hook's awaiters — rejecting a payload await,
-    // resolving a `hook.getConflict()` with the conflicting run. An inline
-    // delta asked for above carries it just as it would have carried the
-    // hook_created, so the caller can advance over it without a re-invocation.
-    if (result.event?.eventType === 'hook_conflict') {
-      return {
-        hasHookConflict: true,
-        hasAwaitedHookCreation: false,
-      };
-    }
-
-    // A forced creation that took the token over: the World journaled the
-    // victim's `hook_disposed{forceClaimedBy}` and recorded the victim on the
-    // hook. The victim only reads that row when something invokes it, and the
-    // World has no queue, so the wake is ours to publish. A claimer that dies
-    // before it goes out has left the forced `hook_created` in its log, and
-    // every replay inside the republish window repays it
-    // (`forcedCreationsOwingWake`), whatever else this suspension wrote. See
-    // `publishForceClaimVictimWake` for why a wake that still fails does not
-    // fail the claimer.
-    if (result.hook?.claimedFrom) {
-      forceClaimVictimWakes?.add(result.hook.hookId);
-      const outcome = await publishForceClaimVictimWake(
-        world,
-        runId,
-        result.hook
-      );
-      runtimeLogger.info('Hook token force-claimed from another run', {
-        workflowRunId: runId,
-        hookId: queueItem.correlationId,
-        victimRunId: result.hook.claimedFrom.runId,
-        victimWake: outcome,
-      });
-    }
-
-    return {
-      hasHookConflict: false,
-      hasAwaitedHookCreation: queueItem.hasConflictAwaiter === true,
-    };
-  } catch (err) {
-    if (EntityConflictError.is(err)) {
-      runtimeLogger.info('Hook already exists, continuing', {
-        workflowRunId: runId,
-        message: err.message,
-      });
-      return {
-        hasHookConflict: false,
-        hasAwaitedHookCreation: queueItem.hasConflictAwaiter === true,
-      };
-    }
-
-    if (RunExpiredError.is(err)) {
-      runtimeLogger.info('Workflow run already completed, skipping hook', {
-        workflowRunId: runId,
-        message: err.message,
-      });
-      return {
-        hasHookConflict: false,
-        hasAwaitedHookCreation: false,
-      };
-    }
-
-    if (isWorldValidationFailure(err)) {
-      const fatal = new FatalError(
-        `createHook failed World validation: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
-      fatal.cause = err;
-      throw fatal;
-    }
-
-    throw err;
-  }
-}
-
 /**
  * Handles a workflow suspension by processing all pending operations (hooks, steps, waits).
  * Creates events for all operations but does NOT queue step messages; returns the pending
@@ -383,34 +248,6 @@ export async function handleSuspension({
     eventLog?.events,
     { alreadyWoken: forceClaimVictimWakes }
   );
-
-  /**
-   * Await every operation in a suspension phase before letting a failure
-   * escape, preferring a stale-snapshot (412) rejection when one occurred.
-   *
-   * `Promise.all` rejects as soon as one operation does and leaves its siblings
-   * in flight. That matters for a 412: the caller reacts by reloading the event
-   * log and restarting the replay, so a sibling create that lands after the
-   * rejection escaped commits an event whose correlation id came from the
-   * abandoned replay's seeded sequence (an event the fresh replay never
-   * produces), and it races the restart's reload while doing so. Settling first
-   * makes this phase's write set final before the caller acts on the failure.
-   * It mirrors the runtime's inline step claim, which settles the in-flight
-   * step executions before escalating a 412.
-   *
-   * A 412 is preferred over any other rejection in the same phase because it
-   * has a defined, cheap recovery (replay from a corrected log) while the
-   * others do not. A deterministic failure such as an attribute-validation
-   * `FatalError` recurs on the restart and fails the run then, at the cost of
-   * one extra replay.
-   */
-  const settlePhase = async (ops: Promise<unknown>[]): Promise<void> => {
-    const reasons = (await Promise.allSettled(ops))
-      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-      .map((r) => r.reason);
-    if (reasons.length === 0) return;
-    throw reasons.find((r) => PreconditionFailedError.is(r)) ?? reasons[0];
-  };
 
   // Every suspension write carries replay-recovery telemetry on the first one
   // that commits after replay recovered. All suspension events are
@@ -520,291 +357,27 @@ export async function handleSuspension({
     (item) => !item.hasCreatedEvent
   );
 
-  // Group hook items that need work by token, preserving queue-insertion
-  // (workflow code) order within each token. Operations on one token must
-  // apply in code order: a dispose() of an earlier hook releases the token
-  // before a later same-token hook's creation is validated (otherwise the
-  // new hook records a spurious hook_conflict against the run's own
-  // disposed hook), while a hook created and disposed within the same
-  // suspension is still created before it is disposed. Different tokens
-  // have no claim interaction, so token groups are processed in parallel.
-  const hookItemsByToken = new Map<string, HookInvocationQueueItem[]>();
-  for (const item of allHookItems) {
-    if (item.hasCreatedEvent && !item.disposed) {
-      continue; // already committed and still live: nothing to do
-    }
-    const group = hookItemsByToken.get(item.token);
-    if (group) {
-      group.push(item);
-    } else {
-      hookItemsByToken.set(item.token, [item]);
-    }
-  }
-
-  // Resolve encryption key for this run
-  const rawKey = await world.getEncryptionKeyForRun?.(run);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
-
-  // Gate payload compression on the run's specVersion.
-  const compression =
-    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
-
-  let serializationBlockerCount = 0;
-  const serializationBlockers: SuspensionSerializationBlocker[] = [];
-  async function dehydrateInput(
-    value: unknown,
-    context: Pick<SuspensionSerializationBlocker, 'source' | 'correlationId'>
-  ): Promise<SerializedData> {
-    const stats: GuestCodeStats = { executions: [] };
-    try {
-      return (await dehydrateStepArguments(
-        value,
-        runId,
-        encryptionKey,
-        suspension.globalThis,
-        false,
-        compression,
-        stats
-      )) as SerializedData;
-    } finally {
-      serializationBlockerCount +=
-        stats.totalExecutions ?? stats.executions.length;
-      serializationBlockers.push(
-        ...stats.executions
-          .slice(
-            0,
-            GUEST_CODE_EXECUTION_SAMPLE_LIMIT - serializationBlockers.length
-          )
-          .map((execution) => ({ ...context, ...execution }))
-      );
-    }
-  }
-
-  async function disposeHook(
-    queueItem: HookInvocationQueueItem
-  ): Promise<void> {
-    const hookDisposedEvent: CreateEventRequest = {
-      eventType: 'hook_disposed' as const,
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: queueItem.correlationId,
-      eventData: {
-        token: queueItem.token,
-      },
-    };
-    try {
-      await createGuarded(hookDisposedEvent, { requestId });
-    } catch (err) {
-      if (EntityConflictError.is(err)) {
-        // Hook was already disposed by a concurrent invocation, safe to skip
-        runtimeLogger.info(
-          'Hook already disposed, skipping duplicate disposal',
-          {
-            workflowRunId: runId,
-            correlationId: queueItem.correlationId,
-            message: err.message,
-          }
-        );
-      } else if (RunExpiredError.is(err)) {
-        runtimeLogger.info(
-          'Workflow run already completed, skipping hook disposal',
-          {
-            workflowRunId: runId,
-            correlationId: queueItem.correlationId,
-            message: err.message,
-          }
-        );
-      } else if (HookNotFoundError.is(err)) {
-        // Hook may have already been disposed or never created
-        runtimeLogger.info('Hook not found for disposal, continuing', {
-          workflowRunId: runId,
-          correlationId: queueItem.correlationId,
-          message: err.message,
-        });
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  // Hook outcomes, returned to the caller so it can advance the workflow over
-  // a committed `hook_conflict` (or an awaited `hook_created`) in-process.
-  const hookConflictCorrelationIds: string[] = [];
-  const awaitedHookCorrelationIds: string[] = [];
+  const hookWrites = await startSuspensionHookWrites({
+    suspension,
+    world,
+    run,
+    runId,
+    requestId,
+    allHookItems,
+    hooksNeedingCreation,
+    eventLog,
+    forceClaimVictimWakes,
+    createGuarded,
+    eventSpecVersion: SPEC_VERSION_CURRENT,
+  });
+  const {
+    dehydrateInput,
+    blockers,
+    hookConflictCorrelationIds,
+    awaitedHookCorrelationIds,
+    hookOp,
+  } = hookWrites;
   let hookCreationMs = 0;
-
-  // Ask the hook create for the event-log delta since the cursor the caller's
-  // log was read at. The hook's awaiters are settled by the event this write
-  // commits and by nothing else — a `hook_created` for a clean registration,
-  // a `hook_conflict` when the token was already claimed — so the caller can
-  // continue the workflow in its own process on either outcome, but only over
-  // a log that holds that event, and this write is the one request that can
-  // hand it back together with anything another writer landed in the meantime.
-  // Optional by contract: a World that ignores `sinceCursor` returns no delta
-  // and the caller reads instead.
-  //
-  // Asked for on the single-hook suspension only. Two creates issued from one
-  // snapshot each diff against the same cursor, and only the first delta back
-  // can be folded in (the cursor moves with it), so the log would end up short
-  // of the other's event with nothing to say so.
-  const hookDeltaCursor =
-    hooksNeedingCreation.length === 1 && typeof eventLog?.cursor === 'string'
-      ? eventLog.cursor
-      : undefined;
-
-  const processHookGroup = async (
-    items: HookInvocationQueueItem[]
-  ): Promise<void> => {
-    for (const queueItem of items) {
-      let creationConflicted = false;
-
-      if (!queueItem.hasCreatedEvent) {
-        const hookMetadata =
-          typeof queueItem.metadata === 'undefined'
-            ? undefined
-            : await dehydrateInput(queueItem.metadata, {
-                source: 'hook_metadata',
-                correlationId: queueItem.correlationId,
-              });
-        const hookEvent: CreateEventRequest = {
-          eventType: 'hook_created' as const,
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: queueItem.correlationId,
-          eventData: {
-            token: queueItem.token,
-            tokenRetentionUntil: queueItem.tokenRetentionUntil,
-            metadata: hookMetadata,
-            isWebhook: queueItem.isWebhook ?? false,
-            ...(queueItem.isSystem && { isSystem: true }),
-            ...(queueItem.force && { force: true }),
-          },
-        };
-        const result = await createHookEvent({
-          runId,
-          hookEvent,
-          queueItem,
-          requestId,
-          sinceCursor: hookDeltaCursor,
-          createEvent: createGuarded,
-          world,
-          forceClaimVictimWakes,
-        });
-        if (result.hasHookConflict) {
-          hookConflictCorrelationIds.push(queueItem.correlationId);
-        }
-        if (result.hasAwaitedHookCreation) {
-          awaitedHookCorrelationIds.push(queueItem.correlationId);
-        }
-        creationConflicted = result.hasHookConflict;
-      }
-
-      // Dispose after creation for hooks born and disposed within this
-      // batch. A hook whose creation conflicted was never created, so
-      // there is nothing to dispose.
-      if (queueItem.disposed && !creationConflicted) {
-        await disposeHook(queueItem);
-      }
-    }
-  };
-
-  // Abort requests: resume the hook with the abort payload and write the
-  // stream packet.
-  const abortHook = async (queueItem: HookInvocationQueueItem) => {
-    try {
-      // Dehydrate the abort payload for storage
-      const abortPayload = await dehydrateInput(
-        {
-          aborted: true,
-          reason: queueItem.abortReason,
-        },
-        {
-          source: 'hook_abort',
-          correlationId: queueItem.correlationId,
-        }
-      );
-
-      // Create hook_received event with abort payload
-      await createGuarded({
-        eventType: 'hook_received' as const,
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: queueItem.correlationId,
-        eventData: {
-          token: queueItem.token,
-          payload: abortPayload,
-        },
-      });
-
-      // Write stream cancellation packet for real-time step propagation.
-      // Reuse the same dehydrated payload as the hook event so the reason
-      // round-trips through `dehydrateStepArguments` / `hydrateStepArguments`
-      // (handles DOMException, custom errors, encryption, etc.) instead of
-      // bare JSON.stringify which loses type information and drops undefined.
-      // streamName is set on the queue item at controller construction time
-      // (see workflow/abort-controller.ts).
-      try {
-        const streamName = getAbortStreamIdFromToken(queueItem.token);
-        await world.streams.write(
-          runId,
-          streamName,
-          abortPayload as Uint8Array
-        );
-        await world.streams.close(runId, streamName);
-      } catch {
-        // Best-effort stream write: hook event provides the durable fallback
-        runtimeLogger.debug(
-          'Failed to write abort stream packet, hook event will provide fallback',
-          {
-            workflowRunId: runId,
-            correlationId: queueItem.correlationId,
-          }
-        );
-      }
-    } catch (err) {
-      if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
-        runtimeLogger.info('Workflow run already completed, skipping abort', {
-          workflowRunId: runId,
-          correlationId: queueItem.correlationId,
-          message: err.message,
-        });
-      } else {
-        throw err;
-      }
-    }
-  };
-
-  // Hook writes go out alongside this suspension's step, wait, and attribute
-  // writes rather than ahead of them: they are one more op in the set settled
-  // below. Within the hook writes themselves, token groups apply in code order
-  // (see `hookItemsByToken`) and aborts follow the creations, so a hook created
-  // and aborted in one suspension is created first.
-  //
-  // That includes forced creations. A forced creation publishes its victim's
-  // wake before its token group's next write, but other groups and the step
-  // writes are not held for it. They need not be: a crash before the wake is
-  // repaid by the next replay from the forced `hook_created` itself, which
-  // `forcedCreationsOwingWake` finds wherever it sits in the log, so no row
-  // written after it can hide the debt.
-  const hookGroups = [...hookItemsByToken.values()];
-  const hooksNeedingAbort = allHookItems.filter(
-    (item) => item.abortRequested && !item.disposed
-  );
-  // When the hook groups started and settled, for `hookCreationMs`.
-  let hookGroupsWindow: { startMs: number; endMs?: number } | undefined;
-  const hookOp =
-    hookGroups.length > 0 || hooksNeedingAbort.length > 0
-      ? (async () => {
-          if (hookGroups.length > 0) {
-            const window: { startMs: number; endMs?: number } = {
-              startMs: Date.now(),
-            };
-            hookGroupsWindow = window;
-            await settlePhase(hookGroups.map(processHookGroup));
-            window.endMs = Date.now();
-          }
-          if (hooksNeedingAbort.length > 0) {
-            await settlePhase(hooksNeedingAbort.map(abortHook));
-          }
-        })()
-      : undefined;
 
   // Create step events for steps that don't have them yet.
   // Unlike V1, we do NOT queue step messages from here: the caller
@@ -996,6 +569,7 @@ export async function handleSuspension({
   // The hook writes' share of this suspension's wall time: only the stretch
   // they held it after every other write had settled, since until then the
   // suspension was waiting on those writes too.
+  const hookGroupsWindow = hookWrites.hookGroupsWindow();
   if (hookGroupsWindow?.endMs !== undefined) {
     const blockedFromMs = Math.max(
       hookGroupsWindow.startMs,
@@ -1056,27 +630,10 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
-    serializationBlockerCount,
-    serializationBlockers,
+    serializationBlockerCount: blockers.count,
+    serializationBlockers: blockers.sample,
     reportedEventCount: reportedEvents,
   };
-}
-
-/**
- * Whether an `events.create` rejection is deterministic World validation
- * rather than a transient/storage error. Local Worlds
- * (world-local, world-postgres) throw `AttributeValidationError` directly;
- * remote Worlds surface the equivalent server-side rejection as a
- * `WorkflowWorldError` with HTTP status 400. The name check covers
- * `AttributeValidationError` instances from a different copy of
- * `@workflow/world` than the one this package resolved.
- */
-function isWorldValidationFailure(err: unknown): boolean {
-  if (err instanceof AttributeValidationError) return true;
-  if (err instanceof Error && err.name === 'AttributeValidationError') {
-    return true;
-  }
-  return WorkflowWorldError.is(err) && err.status === 400;
 }
 
 /**

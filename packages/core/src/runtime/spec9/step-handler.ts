@@ -10,6 +10,7 @@ import type {
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { DEFAULT_STEP_MAX_RETRIES } from '../constants.js';
 import {
   getWorkflowQueueName,
   loadWorkflowRunEvents,
@@ -25,11 +26,7 @@ import {
   type StepDeliveryDecision,
   stepDeliveryNeedsLogRead,
 } from './step-delivery.js';
-import {
-  DEFAULT_STEP_MAX_RETRIES,
-  executeStep,
-  failStepForExhaustedRetries,
-} from './step-executor.js';
+import { executeStep, failStepForExhaustedRetries } from './step-executor.js';
 import {
   retryOutlivesMessage,
   stepMessageRetentionSeconds,

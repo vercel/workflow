@@ -205,7 +205,7 @@ describe('QuickJS snapshot lifecycle', () => {
   beforeEach(async () => {
     key = await deriveRunPayloadKeys(rawKey);
     const { __resetSnapshotLatchesForTests } = await import(
-      './spec9/quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });
