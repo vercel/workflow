@@ -5,6 +5,7 @@
     "world",
     "create-world",
     "set-world",
+    "ensure-world-started",
     "get-world-handlers",
     "workflow-entrypoint",
     "health-check"

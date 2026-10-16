@@ -1,0 +1,50 @@
+---
+title: ensureWorldStarted
+description: Start the World once at server boot so a self-hosted World resumes the runs that were in flight when the server stopped.
+type: reference
+summary: Call ensureWorldStarted from a server-startup hook to start a self-hosted World's workers and recover in-flight runs after a restart.
+prerequisites:
+  - /docs/api-reference/workflow-runtime/get-world
+related:
+  - /worlds/postgres
+  - /worlds/local
+---
+
+Calls `start()` on the World that [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) returns, once per process. A self-hosted World starts its background workers in `start()` and re-enqueues every run it finds `pending` or `running` in storage. That is how a run that was sleeping, waiting on a hook, or between steps when the server stopped resumes after a restart. Nothing else triggers this recovery, so call `ensureWorldStarted()` from a hook that runs when the server boots.
+
+```typescript title="instrumentation.ts" lineNumbers
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { ensureWorldStarted } = await import("workflow/runtime");
+    await ensureWorldStarted(); // [!code highlight]
+  }
+}
+```
+
+`workflow/nitro` (and so Nuxt, and Express, Hono, and Fastify on Nitro) registers this call itself for production builds. See [`startWorld`](/docs/configuration/framework-options#workflowstartworld). Other frameworks need the one-time setup shown on the [Postgres World](/worlds/postgres#server-startup) page.
+
+## API signature
+
+### Parameters
+
+This function takes no parameters.
+
+### Returns
+
+`Promise<void>`, which resolves once `start()` has finished.
+
+## Behavior
+
+- **Once per World.** Repeated and concurrent calls share one `start()`, including calls from the separate module copies a bundler creates per layer. A World injected later with [`setWorld()`](/docs/api-reference/workflow-runtime/set-world) is started by the next call.
+- **Never rejects.** A failed start, such as a database that is unreachable at boot, is logged and the next call tries again. Runs stay durable in storage until a start succeeds. Awaiting it is optional: leave it unawaited if the server should accept requests while recovery scans storage.
+- **No-op on Vercel.** The Vercel World has no `start()`: its queue delivers work over HTTP and redelivers interrupted messages itself.
+- **Not deduplicated against direct calls.** Code that calls `world.start()` itself runs a second start. Replace such calls with `ensureWorldStarted()`.
+
+<Callout type="warn">
+Every process that calls `ensureWorldStarted()` re-enqueues every active run in storage, including runs another instance is executing. With several instances sharing one database, each instance's boot repeats that scan and re-enqueues the same runs, so boot-time work grows with the number of instances and the number of active runs. To recover from one instance only, call `ensureWorldStarted()` there and nowhere else (for Nitro, set [`startWorld: false`](/docs/configuration/framework-options#workflowstartworld) on the others).
+</Callout>
+
+## Related functions
+
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world): Resolve the cached World instance.
+- [`setWorld()`](/docs/api-reference/workflow-runtime/set-world): Inject or reset the World instance.

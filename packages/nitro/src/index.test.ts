@@ -11,7 +11,7 @@ type StubOptions = {
   preset?: string;
   rootDir?: string;
   workspaceDir?: string;
-  workflow?: { dirs?: string[]; runtime?: string };
+  workflow?: { dirs?: string[]; runtime?: string; startWorld?: boolean };
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
   };
@@ -40,6 +40,7 @@ function createNitroStub({
       dev,
       externals: externals ?? {},
       handlers: [],
+      plugins: [],
       ...(moduleSideEffects ? { moduleSideEffects } : {}),
       preset,
       rootDir,
@@ -202,6 +203,71 @@ describe('@workflow/nitro transform boundaries', () => {
         transform.transform.call({}, code, siblingId)
       ).resolves.not.toBeNull();
     }
+  });
+});
+
+describe('@workflow/nitro World start plugin', () => {
+  const pluginId = '#workflow/start-world-plugin';
+
+  it('registers a plugin that starts the World in production builds', async () => {
+    const nitro = createNitroStub({ routing: true });
+
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options.plugins).toEqual([pluginId]);
+    const source = nitro.options.virtual[pluginId];
+    expect(source).toContain("import('workflow/runtime')");
+    expect(source).toContain('ensureWorldStarted()');
+    expect(source).not.toContain('vite-ignore');
+  });
+
+  it('does not register the plugin in dev unless startWorld is set', async () => {
+    const dev = createNitroStub({ routing: true, dev: true });
+    await nitroModule.setup(dev);
+    expect(dev.options.plugins).toEqual([]);
+
+    const optedIn = createNitroStub({
+      routing: true,
+      dev: true,
+      workflow: { startWorld: true },
+    });
+    await nitroModule.setup(optedIn);
+    expect(optedIn.options.plugins).toEqual([pluginId]);
+  });
+
+  it('does not register the plugin when startWorld is false', async () => {
+    const nitro = createNitroStub({
+      routing: true,
+      workflow: { startWorld: false },
+    });
+
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options.plugins).toEqual([]);
+  });
+
+  it('never registers the plugin for Vercel deploys', async () => {
+    for (const majorVersion of [2, 3]) {
+      const nitro = createNitroStub({
+        routing: majorVersion === 3,
+        majorVersion,
+        preset: 'vercel',
+        workflow: { startWorld: true },
+      });
+
+      await nitroModule.setup(nitro);
+
+      expect(nitro.options.plugins).toEqual([]);
+    }
+  });
+
+  it('registers the plugin once when setup runs twice', async () => {
+    const nitro = createNitroStub({ routing: true });
+
+    await nitroModule.setup(nitro);
+    await nitroModule.setup(nitro);
+
+    expect(nitro.options.plugins).toEqual([pluginId]);
   });
 });
 

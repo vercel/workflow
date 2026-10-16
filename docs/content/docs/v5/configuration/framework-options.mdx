@@ -74,6 +74,14 @@ Configure Workflow through the Nitro `workflow` module options.
 - Default: `inline` in development, `false` in production
 - Controls source maps for generated workflow bundles.
 
+### `workflow.startWorld`
+
+- Environment override: none
+- Default: `true` for production builds, `false` in development; never applied to Vercel deploys
+- Registers a server plugin that calls [`ensureWorldStarted()`](/docs/api-reference/workflow-runtime/ensure-world-started) at boot, so a self-hosted World (Local, Postgres) starts its workers and resumes the runs that were in flight when the server last stopped.
+- Off in development because a dev server's in-flight runs usually belong to code that has since been edited, and replaying them against the new code fails with a [replay divergence](/docs/errors/replay-divergence). Set it to `true` to recover in development anyway.
+- Set it to `false` to start the World yourself, for example from one instance of a multi-instance deployment.
+
 ## NestJS
 
 Configure Workflow through `WorkflowModule.forRoot()`.

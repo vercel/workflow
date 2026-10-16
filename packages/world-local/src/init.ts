@@ -42,6 +42,9 @@ function getModuleDir(): string | null {
   return null;
 }
 
+/** The version {@link getPackageInfo} reports when package.json is unreadable. */
+export const BUNDLED_VERSION = 'bundled';
+
 /**
  * Returns the package name and version from package.json.
  * The result is cached after the first read.
@@ -71,7 +74,7 @@ export async function getPackageInfo(): Promise<PackageInfo> {
   // Bundled context - package.json not accessible
   packageInfo.cached = {
     name: PACKAGE_NAME,
-    version: 'bundled',
+    version: BUNDLED_VERSION,
   };
   return packageInfo.cached;
 }
@@ -448,6 +451,12 @@ export async function initDataDir(dataDir: string): Promise<void> {
   }
 
   const packageInfo = await getPackageInfo();
+  // A server bundle that inlines this package has no package.json to read, so
+  // the version is the 'bundled' sentinel (see getPackageInfo). There is no
+  // version to compare or record, so the version file is left as it is.
+  if (packageInfo.version === BUNDLED_VERSION) {
+    return;
+  }
   const currentVersion = parseVersion(packageInfo.version);
 
   // Read existing version file

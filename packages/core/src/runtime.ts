@@ -227,6 +227,7 @@ export {
 export {
   createWorld,
   createWorldFromModule,
+  ensureWorldStarted,
   getWorld,
   getWorldHandlers,
   setWorld,
