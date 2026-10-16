@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 5.0.6
+
+### Patch Changes
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Recommend the QuickJS VM with snapshotting on runs that failed with `MAX_EVENTS_EXCEEDED` or `REPLAY_TIMEOUT`
+- Updated dependencies [[`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16)]:
+  - @workflow/world-local@5.1.2
+
 ## 5.0.5
 
 No changes in this release.

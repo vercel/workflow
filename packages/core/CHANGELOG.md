@@ -1,5 +1,24 @@
 # @workflow/core
 
+## 5.2.3
+
+### Patch Changes
+
+- [#4335](https://github.com/vercel/workflow/pull/4335) [`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95) Thanks [@pranaygp](https://github.com/pranaygp)! - Security: remove the `nanoid` dependency (pinned at 5.1.6, affected by [GHSA-28wg-ghj8-5hjv](https://github.com/advisories/GHSA-28wg-ghj8-5hjv)). Default hook tokens now come from a built-in copy of the same generator, so tokens and seeded random values stay identical for runs recorded on earlier versions. Upgrading `nanoid` itself would have changed them, because `nanoid@5.1.16` draws a different number of random bytes per id.
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stamp the default snapshot threshold into QuickJS runs at `start()` so they qualify for the event limit exemption, warn when a run approaches the event limit, and recommend `WORKFLOW_VM=quickjs` in `MAX_EVENTS_EXCEEDED` and `REPLAY_TIMEOUT` errors
+
+- [#4866](https://github.com/vercel/workflow/pull/4866) [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a step's creation is recorded on its `step_started` alone, with no separate `step_created`.
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Preserve `workflowVm` and `snapshotThreshold` from `executionContext` in `hydrateResourceIO` for observability UIs
+
+- [#4819](https://github.com/vercel/workflow/pull/4819) [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ignore events a step or hook writes after its outcome during replay instead of failing the run
+- Updated dependencies [[`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16)]:
+  - @workflow/errors@5.0.5
+  - @workflow/world@5.0.5
+  - @workflow/world-local@5.1.2
+  - @workflow/world-vercel@5.2.3
+
 ## 5.2.2
 
 ### Patch Changes
