@@ -329,6 +329,13 @@ export default {
         addDashboardHandler(nitro, dashboardPath);
       }
 
+      if (
+        !isVercelDeploy &&
+        (nitro.options.workflow?.startWorld ?? !nitro.options.dev)
+      ) {
+        addStartWorldPlugin(nitro);
+      }
+
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/webhook/:token',
@@ -405,6 +412,43 @@ export default {
     }
   },
 } satisfies NitroModule;
+
+const START_WORLD_PLUGIN_VIRTUAL_ID = '#workflow/start-world-plugin';
+
+/**
+ * Register a Nitro server plugin that starts the World once at boot, so a
+ * self-hosted World recovers the runs that were in flight when the server last
+ * stopped. See `ModuleOptions.startWorld`.
+ *
+ * The plugin is a virtual module so every Nitro framework bundles it into the
+ * server output; Nuxt's standalone `.output` does not copy stray files from the
+ * build directory. `workflow/runtime` is a bare import the bundler resolves, so
+ * the plugin shares the runtime copy the flow handler uses. Marking it
+ * `@vite-ignore` would make Node load a second copy from `node_modules` beside
+ * the bundled one, and the dual CJS/ESM load fails with
+ * `ERR_INTERNAL_ASSERTION` in both the plugin and the flow route.
+ *
+ * The plugin does not await the start, so the server listens while recovery
+ * scans storage. `ensureWorldStarted()` logs a failure instead of rejecting;
+ * the `catch` only covers the import itself.
+ */
+function addStartWorldPlugin(nitro: Nitro) {
+  nitro.options.virtual ||= {};
+  nitro.options.virtual[START_WORLD_PLUGIN_VIRTUAL_ID] = /* js */ `
+    export default () => {
+      import('workflow/runtime')
+        .then(({ ensureWorldStarted }) => ensureWorldStarted())
+        .catch((error) => {
+          console.error('[workflow] Failed to load the runtime to start the World:', error);
+        });
+    };
+  `;
+
+  nitro.options.plugins ||= [];
+  if (!nitro.options.plugins.includes(START_WORLD_PLUGIN_VIRTUAL_ID)) {
+    nitro.options.plugins.push(START_WORLD_PLUGIN_VIRTUAL_ID);
+  }
+}
 
 const DASHBOARD_VIRTUAL_ID = '#workflow/dashboard-handler';
 const DEFAULT_DASHBOARD_PATH = '/_workflow';
