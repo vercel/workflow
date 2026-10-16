@@ -30,13 +30,14 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-dynamic-workflow.test.ts
  */
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { getCurrentTest } from '@vitest/runner';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Run, start as rawStart } from '../src/runtime';
-import { getRun, getWorld } from '../src/runtime';
+import { getHookByToken, getRun, getWorld, resumeHook } from '../src/runtime';
 import {
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -403,3 +404,995 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
     ).rejects.toThrow(/at least one registered step/);
   });
 });
+
+/**
+ * Published revisions: bird-survey missions kept as regression coverage for
+ * revision checks, hook disposal, and fan-out.
+ *
+ * The deployment holds only the step catalog and the runner
+ * (`dynamicMissionRun` and friends in `workflows/99_e2e.ts`). The missions
+ * are published after deploy: this runner plays the operator, building each
+ * approved revision and handing it to the unchanged deployment.
+ */
+
+/** Mission A, as the recipe publishes it: every detection gets a review. */
+const REVIEW_ALL_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const detections = await steps.llm({ image: input.image, count: input.count });
+
+  const reviews = await Promise.all(
+    detections.map(async (detection) => {
+      const token = input.reviewTokenPrefix + ":" + detection.id;
+      const review = createHook({ token });
+      await steps.expertReview(detection, token);
+      const verdict = await review;
+      return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+    })
+  );
+
+  const confirmed = reviews.filter((review) => review.confirmed).length;
+  const result = { image: input.image, confirmed, reviews };
+  await steps.notify(input.image + ": " + confirmed + " of " + reviews.length + " confirmed");
+  if (input.parentToken) {
+    await steps.reportToParent(input.parentToken, result);
+  }
+  return result;
+}
+`;
+
+/**
+ * Mission B, published later: confident detections are accepted without a
+ * review, and a review nobody answers in time counts as unconfirmed.
+ */
+const TRIAGE_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const detections = await steps.llm({ image: input.image, count: input.count });
+
+  const reviews = await Promise.all(
+    detections.map(async (detection) => {
+      if (detection.confidence >= input.autoAcceptAbove) {
+        return { ...detection, confirmed: true, reviewedBy: "auto" };
+      }
+      const token = input.reviewTokenPrefix + ":" + detection.id;
+      const review = createHook({ token });
+      try {
+        await steps.expertReview(detection, token);
+        const verdict = await Promise.race([
+          review,
+          sleep(input.reviewTimeout).then(() => null),
+        ]);
+        if (verdict === null) {
+          return { ...detection, confirmed: false, reviewedBy: "timeout" };
+        }
+        return { ...detection, confirmed: verdict.confirmed === true, reviewedBy: "expert" };
+      } finally {
+        // Release the token, so a response after the timeout is refused
+        // instead of resolving a hook nothing reads.
+        review.dispose();
+      }
+    })
+  );
+
+  const confirmed = reviews.filter((review) => review.confirmed).length;
+  const result = { image: input.image, confirmed, reviews };
+  await steps.notify(input.image + ": " + confirmed + " of " + reviews.length + " confirmed");
+  if (input.parentToken) {
+    await steps.reportToParent(input.parentToken, result);
+  }
+  return result;
+}
+`;
+
+/** Alias the source calls -> catalog step name, for both missions. */
+const MISSION_STEPS = {
+  llm: 'detectBirds',
+  expertReview: 'requestExpertReview',
+  notify: 'notify',
+  reportToParent: 'reportToParent',
+};
+
+/** The operator path: an approved, immutable revision of a mission. */
+function publishRevision(
+  missionId: string,
+  revision: number,
+  source: string,
+  {
+    steps = MISSION_STEPS,
+    catalogVersion = 'birds@1',
+  }: { steps?: Record<string, string>; catalogVersion?: string } = {}
+) {
+  return {
+    missionId,
+    revision,
+    source,
+    sourceSha256: createHash('sha256').update(source).digest('hex'),
+    steps,
+    catalogVersion,
+    approval: {
+      approvedBy: 'e2e-operator',
+      approvedAt: new Date().toISOString(),
+    },
+  };
+}
+
+const MISSION_A = publishRevision('review-all', 1, REVIEW_ALL_SOURCE);
+const MISSION_B = publishRevision('triage', 1, TRIAGE_SOURCE);
+
+/** Every event in a run's log, oldest first. */
+async function allRunEvents(runId: string) {
+  const world = await getWorld();
+  const events: { eventType: string }[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await world.events.list({
+      runId,
+      pagination: { limit: 100, cursor, sortOrder: 'asc' },
+    });
+    events.push(...(page.data as { eventType: string }[]));
+    if (!page.cursor || page.cursor === cursor) break;
+    cursor = page.cursor;
+  }
+  return events;
+}
+
+/**
+ * Resume a hook a dynamic mission creates, once it exists.
+ *
+ * Missions create their hooks deep inside a dynamic child, so there is no run
+ * to wait on first: poll the token until it resolves, then resume it once.
+ * When a `parent` is given (the fan-out case, where the runner never learns
+ * the children's run IDs up front), a failed parent is checked against the
+ * unsupported-deployment refusals, so a lane that cannot run dynamic
+ * workflows skips here instead of timing out on a hook that will never exist.
+ */
+async function resumeMissionHook(
+  token: string,
+  payload: unknown,
+  {
+    parent,
+    timeoutMs = 60_000,
+  }: { parent?: Run<unknown>; timeoutMs?: number } = {}
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const hook = await getHookByToken(token);
+      await resumeHook(hook, payload);
+      return hook;
+    } catch (error) {
+      lastError = error;
+    }
+    if (parent && (await parent.status) === 'failed') {
+      try {
+        await parent.returnValue;
+      } catch (error) {
+        skipIfUnsupportedDeployment(error);
+      }
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for hook ${token}. Last error: ${String(lastError)}`
+  );
+}
+
+describeJs(
+  'dynamic workflows: published revisions',
+  { timeout: 120_000 },
+  () => {
+    it('runs a published mission that reviews every detection', async () => {
+      const prefix = `e2e-dynamic-review:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        MISSION_A,
+        { image: 'backyard.jpg', count: 3, reviewTokenPrefix: prefix },
+      ]);
+
+      // Every review waits on its own hook, in parallel; resume them out of
+      // order to show nothing depends on arrival order.
+      const verdicts = [true, false, true];
+      for (const id of [2, 0, 1]) {
+        const hook = await resumeMissionHook(`${prefix}:${id}`, {
+          confirmed: verdicts[id],
+        });
+        expect(hook.runId).toBe(childRunId);
+      }
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toEqual({
+        image: 'backyard.jpg',
+        confirmed: 2,
+        reviews: [
+          {
+            id: 0,
+            species: 'American robin',
+            confidence: 0.97,
+            confirmed: true,
+            reviewedBy: 'expert',
+          },
+          {
+            id: 1,
+            species: 'Blue jay',
+            confidence: 0.62,
+            confirmed: false,
+            reviewedBy: 'expert',
+          },
+          {
+            id: 2,
+            species: 'Northern cardinal',
+            confidence: 0.91,
+            confirmed: true,
+            reviewedBy: 'expert',
+          },
+        ],
+      });
+    });
+
+    it('runs a mission published after deploy that only reviews uncertain detections', async () => {
+      const prefix = `e2e-dynamic-triage:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        MISSION_B,
+        {
+          image: 'feeder.jpg',
+          count: 4,
+          reviewTokenPrefix: prefix,
+          autoAcceptAbove: 0.9,
+          reviewTimeout: '10m',
+        },
+      ]);
+
+      // Detections 1 and 3 are under the threshold; 0 and 2 never get a hook.
+      await resumeMissionHook(`${prefix}:1`, { confirmed: true });
+      await resumeMissionHook(`${prefix}:3`, { confirmed: false });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        image: 'feeder.jpg',
+        confirmed: 3,
+        reviews: [
+          { id: 0, confirmed: true, reviewedBy: 'auto' },
+          { id: 1, confirmed: true, reviewedBy: 'expert' },
+          { id: 2, confirmed: true, reviewedBy: 'auto' },
+          { id: 3, confirmed: false, reviewedBy: 'expert' },
+        ],
+      });
+      await expect(getHookByToken(`${prefix}:0`)).rejects.toThrow(/not found/i);
+    });
+
+    it('closes and disposes a review nobody answers when its timeout fires', async () => {
+      const prefix = `e2e-dynamic-triage:${crypto.randomUUID()}`;
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        MISSION_B,
+        {
+          image: 'porch.jpg',
+          count: 2,
+          reviewTokenPrefix: prefix,
+          autoAcceptAbove: 0.9,
+          reviewTimeout: '2s',
+        },
+      ]);
+
+      // The durable sleep wins the race, so the run completes with no resume.
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        confirmed: 1,
+        reviews: [
+          { id: 0, reviewedBy: 'auto' },
+          { id: 1, confirmed: false, reviewedBy: 'timeout' },
+        ],
+      });
+
+      // The mission disposed the timed-out review's hook itself. Completion
+      // removes a run's remaining hooks without logging a `hook_disposed`, so
+      // this event is the source's dispose(). (Not ordered against
+      // `run_completed`: under load that event can trail the run's result.)
+      const events = await allRunEvents(childRunId);
+      expect(events.map((event) => event.eventType)).toContain('hook_disposed');
+
+      // A late response is refused rather than delivered.
+      await expect(getHookByToken(`${prefix}:1`)).rejects.toThrow(/not found/i);
+    });
+
+    it('gives a revision that differs only in whitespace a new workflow id', async () => {
+      // One confident detection, so both runs finish without a review.
+      const input = {
+        image: 'wire.jpg',
+        count: 1,
+        reviewTokenPrefix: `e2e-dynamic-triage:${crypto.randomUUID()}`,
+        autoAcceptAbove: 0.9,
+        reviewTimeout: '10m',
+      };
+      const reformatted = publishRevision('triage', 2, `${TRIAGE_SOURCE}\n`);
+      const [first, second] = await Promise.all([
+        startParent('dynamicMissionRun', [MISSION_B, input]),
+        startParent('dynamicMissionRun', [reformatted, input]),
+      ]);
+
+      const [a, b] = await Promise.all([
+        awaitChildRun(first.childRunId),
+        awaitChildRun(second.childRunId),
+      ]);
+      expect(a.output).toEqual(b.output);
+      expect(a.record.workflowName).not.toBe(b.record.workflowName);
+    });
+
+    it('refuses a stored revision whose source does not match its recorded hash', async () => {
+      const tampered = {
+        ...MISSION_B,
+        source: TRIAGE_SOURCE.replace('>= input.autoAcceptAbove', '>= 0'),
+      };
+      const parent = await start(await e2e('dynamicMissionRun'), [
+        tampered,
+        { image: 'x.jpg', count: 1, reviewTokenPrefix: 'unused' },
+      ]);
+      await expect(parent.returnValue).rejects.toThrow(
+        /does not match its recorded hash/
+      );
+    });
+
+    it('fans missions out from a static parent and back in through hooks', async () => {
+      const surveyKey = `e2e-dynamic-survey:${crypto.randomUUID()}`;
+      const parent = await start(await e2e('dynamicMissionFanOut'), [
+        MISSION_A,
+        surveyKey,
+        ['north.jpg', 'south.jpg'],
+      ]);
+
+      // Each child mission makes one detection and waits on its review.
+      for (const [index, confirmed] of [true, false].entries()) {
+        const hook = await resumeMissionHook(
+          `${surveyKey}:review:${index}:0`,
+          { confirmed },
+          { parent }
+        );
+        trackRun(getRun(hook.runId), {
+          testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+        });
+      }
+
+      let output: unknown;
+      try {
+        output = await parent.returnValue;
+      } catch (error) {
+        skipIfUnsupportedDeployment(error);
+      }
+      expect(output).toMatchObject({
+        images: 2,
+        confirmed: 1,
+        results: [
+          { image: 'north.jpg', confirmed: 1 },
+          { image: 'south.jpg', confirmed: 0 },
+        ],
+      });
+    });
+  }
+);
+
+/**
+ * The customer-migration procedures in the "Dynamic Workflows" cookbook
+ * recipe. The deployment holds only the migration catalog (a simulated
+ * destination; see `99_e2e.ts`). Both procedures exist only here, published
+ * after deploy, and must converge on the same destination records. Procedure
+ * A appears in the recipe byte-for-byte, and an excerpt of B; keep them in
+ * sync.
+ */
+
+/** Procedure A: account families in parallel, parent-first, one review only where owners disagree. */
+const PARENT_FIRST_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
+
+  const rows = [];
+  let cursor = null;
+  do {
+    const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
+    rows.push(...page.records);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+
+  // A family whose parent links cannot be ordered is rejected; the rest proceed.
+  const familyOf = (row) => row.contract.split("/")[0].toLowerCase();
+  const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
+  const reasons = new Map();
+  const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  const onReportedCycle = new Set();
+  for (const row of byId.values()) {
+    if (row.parentId === null) continue;
+    const parent = byId.get(row.parentId);
+    if (row.parentId === row.id) reject(row, row.id + " is its own parent");
+    else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
+    else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
+    else if (!onReportedCycle.has(row.id)) {
+      const path = [row.id];
+      for (let at = parent; at; at = byId.get(at.parentId)) {
+        if (at.id === row.id) {
+          reject(row, "cycle: " + [...path, row.id].join(" → "));
+          path.forEach((id) => onReportedCycle.add(id));
+          break;
+        }
+        if (path.includes(at.id)) break;
+        path.push(at.id);
+      }
+    }
+  }
+  const rejectedRecords = rows
+    .filter((row) => row.kind === "contact" && !byId.has(row.accountId))
+    .map((row) => ({ id: row.id, reason: row.id + ": account " + row.accountId + " is not in the export" }));
+  const accounts = [...byId.values()].filter((row) => !reasons.has(familyOf(row)));
+  const contacts = rows.filter(
+    (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
+  );
+
+  // This customer's rules: a family is every account under one contract root,
+  // accounts on the same contract are one account, and a contact is one person
+  // per normalized email within a family.
+  const families = new Map();
+  for (const row of byId.values()) {
+    families.set(familyOf(row), [...(families.get(familyOf(row)) || []), row]);
+  }
+
+  function familyOperations(members, owner) {
+    // Parent-first: an account is written only after the account it reports to.
+    // Validation above guarantees every parent is in the family and acyclic.
+    const ordered = [];
+    const visit = (row) => {
+      if (ordered.includes(row)) return;
+      if (row.parentId !== null) visit(byId.get(row.parentId));
+      ordered.push(row);
+    };
+    members.forEach(visit);
+
+    const ops = [];
+    const survivors = new Map();
+    const survivorOf = new Map();
+    for (const row of ordered) {
+      ops.push({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, sources: [row.id] });
+      if (row.parentId) ops.push({ op: "setParent", account: row.id, parent: row.parentId });
+      const survivor = survivors.get(row.contract);
+      if (!survivor) {
+        survivors.set(row.contract, row.id);
+        survivorOf.set(row.id, row.id);
+        continue;
+      }
+      survivorOf.set(row.id, survivor);
+      if (owner) {
+        ops.push({ op: "setOwner", key: survivor, owner }, { op: "setOwner", key: row.id, owner });
+      }
+      ops.push({ op: "mergeAccount", from: row.id, into: survivor });
+    }
+
+    const people = new Map();
+    for (const row of contacts) {
+      if (!survivorOf.has(row.accountId)) continue;
+      const email = row.email.trim().toLowerCase();
+      const person = people.get(email) || { key: row.id, name: row.name, email, sources: [], accounts: [] };
+      person.sources.push(row.id);
+      person.accounts.push(survivorOf.get(row.accountId));
+      people.set(email, person);
+    }
+    for (const person of people.values()) {
+      ops.push({ op: "createContact", key: person.key, name: person.name, email: person.email, sources: person.sources });
+      for (const account of new Set(person.accounts)) {
+        ops.push({ op: "linkContact", contact: person.key, account });
+      }
+    }
+    return ops;
+  }
+
+  async function migrateFamily(family, members) {
+    if (reasons.has(family)) return { group: family, status: "rejected", reasons: reasons.get(family) };
+    const stage = (owner) =>
+      steps.stageChanges({ ...scope, groupKey: family, operations: familyOperations(members, owner) });
+    let plan = await stage();
+    if (plan.conflicts.length > 0) {
+      // Only this family waits for a person; the others carry on.
+      const token = input.tokenPrefix + ":" + family;
+      const review = createHook({ token });
+      try {
+        const owners = plan.conflicts.flatMap((conflict) => conflict.values);
+        await steps.requestApproval({ planId: plan.planId, token, summary: family + ": choose an owner from " + owners.join(", ") });
+        const decision = await review;
+        if (!decision.approved) return { group: family, status: "skipped" };
+        plan = await stage(decision.owner || owners[0]);
+      } finally {
+        review.dispose();
+      }
+    }
+    const result = await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
+    return { group: family, status: "applied", result };
+  }
+
+  const outcomes = await Promise.all([...families].map(([family, members]) => migrateFamily(family, members)));
+  const verification = await steps.verifyChanges({
+    ...scope,
+    results: outcomes.filter((outcome) => outcome.result).map((outcome) => outcome.result),
+  });
+  const results = outcomes.map(({ result, ...row }) => row);
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { results, rejectedRecords, verification } });
+  return { results, rejectedRecords, verification, report };
+}
+`;
+
+/** Procedure B: load everything provisional first, then one reviewed consolidation. */
+const PROVISIONAL_FIRST_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const scope = { migrationId: input.migrationId, destinationId: input.destinationId };
+
+  const rows = [];
+  let cursor = null;
+  do {
+    const page = await steps.readSourcePage({ dataset: input.dataset, cursor });
+    rows.push(...page.records);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+
+  // A family whose parent links cannot be ordered is rejected; the rest proceed.
+  const familyOf = (row) => row.contract.split("/")[0].toLowerCase();
+  const byId = new Map(rows.filter((row) => row.kind === "account").map((row) => [row.id, row]));
+  const reasons = new Map();
+  const reject = (row, reason) => reasons.set(familyOf(row), [...(reasons.get(familyOf(row)) || []), reason]);
+  const onReportedCycle = new Set();
+  for (const row of byId.values()) {
+    if (row.parentId === null) continue;
+    const parent = byId.get(row.parentId);
+    if (row.parentId === row.id) reject(row, row.id + " is its own parent");
+    else if (!parent) reject(row, row.id + ": parent " + row.parentId + " is not in the export");
+    else if (familyOf(parent) !== familyOf(row)) reject(row, row.id + ": parent " + row.parentId + " is in another company");
+    else if (!onReportedCycle.has(row.id)) {
+      const path = [row.id];
+      for (let at = parent; at; at = byId.get(at.parentId)) {
+        if (at.id === row.id) {
+          reject(row, "cycle: " + [...path, row.id].join(" → "));
+          path.forEach((id) => onReportedCycle.add(id));
+          break;
+        }
+        if (path.includes(at.id)) break;
+        path.push(at.id);
+      }
+    }
+  }
+  const rejectedRecords = rows
+    .filter((row) => row.kind === "contact" && !byId.has(row.accountId))
+    .map((row) => ({ id: row.id, reason: row.id + ": account " + row.accountId + " is not in the export" }));
+  const accounts = [...byId.values()].filter((row) => !reasons.has(familyOf(row)));
+  const contacts = rows.filter(
+    (row) => row.kind === "contact" && byId.has(row.accountId) && !reasons.has(familyOf(byId.get(row.accountId)))
+  );
+
+  // 1. Land every valid row as written: provisional, flat, one record per row.
+  const load = await steps.stageChanges({
+    ...scope,
+    groupKey: "load",
+    operations: [
+      ...accounts.map((row) => ({ op: "createAccount", key: row.id, name: row.name, owner: row.owner, status: "provisional", sources: [row.id] })),
+      ...contacts.flatMap((row) => [
+        { op: "createContact", key: row.id, name: row.name, email: row.email.trim().toLowerCase(), sources: [row.id] },
+        { op: "linkContact", contact: row.id, account: row.accountId },
+      ]),
+    ],
+  });
+  const loaded = await steps.applyChanges({ plan: load, idempotencyKey: "apply:" + load.planId });
+
+  // 2. Reconcile the landed records with this customer's rules, as one change.
+  function consolidation(owner) {
+    const ops = [];
+    for (const row of accounts) {
+      if (row.parentId) ops.push({ op: "setParent", account: row.id, parent: row.parentId });
+    }
+    const survivors = new Map();
+    for (const row of accounts) {
+      const survivor = survivors.get(row.contract);
+      if (!survivor) {
+        survivors.set(row.contract, row.id);
+        continue;
+      }
+      if (owner) ops.push({ op: "setOwner", key: survivor, owner }, { op: "setOwner", key: row.id, owner });
+      ops.push({ op: "mergeAccount", from: row.id, into: survivor });
+    }
+    const people = new Map();
+    for (const row of contacts) {
+      const identity = familyOf(byId.get(row.accountId)) + ":" + row.email.trim().toLowerCase();
+      const person = people.get(identity);
+      if (person) ops.push({ op: "mergeContact", from: row.id, into: person });
+      else people.set(identity, row.id);
+    }
+    for (const key of survivors.values()) ops.push({ op: "markFinal", key });
+    return ops;
+  }
+  const stage = (owner) =>
+    steps.stageChanges({ ...scope, groupKey: "consolidation", operations: consolidation(owner), dependsOn: [load] });
+  let plan = await stage();
+
+  // 3. One review for the whole consolidation, not one per family.
+  const token = input.tokenPrefix + ":consolidation";
+  const review = createHook({ token });
+  let decision;
+  try {
+    const owners = plan.conflicts.flatMap((conflict) => conflict.values);
+    await steps.requestApproval({ planId: plan.planId, token, summary: plan.operations.length + " changes; owners to choose from: " + owners.join(", ") });
+    decision = await review;
+    if (decision.approved && plan.conflicts.length > 0) plan = await stage(decision.owner || owners[0]);
+  } finally {
+    review.dispose();
+  }
+
+  // 4. Apply only what was approved, then check the destination either way.
+  const applies = [loaded];
+  if (decision.approved) {
+    applies.push(await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId }));
+  }
+  const verification = await steps.verifyChanges({ ...scope, results: applies });
+  const results = [
+    ...[...reasons].map(([group, why]) => ({ group, status: "rejected", reasons: why })),
+    { group: "load", status: "applied", planId: load.planId },
+    { group: "consolidation", status: decision.approved ? "applied" : "skipped", planId: plan.planId },
+  ];
+  const report = await steps.publishReport({ migrationId: input.migrationId, results: { results, rejectedRecords, verification } });
+  return { results, rejectedRecords, verification, report };
+}
+`;
+
+/** Changes a staged plan before applying it, which the adapter must refuse. */
+const TAMPERED_PLAN_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  const plan = await steps.stageChanges({
+    migrationId: input.migrationId,
+    destinationId: input.destinationId,
+    groupKey: "tampered",
+    operations: [{ op: "createAccount", key: "acct-a", name: "A", owner: "dana", sources: [] }],
+  });
+  plan.operations.push({ op: "createAccount", key: "acct-b", name: "B", owner: "dana", sources: [] });
+  return await steps.applyChanges({ plan, idempotencyKey: "apply:" + plan.planId });
+}
+`;
+
+/** Stages a parent cycle directly, which the adapter must refuse on its own. */
+const PARENT_CYCLE_SOURCE = `
+async function workflow(input) {
+  "use workflow";
+  return await steps.stageChanges({
+    migrationId: input.migrationId,
+    destinationId: input.destinationId,
+    groupKey: "cycle",
+    operations: [
+      { op: "createAccount", key: "acct-a", name: "A", owner: "dana", sources: [] },
+      { op: "createAccount", key: "acct-b", name: "B", owner: "dana", sources: [] },
+      { op: "setParent", account: "acct-a", parent: "acct-b" },
+      { op: "setParent", account: "acct-b", parent: "acct-a" },
+    ],
+  });
+}
+`;
+
+const MIGRATION_CATALOG_STEPS = Object.fromEntries(
+  [
+    'readSourcePage',
+    'lookupDestination',
+    'stageChanges',
+    'requestApproval',
+    'applyChanges',
+    'verifyChanges',
+    'publishReport',
+  ].map((name) => [name, name])
+);
+
+const publishProcedure = (id: string, source: string) =>
+  publishRevision(id, 1, source, {
+    steps: MIGRATION_CATALOG_STEPS,
+    catalogVersion: 'crm-migration@1',
+  });
+
+const PROCEDURE_A = publishProcedure('acme-parent-first', PARENT_FIRST_SOURCE);
+const PROCEDURE_B = publishProcedure(
+  'acme-provisional-first',
+  PROVISIONAL_FIRST_SOURCE
+);
+
+function migrationInput() {
+  const id = crypto.randomUUID();
+  return {
+    dataset: 'synthetic-crm-v1',
+    migrationId: `migration-${id}`,
+    destinationId: `destination-${id}`,
+    tokenPrefix: `e2e-migration:${id}`,
+  };
+}
+
+/** Wait until a hook exists for `token`, without resuming it. */
+async function waitForMissionHook(token: string, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await getHookByToken(token);
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `No hook ${token} after ${timeoutMs}ms: ${String(lastError)}`
+  );
+}
+
+/** How many `applyChanges` calls a run has completed so far. */
+async function completedApplies(runId: string) {
+  const world = await getWorld();
+  const page = await world.steps.list({
+    runId,
+    pagination: { limit: 100, sortOrder: 'asc' },
+    resolveData: 'none',
+  });
+  return page.data.filter(
+    (step) =>
+      step.stepName.endsWith('//applyChanges') && step.status === 'completed'
+  ).length;
+}
+
+/** The destination records both procedures must end with. */
+const MIGRATED_ACCOUNTS = [
+  { key: 'acct-acme', parent: null, owner: 'dana', status: 'final' },
+  {
+    key: 'acct-acme-east',
+    parent: 'acct-acme',
+    owner: 'dana',
+    status: 'final',
+  },
+  {
+    key: 'acct-acme-west',
+    parent: 'acct-acme',
+    owner: 'dana',
+    status: 'final',
+  },
+  { key: 'acct-globex', parent: null, owner: 'lee', status: 'final' },
+  {
+    key: 'acct-initech',
+    parent: null,
+    owner: 'sam',
+    status: 'final',
+    sources: ['acct-initech', 'acct-initech-ltd'],
+  },
+];
+const MIGRATED_CONTACTS = [
+  {
+    key: 'ct-ada-east',
+    email: 'ada@acme.com',
+    accounts: ['acct-acme-east', 'acct-acme-west'],
+    sources: ['ct-ada-east', 'ct-ada-west'],
+  },
+  { key: 'ct-info-globex', accounts: ['acct-globex'] },
+  { key: 'ct-info-initech', accounts: ['acct-initech'] },
+];
+
+/** Every family in `synthetic-crm-invalid`, in export order. */
+const INVALID_PARENT_FAMILIES = [
+  { group: 'c-100', status: 'applied' },
+  {
+    group: 'c-400',
+    status: 'rejected',
+    reasons: ['acct-self is its own parent'],
+  },
+  {
+    group: 'c-500',
+    status: 'rejected',
+    reasons: ['cycle: acct-loop-a → acct-loop-b → acct-loop-a'],
+  },
+  {
+    group: 'c-600',
+    status: 'rejected',
+    reasons: ['acct-stray: parent acct-missing is not in the export'],
+  },
+  {
+    group: 'c-700',
+    status: 'rejected',
+    reasons: ['acct-cross: parent acct-acme is in another company'],
+  },
+];
+const INVALID_PARENT_RECORDS = [
+  {
+    id: 'ct-orphan',
+    reason: 'ct-orphan: account acct-gone is not in the export',
+  },
+];
+
+describeJs(
+  'dynamic workflows: customer migration recipe',
+  { timeout: 120_000 },
+  () => {
+    it('procedure A finishes independent families while one waits for review', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_A,
+        input,
+      ]);
+
+      const hook = await waitForMissionHook(`${input.tokenPrefix}:c-300`);
+      expect(hook.runId).toBe(childRunId);
+      // Acme and Globex apply while Initech is still waiting for a person.
+      const deadline = Date.now() + 30_000;
+      while (
+        (await completedApplies(childRunId)) < 2 &&
+        Date.now() < deadline
+      ) {
+        await sleep(250);
+      }
+      expect(await completedApplies(childRunId)).toBe(2);
+      expect((await readRunRecord(childRunId)).status).not.toBe('completed');
+
+      await resumeHook(hook, { approved: true, owner: 'sam' });
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        results: [
+          { group: 'c-100', status: 'applied' },
+          { group: 'c-200', status: 'applied' },
+          { group: 'c-300', status: 'applied' },
+        ],
+        verification: {
+          ok: true,
+          violations: [],
+          counts: { accounts: 5, contacts: 3, provisional: 0 },
+          accounts: MIGRATED_ACCOUNTS,
+          contacts: MIGRATED_CONTACTS,
+        },
+      });
+    });
+
+    it('procedure A leaves a rejected family out and migrates the rest', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_A,
+        input,
+      ]);
+      await resumeMissionHook(`${input.tokenPrefix}:c-300`, {
+        approved: false,
+      });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        results: [
+          { group: 'c-100', status: 'applied' },
+          { group: 'c-200', status: 'applied' },
+          { group: 'c-300', status: 'skipped' },
+        ],
+        verification: {
+          ok: true,
+          accounts: MIGRATED_ACCOUNTS.slice(0, 4),
+          contacts: MIGRATED_CONTACTS.slice(0, 2),
+        },
+      });
+    });
+
+    it('procedure B, published later, loads provisionally and converges after one review', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_B,
+        input,
+      ]);
+
+      const hook = await waitForMissionHook(
+        `${input.tokenPrefix}:consolidation`
+      );
+      // Every row has already landed provisionally; nothing is consolidated.
+      expect(await completedApplies(childRunId)).toBe(1);
+
+      await resumeHook(hook, { approved: true, owner: 'sam' });
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        results: [
+          { group: 'load', status: 'applied' },
+          { group: 'consolidation', status: 'applied' },
+        ],
+        verification: {
+          ok: true,
+          violations: [],
+          counts: { accounts: 5, contacts: 3, provisional: 0 },
+          accounts: MIGRATED_ACCOUNTS,
+          contacts: MIGRATED_CONTACTS,
+        },
+      });
+    });
+
+    it('procedure B reports provisional records when the consolidation is rejected', async () => {
+      const input = migrationInput();
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_B,
+        input,
+      ]);
+      await resumeMissionHook(`${input.tokenPrefix}:consolidation`, {
+        approved: false,
+      });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        results: [
+          { group: 'load', status: 'applied' },
+          { group: 'consolidation', status: 'skipped' },
+        ],
+        verification: {
+          ok: false,
+          counts: { accounts: 6, contacts: 4, provisional: 6 },
+        },
+      });
+    });
+
+    it('rejects families whose parents cannot be ordered and migrates the rest', async () => {
+      const input = { ...migrationInput(), dataset: 'synthetic-crm-invalid' };
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_A,
+        input,
+      ]);
+
+      // Acme has no owner conflict, so the run finishes without a review.
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        results: INVALID_PARENT_FAMILIES,
+        rejectedRecords: INVALID_PARENT_RECORDS,
+        verification: {
+          ok: true,
+          violations: [],
+          accounts: MIGRATED_ACCOUNTS.slice(0, 3),
+          contacts: MIGRATED_CONTACTS.slice(0, 1),
+        },
+      });
+    });
+
+    it('procedure B rejects the same families before it loads anything', async () => {
+      const input = { ...migrationInput(), dataset: 'synthetic-crm-invalid' };
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        PROCEDURE_B,
+        input,
+      ]);
+      await resumeMissionHook(`${input.tokenPrefix}:consolidation`, {
+        approved: true,
+      });
+
+      const child = await awaitChildRun(childRunId);
+      expect(child.output).toMatchObject({
+        results: [
+          ...INVALID_PARENT_FAMILIES.slice(1),
+          { group: 'load', status: 'applied' },
+          { group: 'consolidation', status: 'applied' },
+        ],
+        rejectedRecords: INVALID_PARENT_RECORDS,
+        verification: {
+          ok: true,
+          violations: [],
+          counts: { accounts: 3, contacts: 1, provisional: 0 },
+          accounts: MIGRATED_ACCOUNTS.slice(0, 3),
+          contacts: MIGRATED_CONTACTS.slice(0, 1),
+        },
+      });
+    });
+
+    it('refuses a plan that would create a parent cycle', async () => {
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        publishProcedure('parent-cycle', PARENT_CYCLE_SOURCE),
+        migrationInput(),
+      ]);
+      const child = trackRun(getRun(childRunId), {
+        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+      });
+      await expect(child.returnValue).rejects.toThrow(
+        /acct-b -> acct-a would create a parent cycle/
+      );
+    });
+
+    it('refuses a plan changed after it was staged', async () => {
+      const { childRunId } = await startParent('dynamicMissionRun', [
+        publishProcedure('tampered', TAMPERED_PLAN_SOURCE),
+        migrationInput(),
+      ]);
+      const child = trackRun(getRun(childRunId), {
+        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+      });
+      await expect(child.returnValue).rejects.toThrow(
+        /changed after it was staged/
+      );
+    });
+  }
+);

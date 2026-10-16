@@ -58,6 +58,7 @@ export const slugToCategory: Record<string, string> = {
 
   // Advanced
   'child-workflows': 'advanced',
+  'dynamic-workflows': 'advanced',
   'distributed-abort-controller': 'advanced',
   'upgrading-workflows': 'advanced',
   'serializable-steps': 'advanced',
@@ -184,6 +185,14 @@ export const recipes: Record<string, Recipe> = {
     description:
       'Spawn and orchestrate child workflows from a parent, waiting for completion via hook resume and handling partial failures.',
     category: 'advanced',
+  },
+  'dynamic-workflows': {
+    slug: 'dynamic-workflows',
+    title: 'Dynamic Workflows',
+    description:
+      'Run a customer-specific migration procedure, written and approved after deploy, as a durable workflow over a fixed catalog of deployed steps.',
+    category: 'advanced',
+    skipVersions: ['v4'],
   },
   'distributed-abort-controller': {
     slug: 'distributed-abort-controller',
