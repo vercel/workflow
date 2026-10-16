@@ -1,5 +1,18 @@
 # @workflow/web-shared
 
+## 5.0.6
+
+### Patch Changes
+
+- [#4866](https://github.com/vercel/workflow/pull/4866) [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a step's creation is recorded on its `step_started` alone, with no separate `step_created`.
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `getRunLimitGuidance()` for runs that failed with `MAX_EVENTS_EXCEEDED` or `REPLAY_TIMEOUT`, and show the run's workflow VM in the sidebar
+
+- [#4819](https://github.com/vercel/workflow/pull/4819) [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ignore events a step or hook writes after its outcome during replay instead of failing the run
+- Updated dependencies [[`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a)]:
+  - @workflow/core@5.2.3
+  - @workflow/world@5.0.5
+
 ## 5.0.5
 
 ### Patch Changes
