@@ -35,6 +35,11 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
+import {
+  cacheHookLookup,
+  evictHookLookup,
+  getCachedHookLookup,
+} from './hook-lookup-cache.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
 import { HookInvocationResultSchema } from './invocations.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -332,9 +337,12 @@ export type ResumedHook = Hook & {
  * event. Event and response persistence may be separate backend operations.
  *
  * Prefer passing the token string over a cached {@link Hook} object. A token
- * is looked up fresh, so the live backend can attest its atomic resume claim
- * and the durable write becomes idempotent-on-retry (transport retries of the
- * same write converge on one event). A supplied Hook object may carry a stale
+ * is resolved by a recent by-token lookup (reused for repeated resumes of the
+ * same token for up to `WORKFLOW_HOOK_LOOKUP_CACHE_TTL_MS`, and retried fresh
+ * if the reused hook turns out to be gone), so the live backend can attest
+ * its atomic resume claim and the durable write becomes idempotent-on-retry
+ * (transport retries of the same write converge on one event). A supplied
+ * Hook object may carry a stale
  * attestation, so it is deliberately ignored and the write is claim-less —
  * meaning a lost response cannot be retried safely: retrying at the
  * application level mints a fresh claim and can commit a second
@@ -435,6 +443,15 @@ const MAX_FORCE_CLAIM_REDIRECTS = 3;
 // them, always within this module copy.
 const notFoundReasons = new WeakMap<object, 'lookup' | 'not-webhook'>();
 
+/**
+ * Errors from an attempt that resumed a hook out of the by-token lookup
+ * cache and was refused because that hook is gone. The redirect loop retries
+ * those once with a fresh lookup instead of surfacing them.
+ */
+// per-copy-ok: written by `resumeHookAttempt` and read by the loop in
+// `resumeHookImpl` around one error object, always within this module copy.
+const staleCachedLookups = new WeakSet<object>();
+
 async function resumeHookImpl<T = any>(
   tokenOrHook: string | ResumableHook,
   payload: T,
@@ -488,6 +505,11 @@ async function resumeHookImpl<T = any>(
       // after a redirect.
       let lookupsAfterRedirect = 0;
       const MAX_LOOKUPS_AFTER_REDIRECT = 5;
+      // A token resume may start from a cached by-token lookup (see
+      // hook-lookup-cache.ts). If the cached hook turns out to be gone, the
+      // resume is retried once against a fresh lookup; every attempt after
+      // that looks the token up fresh.
+      let allowCachedLookup = true;
       // One logical resume, one resumeId, whichever run it ends up in. The
       // per-run (runId, resumeId) claim then dedups a retry of the redirected
       // write exactly as it dedups a retry of a plain one.
@@ -518,7 +540,8 @@ async function resumeHookImpl<T = any>(
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            webhookOnly,
+            allowCachedLookup
           );
         } catch (err) {
           if (
@@ -528,6 +551,24 @@ async function resumeHookImpl<T = any>(
           ) {
             throw err;
           }
+          if (
+            allowCachedLookup &&
+            err !== null &&
+            typeof err === 'object' &&
+            staleCachedLookups.has(err)
+          ) {
+            // Not a redirect: the cached lookup was simply out of date and
+            // nothing was written. Same logical resume (same resumeId), now
+            // against whoever holds the token. The caller's key, if any, was
+            // meant for the run the stale entry named.
+            allowCachedLookup = false;
+            span?.setAttributes({ 'workflow.hook.lookup_cache_stale': true });
+            target = token;
+            fresh = true;
+            keyOverride = undefined;
+            continue;
+          }
+          allowCachedLookup = false;
           if (redirects >= MAX_FORCE_CLAIM_REDIRECTS) {
             if (HookForceClaimedError.is(err)) {
               // Every hop found the token already moved on again. Nothing was
@@ -643,19 +684,37 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  webhookOnly: boolean,
+  allowCachedLookup: boolean
 ): Promise<ResumedHook> {
+  let usedCachedLookup = false;
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
     let hook: ResumableHook;
     if (suppliedToken) {
-      try {
-        hook = await world.hooks.getByToken(tokenOrHook);
-      } catch (lookupError) {
-        if (HookNotFoundError.is(lookupError)) {
-          notFoundReasons.set(lookupError, 'lookup');
+      // A cached lookup is only used where a stale one can be retried
+      // transparently: never for a `Request` payload, whose body the failed
+      // write would already have consumed (see `assertResendable`).
+      const cached =
+        allowCachedLookup && !(payload instanceof Request)
+          ? getCachedHookLookup(world, tokenOrHook)
+          : undefined;
+      if (cached) {
+        // A copy, so the lazy-metadata wrap below never mutates the entry.
+        hook = { ...cached };
+        usedCachedLookup = true;
+        span?.setAttributes({ 'workflow.hook.lookup_cached': true });
+      } else {
+        try {
+          const looked = await world.hooks.getByToken(tokenOrHook);
+          cacheHookLookup(world, tokenOrHook, { ...looked });
+          hook = looked;
+        } catch (lookupError) {
+          if (HookNotFoundError.is(lookupError)) {
+            notFoundReasons.set(lookupError, 'lookup');
+          }
+          throw lookupError;
         }
-        throw lookupError;
       }
     } else {
       hook = tokenOrHook;
@@ -985,6 +1044,22 @@ async function resumeHookAttempt<T = any>(
 
     return asLazyMetadataHook(hook) satisfies ResumedHook;
   } catch (err) {
+    if (usedCachedLookup && typeof tokenOrHook === 'string') {
+      // Whatever failed, the next resume of this token looks it up fresh.
+      evictHookLookup(world, tokenOrHook);
+      // A refusal that means "this hook is gone" committed nothing, so the
+      // caller's loop may retry this resume once against a fresh lookup. (A
+      // takeover refusal needs no mark: the loop's redirect handling already
+      // follows it with a fresh lookup, and the eviction above makes sure
+      // that lookup is not served from the cache.)
+      if (
+        err !== null &&
+        typeof err === 'object' &&
+        HookNotFoundError.is(err)
+      ) {
+        staleCachedLookups.add(err);
+      }
+    }
     span?.setAttributes({
       ...Attribute.HookToken(
         typeof tokenOrHook === 'string' ? tokenOrHook : tokenOrHook.token
