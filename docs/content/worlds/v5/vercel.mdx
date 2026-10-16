@@ -226,7 +226,7 @@ Three more are situational:
 - `WORKFLOW_VERCEL_PROJECT_NAME` — the project slug, used only to build dashboard links.
 - `VERCEL_TOKEN` — a fallback the World reads for the Vercel API calls it makes alongside your Workflow requests (fetching a run's encryption key, resolving `deploymentId: "latest"`). A client that passes `token` explicitly, as below, already covers those calls and does not need it.
 
-For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against.
+For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against. The `workflow` CLI's `--env` flag reads the same variable but only accepts `production` or `preview`, so a custom environment is reachable from your own script, not from the CLI.
 
 <Callout type="info">
   The Workflow SDK does not read `WORKFLOW_VERCEL_*` from the environment on
@@ -299,6 +299,10 @@ Wait for the deployment under test, then hand its ID to the test step alongside 
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # check out the repository
+      deployments: read # find the deployment to wait for
+      statuses: read # read its deployment status and ID
     steps:
       - uses: actions/checkout@v4
 
@@ -321,7 +325,7 @@ jobs:
 
 Store the token as an encrypted secret and derive `WORKFLOW_VERCEL_ENV` from the branch, so a pull request run never authenticates as `production`.
 
-If the deployment is behind deployment protection, the job also needs a way to reach its URL. Grant the workflow `id-token: write` and mint a short-lived OIDC token from the runner for the `x-vercel-trusted-oidc-idp-token` header; that credential is for [Trusted Sources](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources) only and is separate from the Vercel auth token above.
+If the deployment is behind deployment protection, the job also needs a way to reach its URL. Add `id-token: write` to the job's `permissions` and mint a short-lived OIDC token from the runner for the `x-vercel-trusted-oidc-idp-token` header; that credential is for [Trusted Sources](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources) only and is separate from the Vercel auth token above.
 
 ## Testing & compatibility
 
