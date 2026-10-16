@@ -209,7 +209,7 @@ Inside a Vercel deployment there is nothing to authenticate: the platform inject
 
 ### Environment variables
 
-These four values are what an external client needs. The names are the convention shared by the `workflow` CLI, the web UI, and Workflow's own CI:
+These four values are what an external client needs. The names are the convention shared by the `workflow` CLI and the web UI:
 
 | Variable | Value | Notes |
 | --- | --- | --- |
@@ -293,7 +293,7 @@ Reads such as [`getRun()`](/docs/api-reference/workflow-api/get-run) do not need
 
 ### In CI
 
-Wait for the deployment under test, then hand its ID to the test step alongside the four auth variables. This is how Workflow's own end-to-end suite authenticates against its preview and production deployments:
+Wait for the deployment under test, then hand its ID to the test step alongside the four auth variables:
 
 ```yaml title=".github/workflows/e2e.yml" lineNumbers
 jobs:
