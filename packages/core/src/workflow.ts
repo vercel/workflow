@@ -594,6 +594,15 @@ async function createWorkflowSessionInner(
     runId: workflowRun.runId,
     encryptionKey,
     worldCapabilities,
+    // Unmarked histories exist on both sides of #4861. Only recover runs
+    // explicitly selected by the operator; the caller SDK version is not
+    // evidence of the executor or its delivery algorithm. Pin this choice
+    // for the lifetime of the retained session.
+    legacyAttributeDelivery: (
+      process.env.WORKFLOW_LEGACY_ATTRIBUTE_RUN_IDS ?? ''
+    )
+      .split(',')
+      .some((runId) => runId.trim() === workflowRun.runId),
     globalThis: vmGlobalThis,
     onWorkflowError,
     eventsConsumer,
