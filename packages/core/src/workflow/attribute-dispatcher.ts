@@ -79,6 +79,12 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
       }
 
       ctx.invocationsQueue.delete(correlationId);
+      if (ctx.legacyAttributeDelivery) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolve();
+        });
+        return EventConsumerResult.Finished;
+      }
       // Resolving setAttributes() resumes a branch that may draw the next
       // correlation ID, so it is branch-deciding like a step result: register
       // it with the delivery barriers at its log index and resolve only once

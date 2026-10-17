@@ -144,6 +144,20 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens after the in-process budget fails to catch up. The delay gives the other writers time to quiesce.
 
+### `WORKFLOW_LEGACY_ATTRIBUTE_RUN_IDS`
+
+- Default: empty (all runs use ordered attribute delivery).
+- Comma-separated, exact run IDs. Whitespace around each ID is ignored.
+- For self-hosted recovery of Node VM runs recorded before the attribute-ordering fix in `@workflow/core` 5.2.2. Selected runs resolve `setAttributes()` using the old scheduling behavior; other runs keep ordered delivery.
+
+An upgrade can change which branch wins a race involving `setAttributes()`, even with unchanged workflow code. Use this setting only for runs whose original behavior you have verified on a copy of their saved history. It does not repair histories that already replay inconsistently on their original runtime. Runs created by source builds around the fix can share the same version number, so the SDK cannot safely identify them from the stored version alone.
+
+Set the same list on every worker before resuming the selected runs, and keep it unchanged until they finish. QuickJS is unaffected. For example:
+
+```sh
+export WORKFLOW_LEGACY_ATTRIBUTE_RUN_IDS="wrun_<first-id>,wrun_<second-id>"
+```
+
 ### `WORKFLOW_LOG_ORDER_DRAWS`
 
 - Default: enabled
