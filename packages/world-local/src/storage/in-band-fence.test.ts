@@ -239,6 +239,82 @@ describe('in-band fence (world-local)', () => {
       };
     }
 
+    /** Kills a process while it holds the fence lock of `runId`, as a writer in the middle of a write. */
+    async function killFenceHolder(runId: string) {
+      const countPath = path.join(
+        testDir,
+        '.locks',
+        'runs',
+        `${runId}.in-band`
+      );
+      await fs.mkdir(path.dirname(countPath), { recursive: true });
+      const proc = fork(
+        fileURLToPath(new URL('../lock-holder.child.mjs', import.meta.url)),
+        [countPath],
+        { execArgv: [], stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }
+      );
+      const holding = await new Promise<{ status: string }>(
+        (resolve, reject) => {
+          proc.once('message', (m) => resolve(m as { status: string }));
+          proc.once('exit', (code) =>
+            reject(new Error(`holder exited (${code}) without locking`))
+          );
+        }
+      );
+      expect(holding.status).toBe('holding');
+      const exited = new Promise((resolve) => proc.once('exit', resolve));
+      proc.kill('SIGKILL');
+      await exited;
+      await expect(fs.stat(`${countPath}.lock`)).resolves.toBeTruthy();
+    }
+
+    it('a writer killed while it holds the fence lock does not hold up the next one', async () => {
+      const runId = await createRun();
+      const { snapshot } = await snapshotOf(runId);
+      await killFenceHolder(runId);
+      const started = Date.now();
+      await storage.events.create(runId, attrSet('next'), {
+        inBand: true,
+        expectedSeqInBand: snapshot?.seqInBand,
+      });
+      // Not the lock's 30 s staleness.
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect((await snapshotOf(runId)).snapshot?.seqInBand).toBe(
+        (snapshot?.seqInBand ?? 0) + 1
+      );
+    }, 30_000);
+
+    it('of writers in several processes racing for a killed writer’s fence lock, exactly one is accepted', async () => {
+      const runId = await createRun();
+      const { snapshot } = await snapshotOf(runId);
+      const loaded = snapshot?.seqInBand as number;
+      const others = await Promise.all(
+        [1, 2, 3].map(() => otherProcess(runId, loaded))
+      );
+      await killFenceHolder(runId);
+      const answers = await Promise.all([
+        ...others.map((o) => o.write()),
+        storage.events
+          .create(runId, attrSet('here'), {
+            inBand: true,
+            expectedSeqInBand: loaded,
+          })
+          .then(
+            (): Answer => ({ status: 'accepted' }),
+            (err: unknown): Answer => ({
+              status: InBandSupersededError.is(err) ? 'refused' : 'error',
+              message: String(err),
+            })
+          ),
+      ]);
+      expect(answers.filter((a) => a.status === 'error')).toEqual([]);
+      expect(answers.filter((a) => a.status === 'accepted')).toHaveLength(1);
+      expect(answers.filter((a) => a.status === 'refused')).toHaveLength(3);
+      const after = await snapshotOf(runId);
+      expect(after.snapshot?.seqInBand).toBe(loaded + 1);
+      expect(after.slots).toEqual([1, 2]);
+    }, 30_000);
+
     it('a stale writer in this process is refused after another process wrote in-band', async () => {
       const runId = await createRun();
       const { snapshot } = await snapshotOf(runId);
