@@ -258,7 +258,11 @@ describe('resumeHook', () => {
 
       await resumeHook('order:1', { approved: true });
 
-      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(run);
+      // The fallback read only the run's metadata, so the key is resolved by
+      // runId + the deploymentId it carried (#4645).
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(run.runId, {
+        deploymentId: run.deploymentId,
+      });
       expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
         SerializationFormat.ENCRYPTED
       );

@@ -99,7 +99,7 @@ getEncryptionKeyForRun?(
 ): Promise<Uint8Array | undefined>;
 ```
 
-Use `getEncryptionKeyForRun(run)` when the run entity already exists. Use `getEncryptionKeyForRun(runId, context?)` in runtime paths like `start()` where the run has not been created yet but the world may still need context such as `deploymentId`.
+Use `getEncryptionKeyForRun(run)` when the runtime already holds the run entity. Use `getEncryptionKeyForRun(runId, context?)` everywhere else: in paths like `start()` where the run does not exist yet, and in paths that have a run id but no reason to load the run's payloads, such as resolving the key for a stream read. Either way `context` carries whatever the World needs to find the key, such as `deploymentId`.
 
 To add encryption support to a custom `World`:
 
