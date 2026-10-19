@@ -39,6 +39,13 @@ export type Config = {
    * Default is 10ms. Set to 0 for immediate flushing.
    */
   streamFlushIntervalMs?: number;
+  /**
+   * Shared secret that authenticates queue deliveries. The queue attaches it
+   * to every delivery and `createQueueHandler` rejects deliveries without it.
+   * Falls back to the `WORKFLOW_QUEUE_SECRET` environment variable (read at
+   * delivery time). See `@workflow/world/queue-auth.js`.
+   */
+  queueSecret?: string;
 };
 
 export const config = once<Config>(() => {

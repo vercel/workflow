@@ -217,6 +217,11 @@ esac
 
 export WORKFLOW_PUBLIC_MANIFEST="1"
 
+# `pnpm start` runs with NODE_ENV=production, where the flow route rejects
+# queue deliveries without a shared secret. The app and the harness are both
+# children of this script, so one value generated here authenticates both.
+export WORKFLOW_QUEUE_SECRET="${WORKFLOW_QUEUE_SECRET:-$(openssl rand -hex 32)}"
+
 # See the note in usage: a local lane runs the same storm ~2x slower than the
 # Vercel lane, so the harness' own 240000 leaves `step-storm` at ~83% of its
 # timeout and one slow runner turns "reproduces" into "stuck". Measured on

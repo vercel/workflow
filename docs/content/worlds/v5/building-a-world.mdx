@@ -355,6 +355,8 @@ interface Queue {
 }
 ```
 
+A World that delivers by path must authenticate the sender in `createQueueHandler` before it reads the body: the route is an ordinary HTTP endpoint, and a delivery decides which run is created, replayed, or has a step executed. Valid-looking `x-vqs-*` headers and a coherent payload prove nothing about who sent it. The Local and Postgres Worlds use the shared-secret helpers in `@workflow/world/queue-auth.js` (`applyQueueAuthHeader` on the sender, `authorizeQueueDelivery` on the receiver, keyed by `WORKFLOW_QUEUE_SECRET`), which a custom World can reuse.
+
 Keep a message's full queue name from `queue()` to its delivery, including its prefix. A World that delivers by path should also have `createQueueHandler(prefix, ...)` refuse a message outside `prefix` (the Local World answers 400), so a misrouted message is retried rather than run by the wrong consumer.
 
 If your World re-enqueues active runs when it starts, send each run back to the queue namespace it recorded at creation, `executionContext.queueNamespace` (read it with `getRunQueueNamespace()` from `@workflow/world`), rather than to the starting process's own namespace. `reenqueueActiveRuns()` from `@workflow/world` does this. The Workflow SDK's `start()` records the namespace when one is set, and a library that creates its own runs records its own.

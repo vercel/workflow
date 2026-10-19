@@ -76,6 +76,13 @@ The Local World is the default outside Vercel and is intended for development.
 - Default: auto-detected
 - Local app port used to build the callback URL when `baseUrl` is unset.
 
+### `queueSecret`
+
+- Environment variable: `WORKFLOW_QUEUE_SECRET`
+- Default: unset
+- Shared secret that authenticates queue deliveries to the flow route. Set the same value, at least 32 characters, on every process that sends or receives queue messages.
+- Required unless `NODE_ENV` is `development` or `test`. Without it, the flow route rejects every delivery with `503`. See [Queue authentication](/worlds/local#workflow_queue_secret).
+
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
 - Factory option: none
@@ -154,6 +161,13 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: `WORKFLOW_POSTGRES_JOB_PREFIX`
 - Default: `workflow_`
 - Prefix for Graphile Worker job names.
+
+### `queueSecret`
+
+- Environment variable: `WORKFLOW_QUEUE_SECRET`
+- Default: unset
+- Shared secret that authenticates the worker's deliveries to the app's flow route. Set the same value, at least 32 characters, on every worker and app process.
+- Required unless `NODE_ENV` is `development` or `test`. Without it, the flow route rejects every delivery with `503`. See [Queue authentication](/worlds/postgres#workflow_queue_secret).
 
 ### `queueConcurrency`
 

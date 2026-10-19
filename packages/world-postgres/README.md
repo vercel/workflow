@@ -4,12 +4,11 @@ An embedded worker and workflow system backed by PostgreSQL for multi-host self-
 
 > **This is a reference implementation.** It shows how to implement the World
 > interface on top of a database and a queue, and it is a reasonable starting
-> point for self-hosting. It is not a managed backend: it ships **without
-> authentication**, and it is not tuned for the performance or scale properties
-> of one. A production deployment typically runs workers in separate processes
-> with a more robust queuing system, and **must** put its own authentication in
-> front of the workflow HTTP routes. Read [Security](#security) before you
-> deploy it.
+> point for self-hosting. It is not a managed backend: its only built-in
+> authentication is a shared secret on queue deliveries, and it is not tuned for
+> the performance or scale properties of one. A production deployment typically
+> runs workers in separate processes with a more robust queuing system. Read
+> [Security](#security) before you deploy it.
 >
 > While some customers have been successful in deploying the Postgres World as
 > is, for production use-cases, we highly recommend cloning this reference
@@ -18,23 +17,31 @@ An embedded worker and workflow system backed by PostgreSQL for multi-host self-
 
 ## Security
 
-The Postgres World does **not** automatically authenticate the requests that
-drive workflow execution. Adding that is your responsibility, and it should be
-in place before an app using this World is reachable by untrusted clients.
-
 ### Protect the queue route
 
 `POST /.well-known/workflow/v1/flow` is where the worker delivers workflow
 orchestration and queued step invocations. It is mounted in your application
-like any other route, so it is publicly reachable by default, and the queue
+like any other route, so it is reachable by anyone who can reach the app, and a
+delivery decides which run is created, replayed, or has a step executed.
+
+The worker authenticates its deliveries with a shared secret,
+`WORKFLOW_QUEUE_SECRET` (or the `queueSecret` option). It attaches the secret to
+every delivery at send time, without storing it in the database, and the queue
 handler, inherited from
 [`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local),
-accepts any request whose `x-vqs-*` headers and queue-name prefix are
-well-formed, leaving the payload itself to be validated later by the runtime
-that consumes the message. There is no signature, shared secret, or caller check,
-so anyone who can reach the route can forge or replay a workflow or step
-invocation, including steps your application would only reach after its own
-gating. Restrict it before you expose the app.
+rejects a delivery that does not carry it with `401` before reading the body.
+Set the same random value of at least 32 characters (for example
+`openssl rand -hex 32`) on every worker and app process.
+
+Without a secret, the handler accepts unauthenticated deliveries only when
+`NODE_ENV` is `development` or `test`, and otherwise rejects every delivery with
+`503`, including when `NODE_ENV` is unset.
+
+The secret travels as a bearer credential in a request header. It does not sign
+the message, so anything that can observe a delivery can replay it. Keep
+deliveries on loopback or a private network, use `https://` in
+`WORKFLOW_LOCAL_BASE_URL` when they cross hosts, and keep the secret out of
+request logs. Credentialed deliveries never follow redirects.
 
 The other routes under `/.well-known/workflow/v1/` differ:
 
@@ -51,10 +58,9 @@ The other routes under `/.well-known/workflow/v1/` differ:
   not withdraw the manifest. Leave it unset outside of testing, because the
   manifest lists your workflow and step names.
 
-### Bringing your own auth
+### Defense in depth
 
-Workflow does not prescribe an auth mechanism, so gate the flow route at the
-network edge rather than inside the application:
+The shared secret is the World's own check; network controls still help:
 
 - **Keep the flow route unreachable from outside.** By default the worker
   delivers to a loopback address (`http://localhost:{PORT}`, or
@@ -65,17 +71,10 @@ network edge rather than inside the application:
   not block the whole `/.well-known/workflow/` prefix if you use
   `createWebhook()`: its `webhook/:token` route sits under the same prefix and
   has to stay reachable by whoever calls it.
-- **Authenticate at the proxy when the routes must cross hosts.** If your web
-  tier and workers are separate deployments, require mTLS or a shared-secret
-  header at the proxy in front of the application, and strip any client-supplied
-  copy of that header at the edge.
 - **Do not gate these paths in framework middleware.** The setup guides tell you
   to exclude `/.well-known/workflow/*` from your Next.js proxy matcher, because a
   handler that consumes the internal request body breaks execution. Adding the
   paths back in order to gate them reintroduces that failure mode.
-- **Do not expect the World to present a credential.** It does not sign its
-  delivery requests or attach a secret to them, so an in-application check that
-  requires one will reject the World's own deliveries.
 
 ### Data at rest
 
@@ -116,6 +115,10 @@ Configure the PostgreSQL world using environment variables:
 ```bash
 # Required: PostgreSQL connection string
 export WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/database"
+
+# Required unless NODE_ENV is development or test: authenticates queue
+# deliveries. Use the same value on every worker and app process.
+export WORKFLOW_QUEUE_SECRET="<generate once with: openssl rand -hex 32>"
 
 # Optional: Job prefix for queue operations
 export WORKFLOW_POSTGRES_JOB_PREFIX="myapp"
@@ -194,6 +197,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
+| `queueSecret`      | `string`  | `process.env.WORKFLOW_QUEUE_SECRET`                                                    | Shared secret that authenticates queue deliveries (see [Security](#security)). Required unless `NODE_ENV` is `development` or `test`. |
 
 ## Environment variables
 
@@ -207,6 +211,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
+| `WORKFLOW_QUEUE_SECRET` | Shared secret that authenticates queue deliveries; same value on every worker and app process. Required unless `NODE_ENV` is `development` or `test` | - |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 

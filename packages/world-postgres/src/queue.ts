@@ -32,6 +32,10 @@ import {
   destroyNodeHttpAgents,
   nodeHttpFetch,
 } from '@workflow/world/node-http.js';
+import {
+  applyQueueAuthHeader,
+  resolveQueueSecret,
+} from '@workflow/world/queue-auth.js';
 import { createWorld } from '@workflow/world-local';
 import {
   Logger,
@@ -220,7 +224,13 @@ export function createQueue(
   pool: Pool
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const localWorld = createWorld({ dataDir: undefined, port });
+  // The receiving handler is world-local's, so it authenticates deliveries
+  // against the same secret this queue's sender attaches.
+  const localWorld = createWorld({
+    dataDir: undefined,
+    port,
+    queueSecret: config.queueSecret,
+  });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
   // custom dispatcher, and a queue-owned pool keeps these sockets out of the
@@ -689,6 +699,9 @@ export function createQueue(
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
       headers.set(EXECUTOR_ATTEMPT_HEADER, String(executorDelivery.attempt));
     }
+    // Attached per delivery, never stored on the Graphile job, and replaces
+    // any copy that came in through the job's caller-supplied headers.
+    applyQueueAuthHeader(headers, resolveQueueSecret(config.queueSecret));
     const directHandler = directHandlers.get(prefix);
     const deliveryRoute = routes.get(prefix) ?? route;
     let response: Response;

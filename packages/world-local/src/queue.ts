@@ -20,6 +20,11 @@ import {
   destroyNodeHttpAgents,
   nodeHttpFetch,
 } from '@workflow/world/node-http.js';
+import {
+  applyQueueAuthHeader,
+  authorizeQueueDelivery,
+  resolveQueueSecret,
+} from '@workflow/world/queue-auth.js';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -267,14 +272,17 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       let delivery = 0;
       try {
         for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
-          const headers: Record<string, string> = {
-            ...opts?.headers,
-            'content-type': 'application/json',
-            'x-vqs-queue-name': queueName,
-            'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1),
-            'x-vqs-message-created-at': createdAt,
-          };
+          const outgoing = new Headers(opts?.headers);
+          outgoing.set('content-type', 'application/json');
+          outgoing.set('x-vqs-queue-name', queueName);
+          outgoing.set('x-vqs-message-id', messageId);
+          outgoing.set('x-vqs-message-attempt', String(delivery + 1));
+          outgoing.set('x-vqs-message-created-at', createdAt);
+          // Resolved per attempt and never stored with the message, so a
+          // secret set or rotated after enqueue applies to the next attempt.
+          const secret = resolveQueueSecret(config.queueSecret);
+          applyQueueAuthHeader(outgoing, secret);
+          const headers: Record<string, string> = Object.fromEntries(outgoing);
           const directHandler = directHandlers.get(prefix);
           let response: Response;
           let text: string;
@@ -290,9 +298,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               const baseUrl = await resolveBaseUrl(config);
               const url = deliveryUrl(baseUrl, prefix);
               response = nodeHttpAgents
-                ? await nodeHttpFetch(url, {
+                ? // node:http never follows redirects.
+                  await nodeHttpFetch(url, {
                     method: 'POST',
-                    headers: new Headers(headers),
+                    headers: outgoing,
                     body,
                     agents: nodeHttpAgents,
                     signal: closeSignal,
@@ -307,6 +316,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     headers,
                     body,
                     signal: closeSignal,
+                    // fetch forwards custom headers across a cross-origin
+                    // redirect, so a credentialed delivery never follows
+                    // one. The 3xx is handled like any other non-ok reply.
+                    ...(secret ? { redirect: 'manual' } : {}),
                   } as any);
             }
             delivery++;
@@ -456,6 +469,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req) => {
+      // Authenticate the sender before parsing any caller-controlled header
+      // or reading the body.
+      const rejected = authorizeQueueDelivery(req, config.queueSecret);
+      if (rejected) return rejected;
+
       const headers = HeaderParser.safeParse(Object.fromEntries(req.headers));
 
       if (!headers.success || !req.body) {

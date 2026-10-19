@@ -266,6 +266,14 @@ Precedence: `WORKFLOW_POSTGRES_URL` > `DATABASE_URL` > `postgres://world:world@l
 
 The `bootstrap` migration command uses the same precedence.
 
+### `WORKFLOW_QUEUE_SECRET`
+
+Shared secret that authenticates queue deliveries. Graphile workers deliver each job by POSTing it to your app's flow route (`/.well-known/workflow/v1/flow`), and the flow route rejects a delivery without this secret (`401`) before reading the request body. The worker attaches it at delivery time, so it is never stored in the database. Default: unset.
+
+Generate a random value of at least 32 characters (for example `openssl rand -hex 32`) and set the same value on every worker and app process. You can also pass it as `queueSecret` to `createWorld()`.
+
+Without a secret, the flow route accepts unauthenticated deliveries only when `NODE_ENV` is `development` or `test`, and rejects every delivery with `503` otherwise, including when `NODE_ENV` is unset. A rejected job is retried with Graphile Worker's backoff until its attempts run out, so setting the secret promptly resumes it. A configured secret is always enforced.
+
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
 Prefix for graphile-worker queue job names. Useful when sharing a database between multiple applications. Default: `workflow_`

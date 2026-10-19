@@ -54,6 +54,16 @@ Full base URL override for HTTPS or custom hostnames. Default: `http://localhost
 
 Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
+### `WORKFLOW_QUEUE_SECRET`
+
+Shared secret that authenticates queue deliveries. The Local World delivers queue messages by POSTing them to your app's flow route (`/.well-known/workflow/v1/flow`), which is reachable by anything that can reach the app. The queue attaches this secret to every delivery, and the flow route rejects a delivery without it (`401`) before reading the request body. Default: unset.
+
+Generate a random value of at least 32 characters (for example `openssl rand -hex 32`) and set the same value on every process that sends or receives queue messages, including any CLI or script that starts runs or resumes hooks against the app.
+
+Without a secret, the flow route accepts unauthenticated deliveries only when `NODE_ENV` is `development` or `test` (as under `next dev` and Vitest), and rejects every delivery with `503` otherwise, including when `NODE_ENV` is unset. A configured secret is always enforced. Dev servers often listen on every network interface, so set a secret in development too if your machine is reachable by others.
+
+Credentialed deliveries do not follow redirects. Use `https://` in `WORKFLOW_LOCAL_BASE_URL` when deliveries leave the machine.
+
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
 Maximum number of concurrent queue message handlers. Default: `1000`
@@ -152,6 +162,6 @@ The Local World is designed for development, not production:
 - **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
 - **Filesystem storage**: Data is stored in local JSON files.
 - **Single instance**: The Local World cannot handle distributed deployments.
-- **No authentication**: The Local World is suitable only for local development.
+- **Shared-secret authentication only**: Queue deliveries are authenticated with [`WORKFLOW_QUEUE_SECRET`](#workflow_queue_secret); there are no per-user or per-tenant credentials.
 
 For production deployments, use the [Vercel World](/worlds/vercel), which handles execution, persistence, multi-tenancy, scale, observability, and security for you on Vercel, or check out the [Postgres World](/worlds/postgres) - a tested reference implementation that implements the complete World spec and can be used to deploy workflows anywhere.

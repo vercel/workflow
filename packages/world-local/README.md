@@ -21,6 +21,16 @@ the callback's value as `{ result }`. For example, a callback returning
 response data; the receiver does not schedule another execution for that
 invocation.
 
+## Queue authentication
+
+The queue delivers messages by POSTing them to the app's flow route, so the
+route's handler authenticates each delivery with a shared secret before reading
+it. Set `WORKFLOW_QUEUE_SECRET` (or the `queueSecret` option) to the same random
+value, at least 32 characters, on every process that sends or receives queue
+messages. Without one, the handler accepts unauthenticated deliveries only when
+`NODE_ENV` is `development` or `test` (`next dev`, Vitest), and answers every
+delivery with `503` otherwise, including under `next start`.
+
 ## Programmatic configuration
 
 ```ts

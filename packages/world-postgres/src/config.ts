@@ -28,4 +28,12 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    * Default is 10ms. Set to 0 for immediate flushing.
    */
   streamFlushIntervalMs?: number;
+  /**
+   * Shared secret that authenticates queue deliveries between Graphile
+   * workers and the app's queue route. Falls back to the
+   * `WORKFLOW_QUEUE_SECRET` environment variable (read at delivery time), which
+   * must then be set identically on every worker and app process. Required
+   * outside `NODE_ENV=development`/`test`. See `@workflow/world/queue-auth.js`.
+   */
+  queueSecret?: string;
 };
