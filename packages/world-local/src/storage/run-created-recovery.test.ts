@@ -326,6 +326,36 @@ it('lets recovery win a paused original publish without duplicating run_created'
   ).toHaveLength(1);
 });
 
+it('does not duplicate run_created when repair overtakes resilient start', async () => {
+  const runId = `wrun_${monotonicUlid()}`;
+  armPublisherGate();
+  const resilientStart = createStorage(testDir).events.create(
+    runId,
+    changedRedelivery()
+  );
+  await publisherGate.reached;
+
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const repaired = await createStorage(testDir).events.create(
+    runId,
+    changedRedelivery()
+  );
+  publisherGate.release();
+  const original = await resilientStart;
+
+  expect(original.run?.status).toBe('running');
+  expect(repaired.run?.status).toBe('running');
+  const events = await listEvents(runId);
+  expect(events[0]?.eventType).toBe('run_created');
+  expect(events.slice(1).map((event) => event.eventType)).toEqual([
+    'run_started',
+    'run_started',
+  ]);
+  expect(
+    events.filter((event) => event.eventType === 'run_created')
+  ).toHaveLength(1);
+});
+
 it('rejects a missing input without changing the pending run or empty log', async () => {
   const original = await createInterruptedRun();
   const runPath = taggedPath(testDir, 'runs', original.run.runId);

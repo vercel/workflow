@@ -988,13 +988,54 @@ export function createEventsStorage(
     );
 
   /**
+   * Publishes a run's creation at its fixed first slot without ever bumping.
+   * `writeExclusive` is the complete cross-process arbitration: it holds no
+   * lock while writing its temp file, and the hard link either publishes this
+   * event or reveals the winner.
+   */
+  async function publishRunCreatedAtFirstSlot(event: Event): Promise<boolean> {
+    const eventId = slotToEventId(FIRST_EVENT_SLOT);
+    const firstSlotEvent =
+      event.eventId === eventId ? event : { ...event, eventId };
+    const eventPath = taggedPath(
+      basedir,
+      runEntityDir('events', event.runId),
+      `${event.runId}-${eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(firstSlotEvent, jsonReplacer, 2);
+    if (await writeExclusive(eventPath, serializedEvent)) {
+      notePublishedSlot(event.runId, eventId);
+      rememberStoredEvent(firstSlotEvent, eventPath, serializedEvent);
+      return true;
+    }
+
+    const occupant = await readJSONWithFallback(
+      basedir,
+      runEntityDir('events', event.runId),
+      `${event.runId}-${eventId}`,
+      ReadEventSchema,
+      tag
+    );
+    if (
+      occupant?.eventType === 'run_created' &&
+      occupant.runId === event.runId
+    ) {
+      notePublishedSlot(event.runId, eventId);
+      return false;
+    }
+    throw missingRunCreatedError(
+      event.runId,
+      `event slot ${FIRST_EVENT_SLOT} is occupied by ${
+        occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+      }`
+    );
+  }
+
+  /**
    * Restores the first event of a pending run whose entity write survived but
    * whose creation-event write did not. The run record is the only authority:
    * a redelivered event may carry different data.
-   *
-   * Slot 1 is fixed rather than allocated. `writeExclusive` is the complete
-   * cross-process arbitration: it holds no lock while writing its temp file,
-   * and the hard link either publishes this event or reveals the winner.
    */
   async function restoreMissingRunCreated(run: WorkflowRun): Promise<void> {
     const firstPage = await queryRunEvents(run.runId, {
@@ -1031,39 +1072,11 @@ export function createEventsStorage(
         encryptionPublicKey: run.encryptionPublicKey,
       },
     };
-    const eventPath = taggedPath(
-      basedir,
-      runEntityDir('events', run.runId),
-      `${run.runId}-${eventId}`,
-      tag
-    );
-    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-    if (await writeExclusive(eventPath, serializedEvent)) {
-      notePublishedSlot(run.runId, eventId);
-      rememberStoredEvent(event, eventPath, serializedEvent);
+    if (await publishRunCreatedAtFirstSlot(event)) {
       console.warn(
         `[world-local] restored missing run_created for ${run.runId}`
       );
-      return;
     }
-
-    const occupant = await readJSONWithFallback(
-      basedir,
-      runEntityDir('events', run.runId),
-      `${run.runId}-${eventId}`,
-      ReadEventSchema,
-      tag
-    );
-    if (occupant?.eventType === 'run_created' && occupant.runId === run.runId) {
-      notePublishedSlot(run.runId, eventId);
-      return;
-    }
-    throw missingRunCreatedError(
-      run.runId,
-      `event slot ${FIRST_EVENT_SLOT} is occupied by ${
-        occupant ? `"${occupant.eventType}"` : 'an unreadable event'
-      }`
-    );
   }
 
   // Per-instance in-process mutexes. Two storage instances sharing
@@ -1319,7 +1332,7 @@ export function createEventsStorage(
                     encryptionPublicKey: runInputData.encryptionPublicKey,
                   },
                 };
-                await storeEvent(runCreatedEvent);
+                await publishRunCreatedAtFirstSlot(runCreatedEvent);
                 currentRun = createdRun;
                 createdByResilientStart = true;
               } else {
