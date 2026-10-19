@@ -1199,6 +1199,45 @@ it('initializes from the owner session catch-up alone, without run, event or ste
   await fixture.finished;
 });
 
+it('retries a rejected initialization without repeating the writer catch-up', async () => {
+  const fixture = await setup();
+  const events = await fixture.world.events.list({
+    runId: fixture.runId,
+    resolveData: 'all',
+  });
+  // Like the eventsync writer: one catch-up per session, before any write.
+  let caughtUp = false;
+  const catchUp = vi.fn(async () => {
+    if (caughtUp) throw new Error('Catch-up must precede the first write');
+    caughtUp = true;
+    return { events: events.data, head: events.data.length };
+  });
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  fixture.world.events.createWriteSession = () => ({
+    catchUp,
+    create: (event, params) => create(fixture.runId, event, params),
+    dispose() {},
+  });
+  // A retryable rejection after the catch-up: this process is not the run's
+  // pinned deployment yet.
+  fixture.world.capabilities = {
+    ...fixture.world.capabilities,
+    deploymentAffinity: true,
+  };
+  vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'another-deployment');
+  cleanups.push(async () => vi.unstubAllEnvs());
+  await expect(
+    fixture.owner.submit({ runId: fixture.runId }, fixture.metadata)
+  ).rejects.toMatchObject({ status: 409 });
+  vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'test');
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  expect(catchUp).toHaveBeenCalledTimes(1);
+  expect((await fixture.world.runs.get(fixture.runId)).status).not.toBe(
+    'failed'
+  );
+  await fixture.finished;
+});
+
 it('stops without failing the run when the server rejects the owner during catch-up', async () => {
   const fixture = await setup();
   const create = vi.fn();

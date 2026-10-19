@@ -337,6 +337,8 @@ export class RetainedRunner {
   private timerWakeups = new Set<string>();
   private localTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private lifetime?: Promise<void>;
+  /** The owner's writer has delivered its one catch-up and it is applied. */
+  private historyLoaded = false;
   /** `step_created` events applied so far, and a waiter for the next one. */
   private stepsCreated = 0;
   private stepCreatedSignal?: () => void;
@@ -833,7 +835,20 @@ export class RetainedRunner {
       this.logPhase(phase, 'completed', elapsedMs, details);
       return result;
     } catch (error) {
-      this.logPhase(phase, 'error', performance.now() - started, details);
+      this.logPhase(phase, 'error', performance.now() - started, {
+        ...details,
+        // Start-up phases are infrastructure: never user step or workflow code.
+        ...(STARTUP_PHASES.has(phase)
+          ? {
+              errorName: error instanceof Error ? error.name : typeof error,
+              errorMessage: String((error as Error)?.message ?? error).slice(
+                0,
+                300
+              ),
+              errorStatus: (error as { status?: unknown })?.status,
+            }
+          : {}),
+      });
       this.observe(phase, 'end', spanId, {
         ...details,
         status: 'error',
@@ -872,7 +887,14 @@ export class RetainedRunner {
         new Error('Buffered writer requires both stage and flush')
       );
     const catchUp = this.eventWriter?.catchUp?.bind(this.eventWriter);
-    if (
+    if (catchUp && this.historyLoaded) {
+      // A previous attempt loaded the history over this writer and failed
+      // later (a retryable rejection): the writer's catch-up happens once, and
+      // nothing was written since, so only validation runs again.
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
+    } else if (
       catchUp &&
       this.freshStart &&
       this.startInput &&
@@ -918,6 +940,7 @@ export class RetainedRunner {
             ack.reject
           );
       }
+      this.historyLoaded = true;
       await this.observed('load_run', () => this.validateRun(), {
         parentSpanId,
       });
@@ -955,6 +978,7 @@ export class RetainedRunner {
           head: loaded.head,
         }
       );
+      this.historyLoaded = true;
       await this.observed('load_run', () => this.validateRun(), {
         parentSpanId,
       });
