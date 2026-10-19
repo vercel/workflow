@@ -136,6 +136,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export const MAX_CACHED_EVENT_ENTRIES = 1000;
 
+/**
+ * How many times a forced `hook_created` re-reads the token's holder after it
+ * changed between that read and the claim lock. Each retry means another
+ * claimer took the token in between.
+ */
+const MAX_FORCE_CLAIM_VICTIM_RETRIES = 100;
+
 function getHookRetentionLimitMs(): number {
   const days = Number(
     process.env.WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS ?? 30
@@ -2489,12 +2496,15 @@ export function createEventsStorage(
                 // serializes it against the victim's own disposal.
                 signal.throwIfAborted();
                 // The victim's claim is written before its `hook_created` is
-                // published (see the entity-write ordering below), so a
-                // takeover can meet a creation still in flight. That is fine:
-                // the creator's publish is refused by the journal guard (its
-                // own disposal is committed by then) and its replay reads the
-                // disposal with no creation — the runtime handles exactly
-                // that. Nothing waits here: while this lock is held the token
+                // published (see the entity-write ordering below). In one
+                // process this takeover first waits on the victim's per-hook
+                // key, which the creation holds across both, so it cannot
+                // meet the creation midway; from another instance (per-hook
+                // keys are not shared) it can meet a creation still in
+                // flight. That is fine: the creator's publish is refused by
+                // the journal guard (its own disposal is committed by then)
+                // and its replay reads the disposal with no creation — the
+                // runtime handles exactly that. Nothing waits here: while this lock is held the token
                 // resolves to nothing, and every millisecond of that is a
                 // `getHookByToken` that misses.
                 const victimRun = await readJSONWithFallback(
@@ -2687,9 +2697,23 @@ export function createEventsStorage(
           // victim) only after its own takeover is done waiting. The holder
           // is read here and confirmed under the claim lock; a change of
           // holder in between retries under the new holder's key. Like every
-          // per-hook lock, this serializes within one process.
+          // per-hook lock, this serializes within one process. Across
+          // instances sharing a data directory only the resume's last-instant
+          // dispose-lock check remains, and the window is wider than for an
+          // ordinary disposal: the takeover appends the victim's row right
+          // after its dispose lock, with no teardown in between to absorb a
+          // resume that passed that check.
           let claimResult: Awaited<ReturnType<typeof claimToken>>;
-          for (;;) {
+          for (let attempt = 0; ; attempt++) {
+            // Every `victim-changed` means another claimer took the token in
+            // between, so this ends. The bound turns a disagreement between
+            // the read here and the one under the claim lock into an error
+            // instead of a spin.
+            if (attempt === MAX_FORCE_CLAIM_VICTIM_RETRIES) {
+              throw new WorkflowWorldError(
+                `Hook token holder kept changing during a forced claim of "${data.correlationId}"`
+              );
+            }
             const holder =
               hookData.force === true
                 ? await readHookTokenClaim(constraintPath)
