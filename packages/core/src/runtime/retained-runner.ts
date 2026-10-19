@@ -2425,6 +2425,27 @@ export class RetainedRunner {
             )
           : new RunnerFault('execution', cause);
     const fault = this.fault;
+    if (!this.failurePromise) {
+      const cause = fault.cause as
+        | { name?: unknown; message?: unknown; stack?: unknown }
+        | undefined;
+      ownerLog('fault', {
+        runId: this.runId,
+        ownerId: this.id,
+        kind: fault.kind,
+        conflictReason: fault.conflictReason,
+        superseded: fault.superseded,
+        causeName: cause?.name === undefined ? undefined : String(cause.name),
+        causeMessage:
+          cause?.message === undefined
+            ? undefined
+            : String(cause.message).slice(0, 500),
+        causeStack:
+          typeof cause?.stack === 'string'
+            ? cause.stack.split('\n').slice(0, 8).join('\n')
+            : undefined,
+      });
+    }
     if (!this.failurePromise)
       this.failurePromise = (async () => {
         const spanId = randomUUID();
