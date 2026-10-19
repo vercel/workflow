@@ -193,9 +193,10 @@ export async function handleHealthCheckMessage(
   // Best-effort: a failure here must not fail the health check itself, which
   // callers also rely on for plain capability detection.
   let encryptionPublicKey: string | undefined;
-  if (healthCheck.runId) {
+  const probeRunId = healthCheck.probeRunId ?? healthCheck.runId;
+  if (probeRunId) {
     try {
-      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      const rawKey = await world.getEncryptionKeyForRun?.(probeRunId);
       if (rawKey) {
         encryptionPublicKey = bytesToBase64(
           (await deriveRunKeyPair(rawKey)).publicKey
@@ -423,7 +424,10 @@ export async function healthCheck(
       {
         __healthCheck: true,
         correlationId,
-        ...(options?.runId ? { runId: options.runId } : {}),
+        // Sent as `probeRunId`, never `runId`: a 4.x responder would parse a
+        // `runId`-bearing probe as a run invocation (see
+        // `HealthCheckPayloadSchema`).
+        ...(options?.runId ? { probeRunId: options.runId } : {}),
       },
       {
         // Use JSON transport so the health check works against both

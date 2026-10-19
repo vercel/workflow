@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod/v4';
 import {
   getQueueTopicPrefix,
   getRunQueueNamespace,
+  HealthCheckPayloadSchema,
   parseQueueName,
   parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
   ValidQueueName,
+  WorkflowInvokePayloadSchema,
 } from './queue.js';
 
 describe('getQueueTopicPrefix', () => {
@@ -147,6 +150,36 @@ describe('QueuePayloadSchema', () => {
       correlationId: 'corr_123',
       runId: 'wrun_01ABC',
     });
+  });
+
+  it('preserves the health-check discriminator and probeRunId on a probe', () => {
+    expect(
+      QueuePayloadSchema.parse({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        probeRunId: 'wrun_01ABC',
+      })
+    ).toEqual({
+      __healthCheck: true,
+      correlationId: 'corr_123',
+      probeRunId: 'wrun_01ABC',
+    });
+  });
+
+  it('parses a probeRunId probe as a health check even when the invoke schema is tried first', () => {
+    // 4.x deployments order their queue payload union invoke-first. The probe
+    // must not satisfy the invoke schema, or it is replayed as a run.
+    const invokeFirst = z.union([
+      WorkflowInvokePayloadSchema,
+      HealthCheckPayloadSchema,
+    ]);
+    expect(
+      invokeFirst.parse({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        probeRunId: 'wrun_01ABC',
+      })
+    ).toMatchObject({ __healthCheck: true, correlationId: 'corr_123' });
   });
 
   it('preserves health-check payloads that carry no runId', () => {
