@@ -15,6 +15,11 @@ directory publishes one `hook_created` event. A losing creator reports an
 entity conflict without appending another creation, including when a retry
 publishes before the original token-claim owner.
 
+If creation is interrupted after a run is saved, its missing `run_created`
+event is restored from the saved record before the pending run starts,
+updates attributes, or is terminated. Recovery requires an empty history and
+the original input; damaged runs can still be cancelled.
+
 Its HTTP queue handler supports receiving `invoke: true` messages and returns
 the callback's value as `{ result }`. For example, a callback returning
 `{ timeoutSeconds: 5 }` produces `{ result: { timeoutSeconds: 5 } }`. The value is

@@ -982,6 +982,74 @@ export function createEventsStorage(
       getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
 
+  /** Repair a run entity whose creation event was never published. */
+  async function ensureRunCreatedEvent(
+    run: WorkflowRun,
+    allowIncompleteHistory = false
+  ): Promise<void> {
+    const { data: events } = await queryRunEvents(run.runId, {
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+    // An existing creation need not be first: another writer may have
+    // published an event while the original creator was still in flight.
+    if (events.some((event) => event.eventType === 'run_created')) return;
+    const cannotRecover = (reason: string) => {
+      // Terminal transitions do not replay history, so a damaged run must
+      // still be cancellable or markable as failed.
+      if (!allowIncompleteHistory) {
+        throw new WorkflowWorldError(
+          `Cannot recover the missing run_created event for workflow run "${run.runId}": ${reason}`
+        );
+      }
+    };
+    // The caller only repairs pending runs. With no history, the saved
+    // record still describes creation; do not guess a missing prefix for
+    // nonempty history or substitute a redelivery's payload for missing input.
+    if (events.length) return cannotRecover('the event log is not empty');
+    if (run.input === undefined)
+      return cannotRecover('the original input is missing');
+
+    // The run file is authoritative: a redelivery may carry different input,
+    // deployment, attributes, or encryption metadata. Use its original time
+    // and spec version too. Dynamic code stays on the run record only.
+    const event: Event = {
+      eventType: 'run_created',
+      runId: run.runId,
+      eventId: slotToEventId(FIRST_EVENT_SLOT),
+      createdAt: run.createdAt,
+      specVersion: run.specVersion,
+      eventData: {
+        deploymentId: run.deploymentId,
+        workflowName: run.workflowName,
+        input: run.input,
+        executionContext: run.executionContext,
+        attributes: run.attributes,
+        encryptionPublicKey: run.encryptionPublicKey,
+      },
+    };
+    const eventPath = taggedPath(
+      basedir,
+      runEntityDir('events', run.runId),
+      `${run.runId}-${event.eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+    if (await writeExclusive(eventPath, serializedEvent)) {
+      rememberStoredEvent(event, eventPath, serializedEvent);
+    } else {
+      // The original creator may finish while recovery is preparing its
+      // write. Adopt that event, never bump this creation to another slot.
+      const existing = await readJSON(eventPath, ReadEventSchema);
+      if (
+        existing?.eventType !== 'run_created' ||
+        existing.runId !== run.runId
+      ) {
+        return cannotRecover('the first event slot is occupied');
+      }
+    }
+    notePublishedSlot(run.runId, event.eventId);
+  }
+
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
@@ -1213,28 +1281,6 @@ export function createEventsStorage(
               );
 
               if (created) {
-                // We created the run, so also write the run_created event.
-                // Drawn before this invocation's own id so it takes the
-                // earlier slot: it must replay first.
-                const runCreatedEventId = await mintEventId(effectiveRunId);
-                const runCreatedEvent: Event = {
-                  eventType: 'run_created',
-                  runId: effectiveRunId,
-                  eventId: runCreatedEventId,
-                  createdAt: now,
-                  specVersion: effectiveSpecVersion,
-                  eventData: {
-                    deploymentId: runInputData.deploymentId,
-                    workflowName: runInputData.workflowName,
-                    input: runInputData.input,
-                    executionContext: runInputData.executionContext,
-                    attributes: runInputData.attributes,
-                    allowReservedAttributes:
-                      runInputData.allowReservedAttributes,
-                    encryptionPublicKey: runInputData.encryptionPublicKey,
-                  },
-                };
-                await storeEvent(runCreatedEvent);
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -1250,14 +1296,6 @@ export function createEventsStorage(
             }
           }
         }
-
-        // Draw this event's id now that any synthetic `run_created` above has
-        // taken the earlier slot. A slot draw is a candidate, not a
-        // reservation: the many rejections below (a duplicate step_started
-        // from a concurrent replay, a terminal run, a step already in a
-        // terminal state) return without publishing, and the position stays
-        // available to the next writer.
-        eventId = await mintEventId(effectiveRunId);
 
         // These events are rejected on a non-existent run to match the
         // postgres and vercel worlds, which both surface this as a
@@ -1296,7 +1334,26 @@ export function createEventsStorage(
               params && { resolveData: entityResolveData(params.resolveData) }
             );
           }
+
+          const terminating =
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed';
+          if (
+            currentRun.status === 'pending' &&
+            (data.eventType === 'run_started' ||
+              data.eventType === 'attr_set' ||
+              terminating)
+          ) {
+            // The run and its creation event are separate writes. A saved
+            // run alone is not proof that its initial history was committed.
+            await ensureRunCreatedEvent(currentRun, terminating);
+          }
         }
+
+        // Any repaired `run_created` must take the earlier slot. A draw is
+        // only a candidate, not a reservation: rejected writes leave the
+        // position available to the next writer.
+        eventId = await mintEventId(effectiveRunId);
 
         // ============================================================
         // VALIDATION: Terminal state and event ordering checks
@@ -3323,6 +3380,24 @@ export function createEventsStorage(
             // starts above it. Only a committed publish moves the watermark.
             notePublishedSlot(effectiveRunId, eventId);
             break;
+          }
+          // Recovery may publish this run's creation while its original
+          // writer is paused. Only that same creation is a duplicate; an
+          // unrelated occupant still needs the normal slot collision handling.
+          if (data.eventType === 'run_created') {
+            const occupant = await readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            );
+            if (
+              occupant?.eventType === 'run_created' &&
+              occupant.runId === effectiveRunId
+            ) {
+              break;
+            }
           }
           // Losing this publish to THIS SAME resume is the convergence the
           // claim exists to force, and it has to be answered before the bump
