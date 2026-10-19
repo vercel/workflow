@@ -154,6 +154,14 @@ async function pruneExpiredLeases(
   `);
 }
 
+/** The transaction's `now()`: the `created_at` its inserts default to. */
+async function transactionNow(tx: DrizzleTransaction): Promise<number> {
+  const result = await tx.execute<{ now: Date | string }>(
+    sql`SELECT now() AS now`
+  );
+  return new Date(result.rows[0]?.now ?? Date.now()).getTime();
+}
+
 const fencingTokenOf = (event: Event) =>
   (event as { eventData: { fencingToken: number } }).eventData.fencingToken;
 
@@ -251,7 +259,14 @@ export async function acquireLock(
 
     // Refused. A retry of a scope that already waited writes nothing.
     const now = Date.now();
-    const waitingSince = scope.created ? +scope.created.createdAt : now;
+    // Measured from what the scope's lock_created records as its createdAt,
+    // on every attempt including the first: the column default is this
+    // transaction's `now()`, so the first refusal reads it here rather than
+    // using the app clock, or its schedule would be a few ms off from every
+    // later attempt's and its retry messages would not collapse.
+    const waitingSince = scope.created
+      ? +scope.created.createdAt
+      : await transactionNow(tx);
     // The scope's deterministic schedule: every attempt in this window gets
     // the same instant, so the runtime's retry messages collapse onto one.
     const retryAt = new Date(
