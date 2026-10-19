@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { getWorkflowQueueTrigger } from '@workflow/builders';
+import { getWorkflowQueueTriggers } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -372,7 +372,7 @@ export default {
           // execution; step messages include stepId on `__wkf_workflow_*`.
           // It carries `maxConcurrency: 1`, which with world-vercel's per-run
           // topics keeps a run to one orchestrator invocation at a time.
-          experimentalTriggers: [getWorkflowQueueTrigger()],
+          experimentalTriggers: getWorkflowQueueTriggers(),
         };
 
         if (runtime) {

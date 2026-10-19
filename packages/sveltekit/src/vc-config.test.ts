@@ -1,4 +1,7 @@
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  getWorkflowQueueTriggers,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { describe, expect, it } from 'vitest';
 
 import { stripWorkflowQueueTriggersFromConfig } from './vc-config.js';
@@ -27,6 +30,17 @@ describe('stripWorkflowQueueTriggersFromConfig', () => {
       stripWorkflowQueueTriggersFromConfig({
         runtime: 'nodejs',
         experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+      })
+    ).toEqual({
+      runtime: 'nodejs',
+    });
+  });
+
+  it('removes both flow triggers a flow route is built with', () => {
+    expect(
+      stripWorkflowQueueTriggersFromConfig({
+        runtime: 'nodejs',
+        experimentalTriggers: getWorkflowQueueTriggers(),
       })
     ).toEqual({
       runtime: 'nodejs',

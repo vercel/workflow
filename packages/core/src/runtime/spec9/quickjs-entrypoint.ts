@@ -294,6 +294,13 @@ export async function runWorkflowWithQuickJS(params: {
    */
   lingerDeadlineMs?: number;
   /**
+   * Continues the run in a fresh delivery once this one ends: a handoff of
+   * the delivery's message on a World with `capabilities.orchestratorHandoff`,
+   * otherwise a new orchestrator message. Absent (standalone callers): a new
+   * message.
+   */
+  continueInNextDelivery?: () => Promise<void>;
+  /**
    * Queue message ID of the delivery driving this invocation, stamped as
    * `ownerMessageId` on inline lazy step claims so wake replays defer to
    * the in-flight body instead of requeueing the step.
@@ -2300,18 +2307,19 @@ export async function runWorkflowWithQuickJS(params: {
       return;
     }
 
-    // Exit requeues are FRESH messages, never a `{ timeoutSeconds }`
-    // visibility-redelivery of the current message. Redelivering the
-    // CURRENT message is a trap: a hook-resume delivery carries
-    // `hookInput`, and its redelivery re-runs the lazy-resume re-ensure
-    // in the handler prologue: if the workflow disposed that hook
-    // during this invocation (dispose → sleep), a world that rejects
-    // the re-ensure would ack the message as "nothing left to resume"
-    // and the continuation it carried is silently lost. A fresh message
-    // carries only `runId`, so its delivery always reaches replay (and
-    // under turbo a reschedule would re-engage turbo against a stale
-    // preloaded log: see the reinvoke() docs in runtime.ts).
+    // Exit requeues continue the run in a fresh delivery, never a
+    // `{ timeoutSeconds }` visibility-redelivery of the current message,
+    // which would count as a failed attempt. Where the World hands off
+    // (`continueInNextDelivery`), the same message is redelivered without
+    // counting one: its redelivery has `deliveryCount` above 1, so turbo
+    // stays off, and a spec-9 message carries no legacy `hookInput` whose
+    // re-ensure could ack it away. Otherwise a FRESH message carries only
+    // `runId`, so its delivery always reaches replay.
     const requeueImmediately = async (): Promise<void> => {
+      if (params.continueInNextDelivery) {
+        await params.continueInNextDelivery();
+        return;
+      }
       await queueMessage(
         world,
         getWorkflowQueueName(workflowRun.workflowName, namespace),

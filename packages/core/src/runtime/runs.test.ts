@@ -231,6 +231,9 @@ describe('writes to a run started by a newer SDK', () => {
     });
     expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
       specVersion: SPEC_VERSION_CURRENT,
+      // The waits it names exist only on this message, so a queue must not
+      // coalesce it into a running delivery that re-reads only the log.
+      coalesce: false,
     });
   });
 

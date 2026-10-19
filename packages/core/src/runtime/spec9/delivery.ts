@@ -250,9 +250,31 @@ function startedFromBatch(
     : undefined;
 }
 
-/** Runs one delivery of a spec 9 run's queue message. */
+/**
+ * Runs one delivery of a spec 9 run's queue message.
+ *
+ * A delivery that must end before the run's work does (its deadline, a
+ * stream flush, the replay budget, a wait or write it cannot read yet)
+ * continues the run in a fresh delivery. On a World with
+ * `capabilities.orchestratorHandoff` that is a handoff of this message
+ * (`{ timeoutSeconds: 0, handoff: true }`): on world-vercel a message the
+ * orchestrator sent itself would be coalesced into its own delivery and run
+ * again in this same invocation. Elsewhere it is a new orchestrator message.
+ */
 export async function runSpec9Delivery(
   delivery: WorkflowDelivery
+): Promise<DeliveryResult> {
+  const continuation = { handoff: false };
+  const result = await runDelivery(delivery, continuation);
+  // A redelivery the delivery asked for anyway continues the run too.
+  return continuation.handoff && result === undefined
+    ? { timeoutSeconds: 0, handoff: true }
+    : result;
+}
+
+async function runDelivery(
+  delivery: WorkflowDelivery,
+  continuation: { handoff: boolean }
 ): Promise<DeliveryResult> {
   const {
     workflowCode,
@@ -290,11 +312,17 @@ export async function runSpec9Delivery(
   const wakeUpWaits = new Set(completeWaits ?? []);
   // The message whose creator identity this delivery holds: its own, or the
   // one it replaces (see `replaceThisMessage`). A replacement acts as a
-  // redelivery of that message.
+  // redelivery of that message. Counted in attempts, which leave out
+  // handed-off deliveries: a delivery after a handoff continues the run the
+  // way a new message would, rather than recovering from a lost delivery.
   const creatorMessageId = replacesMessage?.messageId ?? metadata.messageId;
+  const deliveryAttempts =
+    metadata.deliveryCount === undefined
+      ? undefined
+      : Math.min(metadata.deliveryCount, metadata.attempt);
   const creatorDeliveryCount = replacesMessage
-    ? Math.max(2, metadata.deliveryCount ?? 1)
-    : metadata.deliveryCount;
+    ? Math.max(2, deliveryAttempts ?? 1)
+    : deliveryAttempts;
 
   const invocationStartTime = Date.now();
   const noInlineReplayAfterMs = await getMaxInlineDurationMs(
@@ -383,12 +411,14 @@ export async function runSpec9Delivery(
   // before their `step_created`/`step_started` commit. A
   // redelivery (`{ timeoutSeconds }` after a fence refusal
   // included) has a delivery count above 1 and takes the
-  // normal path, which loads the log.
+  // normal path, which loads the log, and so does a re-run of a
+  // delivery whose queue coalesced other messages into it.
   const turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
+    metadata.coalescedRerun === undefined &&
     !incomingStepId &&
     !replayDivergence &&
     !hookInput &&
@@ -656,17 +686,30 @@ export async function runSpec9Delivery(
     traceCarrier: await nextTraceCarrier(),
     requestedAt: new Date(),
   });
-  /** Unkeyed wake of this run's orchestrator. */
+  const handsOff = world.capabilities?.orchestratorHandoff === true;
+  /**
+   * Wakes this run's orchestrator once this delivery ends, after
+   * `delaySeconds`. With no delay and nothing but a plain wake to carry,
+   * this delivery hands its message off instead where the World supports it
+   * (see {@link runSpec9Delivery}). `coalesce: false` marks a wake that
+   * carries state the log does not hold (`QueueOptions.coalesce`).
+   */
   const wakeSelf = async (
     extra?: Partial<WorkflowInvokePayload>,
-    delaySeconds?: number
+    delaySeconds?: number,
+    options?: { coalesce: false }
   ): Promise<void> => {
+    const delayed = delaySeconds !== undefined && delaySeconds > 0;
+    if (handsOff && !delayed && extra === undefined) {
+      continuation.handoff = true;
+      return;
+    }
     await queueMessage(
       world,
       getWorkflowQueueName(workflowName, namespace),
       { ...(await replayMessage()), ...extra },
-      delaySeconds !== undefined && delaySeconds > 0
-        ? { delaySeconds }
+      delayed || options
+        ? { ...(delayed ? { delaySeconds } : {}), ...options }
         : undefined
     );
   };
@@ -681,6 +724,12 @@ export async function runSpec9Delivery(
    * the wait it continues. Past
    * {@link MAX_MESSAGE_REPLACEMENTS} replacements in a chain it
    * falls back to redelivering this message instead.
+   *
+   * Never coalesced: the replacement's creator identity is
+   * message-only state, and it must count as a redelivery of the
+   * message it replaces (the background steps and timers that
+   * message created may not have gone out), which a handoff does
+   * not.
    */
   const replaceThisMessage = async (
     delaySeconds: number
@@ -699,7 +748,8 @@ export async function runSpec9Delivery(
         replacesMessage: { messageId: creatorMessageId, count },
         ...(waitContinuation ? { waitContinuation } : {}),
       },
-      delaySeconds
+      delaySeconds,
+      { coalesce: false }
     );
     return undefined;
   };
@@ -1302,6 +1352,7 @@ export async function runSpec9Delivery(
             invocationStartTime +
             noInlineReplayAfterMs -
             getInlineStepDeadlineMarginMs(),
+          continueInNextDelivery: () => wakeSelf(),
           requestId,
           writer,
           ...(wakeUpWaits.size > 0 ? { wakeUpWaits } : {}),
@@ -3568,13 +3619,19 @@ export async function runSpec9Delivery(
             errorMessage: err.message,
           }
         );
-        await wakeSelf({
-          replayDivergence: {
-            eventId: err.eventId,
-            count: divergenceCount,
-            eventIds: divergenceEventIds,
+        // Never coalesced: the divergence history is message-only state,
+        // and it is what bounds the recovery replays.
+        await wakeSelf(
+          {
+            replayDivergence: {
+              eventId: err.eventId,
+              count: divergenceCount,
+              eventIds: divergenceEventIds,
+            },
           },
-        });
+          undefined,
+          { coalesce: false }
+        );
         return { type: 'queued' };
       }
       return {

@@ -31,6 +31,10 @@ export interface HeldMessage {
   deliveryCount: number;
   createdAt: Date;
   opts?: Record<string, unknown>;
+  /** Deliveries of this message that ended in a handoff (option `handoff`). */
+  handoffCount?: number;
+  /** Delivered as the given re-run of a coalesced delivery. */
+  coalescedRerun?: number;
 }
 
 /** One delivery a test made, with what the handler returned. */
@@ -141,6 +145,13 @@ export class AppendOnlyWorld {
        * test with fake timers can let that time pass before the redelivery.
        */
       advanceClock?: (seconds: number) => void;
+      /**
+       * Declare `capabilities.orchestratorHandoff` and honor its result: a
+       * `{ timeoutSeconds: 0, handoff: true }` keeps the same message with
+       * the next delivery count and one more handoff, and `attempt` leaves
+       * handed-off deliveries out.
+       */
+      handoff?: boolean;
       /**
        * Called before every `events.create`, before anything is checked or
        * written. A test throws from it to refuse a write, or awaits in it to
@@ -439,8 +450,11 @@ export class AppendOnlyWorld {
     let result: unknown;
     try {
       result = await this.handler(held.message, {
-        attempt: held.deliveryCount,
+        attempt: held.deliveryCount - (held.handoffCount ?? 0),
         deliveryCount: held.deliveryCount,
+        ...(held.coalescedRerun !== undefined && {
+          coalescedRerun: held.coalescedRerun,
+        }),
         createdAt: held.createdAt,
         messageId: held.messageId,
         queueName: held.queueName,
@@ -470,7 +484,15 @@ export class AppendOnlyWorld {
       this.options.advanceClock?.(
         (result as { timeoutSeconds: number }).timeoutSeconds
       );
-      this.held.push({ ...held, deliveryCount: held.deliveryCount + 1 });
+      const handedOff =
+        this.options.handoff === true &&
+        (result as { handoff?: unknown }).handoff === true;
+      const { coalescedRerun: _rerun, ...next } = held;
+      this.held.push({
+        ...next,
+        deliveryCount: held.deliveryCount + 1,
+        ...(handedOff && { handoffCount: (held.handoffCount ?? 0) + 1 }),
+      });
     }
     return result;
   }
@@ -737,6 +759,7 @@ export class AppendOnlyWorld {
         inBandFence: true,
         inBandEventTime: true,
         ...(self.options.entityOrder ? { inBandBatchEntityOrder: true } : {}),
+        ...(self.options.handoff ? { orchestratorHandoff: true } : {}),
       },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';

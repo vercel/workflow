@@ -43,6 +43,7 @@ interface WorldCapabilities {
   };
   maxConcurrency?: boolean;
   inBandFence?: boolean; // required to declare spec 9, see Single-writer guarantee
+  orchestratorHandoff?: boolean;
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
 }
@@ -309,10 +310,11 @@ interface Queue {
 The handler's result is queue control:
 
 - **`{ timeoutSeconds: n }`**: do not acknowledge; deliver the **same** message again (same `messageId`, next `deliveryCount`) after about `n` seconds. The runtime returns it from a step's message to retry the step in place, and from an orchestrator delivery the in-band fence refused. You may clamp `n`; the runtime checks the log on an early redelivery and asks again. Sleeps never use it: a timer is a new delayed message.
+- **`{ timeoutSeconds: 0, handoff: true }`** (spec 9, only to a World that declares `capabilities.orchestratorHandoff`): the delivery is not done. Deliver the **same** message again at once, and leave this delivery out of `meta.attempt`. A spec 9 orchestrator returns it when its invocation has to end before its work does: the invocation deadline, a stream flush, the replay budget. Without the capability it sends itself a new message instead.
 - **Anything else**: acknowledge.
 - **A rejection**: retry the same message with your own backoff.
 
-`meta.messageId` must be stable across redeliveries of one message, and `meta.deliveryCount` must be 1 only on a message's first delivery (leave it `undefined` if your queue cannot say; the runtime then reads the log before every step body). A step with `maxRetries: 0` runs at most once only if a redelivery never reports 1. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries.
+`meta.messageId` must be stable across redeliveries of one message, and `meta.deliveryCount` must be 1 only on a message's first delivery (leave it `undefined` if your queue cannot say; the runtime then reads the log before every step body). A step with `maxRetries: 0` runs at most once only if a redelivery never reports 1. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries. `meta.attempt` is `deliveryCount` less the deliveries that ended in a handoff; the runtime's delivery cap counts it, so on a World without handoffs it equals `deliveryCount`.
 
 **Deliver a run's orchestrator messages one at a time.** This is the queue half of the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence), described there with the fence. It applies to the Workflow SDK's own prefix only; a queue consumer's own messages on another prefix are delivered as they come.
 
@@ -461,7 +463,14 @@ Two mechanisms keep a run to one in-band writer, and a World implements both:
 
 `orchestratorRunIdOf(payload)` from `@workflow/world` returns the run a message is an orchestrator delivery for (a start, a wake, a hook resume, a cancellation, a timer), or `undefined` for a step message or a health check. While one delivery for a run is in flight, hold the run's other orchestrator deliveries until it responds; never hold step messages back. A delivery that is waiting out a `{ timeoutSeconds }` delay is not in flight. The runtime never needs a second delivery of a run to make progress: an orchestrator blocked on an inline step reads new events from the log itself.
 
-Declare `capabilities.maxConcurrency` when your queue does this. world-vercel uses a per-run topic consumed with `maxConcurrency: 1`, world-postgres a Graphile named queue per run, and world-local an in-process per-run gate. This half is a frequency mechanism: the runtime takes no fast path from it, and correctness rests on the fence.
+Declare `capabilities.maxConcurrency` when your queue does this. world-postgres uses a Graphile named queue per run and world-local an in-process per-run gate. world-vercel uses a per-run topic consumed with `maxConcurrency: 1` for spec 8 runs, and for spec 9 runs a concurrency key per run (below). This half is a frequency mechanism: the runtime takes no fast path from it, and correctness rests on the fence.
+
+A queue may **coalesce** instead of holding: while one delivery of a run is in flight, it drops the run's other orchestrator messages and records them on that delivery, as world-vercel's spec 9 topics do with the queue's concurrency key. That is safe because whatever an orchestrator message is sent for is committed to the log before it is sent, with two exceptions the World has to honor:
+
+- **Re-run the delivery.** When messages were coalesced into a delivery, call the handler again within it before acknowledging, with `meta.coalescedRerun` set (1 for the first re-run). The runtime treats a re-run as a redelivery and reads the log.
+- **Deliver `coalesce: false` messages on their own.** A few orchestrator messages carry state the log does not hold (`QueueOptions.coalesce` is `false`): a replacement message's creator identity, a replay-divergence history, the waits `run.wakeUp()` names. Never coalesce those.
+
+A coalescing queue also needs `capabilities.orchestratorHandoff`: without it an orchestrator that has to end early sends itself a new message, which would be coalesced into its own delivery and run again in the same invocation.
 
 ### Storage: the in-band fence
 

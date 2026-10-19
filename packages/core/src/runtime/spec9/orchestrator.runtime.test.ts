@@ -34,6 +34,13 @@ registerStepFunction('so_add', async (a: number, b: number) => {
   count('so_add');
   return a + b;
 });
+/** Runs past a delivery's deadline when the deadline is under its duration. */
+const SLOW_STEP_MS = 150;
+registerStepFunction('so_slow_add', async (a: number, b: number) => {
+  count('so_slow_add');
+  await new Promise((resolve) => setTimeout(resolve, SLOW_STEP_MS));
+  return a + b;
+});
 let flakyFailures = 0;
 registerStepFunction('so_flaky', async () => {
   count('so_flaky');
@@ -495,11 +502,68 @@ describe.each([
     expect(replacement.message).toMatchObject({
       replacesMessage: { messageId: start.messageId, count: 1 },
     });
+    // Its creator identity exists only on the message, so a queue must not
+    // coalesce it into a running delivery.
+    expect(replacement.opts).toMatchObject({ coalesce: false });
     // The replacement re-snapshots and finishes the run.
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
     expect(calls.so_add).toBe(1);
   });
+
+  // Node engine only: QuickJS keeps its VM live through both inline steps
+  // and finishes in one pass whatever its replay budget.
+  it.runIf(engine === 'node').each([{ handoff: true }, { handoff: false }])(
+    'continues a delivery past its deadline in a fresh one (handoff: $handoff)',
+    async ({ handoff }) => {
+      const code = `const slow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_slow_add");
+       const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) {
+         const first = await slow(a, b);
+         return await add(first, 10);
+       }${transform('workflow')}`;
+      const { world, start } = await setup(code, [1, 2], { handoff });
+
+      // The first step starts inline inside the first delivery's deadline and
+      // finishes past it, so the pass that reads its outcome back (without
+      // run-ahead, a pass of its own) finds the deadline reached.
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+      vi.stubEnv('WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS', '0');
+      vi.stubEnv('WORKFLOW_V2_TIMEOUT_MS', String(SLOW_STEP_MS / 2));
+      let result: unknown;
+      try {
+        result = await world.deliver(start);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      const fresh = world.held.filter((h) => h.messageId !== start.messageId);
+      if (handoff) {
+        // The same message, handed off: no new message, and the next
+        // delivery is not an attempt.
+        expect(result).toEqual({ timeoutSeconds: 0, handoff: true });
+        expect(fresh).toEqual([]);
+        expect(world.held).toEqual([
+          expect.objectContaining({
+            messageId: start.messageId,
+            deliveryCount: 2,
+            handoffCount: 1,
+          }),
+        ]);
+      } else {
+        // A World that cannot hand off gets a new orchestrator message.
+        expect(result).toBeUndefined();
+        expect(world.held.some((h) => h.messageId === start.messageId)).toBe(
+          false
+        );
+        expect(fresh).toHaveLength(1);
+      }
+      expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(calls).toMatchObject({ so_slow_add: 1, so_add: 1 });
+    }
+  );
 
   it('fails an orchestrator past the delivery cap in-band, and never a step message', async () => {
     const { world, start } = await setup(

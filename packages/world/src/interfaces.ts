@@ -657,10 +657,11 @@ export interface WorldCapabilities {
 
   /**
    * The World's queue delivers a run's orchestrator messages one at a time
-   * (see `orchestratorRunIdOf`): per-run topics consumed with
-   * `maxConcurrency: 1` on Vercel Queues, an in-process per-run gate or a
-   * per-run job queue elsewhere. Worlds whose queue cannot serialize a run's
-   * orchestrator deliveries must leave this unset.
+   * (see `orchestratorRunIdOf`): on Vercel Queues, per-run topics consumed
+   * with `maxConcurrency: 1` for spec-8 runs and a concurrency key per run
+   * for spec-9 runs; an in-process per-run gate or a per-run job queue
+   * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
+   * deliveries must leave this unset.
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
    * no fast path from it: one orchestrator at a time is a frequency
@@ -706,6 +707,22 @@ export interface WorldCapabilities {
    * each of these against a World's `events` storage.
    */
   inBandFence?: boolean;
+
+  /**
+   * The World's queue implements the handoff result of an orchestrator
+   * delivery (`{ timeoutSeconds: 0, handoff: true }`, see
+   * `Queue.createQueueHandler`): it delivers the same message again at once
+   * and does not count the handed-off delivery toward `attempt`.
+   *
+   * A spec-9 orchestrator whose invocation must end before its work does
+   * hands its message off on such a World instead of sending itself a new
+   * message. Required where the queue coalesces a run's orchestrator
+   * messages into the running delivery (world-vercel), because a message the
+   * orchestrator sends itself while it holds the run would be coalesced into
+   * its own delivery and run again in the same invocation. A World without it
+   * gets the new message.
+   */
+  orchestratorHandoff?: boolean;
   /**
    * The World records an in-band write (`inBand: true`) with the
    * `occurredAt` it was sent with as its `createdAt`, on creates and on

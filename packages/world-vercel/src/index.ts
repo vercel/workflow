@@ -62,10 +62,16 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // Vercel Queues supports maxConcurrency-limited consumers: every run's
-      // orchestrator messages go to a per-run topic consumed with
-      // `maxConcurrency: 1` (see queue.ts and @workflow/builders).
+      // One orchestrator delivery per run at a time: a spec-8 run's messages
+      // go to a per-run topic consumed with `maxConcurrency: 1`, and a spec-9
+      // run's carry its run id as a VQS concurrency key on the keyed flow
+      // topic (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // A spec-9 orchestrator's `{ timeoutSeconds: 0, handoff: true }` is a VQS
+      // lease handoff: the same message, redelivered at once, not counted as
+      // an attempt. Required here: on the keyed flow topic a message the
+      // orchestrator sends itself is coalesced into its own delivery.
+      orchestratorHandoff: true,
       // The backend stores a single-orchestrator event's `occurredAt` as its
       // `createdAt` (clamped only for clock skew beyond an hour ahead or a
       // week behind), on creates and batch items alike, so run-ahead may

@@ -10,6 +10,7 @@ import {
   type QueuePayload,
   QueuePayloadSchema,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   ValidQueueName,
 } from '@workflow/world';
@@ -279,13 +280,36 @@ export function resolveMessageLifetime(opts?: QueueOptions): {
  * deliver the SAME message (same id, next `deliveryCount`) again after that
  * delay. VQS clamps the delay to what it supports (5s to 900s per hop); the
  * runtime tolerates an early redelivery by checking the log and asking again.
+ *
+ * With `handoff` (`{ timeoutSeconds: 0, handoff: true }`) the lease change is
+ * a VQS handoff: the redelivery starts at once, and VQS counts it toward
+ * neither its retry backoff nor `maxAttempts`, and reports it in the next
+ * delivery's handoff count, which `attempt` subtracts.
  */
 class RedeliverSameMessage extends Error {
-  constructor(readonly afterSeconds: number) {
-    super(`redeliver the same message after ${afterSeconds}s`);
+  constructor(
+    readonly afterSeconds: number,
+    readonly handoff = false
+  ) {
+    super(
+      handoff
+        ? 'hand the message off to its next delivery'
+        : `redeliver the same message after ${afterSeconds}s`
+    );
     this.name = 'RedeliverSameMessage';
   }
 }
+
+/**
+ * Handler re-runs per delivery when its acknowledgment finds orchestrator
+ * messages coalesced into it (see {@link getPhysicalQueueName}). Each re-run
+ * is a replay that read the log those messages' senders committed to, and a
+ * run whose messages keep arriving faster than a replay finishes would
+ * otherwise re-run until the invocation's deadline, which the orchestrator
+ * checks and hands off at. Past the bound, the refused acknowledgment is a
+ * handler error and the message is redelivered with backoff.
+ */
+const MAX_COALESCED_RERUNS = 32;
 
 const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // Ceiling for the per-redelivery backoff. This value is the `retry-after` we
@@ -509,9 +533,20 @@ function getHeadersFromPayload(
  * Resolves the physical VQS topic for a message.
  *
  * Messages on flow (workflow) topics get a payload-dependent physical topic.
- * Other topics keep the logical queue name. VQS scopes `maxConcurrency` per
- * concrete topic, so combined with the flow trigger's `maxConcurrency: 1`
- * (see `getWorkflowQueueTrigger` in `@workflow/builders`):
+ * Other topics keep the logical queue name.
+ *
+ * A message for a single-orchestrator run (spec >= 9, see
+ * {@link runSpecVersionOf}) goes to the KEYED flow topic,
+ * `__[<namespace>_]wkf_keyed_<rest>`. Its consumer (`getWorkflowQueueTriggers`
+ * in `@workflow/builders`) has no `maxConcurrency`, and orchestrator messages
+ * carry the run id as their `Vqs-Experimental-Concurrency-Key` (see
+ * {@link concurrencyKeyOf}): VQS keeps one delivery per run active and
+ * coalesces the run's other orchestrator messages into it, so the run's
+ * orchestrator runs one invocation at a time with no per-run topic. Step
+ * messages ride the same topic unkeyed and run in parallel.
+ *
+ * Everything else keeps the topics of the `maxConcurrency: 1` consumer.
+ * VQS scopes `maxConcurrency` per concrete topic, so:
  *
  * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
  *   per-run topic: at most one replay per run at a time.
@@ -521,6 +556,9 @@ function getHeadersFromPayload(
  *   same step serialize.
  * - Health checks get a per-probe topic (their correlation id) so concurrent
  *   probes never queue behind one shared `…_health_check` slot.
+ *
+ * The two consumers cannot share topics: VQS rejects a keyed send to a topic
+ * that a `maxConcurrency` consumer subscribes to.
  *
  * The flow-topic match allows an optional queue namespace prefix
  * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants) so the
@@ -534,12 +572,79 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
+/** `wkf_workflow_` → `wkf_keyed_`; mirrors `@workflow/builders`. */
+function toKeyedFlowTopic(queueName: string): string {
+  return queueName.replace(
+    FLOW_TOPIC_PATTERN,
+    (_match, namespace: string | undefined) => `__${namespace ?? ''}wkf_keyed_`
+  );
+}
+
+/**
+ * The spec version of the run a workflow message is for, from the payload
+ * (the `runSpecVersion` hint the runtime stamps, a first delivery's
+ * `runInput`, a step message's `runContext`) or else `opts.specVersion`.
+ * `undefined` when neither says, which routes like a spec-8 run: a spec-9
+ * run's message on the `maxConcurrency` topics still delivers, and the
+ * in-band fence keeps it safe.
+ */
+function runSpecVersionOf(
+  payload: QueuePayload,
+  opts?: QueueOptions
+): number | undefined {
+  if ('__healthCheck' in payload) return undefined;
+  if (!('runId' in payload)) return undefined;
+  return (
+    payload.runSpecVersion ??
+    payload.runInput?.specVersion ??
+    payload.runContext?.specVersion ??
+    opts?.specVersion
+  );
+}
+
+function isKeyedRunMessage(
+  queueName: ValidQueueName,
+  payload: QueuePayload,
+  opts?: QueueOptions
+): boolean {
+  if (!FLOW_TOPIC_PATTERN.test(queueName)) return false;
+  const specVersion = runSpecVersionOf(payload, opts);
+  return (
+    specVersion !== undefined && specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
+
+/**
+ * The concurrency key of a message on the keyed flow topic: the run id, for
+ * an orchestrator message. `undefined` for a step message, and for an
+ * orchestrator message sent with `coalesce: false`, which carries state the
+ * run's log does not hold and so must not be coalesced into another
+ * delivery that would never see it (see `QueueOptions.coalesce`).
+ */
+function concurrencyKeyOf(
+  payload: QueuePayload,
+  opts?: QueueOptions
+): string | undefined {
+  if (opts?.coalesce === false) return undefined;
+  if (!('runId' in payload) || typeof payload.runId !== 'string') {
+    return undefined;
+  }
+  if ('stepId' in payload && typeof payload.stepId === 'string') {
+    return undefined;
+  }
+  return payload.runId;
+}
+
 function getPhysicalQueueName(
   queueName: ValidQueueName,
-  payload: QueuePayload
+  payload: QueuePayload,
+  opts?: QueueOptions
 ): string {
   if (!FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
+  }
+  if (isKeyedRunMessage(queueName, payload, opts)) {
+    return toKeyedFlowTopic(queueName);
   }
   // Health checks are matched before the runId branch: a probe issued to
   // prepare a cross-deployment `start()` carries the run id it is about to
@@ -626,10 +731,13 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const topic = getPhysicalQueueName(queueName, payload).replace(
+    const topic = getPhysicalQueueName(queueName, payload, opts).replace(
       /[^A-Za-z0-9-_]/g,
       '-'
     );
+    const concurrencyKey = isKeyedRunMessage(queueName, payload, opts)
+      ? concurrencyKeyOf(payload, opts)
+      : undefined;
 
     return {
       deploymentId,
@@ -650,6 +758,9 @@ export function createQueue(config?: APIConfig): Queue {
         // Set only on a step's execution message; a wake carries none (see
         // `QueueOptions.idempotencyKey`). Passed through as given.
         idempotencyKey: opts?.idempotencyKey,
+        ...(concurrencyKey !== undefined && {
+          experimental_concurrencyKey: concurrencyKey,
+        }),
         ...resolveMessageLifetime(opts),
         headers: {
           ...getHeadersFromPayload(payload),
@@ -736,12 +847,12 @@ export function createQueue(config?: APIConfig): Queue {
     // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
     // one request per distinct route.
     //
-    // `topic` is one of those dimensions, which makes this a no-op under
-    // WORKFLOW_SEQUENTIAL_REPLAYS=1: step dispatches ride the flow topic,
-    // `getPhysicalQueueName` gives each one a per-step physical topic, and
-    // every message therefore lands in a group of its own. The fan-out still
-    // publishes correctly, just at one request per step as before, and each
-    // goes through the batch endpoint rather than `send()` — which does not
+    // `topic` is one of those dimensions. A spec-9 run's step dispatches share
+    // the keyed flow topic and batch as described. A spec-8 run's do not:
+    // `getPhysicalQueueName` gives each one a per-step physical topic, so every
+    // message lands in a group of its own. That fan-out still publishes
+    // correctly, at one request per step, and each goes through the batch
+    // endpoint rather than `send()` — which does not
     // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
     // 503). No caller on this path classifies that error today, so nothing
     // changes behaviorally; worth knowing before one starts.
@@ -838,10 +949,19 @@ export function createQueue(config?: APIConfig): Queue {
               // Stable across redeliveries of one message, including the
               // ones a `{ timeoutSeconds }` result asks for below.
               messageId: MessageId.parse(metadata.messageId),
-              attempt: metadata.deliveryCount,
+              // A handed-off delivery is not an attempt (see
+              // `RedeliverSameMessage`).
+              attempt: Math.max(
+                1,
+                metadata.deliveryCount -
+                  (metadata.experimental_handoffCount ?? 0)
+              ),
               deliveryCount: metadata.deliveryCount,
               createdAt: metadata.createdAt,
               requestId,
+              ...(metadata.experimental_coalesced && {
+                coalescedRerun: metadata.experimental_coalesced.rerun,
+              }),
             });
           const result = await (invocation
             ? invocationStorage.run(
@@ -862,10 +982,14 @@ export function createQueue(config?: APIConfig): Queue {
             // delivery the in-band fence superseded. The same message keeps
             // its id, so a redelivery of the delivery that created a step
             // still recognizes itself.
+            const afterSeconds = Number.isFinite(result.timeoutSeconds)
+              ? Math.max(0, Math.ceil(result.timeoutSeconds))
+              : 0;
             throw new RedeliverSameMessage(
-              Number.isFinite(result.timeoutSeconds)
-                ? Math.max(0, Math.ceil(result.timeoutSeconds))
-                : 0
+              afterSeconds,
+              afterSeconds === 0 &&
+                'handoff' in result &&
+                result.handoff === true
             );
           }
         } finally {
@@ -882,10 +1006,13 @@ export function createQueue(config?: APIConfig): Queue {
         // with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
+        experimental_maxCoalescedReruns: MAX_COALESCED_RERUNS,
         retry: (error, { messageId, deliveryCount }) => {
           if (error instanceof RedeliverSameMessage) {
             // A requested redelivery, not a failure: no backoff, no log line.
-            return { afterSeconds: error.afterSeconds };
+            return error.handoff
+              ? { afterSeconds: 0, experimental_handoff: true }
+              : { afterSeconds: error.afterSeconds };
           }
           const afterSeconds = getHandlerErrorRetryAfterSeconds(
             error,

@@ -4,7 +4,17 @@ function resolveQueueNamespace(namespace?: string): string | undefined {
   return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
 }
 
-function getQueueTopicPrefix(namespace?: string) {
+/**
+ * The physical topic prefix of the flow route's queue trigger. `workflow`
+ * (`__wkf_workflow_`) is the `maxConcurrency: 1` consumer, `keyed`
+ * (`__wkf_keyed_`) the consumer of messages carrying a VQS concurrency key,
+ * which VQS refuses on a topic a `maxConcurrency` consumer subscribes to.
+ * `@workflow/world-vercel` picks between them per message.
+ */
+function getQueueTopicPrefix(
+  namespace?: string,
+  kind: 'workflow' | 'keyed' = 'workflow'
+) {
   if (namespace !== undefined) {
     if (!QUEUE_NAMESPACE_PATTERN.test(namespace)) {
       throw new Error(
@@ -12,10 +22,10 @@ function getQueueTopicPrefix(namespace?: string) {
       );
     }
 
-    return `__${namespace}_wkf_workflow_`;
+    return `__${namespace}_wkf_${kind}_`;
   }
 
-  return '__wkf_workflow_';
+  return `__wkf_${kind}_`;
 }
 
 /**
@@ -112,23 +122,57 @@ export function isSequentialReplaysEnabled(): boolean {
 }
 
 /**
- * Returns the queue trigger configuration for workflow (flow) routes.
+ * Returns the `maxConcurrency: 1` queue trigger of workflow (flow) routes.
+ * Flow routes need {@link getWorkflowQueueTriggers}, which includes it.
  *
  * Builds on `createWorkflowQueueTrigger()`: the namespace comes from
  * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. Always sets
  * `maxConcurrency: 1`, so the queue processes at most one flow invocation per
  * concrete topic at a time. Paired with the per-run physical topic naming in
  * `@workflow/world-vercel` (which appends the run id to the flow topic, and
- * the step id for a step's message), this keeps a run to one orchestrator
- * invocation at a time while its queued steps run in parallel. Queued step
- * invocations share this flow trigger rather than using a separate route.
- *
- * Integrations that write their own flow trigger config instead of calling
- * this must set `maxConcurrency: 1` themselves.
+ * the step id for a step's message), this keeps a spec-8 run to one
+ * orchestrator invocation at a time while its queued steps run in parallel.
+ * Queued step invocations share this flow trigger rather than using a
+ * separate route.
  */
 export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
   return {
     ...createWorkflowQueueTrigger(options),
     maxConcurrency: 1,
   };
+}
+
+/**
+ * Returns the queue trigger for the keyed flow topic
+ * (`__wkf_keyed_*`, or `__<namespace>_wkf_keyed_*`).
+ *
+ * `@workflow/world-vercel` sends a spec-9 run's messages there. Its
+ * orchestrator messages carry the run id as a VQS concurrency key, which keeps
+ * the run to one orchestrator invocation at a time and coalesces the run's
+ * other orchestrator messages into it; its step messages carry none and run
+ * in parallel. The trigger has no `maxConcurrency`: VQS refuses a keyed send
+ * to a topic a `maxConcurrency` consumer subscribes to.
+ */
+export function getKeyedWorkflowQueueTrigger(options?: { namespace?: string }) {
+  const namespace = resolveQueueNamespace(options?.namespace);
+  return {
+    ...createWorkflowQueueTrigger(options),
+    topic: `${getQueueTopicPrefix(namespace, 'keyed')}*`,
+  };
+}
+
+/**
+ * Returns every queue trigger a workflow (flow) route needs:
+ * {@link getWorkflowQueueTrigger} for spec-8 runs, health checks and other
+ * messages, and {@link getKeyedWorkflowQueueTrigger} for spec-9 runs.
+ *
+ * Integrations that write their own flow trigger config instead of calling
+ * this must emit both, with `maxConcurrency: 1` on the first and none on the
+ * second.
+ */
+export function getWorkflowQueueTriggers(options?: { namespace?: string }) {
+  return [
+    getWorkflowQueueTrigger(options),
+    getKeyedWorkflowQueueTrigger(options),
+  ];
 }

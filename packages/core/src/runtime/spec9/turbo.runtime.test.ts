@@ -224,6 +224,22 @@ describe.each([
     });
   });
 
+  it('loads the log on a coalesced re-run of the first delivery', async () => {
+    // A queue that coalesced other messages into the first delivery runs its
+    // handler again: the log holds that delivery's writes by then, so the
+    // re-run is a redelivery, not a first delivery.
+    const { world, start } = await setup(twoSteps, [1, 2]);
+
+    await world.deliver({ ...start, coalescedRerun: 1 });
+    await world.runUntilIdle();
+
+    expect(types(world.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+    expect(bodies[0]!.listCalls).toBeGreaterThan(0);
+    expect(world.creates[0]?.params).not.toMatchObject({ skipPreload: true });
+  });
+
   it('stops the delivery when the fence refuses the backgrounded run_started, and redelivers', async () => {
     let refuse = true;
     let release: () => void = () => {};

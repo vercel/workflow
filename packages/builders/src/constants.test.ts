@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  getKeyedWorkflowQueueTrigger,
   getWorkflowQueueTrigger,
+  getWorkflowQueueTriggers,
   isSequentialReplaysEnabled,
 } from './constants.js';
 
@@ -40,6 +42,47 @@ describe('getWorkflowQueueTrigger', () => {
   it('resolves WORKFLOW_QUEUE_NAMESPACE at call time', () => {
     vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'callns');
     expect(getWorkflowQueueTrigger().topic).toBe('__callns_wkf_workflow_*');
+  });
+});
+
+describe('getWorkflowQueueTriggers', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('pairs the maxConcurrency trigger with a keyed trigger that has none', () => {
+    const [serialized, keyed] = getWorkflowQueueTriggers();
+    expect(serialized).toEqual(getWorkflowQueueTrigger());
+    expect(keyed).toEqual(getKeyedWorkflowQueueTrigger());
+    expect(keyed).toMatchObject({
+      type: serialized!.type,
+      consumer: serialized!.consumer,
+      topic: '__wkf_keyed_*',
+    });
+    // VQS refuses a keyed send to a topic a maxConcurrency consumer reads.
+    expect(keyed).not.toHaveProperty('maxConcurrency');
+  });
+
+  it('keeps the two topic patterns disjoint', () => {
+    const [serialized, keyed] = getWorkflowQueueTriggers({
+      namespace: 'custom',
+    });
+    expect(keyed!.topic).toBe('__custom_wkf_keyed_*');
+    const prefix = (topic: string) => topic.slice(0, -1);
+    expect(prefix(keyed!.topic).startsWith(prefix(serialized!.topic))).toBe(
+      false
+    );
+    expect(prefix(serialized!.topic).startsWith(prefix(keyed!.topic))).toBe(
+      false
+    );
+  });
+
+  it('resolves WORKFLOW_QUEUE_NAMESPACE at call time for both', () => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'callns');
+    expect(getWorkflowQueueTriggers().map((t) => t.topic)).toEqual([
+      '__callns_wkf_workflow_*',
+      '__callns_wkf_keyed_*',
+    ]);
   });
 });
 

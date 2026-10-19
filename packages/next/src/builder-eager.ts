@@ -105,7 +105,7 @@ export async function getNextBuilderEager(
 
   const {
     BaseBuilder: BaseBuilderClass,
-    getWorkflowQueueTrigger,
+    getWorkflowQueueTriggers,
     detectWorkflowPatterns,
     parentHasChild,
     writeFileIfChanged,
@@ -822,7 +822,7 @@ export async function getNextBuilderEager(
         version: '0',
         workflows: {
           maxDuration: 'max',
-          experimentalTriggers: [getWorkflowQueueTrigger()],
+          experimentalTriggers: getWorkflowQueueTriggers(),
         },
       };
 

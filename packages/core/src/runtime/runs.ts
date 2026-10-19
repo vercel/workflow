@@ -453,7 +453,10 @@ export async function wakeUpRun(
 
     // A single-orchestrator run's waits are completed by its orchestrator
     // alone (in-band), so a wake-up names the waits on an orchestrator
-    // message instead of writing `wait_completed` beside it.
+    // message instead of writing `wait_completed` beside it. The names live
+    // only on that message, so it is never coalesced into a delivery that is
+    // already running (`coalesce: false`): that delivery re-reads only the
+    // log and would not complete them.
     if ((run.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
       const correlationIds = pendingWaits.flatMap((event) =>
         event.correlationId ? [event.correlationId] : []
@@ -473,6 +476,7 @@ export async function wakeUpRun(
               run.specVersion,
               SPEC_VERSION_LEGACY
             ),
+            coalesce: false,
           }
         );
       }

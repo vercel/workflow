@@ -12,7 +12,9 @@ catalog:
   "@types/node": 22.19.0
   "@vercel/functions": ^3.8.0
   "@vercel/oidc": 3.2.0
-  "@vercel/queue": 0.8.0
+  # TEMPORARY: vercel/vqs#233 (experimental concurrency keys and lease
+  # handoffs) before it is released. Revert to a published version before merge.
+  "@vercel/queue": https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz
   "@vitest/coverage-v8": ^4.1.10
   "@vitest/runner": ^4.1.10
   ai: 6.0.116

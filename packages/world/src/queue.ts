@@ -656,6 +656,17 @@ export interface QueueOptions {
    * (the pre-regional-routing behavior).
    */
   region?: string;
+  /**
+   * `false` for an orchestrator message that carries state its run's log
+   * does not hold (spec >= 9: a `replacesMessage` or `replayDivergence`
+   * history, `completeWaits`). A World whose queue coalesces a run's
+   * orchestrator messages into the delivery that is running (see
+   * {@link Queue.createQueueHandler}, `meta.coalescedRerun`) delivers such a
+   * message on its own instead, because a coalesced message is never
+   * delivered and its holder re-reads only the log. Absent means the
+   * message may be coalesced.
+   */
+  coalesce?: boolean;
 }
 
 /**
@@ -771,6 +782,13 @@ export interface Queue {
    *   same payload instead, provided it carries the same `messageId` in
    *   `meta` on delivery; otherwise the runtime's creator-redelivery rule
    *   loses its anchor (see `meta.messageId`).
+   * - **Resolves with `{ timeoutSeconds: 0, handoff: true }`** (spec >= 9,
+   *   only on a World declaring `capabilities.orchestratorHandoff`): the
+   *   delivery is not done and continues in a fresh one. Deliver the SAME
+   *   message again at once, and do not count this delivery toward `attempt`.
+   *   The orchestrator returns this when its invocation must end before its
+   *   work does (the invocation deadline, a stream flush, the replay budget,
+   *   a fence refusal).
    * - **Resolves with anything else**: acknowledge the message.
    * - **Rejects**: retry the same message, with a World-chosen backoff.
    *
@@ -792,8 +810,19 @@ export interface Queue {
    *   is correct but slower. A queue that reports 1 for a redelivery breaks
    *   the at-most-once guarantee of a `maxRetries: 0` step.
    * - `createdAt` is when the message was first enqueued, when known.
-   * - `attempt` is the same count as `deliveryCount`, kept for Worlds and
-   *   callers that predate it.
+   * - `attempt` is `deliveryCount` less the deliveries that ended in a
+   *   handoff (`{ timeoutSeconds: 0, handoff: true }`). It is what the
+   *   runtime's delivery cap counts. On a World without handoffs it equals
+   *   `deliveryCount`.
+   * - `coalescedRerun` is set when the World runs the handler again within
+   *   the same delivery, because orchestrator messages for the run arrived
+   *   while it ran and the queue coalesced them into it instead of
+   *   delivering them (`@vercel/queue`'s experimental concurrency key). It
+   *   counts those re-runs from 1. A coalesced message is never delivered,
+   *   so a re-run must read the run's log, as a redelivery does: whatever
+   *   those messages were sent for was committed to the log before they
+   *   were sent. A message whose payload carries more than the log (see
+   *   {@link QueueOptions.coalesce}) is never coalesced.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -806,6 +835,7 @@ export interface Queue {
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
+        coalescedRerun?: number;
       }
     ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
