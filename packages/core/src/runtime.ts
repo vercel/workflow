@@ -75,6 +75,7 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import { maybeWarnApproachingEventLimit } from './runtime/event-limit-warning.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -2038,12 +2039,18 @@ export function workflowEntrypoint(
                         const loaded = await loadWorkflowRunEvents(runId);
                         eventLog = nextEventLogLoad(loaded);
 
-                        // Check for pending steps: any step_created without
-                        // a matching step_completed or step_failed.
+                        // Check for pending steps: any created step without
+                        // a matching step_completed or step_failed. A
+                        // `step_started` counts as the creation too: a World
+                        // may record an inline step's creation on its
+                        // `step_started` alone, with no `step_created`.
                         const stepCreatedIds = new Set<string | undefined>();
                         const stepTerminalIds = new Set<string | undefined>();
                         for (const e of loaded.events) {
-                          if (e.eventType === 'step_created') {
+                          if (
+                            e.eventType === 'step_created' ||
+                            e.eventType === 'step_started'
+                          ) {
                             stepCreatedIds.add(e.correlationId);
                           } else if (
                             e.eventType === 'step_completed' ||
@@ -3383,6 +3390,13 @@ export function workflowEntrypoint(
                             maxEventsLimit
                           );
                         }
+                        maybeWarnApproachingEventLimit({
+                          runId,
+                          workflowName,
+                          eventCount: workflowEventCount,
+                          limit: maxEventsLimit,
+                          isQuickJS: false,
+                        });
                       }
 
                       // Latency telemetry: judge TTFS eligibility against the

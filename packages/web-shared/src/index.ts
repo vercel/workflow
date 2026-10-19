@@ -60,6 +60,13 @@ export {
   truncateId,
 } from './lib/hydration';
 export {
+  getRunLimitGuidance,
+  isQuickJSSnapshotRun,
+  type RunLimitGuidance,
+  type RunLimitGuidanceInput,
+  type RunLimitGuidanceKind,
+} from './lib/run-limit-guidance';
+export {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from './lib/sealed-events';

@@ -67,7 +67,7 @@ import {
 } from './helpers.js';
 import { Run } from './run.js';
 import {
-  getSnapshotThresholdFromEnv,
+  getSnapshotThresholdForStart,
   getWorkflowVmFromEnv,
 } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -1015,10 +1015,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // If WORKFLOW_VM / WORKFLOW_SNAPSHOT_THRESHOLD are set on the client
       // starting the run, stamp them into the run's executionContext so the
       // run keeps the engine and snapshot policy it started with (the same
-      // deployment can serve both VM engines). Unknown values throw; see
+      // deployment can serve both VM engines). QuickJS runs always get an
+      // explicit threshold (the default when unset) because the World keys
+      // the per-run event limit exemption on it. Unknown values throw; see
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
-      const snapshotThreshold = getSnapshotThresholdFromEnv();
+      const snapshotThreshold = getSnapshotThresholdForStart(workflowVm);
       // The queue namespace the run's messages travel on, recorded so a World
       // that re-enqueues active runs on restart (world-local, world-postgres)
       // sends this run back to its own namespace's consumer.

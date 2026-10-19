@@ -26,6 +26,7 @@ import {
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
+import { RunLimitGuidanceAlert } from '~/components/run-limit-guidance-alert';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import {
   AlertDialog,
@@ -722,6 +723,7 @@ export function RunDetailView({
               )}
             </div>
           </div>
+          <RunLimitGuidanceAlert run={runData} />
         </div>
 
         <div className="mt-4 flex-1 flex flex-col min-h-0">

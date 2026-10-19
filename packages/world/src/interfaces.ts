@@ -866,6 +866,19 @@ export interface World extends Queue, Streamer, Storage {
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
 
   /**
+   * The region an existing run's data lives in, derived from its run ID
+   * alone (no I/O, never throws).
+   *
+   * The counterpart of {@link createRunId} for worlds that embed a region in
+   * the IDs they mint. Callers that create a run on behalf of an existing one
+   * (e.g. `recreateRunFromExisting()`) pass the result to `start({ region })`
+   * so the new run is placed where the original was, rather than wherever the
+   * calling process happens to execute. Return `null` when the ID is not one
+   * this world recognizes. Worlds without a regional dimension omit this.
+   */
+  regionForRunId?(runId: string): string | null;
+
+  /**
    * Upload a dynamic run's serialized workflow VM code to the World's blob
    * storage ahead of `run_created`, returning the ref key to attach to the
    * run.
