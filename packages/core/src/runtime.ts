@@ -64,6 +64,10 @@ import {
   isTurboEnabled,
   isVmRetentionEnabled,
 } from './runtime/constants.js';
+import {
+  getLockContinuationDispatch,
+  getWaitContinuationDispatch,
+} from './runtime/continuation-dispatch.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
   type DeploymentAffinityOutcome,
@@ -141,7 +145,6 @@ import {
   type SuspensionSerializationBlocker,
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
-import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld } from './runtime/world.js';
 import {
   dehydrateRunError,
@@ -839,6 +842,7 @@ export function workflowEntrypoint(
           runContext,
           hookResumeTiming,
           waitContinuation,
+          lockContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -1108,6 +1112,10 @@ export function workflowEntrypoint(
                   // republishes), so each suspension of the loop below does
                   // not send them again. See `forcedCreationsOwingWake`.
                   const forceClaimVictimWakes = new Set<string>();
+                  // Lock scopes this invocation has asked for a slot, with the
+                  // World's `retryAt`, so a waiting lock costs one write per
+                  // retry rather than one per pass of this loop.
+                  const lockProbes = new Map<string, number>();
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
@@ -3637,6 +3645,7 @@ export function workflowEntrypoint(
                             runReadyBarrier,
                             replayRecoveryReporter,
                             forceClaimVictimWakes,
+                            lockProbes,
                             // Lets the batched fan-out publish each eagerly
                             // created step's execution message after its
                             // chunk commits. Steps queued there are reported
@@ -4002,6 +4011,20 @@ export function workflowEntrypoint(
                           continue;
                         }
 
+                        // A lock grant, likewise: the `lock_acquired` this
+                        // suspension's re-POST committed is a resolution the
+                        // workflow is waiting on, and it may decide a race
+                        // against a step this pass scheduled. Replay over it
+                        // in-process before dispatching anything, as for an
+                        // attribute write; nothing out of band delivers it.
+                        if (
+                          suspensionResult.lockAcquiredCorrelationIds.length > 0
+                        ) {
+                          await suspensionResult.deferredBatchWork;
+                          eventLog = nextEventLogLoad(eventLog);
+                          continue;
+                        }
+
                         // Steps whose arguments failed to serialize were
                         // finalized by the suspension handler as step_created
                         // + step_failed (see finalizeUnserializableStep). No
@@ -4209,7 +4232,7 @@ export function workflowEntrypoint(
                         // multiple hops) and its idempotency key dedupes
                         // re-observations of the same pending wait across
                         // suspension passes. See
-                        // runtime/wait-continuation.ts for the full
+                        // runtime/continuation-dispatch.ts for the full
                         // delay/key selection rationale.
                         const traceCarrier = await nextTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
@@ -4396,7 +4419,46 @@ export function workflowEntrypoint(
                             )
                           );
                         }
-                        if (suspensionResult.waitTimeout) {
+                        // A waiting lock and a pending wait share one wake:
+                        // arm whichever fires first, and the next pass
+                        // re-observes the other.
+                        const lockRetry = suspensionResult.lockRetry;
+                        if (
+                          lockRetry &&
+                          (!suspensionResult.waitTimeout ||
+                            lockRetry.seconds <
+                              suspensionResult.waitTimeout.seconds)
+                        ) {
+                          // The attempt rule is the wait's (below): advance it
+                          // only when this invocation IS the retry for this
+                          // scope and the scope is still pending.
+                          const lockAttempt =
+                            lockContinuation?.correlationId ===
+                            lockRetry.correlationId
+                              ? lockContinuation.attempt + 1
+                              : 0;
+                          dispatches.push(
+                            queueMessage(
+                              world,
+                              getWorkflowQueueName(workflowName, namespace),
+                              {
+                                runId,
+                                traceCarrier,
+                                requestedAt: new Date(),
+                                lockContinuation: {
+                                  correlationId: lockRetry.correlationId,
+                                  attempt: lockAttempt,
+                                },
+                              },
+                              getLockContinuationDispatch(
+                                lockRetry.retryAtMs,
+                                lockRetry.correlationId,
+                                Date.now(),
+                                lockAttempt
+                              )
+                            )
+                          );
+                        } else if (suspensionResult.waitTimeout) {
                           // One higher than the incoming continuation's when
                           // this invocation IS the continuation for this same
                           // wait and the wait is still pending: that delivery

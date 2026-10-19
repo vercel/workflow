@@ -3,7 +3,7 @@ import {
   getWaitContinuationDispatch,
   NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
   WAIT_CONTINUATION_MAX_DELAY_SECONDS,
-} from './wait-continuation.js';
+} from './continuation-dispatch.js';
 
 const CORR_ID = 'wait_01ABC';
 const NOW = new Date('2026-05-19T12:00:20.500Z').getTime();

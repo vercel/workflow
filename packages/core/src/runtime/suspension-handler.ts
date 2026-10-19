@@ -27,6 +27,7 @@ import { importKey } from '../encryption.js';
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
+  LockInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
   WorkflowSuspension,
@@ -49,6 +50,7 @@ import {
   isBatchTransitionsEnabled,
   MAX_BATCH_FANOUT_EVENTS,
 } from './constants.js';
+import { lockRetrySeconds } from './continuation-dispatch.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
@@ -153,6 +155,14 @@ export interface SuspensionHandlerParams {
    * suspension. Omitted, every suspension republishes on its own.
    */
   forceClaimVictimWakes?: Set<string>;
+  /**
+   * The invocation's record of lock scopes it has already asked for a slot,
+   * by correlation id, with the `retryAt` the World answered. A pending scope
+   * is re-POSTed only once that instant has passed, so the several passes one
+   * invocation makes over a waiting lock (one per inline step batch, say)
+   * cost one World write, not one each. Omitted, every suspension asks.
+   */
+  lockProbes?: Map<string, number>;
 }
 
 /**
@@ -263,6 +273,23 @@ export interface SuspensionHandlerResult {
    * (and reported here) until its `wait_completed` lands.
    */
   waitTimeout?: { seconds: number; correlationId: string; resumeAtMs: number };
+  /**
+   * The soonest retry among the lock scopes still waiting for a slot: when
+   * the World said to ask again (`retryAtMs`), the seconds until then, and
+   * the scope, whose correlation id keys the retry's continuation (see
+   * `getLockContinuationDispatch`). A run with both this and a
+   * {@link waitTimeout} arms whichever fires first; the next pass re-observes
+   * the other.
+   */
+  lockRetry?: { seconds: number; correlationId: string; retryAtMs: number };
+  /**
+   * Correlation ids of the lock scopes this suspension's `lock_created`
+   * writes were granted: their `lock_acquired` is committed but not in the
+   * caller's log. The caller replays over a reloaded log before running
+   * anything else this suspension scheduled, so the grant can decide a
+   * `Promise.race` the way the log orders it (as `hasAttributeEvents` does).
+   */
+  lockAcquiredCorrelationIds: string[];
   /**
    * Whether a hook create committed a `hook_conflict` — the token was already
    * claimed, so this run's hook was never created. The caller answers it by
@@ -497,6 +524,7 @@ export async function handleSuspension({
   ownerMessageId,
   allowDeferredBatchWork,
   forceClaimVictimWakes,
+  lockProbes,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -662,6 +690,9 @@ export async function handleSuspension({
   );
   const attributeItems = suspension.items.filter(
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
+  );
+  const lockItems = suspension.items.filter(
+    (item): item is LockInvocationQueueItem => item.type === 'lock'
   );
 
   const hooksNeedingCreation = allHookItems.filter(
@@ -1936,6 +1967,101 @@ export async function handleSuspension({
     );
   }
 
+  // Lock scopes. A released scope owes its `lock_released`. A scope still
+  // waiting re-POSTs its `lock_created` (the first time, or once its last
+  // `retryAt` has passed): the World either grants it, committing a
+  // `lock_acquired`, or answers with the scope's committed `lock_created` and
+  // a fresh `retryAt`, appending nothing. A held scope needs nothing.
+  const lockAcquiredCorrelationIds: string[] = [];
+  const lockRetries = new Map<string, number>();
+  for (const queueItem of lockItems) {
+    if (queueItem.released) {
+      ops.push(
+        (async () => {
+          try {
+            await ensureRunReady();
+            await createGuarded(
+              {
+                eventType: 'lock_released',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: queueItem.correlationId,
+                eventData: { key: queueItem.key },
+              },
+              { requestId }
+            );
+          } catch (err) {
+            // Already released by a concurrent invocation, or the run ended
+            // and the World's terminal reclaim freed the slot.
+            if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+              runtimeLogger.info('Lock already released, continuing', {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              });
+              return;
+            }
+            throw err;
+          }
+        })()
+      );
+      continue;
+    }
+    if (queueItem.acquired) continue;
+    const probedRetryAtMs = lockProbes?.get(queueItem.correlationId);
+    if (probedRetryAtMs !== undefined && probedRetryAtMs > Date.now()) {
+      lockRetries.set(queueItem.correlationId, probedRetryAtMs);
+      continue;
+    }
+    ops.push(
+      (async () => {
+        await ensureRunReady();
+        let result: EventResult;
+        try {
+          result = await createGuarded(
+            {
+              eventType: 'lock_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: queueItem.correlationId,
+              eventData: {
+                key: queueItem.key,
+                concurrency: queueItem.concurrency,
+                ...(queueItem.leaseTtlMs !== undefined && {
+                  leaseTtlMs: queueItem.leaseTtlMs,
+                }),
+              },
+            },
+            { requestId }
+          );
+        } catch (err) {
+          // The run reached a terminal state: it no longer wants the slot.
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            runtimeLogger.info('Lock acquisition refused for a finished run', {
+              workflowRunId: runId,
+              correlationId: queueItem.correlationId,
+              message: err.message,
+            });
+            return;
+          }
+          throw err;
+        }
+        if (result.event?.eventType === 'lock_acquired') {
+          lockAcquiredCorrelationIds.push(queueItem.correlationId);
+          lockProbes?.delete(queueItem.correlationId);
+          warnOnLockGrant(runId, queueItem, result, lockItems);
+          return;
+        }
+        const retryAtMs =
+          result.lock?.retryAt?.getTime() ??
+          (result.event?.eventType === 'lock_created'
+            ? result.event.eventData.retryAt?.getTime()
+            : undefined) ??
+          Date.now() + 1_000;
+        lockProbes?.set(queueItem.correlationId, retryAtMs);
+        lockRetries.set(queueItem.correlationId, retryAtMs);
+      })()
+    );
+  }
+
   // Await the step_created / wait_created event creates before returning.
   // The caller (workflowEntrypoint) only enqueues the step-dispatch queue
   // messages AFTER handleSuspension resolves, and the queue handler acks
@@ -1991,6 +2117,15 @@ export async function handleSuspension({
     }
   }
 
+  // The soonest lock retry, if any scope is still waiting.
+  let lockRetry: SuspensionHandlerResult['lockRetry'];
+  for (const [correlationId, retryAtMs] of lockRetries) {
+    const seconds = lockRetrySeconds(retryAtMs, now);
+    if (!lockRetry || seconds < lockRetry.seconds) {
+      lockRetry = { seconds, correlationId, retryAtMs };
+    }
+  }
+
   span?.setAttributes({
     ...Attribute.WorkflowRunStatus('workflow_suspended'),
     ...Attribute.WorkflowStepsCreated(stepItems.length),
@@ -2016,6 +2151,8 @@ export async function handleSuspension({
     // report one. The next pass, which sees the conflict settled, reports it.
     waitTimeout:
       hookConflictCorrelationIds.length > 0 ? undefined : soonestWait,
+    lockRetry: hookConflictCorrelationIds.length > 0 ? undefined : lockRetry,
+    lockAcquiredCorrelationIds,
     hasHookConflict: hookConflictCorrelationIds.length > 0,
     hookConflictCorrelationIds,
     hasAwaitedHookCreation: awaitedHookCorrelationIds.length > 0,
@@ -2031,6 +2168,55 @@ export async function handleSuspension({
     serializationBlockers,
     reportedEventCount: reportedEvents,
   };
+}
+
+/**
+ * The two warnings a fresh grant can earn, logged once per grant (here,
+ * where the World answered, rather than in the workflow body, which would
+ * repeat them on every replay):
+ *
+ * - the key's stored concurrency is not what this scope asked for (first
+ *   writer wins);
+ * - the run now holds two or more locks, which deadlocks against another
+ *   run acquiring the same keys in the opposite order.
+ */
+function warnOnLockGrant(
+  runId: string,
+  queueItem: LockInvocationQueueItem,
+  result: EventResult,
+  lockItems: LockInvocationQueueItem[]
+): void {
+  if (result.event?.eventType !== 'lock_acquired') return;
+  const { effectiveConcurrency } = result.event.eventData;
+  if (effectiveConcurrency !== queueItem.concurrency) {
+    runtimeLogger.warn(
+      `lock("${queueItem.key}") asked for concurrency ${queueItem.concurrency}, but the key is already limited to ${effectiveConcurrency}; the existing limit applies`,
+      {
+        workflowRunId: runId,
+        correlationId: queueItem.correlationId,
+        key: queueItem.key,
+      }
+    );
+  }
+  const otherHeld = lockItems.filter(
+    (item) =>
+      item.correlationId !== queueItem.correlationId &&
+      item.acquired &&
+      !item.released
+  );
+  if (otherHeld.length > 0) {
+    runtimeLogger.warn(
+      `Workflow run holds ${otherHeld.length + 1} locks at once (${[
+        ...otherHeld.map((item) => item.key),
+        queueItem.key,
+      ]
+        .map((key) => `"${key}"`)
+        .join(
+          ', '
+        )}); runs acquiring the same keys in a different order can deadlock`,
+      { workflowRunId: runId, correlationId: queueItem.correlationId }
+    );
+  }
 }
 
 /**

@@ -67,6 +67,12 @@ const getDeferredCheckDelayMs = (): number =>
  * An allowlist rather than the complement of the ordered set, so a type this
  * file has not been taught about keeps the strict old behavior.
  *
+ * `lock_acquired` is World-origin like `hook_conflict`: the World commits it in
+ * place of a `lock_created`, or on a later retry at whatever position the
+ * grant lands, so it is a resolution rather than a record of a replay's
+ * decision. `lock_created` and `lock_released` are replay-origin and stay
+ * strict.
+ *
  * `hook_disposed` is deliberately absent despite being about a hook: it is
  * written when the workflow's own `using` scope exits, so it is replay-origin.
  *
@@ -93,6 +99,7 @@ const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'wait_completed',
   'attr_set',
   'run_cancelled',
+  'lock_acquired',
 ]);
 
 /**
@@ -109,6 +116,7 @@ const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
  */
 const ONE_SHOT_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'wait_completed',
+  'lock_acquired',
 ]);
 
 /** Identifies the thing a one-shot resolution event resolves. */

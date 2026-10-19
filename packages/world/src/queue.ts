@@ -453,6 +453,22 @@ export const WorkflowInvokePayloadSchema = z.compile(
       })
       .optional()
       .catch(undefined),
+    /**
+     * The `lock()` scope this message is the delayed retry for, and which
+     * attempt in that scope's chain it is: the lock counterpart of
+     * {@link WorkflowInvokePayloadSchema.shape.waitContinuation}, with the
+     * same reason to exist. A retry delivered while its scope is still pending
+     * has spent its idempotency key, so the next one must advance the attempt
+     * or the world's dedupe window drops it and the waiter loses its only
+     * wake. `.catch(undefined)` for the same reason as `waitContinuation`.
+     */
+    lockContinuation: z
+      .object({
+        correlationId: z.string(),
+        attempt: z.number().int().nonnegative(),
+      })
+      .optional()
+      .catch(undefined),
     /** Step ID for inline step execution in combined handler. If provided, the flow execution
      * will jump directly to execute the step with the given ID before doing an event replay. */
     stepId: z.string().optional(),

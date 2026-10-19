@@ -57,6 +57,7 @@ import {
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
 } from './constants.js';
+import { getWaitContinuationDispatch } from './continuation-dispatch.js';
 import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
@@ -102,7 +103,6 @@ import {
   isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
 } from './vm-mode.js';
-import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { safeWaitUntil } from './wait-until.js';
 import { getWorld } from './world.js';
 
@@ -165,7 +165,7 @@ async function queueStepMessage(params: {
    * Publish purpose, used to bucket the idempotency key. Worlds retire
    * used keys (VQS retention TTL, world-postgres completed-keys cache),
    * so a key shared across purposes silently swallows the second
-   * publish. See wait-continuation.ts for the same hazard on wait
+   * publish. See continuation-dispatch.ts for the same hazard on wait
    * keys. `dispatch` is the plain background handoff (overflow / crash
    * recovery) and uses the step-identity-scoped dispatch key
    * (stepDispatchIdempotencyKey) so it stays mutually
@@ -2685,7 +2685,7 @@ export async function runWorkflowWithQuickJS(params: {
       // not already scheduled. The dispatch helper handles delay
       // clamping (long waits chain across hops) and idempotency-key
       // dedup of re-observations of the same pending wait. See
-      // runtime/wait-continuation.ts.
+      // runtime/continuation-dispatch.ts.
       wfdiag('exit_suspended', {
         action: 'schedule_wait_timeout',
         timeoutSeconds: soonestWait.seconds,

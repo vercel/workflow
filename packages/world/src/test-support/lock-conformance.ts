@@ -41,8 +41,11 @@ export interface LockConformanceOptions {
   events: () => Storage['events'];
   /** The capabilities the World under test declares (`World.capabilities`). */
   capabilities: () => WorldCapabilities | undefined;
-  /** The World's optional `locks` admin namespace, when it has one. */
-  locks?: () => Storage['locks'];
+  /**
+   * The World's optional `locks` admin namespace over the same backing data
+   * as `events` (the instance a test got from `events()`), when it has one.
+   */
+  locks?: (events: Storage['events']) => Storage['locks'];
   /** A run id for `run_created`, or `null` when the World mints it. */
   newRunId: () => string | null;
   /**
@@ -258,7 +261,7 @@ export function lockConformance(options: LockConformanceOptions): void {
       );
       expect(new Set(tokens).size).toBe(concurrency);
 
-      const lock = await options.locks?.()?.get(key);
+      const lock = await options.locks?.(first)?.get(key);
       if (lock) {
         expect(lock.count).toBe(concurrency);
         expect(lock.grantSeq).toBe(concurrency);
@@ -291,7 +294,7 @@ export function lockConformance(options: LockConformanceOptions): void {
       expect(again.event.eventType).toBe('lock_acquired');
       expect(again.event.eventId).toBe(granted.event.eventId);
       expect(await logOf(events, runId)).toHaveLength(before.length);
-      const lock = await options.locks?.()?.get(key);
+      const lock = await options.locks?.(events)?.get(key);
       if (lock) expect(lock.count).toBe(1);
     });
 
@@ -413,7 +416,7 @@ export function lockConformance(options: LockConformanceOptions): void {
       );
       expect(reposted.event.eventType).toBe('lock_acquired');
       expect(reposted.result.lock?.status).toBe('released');
-      const lock = await options.locks?.()?.get(key);
+      const lock = await options.locks?.(events)?.get(key);
       if (lock) expect(lock.count).toBe(concurrency);
     });
 
@@ -445,7 +448,7 @@ export function lockConformance(options: LockConformanceOptions): void {
           terminate(round % 2 ? second : first, runId, how),
         ]);
 
-        const lock = await options.locks?.()?.get(key);
+        const lock = await options.locks?.(first)?.get(key);
         if (lock) expect(lock.count).toBe(1);
         expect(await freeSlots(first, key, concurrency)).toBe(1);
       }
@@ -462,7 +465,7 @@ export function lockConformance(options: LockConformanceOptions): void {
         expect(await freeSlots(events, key, 2)).toBe(0);
 
         await terminate(events, runId, how);
-        const holders = await options.locks?.()?.listHolders({ runId });
+        const holders = await options.locks?.(events)?.listHolders({ runId });
         if (holders) expect(holders).toEqual([]);
 
         const refused = await acquire(events, runId, key, 2).catch(
@@ -545,7 +548,7 @@ export function lockConformance(options: LockConformanceOptions): void {
       const token = (e: Event) =>
         (e as { eventData: { fencingToken: number } }).eventData.fencingToken;
       expect(token(next.event)).toBeGreaterThan(token(leased.event));
-      const lock = await options.locks?.()?.get(key);
+      const lock = await options.locks?.(events)?.get(key);
       if (lock) expect(lock.count).toBe(1);
 
       // The expired holder's own release is a no-op that frees nothing.
@@ -574,9 +577,9 @@ export function lockConformance(options: LockConformanceOptions): void {
 
     if (options.locks) {
       test('force-releasing a holder frees its slot exactly once', async () => {
-        const admin = options.locks?.();
-        if (!admin?.releaseHolder) return;
         const events = options.events();
+        const admin = options.locks?.(events);
+        if (!admin?.releaseHolder) return;
         const key = uniqueId('key');
         const runId = await createRun(events);
         const { correlationId } = await acquire(events, runId, key, 1);

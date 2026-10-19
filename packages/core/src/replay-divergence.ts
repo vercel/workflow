@@ -41,6 +41,8 @@ function describeQueueItem(item: QueueItem): string {
       return `wait (${item.correlationId})`;
     case 'attribute':
       return `attribute (${item.correlationId})`;
+    case 'lock':
+      return `lock "${item.key}" (${item.correlationId})`;
   }
   item satisfies never;
   return 'unknown';

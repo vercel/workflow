@@ -1,5 +1,18 @@
 /**
- * Wait-continuation dispatch: delay + idempotency-key selection.
+ * Delayed self-continuation dispatch: delay + idempotency-key selection for
+ * the message a run enqueues to wake itself later.
+ *
+ * Two timers use it, keyed on their own correlation ids, so they can never
+ * collide:
+ *
+ * - a pending `sleep()` (`wait_<ulid>`), described below;
+ * - a `lock()` scope waiting for a slot (`lock_<ulid>`), whose World-computed
+ *   `retryAt` says when to re-POST its `lock_created`. See
+ *   {@link getLockContinuationDispatch}.
+ *
+ * Every hazard below applies to both: a lock retry that is delivered early (or
+ * re-observed by an unrelated pass) is exactly a wait that is delivered early,
+ * and the same attempt-suffixed keys keep its timer from being dropped.
  *
  * When V2 suspension processing observes a pending wait, it enqueues a
  * delayed "continuation" message that fires once the wait elapses and
@@ -139,6 +152,45 @@ export function getWaitContinuationDispatch(
     delaySeconds: dispatch.delaySeconds,
     idempotencyKey: `${dispatch.idempotencyKey}:a${attempt}`,
   };
+}
+
+/**
+ * {@link getWaitContinuationDispatch} under its general name: the dispatch for
+ * any delayed self-continuation keyed on `correlationId`.
+ */
+export const getContinuationDispatch = getWaitContinuationDispatch;
+
+/**
+ * Dispatch for a `lock()` scope still waiting for a slot: wake the run at the
+ * World's `retryAt` (floored at 1s, the queue's delay granularity) so its next
+ * replay re-POSTs the scope's `lock_created`. `attempt` follows the same rule
+ * as a wait's: it advances only when this invocation IS the continuation for
+ * this scope and the scope is still pending (see
+ * `WorkflowInvokePayload.lockContinuation`).
+ *
+ * A retry delay never approaches the 23h hop limit (the reference backoff
+ * caps at 30s), but a World is free to pick one, so it goes through the same
+ * clamping as a wait.
+ */
+export function getLockContinuationDispatch(
+  retryAtMs: number,
+  lockCorrelationId: string,
+  now: number = Date.now(),
+  attempt = 0
+): WaitContinuationDispatch & { seconds: number } {
+  const seconds = lockRetrySeconds(retryAtMs, now);
+  return {
+    seconds,
+    ...getContinuationDispatch(seconds, lockCorrelationId, now, attempt),
+  };
+}
+
+/** Seconds until `retryAtMs`, floored at 1 (NaN reads as "now"). */
+export function lockRetrySeconds(retryAtMs: number, now: number): number {
+  const remainingMs = retryAtMs - now;
+  return Number.isFinite(remainingMs)
+    ? Math.max(1, Math.ceil(remainingMs / 1000))
+    : 1;
 }
 
 function waitContinuationDispatchForAttemptZero(
