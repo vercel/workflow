@@ -120,8 +120,10 @@ carries the owning team, and this takes precedence over a `VERCEL_TOKEN` set in
 the function's environment. A `VERCEL_TOKEN` belongs to a *user* and carries no
 team, so authenticating with it scopes the lookup to that user's default team
 and fails with a 404 whenever that is not the team that owns the deployment.
-Outside a deployment (CLI, CI, the dashboard) `VERCEL_TOKEN` is still used;
-configure the World's `teamId` so the request is scoped explicitly.
+Outside a deployment (CLI, CI, the dashboard) the SDK uses the World's
+`token`, falling back to `VERCEL_TOKEN`; configure the World's `teamId` so the
+request is scoped explicitly. See
+[Starting runs from outside a deployment](/worlds/vercel#starting-runs-from-outside-a-deployment).
 </Callout>
 
 <Callout type="warn">
