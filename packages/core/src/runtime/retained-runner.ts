@@ -272,7 +272,7 @@ const LOCAL_TIMER_DEADLINE_MARGIN_MS = 5_000;
 const MAX_WAKE_DELAY_SECONDS = 82_800;
 /** While the owner has in-process work, a durable wake is kept armed this far
  * ahead so a crashed owner is replaced (WORKFLOW_RETAINED_MONITOR_MS). */
-const DEFAULT_MONITOR_MS = 60_000;
+const DEFAULT_MONITOR_MS = 20_000;
 /** Before the function deadline the owner stops taking work and hands the
  * run to a fresh owner invocation through an immediate queue wake. */
 const HANDOFF_MARGIN_MS = 10_000;

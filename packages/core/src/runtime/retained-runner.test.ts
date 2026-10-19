@@ -2120,7 +2120,7 @@ it('arms one monitor wake on activation before acknowledging, and dedupes later 
   await expect(first).resolves.toEqual({ status: 'accepted' });
   await fixture.send('b', 'two');
   expect(monitorKeys(calls)).toHaveLength(1);
-  expect(monitorKeys(calls)[0].delaySeconds).toBe(60);
+  expect(monitorKeys(calls)[0].delaySeconds).toBe(20);
   await fixture.finished;
 });
 
