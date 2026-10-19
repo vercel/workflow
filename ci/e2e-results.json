@@ -1,14 +1,14 @@
 {
-  "lastUpdated": "2026-10-19T18:56:34.840Z",
-  "commit": "42077f2b9d39f238f1db4860a536ef5cd2d395e7",
+  "lastUpdated": "2026-10-19T19:13:47.138Z",
+  "commit": "a3f53cf22a2e97c91363faaffa274a5fbef7c174",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
-      "status": "passing",
+      "status": "partial",
       "total": 10800,
-      "passed": 9686,
-      "failed": 0,
+      "passed": 9685,
+      "failed": 1,
       "skipped": 1114,
       "frameworks": {},
       "progress": 90
