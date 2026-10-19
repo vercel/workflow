@@ -915,7 +915,11 @@ export interface CreateEventParams {
    * the replay loop and the suspension handler, which merge the report below
    * back into their loaded log. Omitted by callers with no loaded log to be
    * stale against, the step executor included: for those the report would be
-   * a read the World does for no one.
+   * a read the World does for no one. Independent concurrent hook registrations
+   * in a hooks-only suspension also omit it deliberately: the runtime verifies
+   * their committed events together after every write settles, and reloads if
+   * they do not form a complete suffix. Absence does not imply no loaded log;
+   * without a count there is no evidence for count-based stale rejection.
    *
    * A World's slots are dense and 1-based (see `Storage.events`), so a count
    * and a position are the same number. An id that is not a position does not
@@ -1081,6 +1085,10 @@ export type EventResult<T extends EventType = EventType> = {
    * caller holds any earlier events. The runtime may advance to it only after
    * proving that its loaded prefix plus committed responses covers every slot
    * through this event. Worlds that omit it retain the normal reload path.
+   * When supplied, `event` MUST match what ascending events.list returns for
+   * that slot with the same resolveData option, including stored timestamps,
+   * normalized retention, metadata bytes, and hook-conflict details. The
+   * runtime uses this stored event as replay input, not an echo of the request.
    */
   eventCursor?: string;
   /** The workflow run entity (for run_* events) */

@@ -63,6 +63,12 @@ after all concurrent hook registrations settle and their returned events prove
 a complete consecutive suffix of its loaded log. Missing events or cursors keep
 the normal reload path. Registrations use the existing single-event API.
 
+Returning `eventCursor` opts into replaying the returned `event` directly. It
+must equal the event returned by `events.list` for that slot with the same
+`resolveData` option, including stored timestamps, normalized retention,
+resolved metadata, and hook-conflict details. Return persisted state rather than
+echoing the creation request.
+
 ## Implementation constraint: no mutable module state
 
 A World implementation must not keep mutable state at module scope. Hold it on

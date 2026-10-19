@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -75,6 +76,7 @@ function setup(count = 2) {
     events: { create, list: vi.fn() },
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as unknown as World;
+  const span = { setAttributes: vi.fn() };
   const invoke = (
     options: Partial<Parameters<typeof handleSuspension>[0]> = {}
   ) =>
@@ -82,11 +84,12 @@ function setup(count = 2) {
       world,
       run,
       eventLog,
+      span: span as unknown as Span,
       requestId: 'request',
       suspension: new WorkflowSuspension(pending, globalThis),
       ...options,
     });
-  return { create, answer, world, seed, eventLog, pending, invoke };
+  return { create, answer, world, span, seed, eventLog, pending, invoke };
 }
 
 describe('concurrent hook history reconciliation', () => {
@@ -119,6 +122,11 @@ describe('concurrent hook history reconciliation', () => {
     );
     expect(t.eventLog.cursor).toBe(`eid:${slotToEventId(5)}`);
     expect(result.eventLogCarriedForward).toBe(true);
+    expect(t.span.setAttributes).toHaveBeenCalledWith({
+      'workflow.concurrent_hooks.count': 2,
+      'workflow.concurrent_hooks.carried_forward': true,
+      'workflow.concurrent_hooks.fallback_reason': 'none',
+    });
     expect(result.awaitedHookCorrelationIds.sort()).toEqual([
       'hook_0',
       'hook_1',
@@ -207,21 +215,21 @@ describe('concurrent hook history reconciliation', () => {
   });
 
   it.each([
-    'gap before',
-    'gap between',
-    'missing event',
-    'missing cursor',
-    'duplicate slot',
-    'old event',
-    'wrong run',
-    'wrong correlation',
-    'wrong token',
-    'wrong type',
-    'non-slot ID',
-    'truncated page',
-    'lazy metadata',
-    'omitted metadata',
-  ])('retains the reload path without changing the log: %s', async (mode) => {
+    ['gap before', 'nonconsecutive_slots'],
+    ['gap between', 'nonconsecutive_slots'],
+    ['missing event', 'missing_event'],
+    ['missing cursor', 'missing_event_cursor'],
+    ['duplicate slot', 'nonconsecutive_slots'],
+    ['old event', 'nonconsecutive_slots'],
+    ['wrong run', 'event_mismatch'],
+    ['wrong correlation', 'event_mismatch'],
+    ['wrong token', 'event_mismatch'],
+    ['wrong type', 'event_mismatch'],
+    ['non-slot ID', 'non_slot_event'],
+    ['truncated page', 'incomplete_response'],
+    ['lazy metadata', 'unresolved_metadata'],
+    ['omitted metadata', 'unresolved_metadata'],
+  ])('retains the reload path without changing the log: %s', async (mode, reason) => {
     const t = setup();
     if (mode.includes('metadata'))
       Object.assign(t.pending.get('hook_1')!, { metadata: 'payload' });
@@ -259,6 +267,11 @@ describe('concurrent hook history reconciliation', () => {
     expect(t.eventLog.events).toEqual(t.seed);
     expect(t.eventLog.cursor).toBe(`eid:${slotToEventId(3)}`);
     expect(t.create).toHaveBeenCalledTimes(2);
+    expect(t.span.setAttributes).toHaveBeenCalledWith({
+      'workflow.concurrent_hooks.count': 2,
+      'workflow.concurrent_hooks.carried_forward': false,
+      'workflow.concurrent_hooks.fallback_reason': reason,
+    });
   });
 
   it('does not hide an existing hole in the loaded prefix', async () => {
@@ -267,6 +280,11 @@ describe('concurrent hook history reconciliation', () => {
     const before = [...t.eventLog.events];
     expect((await t.invoke()).eventLogCarriedForward).toBe(false);
     expect(t.eventLog.events).toEqual(before);
+    expect(t.span.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'workflow.concurrent_hooks.fallback_reason': 'prefix_gap',
+      })
+    );
   });
 
   it('uses the World cursor without assuming its encoding', async () => {
@@ -288,6 +306,11 @@ describe('concurrent hook history reconciliation', () => {
     });
     expect((await t.invoke()).eventLogCarriedForward).toBe(false);
     expect(t.eventLog.events).toEqual(t.seed);
+    expect(t.span.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'workflow.concurrent_hooks.fallback_reason': 'missing_response',
+      })
+    );
   });
 
   it('settles siblings before propagating a stale-write failure, without fallback writes', async () => {
@@ -350,7 +373,73 @@ describe('concurrent hook history reconciliation', () => {
       (call) => call[1].eventType === 'wait_created'
     );
     expect(waitCall?.[2]?.eventCount).toBe(3);
+    for (const call of t.create.mock.calls.filter(
+      (call) => call[1].eventType === 'hook_created'
+    )) {
+      expect(call[2]?.eventCount).toBe(3);
+      expect(call[2]?.resolveData).toBeUndefined();
+    }
     expect(t.eventLog.events).toEqual(t.seed);
+  });
+
+  it.each([
+    'step',
+    'attribute',
+    'disposal',
+    'abort',
+    'force',
+    'same token',
+  ])('keeps catch-up hints and avoids metadata echo when a sibling adds a %s', async (mode) => {
+    // Two independent hooks must not opt in when a third item makes the
+    // suspension ineligible, even though both would qualify individually.
+    const t = setup();
+    Object.assign(t.pending.get('hook_0')!, { metadata: 'x'.repeat(10_000) });
+    if (mode === 'step') {
+      t.pending.set('step_1', {
+        type: 'step',
+        correlationId: 'step_1',
+        stepName: 'test',
+        args: [],
+      });
+    } else if (mode === 'attribute') {
+      t.pending.set('attr_1', {
+        type: 'attribute',
+        correlationId: 'attr_1',
+        changes: { status: 'idle' },
+      });
+    } else {
+      t.pending.set('hook_extra', {
+        type: 'hook',
+        correlationId: 'hook_extra',
+        token: mode === 'same token' ? 'customer:1' : 'customer:extra',
+        ...(mode === 'force' ? { force: true } : {}),
+        ...(mode === 'disposal'
+          ? { hasCreatedEvent: true, disposed: true }
+          : {}),
+        ...(mode === 'abort'
+          ? { hasCreatedEvent: true, abortRequested: true }
+          : {}),
+      });
+    }
+    if (mode === 'abort') {
+      t.world.streams = { write: vi.fn(), close: vi.fn() } as any;
+    }
+    expect((await t.invoke()).eventLogCarriedForward).toBe(false);
+    for (const call of t.create.mock.calls.filter(
+      (call) => call[1].eventType === 'hook_created'
+    )) {
+      expect(call[2]?.eventCount).toBe(3);
+      expect(call[2]?.resolveData).toBeUndefined();
+    }
+    expect(t.span.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'workflow.concurrent_hooks.carried_forward': false,
+        'workflow.concurrent_hooks.fallback_reason':
+          mode === 'force' || mode === 'same token'
+            ? 'dependent_hooks'
+            : 'other_suspension_writes',
+      })
+    );
   });
 
   it.each([

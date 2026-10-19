@@ -808,16 +808,28 @@ export async function handleSuspension({
   // advisory catch-up position: a sibling's commit is not unknown history.
   // Actual write fencing, validation, and token ownership remain the World's.
   // Same-token lifecycle operations and forced claims keep their original path.
-  const concurrentHooks =
-    eventLog && (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-      ? hooksNeedingCreation.filter(
-          (item) =>
-            !item.force &&
-            !item.disposed &&
-            !item.abortRequested &&
-            hookItemsByToken.get(item.token)?.length === 1
-        )
-      : [];
+  // Mixed suspensions cannot carry this suffix forward, so retain their normal
+  // catch-up hints and avoid resolving metadata that replay would discard.
+  const hasOtherSuspensionWrites =
+    stepItems.some((item) => !item.hasCreatedEvent) ||
+    waitItems.some((item) => !item.hasCreatedEvent) ||
+    attributeItems.length > 0 ||
+    allHookItems.some((item) => item.disposed || item.abortRequested);
+  const concurrentHookIneligibility = !eventLog
+    ? 'no_event_log'
+    : (run.specVersion ?? 0) < SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      ? 'unsupported_spec'
+      : hasOtherSuspensionWrites
+        ? 'other_suspension_writes'
+        : hooksNeedingCreation.some(
+              (item) =>
+                item.force || hookItemsByToken.get(item.token)?.length !== 1
+            )
+          ? 'dependent_hooks'
+          : undefined;
+  const concurrentHooks = concurrentHookIneligibility
+    ? []
+    : hooksNeedingCreation;
   const hookFrontier =
     concurrentHooks.length > 1 && eventLog
       ? maxEventSlot(eventLog.events)
@@ -1997,53 +2009,72 @@ export async function handleSuspension({
   // their requests and fill exactly frontier+1..frontier+N. A missing response,
   // duplicate old event, or a foreign event between these commits requires the
   // caller's existing incremental reload; never advance a cursor across a gap.
-  let concurrentHooksCarriedForward = false;
-  if (
-    eventLog &&
-    hookFrontier !== undefined &&
-    concurrentHookIds.size > 1 &&
-    hookResults.size === concurrentHookIds.size &&
-    eventWrites === hookResults.size &&
-    maxEventSlot(eventLog.events) === hookFrontier &&
-    findEventSlotGap(eventLog.events) === undefined
-  ) {
-    const committed: { event: Event; cursor?: string }[] = [];
+  const reconcileConcurrentHooks = (): string | undefined => {
+    if (concurrentHookIneligibility) return concurrentHookIneligibility;
+    if (!eventLog || hookFrontier === undefined) return 'missing_frontier';
+    if (hookResults.size !== concurrentHookIds.size) return 'missing_response';
+    if (eventWrites !== hookResults.size) return 'other_suspension_writes';
+    if (maxEventSlot(eventLog.events) !== hookFrontier) return 'prefix_changed';
+    if (findEventSlotGap(eventLog.events) !== undefined) return 'prefix_gap';
+
+    const committed: { event: Event; slot: number; cursor?: string }[] = [];
     for (const item of concurrentHooks) {
       const result = hookResults.get(item.correlationId)!;
       const event = result.event;
+      if (!event) return 'missing_event';
+      if (result.hasMore === true) return 'incomplete_response';
       if (
-        !event ||
-        result.hasMore === true ||
         event.runId !== runId ||
         event.correlationId !== item.correlationId ||
         (event.eventType !== 'hook_created' &&
           event.eventType !== 'hook_conflict') ||
-        event.eventData.token !== item.token ||
-        (event.eventType === 'hook_created' &&
-          ((event.eventData.metadata !== undefined &&
-            !(event.eventData.metadata instanceof Uint8Array)) ||
-            (item.metadata !== undefined &&
-              event.eventData.metadata === undefined))) ||
-        eventIdToSlot(event.eventId) === null
+        event.eventData.token !== item.token
       ) {
-        break;
+        return 'event_mismatch';
       }
-      committed.push({ event, cursor: result.eventCursor });
+      if (
+        event.eventType === 'hook_created' &&
+        ((event.eventData.metadata !== undefined &&
+          !(event.eventData.metadata instanceof Uint8Array)) ||
+          (item.metadata !== undefined &&
+            event.eventData.metadata === undefined))
+      ) {
+        return 'unresolved_metadata';
+      }
+      const slot = eventIdToSlot(event.eventId);
+      if (slot === null) return 'non_slot_event';
+      committed.push({ event, slot, cursor: result.eventCursor });
     }
-    committed.sort((a, b) => a.event.eventId.localeCompare(b.event.eventId));
-    const last = committed.at(-1);
+    committed.sort((a, b) => a.slot - b.slot);
     if (
-      committed.length === concurrentHookIds.size &&
-      last?.cursor &&
-      committed.every(
-        ({ event }, index) =>
-          eventIdToSlot(event.eventId) === hookFrontier + index + 1
-      )
+      !committed.every(({ slot }, index) => slot === hookFrontier + index + 1)
     ) {
-      eventLog.events.push(...committed.map(({ event }) => event));
-      eventLog.cursor = last.cursor;
-      concurrentHooksCarriedForward = true;
+      return 'nonconsecutive_slots';
     }
+    const last = committed.at(-1);
+    if (!last?.cursor) return 'missing_event_cursor';
+    eventLog.events.push(...committed.map(({ event }) => event));
+    eventLog.cursor = last.cursor;
+    return undefined;
+  };
+  let concurrentHooksCarriedForward = false;
+  if (hooksNeedingCreation.length > 1) {
+    const fallbackReason = reconcileConcurrentHooks();
+    concurrentHooksCarriedForward = fallbackReason === undefined;
+    span?.setAttributes({
+      'workflow.concurrent_hooks.count': hooksNeedingCreation.length,
+      'workflow.concurrent_hooks.carried_forward':
+        concurrentHooksCarriedForward,
+      // A span can cover several suspensions; clear a previous fallback when
+      // this registration set succeeds instead of leaving a stale reason.
+      'workflow.concurrent_hooks.fallback_reason': fallbackReason ?? 'none',
+    });
+    runtimeLogger.debug('Reconciled concurrent hook registrations', {
+      workflowRunId: runId,
+      hookCount: hooksNeedingCreation.length,
+      carriedForward: concurrentHooksCarriedForward,
+      ...(fallbackReason ? { fallbackReason } : {}),
+    });
   }
 
   // The hook writes' share of this suspension's wall time: only the stretch

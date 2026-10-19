@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+Production workflow backend for Vercel platform deployments.
+
+Integrates with Vercel's infrastructure for storage, queuing, and authentication. Handles workflow persistence and scaling in production environments.
+
+Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
+
+## Concurrent hook registrations
+
 Concurrent independent hook registrations use the existing single-event
 requests. The Node.js runtime defers per-request history catch-up and reconciles
 the committed events after all requests settle. The adapter supplies an optional
@@ -8,11 +16,12 @@ path. A consecutive suffix needs no history read; missing or intervening events
 retain the normal reload before continuation. No server upgrade or batch
 registration endpoint is required.
 
-Production workflow backend for Vercel platform deployments.
-
-Integrates with Vercel's infrastructure for storage, queuing, and authentication. Handles workflow persistence and scaling in production environments.
-
-Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
+The runtime applies this optimization only to hooks-only suspensions whose
+registrations are all independent. Mixed suspensions, forced claims, and
+same-token lifecycle operations keep the normal catch-up path without resolving
+metadata for unused mutation responses. Runtime spans record
+`workflow.concurrent_hooks.carried_forward` and, on fallback,
+`workflow.concurrent_hooks.fallback_reason`; debug logs include the same outcome.
 
 ## Connection failures
 
