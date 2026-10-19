@@ -153,10 +153,14 @@ function nextMessage<T>(child: ChildProcess): Promise<T> {
 }
 
 async function spawnStarter(runId: string) {
-  const child = fork(childScript, ['start', testDir, runId], {
-    execArgv: [],
-    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-  });
+  const child = fork(
+    childScript,
+    ['start', testDir, runId, String(SPEC_VERSION_CURRENT)],
+    {
+      execArgv: [],
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    }
+  );
   children.push(child);
   expect(await nextMessage(child)).toEqual({ status: 'ready' });
   return () => {
@@ -498,10 +502,14 @@ it.each([
   'after-event-link',
 ])('recovers without hanging after SIGKILL at %s', async (stage) => {
   const runId = `wrun_${monotonicUlid()}`;
-  const child = fork(childScript, ['crash-create', testDir, runId, stage], {
-    execArgv: [],
-    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-  });
+  const child = fork(
+    childScript,
+    ['crash-create', testDir, runId, String(SPEC_VERSION_CURRENT), stage],
+    {
+      execArgv: [],
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    }
+  );
   children.push(child);
   expect(await withTimeout(nextMessage(child))).toEqual({
     status: 'checkpoint',

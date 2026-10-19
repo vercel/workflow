@@ -8,7 +8,8 @@ register(
   )}`
 );
 
-const [mode, dataDir, runId, extra] = process.argv.slice(2);
+const [mode, dataDir, runId, specVersionArg, extra] = process.argv.slice(2);
+const specVersion = Number(specVersionArg);
 
 async function send(message) {
   await new Promise((resolve, reject) => {
@@ -56,13 +57,10 @@ if (mode === 'crash-create') {
 }
 
 const { createStorage } = await import('../storage.ts');
-const { SPEC_VERSION_CURRENT } = await import(
-  '../../../world/src/spec-version.ts'
-);
 
 const originalCreation = {
   eventType: 'run_created',
-  specVersion: SPEC_VERSION_CURRENT,
+  specVersion,
   eventData: {
     deploymentId: 'dpl_original',
     workflowName: 'workflow//original//entry',
@@ -92,7 +90,7 @@ if (mode === 'crash-create') {
     try {
       const result = await storage.events.create(runId, {
         eventType: 'run_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion,
         eventData: {
           deploymentId: 'dpl_redelivered',
           workflowName: 'workflow//redelivered//entry',

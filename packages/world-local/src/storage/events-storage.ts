@@ -1327,6 +1327,10 @@ export function createEventsStorage(
           }
         }
 
+        // A pending run whose creation was interrupted has a run record but no
+        // `run_created`. Restore it before any event that could become the run's
+        // first event takes slot 1. Runs created just above by resilient start,
+        // and legacy or newer-spec runs, are skipped.
         if (
           currentRun?.status === 'pending' &&
           !createdByResilientStart &&
