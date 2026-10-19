@@ -993,6 +993,8 @@ export function createEventsStorage(
   // in-process invocation enters the dedup branch.
   const stepLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
+  const hookLockKey = (runId: string, hookId: string) =>
+    tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
 
   const storage: LocalEventsStorage = {
     clearCache,
@@ -1065,10 +1067,11 @@ export function createEventsStorage(
         runId &&
         data.correlationId
       ) {
-        const lockKey = tag
-          ? `${runId}-${data.correlationId}.hook.${tag}`
-          : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, createImpl);
+        return withInProcessLock(
+          hookLocks,
+          hookLockKey(runId, data.correlationId),
+          createImpl
+        );
       }
       return createImpl();
 
@@ -2432,10 +2435,11 @@ export function createEventsStorage(
           // run cannot race its successor and create a spurious conflict
           // (issue #2778). Missing claim caches are rebuilt from the event log;
           // stale owners are removed before the successor is admitted.
-          const claimResult = await withHookTokenClaimLock(
-            basedir,
-            hookData.token,
-            async (signal) => {
+          const claimToken = (lockedVictim?: {
+            runId: string;
+            hookId: string;
+          }) =>
+            withHookTokenClaimLock(basedir, hookData.token, async (signal) => {
               let existingClaim = await readHookTokenClaim(constraintPath);
               if (!existingClaim) {
                 // Repair a missing or corrupt claim from the event log.
@@ -2465,6 +2469,13 @@ export function createEventsStorage(
               ) {
                 if (hookData.force !== true || !existingClaim.hookId) {
                   return { status: 'conflict' as const, claim: existingClaim };
+                }
+                if (
+                  existingClaim.runId !== lockedVictim?.runId ||
+                  existingClaim.hookId !== lockedVictim?.hookId
+                ) {
+                  // Retry under the per-hook lock of the hook holding it now.
+                  return { status: 'victim-changed' as const };
                 }
                 // `createHook({ experimental_force: true })`: take the token
                 // over. Same order as workflow-server (docs/hook-force-claim.md,
@@ -2663,8 +2674,43 @@ export function createEventsStorage(
                 assert(await writeExclusive(constraintPath, claimContent()));
               }
               return { status: 'claimed' as const };
-            }
-          );
+            });
+          // A takeover writes the victim's dispose lock and `hook_disposed`
+          // row, so it also holds the victim's per-hook lock: a resume to the
+          // victim checks that dispose lock and appends under that lock, and
+          // must not pass the check and then land behind the row (#4923).
+          // Order: this hook's key (held by `create`), the victim's key, then
+          // the token claim lock. The victim's own `hook_disposed` takes its
+          // key and then the claim lock, so the victim's key must not be
+          // taken inside the claim lock. There is no cycle: a resume takes
+          // only its hook's key, and a hook becomes a holder (someone's
+          // victim) only after its own takeover is done waiting. The holder
+          // is read here and confirmed under the claim lock; a change of
+          // holder in between retries under the new holder's key. Like every
+          // per-hook lock, this serializes within one process.
+          let claimResult: Awaited<ReturnType<typeof claimToken>>;
+          for (;;) {
+            const holder =
+              hookData.force === true
+                ? await readHookTokenClaim(constraintPath)
+                : null;
+            const victim =
+              holder?.hookId &&
+              !(
+                holder.runId === effectiveRunId &&
+                holder.hookId === data.correlationId
+              )
+                ? { runId: holder.runId, hookId: holder.hookId }
+                : undefined;
+            claimResult = victim
+              ? await withInProcessLock(
+                  hookLocks,
+                  hookLockKey(victim.runId, victim.hookId),
+                  () => claimToken(victim)
+                )
+              : await claimToken();
+            if (claimResult.status !== 'victim-changed') break;
+          }
           if (claimResult.status === 'owned' && claimResult.claim.claimedFrom) {
             // A retry adopting a forced claim still names the victim, so the
             // runtime still wakes it.
