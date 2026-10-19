@@ -3915,6 +3915,123 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
   });
 });
 
+describe('workflowEntrypoint concurrent hook continuation', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    false,
+    true,
+  ])('continues after concurrent registrations, interleaved writer=%s', async (interleaved) => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', '1');
+    const runId = `wrun_hook_reconciliation_${interleaved}`;
+    const workflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      specVersion: 6,
+      deploymentId: 'test-deployment',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      startedAt: new Date(),
+    } satisfies WorkflowRun;
+    const durableEvents: Event[] = [];
+    const record = (data: any): Event => {
+      const event = {
+        ...data,
+        runId,
+        eventId: slotToEventId(durableEvents.length + 1),
+        createdAt: new Date(),
+      } as Event;
+      durableEvents.push(event);
+      return event;
+    };
+    record({
+      eventType: 'run_created',
+      specVersion: 6,
+      eventData: {
+        workflowName: 'workflow',
+        deploymentId: 'test-deployment',
+        input: workflowRun.input,
+      },
+    });
+    let hooks = 0;
+    const create = vi.fn(async (_runId: string, data: any, _params?: any) => {
+      if (data.eventType === 'hook_created' && hooks++ === 1 && interleaved) {
+        // A concurrent delivery started after this invocation read its prefix.
+        record({ eventType: 'run_started', specVersion: 6 });
+      }
+      const event = record(data);
+      if (data.eventType === 'run_started')
+        return {
+          event,
+          run: workflowRun,
+          events: [...durableEvents],
+          cursor: `eid:${event.eventId}`,
+          hasMore: false,
+        };
+      if (data.eventType === 'run_completed')
+        workflowRun.status = 'completed' as any;
+      return { event, eventCursor: `eid:${event.eventId}` };
+    });
+    const list = vi.fn(async ({ pagination }: any) => ({
+      data: durableEvents.filter(
+        (event) =>
+          !pagination?.cursor || event.eventId > pagination.cursor.slice(4)
+      ),
+      cursor: `eid:${durableEvents.at(-1)!.eventId}`,
+      hasMore: false,
+    }));
+    const queue = vi.fn(async () => ({ messageId: null }));
+    let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn((_prefix: string, callback: typeof handler) => {
+        handler = callback;
+        return async () => new Response(null, { status: 204 });
+      }),
+      events: { create, list },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue,
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+    const entry = workflowEntrypoint(`
+      const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
+      async function workflow() {
+        const first = createHook({ token: 'customer:first' });
+        const second = createHook({ token: 'customer:second' });
+        const owners = await Promise.all([first.getConflict(), second.getConflict()]);
+        return owners.every(owner => owner === null);
+      }
+      globalThis.__private_workflows = new Map([['workflow', workflow]]);`);
+    await entry(new Request('https://example.test'));
+    await handler(
+      { runId, requestedAt: new Date() },
+      {
+        requestId: 'request',
+        attempt: 1,
+        queueName: '__wkf_workflow_workflow',
+        messageId: 'msg_hooks',
+      }
+    );
+    expect(workflowRun.status).toBe('completed');
+    expect(queue).not.toHaveBeenCalled();
+    expect(list).toHaveBeenCalledTimes(interleaved ? 1 : 0);
+    const registrations = create.mock.calls.filter(
+      (call) => call[1].eventType === 'hook_created'
+    );
+    expect(registrations).toHaveLength(2);
+    for (const call of registrations) {
+      expect(call[2]?.eventCount).toBeUndefined();
+      expect(call[2]?.sinceCursor).toBeUndefined();
+    }
+  });
+});
+
 describe('workflowEntrypoint max-deliveries terminal write', () => {
   afterEach(() => {
     setWorld(undefined);

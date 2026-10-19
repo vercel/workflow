@@ -6,6 +6,23 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
+## Concurrent hook registrations
+
+Concurrent independent hook registrations use the existing single-event
+requests. The Node.js runtime defers per-request history catch-up and reconciles
+the committed events after all requests settle. The adapter supplies an optional
+`eventCursor` in Vercel's cursor format and honors resolved hook metadata for this
+path. A consecutive suffix needs no history read; missing or intervening events
+retain the normal reload before continuation. No server upgrade or batch
+registration endpoint is required.
+
+The runtime applies this optimization only to hooks-only suspensions whose
+registrations are all independent. Mixed suspensions, forced claims, and
+same-token lifecycle operations keep the normal catch-up path without resolving
+metadata for unused mutation responses. Runtime spans record
+`workflow.concurrent_hooks.carried_forward` and, on fallback,
+`workflow.concurrent_hooks.fallback_reason`; debug logs include the same outcome.
+
 ## Connection failures
 
 Backend connection failures and interrupted event streams follow existing retry policies, including failures with unrecognized error codes. Repeated HTTP/2 session failures rebuild the shared events connection pool. Invalid backend URL protocols, embedded credentials, Fetch-blocked ports, and unsupported request headers fail immediately. Interrupted event writes retain their existing in-process retries; caller cancellations are excluded.
