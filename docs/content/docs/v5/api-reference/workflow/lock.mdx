@@ -114,8 +114,20 @@ A run keeps its slot until it releases it or until the run completes, fails, or 
 
 Pass `leaseTtlMs` to let the World take a slot back after a time limit, even from a run that is still running:
 
-```typescript
-const slot = await lock("export:nightly", { concurrency: 1, leaseTtlMs: 3_600_000 });
+```typescript lineNumbers
+import { lock } from "workflow";
+
+declare function exportAll(): Promise<void>; // @setup
+
+export async function nightlyExport() {
+  "use workflow";
+
+  await using slot = await lock("export:nightly", {
+    concurrency: 1,
+    leaseTtlMs: 3_600_000, // [!code highlight]
+  });
+  await exportAll();
+}
 ```
 
 Once the lease expires, another run can be admitted while the first is still inside its critical section, so **two holders can run at once**. Only use a lease when a stuck holder is worse than an occasional overlap, and use the fencing token to reject the stale holder's writes.
