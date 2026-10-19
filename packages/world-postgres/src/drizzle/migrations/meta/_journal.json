@@ -197,6 +197,13 @@
       "when": 1790035200000,
       "tag": "0027_timestamps_with_time_zone",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790121600000,
+      "tag": "0028_add_lock_tables",
+      "breakpoints": true
     }
   ]
 }
