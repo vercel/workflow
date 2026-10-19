@@ -163,25 +163,31 @@ export const getContinuationDispatch = getWaitContinuationDispatch;
 /**
  * Dispatch for a `lock()` scope still waiting for a slot: wake the run at the
  * World's `retryAt` (floored at 1s, the queue's delay granularity) so its next
- * replay re-POSTs the scope's `lock_created`. `attempt` follows the same rule
- * as a wait's: it advances only when this invocation IS the continuation for
- * this scope and the scope is still pending (see
- * `WorkflowInvokePayload.lockContinuation`).
+ * replay re-POSTs the scope's `lock_created`.
+ *
+ * The key is `<correlationId>:r<retryAtMs>`, not the wait scheme's attempt
+ * counter. Every failed attempt gets a fresh `retryAt` from the World, so
+ * each retry has a key no earlier delivery can have spent, whatever order a
+ * run's several waiting scopes are armed in; and every pass that re-observes
+ * the same attempt (the invocation's probe record hands back the same
+ * `retryAt`) collapses onto one message. An attempt counter carried on the
+ * message would be reset to 0 whenever another scope's retry is the one
+ * delivered, re-arming this scope under a key it already spent.
  *
  * A retry delay never approaches the 23h hop limit (the reference backoff
- * caps at 30s), but a World is free to pick one, so it goes through the same
- * clamping as a wait.
+ * caps at 30s), but a World is free to pick one, so it is clamped the same
+ * way; a hop delivered early simply re-POSTs and gets a fresh `retryAt`.
  */
 export function getLockContinuationDispatch(
   retryAtMs: number,
   lockCorrelationId: string,
-  now: number = Date.now(),
-  attempt = 0
+  now: number = Date.now()
 ): WaitContinuationDispatch & { seconds: number } {
   const seconds = lockRetrySeconds(retryAtMs, now);
   return {
     seconds,
-    ...getContinuationDispatch(seconds, lockCorrelationId, now, attempt),
+    delaySeconds: Math.min(seconds, getWaitContinuationMaxDelaySeconds()),
+    idempotencyKey: `${lockCorrelationId}:r${Math.floor(retryAtMs)}`,
   };
 }
 

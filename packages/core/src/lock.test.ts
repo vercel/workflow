@@ -250,8 +250,10 @@ describe.each([
       const continuations = h.messagesFor(waiter);
       expect(continuations).toHaveLength(1);
       expect(continuations[0].payload.lockContinuation).toMatchObject({
-        attempt: i,
+        correlationId: expect.stringMatching(/^lock_/),
       });
+      // Each retry is keyed on its own retryAt, never on a spent key.
+      expect(continuations[0].idempotencyKey).toMatch(/^lock_.*:r\d+$/);
       expect(continuations[0].delaySeconds).toBeGreaterThanOrEqual(1);
       const eventsBefore = (await h.events(waiter)).length;
       const sentBefore = h.sent.length;

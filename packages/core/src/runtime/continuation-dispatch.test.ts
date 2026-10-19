@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  getLockContinuationDispatch,
   getWaitContinuationDispatch,
   NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
   WAIT_CONTINUATION_MAX_DELAY_SECONDS,
@@ -222,5 +223,29 @@ describe('getWaitContinuationDispatch', () => {
       );
       expect(delaySeconds).toBeLessThanOrEqual(overriddenMax);
     });
+  });
+});
+
+describe('getLockContinuationDispatch', () => {
+  it('keys each retry on its own retryAt, so no retry can reuse a spent key', () => {
+    const first = getLockContinuationDispatch(NOW + 1_500, 'lock_A', NOW);
+    const second = getLockContinuationDispatch(NOW + 3_200, 'lock_A', NOW);
+    expect(first).toMatchObject({
+      seconds: 2,
+      delaySeconds: 2,
+      idempotencyKey: `lock_A:r${NOW + 1_500}`,
+    });
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+    // Re-observing the same attempt collapses onto the same message.
+    expect(
+      getLockContinuationDispatch(NOW + 1_500, 'lock_A', NOW + 400)
+        .idempotencyKey
+    ).toBe(first.idempotencyKey);
+  });
+
+  it('floors the delay at 1s', () => {
+    expect(
+      getLockContinuationDispatch(NOW - 5_000, 'lock_A', NOW)
+    ).toMatchObject({ seconds: 1, delaySeconds: 1 });
   });
 });

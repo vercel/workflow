@@ -842,7 +842,6 @@ export function workflowEntrypoint(
           runContext,
           hookResumeTiming,
           waitContinuation,
-          lockContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -3154,7 +3153,6 @@ export function workflowEntrypoint(
                           // that arrives before its wait elapses re-arms
                           // under a fresh key instead of losing the timer.
                           waitContinuation,
-                          lockContinuation,
                           // Inline-step ownership plumbing: redeliveries of
                           // this message drive crash recovery for steps an
                           // earlier invocation claimed inline (see the
@@ -4430,14 +4428,6 @@ export function workflowEntrypoint(
                             lockRetry.seconds <
                               suspensionResult.waitTimeout.seconds)
                         ) {
-                          // The attempt rule is the wait's (below): advance it
-                          // only when this invocation IS the retry for this
-                          // scope and the scope is still pending.
-                          const lockAttempt =
-                            lockContinuation?.correlationId ===
-                            lockRetry.correlationId
-                              ? lockContinuation.attempt + 1
-                              : 0;
                           dispatches.push(
                             queueMessage(
                               world,
@@ -4448,14 +4438,12 @@ export function workflowEntrypoint(
                                 requestedAt: new Date(),
                                 lockContinuation: {
                                   correlationId: lockRetry.correlationId,
-                                  attempt: lockAttempt,
+                                  retryAtMs: lockRetry.retryAtMs,
                                 },
                               },
                               getLockContinuationDispatch(
                                 lockRetry.retryAtMs,
-                                lockRetry.correlationId,
-                                Date.now(),
-                                lockAttempt
+                                lockRetry.correlationId
                               )
                             )
                           );

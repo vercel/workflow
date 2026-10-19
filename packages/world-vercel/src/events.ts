@@ -573,6 +573,16 @@ export async function createWorkflowRunEventBatch(
       { status: 400 }
     );
   }
+  // Same refusal as the single create: lock events are not on the wire yet.
+  const lockEvent = events.find(({ event }) =>
+    isLockEventType(event.eventType)
+  );
+  if (lockEvent) {
+    throw new WorkflowWorldError(
+      `${lockEvent.event.eventType} is not supported by this World: it does not declare the \`locks\` capability`,
+      { status: 400 }
+    );
+  }
   // Advisory `hook_received` has no entity condition: the server appends a
   // fresh row on every attempt, so a retried batch would deliver the hook
   // payload twice, and the atomic lazy-resume shape (the one dedupable

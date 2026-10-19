@@ -1089,12 +1089,6 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
-  /**
-   * The lock scope this invocation is the delayed retry for, if it is one
-   * (`WorkflowInvokePayload.lockContinuation`). Same purpose as
-   * `waitContinuation`.
-   */
-  lockContinuation?: { correlationId: string; attempt: number };
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -1111,12 +1105,7 @@ export async function runWorkflowWithQuickJS(params: {
     requestId,
     namespace,
     waitContinuation,
-    lockContinuation,
   } = params;
-  const nextLockContinuationAttempt = (correlationId: string): number =>
-    lockContinuation?.correlationId === correlationId
-      ? lockContinuation.attempt + 1
-      : 0;
   // Lock scopes this invocation asked for a slot, with the World's retryAt.
   const lockProbes = new Map<string, number>();
   /** Arms the delayed retry for a waiting lock scope. */
@@ -1124,12 +1113,9 @@ export async function runWorkflowWithQuickJS(params: {
     correlationId: string;
     retryAtMs: number;
   }): Promise<void> => {
-    const attempt = nextLockContinuationAttempt(retry.correlationId);
     const dispatch = getLockContinuationDispatch(
       retry.retryAtMs,
-      retry.correlationId,
-      Date.now(),
-      attempt
+      retry.correlationId
     );
     await queueMessage(
       world,
@@ -1138,7 +1124,10 @@ export async function runWorkflowWithQuickJS(params: {
         runId,
         traceCarrier: await nextTraceCarrier(),
         requestedAt: new Date(),
-        lockContinuation: { correlationId: retry.correlationId, attempt },
+        lockContinuation: {
+          correlationId: retry.correlationId,
+          retryAtMs: retry.retryAtMs,
+        },
       },
       {
         delaySeconds: dispatch.delaySeconds,

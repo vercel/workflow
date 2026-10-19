@@ -454,18 +454,17 @@ export const WorkflowInvokePayloadSchema = z.compile(
       .optional()
       .catch(undefined),
     /**
-     * The `lock()` scope this message is the delayed retry for, and which
-     * attempt in that scope's chain it is: the lock counterpart of
-     * {@link WorkflowInvokePayloadSchema.shape.waitContinuation}, with the
-     * same reason to exist. A retry delivered while its scope is still pending
-     * has spent its idempotency key, so the next one must advance the attempt
-     * or the world's dedupe window drops it and the waiter loses its only
-     * wake. `.catch(undefined)` for the same reason as `waitContinuation`.
+     * The `lock()` scope this message is the delayed retry for, and the
+     * World-computed `retryAt` (epoch ms) it was armed for. Diagnostic only:
+     * unlike a wait's, a lock retry's idempotency key needs no attempt
+     * counter, because it is derived from that `retryAt`, which is fresh on
+     * every failed attempt (see `getLockContinuationDispatch`).
+     * `.catch(undefined)` for the same reason as `waitContinuation`.
      */
     lockContinuation: z
       .object({
         correlationId: z.string(),
-        attempt: z.number().int().nonnegative(),
+        retryAtMs: z.number(),
       })
       .optional()
       .catch(undefined),
