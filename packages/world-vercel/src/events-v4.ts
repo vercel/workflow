@@ -551,6 +551,12 @@ const CreateEventV4BodySchemas: {
   // Never POSTed by the SDK (server-originated sealed-log filler); present
   // only because the map is exhaustive over EventType.
   noop: CreateEventV4BodySchema,
+  // Never POSTed by this World yet: it does not declare `locks`, and
+  // `createWorkflowRunEvent` refuses lock events before they reach the wire.
+  lock_created: CreateEventV4BodySchema,
+  lock_acquired: CreateEventV4BodySchema,
+  lock_released: CreateEventV4BodySchema,
+  lock_waiter_queued: CreateEventV4BodySchema,
 };
 
 const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());

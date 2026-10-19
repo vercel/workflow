@@ -230,6 +230,25 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },
+  // Lock events are refused before the wire until this World declares the
+  // `locks` capability; classified conservatively until the backend defines
+  // their idempotency.
+  lock_created: {
+    retryable: false,
+    reason: 'not supported by this World yet (no `locks` capability)',
+  },
+  lock_acquired: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
+  lock_released: {
+    retryable: false,
+    reason: 'not supported by this World yet (no `locks` capability)',
+  },
+  lock_waiter_queued: {
+    retryable: false,
+    reason: 'not supported by this World yet (no `locks` capability)',
+  },
 } satisfies Record<WorkflowEventType, EventRetryPolicy>;
 
 /** Up to this many retries after the initial attempt (3 attempts total). */

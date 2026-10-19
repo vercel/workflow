@@ -52,8 +52,10 @@ import {
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
+  isLockEventType,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
+  type LockEventType,
   mintedSpecVersion,
   validateUlidTimestamp,
   type WorkflowRun,
@@ -109,7 +111,16 @@ function validateWorkflowRunIdTimestamp(id: string): string | null {
  * below. Event types with no `eventData` (run_cancelled) and with optional
  * `eventData` (run_started, step_started, …) both contribute correctly.
  */
-type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
+/**
+ * Lock events (`lock_created`, `lock_released`, `lock_waiter_queued`) are not
+ * part of the v4 wire contract yet: this World does not declare the `locks`
+ * capability, so the runtime never sends them, and `createWorkflowRunEvent`
+ * refuses them outright rather than drop their fields on the wire. They come
+ * back into this union when the backend implements locks.
+ */
+type WireEventRequest = Exclude<AnyEventRequest, { eventType: LockEventType }>;
+
+type EventDataField<E = WireEventRequest> = E extends { eventData?: infer D }
   ? keyof NonNullable<D> & string
   : never;
 
@@ -668,6 +679,12 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult<T['eventType']>> {
+  if (isLockEventType(data.eventType)) {
+    throw new WorkflowWorldError(
+      `${data.eventType} is not supported by this World: it does not declare the \`locks\` capability`,
+      { status: 400 }
+    );
+  }
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
