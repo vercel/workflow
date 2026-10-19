@@ -173,6 +173,9 @@ export function createFetcher(control: Control) {
         correlationId?: string;
         /** sha256 of the event's payload field, or null when it has none. */
         payloadDigest: string | null;
+        createdAt: string;
+        /** A lock event's `eventData`. */
+        lock?: Record<string, unknown>;
       }[]
     > {
       const query = resolveData
@@ -187,6 +190,8 @@ export function createFetcher(control: Control) {
           eventType: string;
           correlationId?: string;
           payloadDigest: string | null;
+          createdAt: string;
+          lock?: Record<string, unknown>;
         }[];
       };
       return data.events;

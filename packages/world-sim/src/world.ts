@@ -206,6 +206,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     steps: (runId) => store.allSteps(runId),
     hooks: (runId) => store.allHooks(runId),
     waits: (runId) => store.allWaits(runId),
+    locks: () => store.allLocks(),
+    lockHolders: () => store.allLockHolders(),
     pendingMessages: () => simQueue.view(),
     rejections: () => [...rejected],
   };
@@ -733,6 +735,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     capabilities: {
       // The store fences in-band writes; see store.ts.
       inBandFence: true,
+      // In-memory per-key semaphores with terminal reclaim; see store.ts.
+      locks: { concurrency: true },
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
