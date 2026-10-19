@@ -4913,6 +4913,15 @@ export function workflowEntrypoint(
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
+                        // Settles once every body in this batch has. A
+                        // `retry` below is published only after that, so a
+                        // queued delivery carrying it waits this long.
+                        let markInlineBatchSettled!: () => void;
+                        const inlineBatchSettled = new Promise<void>(
+                          (resolve) => {
+                            markInlineBatchSettled = resolve;
+                          }
+                        );
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
                             const run = () => {
@@ -5040,7 +5049,8 @@ export function workflowEntrypoint(
                                 logLevel: isFreshClaim ? 'debug' : 'warn',
                                 // A `retry` is published below (toRetry)
                                 // under the step's dispatch key.
-                                retryPublishedUnderDispatchKey: true,
+                                retryPublishedUnderDispatchKeyAfter:
+                                  inlineBatchSettled,
                               }
                             );
                             return executed.finally(() =>
@@ -5060,6 +5070,9 @@ export function workflowEntrypoint(
                         for (const promise of stepExecutionPromises) {
                           promise.catch(() => {});
                         }
+                        void Promise.allSettled(stepExecutionPromises).then(
+                          markInlineBatchSettled
+                        );
                         try {
                           // Join the dispatch publishes launched above and
                           // the fold's deferred batch work (trailing chunk

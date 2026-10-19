@@ -29,23 +29,44 @@ vi.mock('@vercel/functions', () => ({
   }),
 }));
 
-const STEP_NAME = 'retryHandoffStep';
-const FLOW_MESSAGE_ID = 'msg_flow';
+const QUEUE_NAME = '__wkf_workflow_workflow';
 const STEP_MESSAGE_ID = 'msg_queued_step';
 
-/** The inline body holds until the test releases it, then throws. */
-let releaseBody!: () => void;
-let bodyReleased = new Promise<void>((resolve) => {
-  releaseBody = resolve;
-});
-let bodyCalls = 0;
-registerStepFunction(STEP_NAME, async () => {
-  bodyCalls++;
-  await bodyReleased;
+function gate() {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { open, opened };
+}
+
+/** Fails its first attempt once released; later attempts succeed. */
+const FAILING_STEP = 'retryHandoffFailingStep';
+/** Succeeds once released. */
+const SIBLING_STEP = 'retryHandoffSiblingStep';
+let failingGate = gate();
+let siblingGate = gate();
+const calls = { [FAILING_STEP]: 0, [SIBLING_STEP]: 0 };
+registerStepFunction(FAILING_STEP, async () => {
+  calls[FAILING_STEP]++;
+  if (calls[FAILING_STEP] > 1) return 'ok';
+  await failingGate.opened;
   throw new Error('transient failure');
 });
+registerStepFunction(SIBLING_STEP, async () => {
+  calls[SIBLING_STEP]++;
+  await siblingGate.opened;
+  return 'ok';
+});
 
-async function raceQueuedDeliveryWithFailingInlineAttempt() {
+/**
+ * A fake World whose `queue` folds a keyed publish into a message still in
+ * flight under that key, as world-local does, and one orchestrator delivery
+ * that starts `steps` inline (their bodies hold on their gates). Then a queued
+ * delivery of the failing step, keyed in flight under its dispatch key,
+ * arrives and waits on the inline execution.
+ */
+async function startRaceOnFailingStep(steps: string[]) {
   const runId = `wrun_retry_handoff_${Date.now()}`;
   const startedAt = new Date('2024-01-01T00:00:00.000Z');
   const workflowRun: WorkflowRun = {
@@ -86,8 +107,8 @@ async function raceQueuedDeliveryWithFailingInlineAttempt() {
     return event;
   };
 
-  let correlationId: string | undefined;
-  let stepInput: unknown;
+  const stepNames = new Map<string, string>();
+  const stepInputs = new Map<string, unknown>();
   /** Keys of messages in flight, as world-local tracks them. */
   const inflight = new Map<string, string>();
   const published: { message: any; opts: any; messageId: string }[] = [];
@@ -105,17 +126,19 @@ async function raceQueuedDeliveryWithFailingInlineAttempt() {
           return { run: workflowRun, events: [...durable] };
         }
         if (data.eventType === 'step_started') {
-          correlationId ??= data.correlationId;
-          stepInput ??= data.eventData?.input;
+          const id = data.correlationId;
+          if (data.eventData?.stepName)
+            stepNames.set(id, data.eventData.stepName);
+          if (!stepInputs.has(id)) stepInputs.set(id, data.eventData?.input);
           return {
             event: record(data),
             step: {
               runId,
-              stepId: data.correlationId,
-              stepName: STEP_NAME,
+              stepId: id,
+              stepName: stepNames.get(id),
               status: 'running' as const,
               attempt: 1,
-              input: stepInput,
+              input: stepInputs.get(id),
               startedAt: new Date(),
               createdAt: new Date(),
               updatedAt: new Date(),
@@ -131,8 +154,6 @@ async function raceQueuedDeliveryWithFailingInlineAttempt() {
       })),
     },
     runs: { get: vi.fn(async () => workflowRun) },
-    // world-local's keyed publish: a key that is still in flight returns the
-    // in-flight message's id and queues nothing.
     queue: vi.fn(async (_queueName: string, message: any, opts: any) => {
       const key = opts?.idempotencyKey;
       const messageId =
@@ -143,106 +164,148 @@ async function raceQueuedDeliveryWithFailingInlineAttempt() {
     getEncryptionKeyForRun: vi.fn(async () => undefined),
   } as any);
 
+  const declarations = steps
+    .map(
+      (name, i) =>
+        `const s${i} = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("${name}");`
+    )
+    .join('\n');
   const entry = workflowEntrypoint(`
-    const retryHandoffStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("${STEP_NAME}");
+    ${declarations}
     async function workflow() {
-      return await retryHandoffStep();
+      return await Promise.all([${steps.map((_, i) => `s${i}()`).join(', ')}]);
     };globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set("workflow", workflow);`);
   await entry(new Request('https://example.test'));
 
-  // The orchestrator delivery starts the step inline; its body holds.
   const flowDelivery = handler(
     { runId, requestedAt: new Date() },
     {
       requestId: 'req_flow',
       attempt: 1,
-      queueName: '__wkf_workflow_workflow',
-      messageId: FLOW_MESSAGE_ID,
+      queueName: QUEUE_NAME,
+      messageId: 'msg_flow',
     }
   );
-  await vi.waitFor(() => expect(bodyCalls).toBe(1));
-  if (!correlationId) throw new Error('expected an inline step_started');
-  const stepId = correlationId;
+  await vi.waitFor(() => {
+    for (const name of steps) expect(calls[name as keyof typeof calls]).toBe(1);
+  });
+  const stepId = [...stepNames].find(([, name]) => name === FAILING_STEP)?.[0];
+  if (!stepId) throw new Error('expected an inline step_started');
+  const dispatchKey = stepDispatchIdempotencyKey(stepId, FAILING_STEP);
 
-  // A queued delivery of the same step, published under its dispatch key by
-  // a concurrent replay, arrives while the inline body runs.
-  inflight.set(stepDispatchIdempotencyKey(stepId, STEP_NAME), STEP_MESSAGE_ID);
-  const contention = vi.spyOn(runtimeLogger, 'warn');
-  const queuedDelivery = handler(
-    {
-      runId,
-      stepId,
-      stepName: STEP_NAME,
-      requestedAt: new Date(),
-    },
-    {
-      requestId: 'req_step',
-      attempt: 1,
-      queueName: '__wkf_workflow_workflow',
-      messageId: STEP_MESSAGE_ID,
-    }
-  );
+  // Contention logs at warn today; #4545 may move it to debug.
+  const warn = vi.spyOn(runtimeLogger, 'warn');
+  const debug = vi.spyOn(runtimeLogger, 'debug');
+  const deliverQueuedStep = (attempt: number) =>
+    handler(
+      { runId, stepId, stepName: FAILING_STEP, requestedAt: new Date() },
+      {
+        requestId: `req_step_${attempt}`,
+        attempt,
+        queueName: QUEUE_NAME,
+        messageId: STEP_MESSAGE_ID,
+      }
+    );
+  inflight.set(dispatchKey, STEP_MESSAGE_ID);
+  const queuedDelivery = deliverQueuedStep(1);
   await vi.waitFor(() =>
     expect(
-      contention.mock.calls.some(([msg]) =>
+      [...warn.mock.calls, ...debug.mock.calls].some(([msg]) =>
         String(msg).includes('Step execution already in flight')
       )
     ).toBe(true)
   );
 
-  // The inline attempt fails while the queued delivery waits on it.
-  releaseBody();
-  const [flowResult, queuedResult] = await Promise.all([
+  return {
+    stepId,
+    dispatchKey,
+    durable,
+    published,
     flowDelivery,
     queuedDelivery,
-  ]);
-
-  // The queue redelivers the message that carries the retry.
-  const redelivery = () =>
-    handler(
-      { runId, stepId, stepName: STEP_NAME, requestedAt: new Date() },
-      {
-        requestId: 'req_step_2',
-        attempt: 2,
-        queueName: '__wkf_workflow_workflow',
-        messageId: STEP_MESSAGE_ID,
-      }
-    );
-
-  return { stepId, flowResult, queuedResult, published, redelivery };
+    /** The queue redelivers the message that carries the retry. */
+    redeliver: () => deliverQueuedStep(2),
+  };
 }
+
+const stepRetries = (published: { message: any }[], stepId: string) =>
+  published.filter((p) => p.message.stepId === stepId);
 
 describe('a queued delivery waiting on a failing inline attempt', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.restoreAllMocks();
-    bodyCalls = 0;
-    bodyReleased = new Promise<void>((resolve) => {
-      releaseBody = resolve;
-    });
+    calls[FAILING_STEP] = 0;
+    calls[SIBLING_STEP] = 0;
+    failingGate = gate();
+    siblingGate = gate();
   });
 
   it('redelivers to run the retry the inline attempt folded into it', async () => {
-    const { stepId, flowResult, queuedResult, published, redelivery } =
-      await raceQueuedDeliveryWithFailingInlineAttempt();
+    const race = await startRaceOnFailingStep([FAILING_STEP]);
+
+    failingGate.open();
+    const [flowResult, queuedResult] = await Promise.all([
+      race.flowDelivery,
+      race.queuedDelivery,
+    ]);
 
     // The inline attempt published its retry under the dispatch key, so the
     // queue folded it into the waiting delivery's message.
-    const retries = published.filter((p) => p.message.stepId === stepId);
+    const retries = stepRetries(race.published, race.stepId);
     expect(retries).toHaveLength(1);
-    expect(retries[0].opts.idempotencyKey).toBe(
-      stepDispatchIdempotencyKey(stepId, STEP_NAME)
-    );
+    expect(retries[0].opts.idempotencyKey).toBe(race.dispatchKey);
     expect(retries[0].messageId).toBe(STEP_MESSAGE_ID);
     expect(flowResult).toBeUndefined();
 
     // That message must redeliver after the retry's backoff rather than ack.
     expect(queuedResult).toEqual({ timeoutSeconds: expect.any(Number) });
-    expect(bodyCalls).toBe(1);
+    expect(calls[FAILING_STEP]).toBe(1);
 
-    // The redelivery runs attempt 2.
-    await redelivery();
-    expect(bodyCalls).toBe(2);
+    await race.redeliver();
+    expect(calls[FAILING_STEP]).toBe(2);
+  });
+
+  it('stays in flight until the retry is published when a sibling inline step outlasts the failure', async () => {
+    const race = await startRaceOnFailingStep([FAILING_STEP, SIBLING_STEP]);
+
+    failingGate.open();
+    await vi.waitFor(() =>
+      expect(
+        race.durable.some(
+          (e) =>
+            e.eventType === 'step_retrying' && e.correlationId === race.stepId
+        )
+      ).toBe(true)
+    );
+    // The inline batch publishes the retry only once the sibling settles. If
+    // the waiting delivery returned now, its redelivery could finish the
+    // retried attempt and ack (the sibling still pending) before that
+    // publish, which would then land on a spent key.
+    let queuedSettled = false;
+    race.queuedDelivery.then(() => {
+      queuedSettled = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(queuedSettled).toBe(false);
+    expect(stepRetries(race.published, race.stepId)).toHaveLength(0);
+
+    siblingGate.open();
+    const [, queuedResult] = await Promise.all([
+      race.flowDelivery,
+      race.queuedDelivery,
+    ]);
+    const retries = stepRetries(race.published, race.stepId);
+    expect(retries).toHaveLength(1);
+    expect(retries[0].messageId).toBe(STEP_MESSAGE_ID);
+    expect(queuedResult).toEqual({ timeoutSeconds: expect.any(Number) });
+
+    // The redelivery runs attempt 2, sees every step done and finishes the run.
+    await race.redeliver();
+    expect(calls[FAILING_STEP]).toBe(2);
+    expect(race.durable.some((e) => e.eventType === 'run_completed')).toBe(
+      true
+    );
   });
 });
