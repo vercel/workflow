@@ -56,6 +56,7 @@ interface World extends Storage, Queue, Streamer {
   getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
   getEncryptionKeyForRun?(runId: string, context?: Record<string, unknown>): Promise<Uint8Array | undefined>;
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+  regionForRunId?(runId: string): string | null;
   describeRun?(run: Readonly<Record<string, unknown>>): Record<string, string | null> | null | Promise<Record<string, string | null> | null>;
   processExitTriggersQueueRedelivery?: boolean;
 }
@@ -73,6 +74,7 @@ The remaining optional members:
 - `start()` initializes background tasks (for example, queue polling); `close()` releases resources like connection pools and listeners.
 - `getEncryptionKeyForRun()` returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 - `createRunId()` mints the ID for a new run. Implementations may embed World-specific metadata as long as the result remains a valid ULID. This is how [multi-region placement](/worlds/vercel#multi-region) works. `@workflow/world-vercel` reads `options.region` from the `start()` options and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
+- `regionForRunId()` is the inverse of `createRunId()` for Worlds that embed a region: it returns the region an existing run's data lives in, from the ID alone. `recreateRunFromExisting()` uses it so a replayed run lands in the original run's region. Return `null` for an ID you don't recognize; omit the method if your World has no regional dimension.
 - `describeRun()` returns world-specific display fields for a run (for example, a region decoded from its ID) that tooling like `workflow inspect` renders as extra columns. It must be cheap, tolerate missing fields, and never throw.
 - `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget. When `true`, it exits and relies on queue redelivery. When `false` or absent, it attempts to write `run_failed` and returns.
 
