@@ -36,7 +36,7 @@ import {
   type LockHolder,
   LockHolderSchema,
   LockSchema,
-  lockRetryDelayMsForWait,
+  lockRetryAt,
   type Storage,
 } from '@workflow/world';
 import { lock as lockFile } from 'proper-lockfile';
@@ -296,15 +296,18 @@ async function pruneHolders(
 }
 
 export async function createLockAcquisition(
-  ctx: LockEventContext,
+  outer: LockEventContext,
   data: LockCreatedRequest
 ): Promise<{ event: Event; lock: LockAttempt }> {
-  const { basedir, tag, runId } = ctx;
+  const { basedir, tag, runId } = outer;
   const { key, concurrency, leaseTtlMs } = data.eventData;
   const correlationId = data.correlationId;
   const id = holderId(runId, correlationId);
 
   return withKeyLock(basedir, key, tag, async () => {
+    // Stamp inside the key lock, so a grant's events and lease are timed
+    // after the release that made room for it, never before.
+    const ctx: LockEventContext = { ...outer, now: new Date() };
     let state: LockState = (await readState(basedir, key, tag)) ?? {
       key,
       concurrency,
@@ -425,9 +428,14 @@ export async function createLockAcquisition(
     if (Object.keys(state.holders).length !== state.count) {
       await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
     }
+    // The scope's deterministic schedule: every attempt in this window gets
+    // the same instant, so the runtime's retry messages collapse onto one.
     const retryAt = new Date(
-      ctx.now.getTime() +
-        lockRetryDelayMsForWait(ctx.now.getTime() - scope.requestedAt.getTime())
+      lockRetryAt(
+        `${runId}:${correlationId}`,
+        scope.requestedAt.getTime(),
+        ctx.now.getTime()
+      )
     );
     const lock: LockAttempt = {
       key,
@@ -457,13 +465,14 @@ export async function createLockAcquisition(
 }
 
 export async function createLockRelease(
-  ctx: LockEventContext,
+  outer: LockEventContext,
   data: LockReleasedRequest
 ): Promise<{ event: Event; lock: LockAttempt }> {
-  const { basedir, tag, runId } = ctx;
+  const { basedir, tag, runId } = outer;
   const { key } = data.eventData;
   const correlationId = data.correlationId;
   return withKeyLock(basedir, key, tag, async () => {
+    const ctx: LockEventContext = { ...outer, now: new Date() };
     const scope = await readScope(basedir, runId, correlationId, tag);
     if (!scope?.acquiredEventId || scope.key !== key) {
       throw new EntityConflictError(

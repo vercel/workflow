@@ -158,18 +158,64 @@ export function lockRetryDelayMs(
 }
 
 /**
- * {@link lockRetryDelayMs} with the attempt number derived from how long the
- * scope has been waiting (since its `lock_created` committed): the attempt a
- * waiter retrying at the reference cadence would be on. Lets a World back off
- * without storing a per-waiter counter, so a failed attempt writes nothing.
+ * The next retry instant for a waiting lock scope: the first point of the
+ * scope's retry schedule that is later than `nowMs`.
+ *
+ * The schedule is a pure function of the scope (`seed`, e.g.
+ * `${runId}:${correlationId}`) and when it started waiting: exponential
+ * full-jitter backoff ({@link lockRetryDelayMs}) whose jitter is drawn from a
+ * hash of the seed rather than `Math.random`. Two properties follow, and the
+ * runtime depends on both:
+ *
+ * - Every attempt that fails within one window gets the *same* `retryAt`,
+ *   whoever made it: the scope's own retry, an unrelated wake of its run, a
+ *   duplicate delivery. The runtime keys its retry message on `retryAt`, so
+ *   all of them collapse onto one message instead of each starting another
+ *   self-renewing retry chain.
+ * - A failed attempt writes nothing: no per-waiter counter to bump.
+ *
+ * Different scopes still get independent jitter, so waiters on one key do
+ * not retry in lockstep. Past the cap the schedule is one point per
+ * `capMs`-wide window, at a seeded offset within it, so the next point is
+ * found in constant time however long the scope has waited.
  */
-export function lockRetryDelayMsForWait(
-  waitingMs: number,
-  options: Parameters<typeof lockRetryDelayMs>[1] = {}
+export function lockRetryAt(
+  seed: string,
+  waitingSinceMs: number,
+  nowMs: number,
+  options: { baseMs?: number; capMs?: number; minMs?: number } = {}
 ): number {
-  const baseMs = options?.baseMs ?? LOCK_RETRY_BASE_MS;
-  const attempt = Math.floor(Math.log2(1 + Math.max(0, waitingMs) / baseMs));
-  return lockRetryDelayMs(attempt, options);
+  const baseMs = options.baseMs ?? LOCK_RETRY_BASE_MS;
+  const capMs = options.capMs ?? LOCK_RETRY_CAP_MS;
+  let t = waitingSinceMs;
+  let k = 0;
+  // The exponential phase: until the window reaches the cap.
+  for (; baseMs * 2 ** k < capMs && k < 30; k++) {
+    t += lockRetryDelayMs(k, {
+      ...options,
+      random: () => seededUnit(`${seed}:${k}`),
+    });
+    if (t > nowMs) return t;
+  }
+  // The capped phase: point n sits at a seeded offset inside its own
+  // `capMs`-wide window, so points strictly increase and the one after
+  // `nowMs` is the first or second window from the one `nowMs` falls in.
+  const phaseStart = t;
+  const pointAt = (n: number) =>
+    phaseStart + n * capMs + Math.floor(seededUnit(`${seed}:c${n}`) * capMs);
+  let n = Math.max(0, Math.floor((nowMs - phaseStart) / capMs));
+  while (pointAt(n) <= nowMs) n++;
+  return Math.max(pointAt(n), nowMs + (options.minMs ?? LOCK_RETRY_MIN_MS));
+}
+
+/** A deterministic number in [0, 1) from a string (FNV-1a, 32-bit). */
+function seededUnit(input: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) / 0x1_0000_0000;
 }
 
 /** Reference backoff base (1s). */

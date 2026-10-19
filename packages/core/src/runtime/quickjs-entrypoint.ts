@@ -60,6 +60,7 @@ import {
 import {
   getLockContinuationDispatch,
   getWaitContinuationDispatch,
+  isEarlyLockRetry,
 } from './continuation-dispatch.js';
 import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
 import { getPortLazy } from './get-port-lazy.js';
@@ -1089,6 +1090,12 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
+  /**
+   * The lock scope this invocation is the delayed retry for, if it is one
+   * (`WorkflowInvokePayload.lockContinuation`). Read only to tell an early
+   * delivery apart; see `getLockContinuationDispatch`.
+   */
+  lockContinuation?: { correlationId: string; retryAtMs: number };
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -1105,6 +1112,7 @@ export async function runWorkflowWithQuickJS(params: {
     requestId,
     namespace,
     waitContinuation,
+    lockContinuation,
   } = params;
   // Lock scopes this invocation asked for a slot, with the World's retryAt.
   const lockProbes = new Map<string, number>();
@@ -1115,7 +1123,9 @@ export async function runWorkflowWithQuickJS(params: {
   }): Promise<void> => {
     const dispatch = getLockContinuationDispatch(
       retry.retryAtMs,
-      retry.correlationId
+      retry.correlationId,
+      Date.now(),
+      isEarlyLockRetry(lockContinuation, retry)
     );
     await queueMessage(
       world,

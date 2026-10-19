@@ -8,8 +8,8 @@ import {
 import {
   LOCK_RETRY_CAP_MS,
   LOCK_RETRY_MIN_MS,
+  lockRetryAt,
   lockRetryDelayMs,
-  lockRetryDelayMsForWait,
 } from './locks.js';
 
 describe('lock retry backoff', () => {
@@ -26,15 +26,41 @@ describe('lock retry backoff', () => {
     );
   });
 
-  test('derives the attempt from how long the scope has waited', () => {
-    const max = { random: () => 0.999999 };
-    expect(lockRetryDelayMsForWait(0, max)).toBe(LOCK_RETRY_MIN_MS);
-    // Waited 3s: the attempt a 1s/2s/... waiter would be on is 2.
-    expect(lockRetryDelayMsForWait(3_000, max)).toBeGreaterThan(3_000);
-    expect(lockRetryDelayMsForWait(3_000, max)).toBeLessThan(4_000);
-    expect(lockRetryDelayMsForWait(3_600_000, max)).toBeLessThan(
-      LOCK_RETRY_CAP_MS
+  test('lockRetryAt is one schedule per scope, the same for every observer', () => {
+    const since = 1_000_000;
+    const first = lockRetryAt('wrun_a:lock_1', since, since);
+    // Anyone asking inside the same window gets the same instant.
+    expect(lockRetryAt('wrun_a:lock_1', since, since + 1)).toBe(first);
+    expect(lockRetryAt('wrun_a:lock_1', since, first - 1)).toBe(first);
+    // Past it, the next point, strictly later.
+    const second = lockRetryAt('wrun_a:lock_1', since, first);
+    expect(second).toBeGreaterThan(first);
+    // Another scope draws its own jitter.
+    const others = new Set(
+      Array.from({ length: 20 }, (_, i) =>
+        lockRetryAt(`wrun_a:lock_${i}`, since, since + 10_000)
+      )
     );
+    expect(others.size).toBeGreaterThan(10);
+  });
+
+  test('lockRetryAt backs off to the cap and stays strictly increasing', () => {
+    const since = 0;
+    let previous = since;
+    let now = since;
+    const gaps: number[] = [];
+    for (let i = 0; i < 400; i++) {
+      const next = lockRetryAt('s', since, now);
+      expect(next).toBeGreaterThan(now);
+      expect(next).toBeGreaterThan(previous);
+      gaps.push(next - previous);
+      previous = next;
+      now = next;
+    }
+    expect(Math.max(...gaps)).toBeLessThan(2 * LOCK_RETRY_CAP_MS);
+    // Hours in, the next point is found without walking the schedule.
+    const late = lockRetryAt('s', since, 7 * 24 * 3_600_000);
+    expect(late - 7 * 24 * 3_600_000).toBeLessThan(2 * LOCK_RETRY_CAP_MS);
   });
 });
 

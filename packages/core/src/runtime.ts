@@ -67,6 +67,7 @@ import {
 import {
   getLockContinuationDispatch,
   getWaitContinuationDispatch,
+  isEarlyLockRetry,
 } from './runtime/continuation-dispatch.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
@@ -842,6 +843,7 @@ export function workflowEntrypoint(
           runContext,
           hookResumeTiming,
           waitContinuation,
+          lockContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -3153,6 +3155,7 @@ export function workflowEntrypoint(
                           // that arrives before its wait elapses re-arms
                           // under a fresh key instead of losing the timer.
                           waitContinuation,
+                          lockContinuation,
                           // Inline-step ownership plumbing: redeliveries of
                           // this message drive crash recovery for steps an
                           // earlier invocation claimed inline (see the
@@ -4443,7 +4446,9 @@ export function workflowEntrypoint(
                               },
                               getLockContinuationDispatch(
                                 lockRetry.retryAtMs,
-                                lockRetry.correlationId
+                                lockRetry.correlationId,
+                                Date.now(),
+                                isEarlyLockRetry(lockContinuation, lockRetry)
                               )
                             )
                           );

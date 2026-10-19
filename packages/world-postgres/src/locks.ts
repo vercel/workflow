@@ -29,7 +29,7 @@ import {
   type Lock,
   type LockAttempt,
   type LockHolder,
-  lockRetryDelayMsForWait,
+  lockRetryAt,
   type Storage,
 } from '@workflow/world';
 import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm';
@@ -252,7 +252,11 @@ export async function acquireLock(
     // Refused. A retry of a scope that already waited writes nothing.
     const now = Date.now();
     const waitingSince = scope.created ? +scope.created.createdAt : now;
-    const retryAt = new Date(now + lockRetryDelayMsForWait(now - waitingSince));
+    // The scope's deterministic schedule: every attempt in this window gets
+    // the same instant, so the runtime's retry messages collapse onto one.
+    const retryAt = new Date(
+      lockRetryAt(`${runId}:${correlationId}`, waitingSince, now)
+    );
     const lock: LockAttempt = {
       key,
       status: 'pending',

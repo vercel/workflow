@@ -106,8 +106,8 @@ export {
   LockKeySchema,
   LockSchema,
   LockWaiterSchema,
+  lockRetryAt,
   lockRetryDelayMs,
-  lockRetryDelayMsForWait,
 } from './locks.js';
 // The client this flag selects lives in `./node-http.js`, which is reachable
 // only by subpath: it imports node builtins statically, and this index is also

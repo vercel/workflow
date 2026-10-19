@@ -151,6 +151,14 @@ async function createHarness(
     return runId;
   }
 
+  /** A plain wake of `runId`, as a duplicate delivery would be. */
+  const wake = (runId: string) =>
+    pending.push({
+      id: `msg_${randomUUID()}`,
+      queueName: '__wkf_workflow_workflow',
+      payload: { runId, requestedAt: new Date() },
+    });
+
   const messagesFor = (runId: string) =>
     pending.filter((m) => m.payload.runId === runId && !m.payload.stepId);
 
@@ -166,6 +174,7 @@ async function createHarness(
     creates,
     start,
     deliver,
+    wake,
     messagesFor,
     events,
     async run(runId: string) {
@@ -211,12 +220,16 @@ describe.each([
 ] as const)('lock() over the runtime (%s engine)', (engine) => {
   let h: Awaited<ReturnType<typeof createHarness>>;
   beforeEach(async () => {
+    // Only the clock is faked, so a retry can be delivered when it is due
+    // without waiting for it; timers stay real.
+    vi.useFakeTimers({ toFake: ['Date'] });
     gates.clear();
     entered.clear();
     inside = 0;
     maxInside = 0;
   });
   afterEach(async () => {
+    vi.useRealTimers();
     for (const gate of gates.values()) gate.resolve();
     await h?.cleanup();
   });
@@ -258,6 +271,13 @@ describe.each([
       const eventsBefore = (await h.events(waiter)).length;
       const sentBefore = h.sent.length;
       const createsBefore = h.creates.length;
+      // Deliver it when it is due, as the queue would.
+      const due = (
+        continuations[0].payload.lockContinuation as {
+          retryAtMs: number;
+        }
+      ).retryAtMs;
+      vi.setSystemTime(Math.max(Date.now(), due));
       await h.deliver(continuations[0]);
       const writes = h.creates
         .slice(createsBefore)
@@ -276,6 +296,16 @@ describe.each([
       expect(cost).toMatchObject({ events: 0, messages: 1, lockWrites: 1 });
       expect(cost.writes).toBeLessThanOrEqual(2);
     }
+
+    // An unrelated wake of the waiter (a duplicate delivery, a sibling
+    // branch finishing) re-POSTs inside the same retry window, is handed the
+    // same retryAt, and arms the same key: still one retry chain.
+    h.wake(waiter);
+    const [extraWake] = h
+      .messagesFor(waiter)
+      .filter((m) => !m.payload.lockContinuation);
+    await h.deliver(extraWake);
+    expect(h.messagesFor(waiter)).toHaveLength(1);
     expect((await h.events(waiter)).length).toBe(afterFirst.length);
 
     // Release: the holder finishes, and the waiter's next retry is granted.
@@ -286,7 +316,14 @@ describe.each([
       'lock_released'
     );
 
-    const waiterDone = h.deliver(h.messagesFor(waiter)[0]);
+    const next = h.messagesFor(waiter)[0];
+    vi.setSystemTime(
+      Math.max(
+        Date.now(),
+        (next.payload.lockContinuation as { retryAtMs: number }).retryAtMs
+      )
+    );
+    const waiterDone = h.deliver(next);
     await gateFor(entered, 'waiter').promise;
     gateFor(gates, 'waiter').resolve();
     await waiterDone;
@@ -309,17 +346,23 @@ describe.each([
     // Drive every run's messages concurrently until all complete; open each
     // gate as soon as its body enters, so holders cycle.
     const inflight = new Set<Promise<void>>();
-    const deadline = Date.now() + 30_000;
     for (const tag of tags) {
       void gateFor(entered, tag).promise.then(() =>
         setTimeout(() => gateFor(gates, tag).resolve(), 5)
       );
     }
-    while (Date.now() < deadline) {
+    for (let round = 0; round < 3_000; round++) {
       const statuses = await Promise.all(runs.map((r) => h.run(r)));
       if (statuses.every((r) => r.status === 'completed')) break;
       for (const runId of runs) {
         for (const message of h.messagesFor(runId)) {
+          // A retry is delivered when it is due, as the queue would.
+          const due = (
+            message.payload.lockContinuation as
+              | { retryAtMs: number }
+              | undefined
+          )?.retryAtMs;
+          if (due !== undefined) vi.setSystemTime(Math.max(Date.now(), due));
           const p = h.deliver(message).finally(() => inflight.delete(p));
           inflight.add(p);
         }

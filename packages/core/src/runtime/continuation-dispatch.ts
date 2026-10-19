@@ -165,30 +165,54 @@ export const getContinuationDispatch = getWaitContinuationDispatch;
  * World's `retryAt` (floored at 1s, the queue's delay granularity) so its next
  * replay re-POSTs the scope's `lock_created`.
  *
- * The key is `<correlationId>:r<retryAtMs>`, not the wait scheme's attempt
- * counter. Every failed attempt gets a fresh `retryAt` from the World, so
- * each retry has a key no earlier delivery can have spent, whatever order a
- * run's several waiting scopes are armed in; and every pass that re-observes
- * the same attempt (the invocation's probe record hands back the same
- * `retryAt`) collapses onto one message. An attempt counter carried on the
- * message would be reset to 0 whenever another scope's retry is the one
- * delivered, re-arming this scope under a key it already spent.
+ * The key is `<correlationId>:r<retryAtMs>`. A World computes `retryAt` from
+ * the scope's own deterministic schedule (`lockRetryAt` in
+ * `@workflow/world`), so every pass that observes the scope waiting in one
+ * window arms the same key: the scope's own retry, an unrelated wake of the
+ * run (a sibling step finishing), a duplicate delivery. They collapse onto one
+ * message rather than each starting another self-renewing retry chain, and
+ * each window's key is new, so no retry reuses a key a delivery already
+ * spent.
  *
- * A retry delay never approaches the 23h hop limit (the reference backoff
+ * The one exception is the wait scheme's: a retry delivered *before* its
+ * `retryAt` (clock skew) re-POSTs, is refused, and is handed the same
+ * `retryAt` it was armed for, whose key it just spent. `early` marks that
+ * case (this invocation is the retry for this scope and got back the instant
+ * it was armed for), and adds a second-bucketed suffix so the re-arm is not
+ * dropped while same-instant duplicates still collapse.
+ *
+ * A retry delay never approaches the 23h hop limit (the reference schedule
  * caps at 30s), but a World is free to pick one, so it is clamped the same
- * way; a hop delivered early simply re-POSTs and gets a fresh `retryAt`.
+ * way; a hop delivered early simply takes the `early` path.
  */
 export function getLockContinuationDispatch(
   retryAtMs: number,
   lockCorrelationId: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  early = false
 ): WaitContinuationDispatch & { seconds: number } {
   const seconds = lockRetrySeconds(retryAtMs, now);
+  const key = `${lockCorrelationId}:r${Math.floor(retryAtMs)}`;
   return {
     seconds,
     delaySeconds: Math.min(seconds, getWaitContinuationMaxDelaySeconds()),
-    idempotencyKey: `${lockCorrelationId}:r${Math.floor(retryAtMs)}`,
+    idempotencyKey: early ? `${key}:e${Math.floor(now / 1000)}` : key,
   };
+}
+
+/**
+ * Whether an invocation armed as the retry for `retry.correlationId` at
+ * `incoming.retryAtMs` was handed that same instant again, i.e. was delivered
+ * early. See {@link getLockContinuationDispatch}.
+ */
+export function isEarlyLockRetry(
+  incoming: { correlationId: string; retryAtMs: number } | undefined,
+  retry: { correlationId: string; retryAtMs: number }
+): boolean {
+  return (
+    incoming?.correlationId === retry.correlationId &&
+    incoming.retryAtMs >= retry.retryAtMs
+  );
 }
 
 /** Seconds until `retryAtMs`, floored at 1 (NaN reads as "now"). */
