@@ -975,6 +975,90 @@ export function createEventsStorage(
       getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
 
+  const missingRunCreatedError = (runId: string, reason: string) =>
+    new WorkflowWorldError(
+      `Cannot restore missing run_created for workflow run "${runId}": ${reason}`
+    );
+
+  /**
+   * Restores the first event of a pending run whose entity write survived but
+   * whose creation-event write did not. The run record is the only authority:
+   * a redelivered event may carry different data.
+   *
+   * Slot 1 is fixed rather than allocated. `writeExclusive` is the complete
+   * cross-process arbitration: it holds no lock while writing its temp file,
+   * and the hard link either publishes this event or reveals the winner.
+   */
+  async function restoreMissingRunCreated(run: WorkflowRun): Promise<void> {
+    const firstPage = await queryRunEvents(run.runId, {
+      limit: 1,
+      sortOrder: 'asc',
+    });
+    const first = firstPage.data[0];
+    if (first) {
+      if (first.eventType === 'run_created' && first.runId === run.runId) {
+        return;
+      }
+      throw missingRunCreatedError(
+        run.runId,
+        `the event log is not empty (its first event is "${first.eventType}")`
+      );
+    }
+    if (run.input === undefined) {
+      throw missingRunCreatedError(run.runId, 'the original input is missing');
+    }
+
+    const eventId = slotToEventId(FIRST_EVENT_SLOT);
+    const event: Event = {
+      eventType: 'run_created',
+      runId: run.runId,
+      eventId,
+      createdAt: run.createdAt,
+      specVersion: run.specVersion,
+      eventData: {
+        deploymentId: run.deploymentId,
+        workflowName: run.workflowName,
+        input: run.input,
+        executionContext: run.executionContext,
+        attributes: run.attributes,
+        encryptionPublicKey: run.encryptionPublicKey,
+      },
+    };
+    const eventPath = taggedPath(
+      basedir,
+      runEntityDir('events', run.runId),
+      `${run.runId}-${eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+    if (await writeExclusive(eventPath, serializedEvent)) {
+      notePublishedSlot(run.runId, eventId);
+      rememberStoredEvent(event, eventPath, serializedEvent);
+      console.warn(
+        `[world-local] restored missing run_created for ${run.runId}`
+      );
+      return;
+    }
+
+    const occupant = await readJSONWithFallback(
+      basedir,
+      runEntityDir('events', run.runId),
+      `${run.runId}-${eventId}`,
+      ReadEventSchema,
+      tag
+    );
+    if (occupant?.eventType === 'run_created' && occupant.runId === run.runId) {
+      notePublishedSlot(run.runId, eventId);
+      return;
+    }
+    throw missingRunCreatedError(
+      run.runId,
+      `event slot ${FIRST_EVENT_SLOT} is occupied by ${
+        occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+      }`
+    );
+  }
+
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
@@ -1123,6 +1207,7 @@ export function createEventsStorage(
         // on running steps, and running steps are always allowed to modify regardless
         // of run state. This optimization saves filesystem reads per step event.
         let currentRun: WorkflowRun | null = null;
+        let createdByResilientStart = false;
         const skipRunValidationEvents = ['step_completed', 'step_retrying'];
         if (
           data.eventType !== 'run_created' &&
@@ -1226,6 +1311,7 @@ export function createEventsStorage(
                 };
                 await storeEvent(runCreatedEvent);
                 currentRun = createdRun;
+                createdByResilientStart = true;
               } else {
                 // Run already exists (concurrent run_created won the
                 // race). Re-read it so downstream logic sees the real state.
@@ -1239,6 +1325,19 @@ export function createEventsStorage(
               }
             }
           }
+        }
+
+        if (
+          currentRun?.status === 'pending' &&
+          !createdByResilientStart &&
+          !requiresNewerWorld(currentRun.specVersion) &&
+          !isLegacySpecVersion(currentRun.specVersion) &&
+          (data.eventType === 'run_started' ||
+            data.eventType === 'attr_set' ||
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed')
+        ) {
+          await restoreMissingRunCreated(currentRun);
         }
 
         // Draw this event's id now that any synthetic `run_created` above has
@@ -3253,6 +3352,35 @@ export function createEventsStorage(
             // starts above it. Only a committed publish moves the watermark.
             notePublishedSlot(effectiveRunId, eventId);
             break;
+          }
+          // A run's creation is permanently slot 1. Recovery can win that
+          // slot while the original publisher is paused; converge on that
+          // same event and surface the EntityConflictError that start()
+          // already treats as benign. Any other occupant is corrupt history,
+          // not a reason to move run_created to a later slot.
+          if (data.eventType === 'run_created') {
+            const slot = eventIdToSlot(eventId);
+            const occupant = await readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            );
+            if (
+              slot === FIRST_EVENT_SLOT &&
+              occupant?.eventType === 'run_created' &&
+              occupant.runId === effectiveRunId
+            ) {
+              break;
+            }
+            throw new WorkflowWorldError(
+              `Cannot publish run_created for workflow run "${effectiveRunId}": event slot ${
+                slot ?? eventId
+              } is occupied by ${
+                occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+              }`
+            );
           }
           // Losing this publish to THIS SAME resume is the convergence the
           // claim exists to force, and it has to be answered before the bump
