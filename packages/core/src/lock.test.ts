@@ -58,7 +58,11 @@ interface QueuedMessage {
  * world-local's storage (locks included) behind a queue that only records.
  * `deliver` runs one recorded message through the real handler.
  */
-async function createHarness(options: { locks?: boolean } = {}) {
+type Engine = 'node' | 'quickjs';
+
+async function createHarness(
+  options: { locks?: boolean; engine?: Engine } = {}
+) {
   const dir = await mkdtemp(join(tmpdir(), 'lock-runtime-'));
   const local = createWorld({ dataDir: dir }) as unknown as World;
   const pending: QueuedMessage[] = [];
@@ -132,7 +136,12 @@ async function createHarness(options: { locks?: boolean } = {}) {
     await local.events.create(runId, {
       eventType: 'run_created',
       specVersion: SPEC_VERSION_CURRENT,
-      eventData: { deploymentId: 'dpl_lock', workflowName: 'workflow', input },
+      eventData: {
+        deploymentId: 'dpl_lock',
+        workflowName: 'workflow',
+        input,
+        executionContext: { workflowVm: options.engine ?? 'node' },
+      },
     } as never);
     pending.push({
       id: `msg_${randomUUID()}`,
@@ -196,7 +205,10 @@ registerStepFunction('lock_gate', async (tag: string) => {
   return tag;
 });
 
-describe('lock() over the runtime', () => {
+describe.each([
+  'node',
+  'quickjs',
+] as const)('lock() over the runtime (%s engine)', (engine) => {
   let h: Awaited<ReturnType<typeof createHarness>>;
   beforeEach(async () => {
     gates.clear();
@@ -210,7 +222,7 @@ describe('lock() over the runtime', () => {
   });
 
   it('waits without growing the event log: one queue message and one lock write per retry', async () => {
-    h = await createHarness();
+    h = await createHarness({ engine });
     const key = `cost:${randomUUID()}`;
     const holder = await h.start([key, 1, 'holder']);
     const waiter = await h.start([key, 1, 'waiter']);
@@ -287,7 +299,7 @@ describe('lock() over the runtime', () => {
   });
 
   it('never runs more than `concurrency` holders at once', async () => {
-    h = await createHarness();
+    h = await createHarness({ engine });
     const key = `fanout:${randomUUID()}`;
     const tags = Array.from({ length: 6 }, (_, i) => `run${i}`);
     const runs = await Promise.all(tags.map((tag) => h.start([key, 2, tag])));
@@ -320,7 +332,7 @@ describe('lock() over the runtime', () => {
   });
 
   it('fails the run when the World does not support locks', async () => {
-    h = await createHarness({ locks: false });
+    h = await createHarness({ locks: false, engine });
     const runId = await h.start([`unsupported:${randomUUID()}`, 1, 'x']);
     await h.deliver(h.messagesFor(runId)[0]);
     const run = await h.run(runId);
