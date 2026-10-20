@@ -169,6 +169,30 @@ describe('v4 create-event response schemas', () => {
     expect(result.event.eventData).toEqual({ stepName: 'step' });
   });
 
+  it('parses the echoed idempotencyKey on the run_created run', async () => {
+    const created = await postEvent(
+      'run_created',
+      responseBody(
+        'run_created',
+        {
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          input: new Uint8Array(),
+          idempotencyKey: 'order-1',
+          idempotencyKeyTtlMs: 86_400_000,
+          idempotencyKeyReusePolicy: 'REJECT_DUPLICATE',
+        },
+        { run: { ...runningRun, status: 'pending', idempotencyKey: 'order-1' } }
+      )
+    );
+    expect(created.run?.idempotencyKey).toBe('order-1');
+    expect(created.event.eventData).toMatchObject({
+      idempotencyKey: 'order-1',
+      idempotencyKeyTtlMs: 86_400_000,
+      idempotencyKeyReusePolicy: 'REJECT_DUPLICATE',
+    });
+  });
+
   it('requires run on run_created and startedAt on run_started', async () => {
     const created = await postEvent(
       'run_created',

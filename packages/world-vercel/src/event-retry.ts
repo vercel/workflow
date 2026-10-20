@@ -72,6 +72,7 @@ import {
   StreamError,
   ThrottleError,
   TooEarlyError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { EventTypeSchema } from '@workflow/world';
@@ -331,6 +332,10 @@ export function isRetryableEventPostError(err: unknown): boolean {
     // A takeover redirect is definitive for THIS target; the runtime's
     // resume path follows the token instead of re-issuing the write here.
     HookForceClaimedError.is(err) ||
+    // Another run holds the idempotency key: definitive, and start() applies
+    // its conflict policy. A retry of a run_created whose first attempt
+    // landed is answered with a plain 409 (EntityConflictError) instead.
+    WorkflowRunAlreadyStartedError.is(err) ||
     RunExpiredError.is(err) ||
     TooEarlyError.is(err) ||
     ThrottleError.is(err)

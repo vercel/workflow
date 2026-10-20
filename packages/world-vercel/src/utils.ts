@@ -559,7 +559,12 @@ export async function makeRequest<T>({
             code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
-            details: errorData.details,
+            // An idempotency-key refusal names the holder top-level on the
+            // body (like the v4 path), not under `details`.
+            details:
+              errorCode === 'idempotency-key-conflict'
+                ? errorData
+                : errorData.details,
           });
           span?.setAttributes({
             ...ErrorType(errorCode || `HTTP ${response.status}`),

@@ -22,6 +22,7 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
   HookForceClaimedError,
+  IDEMPOTENCY_KEY_CONFLICT_CODE,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
@@ -30,6 +31,7 @@ import {
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
@@ -384,7 +386,13 @@ export function inBandCounter(value: unknown): number | undefined {
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
- *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
+ *   - 409 with code `idempotency-key-conflict` → WorkflowRunAlreadyStartedError
+ *     (a run_created refused because another run holds its idempotency key;
+ *     `details` carries the holder's `runId`, `runStatus` and `workflowName`)
+ *   - 409 with code `hook-force-claimed` → HookForceClaimedError
+ *   - other 409 → EntityConflictError (start() dedupe, including a re-post of
+ *     a keyed run_created whose first attempt landed; terminal-state
+ *     transitions)
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
  *   - 412 with code `in-band-superseded` → InBandSupersededError (the in-band
@@ -433,6 +441,31 @@ export function errorForResponse(
       '',
       typeof claimedBy?.runId === 'string' ? claimedBy.runId : 'unknown',
       typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
+    );
+  }
+  if (status === 409 && code === IDEMPOTENCY_KEY_CONFLICT_CODE) {
+    // Must not degrade to EntityConflictError: start() treats that as its own
+    // earlier write landing and would publish a run that was never created.
+    const holder =
+      details && typeof details === 'object'
+        ? (details as {
+            runId?: unknown;
+            runStatus?: unknown;
+            workflowName?: unknown;
+          })
+        : undefined;
+    return new WorkflowRunAlreadyStartedError(
+      typeof holder?.runId === 'string' ? holder.runId : 'unknown',
+      {
+        message,
+        url,
+        ...(typeof holder?.runStatus === 'string'
+          ? { runStatus: holder.runStatus }
+          : {}),
+        ...(typeof holder?.workflowName === 'string'
+          ? { workflowName: holder.workflowName }
+          : {}),
+      }
     );
   }
   if (status === 409) return new EntityConflictError(message);
