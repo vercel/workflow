@@ -34,11 +34,22 @@ registerStepFunction('so_add', async (a: number, b: number) => {
   count('so_add');
   return a + b;
 });
-/** Runs past a delivery's deadline when the deadline is under its duration. */
-const SLOW_STEP_MS = 150;
+/**
+ * Moves the clock `Date.now()` reads (see {@link mockClock}) past every
+ * invocation deadline while it runs, so the delivery running it inline is past
+ * its deadline once the body returns.
+ */
+let clockOffsetMs = 0;
+const realNow = Date.now.bind(Date);
+function mockClock() {
+  clockOffsetMs = 0;
+  return vi
+    .spyOn(Date, 'now')
+    .mockImplementation(() => realNow() + clockOffsetMs);
+}
 registerStepFunction('so_slow_add', async (a: number, b: number) => {
   count('so_slow_add');
-  await new Promise((resolve) => setTimeout(resolve, SLOW_STEP_MS));
+  clockOffsetMs += 30 * 60_000;
   return a + b;
 });
 let flakyFailures = 0;
@@ -525,15 +536,16 @@ describe.each([
       const { world, start } = await setup(code, [1, 2], { handoff });
 
       // The first step starts inline inside the first delivery's deadline and
-      // finishes past it, so the pass that reads its outcome back (without
-      // run-ahead, a pass of its own) finds the deadline reached.
+      // its body moves the clock past it, so the pass that reads its outcome
+      // back (without run-ahead, a pass of its own) finds the deadline
+      // reached.
       vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
-      vi.stubEnv('WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS', '0');
-      vi.stubEnv('WORKFLOW_V2_TIMEOUT_MS', String(SLOW_STEP_MS / 2));
+      const clock = mockClock();
       let result: unknown;
       try {
         result = await world.deliver(start);
       } finally {
+        clock.mockRestore();
         vi.unstubAllEnvs();
       }
       const fresh = world.held.filter((h) => h.messageId !== start.messageId);
@@ -588,20 +600,20 @@ describe.each([
         },
       });
 
-      vi.stubEnv('WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS', '0');
-      vi.stubEnv('WORKFLOW_V2_TIMEOUT_MS', String(SLOW_STEP_MS / 2));
+      const clock = mockClock();
       let delivered = false;
       const delivery = world.deliver(start).then((result) => {
         delivered = true;
         return result;
       });
       try {
-        await new Promise((resolve) => setTimeout(resolve, SLOW_STEP_MS * 3));
+        await new Promise((resolve) => setTimeout(resolve, 300));
         expect(delivered).toBe(false);
         releaseOutcome();
         expect(await delivery).toEqual({ timeoutSeconds: 0, handoff: true });
       } finally {
         releaseOutcome();
+        clock.mockRestore();
         vi.unstubAllEnvs();
       }
       expect(eventsOf(world, 'step_completed')).toHaveLength(1);
