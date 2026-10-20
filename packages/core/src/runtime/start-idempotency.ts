@@ -309,21 +309,31 @@ export function markKeysDisabledFatal(err: unknown): unknown {
  * stream untouched: never read, locked, or cancelled.
  *
  * The gate resolves, never rejects, so nothing waiting on it can surface as
- * an unhandled rejection. Settling it twice is a no-op, so `close()` after
- * `open()` changes nothing.
+ * an unhandled rejection. Only the first of `open()` and `close()` counts;
+ * `close()` returns whether it was the one that settled the gate (so `false`
+ * after an `open()`).
  */
 export function createArgumentStreamGate(): {
   gate: Promise<boolean>;
   open(): void;
-  close(): void;
+  close(): boolean;
 } {
   let settle!: (open: boolean) => void;
+  let settled = false;
   const gate = new Promise<boolean>((resolve) => {
     settle = resolve;
   });
+  const decide = (open: boolean): boolean => {
+    if (settled) return false;
+    settled = true;
+    settle(open);
+    return true;
+  };
   return {
     gate,
-    open: () => settle(true),
-    close: () => settle(false),
+    open: () => {
+      decide(true);
+    },
+    close: () => decide(false),
   };
 }

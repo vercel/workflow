@@ -61,6 +61,9 @@ vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
   trace: vi.fn((_name, fn) => fn(undefined)),
   getActiveSpan: vi.fn().mockResolvedValue(undefined),
+  // The argument-stream sinks record their flush and close spans.
+  getSpanKind: vi.fn().mockResolvedValue(undefined),
+  recordElapsedSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('start', () => {

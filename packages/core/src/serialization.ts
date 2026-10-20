@@ -23,6 +23,7 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -674,6 +675,20 @@ export function getByteUnframingStream(): TransformStream<
 }
 
 /**
+ * The `catch` for a fire-and-forget telemetry span. Telemetry must never fail
+ * the stream it describes, and a promise nothing awaits must never reject
+ * unobserved (an unhandled rejection takes the process down), so a failure to
+ * record a span is logged and dropped.
+ */
+function logSpanFailure(spanName: string): (error: unknown) => void {
+  return (error) => {
+    runtimeLogger.debug('Failed to record a stream telemetry span', {
+      span: spanName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+}
+/**
  * Emit the client-observed end-to-end time-to-first-chunk span for a live read:
  * read dispatch (`startEpochMs`) → the first non-empty chunk reaching the
  * reader, including the network hop. Fire-and-forget; no-op without OTEL.
@@ -701,7 +716,7 @@ function recordReadTimeToFirstChunk(
           : {}),
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.read'));
 }
 
 /**
@@ -724,7 +739,7 @@ function recordStreamReadKeyResolution(
         'workflow.stream.read.key_succeeded': succeeded,
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.read.resolve_key'));
 }
 
 /**
@@ -756,7 +771,7 @@ function recordStreamReadComplete(
           : {}),
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.read.complete'));
 }
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
@@ -1252,7 +1267,7 @@ function recordStreamWriteFlush(
         'workflow.stream.write.chunk_rtt': rpcMs,
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.flush'));
 }
 
 /**
@@ -1275,7 +1290,7 @@ function recordStreamClose(
         'workflow.stream.close.rpc_ms': Date.now() - startEpochMs,
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.close'));
 }
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {

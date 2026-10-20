@@ -1421,16 +1421,17 @@ export async function start<TArgs extends unknown[], TResult>(
                 { workflowRunId: runId, workflowName }
               );
             }
-            // The run exists: its argument streams are written even if the
-            // publish below fails, as a retry adopts this run as the holder.
+            // The run exists: its argument streams are written, and kept
+            // alive, even if the publish below fails, as a retry adopts this
+            // run as the holder.
             argumentStreams.open();
+            flushArgumentStreams();
           }
 
           await world.queue(queueName, queuePayload, {
             ...queueOptions,
             idempotencyKey: startMessageIdempotencyKey(runId),
           });
-          flushArgumentStreams();
 
           span?.setAttributes({
             ...Attribute.WorkflowStartIdempotencyOutcome('created'),
@@ -1441,7 +1442,12 @@ export async function start<TArgs extends unknown[], TResult>(
 
           return new Run<TResult>(runId, { started: true });
         } finally {
-          argumentStreams.close();
+          if (argumentStreams.close()) {
+            // No run: the gated pipes never start and settle on their own,
+            // but nothing else observes `ops`, so settle them here too. No
+            // argument op can then reject unhandled on any exit.
+            void Promise.allSettled(ops);
+          }
         }
       }
 
