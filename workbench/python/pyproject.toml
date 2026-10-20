@@ -5,12 +5,14 @@ description = "Python conformance target for the @workflow/core e2e suite"
 requires-python = ">=3.10"
 dependencies = [
   "vercel-workflow",
+  "httpx2>=2",
   "uvicorn>=0.30",
 ]
 
 [tool.uv.sources]
-# TEMPORARY: matching per-run layout in vercel-py; revert to vercel/vercel-py main before merge.
-vercel-workflow = { git = "https://github.com/ruiconti/vercel-py", branch = "rui/local-world-per-run-dirs-on-cc65153", subdirectory = "src/vercel-workflow" }
+# TEMPORARY: per-run LocalWorld layout from vercel/vercel-py#475. Switch back to
+# vercel/vercel-py main once it merges.
+vercel-workflow = { git = "https://github.com/ruiconti/vercel-py", branch = "rui/local-world-per-run-dirs", subdirectory = "src/vercel-workflow" }
 
 [tool.vercel]
 entrypoint = "app:app"
