@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { globalSingleton } from '@workflow/utils';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 
@@ -35,13 +36,52 @@ export function ownerLog(event: string, fields: Record<string, unknown>) {
 const monitor = globalSingleton('@workflow/core//ownerDiagnostics', 1, () => ({
   sources: new Set<OwnerDiagnosticsSource>(),
   timer: undefined as ReturnType<typeof setInterval> | undefined,
+  /** Highest maxProcFds sampled since the last logged line. */
+  peakFds: 0,
 }));
+
+/** Open file descriptors (entries, not numbers) of one process. */
+function fdCount(pid: string): number | undefined {
+  try {
+    return readdirSync(`/proc/${pid}/fd`).length;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The highest open-FD count of any visible process, as the function runtime
+ * measures it (Linux only; undefined elsewhere). The runtime refuses new
+ * requests while any in-flight request has seen 850 or more, and an owner's
+ * starting request stays in flight for the owner's lifetime, so a brief spike
+ * counts for that whole lifetime.
+ */
+function maxProcFds(): number | undefined {
+  let pids: string[];
+  try {
+    pids = readdirSync('/proc').filter((name) => /^\d+$/.test(name));
+  } catch {
+    return undefined;
+  }
+  let max: number | undefined;
+  for (const pid of pids) {
+    const count = fdCount(pid);
+    if (count !== undefined) max = Math.max(max ?? 0, count);
+  }
+  return max;
+}
 
 function snapshot() {
   const memory = process.memoryUsage();
+  const procMax = maxProcFds();
+  const peakMaxProcFds = Math.max(monitor.peakFds, procMax ?? 0) || undefined;
+  monitor.peakFds = 0;
   return {
     rssMb: Math.round(memory.rss / 2 ** 20),
     heapUsedMb: Math.round(memory.heapUsed / 2 ** 20),
+    fds: fdCount('self'),
+    maxProcFds: procMax,
+    peakMaxProcFds,
     owners: [...monitor.sources].map((source) => {
       try {
         return source.diagnostics();
@@ -62,6 +102,7 @@ export function trackOwner(source: OwnerDiagnosticsSource): () => void {
       const now = Date.now();
       const lagMs = now - expected;
       expected = now + TICK_MS;
+      monitor.peakFds = Math.max(monitor.peakFds, maxProcFds() ?? 0);
       if (lagMs > LAG_LOG_MS) {
         ownerLog('event_loop_lag', { lagMs, ...snapshot() });
         lastBeat = now;
