@@ -69,6 +69,9 @@ export const OwnedStepStatusSchema = z.compile(
     stepId: z.string(),
     executionId: z.string(),
     attempt: z.number().int().positive(),
+    /** A queue redelivery: an earlier delivery of this attempt ended without
+     * an acknowledgement, so its worker is gone. */
+    lost: z.boolean().optional(),
   })
 );
 
@@ -270,6 +273,7 @@ export async function executeOwnedStep(
             type: 'step_status',
             version: 1,
             ...identity,
+            ...(metadata.attempt > 1 ? { lost: true } : {}),
           },
           {
             target,

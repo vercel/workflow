@@ -161,6 +161,12 @@ const MAX_RUNNING_STEPS = 200;
 /** Inputs an owner queues before refusing more (429): a full window of step
  * results plus room for other inputs (hook resumes, wakes, status probes). */
 const MAILBOX_CAPACITY = MAX_RUNNING_STEPS + 128;
+/** A remote step runs under its queue delivery's lease: a lost worker is
+ * redelivered and reported (`step_status` with `lost`). This bound only
+ * recovers an attempt whose delivery itself never surfaces again. */
+const ABANDONED_ATTEMPT_MS = 15 * 60_000;
+/** Backstop wake for a step waiting to start (e.g. behind MAX_RUNNING_STEPS). */
+const PENDING_RECHECK_MS = 60_000;
 /** Phases logged on every owner start (see `owner-diagnostics.ts`). */
 const STARTUP_PHASES = new Set([
   'initialize',
@@ -393,9 +399,10 @@ export class RetainedRunner {
   private undelivered = new Map<string, number>();
 
   /** Step placement for every single-owner run: up to three bodies
-   * (`localStepSlots`) run in this owner, the rest go directly to other invocations (`executionMode:
-   * 'remote'`), and every result returns through invoke. Implied by the
-   * single-owner marker; there is no option. */
+   * (`localStepSlots`) run in this owner, the rest are launched through the
+   * queue (`executionMode: 'queued'`) so a lost worker is redelivered, and
+   * every result returns through invoke. Implied by the single-owner marker;
+   * there is no option. */
   private get queuedSteps() {
     return { mode: 'hybrid' as const, attemptTimeoutMs: this.attemptTimeoutMs };
   }
@@ -420,8 +427,9 @@ export class RetainedRunner {
     private readonly metadata: Metadata,
     private readonly retire: () => void,
     private readonly idleMs = 60_000,
-    /** How long an admitted body may run before recovery supersedes it. */
-    private readonly attemptTimeoutMs = 60_000,
+    /** How long a remote attempt may stay unresolved before recovery
+     * supersedes it; see ABANDONED_ATTEMPT_MS. */
+    private readonly attemptTimeoutMs = ABANDONED_ATTEMPT_MS,
     /** Step bodies this owner runs itself; the rest are dispatched. */
     private readonly localStepSlots = 3
   ) {
@@ -2004,8 +2012,13 @@ export class RetainedRunner {
     const step = this.steps.get(input.stepId);
     if (step?.status !== 'running') return { status: 'superseded' };
     if (!result.success) {
-      // A redelivery cannot rerun an uncertain body. Recovery alone decides
-      // whether to durably supersede this attempt and publish a new one.
+      // A queue redelivery of a remote step means the earlier delivery's
+      // lease ended without an acknowledgement: that worker is gone, so the
+      // attempt is superseded now and the step retried as a new attempt.
+      // Otherwise a redelivery cannot rerun an uncertain body, and recovery
+      // alone decides whether to supersede it.
+      if (status.data?.lost && !this.localWorkers.has(input.stepId))
+        await this.supersedeAttempt(step, start, 'lost');
       await this.advance();
       const outcome = this.stepOutcomes.get(input.executionId);
       return outcome
@@ -2058,7 +2071,9 @@ export class RetainedRunner {
       }
       if (step.status === 'pending')
         return [
-          step.retryAfter ? +step.retryAfter : now + policy.attemptTimeoutMs,
+          step.retryAfter
+            ? +step.retryAfter
+            : now + Math.min(policy.attemptTimeoutMs, PENDING_RECHECK_MS),
         ];
       return [];
     });
@@ -2094,31 +2109,41 @@ export class RetainedRunner {
           !(undeliveredAt !== undefined && undeliveredAt <= Date.now()))
       )
         continue;
-      this.undelivered.delete(start.event.eventId);
-      const maxRetries =
-        getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
-      const exhausted = start.attempt >= maxRetries + 1;
-      const retryAfter = new Date(Date.now() + 1000);
-      if (!exhausted) await this.armStepRecovery(+retryAfter);
-      const error = await dehydrateStepError(
-        new Error(`Step attempt ${start.attempt} timed out`),
-        this.runId,
-        this.key,
-        [],
-        globalThis,
-        (this.run.specVersion ?? 1) >= 5
-      );
-      await this.commit({
-        eventType: exhausted ? 'step_failed' : 'step_retrying',
-        correlationId: step.stepId,
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          stepName: step.stepName,
-          error,
-          ...(!exhausted ? { retryAfter } : {}),
-        },
-      });
+      await this.supersedeAttempt(step, start, 'timed out');
     }
+  }
+
+  /** End an attempt that will never report (timed out, or its worker lost):
+   * retry the step, or fail it once its retry budget is spent. */
+  private async supersedeAttempt(
+    step: Step,
+    start: { event: Event; attempt: number },
+    reason: 'timed out' | 'lost'
+  ) {
+    this.undelivered.delete(start.event.eventId);
+    const maxRetries =
+      getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+    const exhausted = start.attempt >= maxRetries + 1;
+    const retryAfter = new Date(Date.now() + 1000);
+    if (!exhausted) await this.armStepRecovery(+retryAfter);
+    const error = await dehydrateStepError(
+      new Error(`Step attempt ${start.attempt} ${reason}`),
+      this.runId,
+      this.key,
+      [],
+      globalThis,
+      (this.run.specVersion ?? 1) >= 5
+    );
+    await this.commit({
+      eventType: exhausted ? 'step_failed' : 'step_retrying',
+      correlationId: step.stepId,
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        stepName: step.stepName,
+        error,
+        ...(!exhausted ? { retryAfter } : {}),
+      },
+    });
   }
 
   private async dispatchSteps(
@@ -2154,7 +2179,7 @@ export class RetainedRunner {
             workflowName: this.run.workflowName,
             workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
             parentSpanId: this.currentTurnId,
-            executionMode: 'remote' as const,
+            executionMode: 'queued' as const,
             step,
           },
         },
@@ -2194,7 +2219,7 @@ export class RetainedRunner {
                       : 400,
                 });
             },
-            { parentSpanId, stepId: message.stepId, executionMode: 'remote' }
+            { parentSpanId, stepId: message.stepId, executionMode: 'queued' }
           );
         } catch (cause) {
           await this.enqueue('step.delivery_failed', async () => {

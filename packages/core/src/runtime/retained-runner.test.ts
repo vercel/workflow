@@ -103,6 +103,15 @@ function asQueued<T>(message: T): T {
   } as T;
 }
 
+/** The same step delivered directly over HTTP (`executionMode: 'remote'`). */
+function asRemote<T>(message: T): T {
+  const delivery = message as { input: Record<string, unknown> };
+  return {
+    ...delivery,
+    input: { ...delivery.input, executionMode: 'remote' },
+  } as T;
+}
+
 it.each([
   5, 100,
 ])('keeps three local bodies in a %i-step batch and processes remote invoke results without deadlock', async (count) => {
@@ -333,10 +342,7 @@ it('answers a direct dispatch once the body starts and returns its result throug
       .map((call) => call[1])
       .filter((message) => 'stepId' in message);
   await vi.waitFor(() => expect(dispatched()).toHaveLength(2));
-  const [first, second] = dispatched();
-  expect(
-    (first as { input: { executionMode?: string } }).input.executionMode
-  ).toBe('remote');
+  const [first, second] = dispatched().map(asRemote);
   // The dispatch request is answered while the body is still running.
   await executeOwnedStep(fixture.world, first, fixture.metadata);
   await vi.waitFor(() => expect(body).toHaveBeenCalledTimes(1));
@@ -355,6 +361,65 @@ it('answers a direct dispatch once the body starts and returns its result throug
   expect(
     fixture.invoke.mock.calls.filter(
       ([, input]) => input.type === 'step_result'
+    )
+  ).toHaveLength(2);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
+it('retries a queued step whose delivery was lost as a new recorded attempt', async () => {
+  const body = vi.fn(async (n) => n);
+  registerStepFunction('queuedWork', body);
+  const fixture = await queuedFixture();
+  await vi.waitFor(() =>
+    expect(
+      fixture.queue.mock.calls.filter(([, message]) => 'stepId' in message)
+    ).toHaveLength(2)
+  );
+  const [lost, other] = fixture.queue.mock.calls
+    .map((call) => call[1])
+    .filter((message) => 'stepId' in message) as Array<{
+    stepId: string;
+    input: { executionMode?: string };
+  }>;
+  expect(lost.input.executionMode).toBe('queued');
+  // The first delivery's worker died; the queue redelivers the message.
+  await executeOwnedStep(fixture.world, lost, {
+    ...fixture.metadata,
+    attempt: 2,
+  });
+  expect(body).not.toHaveBeenCalled();
+  const retrying = fixture.owner.events.filter(
+    (event) =>
+      event.eventType === 'step_retrying' && event.correlationId === lost.stepId
+  );
+  expect(retrying).toHaveLength(1);
+  // The other branch completes normally (before this fixture's short attempt
+  // timeout matters).
+  await executeOwnedStep(fixture.world, other, fixture.metadata);
+  // The retry is published as a new attempt once its retry time is due.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(Date.now() + 1100);
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  vi.useRealTimers();
+  const retried = await vi.waitFor(() => {
+    const message = fixture.queue.mock.calls
+      .map((call) => call[1])
+      .filter(
+        (message) => 'stepId' in message && message.stepId === lost.stepId
+      )[1];
+    expect(message).toBeDefined();
+    return message!;
+  });
+  await executeOwnedStep(fixture.world, retried, fixture.metadata);
+  await fixture.finished;
+  expect(body).toHaveBeenCalledTimes(2);
+  expect(
+    fixture.owner.events.filter(
+      (event) =>
+        event.eventType === 'step_started' &&
+        event.correlationId === lost.stepId
     )
   ).toHaveLength(2);
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
