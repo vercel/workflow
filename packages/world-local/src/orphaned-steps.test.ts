@@ -4,7 +4,11 @@ import path from 'node:path';
 import type { Event, Storage } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld, type LocalWorld } from './index.js';
-import { ORPHANED_STEP_ERROR_MESSAGE, realmBoot } from './orphaned-steps.js';
+import {
+  ORPHANED_STEP_ERROR_MESSAGE,
+  RELEASE_CONCURRENCY,
+  realmBoot,
+} from './orphaned-steps.js';
 import {
   createRun,
   createStep,
@@ -264,6 +268,77 @@ describe('orphaned inline steps on restart', () => {
       'step_created',
       'step_started',
     ]);
+    await world.close();
+  });
+
+  it('leaves the steps of a finished run alone', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await startInlineStep(previous, runId, 'step_inline');
+    await updateRun(previous, runId, 'run_cancelled');
+    await previous.close();
+
+    const world = createWorld({ dataDir, recoverActiveRuns: false });
+    await bootNewRealm();
+    await world.start();
+    await world.releaseOrphanedSteps(runId);
+
+    expect(types(await stepEvents(world, runId, 'step_inline'))).toEqual([
+      'step_created',
+      'step_started',
+    ]);
+    expect(await world.steps.get(runId, 'step_inline')).toMatchObject({
+      status: 'running',
+    });
+    await world.close();
+  });
+
+  it('releases several runs at once, each before its own delivery', async () => {
+    const previous = createWorld({ dataDir });
+    const runIds: string[] = [];
+    for (let i = 0; i < 3 * RELEASE_CONCURRENCY; i++) {
+      const runId = await startRun(previous);
+      await startInlineStep(previous, runId, 'step_inline');
+      runIds.push(runId);
+    }
+    await previous.close();
+
+    const world = createWorld({ dataDir });
+    const list = world.steps.list.bind(world.steps);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.spyOn(world.steps, 'list').mockImplementation(async (params) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 5));
+        return await list(params);
+      } finally {
+        inFlight--;
+      }
+    });
+    const atDelivery = new Map<string, string[]>();
+    world.registerHandler('__wkf_workflow_', async (req) => {
+      const { runId } = await req.json();
+      atDelivery.set(
+        runId,
+        types(await stepEvents(world, runId, 'step_inline'))
+      );
+      return Response.json({ ok: true });
+    });
+    await bootNewRealm();
+    await world.start();
+
+    await vi.waitFor(() => expect(atDelivery.size).toBe(runIds.length));
+    for (const runId of runIds) {
+      expect(atDelivery.get(runId)).toEqual([
+        'step_created',
+        'step_started',
+        'step_retrying',
+      ]);
+    }
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(RELEASE_CONCURRENCY);
     await world.close();
   });
 

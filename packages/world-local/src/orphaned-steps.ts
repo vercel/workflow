@@ -3,6 +3,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
   isStepEventType,
+  isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   type Storage,
 } from '@workflow/world';
@@ -42,7 +43,10 @@ export const realmBoot = globalSingleton(
  * `running`, its latest `step_started` carries an owner, and it has no
  * `step_retrying` or terminal event. Queue-owned and finished steps are left
  * alone, and so is any step started since this realm booted
- * ({@link realmBoot}), whose owner may be a live delivery in this realm.
+ * ({@link realmBoot}), whose owner may be a live delivery in this realm. A run
+ * that has already finished is left alone too: world-local accepts
+ * `step_retrying` regardless of the run's status, so releasing would turn a
+ * step of a finished run back to `pending`.
  *
  * A stamp from before this realm booted is treated as dead, so this must only
  * run while no other live process or worker thread runs workflows on the same
@@ -52,12 +56,14 @@ export const realmBoot = globalSingleton(
  * another process.
  */
 export async function releaseOrphanedSteps(
-  storage: Pick<Storage, 'events' | 'steps'>,
+  storage: Pick<Storage, 'events' | 'runs' | 'steps'>,
   runId: string
 ): Promise<void> {
   const running = await listRunningStepIds(storage.steps, runId);
   // Every releasable step is `running`, so most runs need no event scan.
   if (running.size === 0) return;
+  const run = await storage.runs.get(runId, { resolveData: 'none' });
+  if (isTerminalWorkflowRunStatus(run.status)) return;
   for (const [stepId, step] of await readStepOwnership(storage.events, runId)) {
     if (!running.has(stepId) || !isOrphaned(step)) continue;
     try {
@@ -75,6 +81,74 @@ export async function releaseOrphanedSteps(
       if (!EntityConflictError.is(err)) throw err;
     }
   }
+}
+
+/** How many runs startup recovery releases at once. */
+export const RELEASE_CONCURRENCY = 8;
+
+/**
+ * Releases runs' orphaned steps for startup recovery, several runs at a time,
+ * while runs are still re-enqueued one by one and each only after its own
+ * release. `prefetch` starts releasing a page of runs in the background as
+ * soon as it is listed; `settle` waits for one run's release before that run
+ * is enqueued, releasing it there if it was not prefetched.
+ *
+ * A failed release is logged and otherwise ignored: the run is still
+ * recoverable, just only once the lease expires. So neither method rejects.
+ */
+export function createReleasePipeline(
+  storage: Pick<Storage, 'events' | 'runs' | 'steps'>,
+  concurrency = RELEASE_CONCURRENCY
+) {
+  const limit = createLimiter(concurrency);
+  const releases = new Map<string, Promise<void>>();
+  const release = async (runId: string) => {
+    try {
+      await releaseOrphanedSteps(storage, runId);
+    } catch (err) {
+      console.warn(
+        `[world-local] Failed to release orphaned steps of run ${runId}: ${err}`
+      );
+    }
+  };
+  return {
+    prefetch(runIds: Iterable<string>): void {
+      for (const runId of runIds) {
+        if (!releases.has(runId)) {
+          releases.set(
+            runId,
+            limit(() => release(runId))
+          );
+        }
+      }
+    },
+    async settle(runId: string): Promise<void> {
+      const pending = releases.get(runId);
+      releases.delete(runId);
+      await (pending ?? release(runId));
+    },
+  };
+}
+
+/** Run at most `max` of the given tasks at a time, in call order. */
+function createLimiter(max: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (active < max) {
+      active++;
+    } else {
+      // A finishing task hands its slot straight to this one.
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    }
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active--;
+    }
+  };
 }
 
 interface StepOwnership {
