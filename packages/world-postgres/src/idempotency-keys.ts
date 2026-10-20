@@ -1,5 +1,4 @@
 import {
-  EntityConflictError,
   WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -57,7 +56,7 @@ export async function claimRunIdempotencyKey(
   tx: DrizzleTransaction,
   options: ClaimRunIdempotencyKeyOptions
 ): Promise<void> {
-  const { runIdempotencyKeys: keys, runs } = Schema;
+  const { runIdempotencyKeys: keys } = Schema;
   const { runId, workflowName, key, ttlMs } = options;
   const now = options.now ?? (() => new Date());
   const scope = and(
@@ -81,29 +80,12 @@ export async function claimRunIdempotencyKey(
     // Deleted by expired-claim cleanup since the insert: try again.
     if (!claim) continue;
 
-    if (claim.runId === runId) {
-      // Only reachable when a claim outlived its run and the same run id is
-      // reused; the run insert before this already answers a live re-post.
-      throw new EntityConflictError(`Workflow run "${runId}" already exists`);
-    }
-
-    const [holder] = await tx
-      .select({ status: runs.status, completedAt: runs.completedAt })
-      .from(runs)
-      .where(eq(runs.runId, claim.runId))
-      .limit(1);
-    const decision = decideIdempotencyKeyClaim(
-      holder,
-      claim,
-      options.reusePolicy,
-      now().getTime()
-    );
-    if (holder && decision === 'refuse') {
-      throw new WorkflowRunAlreadyStartedError(claim.runId, {
-        runStatus: holder.status,
-        workflowName,
-        idempotencyKey: key,
-      });
+    // A claim naming this run id outlived an earlier run with the same id:
+    // the run row was inserted by this transaction (a live re-post was
+    // already answered by that insert), so that run is gone, which frees the
+    // key. It is taken over like any other, as the Local World does.
+    if (claim.runId !== runId) {
+      await refuseUnlessFree(tx, claim, options);
     }
 
     const [taken] = await tx
@@ -121,33 +103,104 @@ export async function claimRunIdempotencyKey(
 }
 
 /**
+ * Throw `WorkflowRunAlreadyStartedError` when the claim's holder keeps the
+ * key from this start under the decision table.
+ */
+async function refuseUnlessFree(
+  tx: DrizzleTransaction,
+  claim: { runId: string; ttlMs: number },
+  options: ClaimRunIdempotencyKeyOptions
+): Promise<void> {
+  const { runs } = Schema;
+  const now = options.now ?? (() => new Date());
+  const [holder] = await tx
+    .select({ status: runs.status, completedAt: runs.completedAt })
+    .from(runs)
+    .where(eq(runs.runId, claim.runId))
+    .limit(1);
+  if (!holder) return;
+  const decision = decideIdempotencyKeyClaim(
+    holder,
+    claim,
+    options.reusePolicy,
+    now().getTime()
+  );
+  if (decision === 'refuse') {
+    throw new WorkflowRunAlreadyStartedError(claim.runId, {
+      runStatus: holder.status,
+      workflowName: options.workflowName,
+      idempotencyKey: options.key,
+    });
+  }
+}
+
+/** Claims deleted per statement by {@link deleteExpiredRunIdempotencyKeys}. */
+const CLEANUP_BATCH_SIZE = 500;
+
+/**
+ * How old a claim must be before cleanup may delete it. A takeover re-stamps
+ * `created_at`, and under read committed a takeover that commits between the
+ * cleanup statement's snapshot and its row lock could look orphaned (its new
+ * run invisible to that snapshot). No claim that recent is ever collected.
+ */
+const CLEANUP_MIN_AGE_MS = 15 * 60 * 1000;
+
+export interface DeleteExpiredRunIdempotencyKeysOptions {
+  now?: Date;
+  batchSize?: number;
+  /** See {@link CLEANUP_MIN_AGE_MS}. */
+  minAgeMs?: number;
+  /** Checked between batches; `true` stops early (e.g. the World closing). */
+  shouldStop?: () => boolean;
+}
+
+/**
  * Delete idempotency key claims nothing can hold any more: those whose holder
  * run no longer exists, and those whose holder closed more than its TTL ago.
  * Either kind is already free to the decision table, so this only bounds the
  * table's size. Returns the number of claims deleted.
  *
- * Each claim is deleted only while it still names the holder it was found
- * with, so a claim taken over concurrently (by a new, open run) is kept.
+ * Works in batches of `batchSize`, each its own statement, so a large table
+ * is never scanned or locked in one go. Rows another transaction holds (a
+ * claim being taken over) are skipped (`FOR UPDATE SKIP LOCKED`), each claim
+ * is deleted only while it still names the holder it was found with, and no
+ * claim younger than `minAgeMs` is touched.
  */
 export async function deleteExpiredRunIdempotencyKeys(
   drizzle: Drizzle,
-  now: Date = new Date()
+  options: DeleteExpiredRunIdempotencyKeysOptions = {}
 ): Promise<number> {
   const { runIdempotencyKeys: keys, runs } = Schema;
-  const deleted = await drizzle.execute<{ run_id: string }>(sql`
-    DELETE FROM ${keys}
-    WHERE (${keys.workflowName}, ${keys.idempotencyKey}, ${keys.runId}) IN (
-      SELECT k.workflow_name, k.idempotency_key, k.run_id
-      FROM ${keys} k
-      LEFT JOIN ${runs} r ON r.id = k.run_id
-      WHERE r.id IS NULL
-         OR (
-           r.status IN ('completed', 'failed', 'cancelled')
-           AND r.completed_at IS NOT NULL
-           AND r.completed_at + k.ttl_ms * interval '1 millisecond' < ${now}
-         )
-    )
-    RETURNING ${keys.runId}
-  `);
-  return deleted.rowCount ?? 0;
+  const now = options.now ?? new Date();
+  const batchSize = options.batchSize ?? CLEANUP_BATCH_SIZE;
+  const createdBefore = new Date(
+    now.getTime() - (options.minAgeMs ?? CLEANUP_MIN_AGE_MS)
+  );
+  let total = 0;
+  while (!options.shouldStop?.()) {
+    const deleted = await drizzle.execute<{ run_id: string }>(sql`
+      DELETE FROM ${keys}
+      WHERE (${keys.workflowName}, ${keys.idempotencyKey}, ${keys.runId}) IN (
+        SELECT k.workflow_name, k.idempotency_key, k.run_id
+        FROM ${keys} k
+        LEFT JOIN ${runs} r ON r.id = k.run_id
+        WHERE k.created_at < ${createdBefore}
+          AND (
+            r.id IS NULL
+            OR (
+              r.status IN ('completed', 'failed', 'cancelled')
+              AND r.completed_at IS NOT NULL
+              AND r.completed_at + k.ttl_ms * interval '1 millisecond' < ${now}
+            )
+          )
+        LIMIT ${batchSize}
+        FOR UPDATE OF k SKIP LOCKED
+      )
+      RETURNING ${keys.runId}
+    `);
+    const count = deleted.rowCount ?? 0;
+    total += count;
+    if (count < batchSize) break;
+  }
+  return total;
 }

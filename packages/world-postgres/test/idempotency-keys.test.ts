@@ -213,16 +213,67 @@ describe('run idempotency keys (world-postgres)', () => {
     ]);
 
     // As if the clock had moved past the short TTL.
-    const deleted = await deleteExpiredRunIdempotencyKeys(
-      drizzle,
-      new Date(Date.now() + 10_000)
-    );
+    const later = new Date(Date.now() + 10_000);
+
+    // Every one of these claims is younger than the grace window, so none
+    // is collected yet: a takeover committing mid-cleanup is never lost.
+    await deleteExpiredRunIdempotencyKeys(drizzle, { now: later });
+    expect((await claimRow(expired))?.run_id).toBe(expiredRun);
+    expect((await claimRow(orphaned))?.run_id).toBe(orphanedRun);
+
+    // One claim per statement, so the batches loop until none is left.
+    const deleted = await deleteExpiredRunIdempotencyKeys(drizzle, {
+      now: later,
+      minAgeMs: 0,
+      batchSize: 1,
+    });
     expect(deleted).toBeGreaterThanOrEqual(2);
 
     expect((await claimRow(live))?.run_id).toBe(liveRun);
     expect((await claimRow(insideWindow))?.run_id).toBe(insideRun);
     expect(await claimRow(expired)).toBeUndefined();
     expect(await claimRow(orphaned)).toBeUndefined();
+  });
+
+  test('cleanup stops between batches when asked to', async () => {
+    const orphans = [uniqueKey(), uniqueKey()];
+    for (const key of orphans) {
+      const runId = `wrun_${ulid()}`;
+      await createEvent(runId, runCreated(key));
+      await pool.query('DELETE FROM workflow.workflow_runs WHERE id = $1', [
+        runId,
+      ]);
+    }
+    expect(
+      await deleteExpiredRunIdempotencyKeys(drizzle, {
+        minAgeMs: 0,
+        shouldStop: () => true,
+      })
+    ).toBe(0);
+    expect(await claimRow(orphans[0])).toBeDefined();
+  });
+
+  test('a claim left by a deleted run is taken over by a new run with the same id', async () => {
+    const key = uniqueKey();
+    const runId = `wrun_${ulid()}`;
+    await createEvent(runId, runCreated(key));
+    await pool.query('DELETE FROM workflow.workflow_runs WHERE id = $1', [
+      runId,
+    ]);
+    await pool.query(
+      'DELETE FROM workflow.workflow_event_slots WHERE run_id = $1',
+      [runId]
+    );
+    await pool.query('DELETE FROM workflow.workflow_events WHERE run_id = $1', [
+      runId,
+    ]);
+    expect((await claimRow(key))?.run_id).toBe(runId);
+
+    const result = await createEvent(runId, runCreated(key, { ttlMs: 7_000 }));
+    expect(result.run?.runId).toBe(runId);
+    const row = await claimRow(key);
+    expect(row?.run_id).toBe(runId);
+    expect(Number(row?.ttl_ms)).toBe(7_000);
   });
 
   test('ignores idempotency fields on a resilient-start run_started', async () => {
