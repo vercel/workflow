@@ -127,6 +127,7 @@ An out-of-band terminal event has these effects, all of them benign:
 
 - Default: `5`
 - Delay before an orchestrator delivery whose in-band write was refused as superseded is delivered again, once it has replaced itself 10 times in a row. Before that, a refused delivery replaces its message with a fresh one delivered after one second, or at once when this is set to `0`.
+- The redelivery itself waits at least one second, even when this is `0`: a `{ timeoutSeconds: 0 }` result is a handoff, whose next delivery does not count as a redelivery, and this one must (the steps and timers the refused delivery created may not have gone out). Vercel Queues applies its own minimum redelivery delay of 5 seconds on top.
 - Small on purpose: another invocation holds the run, and the redelivery only needs to come after it.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
@@ -233,8 +234,9 @@ Only the spec 8 orchestrator reads these. Spec 9 runs ignore them.
 These no longer exist. Remove them if you set them.
 
 - `WORKFLOW_RESILIENT_STEP_DISPATCH`: a background step's message is enqueued once, after its `step_created` commits.
-- `WORKFLOW_SEALED_LOG`: new runs always use the sealed log. Use `WORKFLOW_SPEC_VERSION=8` to create runs of the previous spec version.
-- `WORKFLOW_SEQUENTIAL_REPLAYS` (Vercel World): one orchestrator at a time per run is now the default.
+- `WORKFLOW_SEALED_LOG`: new runs always use the sealed log. **`WORKFLOW_SEALED_LOG=0` used to create runs of an earlier spec version; it is now ignored, so a deployment that still sets it creates spec 9 runs.** The runtime logs a one-time warning when the variable is set. Use `WORKFLOW_SPEC_VERSION=8` to create runs of the previous spec version.
+
+`WORKFLOW_SEQUENTIAL_REPLAYS` (Vercel World) is still read. Spec 9 runs are kept to one orchestrator at a time by a queue concurrency key without it; the setting serializes spec 8 runs too. See [Vercel World](/worlds/vercel#workflow_sequential_replays).
 
 A trade-off follows from one orchestrator per run: a hook payload, an abort or a cancellation that arrives while the orchestrator is busy with a long inline step is seen by the running workflow through the live feed or the tail poll. Without either it waits for the next delivery, which queues behind the busy one.
 

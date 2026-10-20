@@ -51,7 +51,7 @@ A hook or a wait gives the run writers other than this delivery (a hook resume, 
 
 If the backgrounded `run_started` fails for any reason, a definite refusal included, the in-band writer stops: nothing else this delivery would write reaches the World, and no further inline body starts. Bodies that already started settle first, their outcomes are discarded, and the delivery ends as an awaited `run_started` failing the same way would end it:
 
-- refused by the in-band fence (`InBandSupersededError`): not acknowledged, redelivered after the fence delay, and the redelivery loads the log;
+- refused by the in-band fence (`InBandSupersededError`): acknowledged and replaced by a fresh orchestrator message, which loads the log;
 - the run already finished (for example cancelled before its first delivery): acknowledged with nothing written;
 - anything else: retried by the queue, or recorded as a setup failure.
 

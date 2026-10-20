@@ -17,8 +17,8 @@ The PR does four things:
 
 1. **Spec 9 runtime.** A new orchestrator under `packages/core/src/runtime/spec9/`.
 2. **Spec 8 kept side by side.** The previous orchestrator moves to `packages/core/src/runtime/spec8/`, and each delivery is routed by the run's stored spec version.
-3. **World contract changes.** A required in-band fence for Worlds that declare spec 9, plus new optional queue semantics (handoff and coalescing).
-4. **Vercel queue serialization.** On Vercel, spec 9 runs are kept to one orchestrator invocation by a Vercel Queues concurrency key per run, not by per-run `maxConcurrency: 1` topics. This needs a pre-release `@vercel/queue` with the experimental concurrency key and lease handoff support.
+3. **World contract changes.** A required in-band fence for Worlds that declare spec 9, a `{ timeoutSeconds: 0 }` handoff every World implements for spec 9 runs, in-band event time and per-entity batch order as part of the spec 9 storage contract, and optional coalescing.
+4. **Vercel queue serialization.** On Vercel, spec 9 runs are kept to one orchestrator invocation by a Vercel Queues concurrency key per run on the existing `__wkf_workflow_*` topic. Spec 8 runs keep `main`'s queue topology and behavior. This needs a pre-release `@vercel/queue` with the experimental concurrency key and lease handoff support.
 
 ## 2. The spec 9 model
 
@@ -136,15 +136,19 @@ The delivery bodies and step executors were left separate: they are mostly diffe
 
 | Surface | Change |
 |---|---|
-| `capabilities.inBandFence` | **Required** for a World that declares spec 9. The runtime refuses such a World without it, in `start()` and at the start of every spec 9 delivery. |
-| `capabilities.orchestratorHandoff` | New, optional. The queue implements the handoff result below. |
-| Handler result `{ timeoutSeconds: 0, handoff: true }` | New. Deliver the same message again at once, and do not count this delivery toward `attempt`. |
-| `meta.attempt` | Now `deliveryCount` less the deliveries that ended in a handoff. The delivery cap counts it. On a World without handoffs it equals `deliveryCount`. |
-| `meta.coalescedRerun` | New. Set when the World runs the handler again within one delivery because other orchestrator messages for the run were coalesced into it. |
+| `capabilities.inBandFence` | **Required** for a World that declares spec 9. The runtime refuses such a World without it, in `start()` and at the start of every spec 9 delivery. This is the only new capability. |
+| Handler result `{ timeoutSeconds }` | Its meaning now depends on the message's run, read off the payload (`messageRunSpecVersion`, `isSingleOrchestratorMessage` in `@workflow/world`). Spec 9 run: `n > 0` redelivers the same message after `n` seconds; `0` is a **handoff** (below). Spec 8 and earlier: unchanged from `main`, continue after `n` seconds by a redelivery or a new message (world-vercel sends a new message, up to 23 hours out). An unstamped message counts as spec 8. |
+| Handoff, `{ timeoutSeconds: 0 }` on a spec 9 run | New, required of every World. Deliver the same message again at once and do not count this delivery toward `attempt`. world-vercel uses the Vercel Queues lease handoff, world-local and world-postgres redeliver at once with `attempt` unchanged. The runtime never returns `0` where the next delivery must count as a redelivery (a fence fallback waits at least a second). |
+| `meta.attempt` | `deliveryCount` less the deliveries that followed a handoff and less coalesced re-runs. The delivery cap counts it. On a World with neither it equals `deliveryCount`. |
+| `meta.deliveryCount` on a coalesced re-run | The delivery's count plus the re-run number, so the runtime treats the re-run as a redelivery (turbo off, log read). There is no separate re-run field. |
 | `meta.invocationStartedAt` | New, optional. Epoch milliseconds at which the function invocation began. world-vercel passes it to every coalesced re-run, and the spec 9 delivery measures its inline deadline from it. |
 | `QueueOptions.coalesce` | New. `false` marks an orchestrator message that carries state the run's log does not hold; a coalescing queue must deliver it on its own. |
+| Incomplete skipped-slot report | `hasMore: true` on the write's `EventResult` or `EventBatchResult`. world-vercel maps the backend's `reportIncomplete` to it. |
+| In-band `occurredAt` as `createdAt` | Part of the spec 9 storage contract, no capability. The runtime still checks each speculative write's stored time and turns run-ahead off for the World on a mismatch. world-postgres now stores it (it did not before, so run-ahead was off there); the shared fence conformance suite checks it. |
+| Per-entity `createBatch` order | Part of the spec 9 storage contract, no capability. world-vercel's backend orders batches; world-local and world-postgres have no `createBatch`. |
+| `step_started.creatorMessageId` | Removed. Only a background step's `step_created` and a `wait_created` record their creator; creator rules never read an inline step's. |
 
-world-local and world-postgres declare the fence and keep their in-process per-run gate and per-run job queue. They do not coalesce and do not declare `orchestratorHandoff`, so the runtime sends them a new orchestrator message where world-vercel gets a handoff.
+world-local and world-postgres declare the fence and serialize orchestrator deliveries per run for spec 9 runs only, with an in-process per-run gate and a per-run Graphile named queue. Spec 8 runs are not serialized there, as on `main`: a spec 8 delivery can hold an inline step until another wake of the same run aborts it, and run-level exclusion would hold that wake back. Neither coalesces.
 
 ## 5. Vercel queue serialization
 
@@ -154,17 +158,16 @@ All flow messages, orchestrator and step, go to one topic per workflow name (`__
 
 `WORKFLOW_SEQUENTIAL_REPLAYS=1` is an opt-in on `main`. It gives each run its own topic (`__wkf_workflow_<name>_<runId>`), each step its own topic, and the flow trigger `maxConcurrency: 1`, so a run has at most one orchestrator invocation at a time.
 
-<Callout type="warn">
-**Spec 8 behavior differs from `main`.** This PR removes `WORKFLOW_SEQUENTIAL_REPLAYS` and makes the per-run `maxConcurrency: 1` topics the default for spec 8 runs. That is a change to spec 8 behavior compared to `main`, and it is the only reason the PR needs a second topic family and trigger (see below). Returning spec 8 runs to `main`'s shared, unserialized topic would let spec 8 and spec 9 messages share `__wkf_workflow_*`, with spec 9 orchestrator messages keyed. This is open.
-</Callout>
+This PR keeps all of that for spec 8 runs: the shared unkeyed topic, the new-message continuation of a `{ timeoutSeconds }` result, and the opt-in.
 
 ### After, for spec 9 runs
 
-- **A second topic family and trigger.** Spec 9 messages go to `__wkf_keyed_<name>` (or `__<namespace>_wkf_keyed_<name>`). `@workflow/builders` now emits two triggers for the flow route (`getWorkflowQueueTriggers()`): the existing `__wkf_workflow_*` one with `maxConcurrency: 1`, and a `__wkf_keyed_*` one with no `maxConcurrency`. Next.js, Nitro, SvelteKit and the Build Output API builder all use it.
-- **Why the topics are separate today.** Vercel Queues refuses a keyed send to a topic that a `maxConcurrency` consumer reads, with a 400. In this PR spec 8 messages are on `maxConcurrency` topics (see the callout above), so spec 9 messages need topics of their own. With spec 8 back on `main`'s topology, one topic family and one trigger would do.
+- **Same topic and trigger as `main`.** Spec 9 messages go to `__wkf_workflow_<name>`, next to spec 8 messages, and flow routes keep `main`'s single trigger with no `maxConcurrency`. An earlier version of this PR had a second `__wkf_keyed_*` topic family and trigger, because it had moved spec 8 runs onto `maxConcurrency` topics and Vercel Queues refuses (400) a keyed send to a topic a `maxConcurrency` consumer reads. Restoring spec 8's topology removed the need.
+- **Under `WORKFLOW_SEQUENTIAL_REPLAYS=1`.** The opt-in keeps `main`'s per-run, per-step and per-probe topics and `maxConcurrency: 1` trigger for every run. Spec 9 messages are then sent **unkeyed** (a keyed send would get the 400): the per-run topic serializes the orchestrator, nothing is coalesced, and handoffs still work, since a lease handoff does not depend on a key.
 - **Keyed vs unkeyed.** Orchestrator messages carry the run id as the concurrency key. Step messages and health checks carry none. A spec 9 run's step dispatches now share one topic, so a fan-out batches into one request again.
 - **One delivery per run.** Vercel Queues keeps at most one delivery per key active. A keyed message claimed while another delivery holds the key is **coalesced**: it is never delivered, and it is counted on the holder.
-- **Coalesced re-runs.** The holder's acknowledgment is refused while coalesced messages it has not covered are pending. The client then runs the handler again within the same delivery, with the lease still held (`experimental_maxCoalescedReruns`, 32 in world-vercel), and acknowledges again covering the reported count. The runtime treats a re-run as a redelivery: turbo is off and the log is read.
+- **Coalesced re-runs.** The holder's acknowledgment is refused while coalesced messages it has not covered are pending. The client then runs the handler again within the same delivery, with the lease still held (`experimental_maxCoalescedReruns`, 32 in world-vercel), and acknowledges again covering the reported count. world-vercel reports each re-run with the next `deliveryCount` and the same `attempt`, so the runtime treats it as a redelivery: turbo is off and the log is read.
+- **Which runs are spec 9.** world-vercel decides from the payload alone, at send and at delivery alike: `runInput.specVersion`, `runContext.specVersion` or the `runSpecVersion` hint, which every runtime that creates spec 9 runs stamps. A message without a stamp is treated as spec 8 (unkeyed, new-message continuation). An unstamped spec 9 orchestrator message is then fenced but not serialized; no runtime producer sends one.
 
 **Example: a fan-out whose completions coalesce.**
 
@@ -183,7 +186,7 @@ Coalescing is safe because every producer commits what the wake is for (a step o
 
 ### Handoffs
 
-A delivery that has to end before the run's work is done hands its message off instead of sending itself a new one. On a keyed topic, a message the orchestrator sent itself would be coalesced into its own delivery and run again in the same invocation, which defeats the point of ending it. With a handoff, the client sends `Vqs-Experimental-Handoff: 1` on the lease change, Vercel Queues redelivers the same message at once, and the handed-off delivery counts toward neither its backoff nor `maxAttempts`. Handoffs are used for:
+A spec 9 delivery that has to end before the run's work is done hands its message off (`{ timeoutSeconds: 0 }`) instead of sending itself a new one, on every World. On a keyed topic, a message the orchestrator sent itself would be coalesced into its own delivery and run again in the same invocation, which defeats the point of ending it. On world-vercel, the client sends `Vqs-Experimental-Handoff: 1` on the lease change, Vercel Queues redelivers the same message at once, and the handed-off delivery counts toward neither its backoff nor `maxAttempts`. Handoffs are used for:
 
 - the invocation deadline (node engine);
 - inline step stream writes still flushing in the background;
@@ -264,7 +267,11 @@ Spec 8 runs keep the previous orchestrator unchanged instead of being migrated. 
 
 ### Spec 8 messages are not keyed
 
-Spec 8 messages carry no concurrency key. Keying them would serialize them, and a coalesced wake would become a re-run inside the same invocation instead of a separate delivery, which changes spec 8 behavior. In this PR spec 8 runs use per-run `maxConcurrency: 1` topics by default, which differs from `main` (section 5) and is why the second trigger exists.
+Spec 8 messages carry no concurrency key. Keying them would serialize them, and a coalesced wake would become a re-run inside the same invocation instead of a separate delivery, which changes spec 8 behavior. Spec 8 runs keep `main`'s shared, unserialized topic, its new-message continuation and its opt-in.
+
+### `{ timeoutSeconds: 0 }` means handoff, by run spec
+
+The handoff could have stayed a flag on the result (`handoff: true`) behind a capability. It is the plain `{ timeoutSeconds: 0 }` instead, with the meaning chosen by the message's run: a handoff for spec 9 messages, `main`'s continuation for earlier ones. That leaves no capability for a World to forget and no second result shape. The cost is that a World must read the run's spec off the message, which `@workflow/world` provides. On world-local and world-postgres, spec 9 continuations that used to be new orchestrator messages are now handoffs of the same message: the next delivery keeps the message's id (and so its creator identity) and the attempt count of the delivery that handed off, as on world-vercel. The runtime never hands off where the next delivery must count as a redelivery: the fence fallback asks for at least one second (`WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS=0` included).
 
 ### Per-run and per-step topics are dropped for spec 9
 
@@ -300,13 +307,17 @@ If an operator calls `run.wakeUp()` while this orchestrator is running ahead, an
 
 A proposed fix is a new out-of-band "wake requested" event that `run.wakeUp()` writes the way `resumeHook()` writes `hook_received`, followed by an ordinary keyed wake. The orchestrator turns the request into an in-band `wait_completed`. The wake message no longer carries state, so it can be coalesced, and far-future waits keep run-ahead. It needs a world-vercel backend change to accept the event out-of-band. Not implemented.
 
-### Spec 8 retries and sleeps redeliver the same message on Vercel
+### Spec 8 retries and sleeps on Vercel (fixed)
 
-On `main`, world-vercel answers a `{ timeoutSeconds }` handler result by sending a new message with up to 23 hours of delay. In this PR it redelivers the same message (`RedeliverSameMessage`) for every run, spec 8 included. Vercel Queues caps a redelivery's delay at 900 seconds, and spec 8 counts every delivery toward `WORKFLOW_MAX_QUEUE_DELIVERIES` (48). From the code, a spec 8 sleep or step retry chain longer than about 12 hours would fail the run with `MAX_DELIVERIES_EXCEEDED`, and its message expires at 24 hours. Not reproduced. Spec 9 sleeps use keyed timer messages and are not affected. This also matters for runs created under `WORKFLOW_SPEC_VERSION=8`. The fix is part of restoring `main`'s queue behavior for spec 8 (section 5).
+An earlier version of this PR redelivered the same message for every `{ timeoutSeconds }` result, spec 8 included. Vercel Queues caps a redelivery's delay at 900 seconds, and spec 8 counts every delivery toward `WORKFLOW_MAX_QUEUE_DELIVERIES` (48), so a spec 8 sleep or step retry chain longer than about 12 hours would have failed with `MAX_DELIVERIES_EXCEEDED`. world-vercel now answers a spec 8 run's `{ timeoutSeconds }` with a new message (up to 23 hours of delay) before acknowledging, as on `main`. Unit-tested; not run against Vercel.
 
-### Rollout coupling between builders and world-vercel
+### Spec detection rests on the payload stamp
 
-world-vercel sends spec 9 messages to `__wkf_keyed_*`. A deployment built by an older `@workflow/builders` has no trigger for those topics. Both packages ship together in `workflow`, but an app that pins them to different versions could send spec 9 messages to a topic with no consumer. What Vercel Queues does with such a send has not been verified.
+Topic, key and continuation are chosen from the spec version the message carries. A spec 9 message without one would be sent unkeyed and continue on new messages; a spec 9 step message continuing on a new message would lose its same-message retry and arrive as a plain first delivery, which skips the log read the at-most-once rule of `maxRetries: 0` steps depends on. Every runtime producer stamps spec 9 messages (`queueMessage`/`queueMessages` and the direct `world.queue` call sites; a step message carries `runContext`). I do not know of an unstamped producer, but nothing enforces it at the World boundary.
+
+### Rollout coupling between builders and world-vercel (resolved)
+
+The `__wkf_keyed_*` topics and the second trigger are gone, so a deployment built by an older `@workflow/builders` consumes every message world-vercel sends.
 
 ### Billing
 
@@ -343,11 +354,11 @@ export async function nightlyReport() {
 }
 ```
 
-Each invocation runs about 4 minutes of `aggregateDay` inline, then sends one step to the background and ends. That costs a step invocation and a queue hop where a handoff would cost a redelivery. Handing off at the margin, when the World supports handoffs, would remove that hop. Not implemented.
+Each invocation runs about 4 minutes of `aggregateDay` inline, then sends one step to the background and ends. That costs a step invocation and a queue hop where a handoff would cost a redelivery. Handing off at the margin would remove that hop. Not implemented.
 
 ### QuickJS continuation path covered by typecheck only
 
-The QuickJS engine's exit requeues (replay budget, elapsed wait, unread write) go through `continueInNextDelivery`, which hands off on world-vercel. The node engine's deadline handoff has a test. The QuickJS path has none, because QuickJS keeps its VM live through inline steps and a test trigger for these exits was not found.
+The QuickJS engine's exit requeues (replay budget, elapsed wait, unread write) go through `continueInNextDelivery`, which hands off (`{ timeoutSeconds: 0 }`) on every World. The node engine's deadline handoff has a test. The QuickJS path has none, because QuickJS keeps its VM live through inline steps and a test trigger for these exits was not found.
 
 ### pnpm 11 and the pre-release `@vercel/queue`
 
@@ -397,7 +408,7 @@ After 32 re-runs, a refused acknowledgment used to go to the retry handler, whic
 - Revert `WORKFLOW_SERVER_URL_OVERRIDE`.
 - Deploy the world-vercel backend change first.
 - Decide the `run.wakeUp()` question (section 7).
-- Decide whether spec 8 runs return to `main`'s queue topology, which would remove the second topic family and trigger (section 5).
+- Run the e2e suite on Vercel with spec 8 runs (`WORKFLOW_SPEC_VERSION=8`) to confirm the restored new-message continuation, and with `WORKFLOW_SEQUENTIAL_REPLAYS=1` to confirm spec 9 runs work unkeyed on the per-run topics.
 - Decide the release channel: a 5.x minor or a v6 beta.
 - Decide whether to close the earlier stacked PRs that this one supersedes.
 - Deferred, not required for merge:
