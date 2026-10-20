@@ -46,6 +46,14 @@ export { openWsChannel as openEventsChannel } from './ws-transport.js';
  */
 export const EXPERIMENTAL_LOCKS_ENV_VAR = 'WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS';
 
+/**
+ * With {@link EXPERIMENTAL_LOCKS_ENV_VAR}, also declares `locks.fifo`: the
+ * backend queues refused acquisitions and hands freed slots to the head of the
+ * queue. Only for a backend that implements the waitlist.
+ */
+export const EXPERIMENTAL_LOCKS_FIFO_ENV_VAR =
+  'WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS_FIFO';
+
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
@@ -105,8 +113,19 @@ export function createWorld(config?: APIConfig): World {
       // the project, or one that predates them, refuses the write, and the
       // adapter maps that to `LockUnsupportedError`, so a lock still fails
       // closed rather than running unbounded.
+      // `fifo` (stage 2, the waitlist with direct handoff) has its own
+      // opt-in: a stage-1 backend knows nothing of the wake target the
+      // runtime sends a FIFO World, and without `fifo` the runtime sends none
+      // and polls.
       ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, false)
-        ? { locks: { concurrency: true } }
+        ? {
+            locks: {
+              concurrency: true,
+              ...(envFlag(EXPERIMENTAL_LOCKS_FIFO_ENV_VAR, false) && {
+                fifo: true,
+              }),
+            },
+          }
         : {}),
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
