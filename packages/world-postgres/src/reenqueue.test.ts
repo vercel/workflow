@@ -130,6 +130,8 @@ describe('re-enqueue active runs on start', () => {
     delete process.env.WORKFLOW_POSTGRES_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PORT;
+    delete process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING;
+    delete process.env.WORKFLOW_DEPLOYMENT_ID;
   });
 
   it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {
@@ -183,6 +185,57 @@ describe('re-enqueue active runs on start', () => {
     );
 
     await world.close();
+  });
+
+  it('stays the single postgres deployment unless routing is enabled', async () => {
+    process.env.WORKFLOW_DEPLOYMENT_ID = 'build_a';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(await world.getDeploymentId()).toBe('postgres');
+    expect(world.capabilities).not.toHaveProperty('deploymentAffinity');
+    expect(
+      Object.keys(vi.mocked(run).mock.calls[0]?.[0]?.taskList ?? {})
+    ).toEqual(['workflow_flows']);
+
+    await world.close();
+  });
+
+  it('runs as WORKFLOW_DEPLOYMENT_ID when routing is enabled', async () => {
+    process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING = '1';
+    process.env.WORKFLOW_DEPLOYMENT_ID = 'build_a';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(await world.getDeploymentId()).toBe('build_a');
+    expect(world.capabilities.deploymentAffinity).toBe(true);
+    expect(
+      Object.keys(vi.mocked(run).mock.calls[0]?.[0]?.taskList ?? {})
+    ).toEqual(['workflow_flows@build_a']);
+
+    await world.close();
+  });
+
+  it('refuses to enable routing without WORKFLOW_DEPLOYMENT_ID', () => {
+    process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING = '1';
+
+    expect(() => createWorld()).toThrow(
+      'WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING=1 requires WORKFLOW_DEPLOYMENT_ID'
+    );
+  });
+
+  it.each([
+    'postgres',
+    'latest',
+    'build a',
+    'build/a',
+    'x'.repeat(65),
+  ])('rejects the deployment id %j', (deploymentId) => {
+    expect(() => createWorld({ pool, deploymentId })).toThrow(
+      'Invalid Postgres World deployment id'
+    );
   });
 
   it('re-enqueues active runs via graphile-worker on start', async () => {

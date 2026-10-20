@@ -290,6 +290,16 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
 
+### `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING`
+
+Set to `1` to run this process as the deployment named by `WORKFLOW_DEPLOYMENT_ID`, or pass `deploymentId` to `createWorld()`. Default: unset, so every process is one deployment named `postgres`.
+
+With routing on, runs this process starts record its deployment id, the process consumes Graphile jobs only from its own tasks (`workflow_flows@<id>`, plus `workflow_flows_executor@<id>` with invocation enabled), and the World declares deployment affinity, so the runtime refuses to replay a run on a deployment other than its own. Give every process that runs the same build the same id. The id can contain 1-64 letters, digits, `_`, `.`, and `-`, and can't be `postgres` or `latest`. `WORKFLOW_DEPLOYMENT_ID` alone does not turn routing on.
+
+<Callout type="warn">
+Routing is experimental. This release does not yet send a job to the deployment it is addressed to, and on startup a process re-enqueues every active run onto its own tasks. Enable it only on a database where every active run belongs to this deployment.
+</Callout>
+
 ### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`
 
 How often a wait for a terminal run status re-reads the run, in milliseconds. Default: `1000`.

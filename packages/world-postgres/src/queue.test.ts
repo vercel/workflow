@@ -608,6 +608,36 @@ describe('postgres queue http execution', () => {
     expect(calls[2][2]).not.toHaveProperty('queueName');
   });
 
+  it("keeps a deployment's jobs on its own tasks and runs on shared executor queues", async () => {
+    const queue = buildQueue(
+      {
+        connectionString: 'postgres://test',
+        enableInvoke: true,
+        deploymentId: 'build_a',
+      },
+      pool
+    );
+    await queue.start();
+    expect(await queue.getDeploymentId()).toBe('build_a');
+    expect(
+      Object.keys(vi.mocked(run).mock.calls[0]?.[0]?.taskList ?? {}).sort()
+    ).toEqual(['workflow_flows@build_a', 'workflow_flows_executor@build_a']);
+
+    await queue.queue('__wkf_workflow_example', { runId: 'run_a' });
+    await queue.queue('__wkf_workflow_example', {
+      runId: 'run_a',
+      stepId: 'step_a',
+      stepName: 'step',
+    });
+    const calls = vi.mocked(workerUtilsMock.addJob).mock.calls;
+    expect(calls[0]).toEqual([
+      'workflow_flows_executor@build_a',
+      expect.any(Object),
+      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' }),
+    ]);
+    expect(calls[1][0]).toBe('workflow_flows@build_a');
+  });
+
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },

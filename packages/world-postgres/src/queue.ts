@@ -44,6 +44,7 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
+import { deploymentTaskName, LEGACY_DEPLOYMENT_ID } from './deployment.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
@@ -267,10 +268,9 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(): string {
-    const jobPrefix = config.jobPrefix || 'workflow_';
-    return `${jobPrefix}flows`;
-  }
+  const deploymentId = config.deploymentId ?? LEGACY_DEPLOYMENT_ID;
+  const jobQueueName = `${config.jobPrefix || 'workflow_'}flows`;
+  const flowsTask = deploymentTaskName(jobQueueName, deploymentId);
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
   /**
@@ -285,9 +285,14 @@ export function createQueue(
   const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
+  // Serializes one run's executions. It names no deployment, so a run's jobs
+  // share it even if one lands on another deployment's task.
   const executorQueueName = (runId: string) =>
-    `${getJobQueueName()}:${runId}:executor`;
-  const executorTask = () => `${getJobQueueName()}_executor`;
+    `${jobQueueName}:${runId}:executor`;
+  const executorTask = deploymentTaskName(
+    `${jobQueueName}_executor`,
+    deploymentId
+  );
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     if (!invocations || prefix !== ownPrefix())
@@ -341,7 +346,7 @@ export function createQueue(
            AND locked_by = $4 AND attempts = $5 AND locked_at IS NOT NULL`,
             [
               proof.id,
-              executorTask(),
+              executorTask,
               executorQueueName(input.runId),
               proof.worker,
               proof.attempt,
@@ -401,9 +406,7 @@ export function createQueue(
     };
   };
 
-  const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    return 'postgres';
-  };
+  const getDeploymentId: Queue['getDeploymentId'] = async () => deploymentId;
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
@@ -468,7 +471,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      executorRunId ? executorTask() : getJobQueueName(),
+      executorRunId ? executorTask : flowsTask,
       MessageData.encode({
         id: queueId,
         ...(prefix ? { prefix } : {}),
@@ -515,7 +518,7 @@ export function createQueue(
       idempotencyKey: message.idempotencyKey,
       headers: message.headers,
       // A distinct key avoids replacing the legacy job that is still locked.
-      jobKey: `${executorTask()}:transfer:${message.messageId}`,
+      jobKey: `${executorTask}:transfer:${message.messageId}`,
       executorRunId: runId,
     });
   }
@@ -913,7 +916,7 @@ export function createQueue(
           `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
           queue_name => $3, max_attempts => $4)`,
           [
-            executorTask(),
+            executorTask,
             JSON.stringify(wake),
             executorQueueName(runId),
             MAX_GRAPHILE_JOB_ATTEMPTS,
@@ -959,7 +962,7 @@ export function createQueue(
         if (
           !executor ||
           !graphileHelpers.success ||
-          graphileHelpers.data.job.task_identifier !== executorTask() ||
+          graphileHelpers.data.job.task_identifier !== executorTask ||
           actualQueue !== executorQueueName(orchestration.runId)
         ) {
           const job = graphileHelpers.success
@@ -1078,9 +1081,9 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    taskList[flowsTask] = createTaskHandler(workflowPrefix);
     if (invocations)
-      taskList[executorTask()] = createTaskHandler(workflowPrefix, true);
+      taskList[executorTask] = createTaskHandler(workflowPrefix, true);
 
     runner = await run({
       pgPool: pool,

@@ -168,6 +168,12 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Default: `500`
 - Milliseconds between idle job fetches per worker.
 
+### `deploymentId`
+
+- Environment variable: `WORKFLOW_DEPLOYMENT_ID`, read only when `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING` is `1`
+- Default: unset (one deployment named `postgres`)
+- Experimental. The build this process runs. Runs it starts record the id, it consumes only its own deployment's jobs, and the World declares deployment affinity. See [`WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING`](/worlds/postgres#workflow_postgres_deployment_routing).
+
 ### `applicationManagedShutdown`
 
 - Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)

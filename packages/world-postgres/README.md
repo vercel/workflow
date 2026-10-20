@@ -193,6 +193,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
+| `deploymentId`     | `string`  | `process.env.WORKFLOW_DEPLOYMENT_ID` when `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING=1`, otherwise unset | Experimental. The build this process runs; when unset, every process is the single `postgres` deployment. See [Deployment routing](#experimental-deployment-routing). |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
 ## Environment variables
@@ -205,6 +206,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
 | `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`   | Milliseconds between idle job fetches per worker             | `500`                                           |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
+| `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING` | `1` runs this process as the `WORKFLOW_DEPLOYMENT_ID` deployment (experimental) | unset |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
 
@@ -324,6 +326,20 @@ and its token can be reused. If the token is never reused, the expired
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
+
+### Experimental deployment routing
+
+By default, every process is one deployment named `postgres`. Set
+`WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING=1` and `WORKFLOW_DEPLOYMENT_ID`, or pass
+`deploymentId` to `createWorld()`, to run a process as its own deployment. Runs
+it starts record the id, it consumes Graphile jobs only from
+`workflow_flows@<id>` (and `workflow_flows_executor@<id>`), and the World
+declares deployment affinity. `WORKFLOW_DEPLOYMENT_ID` alone does not turn
+routing on.
+
+This release does not yet send a job to the deployment it is addressed to, and
+startup re-enqueues every active run onto the process's own tasks. Enable
+routing only on a database where every active run belongs to this deployment.
 
 ### Experimental synchronous invocation
 
