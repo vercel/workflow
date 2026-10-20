@@ -67,8 +67,19 @@ const parallelCode = `
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
 
-async function queuedFixture() {
-  const fixture = await setup(parallelCode, false, true);
+/** `timing` widens the attempt deadline and owner idle window for tests in
+ * which a worker retries its result delivery (backoff starts at 1 s). */
+async function queuedFixture(timing?: {
+  idleMs: number;
+  attemptTimeoutMs: number;
+}) {
+  const fixture = await setup(
+    parallelCode,
+    false,
+    true,
+    timing?.idleMs,
+    timing?.attemptTimeoutMs
+  );
   fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
   const queue = vi
     .spyOn(fixture.world, 'queue')
@@ -430,7 +441,10 @@ it('retries a queued step whose delivery was lost as a new recorded attempt', as
 it('retries a lost result acknowledgement with the original outcome, without rerunning the body', async () => {
   const body = vi.fn(async (n) => n);
   registerStepFunction('queuedWork', body);
-  const fixture = await queuedFixture();
+  const fixture = await queuedFixture({
+    idleMs: 5000,
+    attemptTimeoutMs: 10_000,
+  });
   let lose = true;
   const invoke = fixture.world.invoke!;
   fixture.world.invoke = async (...args) => {
@@ -470,7 +484,10 @@ it('retries a lost result acknowledgement with the original outcome, without rer
 
 it('holds a queued result acknowledgement behind the owner flush barrier', async () => {
   registerStepFunction('queuedWork', async (n) => n);
-  const fixture = await queuedFixture();
+  const fixture = await queuedFixture({
+    idleMs: 5000,
+    attemptTimeoutMs: 10_000,
+  });
   const create = fixture.world.events.create.bind(fixture.world.events);
   // Install a session before a replacement owner bootstraps, so the real result
   // path (rather than the fixture's transport) is responsible for its barrier.

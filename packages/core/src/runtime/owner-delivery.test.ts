@@ -23,10 +23,31 @@ it('backs off transient/unknown outcomes with a bounded per-call timeout', async
     return 'accepted';
   });
   const work = retryOwnerDelivery(Date.now() + 60_000, attempt);
-  await vi.advanceTimersByTimeAsync(1000);
+  await vi.advanceTimersByTimeAsync(10_000);
   expect(await work).toBe('accepted');
-  expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(50);
-  expect(calls[2] - calls[1]).toBeGreaterThanOrEqual(100);
+  // 1 s plus up to 1 s of jitter, then double.
+  expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(1000);
+  expect(calls[1] - calls[0]).toBeLessThanOrEqual(2000);
+  expect(calls[2] - calls[1]).toBeGreaterThanOrEqual(2000);
+  expect(calls[2] - calls[1]).toBeLessThanOrEqual(3000);
+});
+
+it('caps the delivery backoff at 30 seconds', async () => {
+  vi.useFakeTimers();
+  const delays: number[] = [];
+  const work = retryOwnerDelivery(
+    Date.now() + 600_000,
+    async () => {
+      if (delays.length < 8)
+        throw new WorkflowWorldError('Back off', { status: 503 });
+      return 'ok';
+    },
+    ({ retryInMs }) => delays.push(retryInMs)
+  );
+  await vi.advanceTimersByTimeAsync(600_000);
+  expect(await work).toBe('ok');
+  expect(Math.max(...delays)).toBeLessThanOrEqual(31_000);
+  expect(delays.at(-1)).toBeGreaterThanOrEqual(30_000);
 });
 
 it('stops at the attempt deadline rather than renewing the retry budget', async () => {
@@ -90,7 +111,7 @@ it('reports each failed attempt before retrying the identical delivery', async (
         status: (error as WorkflowWorldError).status,
       })
   );
-  await vi.advanceTimersByTimeAsync(1000);
+  await vi.advanceTimersByTimeAsync(10_000);
   expect(await work).toBe('ok');
   expect(retries.map((r) => [r.attempt, r.status])).toEqual([
     [1, 503],

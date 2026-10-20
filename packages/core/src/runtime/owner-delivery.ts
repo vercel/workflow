@@ -15,6 +15,12 @@ export function isRetryableOwnerDelivery(error: unknown): boolean {
   );
 }
 
+/** Result-delivery backoff: 1 s plus up to 1 s of jitter, doubling to 30 s.
+ * Many workers of one fan-out may retry against the same owner at once. */
+const FIRST_RETRY_MS = 1000;
+const RETRY_JITTER_MS = 1000;
+const MAX_RETRY_MS = 30_000;
+
 /** Retry delivery, never the step body. The caller retains payload and identity. */
 export async function retryOwnerDelivery<T>(
   deadline: number,
@@ -25,7 +31,7 @@ export async function retryOwnerDelivery<T>(
     retryInMs: number;
   }) => void
 ): Promise<T> {
-  let delay = 100;
+  let delay = FIRST_RETRY_MS;
   let lastError: unknown;
   for (let attempt = 1; ; attempt++) {
     const remaining = deadline - Date.now();
@@ -42,13 +48,14 @@ export async function retryOwnerDelivery<T>(
       if (!isRetryableOwnerDelivery(error)) throw error;
       lastError = error;
     }
-    // Equal jitter avoids synchronized retry waves without a zero-delay spin.
+    // Up to a second of jitter keeps a fan-out's workers from retrying in
+    // lockstep; the doubling thins out the retries a blocked owner receives.
     const retryInMs = Math.min(
       Math.max(0, deadline - Date.now()),
-      delay / 2 + (Math.random() * delay) / 2
+      delay + Math.random() * RETRY_JITTER_MS
     );
     onRetry?.({ attempt, error: lastError, retryInMs });
     await new Promise<void>((resolve) => setTimeout(resolve, retryInMs));
-    delay = Math.min(2000, delay * 2);
+    delay = Math.min(MAX_RETRY_MS, delay * 2);
   }
 }
