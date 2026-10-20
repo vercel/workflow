@@ -904,6 +904,25 @@ const snapshotWarnings = globalSingleton(
   () => new Set<string>()
 );
 
+/**
+ * The live QuickJS heap of a session (`memoryUsedSize`), for snapshot size
+ * tracking: unlike the snapshot's length, a high-water mark of the WASM
+ * memory, it falls when the VM frees memory. Undefined when unavailable;
+ * tracking never fails a capture.
+ */
+function liveHeapBytes(session: {
+  memoryUsage?: () => { memoryUsedSize: number };
+}): number | undefined {
+  try {
+    const bytes = session.memoryUsage?.().memoryUsedSize;
+    return Number.isSafeInteger(bytes) && (bytes as number) >= 0
+      ? bytes
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Log a snapshot-configuration warning once per process per key. */
 function warnOnce(key: string, log: () => void): void {
   if (snapshotWarnings.has(key)) return;
@@ -1711,6 +1730,8 @@ export async function runWorkflowWithQuickJS(params: {
         /** The log position the heap has consumed through. */
         eventsCursor: string;
         eventsThroughCursor: number;
+        /** Live QuickJS heap at capture (see `SnapshotMetadata.heapBytes`). */
+        heapBytes?: number;
       }
     | undefined;
   // Set when an inline step's lazy claim came back `throttled`: the exit
@@ -2364,6 +2385,7 @@ export async function runWorkflowWithQuickJS(params: {
           ...session.snapshot(),
           eventsCursor: positionCursor,
           eventsThroughCursor: positionCount,
+          heapBytes: liveHeapBytes(session),
         };
         if (capturedSnapshot.data.byteLength > MAX_SNAPSHOT_PLAINTEXT_BYTES) {
           // A heap this large costs more to store/decompress than the
@@ -2412,6 +2434,7 @@ export async function runWorkflowWithQuickJS(params: {
       clockMs: snapshot.clockMs,
       engineVersion: snapshot.engineVersion,
       formatVersion: SNAPSHOT_FORMAT_VERSION,
+      heapBytes: snapshot.heapBytes,
     };
     snapshotStored = true;
     safeWaitUntil(
