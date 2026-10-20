@@ -645,18 +645,13 @@ function getPhysicalQueueName(
  *
  * `undefined` for everything else: a step message, a health check, a spec-8
  * run's message (keying it would serialize it, and turn a wake into a
- * coalesced re-run inside the running invocation), an orchestrator message
- * sent with `coalesce: false` (it carries state the run's log does not hold,
- * and a coalesced message is never delivered; see `QueueOptions.coalesce`),
- * and every message under `WORKFLOW_SEQUENTIAL_REPLAYS=1` (see
- * {@link getPhysicalQueueName}).
+ * coalesced re-run inside the running invocation), and every message under
+ * `WORKFLOW_SEQUENTIAL_REPLAYS=1` (see {@link getPhysicalQueueName}).
  */
 function concurrencyKeyOf(
   queueName: ValidQueueName,
-  payload: QueuePayload,
-  opts?: QueueOptions
+  payload: QueuePayload
 ): string | undefined {
-  if (opts?.coalesce === false) return undefined;
   if (!FLOW_TOPIC_PATTERN.test(queueName)) return undefined;
   if (isSequentialReplaysEnabled()) return undefined;
   if (!isSingleOrchestratorMessage(payload)) return undefined;
@@ -734,7 +729,7 @@ export function createQueue(config?: APIConfig): Queue {
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    const concurrencyKey = concurrencyKeyOf(queueName, payload, opts);
+    const concurrencyKey = concurrencyKeyOf(queueName, payload);
 
     return {
       deploymentId,

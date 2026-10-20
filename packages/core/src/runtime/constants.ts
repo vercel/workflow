@@ -168,13 +168,14 @@ export function getReplayTimeoutMaxRetries(): number {
 }
 
 /**
- * How many times in a row an orchestrator delivery the fence refused, or that
- * stopped running ahead, may replace itself with a fresh message (see
- * `replacesMessage` on the invocation payload). Past it the delivery asks the
- * queue to redeliver its own message after the fence redelivery delay, so a
- * run that keeps losing the fence backs off instead of spinning.
+ * How many times one spec 9 orchestrator delivery restarts in place after
+ * run-ahead stopped it (`RunAheadStopError`): it settles its writer, reloads
+ * the log and replays from cold in the same delivery, with run-ahead off for
+ * the rest of the delivery. With run-ahead off a second stop cannot occur, so
+ * the cap is a backstop: a stop past it hands the message off
+ * (`{ timeoutSeconds: 0 }`) instead of restarting again.
  */
-export const MAX_MESSAGE_REPLACEMENTS = 10;
+export const MAX_RUN_AHEAD_RESTARTS = 1;
 
 /**
  * Default maximum number of steps the owned-inline path runs inline (in
@@ -370,8 +371,10 @@ export function isDynamicWorkflowsEnabled(): boolean {
 }
 
 // A replay-consumer mismatch can be caused by a transient divergent replay
-// rather than an invalid persisted history. Queue bounded recovery replays
-// before recording terminal corruption for a run that cannot replay.
+// rather than an invalid persisted history. Run bounded recovery replays
+// before recording terminal corruption for a run that cannot replay: a spec 8
+// delivery queues each one as a new message that carries the count, a spec 9
+// delivery runs them in place, each a cold replay of a freshly loaded log.
 export const REPLAY_DIVERGENCE_MAX_RETRIES = 3;
 
 /**

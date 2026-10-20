@@ -5,7 +5,7 @@ import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
-import { AppendOnlyWorld, type HeldMessage } from './append-only-world.js';
+import { AppendOnlyWorld } from './append-only-world.js';
 
 /** The orchestrator queue of a workflow named `workflow`. */
 export const ORCHESTRATOR_QUEUE = '__wkf_workflow_workflow';
@@ -90,32 +90,37 @@ export const orchestratorMessagesOf = (world: AppendOnlyWorld) =>
   );
 
 /**
- * Asserts that a delivery stood down by replacing its message: it returned
- * nothing (acknowledged), and the World holds exactly one fresh orchestrator
- * message that replaces `replaced` (see `replacesMessage`). Returns it.
+ * Asserts that a delivery stood down by acknowledging its message: it
+ * returned nothing, the World no longer holds the message, and it sent no
+ * orchestrator message after `orchestratorCallsBefore` (the count of
+ * orchestrator queue calls before it ran), only the step messages and timers
+ * its own writes owed.
  */
-export function expectReplaced(
+export function expectAcknowledged(
   world: AppendOnlyWorld,
   result: unknown,
-  replaced: { messageId: string }
-): HeldMessage {
+  message: { messageId: string },
+  orchestratorCallsBefore?: number
+): void {
   if (result !== undefined) {
     throw new Error(
       `expected the delivery to acknowledge, got ${JSON.stringify(result)}`
     );
   }
-  if (world.held.some((h) => h.messageId === replaced.messageId)) {
-    throw new Error('expected the replaced message to be acknowledged');
+  if (world.held.some((h) => h.messageId === message.messageId)) {
+    throw new Error('expected the message to be acknowledged');
   }
-  const replacements = world.held.filter(
-    (h) =>
-      (h.message as { replacesMessage?: { messageId?: string } })
-        .replacesMessage?.messageId === replaced.messageId
-  );
-  if (replacements.length !== 1) {
+  if (orchestratorCallsBefore === undefined) return;
+  const wakes = orchestratorMessagesOf(world)
+    .slice(orchestratorCallsBefore)
+    .filter(
+      (call) =>
+        (call.message as { waitContinuation?: unknown }).waitContinuation ===
+        undefined
+    );
+  if (wakes.length > 0) {
     throw new Error(
-      `expected one replacement message, found ${replacements.length}`
+      `expected no orchestrator wake, found ${JSON.stringify(wakes.map((call) => call.message))}`
     );
   }
-  return replacements[0]!;
 }

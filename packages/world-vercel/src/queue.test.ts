@@ -734,21 +734,6 @@ describe('createQueue', () => {
       }
     });
 
-    it('sends coalesce: false orchestrator messages unkeyed', async () => {
-      const queue = createQueue();
-      await queue.queue(
-        '__wkf_workflow_test',
-        {
-          runId: 'wrun_abc',
-          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-        },
-        { coalesce: false }
-      );
-
-      expect(sent(0).topic).toBe('__wkf_workflow_test');
-      expect(sent(0).options).not.toHaveProperty('experimental_concurrencyKey');
-    });
-
     it('keeps the queue namespace', async () => {
       const queue = createQueue();
       await queue.queue('__eve_wkf_workflow_test', {

@@ -9,12 +9,12 @@ import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
-import { expectReplaced } from '../../test-support/orchestrator-harness.js';
-import * as workflowModule from '../../workflow.js';
 import {
-  getMaxQueueDeliveries,
-  MAX_MESSAGE_REPLACEMENTS,
-} from '../constants.js';
+  expectAcknowledged,
+  orchestratorMessagesOf,
+} from '../../test-support/orchestrator-harness.js';
+import * as workflowModule from '../../workflow.js';
+import { getMaxQueueDeliveries, MAX_BATCH_EVENTS } from '../constants.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -483,8 +483,8 @@ describe.each([
     }
   });
 
-  it('stops a superseded orchestrator without running bodies and replaces its message', async () => {
-    const { world, start } = await setup(
+  it('stops a superseded orchestrator without running bodies, and acknowledges without a message', async () => {
+    const { world, runId, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
       [1, 2]
@@ -511,15 +511,13 @@ describe.each([
 
     const result = await world.deliver(start);
     expect(calls.so_add).toBeUndefined();
-    // Acknowledged, and a fresh message stands in for it.
-    const replacement = expectReplaced(world, result, start);
-    expect(replacement.message).toMatchObject({
-      replacesMessage: { messageId: start.messageId, count: 1 },
-    });
-    // Its creator identity exists only on the message, so a queue must not
-    // coalesce it into a running delivery.
-    expect(replacement.opts).toMatchObject({ coalesce: false });
-    // The replacement re-snapshots and finishes the run.
+    // Acknowledged, and nothing stands in for it: the writer that took the
+    // fence holds the run.
+    expectAcknowledged(world, result, start, 0);
+    expect(world.queueCalls).toEqual([]);
+    // That writer's own delivery (stood in for here) re-snapshots and
+    // finishes the run.
+    world.enqueue(QUEUE, { runId });
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
     expect(calls.so_add).toBe(1);
@@ -742,10 +740,10 @@ describe.each([
     expect(world.queueCalls.length).toBe(before);
   });
 
-  // A delivery that stands down replaces its message with a fresh one, and
-  // the replacement holds the replaced message's creator identity: it alone
-  // may send again what that delivery created and never got out.
-  it('lets the replacement of a delivery re-send the background step that delivery created', async () => {
+  // A redelivery of a message (a crash, or a rejected delivery) holds that
+  // message's creator identity: it alone may send again what an earlier
+  // delivery of it created and never got out.
+  it('lets a redelivery of the creating message re-send the background step that delivery created', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
     try {
       const { world, runId, start } = await setup(
@@ -768,14 +766,9 @@ describe.each([
       await world.deliver(world.enqueue(QUEUE, { runId }));
       expect(stepMessages()).toBe(sent);
 
-      // The replacement of the creating delivery sends it again.
+      // A redelivery of the creating message sends it again.
       world.held.length = 0;
-      await world.deliver(
-        world.enqueue(QUEUE, {
-          runId,
-          replacesMessage: { messageId: start.messageId, count: 1 },
-        })
-      );
+      await world.deliver({ ...start, deliveryCount: 2 });
       expect(stepMessages()).toBe(sent + 1);
       await world.runUntilIdle();
       expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -785,8 +778,8 @@ describe.each([
     }
   });
 
-  it('lets the replacement of a delivery arm the timer of the wait that delivery created', async () => {
-    const { world, runId, start } = await setup(
+  it('lets a redelivery of the creating message arm the timer of the wait that delivery created', async () => {
+    const { world, start } = await setup(
       `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
        async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
       []
@@ -800,45 +793,8 @@ describe.each([
       ).length;
     expect(timers()).toBe(1);
     world.held.length = 0;
-    await world.deliver(
-      world.enqueue(QUEUE, {
-        runId,
-        replacesMessage: { messageId: start.messageId, count: 1 },
-      })
-    );
+    await world.deliver({ ...start, deliveryCount: 2 });
     expect(timers()).toBe(2);
-  });
-
-  it('falls back to redelivering its own message past the replacement cap', async () => {
-    const code = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
-       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`;
-    const { world, runId } = await setup(code, [1, 2]);
-    const asWorld = world.asWorld();
-    const list = asWorld.events.list.bind(asWorld.events);
-    let competed = false;
-    asWorld.events.list = async (params) => {
-      const page = await list(params);
-      if (!competed) {
-        competed = true;
-        world.seqInBand++;
-        world.appendOutOfBand({ eventType: 'run_started' } as Partial<Event>);
-      }
-      return page;
-    };
-    setWorld(asWorld);
-    await workflowEntrypoint(code)(new Request('https://example.test'));
-    world.held.length = 0;
-    const capped = world.enqueue(QUEUE, {
-      runId,
-      replacesMessage: {
-        messageId: 'msg_original',
-        count: MAX_MESSAGE_REPLACEMENTS,
-      },
-    });
-
-    const result = await world.deliver(capped);
-    expect(result).toEqual({ timeoutSeconds: expect.any(Number) });
-    expect(world.held.map((h) => h.messageId)).toEqual([capped.messageId]);
   });
 
   it('acknowledges a wake with nothing new without a replay', async () => {
@@ -855,5 +811,185 @@ describe.each([
     expect(world.creates.length).toBe(creates);
     listSpy.mockRestore();
     expect(SPEC_VERSION_CURRENT).toBeGreaterThan(0);
+  });
+
+  describe('a delivery the fence refuses', () => {
+    const fanOut = 2 * MAX_BATCH_EVENTS + 4;
+    const fanOutCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(n) {
+         const sums = await Promise.all(Array.from({ length: n }, (_, i) => add(i, 1)));
+         return sums.length;
+       }${transform('workflow')}`;
+    /**
+     * Another writer takes the fence just before the fan-out's step_created
+     * past the first two creation batches, so this delivery commits some of
+     * the fan-out's creations and has the rest refused.
+     */
+    const refuseLateCreations = (world: () => AppendOnlyWorld) => {
+      let creations = 0;
+      return {
+        beforeCreate(data: { eventType: string }) {
+          if (
+            data.eventType === 'step_created' &&
+            ++creations === 2 * MAX_BATCH_EVENTS + 1
+          ) {
+            world().seqInBand++;
+            world().appendOutOfBand({ eventType: 'noop' } as Partial<Event>);
+          }
+        },
+      };
+    };
+    const stepMessageIds = (world: AppendOnlyWorld) =>
+      world.queueCalls.flatMap((call) => {
+        const stepId = (call.message as { stepId?: string }).stepId;
+        return stepId === undefined ? [] : [stepId];
+      });
+
+    it('sends the messages its committed background steps still owe, then acknowledges without a wake', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+      try {
+        let current: AppendOnlyWorld | undefined;
+        const { world, runId, start } = await setup(
+          fanOutCode,
+          [fanOut],
+          refuseLateCreations(() => current!)
+        );
+        current = world;
+
+        expectAcknowledged(world, await world.deliver(start), start, 0);
+        // Every step_created it committed has its message, sent once; none
+        // of the refused creations does.
+        const committed = eventsOf(world, 'step_created').map(
+          (event) => event.correlationId
+        );
+        expect(committed.length).toBeGreaterThan(0);
+        expect(committed.length).toBeLessThan(fanOut);
+        expect(stepMessageIds(world).sort()).toEqual([...committed].sort());
+
+        // The writer that took the fence (stood in for here) creates the
+        // rest and finishes the run; each step runs once.
+        world.enqueue(QUEUE, { runId });
+        await world.runUntilIdle(500);
+        expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+        expect(calls.so_add).toBe(fanOut);
+        const starts = eventsOf(world, 'step_started').map(
+          (event) => event.correlationId
+        );
+        expect(starts).toHaveLength(fanOut);
+        expect(new Set(starts).size).toBe(fanOut);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('leaves the messages it owed to the redelivery when it dies before sending them', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+      try {
+        let current: AppendOnlyWorld | undefined;
+        const { world, start } = await setup(
+          fanOutCode,
+          [fanOut],
+          refuseLateCreations(() => current!)
+        );
+        current = world;
+        // The first step message after the refusal never goes out: the
+        // invocation dies there.
+        const asWorld = world.asWorld();
+        const queue = asWorld.queue.bind(asWorld);
+        let failed = false;
+        asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+          if (
+            !failed &&
+            (args[1] as { stepId?: string }).stepId !== undefined &&
+            eventsOf(world, 'noop').length > 0
+          ) {
+            failed = true;
+            throw new Error('the invocation died');
+          }
+          return queue(...args);
+        }) as typeof queue;
+        setWorld(asWorld);
+        await workflowEntrypoint(fanOutCode)(
+          new Request('https://example.test')
+        );
+
+        await expect(world.deliver(start)).rejects.toThrow();
+        expect(failed).toBe(true);
+        // The queue redelivers the same message; as a redelivery of the
+        // creating message it re-sends what the first delivery never got
+        // out, and as the only orchestrator now it finishes the run.
+        expect(world.held.at(-1)).toMatchObject({
+          messageId: start.messageId,
+          deliveryCount: 2,
+        });
+        await world.runUntilIdle(500);
+        expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+        expect(calls.so_add).toBe(fanOut);
+        const starts = eventsOf(world, 'step_started').map(
+          (event) => event.correlationId
+        );
+        expect(starts).toHaveLength(fanOut);
+        expect(new Set(starts).size).toBe(fanOut);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("re-sends a timer delivery's own timer when its wait_completed is refused", async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        let refuse = true;
+        let current: AppendOnlyWorld | undefined;
+        const { world, start } = await setup(
+          `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+           async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+          [],
+          {
+            beforeCreate(data) {
+              if (data.eventType === 'wait_completed' && refuse) {
+                refuse = false;
+                current!.seqInBand++;
+                current!.appendOutOfBand({
+                  eventType: 'noop',
+                } as Partial<Event>);
+              }
+            },
+          }
+        );
+        current = world;
+        await world.deliver(start);
+        const timer = world.held.find(
+          (held) =>
+            (held.message as { waitContinuation?: unknown })
+              .waitContinuation !== undefined
+        )!;
+        expect(timer).toBeDefined();
+        vi.setSystemTime(Date.now() + 2 * 3_600_000);
+        const orchestratorCalls = orchestratorMessagesOf(world).length;
+
+        expectAcknowledged(
+          world,
+          await world.deliver(timer),
+          timer,
+          orchestratorCalls
+        );
+        // Its wait is still open, and the writer that took the fence is not
+        // its timer: the timer goes out again.
+        const resent = world.held.filter(
+          (held) =>
+            (
+              held.message as {
+                waitContinuation?: { correlationId?: string };
+              }
+            ).waitContinuation?.correlationId ===
+            eventsOf(world, 'wait_created')[0]?.correlationId
+        );
+        expect(resent).toHaveLength(1);
+        await world.runUntilIdle();
+        expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

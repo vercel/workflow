@@ -83,7 +83,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
   MAX_BATCH_EVENTS,
-  MAX_MESSAGE_REPLACEMENTS,
+  MAX_RUN_AHEAD_RESTARTS,
 } from '../constants.js';
 import {
   clampMaxEvents,
@@ -152,7 +152,6 @@ import {
   mayStartInlineStep,
 } from './deadline.js';
 import {
-  getFenceRedeliveryDelaySeconds,
   InBandWriter,
   OrchestratorSupersededError,
   RESILIENT_START_SNAPSHOT,
@@ -313,7 +312,6 @@ async function runDelivery(
     runId,
     stepId: incomingStepId,
     stepName: incomingStepName,
-    replayDivergence,
     deploymentMismatchRetryCount,
     runInput,
     hookInput,
@@ -324,24 +322,21 @@ async function runDelivery(
     hookResumeTiming,
     waitContinuation,
     completeWaits,
-    replacesMessage,
   } = delivery.message;
   // Waits a `run.wakeUp()` asked this delivery to complete now, whatever
   // their `resumeAt`. Spent on the first pass that sees them.
   const wakeUpWaits = new Set(completeWaits ?? []);
-  // The message whose creator identity this delivery holds: its own, or the
-  // one it replaces (see `replaceThisMessage`). A replacement acts as a
-  // redelivery of that message. Counted in attempts, which leave out
-  // handed-off deliveries: a delivery after a handoff continues the run the
-  // way a new message would, rather than recovering from a lost delivery.
-  const creatorMessageId = replacesMessage?.messageId ?? metadata.messageId;
-  const deliveryAttempts =
+  // The creator identity this delivery holds: its message's id, and that
+  // message's delivery count in attempts, which leave out handed-off
+  // deliveries. A delivery after a handoff continues the run the way a new
+  // message would; a redelivery after a crash (or a rejected delivery)
+  // counts above 1 and may re-send what an earlier delivery of the same
+  // message created and never got out (see `creator-rules.ts`).
+  const creatorMessageId = metadata.messageId;
+  const creatorDeliveryCount =
     metadata.deliveryCount === undefined
       ? undefined
       : Math.min(metadata.deliveryCount, metadata.attempt);
-  const creatorDeliveryCount = replacesMessage
-    ? Math.max(2, deliveryAttempts ?? 1)
-    : deliveryAttempts;
 
   // The inline deadline is measured from the start of the function
   // invocation, which every coalesced re-run of this delivery shares
@@ -357,9 +352,16 @@ async function runDelivery(
   // republishes), so each suspension of the loop below does
   // not send them again. See `forcedCreationsOwingWake`.
   const forceClaimVictimWakes = new Set<string>();
-  const replayRecoveryReporter = replayDivergence
-    ? new ReplayRecoveryReporter(replayDivergence.count)
-    : ReplayRecoveryReporter.inert();
+  // Replay divergences this delivery recovered from in place (see
+  // `recordDivergence`), oldest first. The delivery cap bounds them across
+  // crashes and redeliveries.
+  const divergences: string[] = [];
+  // Inert until a divergence is recovered: then the first natural write of
+  // a replay that got past it reports the count.
+  let replayRecoveryReporter = ReplayRecoveryReporter.inert();
+  // Restarts in place after run-ahead stopped this delivery (see
+  // `MAX_RUN_AHEAD_RESTARTS`). Run-ahead stays off after the first.
+  let runAheadRestarts = 0;
   // Compilation is useful only for the Node VM. Wait until the
   // run's engine selection is known so QuickJS deliveries never
   // parse and cache an unused node:vm Script. The promise is
@@ -415,12 +417,90 @@ async function runDelivery(
     }
     replayPayloadCache?.prepareEvent(event);
   };
+  /**
+   * What this delivery's own committed writes owe the queue and it has not
+   * sent yet: the message of each background step whose `step_created` it
+   * committed, and of each inline step whose retry it moved to the
+   * background with a committed `step_retrying`, by step. Filled from the
+   * writer's accepted events and emptied as the messages go out, so a
+   * delivery that ends early (a fence refusal, a run-ahead restart) sends
+   * exactly these (see `sendUnsentMessages`).
+   */
+  const unsentStepMessages = new Map<
+    string,
+    StepMessageSpec & { retryAfter?: Date }
+  >();
+  /** Steps whose message this delivery sent. */
+  const sentStepMessages = new Set<string>();
+  /** The `wait_created` this delivery committed, by wait, until it completes. */
+  const ownOpenWaits = new Map<string, Event>();
+  /** Each step's creation this delivery committed, by step. */
+  const ownCreationEventIds = new Map<string, string>();
+  /** Waits whose timer message this delivery sent. */
+  const timedWaits = new Set<string>();
+  const noteCommitted = (event: Event): void => {
+    const id = event.correlationId;
+    if (!id) return;
+    const creation = stepCreationOf(event);
+    if (creation && !ownCreationEventIds.has(id)) {
+      ownCreationEventIds.set(id, event.eventId);
+    }
+    if (event.eventType === 'step_created' && creation && !creation.inline) {
+      unsentStepMessages.set(id, {
+        correlationId: id,
+        stepName: creation.stepName,
+        stepCreatedEventId: event.eventId,
+        input: event.eventData.input,
+      });
+    } else if (event.eventType === 'step_retrying') {
+      // An inline step's retry: its next attempt goes to the step's own
+      // message (a background step's retry is written by its own message).
+      const data = event.eventData as {
+        stepName?: string;
+        attempt?: number;
+        retryAfter?: Date | string;
+      };
+      if (data.stepName === undefined) return;
+      unsentStepMessages.set(id, {
+        correlationId: id,
+        stepName: data.stepName,
+        stepAttempt: (data.attempt ?? 1) + 1,
+        ...(data.retryAfter !== undefined
+          ? { retryAfter: new Date(data.retryAfter) }
+          : {}),
+      });
+    } else if (
+      event.eventType === 'step_completed' ||
+      event.eventType === 'step_failed'
+    ) {
+      // A step with an outcome needs no message.
+      unsentStepMessages.delete(id);
+    } else if (event.eventType === 'wait_created') {
+      ownOpenWaits.set(id, event);
+    } else if (event.eventType === 'wait_completed') {
+      ownOpenWaits.delete(id);
+    }
+  };
+  const noteStepMessageSent = (correlationId: string): void => {
+    unsentStepMessages.delete(correlationId);
+    sentStepMessages.add(correlationId);
+  };
   // Every in-band write of this delivery goes through one
   // writer, which marks it in-band, carries the fence count
   // taken from the delivery's full log load, and stops the
   // delivery for good once the World refuses it as
-  // superseded.
-  const writer = new InBandWriter(world, runId);
+  // superseded. A run-ahead restart takes a fresh one.
+  const newWriter = (): InBandWriter => {
+    const created = new InBandWriter(world, runId);
+    created.onAccepted = noteCommitted;
+    return created;
+  };
+  let writer = newWriter();
+  /**
+   * Sends what {@link unsentStepMessages} and the delivery's wait timers
+   * still owe. Registered by each orchestrator pass once the run is known.
+   */
+  let sendUnsentMessages: (() => Promise<void>) | undefined;
   // Turbo mode fast-paths the first delivery of the run's
   // first orchestrator message: the one `start()` enqueued,
   // the only one that carries `runInput`, on its first
@@ -435,16 +515,15 @@ async function runDelivery(
   // 1 and takes the normal path, which loads the log, and so
   // does a re-run of a delivery whose queue coalesced other
   // messages into it, which the World reports as one too.
-  const turbo =
+  // A restart in place (see `MAX_RUN_AHEAD_RESTARTS`) is not turbo.
+  let turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
     !incomingStepId &&
-    !replayDivergence &&
     !hookInput &&
-    !waitContinuation &&
-    !replacesMessage;
+    !waitContinuation;
   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
   /**
    * Turbo only: settles once the backgrounded `run_started`
@@ -709,13 +788,11 @@ async function runDelivery(
    * Wakes this run's orchestrator once this delivery ends, after
    * `delaySeconds`. With no delay and nothing but a plain wake to carry,
    * this delivery hands its message off instead (see
-   * {@link runSpec9Delivery}). `coalesce: false` marks a wake that carries
-   * state the log does not hold (`QueueOptions.coalesce`).
+   * {@link runSpec9Delivery}).
    */
   const wakeSelf = async (
     extra?: Partial<WorkflowInvokePayload>,
-    delaySeconds?: number,
-    options?: { coalesce: false }
+    delaySeconds?: number
   ): Promise<void> => {
     const delayed = delaySeconds !== undefined && delaySeconds > 0;
     if (!delayed && extra === undefined) {
@@ -726,54 +803,8 @@ async function runDelivery(
       world,
       getWorkflowQueueName(workflowName, namespace),
       { ...(await replayMessage()), ...extra },
-      delayed || options
-        ? { ...(delayed ? { delaySeconds } : {}), ...options }
-        : undefined
+      delayed ? { delaySeconds } : undefined
     );
-  };
-
-  /**
-   * Acknowledges this delivery and sends a fresh orchestrator
-   * message in its place, after `delaySeconds`. The queue
-   * redelivers the same message no sooner than its minimum
-   * retry delay (5s on Vercel Queues); a fresh message is
-   * delivered at once. The replacement keeps this delivery's
-   * creator identity (`replacesMessage`) and, for a timer,
-   * the wait it continues. Past
-   * {@link MAX_MESSAGE_REPLACEMENTS} replacements in a chain it
-   * falls back to redelivering this message instead.
-   *
-   * Never coalesced: the replacement's creator identity is
-   * message-only state, and it must count as a redelivery of the
-   * message it replaces (the background steps and timers that
-   * message created may not have gone out), which a handoff does
-   * not.
-   */
-  const replaceThisMessage = async (
-    delaySeconds: number
-  ): Promise<{ timeoutSeconds: number } | undefined> => {
-    const count = (replacesMessage?.count ?? 0) + 1;
-    if (count > MAX_MESSAGE_REPLACEMENTS) {
-      // At least a second: `{ timeoutSeconds: 0 }` is a handoff, whose
-      // redelivery does not count as one, and this one must (the steps and
-      // timers this message created may not have gone out).
-      return {
-        timeoutSeconds: Math.max(
-          1,
-          delaySeconds,
-          getFenceRedeliveryDelaySeconds()
-        ),
-      };
-    }
-    await wakeSelf(
-      {
-        replacesMessage: { messageId: creatorMessageId, count },
-        ...(waitContinuation ? { waitContinuation } : {}),
-      },
-      delaySeconds,
-      { coalesce: false }
-    );
-    return undefined;
   };
 
   // Deployment-affinity guard, shared by the two paths that
@@ -878,13 +909,14 @@ async function runDelivery(
   // position for the run, so a miss costs nothing.
   // A timer delivery is excluded: one that arrives before its
   // wait is due (a long sleep spans several queue hops) has
-  // to arm the next hop, which a no-op exit would skip.
+  // to arm the next hop, which a no-op exit would skip. So is
+  // a redelivery: it may owe what an earlier delivery of its
+  // message created and never sent (see `creator-rules.ts`).
   if (
+    (creatorDeliveryCount ?? 1) === 1 &&
     !runInput &&
     !hookInput &&
-    !replayDivergence &&
     !waitContinuation &&
-    !replacesMessage &&
     wakeUpWaits.size === 0 &&
     hasConsumedPosition(world, runId)
   ) {
@@ -913,75 +945,115 @@ async function runDelivery(
     }
   }
 
-  try {
-    return await orchestrate();
-  } catch (caught) {
-    // A failed turbo `run_started` decides the delivery, as
-    // a failed awaited `run_started` does on the normal path,
-    // whatever later write surfaced it.
-    const err = turboStartFailure ? turboStartFailure.error : caught;
-    if (OrchestratorSupersededError.is(err) || writer.isSuperseded) {
-      forgetConsumedPosition(world, runId);
-      // The winner holds the run: the replacement only needs
-      // to come after it.
-      const delaySeconds = Math.min(1, getFenceRedeliveryDelaySeconds());
-      // Expected under overlap (a stalled invocation, or a
-      // transport retry of a write that already committed),
-      // so not an error.
-      runtimeLogger.info(
-        'Orchestrator superseded by another invocation of the run; replacing this message',
-        {
-          workflowRunId: runId,
-          loopIteration,
-          delaySeconds,
-          replacements: replacesMessage?.count ?? 0,
-          expectedSeqInBand: writer.expectedSeqInBand,
-        }
-      );
-      span?.setAttributes(Attribute.WorkflowSuperseded(true));
-      continuation.exit = `superseded:${(err as Error)?.message?.slice(0, 200)}`;
-      return await replaceThisMessage(delaySeconds);
-    }
-    if (RunAheadStopError.is(err) || RunAheadStopError.is(writer.stopCause)) {
-      forgetConsumedPosition(world, runId);
-      // The outcomes a hazard stop still lets through are
-      // queued behind the refused writes: send them before
-      // the delivery ends.
-      await writer.idle();
-      // No other writer: the replacement goes out at once.
-      runtimeLogger.info(
-        'Run-ahead stopped before writing from a speculative state; replacing this message',
-        {
-          workflowRunId: runId,
-          reason: RunAheadStopError.is(err)
-            ? err.reason
-            : (writer.stopCause as RunAheadStopError).reason,
-          replacements: replacesMessage?.count ?? 0,
-        }
-      );
-      continuation.exit = `run-ahead-stop:${
-        RunAheadStopError.is(err)
+  while (true) {
+    try {
+      return await orchestrate();
+    } catch (caught) {
+      // A failed turbo `run_started` decides the delivery, as
+      // a failed awaited `run_started` does on the normal path,
+      // whatever later write surfaced it.
+      const err = turboStartFailure ? turboStartFailure.error : caught;
+      if (OrchestratorSupersededError.is(err) || writer.isSuperseded) {
+        forgetConsumedPosition(world, runId);
+        // Expected under overlap (a stalled invocation, or a
+        // transport retry of a write that already committed),
+        // so not an error.
+        runtimeLogger.info(
+          'Orchestrator superseded by another invocation of the run; sending the messages its own writes owe and acknowledging',
+          {
+            workflowRunId: runId,
+            loopIteration,
+            unsentStepMessages: unsentStepMessages.size,
+            expectedSeqInBand: writer.expectedSeqInBand,
+          }
+        );
+        span?.setAttributes(Attribute.WorkflowSuperseded(true));
+        continuation.exit = `superseded:${(err as Error)?.message?.slice(0, 200)}`;
+        // The writer that superseded this one holds every write it
+        // committed: its fenced write came after them, and whatever this
+        // delivery read below them reached it too, through its load or the
+        // skipped-slot report of that write. What it cannot know is which
+        // queue messages those writes still owe (it is not their creator),
+        // so they go out before the acknowledgment. A crash before they do
+        // redelivers this message, whose creator rules re-send them.
+        await sendUnsentMessages?.();
+        continuation.handoff = false;
+        return undefined;
+      }
+      if (
+        !turboStartFailure &&
+        (RunAheadStopError.is(err) || RunAheadStopError.is(writer.stopCause))
+      ) {
+        forgetConsumedPosition(world, runId);
+        // The outcomes a hazard stop still lets through are
+        // queued behind the refused writes: they commit first.
+        await writer.idle();
+        const reason = RunAheadStopError.is(err)
           ? err.reason
-          : (writer.stopCause as RunAheadStopError).reason
-      }`;
-      return await replaceThisMessage(0);
-    }
-    if (turboStartFailure) {
-      if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
-        runtimeLogger.info('Run already finished during setup, skipping', {
-          workflowRunId: runId,
-          message: (err as Error).message,
-        });
-        return undefined;
+          : (writer.stopCause as RunAheadStopError).reason;
+        // The restarted pass decides from the log, and on a first delivery
+        // its creator rules re-send nothing (see `creator-rules.ts`): the
+        // messages this delivery's commits owe go out now.
+        await sendUnsentMessages?.();
+        if (runAheadRestarts >= MAX_RUN_AHEAD_RESTARTS) {
+          runtimeLogger.info(
+            'Run-ahead stopped again after a restart in place; handing the run to the next delivery',
+            { workflowRunId: runId, reason, runAheadRestarts }
+          );
+          continuation.exit = `run-ahead-stop-handoff:${reason}`;
+          continuation.handoff = true;
+          return undefined;
+        }
+        runAheadRestarts++;
+        runtimeLogger.info(
+          'Run-ahead stopped before writing from a speculative state; continuing in place from a fresh load',
+          { workflowRunId: runId, reason, runAheadRestarts }
+        );
+        continuation.exit = `run-ahead-restart:${reason}`;
+        restartInPlace();
+        continue;
       }
-      // Nothing else of this delivery reached the World, so
-      // a setup error can still be recorded.
-      runReadyBarrier = undefined;
-      if (await recordWorkflowSetupFailure(err)) {
-        return undefined;
+      if (turboStartFailure) {
+        if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+          runtimeLogger.info('Run already finished during setup, skipping', {
+            workflowRunId: runId,
+            message: (err as Error).message,
+          });
+          return undefined;
+        }
+        // Nothing else of this delivery reached the World, so
+        // a setup error can still be recorded.
+        runReadyBarrier = undefined;
+        if (await recordWorkflowSetupFailure(err)) {
+          return undefined;
+        }
       }
+      throw err;
     }
-    throw err;
+  }
+
+  /**
+   * Resets the delivery for a fresh orchestrator pass in this same delivery
+   * after run-ahead stopped it: a fresh writer, which adopts the count of
+   * the next full load, no log and no speculative state, no turbo, and no
+   * run-ahead for the rest of the delivery. What it already sent stays sent
+   * (`sentStepMessages`, `timedWaits`).
+   */
+  function restartInPlace(): void {
+    writer = newWriter();
+    log = undefined;
+    speculativeEvents.clear();
+    speculativeSlots.clear();
+    repairWrites.length = 0;
+    runAheadRepair = false;
+    logBehind = false;
+    passConsumedSlot = 0;
+    turbo = false;
+    turboOptimistic = false;
+    turboStartLanded = undefined;
+    turboRunStarted = undefined;
+    runReadyBarrier = undefined;
+    sendUnsentMessages = undefined;
   }
 
   /**
@@ -1268,6 +1340,8 @@ async function runDelivery(
     } as WorkflowRun;
     workflowStartedAt = +(workflowRun.startedAt as Date);
     startWorkflowCompile(workflowRun);
+    const runForMessages = workflowRun;
+    sendUnsentMessages = () => sendOwedMessages(runForMessages);
     span?.setAttributes({
       ...Attribute.WorkflowRunStatus('running'),
       ...Attribute.WorkflowStartedAt(workflowStartedAt),
@@ -1386,6 +1460,8 @@ async function runDelivery(
           },
           requestId,
           writer,
+          onStepMessageSent: noteStepMessageSent,
+          onWaitTimerSent: (correlationId) => timedWaits.add(correlationId),
           ...(wakeUpWaits.size > 0 ? { wakeUpWaits } : {}),
           ...(turboRunStarted && runReadyBarrier
             ? {
@@ -1478,9 +1554,6 @@ async function runDelivery(
     const pendingAbsorbs: Array<Parameters<typeof absorbWrite>[0]> = [];
     const pendingFeedEvents: Event[] = [];
     let liveFeed: LiveLogFeed | undefined;
-    // Timer messages this delivery already sent, by wait and
-    // `resumeAt`.
-    const armedTimers = new Set<string>();
     // Set when an inline step finished with stream writes
     // still flushing; the delivery hands off once no body runs.
     let pendingStreamOps = false;
@@ -1622,7 +1695,11 @@ async function runDelivery(
     // orchestrator chose (`Storage.events`), so the workflow can
     // see that time before the write commits. One found not to
     // is excluded for the rest of the process.
-    const runAheadDepth = isRunAheadDisabledFor(world) ? 0 : getRunAheadDepth();
+    // Off for the rest of a delivery that run-ahead stopped once.
+    const runAheadDepth =
+      isRunAheadDisabledFor(world) || runAheadRestarts > 0
+        ? 0
+        : getRunAheadDepth();
     /** A speculative write in flight, by the slot it holds. */
     type Speculation = {
       event: Event;
@@ -2546,14 +2623,25 @@ async function runDelivery(
             throw err;
           }
           if (ReplayDivergenceError.is(err)) {
-            const recovery = await maybeRecoverDivergence(err);
-            if (recovery.type === 'queued') return undefined;
-            return await failRun(
-              recovery.error,
-              effectiveWorkflowCode,
-              recovery.divergenceCount,
-              recovery.logFields
-            );
+            const recovery = recordDivergence(err);
+            if (recovery.type === 'fail') {
+              return await failRun(
+                recovery.error,
+                effectiveWorkflowCode,
+                recovery.divergenceCount,
+                recovery.logFields
+              );
+            }
+            // Recover in place: the next pass is a cold replay, in a fresh
+            // VM, of a freshly loaded log. Speculative writes settle first,
+            // as before any full load.
+            await settleRunAhead();
+            if (runAheadFailure !== undefined) throw runAheadFailure;
+            if (runAheadRepair) await repairRunAhead();
+            session = null;
+            pendingRebase = undefined;
+            await fullLoad();
+            continue;
           }
           if (replayStart > 0) {
             replayRecoveryReporter.activate();
@@ -3558,81 +3646,156 @@ async function runDelivery(
           };
         })
       );
+      for (const step of steps) noteStepMessageSent(step.correlationId);
     }
 
-    /** Schedules the timers this delivery owns. */
-    async function armTimers(events: Event[]): Promise<void> {
-      const now = Date.now();
-      let earliest: { correlationId: string; resumeAtMs: number } | undefined;
-      for (const wait of openWaits(events)) {
-        if (
-          !schedulesWaitTimer({
-            wait: wait.event,
-            correlationId: wait.correlationId,
-            messageId: creatorMessageId,
-            timerFor: waitContinuation?.correlationId,
-          })
-        ) {
-          continue;
-        }
-        if (!earliest || wait.resumeAtMs < earliest.resumeAtMs) {
-          earliest = {
-            correlationId: wait.correlationId,
-            resumeAtMs: wait.resumeAtMs,
-          };
-        }
-      }
-      if (!earliest) return;
-      // One message per wait per delivery: a delivery that
-      // waits on inline bodies arms the timer early, and its
-      // suspend would otherwise send a second one.
-      const armKey = `${earliest.correlationId}@${earliest.resumeAtMs}`;
-      if (armedTimers.has(armKey)) return;
-      armedTimers.add(armKey);
-      const seconds = Math.max(
-        0,
-        Math.ceil((earliest.resumeAtMs - now) / 1000)
-      );
-      const { delaySeconds } = getWaitContinuationDispatch(
-        seconds,
-        earliest.correlationId,
-        now
-      );
-      await wakeSelf(
-        {
-          waitContinuation: {
-            correlationId: earliest.correlationId,
-            attempt: 0,
-          },
-        },
-        delaySeconds
+    /** The open waits of `events` whose timer this delivery schedules. */
+    function ownedOpenWaits(events: readonly Event[]) {
+      return openWaits(events).filter((wait) =>
+        schedulesWaitTimer({
+          wait: wait.event,
+          correlationId: wait.correlationId,
+          messageId: creatorMessageId,
+          timerFor: waitContinuation?.correlationId,
+        })
       );
     }
 
     /**
-     * Records a replay divergence and queues a recovery
-     * replay while the budget lasts.
+     * Schedules the timer of the earliest wait this delivery owns, once per
+     * wait: a delivery that waits on inline bodies arms the timer early, and
+     * its suspend would otherwise send a second one.
      */
-    async function maybeRecoverDivergence(err: ReplayDivergenceError): Promise<
-      | { type: 'queued' }
+    async function armTimers(events: Event[]): Promise<void> {
+      let earliest: { correlationId: string; resumeAtMs: number } | undefined;
+      for (const wait of ownedOpenWaits(events)) {
+        if (!earliest || wait.resumeAtMs < earliest.resumeAtMs) {
+          earliest = wait;
+        }
+      }
+      if (!earliest || timedWaits.has(earliest.correlationId)) return;
+      await sendWaitTimer(earliest);
+    }
+
+    /** Sends the timer message of one wait. */
+    async function sendWaitTimer(wait: {
+      correlationId: string;
+      resumeAtMs: number;
+    }): Promise<void> {
+      timedWaits.add(wait.correlationId);
+      const now = Date.now();
+      const seconds = Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000));
+      const { delaySeconds } = getWaitContinuationDispatch(
+        seconds,
+        wait.correlationId,
+        now
+      );
+      try {
+        await wakeSelf(
+          {
+            waitContinuation: {
+              correlationId: wait.correlationId,
+              attempt: 0,
+            },
+          },
+          delaySeconds
+        );
+      } catch (error) {
+        timedWaits.delete(wait.correlationId);
+        throw error;
+      }
+    }
+
+    /**
+     * Sends what this delivery's writes owe the queue and it has not sent:
+     * the step messages in `unsentStepMessages`, plus, on a redelivery of
+     * its message, the ones the creator rules re-send for an earlier
+     * delivery of it that never got them out (see `stepsToReenqueue`); and
+     * a timer for every open wait it owns that has none from it yet. A step
+     * message keeps its idempotency key, so one already sent is deduped.
+     */
+    async function sendOwedMessages(run: WorkflowRun): Promise<void> {
+      const owed = new Map(unsentStepMessages);
+      if (log && creatorDeliveryCount !== 1) {
+        const reenqueue = new Set(
+          stepsToReenqueue({
+            events: log.events,
+            messageId: creatorMessageId,
+            deliveryCount: creatorDeliveryCount,
+          })
+        );
+        for (const step of analyzeLogSteps(log.events)) {
+          const id = step.correlationId;
+          if (!reenqueue.has(id) || owed.has(id) || sentStepMessages.has(id)) {
+            continue;
+          }
+          owed.set(id, {
+            correlationId: id,
+            stepName: step.stepName,
+            stepCreatedEventId: step.createdEventId,
+            ...(step.inline ? { stepAttempt: step.starts + 1 } : {}),
+          });
+        }
+      }
+      const now = Date.now();
+      const immediate: StepMessageSpec[] = [];
+      for (const { retryAfter, ...step } of owed.values()) {
+        const spec: StepMessageSpec = {
+          ...step,
+          stepCreatedEventId:
+            step.stepCreatedEventId ??
+            ownCreationEventIds.get(step.correlationId) ??
+            log?.events.find(
+              (event) =>
+                event.correlationId === step.correlationId &&
+                stepCreationOf(event) !== undefined
+            )?.eventId,
+        };
+        const delaySeconds =
+          retryAfter === undefined
+            ? 0
+            : Math.max(0, Math.ceil((+retryAfter - now) / 1000));
+        if (delaySeconds > 0) {
+          await enqueueStepMessages(run, [spec], delaySeconds);
+        } else {
+          immediate.push(spec);
+        }
+      }
+      await enqueueStepMessages(run, immediate);
+      const events = [
+        ...(log?.events ?? []),
+        ...[...ownOpenWaits.values()].filter(
+          (wait) => !log?.events.some((event) => event.eventId === wait.eventId)
+        ),
+      ];
+      for (const wait of ownedOpenWaits(events)) {
+        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
+      }
+    }
+
+    /**
+     * Records a replay divergence. While the recovery budget lasts the
+     * delivery replays again from a fresh load (`recover`), and the first
+     * natural write of a replay that gets past it reports the count.
+     */
+    function recordDivergence(err: ReplayDivergenceError):
+      | { type: 'recover' }
       | {
           type: 'fail';
           error: Error;
           divergenceCount: number;
           logFields: Record<string, unknown>;
-        }
-    > {
-      const divergenceCount = (replayDivergence?.count ?? 0) + 1;
+        } {
+      const priorDivergenceEventId = divergences.at(-1);
+      const isRecoveryReplay = divergences.length > 0;
+      divergences.push(err.eventId);
+      const divergenceCount = divergences.length;
       const maxRecoveryReplays = getReplayDivergenceMaxRetries();
-      const divergenceEventIds = [
-        ...(replayDivergence?.eventIds ??
-          (replayDivergence ? [replayDivergence.eventId] : [])),
-        err.eventId,
-      ].slice(-(maxRecoveryReplays + 1));
+      const divergenceEventIds = divergences.slice(-(maxRecoveryReplays + 1));
       const logFields = {
         errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
         divergenceEventId: err.eventId,
-        priorDivergenceEventId: replayDivergence?.eventId,
+        priorDivergenceEventId,
         divergenceEventIds,
         divergenceCount,
         maxRecoveryReplays,
@@ -3640,43 +3803,17 @@ async function runDelivery(
         deliveryAttempt: metadata.attempt,
         eventLogLength: log?.events.length,
         eventLogLastEventId: log?.events.at(-1)?.eventId,
-        isRecoveryReplay: replayDivergence !== undefined,
+        isRecoveryReplay,
         hasHookInput: hookInput !== undefined,
         hasWaitContinuation: waitContinuation !== undefined,
       };
       if (divergenceCount <= maxRecoveryReplays) {
         runLogger.warn(
-          'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
-          {
-            errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
-            divergenceEventId: err.eventId,
-            divergenceEventIds,
-            divergenceCount,
-            maxRecoveryReplays,
-            loopIteration,
-            deliveryAttempt: metadata.attempt,
-            eventLogLength: log?.events.length,
-            eventLogLastEventId: log?.events.at(-1)?.eventId,
-            isRecoveryReplay: replayDivergence !== undefined,
-            hasHookInput: hookInput !== undefined,
-            hasWaitContinuation: waitContinuation !== undefined,
-            errorMessage: err.message,
-          }
+          'Workflow replay diverged; replaying again from a fresh load before declaring the event log corrupted',
+          { ...logFields, errorMessage: err.message }
         );
-        // Never coalesced: the divergence history is message-only state,
-        // and it is what bounds the recovery replays.
-        await wakeSelf(
-          {
-            replayDivergence: {
-              eventId: err.eventId,
-              count: divergenceCount,
-              eventIds: divergenceEventIds,
-            },
-          },
-          undefined,
-          { coalesce: false }
-        );
-        return { type: 'queued' };
+        replayRecoveryReporter = new ReplayRecoveryReporter(divergenceCount);
+        return { type: 'recover' };
       }
       return {
         type: 'fail',

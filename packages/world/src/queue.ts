@@ -398,7 +398,9 @@ export const WorkflowInvokePayloadSchema = z.compile(
     traceCarrier: TraceCarrierSchema.optional(),
     requestedAt: z.coerce.date().optional(),
     /**
-     * Consecutive replay divergences in this recovery chain and latest position.
+     * Consecutive replay divergences in this recovery chain and latest position
+     * (spec <= 8 runs: a spec 9 orchestrator recovers within its delivery and
+     * never sends it).
      *
      * `eventIds` is every divergent event id in the chain, oldest first, so the
      * terminal failure can say whether each recovery replay diverged at the same
@@ -467,28 +469,13 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * `resumeAt` (spec >= 9): `run.wakeUp()` names them here instead of
      * writing `wait_completed` itself, so the orchestrator writes it in-band,
      * in log order with its own decisions. A wait already completed, or not
-     * open, is ignored. `.catch(undefined)` so a malformed value degrades to
-     * "no waits named" rather than failing the parse.
+     * open, is ignored. The message is an ordinary orchestrator message: a
+     * queue that coalesces it into a running delivery drops the names, and
+     * the waits then run their full length (`run.wakeUp()` is best-effort
+     * there). `.catch(undefined)` so a malformed value degrades to "no waits
+     * named" rather than failing the parse.
      */
     completeWaits: z.array(z.string()).optional().catch(undefined),
-    /**
-     * Set on a fresh orchestrator message that stands in for an earlier one
-     * (spec >= 9): a delivery the in-band fence refused, or that stopped
-     * running ahead, acknowledges its own message and sends this one instead
-     * of asking the queue to deliver the same message again after a delay.
-     * `messageId` is the message it replaces, so this delivery keeps that
-     * message's creator identity (the background steps and timers it is the
-     * only one allowed to re-send). `count` is how many replacements the
-     * chain has had, which bounds it. `.catch(undefined)` so a malformed
-     * value degrades to a plain wake rather than failing the parse.
-     */
-    replacesMessage: z
-      .object({
-        messageId: z.string(),
-        count: z.number().int().positive(),
-      })
-      .optional()
-      .catch(undefined),
     /** Step ID for inline step execution in combined handler. If provided, the flow execution
      * will jump directly to execute the step with the given ID before doing an event replay. */
     stepId: z.string().optional(),
@@ -728,17 +715,6 @@ export interface QueueOptions {
    * (the pre-regional-routing behavior).
    */
   region?: string;
-  /**
-   * `false` for an orchestrator message that carries state its run's log
-   * does not hold (spec >= 9: a `replacesMessage` or `replayDivergence`
-   * history, `completeWaits`). A World whose queue coalesces a run's
-   * orchestrator messages into the delivery that is running (see
-   * {@link Queue.createQueueHandler}, `meta.deliveryCount`) delivers such a
-   * message on its own instead, because a coalesced message is never
-   * delivered and its holder re-reads only the log. Absent means the
-   * message may be coalesced.
-   */
-  coalesce?: boolean;
 }
 
 /**
@@ -904,8 +880,10 @@ export interface Queue {
    *   re-runs so far) and leaves `attempt` unchanged: a coalesced message is
    *   never delivered, so a re-run must read the run's log, as a redelivery
    *   does, and whatever those messages were sent for was committed to the
-   *   log before they were sent. A message whose payload carries more than
-   *   the log (see {@link QueueOptions.coalesce}) is never coalesced.
+   *   log before they were sent. The one orchestrator message whose payload
+   *   carries more than the log, `run.wakeUp()`'s `completeWaits`, is
+   *   best-effort: coalesced, it is lost, and the waits run their full
+   *   length.
    * - `invocationStartedAt` (epoch ms) is when the function invocation running
    *   this handler call began, when the World knows it. It is the same for
    *   every coalesced re-run of a delivery, which all share that invocation:

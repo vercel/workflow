@@ -414,9 +414,14 @@ function rememberWakeUp(runId: string, correlationIds: readonly string[]) {
  * Wake up a workflow run by interrupting pending sleep() calls.
  *
  * On a single-orchestrator run (spec version 9 and later) the run's
- * orchestrator completes the waits: this names them on an orchestrator
- * message and returns once that message is enqueued, so their
- * `wait_completed` lands shortly after. Older runs get it written here.
+ * orchestrator completes the waits: this names them on an ordinary
+ * orchestrator message and returns once that message is enqueued, so their
+ * `wait_completed` lands shortly after. That is best-effort: a queue that
+ * coalesces the run's orchestrator messages into a delivery already running
+ * (world-vercel) drops the names, and the waits then run their full length.
+ * A queue that holds the message until the running delivery ends (the Local
+ * and Postgres Worlds) delivers it after that delivery. Older runs get
+ * `wait_completed` written here.
  */
 export async function wakeUpRun(
   world: World,
@@ -464,9 +469,10 @@ export async function wakeUpRun(
     // A single-orchestrator run's waits are completed by its orchestrator
     // alone (in-band), so a wake-up names the waits on an orchestrator
     // message instead of writing `wait_completed` beside it. The names live
-    // only on that message, so it is never coalesced into a delivery that is
-    // already running (`coalesce: false`): that delivery re-reads only the
-    // log and would not complete them.
+    // only on that message, and it is keyed like every orchestrator message:
+    // coalesced into a delivery that is already running, which re-reads only
+    // the log, the names are lost. `stoppedCount` counts the waits it asked
+    // to complete.
     if ((run.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
       const correlationIds = pendingWaits.flatMap((event) =>
         event.correlationId ? [event.correlationId] : []
@@ -486,7 +492,6 @@ export async function wakeUpRun(
               run.specVersion,
               SPEC_VERSION_LEGACY
             ),
-            coalesce: false,
           }
         );
       }

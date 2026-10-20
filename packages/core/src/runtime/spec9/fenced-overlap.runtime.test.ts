@@ -9,8 +9,9 @@ import {
   creationsOf,
   dataOf,
   eventsOf,
-  expectReplaced,
+  expectAcknowledged,
   ORCHESTRATOR_QUEUE,
+  orchestratorMessagesOf,
   registerWorkflow,
   runResult,
   setupOrchestratorRun,
@@ -159,17 +160,18 @@ describe.each([
     expect(calls.fo_s1).toBe(1);
 
     // A's body finishes; its outcome write carries a stale count.
+    const orchestratorCalls = orchestratorMessagesOf(world).length;
     gate.resolve();
     const [resultA, resultB] = await Promise.all([deliveryA, deliveryB]);
-    // A stands down: it acknowledges and replaces its message with a fresh
-    // one that keeps its creator identity.
-    expectReplaced(world, resultA, start);
-    // B, whose view included every in-band write, finished and acknowledged,
-    // unless A's run-ahead hit the wake's event below a speculative write
-    // and still wrote s1's outcome (a hazard stops decisions, not outcomes),
-    // and that write took the fence first. Then B is the one fenced out, and
-    // its replacement finishes the run.
-    if (resultB !== undefined) expectReplaced(world, resultB, wakeMessage);
+    // Both acknowledge, and neither sends the run another orchestrator
+    // message. Usually A stands down: B's view included every in-band write,
+    // and B finishes the run. Or A's run-ahead hit the wake's event below a
+    // speculative write and still wrote s1's outcome (a hazard stops
+    // decisions, not outcomes), and that write took the fence first: then B
+    // stands down, and A continues in place from a fresh load and finishes
+    // the run.
+    expectAcknowledged(world, resultA, start, orchestratorCalls);
+    expectAcknowledged(world, resultB, wakeMessage, orchestratorCalls);
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(1019);
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -204,8 +206,8 @@ describe.each([
     ]);
   });
 
-  it('discards the retained session when a later write is fenced out, and its redelivery replays to the same result', async () => {
-    const { world, start } = await setupOrchestratorRun(
+  it('discards the retained session when a later write is fenced out, and the winning delivery replays to the same result', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
       twoStepWorkflow,
       [],
       {},
@@ -231,8 +233,11 @@ describe.each([
       new Request('https://example.test')
     );
 
-    expectReplaced(world, await world.deliver(start), start);
+    expectAcknowledged(world, await world.deliver(start), start, 0);
     expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+    // The fenced-out delivery leaves the run to the writer that took the
+    // fence, which this test stands in for with a delivery of its own.
+    world.enqueue(ORCHESTRATOR_QUEUE, { runId });
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(30);
     expect(eventsOf(world, 'step_completed')).toHaveLength(2);

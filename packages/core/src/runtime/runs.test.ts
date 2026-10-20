@@ -229,11 +229,11 @@ describe('writes to a run started by a newer SDK', () => {
       runId: 'wrun_123',
       completeWaits: [waitCreated.correlationId],
     });
-    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+    // An ordinary orchestrator message: best-effort on a queue that
+    // coalesces it into a running delivery.
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toEqual({
+      deploymentId: expect.any(String),
       specVersion: SPEC_VERSION_CURRENT,
-      // The waits it names exist only on this message, so a queue must not
-      // coalesce it into a running delivery that re-reads only the log.
-      coalesce: false,
     });
   });
 

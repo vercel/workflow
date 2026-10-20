@@ -23,8 +23,9 @@ import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
  * Thrown by an {@link InBandWriter} once the World has refused one of its
  * writes as superseded, for that write and for every write after it. The
  * orchestrator delivery that sees it stops writing and stops starting inline
- * step bodies, does not acknowledge its message, and asks for the same message
- * again after {@link getFenceRedeliveryDelaySeconds}.
+ * step bodies, sends the queue messages its own committed writes still owe
+ * (see {@link InBandWriter.onAccepted}), and acknowledges its message: the
+ * writer that superseded it holds a log with every write this one committed.
  */
 export class OrchestratorSupersededError extends Error {
   constructor(readonly cause: unknown) {
@@ -97,24 +98,6 @@ export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
   seq: 0,
   seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
 });
-
-/** Default delay before a superseded orchestrator delivery is redelivered. */
-export const FENCE_REDELIVERY_DELAY_SECONDS = 5;
-
-/**
- * Delay before a superseded orchestrator delivery is redelivered
- * (`WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`, default
- * {@link FENCE_REDELIVERY_DELAY_SECONDS}). Small: the winner holds the run, and
- * the redelivery only needs to come after it.
- */
-export function getFenceRedeliveryDelaySeconds(
-  env: Record<string, string | undefined> = process.env
-): number {
-  const raw = Number(env.WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS);
-  return Number.isFinite(raw) && raw >= 0
-    ? raw
-    : FENCE_REDELIVERY_DELAY_SECONDS;
-}
 
 /**
  * Writes the orchestrator's in-band events and keeps its count of in-band
@@ -195,12 +178,25 @@ export class InBandWriter {
   private openGroup: AheadWrite[] | undefined;
   private tail: Promise<unknown> = Promise.resolve();
 
+  /**
+   * Called with every event a write of this writer committed, in commit
+   * order, before the write's own checks run: a run-ahead write that fails
+   * its check, or a batch whose later items were refused, still committed
+   * these. The delivery keeps from them what it owes the queue (a
+   * background step's message, a wait's timer) until it sends it.
+   */
+  onAccepted: ((event: Event) => void) | undefined;
+
   /** Throws for a World that does not declare the fence. */
   constructor(
     private readonly world: Pick<World, 'events' | 'capabilities'>,
     private readonly runId: string
   ) {
     assertWorldSupportsInBandFence(world);
+  }
+
+  private accepted(event: Event | undefined): void {
+    if (event) this.onAccepted?.(event);
   }
 
   /**
@@ -388,6 +384,7 @@ export class InBandWriter {
       } catch (error) {
         throw this.stop(error, required);
       }
+      this.accepted(result.event);
       if (verify) {
         try {
           verify(result);
@@ -596,6 +593,9 @@ export class InBandWriter {
               : item;
           });
         offset += count;
+        for (const item of slice) {
+          if (item.error === undefined) this.accepted(item.event);
+        }
         if (failed !== undefined) {
           write.reject(failed);
           continue;
@@ -769,6 +769,9 @@ export class InBandWriter {
               : item;
           }),
         };
+        for (const item of answered.results) {
+          if (item.error === undefined) this.accepted(item.event);
+        }
         if (verify) {
           try {
             verify(answered);

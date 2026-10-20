@@ -60,7 +60,9 @@ import type { QueueItem } from '../global.js';
  * single-orchestrator run it does not write `wait_completed` itself: it names
  * the waits on an orchestrator message (`WorkflowInvokePayload.completeWaits`)
  * and the orchestrator writes `wait_completed` in-band, in order with its own
- * decisions. So no writer other than the orchestrator completes a wait, and
+ * decisions (or never, on a queue that coalesces that message into a running
+ * delivery: the wake-up is best-effort there). So no writer other than the
+ * orchestrator completes a wait, and
  * a far-future wait is inert. A wait due within the window counts as
  * path-changing all the same: its completion is the orchestrator's own
  * decision taken at the top of a pass, which run-ahead does not pipeline.

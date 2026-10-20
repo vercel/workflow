@@ -152,7 +152,7 @@ export class AppendOnlyWorld {
       advanceClock?: (seconds: number) => void;
       /**
        * Coalesce like a VQS concurrency key: an orchestrator message for the
-       * run (no `stepId`, `coalesce` not `false`) enqueued while one of its
+       * run (no `stepId`, not delayed) enqueued while one of its
        * orchestrator deliveries runs is not held but counted on that
        * delivery, and a delivery that would acknowledge with messages
        * counted runs its handler again until none are, each re-run with the
@@ -761,7 +761,6 @@ export class AppendOnlyWorld {
         if (
           self.activeOrchestrator &&
           (message as { stepId?: unknown }).stepId === undefined &&
-          options?.coalesce !== false &&
           !(
             options?.delaySeconds !== undefined &&
             (options.delaySeconds as number) > 0

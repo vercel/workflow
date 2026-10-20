@@ -173,6 +173,8 @@ async function queueStepMessage(params: {
   stepAttempt?: number;
   /** Event id of the step's `step_created`, for reading its input back. */
   stepCreatedEventId?: string;
+  /** Called once the message went out. */
+  onSent?: (correlationId: string) => void;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
   const {
@@ -224,6 +226,7 @@ async function queueStepMessage(params: {
       ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
     }
   );
+  params.onSent?.(step.correlationId);
   wfdiag('step_queued', {
     stepId: step.stepId,
     correlationId: step.correlationId,
@@ -349,6 +352,14 @@ export async function runWorkflowWithQuickJS(params: {
    * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
    */
   wakeUpWaits?: ReadonlySet<string>;
+  /**
+   * Called once a step's message went out, with the step's correlation id.
+   * The delivery keeps what its committed writes still owe the queue, and
+   * sends that itself if it ends early (a fence refusal).
+   */
+  onStepMessageSent?: (correlationId: string) => void;
+  /** Called once a wait's timer message went out, with the wait's id. */
+  onWaitTimerSent?: (correlationId: string) => void;
   turbo?: {
     /** The backgrounded `run_started`, folded into the log view on landing. */
     runStarted: Promise<EventResult>;
@@ -420,6 +431,7 @@ export async function runWorkflowWithQuickJS(params: {
       },
       { delaySeconds }
     );
+    params.onWaitTimerSent?.(correlationId);
   };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
@@ -1503,6 +1515,7 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           purpose: 'dispatch',
+          onSent: params.onStepMessageSent,
           stepAttempt: 2,
           wfdiag,
         });
@@ -1790,6 +1803,7 @@ export async function runWorkflowWithQuickJS(params: {
             namespace,
             nextTraceCarrier,
             purpose: 'dispatch',
+            onSent: params.onStepMessageSent,
             ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
             ...(input &&
             input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
@@ -1910,6 +1924,7 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           purpose: 'dispatch',
+          onSent: params.onStepMessageSent,
           wfdiag,
         });
       }

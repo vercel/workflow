@@ -10,10 +10,6 @@ import {
   mayStartInlineStep,
 } from './deadline.js';
 import {
-  FENCE_REDELIVERY_DELAY_SECONDS,
-  getFenceRedeliveryDelaySeconds,
-} from './in-band-writer.js';
-import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   retryOutlivesMessage,
   STEP_RETRY_EXPIRY_SLACK_SECONDS,
@@ -84,19 +80,6 @@ describe('inline step deadline', () => {
         WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS: '5',
       })
     ).toBe(5);
-  });
-});
-
-describe('fence redelivery delay', () => {
-  it('defaults small and is configurable', () => {
-    expect(getFenceRedeliveryDelaySeconds({})).toBe(
-      FENCE_REDELIVERY_DELAY_SECONDS
-    );
-    expect(
-      getFenceRedeliveryDelaySeconds({
-        WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS: '1',
-      })
-    ).toBe(1);
   });
 });
 

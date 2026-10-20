@@ -11,7 +11,7 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
-import { expectReplaced } from '../../test-support/orchestrator-harness.js';
+import { expectAcknowledged } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -240,7 +240,7 @@ describe.each([
     expect(world.creates[0]?.params).not.toMatchObject({ skipPreload: true });
   });
 
-  it('stops the delivery when the fence refuses the backgrounded run_started, and redelivers', async () => {
+  it('stops the delivery when the fence refuses the backgrounded run_started, and acknowledges', async () => {
     let refuse = true;
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -265,16 +265,19 @@ describe.each([
 
     const first = await world.deliver(start);
 
-    // (c) Superseded: acknowledged, and a fresh message replaces it.
+    // (c) Superseded: acknowledged, with nothing sent in its place.
     // The body that started ahead of run_started ran, but nothing it or the
     // orchestrator would have written reached the World.
     expect(bodies).toHaveLength(1);
     expect(types(world.events)).toEqual(['run_created']);
     expect(world.creates).toEqual([]);
-    expectReplaced(world, first, start);
-    expect(world.held).toHaveLength(1);
+    expectAcknowledged(world, first, start);
+    expect(world.held).toHaveLength(0);
+    expect(world.queueCalls).toEqual([]);
 
-    // The replacement is not turbo: it loads the log first and completes.
+    // The writer that took the fence (stood in for by a wake) is not turbo:
+    // it loads the log first and completes.
+    world.enqueue(QUEUE, { runId: world.events[0]!.runId });
     await world.runUntilIdle();
     expect(world.listCalls.length).toBeGreaterThan(0);
     expect(indexOf(world, 'run_completed')).toBeGreaterThan(0);

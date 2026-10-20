@@ -1,4 +1,5 @@
 import { InBandSupersededError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import { type Event, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../../logger.js';
@@ -10,8 +11,9 @@ import {
   creationsOf,
   dataOf,
   eventsOf,
-  expectReplaced,
+  expectAcknowledged,
   ORCHESTRATOR_QUEUE,
+  orchestratorMessagesOf,
   registerWorkflow,
   runResult,
   setupOrchestratorRun,
@@ -36,12 +38,15 @@ let currentWorld: AppendOnlyWorld | undefined;
 let unconfirmedAtStart: number[] = [];
 let bodiesStarted = 0;
 let bodiesFinished = 0;
+/** Per body start: how many step outcomes had committed. */
+let completedAtStart: number[] = [];
 
 registerStepFunction('ra_inc', async (n: number) => {
   bodiesStarted++;
   const world = currentWorld;
   if (world) {
     const outcomes = eventsOf(world, 'step_completed').length;
+    completedAtStart.push(outcomes);
     // Every step before this one is `bodiesStarted - 1`.
     unconfirmedAtStart.push(bodiesStarted - 1 - outcomes);
   }
@@ -50,6 +55,26 @@ registerStepFunction('ra_inc', async (n: number) => {
 });
 
 const step = `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc")`;
+
+/** Holds `ra_gate`'s body until released; `entered` settles once it runs. */
+let gate = withResolvers<void>();
+let gateEntered = withResolvers<void>();
+registerStepFunction('ra_gate', async () => {
+  gateEntered.resolve();
+  await gate.promise;
+  return 'gated';
+});
+
+// A sleep the workflow awaits after an inline step that is still running
+// when `run.wakeUp()` names it.
+const sleepAroundGatedStep = `const gated = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_gate");
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow() {
+    const timer = sleep("1h");
+    const value = await gated();
+    await timer;
+    return value;
+  }${registerWorkflow()}`;
 
 /** Per `ra_once` body start: whether its own `step_started` had committed. */
 let onceStartDurable: boolean[] = [];
@@ -212,6 +237,7 @@ async function coldReplay(world: AppendOnlyWorld, code: string) {
 
 beforeEach(() => {
   unconfirmedAtStart = [];
+  completedAtStart = [];
   bodiesStarted = 0;
   bodiesFinished = 0;
   onceStartDurable = [];
@@ -545,8 +571,9 @@ describe('run-ahead against an append-only World (node engine)', () => {
   // A hazard (an event that could change the workflow's path) below
   // speculative writes stops what the delivery decided from then on, but the
   // outcomes of steps it already ran, whose creation committed, are facts and
-  // still get written: the redelivery runs none of them again.
-  it('writes the outcomes of steps it already ran when a hazard stops run-ahead', async () => {
+  // still get written. The delivery then continues in place from a fresh
+  // load, without run-ahead, and runs none of them again.
+  it('writes the outcomes of steps it already ran when a hazard stops run-ahead, and continues in place', async () => {
     const runAheadDepth = 2;
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(runAheadDepth));
     let injected = false;
@@ -568,21 +595,36 @@ describe('run-ahead against an append-only World (node engine)', () => {
         }
       },
     });
-    // The first delivery stops at the hazard. Every step whose start it
-    // committed has its outcome in the log: none of them runs again.
-    await world.deliver(start);
-    expect(injected).toBe(true);
-    for (const started of eventsOf(world, 'step_started')) {
-      expect(
-        eventsOf(world, 'step_completed').filter(
-          (e) => e.correlationId === started.correlationId
-        )
-      ).toHaveLength(1);
+    // Bodies started before the restart in place.
+    let startedBeforeRestart: number | undefined;
+    const info = vi.spyOn(runtimeLogger, 'info');
+    info.mockImplementation((message) => {
+      if (String(message).includes('continuing in place')) {
+        startedBeforeRestart ??= bodiesStarted;
+      }
+    });
+    // The delivery stops running ahead at the hazard, restarts in place and
+    // finishes the run: one delivery, and no orchestrator message.
+    expect(await world.deliver(start)).toBeUndefined();
+    info.mockRestore();
+    expect(startedBeforeRestart).toBeDefined();
+    // Run-ahead stays off for the rest of the delivery (see
+    // `MAX_RUN_AHEAD_RESTARTS`): each later body starts only once the
+    // previous one's outcome committed.
+    const afterRestart = completedAtStart.slice(startedBeforeRestart);
+    expect(afterRestart.length).toBeGreaterThan(1);
+    for (let i = 1; i < afterRestart.length; i++) {
+      expect(afterRestart[i]).toBeGreaterThan(afterRestart[i - 1]!);
     }
-    await world.runUntilIdle();
-
-    // The hazard stopped the first delivery and the redelivery finished.
-    expect(world.deliveries.length).toBeGreaterThan(1);
+    expect(injected).toBe(true);
+    expect(world.deliveries).toHaveLength(1);
+    expect(
+      orchestratorMessagesOf(world).filter(
+        (call) =>
+          (call.message as { waitContinuation?: unknown }).waitContinuation ===
+          undefined
+      )
+    ).toEqual([]);
     expect(await runResult(world)).toBe(STEPS);
     // Only steps whose speculative creation the stop refused ran twice: their
     // first run had no committed start, so nothing recorded it. One batch
@@ -703,7 +745,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
       },
     });
 
-    expectReplaced(world, await world.deliver(start), start);
+    expectAcknowledged(world, await world.deliver(start), start, 0);
     // Nothing after the refused write reached the World, and every outcome
     // that did has its creation.
     expect(committedAtRefusal).toBeDefined();
@@ -713,6 +755,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
       expect(created.has(completed.correlationId)).toBe(true);
     }
 
+    // The writer that took the fence (stood in for here) finishes the run.
+    world.enqueue(ORCHESTRATOR_QUEUE, { runId: world.events[0]!.runId });
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);
@@ -757,5 +801,91 @@ describe.each([
     expect(completed?.event.correlationId).toBe(wait.correlationId);
     expect(dataOf(completed?.event)?.resumeAt).toEqual(dataOf(wait)?.resumeAt);
     expect(completed?.event.specVersion).toBe(SPEC_VERSION_CURRENT);
+  });
+});
+
+describe.each([
+  'node',
+  'quickjs',
+] as const)('run.wakeUp() while an orchestrator delivery of the run is running (%s engine)', (engine) => {
+  beforeEach(() => {
+    gate = withResolvers<void>();
+    gateEntered = withResolvers<void>();
+  });
+  afterEach(() => {
+    gate.resolve();
+    vi.useRealTimers();
+  });
+
+  const isTimer = (message: unknown) =>
+    (message as { waitContinuation?: unknown }).waitContinuation !== undefined;
+
+  it('completes the sleep in a delivery after the running one, on a queue that holds the wake', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      sleepAroundGatedStep,
+      [],
+      {},
+      engine
+    );
+    const running = world.deliver(start);
+    await gateEntered.promise;
+    const wait = eventsOf(world, 'wait_created')[0];
+    expect(wait).toBeDefined();
+
+    expect(await wakeUpRun(world.asWorld(), runId)).toEqual({
+      stoppedCount: 1,
+    });
+    // The wake waits for the running delivery, as the Local World's per-run
+    // gate keeps it.
+    const wake = world.held.find(
+      (held) =>
+        (held.message as { completeWaits?: string[] }).completeWaits !==
+        undefined
+    );
+    expect(wake?.opts?.coalesce).toBeUndefined();
+    gate.resolve();
+    expect(await running).toBeUndefined();
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(0);
+
+    // Delivered after it, the wake completes the wait in-band, and the run
+    // finishes without its hour-long timer.
+    await world.deliver(wake!);
+    expect(await runResult(world)).toBe('gated');
+    const completed = world.creates.find(
+      (c) => c.event.eventType === 'wait_completed'
+    );
+    expect(completed?.params?.inBand).toBe(true);
+    expect(completed?.event.correlationId).toBe(wait?.correlationId);
+    expect(world.held.every((held) => isTimer(held.message))).toBe(true);
+  });
+
+  it('may lose the wake on a coalescing queue, and the sleep then runs its full length', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      sleepAroundGatedStep,
+      [],
+      { coalesce: true },
+      engine
+    );
+    const running = world.deliver(start);
+    await gateEntered.promise;
+
+    expect(await wakeUpRun(world.asWorld(), runId)).toEqual({
+      stoppedCount: 1,
+    });
+    // Coalesced into the running delivery: never delivered, and the re-run
+    // reads only the log.
+    expect(world.coalescedMessages).toBe(1);
+    gate.resolve();
+    expect(await running).toBeUndefined();
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+
+    // The run is not broken: its timer completes the sleep once it is due.
+    const timer = world.held.find((held) => isTimer(held.message));
+    expect(timer).toBeDefined();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 2 * 3_600_000);
+    await world.deliver(timer!);
+    expect(await runResult(world)).toBe('gated');
   });
 });
