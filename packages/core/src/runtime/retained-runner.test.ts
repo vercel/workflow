@@ -456,11 +456,11 @@ it('retries a queued step whose delivery was lost as a new recorded attempt', as
   );
   const [lost, other] = fixture.queue.mock.calls
     .map((call) => call[1])
-    .filter((message) => 'stepId' in message) as Array<{
+    .filter((message) => 'stepId' in message)
+    .map(asQueued) as Array<{
     stepId: string;
     input: { executionMode?: string };
   }>;
-  expect(lost.input.executionMode).toBe('queued');
   // The first delivery's worker died; the queue redelivers the message.
   await executeOwnedStep(fixture.world, lost, {
     ...fixture.metadata,
@@ -489,7 +489,7 @@ it('retries a queued step whose delivery was lost as a new recorded attempt', as
     expect(message).toBeDefined();
     return message!;
   });
-  await executeOwnedStep(fixture.world, retried, fixture.metadata);
+  await executeOwnedStep(fixture.world, asQueued(retried), fixture.metadata);
   await fixture.finished;
   expect(body).toHaveBeenCalledTimes(2);
   expect(

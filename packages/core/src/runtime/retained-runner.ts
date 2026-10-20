@@ -399,10 +399,9 @@ export class RetainedRunner {
   private undelivered = new Map<string, number>();
 
   /** Step placement for every single-owner run: up to three bodies
-   * (`localStepSlots`) run in this owner, the rest are launched through the
-   * queue (`executionMode: 'queued'`) so a lost worker is redelivered, and
-   * every result returns through invoke. Implied by the single-owner marker;
-   * there is no option. */
+   * (`localStepSlots`) run in this owner, the rest go directly to other
+   * invocations (`executionMode: 'remote'`), and every result returns through
+   * invoke. Implied by the single-owner marker; there is no option. */
   private get queuedSteps() {
     return { mode: 'hybrid' as const, attemptTimeoutMs: this.attemptTimeoutMs };
   }
@@ -2188,7 +2187,7 @@ export class RetainedRunner {
             workflowName: this.run.workflowName,
             workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
             parentSpanId: this.currentTurnId,
-            executionMode: 'queued' as const,
+            executionMode: 'remote' as const,
             step,
           },
         },
@@ -2228,7 +2227,7 @@ export class RetainedRunner {
                       : 400,
                 });
             },
-            { parentSpanId, stepId: message.stepId, executionMode: 'queued' }
+            { parentSpanId, stepId: message.stepId, executionMode: 'remote' }
           );
         } catch (cause) {
           await this.enqueue('step.delivery_failed', async () => {
