@@ -56,9 +56,18 @@ jobs:
     # via `workflow_dispatch` with the relevant commit SHA.
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      # Writes to the repo (creating the backport branch, pushing the signed
+      # commit, opening the PR) use a scoped GitHub App installation token
+      # minted through gh-sts, not the default `GITHUB_TOKEN`: events created
+      # by `GITHUB_TOKEN` do not trigger other workflows, so backport PRs it
+      # opened sat with their CI awaiting a manual approval/re-run. The default
+      # token is only used for read-only lookups and for commenting on the
+      # source PR. `id-token: write` lets the job request the OIDC token that
+      # gh-sts exchanges.
+      contents: read
+      pull-requests: read
       issues: write
+      id-token: write
     steps:
       - name: Validate AI model
         # Deliberately inline rather than a `.github/scripts/*.js` helper with
@@ -752,6 +761,58 @@ jobs:
               ;;
           esac
 
+      - name: Mint scoped GitHub token via gh-sts
+        # Exchanges this job's GitHub Actions OIDC token for a GitHub App
+        # installation token scoped to `contents: write` and
+        # `pull_requests: write` on this repository. The gh-sts policy that
+        # authorizes it only matches this workflow file on `main` (pinned by
+        # repository and owner ID), so pull requests and forks cannot mint it.
+        #
+        # It is minted only after every AI step has finished, and it is
+        # revoked at the end of the job.
+        if: |
+          steps.cherry-pick.outputs.status == 'clean' ||
+          (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
+        id: gh-sts
+        uses: actions/github-script@v7
+        env:
+          GH_STS_POLICY: vercel-workflow-backport-to-stable
+        with:
+          script: |
+            const audience = 'gh-sts.vercel-infra.com';
+            const policy = process.env.GH_STS_POLICY;
+            const { owner, repo } = context.repo;
+            const permissions = { contents: 'write', pull_requests: 'write' };
+
+            const idToken = await core.getIDToken(audience);
+            const res = await fetch(`https://${audience}/token`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${idToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ policy, owner, repo, permissions }),
+            });
+            const text = await res.text();
+            let body;
+            try {
+              body = JSON.parse(text);
+            } catch {}
+            if (!res.ok || typeof body?.token !== 'string') {
+              const detail = body ? `${body.code}: ${body.error}` : text.slice(0, 500);
+              throw new Error(`gh-sts token exchange failed (HTTP ${res.status}) ${detail}`);
+            }
+            core.setSecret(body.token);
+            if (body.policy !== policy || body.owner !== owner || body.repo !== repo) {
+              throw new Error(
+                `gh-sts returned a token for ${body.policy} (${body.owner}/${body.repo}), expected ${policy} (${owner}/${repo})`,
+              );
+            }
+            core.setOutput('token', body.token);
+            core.info(
+              `Minted ${JSON.stringify(body.permissions)} token for ${owner}/${repo} via policy ${policy}, expires ${body.expires_at}`,
+            );
+
       - name: Push backport branch via GitHub API
         # Branch protection on this repo requires verified signatures on
         # every ref (an enterprise-level ruleset matching `~ALL`). A normal
@@ -761,7 +822,7 @@ jobs:
         # mutation, which signs commits automatically with GitHub's
         # internal key (the same way commits made via the web UI are
         # signed). The resulting commit is attributed to the token owner
-        # (`github-actions[bot]`), not the original author.
+        # (the gh-sts GitHub App), not the original author.
         if: |
           steps.cherry-pick.outputs.status == 'clean' ||
           (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
@@ -771,7 +832,7 @@ jobs:
           BRANCH: ${{ steps.existing-pr.outputs.branch }}
           SHA: ${{ steps.resolve.outputs.sha }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.gh-sts.outputs.token }}
           script: |
             const { execFileSync } = require('node:child_process');
 
@@ -969,7 +1030,9 @@ jobs:
         if: steps.push-branch.outputs.pushed == 'true'
         id: backport-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The gh-sts App token (not `GITHUB_TOKEN`) so the PR's
+          # `pull_request` workflows run without a manual approval.
+          GITHUB_TOKEN: ${{ steps.gh-sts.outputs.token }}
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
           PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
@@ -1146,3 +1209,14 @@ jobs:
               issue_number: prNumber,
               body: lines.join('\n')
             });
+
+      - name: Revoke gh-sts token
+        # Installation tokens otherwise stay valid for an hour after the job.
+        if: always() && steps.gh-sts.outputs.token != ''
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.gh-sts.outputs.token }}
+          script: |
+            await github.request('DELETE /installation/token');
+            core.info('Revoked the gh-sts installation token.');
