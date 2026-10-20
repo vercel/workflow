@@ -223,6 +223,7 @@ async function invoke(options: {
       clockMs: 0,
       engineVersion: quickjsWasiVersion,
     })),
+    memoryUsage: vi.fn(() => ({ memoryUsedSize: 123_456 })),
     dispose: vi.fn(),
   };
   startQuickJSWorkflow.mockImplementation(
@@ -435,6 +436,8 @@ describe('QuickJS snapshot lifecycle', () => {
           SnapshotMetadata,
         ];
         expect(metadata.baselineDigest).toBe(dictionary.digest);
+        // The live heap at capture, for size tracking.
+        expect(metadata.heapBytes).toBe(123_456);
         await expect(
           openSnapshot({
             runId,

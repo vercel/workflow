@@ -84,6 +84,14 @@ export const SnapshotMetadataSchema = z.object({
    */
   baselineDigest: z.string().optional(),
   /**
+   * The VM's live heap allocation in bytes when the snapshot was taken
+   * (QuickJS `memoryUsedSize`). Informational only, not sealed. Unlike the
+   * heap image's size, which is the WASM memory's high-water mark and never
+   * shrinks, it falls when the VM frees memory, so it is the signal for heap
+   * growth. world-vercel sends it as `X-Snapshot-Heap-Bytes`.
+   */
+  heapBytes: z.number().int().nonnegative().optional(),
+  /**
    * Snapshot format tag. A reader that doesn't recognize the version
    * treats the snapshot as a clean miss (full replay) instead of handing
    * an incompatible heap to the WASM engine.

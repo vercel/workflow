@@ -98,6 +98,16 @@ export function createSnapshotsStorage(
       // Observability-only denormalized copies (see module docstring).
       headers.set('X-Snapshot-Events-Cursor', metadata.eventsCursor ?? '');
       headers.set('X-Snapshot-Created-At', metadata.createdAt.toISOString());
+      // Size tracking: whether the body was compressed against the
+      // deployment's baseline heap (which changes what its size means),
+      // and the VM's live heap, which unlike the heap image can shrink.
+      headers.set(
+        'X-Snapshot-Dictionary',
+        metadata.baselineDigest !== undefined ? 'baseline' : 'none'
+      );
+      if (metadata.heapBytes !== undefined) {
+        headers.set('X-Snapshot-Heap-Bytes', String(metadata.heapBytes));
+      }
       // Explicit W3C trace-context injection: this path routes around
       // `makeRequest` (raw undici for Buffer-body retry correctness), so
       // ambient auto-instrumentation does not reliably hook it. Required
