@@ -1,4 +1,5 @@
 import { readdirSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { globalSingleton } from '@workflow/utils';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 
@@ -39,7 +40,74 @@ const monitor = globalSingleton('@workflow/core//ownerDiagnostics', 1, () => ({
   /** Highest maxProcFds sampled since the last logged line. */
   peakFds: 0,
   processListeners: false,
+  ready: undefined as ReadyProbe | undefined,
+  probing: false,
+  readyChanges: 0,
 }));
+
+/**
+ * The function runtime's own readiness, read from its local API server (the
+ * same admission check as preflight, without reserving a slot): 200 when it
+ * accepts requests, 503 when only busy, 502 with a reason code
+ * (`x-vercel-internal-rusty-error`) when draining, terminating or failed. A
+ * draining instance gives the function no other notice. Vercel only.
+ */
+interface ReadyProbe {
+  status?: number;
+  code?: string;
+  error?: string;
+  ms: number;
+}
+const READY_PROBE_TIMEOUT_MS = 500;
+/** Change lines logged per process; the probe still runs and heartbeats
+ * carry its latest result. */
+const READY_CHANGE_LINES = 30;
+
+function probeReady(): Promise<ReadyProbe> {
+  const started = performance.now();
+  return new Promise((resolve) => {
+    const done = (result: Omit<ReadyProbe, 'ms'>) =>
+      resolve({ ...result, ms: Math.round(performance.now() - started) });
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: 80,
+        method: 'HEAD',
+        path: '/.well-known/vercel/ready',
+        timeout: READY_PROBE_TIMEOUT_MS,
+      },
+      (res) => {
+        res.resume();
+        const code = res.headers['x-vercel-internal-rusty-error'];
+        done({
+          status: res.statusCode,
+          ...(code ? { code: String(code).slice(0, 100) } : {}),
+        });
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', (error) => done({ error: error.message.slice(0, 100) }));
+    req.end();
+  });
+}
+
+function sampleReady() {
+  if (process.env.VERCEL !== '1' || monitor.probing) return;
+  monitor.probing = true;
+  void probeReady().then((ready) => {
+    monitor.probing = false;
+    const previous = monitor.ready;
+    monitor.ready = ready;
+    const changed =
+      previous?.status !== ready.status ||
+      previous?.code !== ready.code ||
+      previous?.error !== ready.error;
+    if (changed && monitor.readyChanges < READY_CHANGE_LINES) {
+      monitor.readyChanges++;
+      ownerLog('ready_probe', { ...ready, previous, ...snapshot(false) });
+    }
+  });
+}
 
 function errorFields(error: unknown) {
   return {
@@ -106,17 +174,18 @@ function maxProcFds(): number | undefined {
   return max;
 }
 
-function snapshot() {
+function snapshot(resetPeak = true) {
   const memory = process.memoryUsage();
   const procMax = maxProcFds();
   const peakMaxProcFds = Math.max(monitor.peakFds, procMax ?? 0) || undefined;
-  monitor.peakFds = 0;
+  if (resetPeak) monitor.peakFds = 0;
   return {
     rssMb: Math.round(memory.rss / 2 ** 20),
     heapUsedMb: Math.round(memory.heapUsed / 2 ** 20),
     fds: fdCount('self'),
     maxProcFds: procMax,
     peakMaxProcFds,
+    ...(monitor.ready ? { ready: monitor.ready } : {}),
     owners: [...monitor.sources].map((source) => {
       try {
         return source.diagnostics();
@@ -139,6 +208,7 @@ export function trackOwner(source: OwnerDiagnosticsSource): () => void {
       const lagMs = now - expected;
       expected = now + TICK_MS;
       monitor.peakFds = Math.max(monitor.peakFds, maxProcFds() ?? 0);
+      sampleReady();
       if (lagMs > LAG_LOG_MS) {
         ownerLog('event_loop_lag', { lagMs, ...snapshot() });
         lastBeat = now;
