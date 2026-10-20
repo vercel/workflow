@@ -85,6 +85,13 @@ import {
   writeJSON,
 } from '../fs.js';
 import { withInProcessLock } from '../util.js';
+import {
+  CLAIM_ABANDONED_AFTER_MS,
+  claimOwnerContent,
+  isClaimHeldBy,
+  newClaimInstanceId,
+  takeOverAbandonedClaim,
+} from './claim-owner.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
@@ -998,8 +1005,161 @@ export function createEventsStorage(
   // (runId, correlationId) so the "claim token, then write hook
   // entity + event" sequence runs to completion before another
   // in-process invocation enters the dedup branch.
+  //
+  // `waitLocks` does the same for `wait_created` / `wait_completed`, so a
+  // claim this instance wrote always belongs to a call that has ended by the
+  // time another call of this instance reads it (see `claim-owner.ts`).
   const stepLocks = new Map<string, Promise<unknown>>();
+  const waitLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
+  // Names this instance in the step and wait claim files it writes.
+  const claimInstance = newClaimInstanceId();
+
+  /**
+   * Whether the run's log has an event for `correlationId`, of one of
+   * `eventTypes` when given.
+   */
+  async function hasCorrelatedEvent(
+    runId: string,
+    correlationId: string,
+    eventTypes?: readonly string[]
+  ): Promise<boolean> {
+    const result = await paginatedFileSystemQuery({
+      directory: path.join(basedir, runEntityDir('events', runId)),
+      schema: ReadEventSchema,
+      cachedItems: eventCache,
+      filePrefix: `${runId}-`,
+      filter: (event) =>
+        event.correlationId === correlationId &&
+        (!eventTypes || eventTypes.includes(event.eventType)),
+      limit: 1,
+      getCreatedAt: getObjectCreatedAt('evnt'),
+      getId: (event) => event.eventId,
+    });
+    return result.data.length > 0;
+  }
+
+  /**
+   * Called by a write that lost the step or wait claim at `claimPath`. A
+   * process that died after taking the claim and before writing its event
+   * leaves the claim with no event, and every later write would lose the claim
+   * and refuse, so the run could never advance. When the claim's event is not
+   * in the log and its writer is gone, this takes the claim over and returns
+   * true: the caller then finishes the change itself. Otherwise the caller
+   * refuses, as before.
+   *
+   * `eventTypes` are the events the claim stands for. Omitted for a creation
+   * claim, which any event of the step or wait proves was written.
+   */
+  async function adoptOrphanedClaim(
+    claimPath: string,
+    runId: string,
+    correlationId: string,
+    eventTypes?: readonly string[]
+  ): Promise<boolean> {
+    return takeOverAbandonedClaim(
+      claimPath,
+      claimInstance,
+      async () => !(await hasCorrelatedEvent(runId, correlationId, eventTypes))
+    );
+  }
+
+  /**
+   * Takes the claim on a step's `step_completed` / `step_failed`, so only one
+   * terminal write lands, or throws the refusal. A claim whose terminal write a
+   * crash cut short is taken over (see `adoptOrphanedClaim`).
+   */
+  async function claimStepTerminal(
+    runId: string,
+    stepId: string
+  ): Promise<string> {
+    const claimPath = stepClaimPath(runId, stepId, 'terminal');
+    if (
+      !(await writeExclusive(claimPath, claimOwnerContent(claimInstance))) &&
+      !(await adoptOrphanedClaim(claimPath, runId, stepId, [
+        'step_completed',
+        'step_failed',
+      ]))
+    ) {
+      throw new EntityConflictError('Cannot modify step in terminal state');
+    }
+    return claimPath;
+  }
+
+  function stepClaimPath(
+    runId: string,
+    stepId: string,
+    kind: 'created' | 'terminal'
+  ): string {
+    const name = `${runId}-${stepId}.${kind}`;
+    return resolveWithinBase(
+      basedir,
+      '.locks',
+      'steps',
+      tag ? `${name}.${tag}` : name
+    );
+  }
+
+  function waitClaimPath(
+    waitCompositeKey: string,
+    kind: 'created' | 'completed'
+  ): string {
+    const name = `${waitCompositeKey}.${kind}`;
+    return resolveWithinBase(
+      basedir,
+      '.locks',
+      'waits',
+      tag ? `${name}.${tag}` : name
+    );
+  }
+
+  /**
+   * Writes the missing terminal event of a step that is `completed` or
+   * `failed` with no `step_completed` / `step_failed` in the log: a crash
+   * after the step entity's terminal write and before its event. The event is
+   * built from the step entity, never from the write that found it, which is
+   * still refused. The runtime maps that refusal to `skipped` and reloads the
+   * log, where it now finds the step finished.
+   */
+  async function repairTerminalStepEvent(
+    runId: string,
+    step: Step
+  ): Promise<void> {
+    if (step.status !== 'completed' && step.status !== 'failed') return;
+    if (
+      !(await adoptOrphanedClaim(
+        stepClaimPath(runId, step.stepId, 'terminal'),
+        runId,
+        step.stepId,
+        ['step_completed', 'step_failed']
+      ))
+    ) {
+      return;
+    }
+    const base = {
+      runId,
+      eventId: await mintEventId(runId),
+      createdAt: new Date(),
+      specVersion: step.specVersion ?? SPEC_VERSION_CURRENT,
+      correlationId: step.stepId,
+    };
+    await storeEvent(
+      step.status === 'completed'
+        ? {
+            ...base,
+            eventType: 'step_completed',
+            eventData: { stepName: step.stepName, result: step.output },
+          }
+        : {
+            ...base,
+            eventType: 'step_failed',
+            eventData: {
+              stepName: step.stepName,
+              error: step.error as Uint8Array,
+            },
+          }
+    );
+  }
   const hookLockKey = (runId: string, hookId: string) =>
     tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
 
@@ -1051,6 +1211,17 @@ export function createEventsStorage(
           : `${runId}-${data.correlationId}`;
         return withInProcessLock(stepLocks, lockKey, createImpl);
       }
+      if (
+        (data.eventType === 'wait_created' ||
+          data.eventType === 'wait_completed') &&
+        runId &&
+        data.correlationId
+      ) {
+        const lockKey = tag
+          ? `${runId}-${data.correlationId}.${tag}`
+          : `${runId}-${data.correlationId}`;
+        return withInProcessLock(waitLocks, lockKey, createImpl);
+      }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
       // completion before another in-process invocation enters the
@@ -1097,6 +1268,25 @@ export function createEventsStorage(
         // drawn at function entry would sort after it.
         let eventId = '';
         let eventIdPinned = false;
+        // The step or wait claim this call wrote or took over, and when. A
+        // claim older than CLAIM_ABANDONED_AFTER_MS can be taken over by
+        // another writer, so past half that age the event is written only if
+        // the claim still names this instance.
+        let heldClaim: { path: string; at: number } | undefined;
+        const assertClaimStillHeld = async (): Promise<void> => {
+          if (
+            heldClaim &&
+            Date.now() - heldClaim.at >= CLAIM_ABANDONED_AFTER_MS / 2 &&
+            !(await isClaimHeldBy(heldClaim.path, claimInstance))
+          ) {
+            throw new EntityConflictError(
+              `Claim "${path.basename(heldClaim.path)}" was taken over by another writer`
+            );
+          }
+        };
+        // Set when a lazy step_started took over the create-claim of a
+        // creation that a crash cut short.
+        let lazyCreateAdopted = false;
         // The eventId currently recorded in this resume's `(runId, resumeId)`
         // claim, when one was written or read below. An unpinned publish is
         // free to land somewhere else, and the claim is the fast path other
@@ -1402,10 +1592,25 @@ export function createEventsStorage(
           // transition below permits re-starting a non-terminal step (retries
           // rely on that), so without this gate a loser would re-start a
           // running step and run the body a second time.
+          //
+          // A step left `pending` with no step_created in the log is a
+          // creation cut short after its claim and entity, not a winner's:
+          // this call takes over the claim and finishes the creation.
           if (lazyStepStart && validatedStep) {
-            throw new EntityConflictError(
-              `Step "${data.correlationId}" already created`
-            );
+            if (
+              validatedStep.status !== 'pending' ||
+              !(await adoptOrphanedClaim(
+                stepClaimPath(effectiveRunId, data.correlationId, 'created'),
+                effectiveRunId,
+                data.correlationId
+              ))
+            ) {
+              throw new EntityConflictError(
+                `Step "${data.correlationId}" already created`
+              );
+            }
+            lazyCreateAdopted = true;
+            validatedStep = null;
           }
 
           // Step terminal state validation. validatedStep can be null only on
@@ -1413,6 +1618,7 @@ export function createEventsStorage(
           // guard against in that case, so these checks are skipped.
           if (validatedStep) {
             if (isTerminalStepStatus(validatedStep.status)) {
+              await repairTerminalStepEvent(effectiveRunId, validatedStep);
               throw new EntityConflictError(
                 `Cannot modify step in terminal state "${validatedStep.status}"`
               );
@@ -2096,25 +2302,30 @@ export function createEventsStorage(
           // cross-process races (two pnpm workers, redelivered queue messages,
           // etc.). The loser throws EntityConflictError so the runtime's
           // existing catch path can swallow it and avoid double-queuing the
-          // step.
-          const stepCreatedLockName = tag
-            ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
-            : `${effectiveRunId}-${data.correlationId}.created`;
-          const stepCreatedLockPath = resolveWithinBase(
-            basedir,
-            '.locks',
-            'steps',
-            stepCreatedLockName
+          // step. A claim whose creation a crash cut short is taken over
+          // instead (see `adoptOrphanedClaim`).
+          const stepCreatedLockPath = stepClaimPath(
+            effectiveRunId,
+            data.correlationId,
+            'created'
           );
           const stepCreatedClaimed = await writeExclusive(
             stepCreatedLockPath,
-            ''
+            claimOwnerContent(claimInstance)
           );
-          if (!stepCreatedClaimed) {
+          const stepCreatedAdopted =
+            !stepCreatedClaimed &&
+            (await adoptOrphanedClaim(
+              stepCreatedLockPath,
+              effectiveRunId,
+              data.correlationId
+            ));
+          if (!stepCreatedClaimed && !stepCreatedAdopted) {
             throw new EntityConflictError(
               `Step "${data.correlationId}" already created`
             );
           }
+          heldClaim = { path: stepCreatedLockPath, at: Date.now() };
           const stepData = data.eventData as {
             stepName: string;
             input: any;
@@ -2143,7 +2354,9 @@ export function createEventsStorage(
               stepCompositeKey,
               tag
             ),
-            step
+            step,
+            // A creation cut short may have left the entity behind.
+            { overwrite: stepCreatedAdopted }
           );
         } else if (data.eventType === 'step_started') {
           // step_started: Increments attempt, sets status to 'running'
@@ -2158,20 +2371,29 @@ export function createEventsStorage(
           // consumer marks hasCreatedEvent only when it observes that event).
           if (!validatedStep && lazyStepStart) {
             const lazyData = data.eventData;
-            const stepCreatedLockName = tag
-              ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
-              : `${effectiveRunId}-${data.correlationId}.created`;
-            const stepCreatedLockPath = resolveWithinBase(
-              basedir,
-              '.locks',
-              'steps',
-              stepCreatedLockName
+            const stepCreatedLockPath = stepClaimPath(
+              effectiveRunId,
+              data.correlationId,
+              'created'
             );
-            const stepCreatedClaimed = await writeExclusive(
-              stepCreatedLockPath,
-              ''
-            );
+            // Taken over at validation when the entity was left behind.
+            let stepCreateAdopted = lazyCreateAdopted;
+            const stepCreatedClaimed =
+              stepCreateAdopted ||
+              (await writeExclusive(
+                stepCreatedLockPath,
+                claimOwnerContent(claimInstance)
+              ));
             if (!stepCreatedClaimed) {
+              // A crash after the claim and before the entity leaves only the
+              // claim: take it over and create the step.
+              stepCreateAdopted = await adoptOrphanedClaim(
+                stepCreatedLockPath,
+                effectiveRunId,
+                data.correlationId
+              );
+            }
+            if (!stepCreatedClaimed && !stepCreateAdopted) {
               // A concurrent handler already claimed the create for this
               // step. The atomic claim is the exactly-once ownership gate:
               // only the winner runs the step body inline. Throw
@@ -2183,6 +2405,7 @@ export function createEventsStorage(
                 `Step "${data.correlationId}" already created`
               );
             } else {
+              heldClaim = { path: stepCreatedLockPath, at: Date.now() };
               const createdStep: Step = {
                 runId: effectiveRunId,
                 stepId: data.correlationId,
@@ -2205,7 +2428,8 @@ export function createEventsStorage(
                   `${effectiveRunId}-${data.correlationId}`,
                   tag
                 ),
-                createdStep
+                createdStep,
+                { overwrite: stepCreateAdopted }
               );
               // Write the synthetic step_created event so replay observes it
               // (the client step consumer sets hasCreatedEvent only on a
@@ -2232,6 +2456,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
+              await assertClaimStillHeld();
               await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
@@ -2302,21 +2527,10 @@ export function createEventsStorage(
           const completedData = data.eventData as { result: any };
           if (validatedStep) {
             const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-            const lockName = tag
-              ? `${stepCompositeKey}.terminal.${tag}`
-              : `${stepCompositeKey}.terminal`;
-            const terminalLockPath = resolveWithinBase(
-              basedir,
-              '.locks',
-              'steps',
-              lockName
-            );
-            const claimed = await writeExclusive(terminalLockPath, '');
-            if (!claimed) {
-              throw new EntityConflictError(
-                'Cannot modify step in terminal state'
-              );
-            }
+            heldClaim = {
+              path: await claimStepTerminal(effectiveRunId, data.correlationId),
+              at: Date.now(),
+            };
             step = {
               ...validatedStep,
               status: 'completed',
@@ -2344,21 +2558,10 @@ export function createEventsStorage(
           };
           if (validatedStep) {
             const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-            const lockName = tag
-              ? `${stepCompositeKey}.terminal.${tag}`
-              : `${stepCompositeKey}.terminal`;
-            const terminalLockPath = resolveWithinBase(
-              basedir,
-              '.locks',
-              'steps',
-              lockName
-            );
-            const claimed = await writeExclusive(terminalLockPath, '');
-            if (!claimed) {
-              throw new EntityConflictError(
-                'Cannot modify step in terminal state'
-              );
-            }
+            heldClaim = {
+              path: await claimStepTerminal(effectiveRunId, data.correlationId),
+              at: Date.now(),
+            };
             // The error field is SerializedData (Uint8Array) produced by
             // dehydrateStepError. We store it verbatim. Consumers hydrate it
             // via hydrateStepError to reconstruct the original thrown value.
@@ -2991,26 +3194,31 @@ export function createEventsStorage(
           // Atomic claim on a per-(runId, correlationId) constraint file
           // ensures duplicate wait_created from concurrent invocations
           // surfaces as EntityConflictError (replaces a prior TOCTOU
-          // read-then-check that could let both writers through).
+          // read-then-check that could let both writers through). A claim
+          // whose creation a crash cut short is taken over instead (see
+          // `adoptOrphanedClaim`).
           const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const waitCreatedLockName = tag
-            ? `${waitCompositeKey}.created.${tag}`
-            : `${waitCompositeKey}.created`;
-          const waitCreatedLockPath = resolveWithinBase(
-            basedir,
-            '.locks',
-            'waits',
-            waitCreatedLockName
+          const waitCreatedLockPath = waitClaimPath(
+            waitCompositeKey,
+            'created'
           );
           const waitCreatedClaimed = await writeExclusive(
             waitCreatedLockPath,
-            ''
+            claimOwnerContent(claimInstance)
           );
-          if (!waitCreatedClaimed) {
+          const waitCreatedAdopted =
+            !waitCreatedClaimed &&
+            (await adoptOrphanedClaim(
+              waitCreatedLockPath,
+              effectiveRunId,
+              data.correlationId
+            ));
+          if (!waitCreatedClaimed && !waitCreatedAdopted) {
             throw new EntityConflictError(
               `Wait "${data.correlationId}" already exists`
             );
           }
+          heldClaim = { path: waitCreatedLockPath, at: Date.now() };
           const waitData = data.eventData as {
             resumeAt?: Date;
           };
@@ -3026,28 +3234,35 @@ export function createEventsStorage(
           };
           await writeJSON(
             taggedPath(basedir, 'waits', waitCompositeKey, tag),
-            wait
+            wait,
+            // A creation cut short may have left the entity behind.
+            { overwrite: waitCreatedAdopted }
           );
         } else if (data.eventType === 'wait_completed') {
           // wait_completed: Transitions wait to 'completed', rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
-          // invocations from both completing the same wait (TOCTOU race).
+          // invocations from both completing the same wait (TOCTOU race). A
+          // claim whose completion a crash cut short is taken over instead
+          // (see `adoptOrphanedClaim`).
           const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const waitLockName = tag
-            ? `${waitCompositeKey}.completed.${tag}`
-            : `${waitCompositeKey}.completed`;
-          const lockPath = resolveWithinBase(
-            basedir,
-            '.locks',
-            'waits',
-            waitLockName
-          );
-          const claimed = await writeExclusive(lockPath, '');
+          const lockPath = waitClaimPath(waitCompositeKey, 'completed');
+          const claimed =
+            (await writeExclusive(
+              lockPath,
+              claimOwnerContent(claimInstance)
+            )) ||
+            (await adoptOrphanedClaim(
+              lockPath,
+              effectiveRunId,
+              data.correlationId,
+              ['wait_completed']
+            ));
           if (!claimed) {
             throw new EntityConflictError(
               `Wait "${data.correlationId}" already completed`
             );
           }
+          heldClaim = { path: lockPath, at: Date.now() };
           const existingWait = await readJSONWithFallback(
             basedir,
             'waits',
@@ -3236,6 +3451,9 @@ export function createEventsStorage(
           );
           serializedEvent = JSON.stringify(event, jsonReplacer, 2);
           eventPublished = true;
+        }
+        if (!eventPublished) {
+          await assertClaimStillHeld();
         }
         for (let attempt = 0; !eventPublished; attempt++) {
           if (data.eventType === 'hook_received') {
