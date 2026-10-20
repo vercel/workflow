@@ -158,9 +158,12 @@ const MAX_MAILBOX_BATCH = 100;
  * sliding window: each committed outcome frees a slot for the next pending
  * step on the owner's next pass. */
 const MAX_RUNNING_STEPS = 200;
-/** Inputs an owner queues before refusing more (429): a full window of step
- * results plus room for other inputs (hook resumes, wakes, status probes). */
-const MAILBOX_CAPACITY = MAX_RUNNING_STEPS + 128;
+/** Inputs an owner queues before refusing more with a fast 429 (the caller
+ * keeps its input and retries). Each queued input holds its request open
+ * until committed, so this bounds the owner's concurrent inbound requests:
+ * an affinity-pinned instance holding ~200 at once stopped receiving any new
+ * requests. Deliberately below MAX_RUNNING_STEPS; results beyond it retry. */
+const MAILBOX_CAPACITY = 64;
 /** A remote step runs under its queue delivery's lease: a lost worker is
  * redelivered and reported (`step_status` with `lost`). This bound only
  * recovers an attempt whose delivery itself never surfaces again. */
@@ -435,7 +438,9 @@ export class RetainedRunner {
      * supersedes it; see ABANDONED_ATTEMPT_MS. */
     private readonly attemptTimeoutMs = ABANDONED_ATTEMPT_MS,
     /** Step bodies this owner runs itself; the rest are dispatched. */
-    private readonly localStepSlots = 3
+    private readonly localStepSlots = 3,
+    /** Inputs queued before refusing more; see MAILBOX_CAPACITY. */
+    private readonly mailboxCapacity = MAILBOX_CAPACITY
   ) {
     this.facade = {
       ...backend,
@@ -567,11 +572,18 @@ export class RetainedRunner {
         // Retryable: the next delivery reaches a fresh owner.
         new WorkflowWorldError('Runner is retiring', { status: 503 })
       );
-    if (this.pending.length >= MAILBOX_CAPACITY)
+    // Counts every accepted, unanswered input: queued, running, or taken
+    // into a batch. Each one holds its caller's request open.
+    if (this.unanswered >= this.mailboxCapacity)
       return Promise.reject(
         new WorkflowWorldError('Runner mailbox is full', { status: 429 })
       );
+    this.unanswered++;
     const completion = withResolvers<unknown>();
+    const settle = () => {
+      this.unanswered--;
+    };
+    completion.promise.then(settle, settle);
     this.pending.push({
       id,
       run: AsyncResource.bind((batchedOperation?: () => Promise<unknown>) =>
@@ -604,6 +616,8 @@ export class RetainedRunner {
     waitUntil(lifetime);
   }
   private retainedLifetime?: Promise<void>;
+  /** Accepted inputs not yet answered; bounded by mailboxCapacity. */
+  private unanswered = 0;
 
   submit(message: unknown, metadata: Metadata) {
     const parsed = WorkflowInvokePayloadSchema.parse(message);
@@ -833,6 +847,7 @@ export class RetainedRunner {
       closing: this.closing,
       fault: this.fault?.kind,
       inputs: this.pending.length,
+      unanswered: this.unanswered,
       dispatches: this.workers.size,
       localBodies: this.localWorkers.size,
       runningSteps: running,

@@ -826,6 +826,36 @@ it('bounds a mailbox prefix at 100 inputs even when most are duplicate deliverie
   await f.finished;
 });
 
+it('refuses inputs beyond its mailbox capacity with a retryable 429', async () => {
+  const fixture = await setup();
+  const owner = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    code,
+    fixture.metadata,
+    () => {},
+    40
+  );
+  // One synchronous burst of distinct inputs: the default mailbox answers at
+  // most 64 at a time, counting the one already running.
+  const replies = await Promise.allSettled(
+    Array.from({ length: 65 }, (_, i) =>
+      owner.submit(
+        { runId: fixture.runId },
+        { ...fixture.metadata, messageId: MessageId.parse(`wake-${i}`) }
+      )
+    )
+  );
+  const refused = replies.filter(
+    (reply) =>
+      reply.status === 'rejected' &&
+      (reply.reason as { status?: number }).status === 429
+  );
+  expect(refused).toHaveLength(1);
+  expect(replies.at(-1)?.status).toBe('rejected');
+});
+
 it('does not ACK earlier completions when a conflicting duplicate faults their unfinished batch', async () => {
   const f = await bufferedFanout(7);
   const changed = structuredClone(f.completions[0]);
@@ -1911,7 +1941,9 @@ async function setup(
     idleMs,
     attemptTimeoutMs ?? (queued === true ? 1000 : 60_000),
     // The former all-dispatched mode: every body goes to another invocation.
-    queued === true ? 0 : 3
+    queued === true ? 0 : 3,
+    // These tests deliver whole batches at once; backpressure is tested apart.
+    1024
   );
   const send = async (requestId: string, value: string, target = owner) => {
     const hook = target.events.find(
