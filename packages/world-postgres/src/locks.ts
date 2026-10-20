@@ -359,6 +359,15 @@ export async function acquireLock(
         },
       };
     }
+    // The scope withdrew while it waited (its lock_released left the
+    // queue). A later re-POST must not queue or grant it again: nothing
+    // would ever release that slot.
+    if (scope.released) {
+      return {
+        event: scope.created ?? scope.released,
+        lock: { key, status: 'released', concurrency: row.concurrency },
+      };
+    }
     if (scope.failed) {
       return {
         event: scope.failed,

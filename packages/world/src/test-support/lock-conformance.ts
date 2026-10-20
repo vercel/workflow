@@ -884,6 +884,12 @@ export function lockConformance(options: LockConformanceOptions): void {
       expect(released.event?.eventType).toBe('lock_released');
       const state = await expectInvariants(events, key);
       expect(state?.queued).toEqual([]);
+      // A duplicate lock_created after the withdrawal neither queues nor
+      // grants the scope again.
+      const again = await retry(events, w, key, 1);
+      expect(again.event.eventType).toBe('lock_created');
+      expect(again.result.lock?.status).toBe('released');
+      expect((await expectInvariants(events, key))?.queued).toEqual([]);
     });
 
     for (const order of ['release first', 'enqueue first'] as const) {

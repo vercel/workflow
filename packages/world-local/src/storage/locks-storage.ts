@@ -471,6 +471,18 @@ export async function createLockAcquisition(
         },
       };
     }
+    // Converged: the scope withdrew while it waited (its lock_released left
+    // the queue). A later re-POST must not queue or grant it again: nothing
+    // would ever release that slot.
+    if (scope?.releasedEventId) {
+      return {
+        event: await requireEvent(
+          ctx,
+          scope.createdEventId ?? scope.releasedEventId
+        ),
+        lock: { key, status: 'released', concurrency: state.concurrency },
+      };
+    }
     // Converged: the scope was refused for good.
     if (scope?.failedEventId) {
       return {

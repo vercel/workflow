@@ -1064,6 +1064,18 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         },
       };
     }
+    // The scope withdrew while it waited: a re-POST must not queue or grant
+    // it again, since nothing would ever release that slot.
+    if (released) {
+      return {
+        event: stripEventDataRefs(clone(created ?? released), resolveData),
+        lock: {
+          key: request.key,
+          status: 'released',
+          concurrency: row.concurrency,
+        },
+      };
+    }
     if (failed) {
       return {
         event: stripEventDataRefs(clone(failed), resolveData),
