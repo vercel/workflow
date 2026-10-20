@@ -542,7 +542,9 @@ export function createStepDelivery(config: APIConfig | undefined) {
       requestedDeploymentId: deploymentId,
       targetHost: url.hostname,
     };
-    logInvocationRouting('step.send', observation);
+    // Only failed dispatches are logged: an owner sends one per step, and its
+    // lines share the platform's per-request log budget (256 lines).
+    const sent = performance.now();
     const response = await fetchOutsideRequest(url, {
       method: 'POST',
       headers,
@@ -551,24 +553,29 @@ export function createStepDelivery(config: APIConfig | undefined) {
       redirect: 'error',
       ...(config?.dispatcher ? { dispatcher: config.dispatcher } : {}),
     } as RequestInit).catch((cause) => {
-      logInvocationRouting('step.error', { ...observation, ok: false });
+      logInvocationRouting('step.error', {
+        ...observation,
+        ok: false,
+        elapsedMs: Math.round(performance.now() - sent),
+      });
       // No response: the body may or may not have run.
       throw new WorkflowWorldError('Direct step HTTP delivery failed', {
         code: 'TRANSPORT',
         cause,
       });
     });
-    logInvocationRouting('step.response', {
-      ...observation,
-      responseStatus: response.status,
-      responseRequestId:
-        response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
-      responseErrorCode:
-        response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
-      responseAffinity:
-        response.headers.get('x-affinity')?.slice(0, 64) ?? null,
-    });
     if (!response.ok || response.headers.get(INVOCATION_HEADER) !== '1') {
+      logInvocationRouting('step.response', {
+        ...observation,
+        responseStatus: response.status,
+        responseRequestId:
+          response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
+        responseErrorCode:
+          response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
+        responseAffinity:
+          response.headers.get('x-affinity')?.slice(0, 64) ?? null,
+        elapsedMs: Math.round(performance.now() - sent),
+      });
       void response.body?.cancel().catch(() => {});
       // 408/429/5xx (including affinity backoff 503) leave the delivery
       // uncertain rather than failing the step.
