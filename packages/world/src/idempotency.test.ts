@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events.js';
 import {
+  decideIdempotencyKeyClaim,
   IDEMPOTENCY_KEY_MAX_LENGTH,
   IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
   IDEMPOTENCY_KEY_TTL_MAX_MS,
@@ -156,5 +157,87 @@ describe('WorkflowRun idempotencyKey', () => {
 
   it('leaves it absent on runs started without one', () => {
     expect(WorkflowRunSchema.parse(run)).not.toHaveProperty('idempotencyKey');
+  });
+});
+
+describe('decideIdempotencyKeyClaim', () => {
+  const now = Date.parse('2026-10-20T12:00:00.000Z');
+  const claim = { ttlMs: 60_000 };
+  const closedAt = (msAgo: number) => new Date(now - msAgo);
+  const policies = [
+    'ALLOW_DUPLICATE',
+    'ALLOW_DUPLICATE_FAILED_ONLY',
+    'REJECT_DUPLICATE',
+  ] as const;
+
+  it('frees the key when the holder no longer exists', () => {
+    for (const policy of policies) {
+      expect(decideIdempotencyKeyClaim(undefined, claim, policy, now)).toBe(
+        'take-over'
+      );
+      expect(decideIdempotencyKeyClaim(null, claim, policy, now)).toBe(
+        'take-over'
+      );
+    }
+  });
+
+  it('keeps the key with an open holder, whatever the policy', () => {
+    for (const status of ['pending', 'running']) {
+      for (const policy of policies) {
+        expect(
+          decideIdempotencyKeyClaim({ status }, { ttlMs: 1 }, policy, now)
+        ).toBe('refuse');
+      }
+    }
+  });
+
+  it('frees the key once the window has passed, whatever the policy', () => {
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      for (const policy of policies) {
+        expect(
+          decideIdempotencyKeyClaim(
+            { status, completedAt: closedAt(60_001) },
+            claim,
+            policy,
+            now
+          )
+        ).toBe('take-over');
+      }
+    }
+  });
+
+  it('applies the reuse policy inside the window', () => {
+    const expected = {
+      ALLOW_DUPLICATE: { completed: true, failed: true, cancelled: true },
+      ALLOW_DUPLICATE_FAILED_ONLY: {
+        completed: false,
+        failed: true,
+        cancelled: true,
+      },
+      REJECT_DUPLICATE: { completed: false, failed: false, cancelled: false },
+    } as const;
+    for (const policy of policies) {
+      for (const status of ['completed', 'failed', 'cancelled'] as const) {
+        expect(
+          decideIdempotencyKeyClaim(
+            { status, completedAt: closedAt(60_000) },
+            claim,
+            policy,
+            now
+          )
+        ).toBe(expected[policy][status] ? 'take-over' : 'refuse');
+      }
+    }
+  });
+
+  it('treats a closed holder without completedAt as inside its window', () => {
+    expect(
+      decideIdempotencyKeyClaim(
+        { status: 'completed' },
+        { ttlMs: 1 },
+        'REJECT_DUPLICATE',
+        now
+      )
+    ).toBe('refuse');
   });
 });

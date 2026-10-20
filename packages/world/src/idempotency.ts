@@ -71,3 +71,45 @@ export const IdempotencyKeyTtlMsSchema = z.compile(
     .min(IDEMPOTENCY_KEY_TTL_MIN_MS)
     .max(IDEMPOTENCY_KEY_TTL_MAX_MS)
 );
+
+/** What a World does with a key another run holds. */
+export type IdempotencyKeyClaimDecision = 'take-over' | 'refuse';
+
+/**
+ * The decision table of `WorldCapabilities.runIdempotencyKeys`, for a claim
+ * that names a run other than the one being created.
+ *
+ * - A holder that no longer exists frees the key.
+ * - A `pending` or `running` holder keeps it, whatever the policy or TTL.
+ * - A closed holder (`completed`, `failed`, `cancelled`) keeps it until
+ *   `completedAt + ttlMs`, where `ttlMs` is the TTL its own start recorded
+ *   on the claim. Inside that window the new caller's `reusePolicy` decides:
+ *   `ALLOW_DUPLICATE` takes the key, `ALLOW_DUPLICATE_FAILED_ONLY` takes it
+ *   only from a `failed` or `cancelled` holder, `REJECT_DUPLICATE` never.
+ *
+ * A closed holder without a `completedAt` is treated as still inside its
+ * window. Pure, so every World evaluates the table the same way; the World
+ * still owns making the takeover atomic.
+ */
+export function decideIdempotencyKeyClaim(
+  holder: { status: string; completedAt?: Date | null } | null | undefined,
+  claim: { ttlMs: number },
+  reusePolicy: IdempotencyKeyReusePolicy,
+  now: number = Date.now()
+): IdempotencyKeyClaimDecision {
+  if (!holder) return 'take-over';
+  if (holder.status === 'pending' || holder.status === 'running') {
+    return 'refuse';
+  }
+  const completedAt = holder.completedAt?.getTime();
+  if (completedAt !== undefined && now > completedAt + claim.ttlMs) {
+    return 'take-over';
+  }
+  if (reusePolicy === 'ALLOW_DUPLICATE') return 'take-over';
+  if (reusePolicy === 'ALLOW_DUPLICATE_FAILED_ONLY') {
+    return holder.status === 'failed' || holder.status === 'cancelled'
+      ? 'take-over'
+      : 'refuse';
+  }
+  return 'refuse';
+}
