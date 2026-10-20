@@ -5,7 +5,7 @@
 // Node's type stripping, like in-band-fence.child.mjs.
 //
 // Kill points:
-//   claim:<suffix>  right after a claim file ending in <suffix> is linked
+//   claim:<part>    right after a claim file whose name has <part> is linked
 //   event:<type>    right before the <type> event file is written
 import fs from 'node:fs/promises';
 import { register } from 'node:module';
@@ -32,7 +32,7 @@ fs.link = async (from, to) => {
   if (
     killKind === 'claim' &&
     file.includes(`${path.sep}.locks${path.sep}`) &&
-    file.endsWith(killWhat)
+    file.includes(killWhat)
   ) {
     kill();
   }

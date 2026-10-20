@@ -1074,14 +1074,31 @@ export function createEventsStorage(
     stepId: string
   ): Promise<string> {
     const claimPath = stepClaimPath(runId, stepId, 'terminal');
+    if (await writeExclusive(claimPath, claimOwnerContent(claimInstance))) {
+      return claimPath;
+    }
     if (
-      !(await writeExclusive(claimPath, claimOwnerContent(claimInstance))) &&
       !(await adoptOrphanedClaim(claimPath, runId, stepId, [
         'step_completed',
         'step_failed',
       ]))
     ) {
       throw new EntityConflictError('Cannot modify step in terminal state');
+    }
+    // The dead writer may have saved the step as finished after this call
+    // read it. Its saved result wins over this write's, as at validation.
+    const saved = await readJSONWithFallback(
+      basedir,
+      runEntityDir('steps', runId),
+      `${runId}-${stepId}`,
+      StepSchema,
+      tag
+    );
+    if (saved && isTerminalStepStatus(saved.status)) {
+      await storeSavedTerminalStepEvent(runId, saved);
+      throw new EntityConflictError(
+        `Cannot modify step in terminal state "${saved.status}"`
+      );
     }
     return claimPath;
   }
@@ -1136,6 +1153,18 @@ export function createEventsStorage(
     ) {
       return;
     }
+    await storeSavedTerminalStepEvent(runId, step);
+  }
+
+  /**
+   * Writes a finished step's terminal event from the saved step entity. The
+   * caller holds the step's `.terminal` claim, so no other write adds one.
+   */
+  async function storeSavedTerminalStepEvent(
+    runId: string,
+    step: Step
+  ): Promise<void> {
+    if (step.status !== 'completed' && step.status !== 'failed') return;
     const base = {
       runId,
       eventId: await mintEventId(runId),

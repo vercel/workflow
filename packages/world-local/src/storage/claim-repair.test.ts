@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EntityConflictError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type Storage } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRun, updateRun } from '../test-helpers.js';
 import {
   CLAIM_ABANDONED_AFTER_MS,
@@ -27,6 +27,32 @@ import {
 import { createStorage } from './index.js';
 
 type EventRequest = Parameters<Storage['events']['create']>[1];
+
+// Parks this process's next `.terminal` claim write, so a test can let
+// another process finish the step and die between this write's validation
+// and its claim.
+const gate = vi.hoisted(() => ({
+  armed: false,
+  parked: () => {},
+  release: () => {},
+}));
+
+vi.mock('../fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fs.js')>();
+  return {
+    ...actual,
+    writeExclusive: async (filePath: string, data: string) => {
+      if (gate.armed && filePath.endsWith('.terminal')) {
+        gate.armed = false;
+        await new Promise<void>((resolve) => {
+          gate.release = resolve;
+          gate.parked();
+        });
+      }
+      return actual.writeExclusive(filePath, data);
+    },
+  };
+});
 
 const SPEC = SPEC_VERSION_CURRENT;
 const input = new Uint8Array([1]);
@@ -274,6 +300,52 @@ describe('a process killed after a claim and before its event', () => {
     await expect(
       storage.events.create(runId, requests.waitCompleted('w'))
     ).rejects.toThrow('already completed');
+  });
+
+  it('a takeover cut short before it rewrote the claim is taken over in turn', async () => {
+    await startStep('s');
+    await writeAndKill(requests.stepCompleted('s', 1), 'claim:.terminal');
+    // The next writer takes the claim over and dies right after its takeover
+    // marker, before it rewrote the claim.
+    await writeAndKill(requests.stepCompleted('s', 2), 'claim:.takeover.');
+
+    const result = await storage.events.create(
+      runId,
+      requests.stepCompleted('s', 3)
+    );
+
+    expect(result.step?.output).toEqual(new Uint8Array([3]));
+    expect(await eventTypesOf('s')).toEqual([
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+  });
+
+  it('a step finished by a writer that died after this write read it keeps the saved result', async () => {
+    await startStep('s');
+    const parked = new Promise<void>((resolve) => {
+      gate.parked = resolve;
+    });
+    gate.armed = true;
+    // Reads the step as running, then waits at its claim.
+    const late = storage.events.create(runId, requests.stepCompleted('s', 2));
+    await parked;
+    // Meanwhile another process saves the step as completed and dies.
+    await writeAndKill(requests.stepCompleted('s', 1), 'event:step_completed');
+    gate.release();
+
+    await expect(late).rejects.toThrow('terminal state');
+    const events = await eventsOf('s');
+    expect(events.map((event) => event.eventType)).toEqual([
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+    const written = events[2] as { eventData?: { result?: unknown } };
+    expect(written.eventData?.result).toEqual(new Uint8Array([1]));
+    const step = await storage.steps.get(runId, 's', { resolveData: 'all' });
+    expect(step.output).toEqual(new Uint8Array([1]));
   });
 
   it('two writers that find the same orphaned claim write one event', async () => {

@@ -140,6 +140,22 @@ export async function takeOverAbandonedClaim(
   instance: string,
   isOrphaned: () => Promise<boolean>
 ): Promise<boolean> {
+  return takeOver(claimPath, instance, isOrphaned, 0);
+}
+
+/**
+ * How many takers in a row, each dead before it rewrote what it took, a
+ * takeover looks past. Each one is a separate crash, so this is never reached
+ * in practice; it only bounds the recursion.
+ */
+const MAX_TAKEOVER_DEPTH = 8;
+
+async function takeOver(
+  claimPath: string,
+  instance: string,
+  isOrphaned: () => Promise<boolean>,
+  depth: number
+): Promise<boolean> {
   const claim = await readClaim(claimPath);
   if (!claim) return false;
   const abandoned =
@@ -147,13 +163,29 @@ export async function takeOverAbandonedClaim(
     Date.now() - claim.stat.mtimeMs >= CLAIM_ABANDONED_AFTER_MS;
   if (!abandoned || !(await isOrphaned())) return false;
   // One taker per abandoned claim. The marker is keyed by the claim as read,
-  // and the takeover replaces the claim (a new inode naming the taker), so if
-  // the taker dies too, the next takeover gets a new key.
+  // and the takeover replaces the claim (a new inode naming the taker), so a
+  // taker that dies after rewriting the claim leaves a claim with a new key.
+  // A taker that dies before rewriting it leaves its marker behind, so the
+  // marker names its taker too, and is taken over the same way.
   const key = createHash('sha256')
     .update(`${claim.stat.ino}:${claim.stat.mtimeMs}:${claim.content}`)
     .digest('hex')
     .slice(0, 16);
-  if (!(await writeExclusive(`${claimPath}.takeover.${key}`, ''))) {
+  const marker = `${claimPath}.takeover.${key}`;
+  const won =
+    (await writeExclusive(marker, claimOwnerContent(instance))) ||
+    (depth < MAX_TAKEOVER_DEPTH &&
+      (await takeOver(marker, instance, async () => true, depth + 1)));
+  if (!won) return false;
+  // Only the marker's holder rewrites the claim. If the claim is no longer
+  // the one read above, an earlier taker already replaced it: back off.
+  const current = await readClaim(claimPath);
+  if (
+    !current ||
+    current.content !== claim.content ||
+    current.stat.ino !== claim.stat.ino ||
+    current.stat.mtimeMs !== claim.stat.mtimeMs
+  ) {
     return false;
   }
   await write(claimPath, claimOwnerContent(instance), { overwrite: true });
