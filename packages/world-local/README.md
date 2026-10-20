@@ -15,6 +15,11 @@ directory publishes one `hook_created` event. A losing creator reports an
 entity conflict without appending another creation, including when a retry
 publishes before the original token-claim owner.
 
+A step or wait write that a killed process left unfinished, with its claim
+file written and its event not, is finished by the next write of that step or
+wait. The claim names its writer. The next write takes it over once that writer
+no longer runs on this host, or once the claim is 30 seconds old.
+
 Its HTTP queue handler supports receiving `invoke: true` messages and returns
 the callback's value as `{ result }`. For example, a callback returning
 `{ timeoutSeconds: 5 }` produces `{ result: { timeoutSeconds: 5 } }`. The value is
