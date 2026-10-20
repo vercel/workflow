@@ -229,15 +229,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - A bundle whose module scope consumes randomness, reads the clock, or replaces a serialization intrinsic cannot be snapshotted safely. The runtime detects these cases when preparing the snapshot and falls back to per-invocation evaluation.
 - Set `0` or `false` to always evaluate the bundle per invocation.
 - The baseline is built against a fixed clock and fixed entropy, so every instance of a deployment produces the same bytes. That lets it serve as the compression dictionary for per-run snapshots (see [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold)). With it disabled, snapshots are compressed without one.
-
-### `WORKFLOW_QUICKJS_PREBUILT_BASELINE`
-
-- Default: enabled when `WORKFLOW_VM=quickjs` is set **at build time**, disabled otherwise.
-- Read by the workflow builder, not at runtime. Set `1` or `true` to force it on, or `0` or `false` to force it off.
-- Builds the baseline snapshot described in [`WORKFLOW_QUICKJS_BASELINE_SNAPSHOT`](#workflow_quickjs_baseline_snapshot) during the build and embeds it, compressed, in the generated flow route. Instances then restore it on their first QuickJS run instead of evaluating the bundle to build it. The result is identical to the snapshot an instance builds itself.
-- Adds the compressed baseline (typically a few hundred KB to a few MB, depending on the bundle) to the flow route. Runs on the `node` engine never read it.
-- A bundle that cannot be snapshotted (see above) is recorded as such, so instances skip the attempt. A baseline built by a different SDK or engine version than the one serving the run is ignored.
-- Never applied in watch mode (`next dev` and similar), where the bundle changes on every edit.
+- Production builds create the baseline ahead of time and ship it with the flow function as a file, `__workflow_assets/quickjs-baseline.bin`. Instances then load it on their first QuickJS run instead of evaluating the bundle to build it (the result is identical): for a large bundle, roughly 20 ms instead of 200 ms per cold instance. This happens for every build, since the engine is chosen per run, and the file is never read by runs on the `node` engine.
+  - Development builds (`next dev` and similar), and builds that run at application startup (NestJS without `workflow-nest build`), skip it: instances build the baseline in memory instead.
+  - SvelteKit, and Astro outside Vercel, don't ship the file yet, because they have no way to ship a server-only file with the route. Instances there build the baseline in memory.
+  - A bundle that can't be snapshotted is recorded at build time, so instances skip the attempt. If its module scope throws in the QuickJS VM (for example, a top-level `Intl.NumberFormat`), the build fails when `WORKFLOW_VM=quickjs` is set at build time, since every QuickJS run would fail the same way. Otherwise the build logs the error and continues.
+  - A baseline built by a different SDK or engine version than the one serving the run is ignored.
 
 ### `WORKFLOW_SNAPSHOT_THRESHOLD`
 

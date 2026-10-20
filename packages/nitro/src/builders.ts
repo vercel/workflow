@@ -62,8 +62,23 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   }
 }
 
+/**
+ * Base directory of the flow assets in the generated route's loader,
+ * replaced per chunk by the `workflow:flow-assets` plugin (see index.ts).
+ */
+export const FLOW_ASSETS_DIR_PLACEHOLDER = '__WORKFLOW_FLOW_ASSETS_DIR__';
+
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
+
+  /**
+   * Nitro bundles the flow route into its server build, so the loader
+   * resolves the files relative to the chunk it ends up in: the plugin
+   * rewrites the placeholder to that chunk's path to its copy of them.
+   */
+  protected override getFlowAssetLoaderCode(): string | undefined {
+    return `(name) => import('node:fs/promises').then((fs) => fs.readFile(new URL(${JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`)} + name, import.meta.url)))`;
+  }
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
     super({

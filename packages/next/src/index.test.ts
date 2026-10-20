@@ -271,7 +271,35 @@ describe('withWorkflow builder config', () => {
       '@vercel/cli-auth',
       '@napi-rs/keyring',
     ]);
-    expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
+    // Only the flow route's assets are traced in; nothing else.
+    expect(nextConfig.outputFileTracingIncludes).toEqual({
+      '/.well-known/workflow/v1/flow': [
+        './app/.well-known/workflow/v1/flow/__workflow_assets/**',
+        './src/app/.well-known/workflow/v1/flow/__workflow_assets/**',
+      ],
+    });
+  });
+
+  it("adds the flow assets to the user's file-tracing includes", async () => {
+    const config = withWorkflow({
+      outputFileTracingIncludes: {
+        '/api/**': ['./data/**'],
+        '/.well-known/workflow/v1/flow': ['./extra/**'],
+      },
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.outputFileTracingIncludes).toEqual({
+      '/api/**': ['./data/**'],
+      '/.well-known/workflow/v1/flow': [
+        './extra/**',
+        './app/.well-known/workflow/v1/flow/__workflow_assets/**',
+        './src/app/.well-known/workflow/v1/flow/__workflow_assets/**',
+      ],
+    });
   });
 
   function writeProjectWithQueueVersion(version: string): string {

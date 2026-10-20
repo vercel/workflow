@@ -24,6 +24,17 @@ const WORKFLOW_ROUTES = [
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
 
+  /**
+   * Astro's server build moves the assets it tracks into the public client
+   * output, and offers no non-public way to ship a server-only file with the
+   * route (Vercel deployments use the Build Output API builder, which
+   * does). Ship nothing: QuickJS runs compute the baseline heap in memory on
+   * each cold instance instead (same result).
+   */
+  protected override getFlowAssetLoaderCode(): string | undefined {
+    return undefined;
+  }
+
   constructor(options: Partial<AstroConfig> = {}) {
     const config = resolveAstroBuilderConfig(options);
     super({

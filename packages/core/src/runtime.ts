@@ -113,7 +113,10 @@ import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
 } from './runtime/out-of-band-observation.js';
-import type { PrebuiltQuickJSBaseline } from './runtime/quickjs-runtime.js';
+import type {
+  PrebuiltQuickJSBaseline,
+  WorkflowAssetLoader,
+} from './runtime/quickjs-runtime.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -798,12 +801,19 @@ export function workflowEntrypoint(
     routeModuleBodyStartedAt?: number;
     basePath?: string;
     /**
-     * The QuickJS engine's baseline heap for `workflowCode`, prebuilt by
-     * the workflow builder (`WORKFLOW_QUICKJS_PREBUILT_BASELINE`). Only
-     * read by runs on the QuickJS engine; ignored when it was built by
-     * different engine code or for different workflow code.
+     * Header of the QuickJS engine's baseline heap for `workflowCode`,
+     * prebuilt by the workflow builder; the heap itself is a file read with
+     * `loadAsset`. Only read by runs on the QuickJS engine; ignored when it
+     * was built by different engine code or for different workflow code.
      */
     quickjsBaseline?: PrebuiltQuickJSBaseline;
+    /**
+     * Reads a file the workflow builder shipped with this route, by name.
+     * Generated per framework integration, which knows where its
+     * deployment output puts the files. Only called by QuickJS runs, and a
+     * failed read falls back to computing the data in memory.
+     */
+    loadAsset?: WorkflowAssetLoader;
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
@@ -3155,6 +3165,7 @@ export function workflowEntrypoint(
                           // under a fresh key instead of losing the timer.
                           waitContinuation,
                           quickjsBaseline: options?.quickjsBaseline,
+                          loadAsset: options?.loadAsset,
                           // Inline-step ownership plumbing: redeliveries of
                           // this message drive crash recovery for steps an
                           // earlier invocation claimed inline (see the

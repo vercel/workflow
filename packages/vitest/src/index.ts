@@ -31,6 +31,15 @@ export type { WorkflowRef } from './workflow-refs.js';
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
 
+  /**
+   * Built at test time, right before use: the runtime computes the flow
+   * assets (the QuickJS baseline heap) in memory on first use instead, and
+   * only for QuickJS runs.
+   */
+  protected override get prebuildsFlowAssets(): boolean {
+    return false;
+  }
+
   constructor(workingDir: string, outDir: string) {
     super({
       ...createBaseBuilderConfig({

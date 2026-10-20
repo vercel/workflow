@@ -95,6 +95,35 @@ const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
   'nextjs-turbopack': '.next/diagnostics/workflows-manifest.json',
 };
 
+/**
+ * Where a local production build puts the QuickJS engine's prebuilt baseline
+ * heap, which the flow route reads at runtime. Projects missing here ship
+ * none: SvelteKit and Astro have no non-public way to ship it (QuickJS runs
+ * compute it in memory there), and Nest builds at application startup.
+ */
+const QUICKJS_BASELINE_ASSET_PATHS: Record<string, string> = {
+  example:
+    '.vercel/output/functions/.well-known/workflow/v1/flow.func/__workflow_assets/quickjs-baseline.bin',
+  'nextjs-webpack':
+    'app/.well-known/workflow/v1/flow/__workflow_assets/quickjs-baseline.bin',
+  'nextjs-turbopack':
+    'app/.well-known/workflow/v1/flow/__workflow_assets/quickjs-baseline.bin',
+  nitro: '.output/server/__workflow_assets/quickjs-baseline.bin',
+  vite: '.output/server/__workflow_assets/quickjs-baseline.bin',
+  nuxt: '.output/server/__workflow_assets/quickjs-baseline.bin',
+  hono: '.output/server/__workflow_assets/quickjs-baseline.bin',
+  express: '.output/server/__workflow_assets/quickjs-baseline.bin',
+  fastify: '.output/server/__workflow_assets/quickjs-baseline.bin',
+  'tanstack-start': '.output/server/__workflow_assets/quickjs-baseline.bin',
+};
+
+/**
+ * Next.js ships the flow function's files by its traces, so the baseline
+ * must be in the flow route's trace, not only on disk.
+ */
+const NEXT_FLOW_ROUTE_TRACE =
+  '.next/server/app/.well-known/workflow/v1/flow/route.js.nft.json';
+
 const SOURCE_MAP_WARNING = 'failed to read input source map';
 const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
 const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
@@ -248,6 +277,21 @@ describe.each([
       // ESM output should NOT contain CJS polyfill
       expect(bundleContent).not.toContain('var __import_meta_url');
       expect(bundleContent).not.toContain('pathToFileURL(__filename)');
+    }
+
+    const baselineAssetPath = QUICKJS_BASELINE_ASSET_PATHS[project];
+    if (baselineAssetPath && !process.env.VERCEL) {
+      await fs.access(path.join(appPath, baselineAssetPath));
+      if (project.startsWith('nextjs-')) {
+        const trace = JSON.parse(
+          await fs.readFile(path.join(appPath, NEXT_FLOW_ROUTE_TRACE), 'utf8')
+        ) as { files: string[] };
+        expect(
+          trace.files.some((file) =>
+            file.endsWith(`/${path.basename(baselineAssetPath)}`)
+          )
+        ).toBe(true);
+      }
     }
 
     const legacyStepRoutePath = LEGACY_STEP_ROUTE_PATHS[project];
