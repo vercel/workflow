@@ -23,6 +23,7 @@ import type {
   EventsResolveData,
   Hook,
   HookCreatedEventRequest,
+  IdempotencyKeyReusePolicy,
   ListEventsParams,
   PaginatedResponse,
   PaginationOptions,
@@ -40,6 +41,7 @@ import {
   getMaxEventsForRun,
   getMaxEventsPerRun,
   HookSchema,
+  IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
   IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
@@ -116,6 +118,7 @@ import {
   hookFromCreatedEvent,
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
+import { createRunClaimingIdempotencyKey } from './idempotency-keys.js';
 import { handleLegacyEvent } from './legacy.js';
 import {
   purgeRunEntityData,
@@ -1794,6 +1797,9 @@ export function createEventsStorage(
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
             dynamicWorkflowCode?: SerializedData;
+            idempotencyKey?: string;
+            idempotencyKeyTtlMs?: number;
+            idempotencyKeyReusePolicy?: IdempotencyKeyReusePolicy;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1826,6 +1832,9 @@ export function createEventsStorage(
             // it has no upload path to send one to — so the inline field is
             // the only shape to handle.
             dynamicWorkflowCode: runData.dynamicWorkflowCode,
+            ...(runData.idempotencyKey !== undefined
+              ? { idempotencyKey: runData.idempotencyKey }
+              : {}),
             createdAt: now,
             updatedAt: now,
           };
@@ -1834,14 +1843,31 @@ export function createEventsStorage(
           // start path (run_started on non-existent run) that could result in
           // duplicate run_created events in the event log.
           const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
-          const created = await writeExclusive(
-            runPath,
-            JSON.stringify(run, jsonReplacer, 2)
-          );
-          if (!created) {
-            throw new EntityConflictError(
-              `Workflow run "${effectiveRunId}" already exists`
-            );
+          const runJson = JSON.stringify(run, jsonReplacer, 2);
+          if (runData.idempotencyKey !== undefined) {
+            // A keyed start claims its key and publishes the run file under
+            // the key's claim lock, so the claim never names a run that was
+            // not created and concurrent claimers take turns. See
+            // idempotency-keys.ts.
+            await createRunClaimingIdempotencyKey({
+              basedir,
+              tag,
+              runId: effectiveRunId,
+              workflowName: runData.workflowName,
+              key: runData.idempotencyKey,
+              ttlMs:
+                runData.idempotencyKeyTtlMs ?? IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
+              reusePolicy:
+                runData.idempotencyKeyReusePolicy ?? 'REJECT_DUPLICATE',
+              writeRun: () => writeExclusive(runPath, runJson),
+            });
+          } else {
+            const created = await writeExclusive(runPath, runJson);
+            if (!created) {
+              throw new EntityConflictError(
+                `Workflow run "${effectiveRunId}" already exists`
+              );
+            }
           }
         } else if (data.eventType === 'run_started') {
           // Reuse currentRun from validation (already read above)
@@ -1895,6 +1921,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                idempotencyKey: currentRun.idempotencyKey,
               }
             );
             run = written.run;
@@ -1931,6 +1958,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                idempotencyKey: currentRun.idempotencyKey,
               }
             );
             run = written.run;
@@ -1978,6 +2006,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                idempotencyKey: currentRun.idempotencyKey,
               }
             );
             run = written.run;
@@ -2017,6 +2046,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                idempotencyKey: currentRun.idempotencyKey,
               }
             );
             run = written.run;
