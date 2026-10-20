@@ -44,7 +44,11 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
-import { deploymentTaskName, LEGACY_DEPLOYMENT_ID } from './deployment.js';
+import {
+  deploymentTaskName,
+  isRoutableDeploymentId,
+  LEGACY_DEPLOYMENT_ID,
+} from './deployment.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
@@ -270,7 +274,25 @@ export function createQueue(
 
   const deploymentId = config.deploymentId ?? LEGACY_DEPLOYMENT_ID;
   const jobQueueName = `${config.jobPrefix || 'workflow_'}flows`;
-  const flowsTask = deploymentTaskName(jobQueueName, deploymentId);
+  const flowsTask = (target: string) =>
+    deploymentTaskName(jobQueueName, target);
+  const executorTask = (target: string) =>
+    deploymentTaskName(`${jobQueueName}_executor`, target);
+  /**
+   * The deployment a producer addressed, or this one. Every deployment sends
+   * to the others, including in single-deployment mode: a `'postgres'`
+   * process can start or hand off a run on an opted-in one.
+   */
+  function targetDeploymentId(requested: string | undefined): string {
+    if (requested === undefined || requested === 'latest') return deploymentId;
+    if (!isRoutableDeploymentId(requested)) {
+      throw new WorkflowWorldError(
+        `Cannot queue for deployment ${JSON.stringify(requested)}: no Postgres World deployment can have that id.`,
+        { status: 400 }
+      );
+    }
+    return requested;
+  }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
   /**
@@ -289,10 +311,6 @@ export function createQueue(
   // share it even if one lands on another deployment's task.
   const executorQueueName = (runId: string) =>
     `${jobQueueName}:${runId}:executor`;
-  const executorTask = deploymentTaskName(
-    `${jobQueueName}_executor`,
-    deploymentId
-  );
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     if (!invocations || prefix !== ownPrefix())
@@ -346,7 +364,7 @@ export function createQueue(
            AND locked_by = $4 AND attempts = $5 AND locked_at IS NOT NULL`,
             [
               proof.id,
-              executorTask,
+              executorTask(deploymentId),
               executorQueueName(input.runId),
               proof.worker,
               proof.attempt,
@@ -442,6 +460,7 @@ export function createQueue(
     attemptOffset,
     deliveryOffset,
     createdAt,
+    target = deploymentId,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
@@ -458,6 +477,8 @@ export function createQueue(
     executorRunId?: string;
     attemptOffset?: number;
     deliveryOffset?: number;
+    /** The deployment whose task carries the job. */
+    target?: string;
     maxAttempts?: number;
   }) {
     const utils = workerUtils;
@@ -471,7 +492,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      executorRunId ? executorTask : flowsTask,
+      executorRunId ? executorTask(target) : flowsTask(target),
       MessageData.encode({
         id: queueId,
         ...(prefix ? { prefix } : {}),
@@ -518,7 +539,7 @@ export function createQueue(
       idempotencyKey: message.idempotencyKey,
       headers: message.headers,
       // A distinct key avoids replacing the legacy job that is still locked.
-      jobKey: `${executorTask}:transfer:${message.messageId}`,
+      jobKey: `${executorTask(deploymentId)}:transfer:${message.messageId}`,
       executorRunId: runId,
     });
   }
@@ -887,6 +908,7 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
+      target: targetDeploymentId(opts?.deploymentId),
       ...(input ? { executorRunId: input.runId } : {}),
     });
     return { messageId };
@@ -916,7 +938,7 @@ export function createQueue(
           `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
           queue_name => $3, max_attempts => $4)`,
           [
-            executorTask,
+            executorTask(targetDeploymentId(run.deploymentId)),
             JSON.stringify(wake),
             executorQueueName(runId),
             MAX_GRAPHILE_JOB_ATTEMPTS,
@@ -962,7 +984,8 @@ export function createQueue(
         if (
           !executor ||
           !graphileHelpers.success ||
-          graphileHelpers.data.job.task_identifier !== executorTask ||
+          graphileHelpers.data.job.task_identifier !==
+            executorTask(deploymentId) ||
           actualQueue !== executorQueueName(orchestration.runId)
         ) {
           const job = graphileHelpers.success
@@ -1081,9 +1104,12 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    taskList[flowsTask] = createTaskHandler(workflowPrefix);
+    taskList[flowsTask(deploymentId)] = createTaskHandler(workflowPrefix);
     if (invocations)
-      taskList[executorTask] = createTaskHandler(workflowPrefix, true);
+      taskList[executorTask(deploymentId)] = createTaskHandler(
+        workflowPrefix,
+        true
+      );
 
     runner = await run({
       pgPool: pool,

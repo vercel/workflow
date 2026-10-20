@@ -638,6 +638,73 @@ describe('postgres queue http execution', () => {
     expect(calls[1][0]).toBe('workflow_flows@build_a');
   });
 
+  it.each([
+    [undefined, undefined, 'workflow_flows'],
+    [undefined, 'build_b', 'workflow_flows@build_b'],
+    ['build_a', 'postgres', 'workflow_flows'],
+    ['build_a', 'build_b', 'workflow_flows@build_b'],
+    ['build_a', undefined, 'workflow_flows@build_a'],
+    ['build_a', 'latest', 'workflow_flows@build_a'],
+  ])('a %s process queues for deployment %s on %s', async (self, target, task) => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', deploymentId: self },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__wkf_workflow_example',
+      { runId: 'run_a' },
+      { deploymentId: target }
+    );
+
+    expect(vi.mocked(workerUtilsMock.addJob).mock.calls[0][0]).toBe(task);
+  });
+
+  it('refuses to queue for a deployment id no deployment can have', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await expect(
+      queue.queue(
+        '__wkf_workflow_example',
+        { runId: 'run_a' },
+        { deploymentId: 'build/a' }
+      )
+    ).rejects.toThrow('Cannot queue for deployment "build/a"');
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+  });
+
+  it("wakes an invoked run on its own deployment's executor task", async () => {
+    const client = { query: vi.fn() };
+    invocationTransport.invoke.mockImplementation(
+      async (_runId, _payload, _options, enqueue) => {
+        await enqueue(client, 'inv_1', {
+          workflowName: 'example',
+          deploymentId: 'build_b',
+        });
+      }
+    );
+    const queue = buildQueue(
+      {
+        connectionString: 'postgres://test',
+        enableInvoke: true,
+        deploymentId: 'build_a',
+      },
+      pool
+    );
+    await queue.start();
+
+    await queue.invoke?.('run_a', { value: 1 });
+
+    expect(client.query).toHaveBeenCalledWith(expect.any(String), [
+      'workflow_flows_executor@build_b',
+      expect.any(String),
+      'workflow_flows:run_a:executor',
+      expect.any(Number),
+    ]);
+  });
+
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },

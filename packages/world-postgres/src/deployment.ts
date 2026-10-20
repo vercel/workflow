@@ -28,12 +28,20 @@ export function getDeploymentIdFromEnv(): string | undefined {
   return deploymentId;
 }
 
+/** Whether `deploymentId` can name a deployment's Graphile tasks. */
+export function isRoutableDeploymentId(deploymentId: string): boolean {
+  return (
+    deploymentId === LEGACY_DEPLOYMENT_ID ||
+    (deploymentId.length <= MAX_DEPLOYMENT_ID_LENGTH &&
+      DEPLOYMENT_ID_PATTERN.test(deploymentId))
+  );
+}
+
 export function assertValidDeploymentId(deploymentId: string): void {
   if (
     deploymentId === LEGACY_DEPLOYMENT_ID ||
     deploymentId === 'latest' ||
-    deploymentId.length > MAX_DEPLOYMENT_ID_LENGTH ||
-    !DEPLOYMENT_ID_PATTERN.test(deploymentId)
+    !isRoutableDeploymentId(deploymentId)
   ) {
     throw new Error(
       `Invalid Postgres World deployment id ${JSON.stringify(deploymentId)}: expected 1-${MAX_DEPLOYMENT_ID_LENGTH} letters, digits, '_', '.', or '-', other than "${LEGACY_DEPLOYMENT_ID}" or "latest". Unset the deployment id to run as the single "${LEGACY_DEPLOYMENT_ID}" deployment.`

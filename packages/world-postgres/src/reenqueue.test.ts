@@ -4,6 +4,7 @@ import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
+import { MessageData } from './message.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -86,7 +87,7 @@ describe('re-enqueue active runs on start', () => {
     runsByStatus: Partial<
       Record<
         'pending' | 'running',
-        Array<{ runId: string; workflowName: string }>
+        Array<{ runId: string; workflowName: string; deploymentId?: string }>
       >
     >
   ) {
@@ -98,7 +99,11 @@ describe('re-enqueue active runs on start', () => {
             ? [params.status as 'pending' | 'running']
             : (['pending', 'running'] as const);
         const data = statuses.flatMap((status) =>
-          (runsByStatus[status] ?? []).map((r) => ({ ...r, status }))
+          (runsByStatus[status] ?? []).map((r) => ({
+            deploymentId: 'postgres',
+            ...r,
+            status,
+          }))
         );
         return { data, hasMore: false, cursor: null };
       }),
@@ -262,6 +267,32 @@ describe('re-enqueue active runs on start', () => {
     await world.close();
   });
 
+  it.each([
+    [undefined, 'wrun_LEGACY', 'workflow_flows'],
+    ['build_a', 'wrun_A', 'workflow_flows@build_a'],
+  ])('recovers only the runs of deployment %s', async (deploymentId, runId, task) => {
+    mockRunsList({
+      running: [
+        { runId: 'wrun_LEGACY', workflowName: 'wf' },
+        { runId: 'wrun_A', workflowName: 'wf', deploymentId: 'build_a' },
+        { runId: 'wrun_B', workflowName: 'wf', deploymentId: 'build_b' },
+      ],
+    });
+
+    const world = createWorld({ pool, deploymentId });
+    await world.start();
+
+    const jobs = vi
+      .mocked(workerUtilsMock.addJob)
+      .mock.calls.map(([identifier, payload]) => [
+        identifier,
+        JSON.parse(MessageData.parse(payload).data.toString()).runId,
+      ]);
+    expect(jobs).toEqual([[task, runId]]);
+
+    await world.close();
+  });
+
   it('does not enqueue anything when there are no active runs', async () => {
     mockRunsList({});
 
@@ -290,11 +321,13 @@ describe('re-enqueue active runs on start', () => {
                 runId: 'wrun_page1_pending',
                 workflowName: 'paginatedWf',
                 status: 'pending',
+                deploymentId: 'postgres',
               },
               {
                 runId: 'wrun_page1_running',
                 workflowName: 'paginatedWf',
                 status: 'running',
+                deploymentId: 'postgres',
               },
             ],
             hasMore: true,

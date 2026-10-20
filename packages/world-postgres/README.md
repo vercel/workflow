@@ -332,14 +332,20 @@ and its token can be reused. If the token is never reused, the expired
 By default, every process is one deployment named `postgres`. Set
 `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING=1` and `WORKFLOW_DEPLOYMENT_ID`, or pass
 `deploymentId` to `createWorld()`, to run a process as its own deployment. Runs
-it starts record the id, it consumes Graphile jobs only from
-`workflow_flows@<id>` (and `workflow_flows_executor@<id>`), and the World
-declares deployment affinity. `WORKFLOW_DEPLOYMENT_ID` alone does not turn
-routing on.
+it starts record the id, and the World declares deployment affinity.
+`WORKFLOW_DEPLOYMENT_ID` alone does not turn routing on.
 
-This release does not yet send a job to the deployment it is addressed to, and
-startup re-enqueues every active run onto the process's own tasks. Enable
-routing only on a database where every active run belongs to this deployment.
+Each deployment consumes jobs only from its own tasks: `workflow_flows` (and
+`workflow_flows_executor`) for `postgres`, `workflow_flows@<id>` (and
+`workflow_flows_executor@<id>`) otherwise. A job addressed to a deployment goes
+to its task whether or not the sending process has routing on, and on startup a
+process re-enqueues only its own deployment's active runs. A run's jobs wait
+until a process of its deployment runs, so keep each deployment running until
+its runs end.
+
+Upgrade every process to this release with routing off before enabling it on a
+database that older releases used: they ignore the deployment a job is
+addressed to and re-enqueue every active run on startup.
 
 ### Experimental synchronous invocation
 
@@ -395,6 +401,9 @@ jobs can execute concurrently. The default job prefix produces these names:
 | --- | --- | --- |
 | `workflow_flows_executor` | Start or resume workflow execution | `workflow_flows:<runId>:executor`, one queue per run |
 | `workflow_flows` | Step execution and health checks | No run-scoped named queue |
+
+With [deployment routing](#experimental-deployment-routing) on, both task
+identifiers end in `@<deploymentId>`. The named queues do not change.
 
 Graphile permits one active job per run's named queue across worker processes.
 Different runs, step jobs, and health checks can execute concurrently.

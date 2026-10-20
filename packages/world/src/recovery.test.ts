@@ -100,6 +100,42 @@ describe('reenqueueActiveRuns', () => {
     ]);
   });
 
+  it('recovers only the runs pinned to the given deployment', async () => {
+    const runs = {
+      list: vi.fn(async () => ({
+        data: [
+          {
+            runId: 'wrun_OWN',
+            workflowName: 'myWorkflow',
+            status: 'running',
+            deploymentId: 'build_a',
+          },
+          {
+            runId: 'wrun_OTHER',
+            workflowName: 'myWorkflow',
+            status: 'running',
+            deploymentId: 'build_b',
+          },
+        ],
+        hasMore: false,
+        cursor: null,
+      })),
+    } as unknown as Storage['runs'];
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await reenqueueActiveRuns(runs, enqueue, 'test', undefined, {
+      deploymentId: 'build_a',
+    });
+
+    expect(enqueue.mock.calls).toEqual([
+      [
+        '__wkf_workflow_myWorkflow',
+        { runId: 'wrun_OWN' },
+        { deploymentId: 'build_a' },
+      ],
+    ]);
+  });
+
   it('rejects an invalid default namespace before enqueueing anything', async () => {
     const enqueue = vi.fn<Queue['queue']>();
 

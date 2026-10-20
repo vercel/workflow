@@ -113,11 +113,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Another deployment's runs are its own processes' to recover; queued
+      // here they would wait on a task this process does not consume.
       await reenqueueActiveRuns(
         storage.runs,
         queue.queue,
         'world-postgres',
-        config.namespace
+        config.namespace,
+        { deploymentId: await queue.getDeploymentId() }
       );
     },
     async close() {

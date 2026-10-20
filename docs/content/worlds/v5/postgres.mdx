@@ -292,12 +292,14 @@ Set to `1` when the application or framework coordinates shutdown and awaits `wo
 
 ### `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING`
 
-Set to `1` to run this process as the deployment named by `WORKFLOW_DEPLOYMENT_ID`, or pass `deploymentId` to `createWorld()`. Default: unset, so every process is one deployment named `postgres`.
+Set to `1` to run this process as the deployment named by `WORKFLOW_DEPLOYMENT_ID`, or pass `deploymentId` to `createWorld()`. Default: unset, so the process is the deployment named `postgres`.
 
-With routing on, runs this process starts record its deployment id, the process consumes Graphile jobs only from its own tasks (`workflow_flows@<id>`, plus `workflow_flows_executor@<id>` with invocation enabled), and the World declares deployment affinity, so the runtime refuses to replay a run on a deployment other than its own. Give every process that runs the same build the same id. The id can contain 1-64 letters, digits, `_`, `.`, and `-`, and can't be `postgres` or `latest`. `WORKFLOW_DEPLOYMENT_ID` alone does not turn routing on.
+Each deployment consumes Graphile jobs only from its own tasks: `workflow_flows` (plus `workflow_flows_executor` with invocation enabled) for `postgres`, and `workflow_flows@<id>` (plus `workflow_flows_executor@<id>`) for any other id. A job addressed to a deployment, such as a hook resume or a step for a run that deployment started, goes to that deployment's task whether or not routing is on in the sending process. On startup a process re-enqueues only its own deployment's active runs.
+
+With routing on, runs this process starts record its deployment id, and the World declares deployment affinity, so the runtime refuses to replay a run on a deployment other than its own. Give every process that runs the same build the same id. The id can contain 1-64 letters, digits, `_`, `.`, and `-`, and can't be `postgres` or `latest`. `WORKFLOW_DEPLOYMENT_ID` alone does not turn routing on.
 
 <Callout type="warn">
-Routing is experimental. This release does not yet send a job to the deployment it is addressed to, and on startup a process re-enqueues every active run onto its own tasks. Enable it only on a database where every active run belongs to this deployment.
+Routing is experimental. A run's jobs wait until a process of its deployment is running, so keep each deployment's processes running until its runs end. Before enabling routing on a database that older releases of this package used, upgrade every process to this release with routing off: older releases ignore the deployment a job is addressed to and re-enqueue every active run on startup.
 </Callout>
 
 ### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`
