@@ -15,10 +15,11 @@ directory publishes one `hook_created` event. A losing creator reports an
 entity conflict without appending another creation, including when a retry
 publishes before the original token-claim owner.
 
-If run creation is interrupted after the run record is saved, the next event
-for that pending run restores the missing `run_created` event from the saved
-record before it continues. Recovery only repairs an empty event log; it
-rejects non-empty history rather than guessing a missing prefix.
+If run creation is interrupted after the run record is saved, the next lifecycle
+event for that pending run restores the missing `run_created` event from the saved
+record before it continues. Recovery only repairs an empty event log. A start
+rejects non-empty history rather than guessing a missing prefix, but cancelling or
+failing the run still succeeds.
 
 Its HTTP queue handler supports receiving `invoke: true` messages and returns
 the callback's value as `{ result }`. For example, a callback returning
