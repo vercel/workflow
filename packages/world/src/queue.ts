@@ -565,6 +565,19 @@ export const HealthCheckPayloadSchema = z.compile(
      * probe response. That lets the caller seal the workflow arguments without
      * a separate key lookup. Absent for probes issued for other reasons (CLI
      * health command, dashboard), in which case no key is returned.
+     *
+     * Deliberately not named `runId`: `runId` is the only required field of
+     * `WorkflowInvokePayloadSchema`, and 4.x deployments parse queue payloads
+     * with a union that tries the invoke schema before the health check. A
+     * probe carrying `runId` is read there as "replay this run", which POSTs
+     * `run_started` for a run that does not exist yet (404) and retries the
+     * delivery, so the probe never answers.
+     */
+    probeRunId: z.string().optional(),
+    /**
+     * Legacy spelling of {@link probeRunId}, sent by 5.x callers released
+     * before the rename. Accepted so those callers still get a public key
+     * back from this deployment; never sent.
      */
     runId: z.string().optional(),
   })
@@ -574,15 +587,12 @@ export const HealthCheckPayloadSchema = z.compile(
  * Health check MUST come first.
  *
  * Zod unions return the first matching member's output, and `z.object` strips
- * keys the matching member doesn't declare. `HealthCheckPayloadSchema` carries
- * an optional `runId`, so a probe payload also satisfies
- * `WorkflowInvokePayloadSchema` (whose only required field is `runId`). With
- * the invoke member first, parsing a runId-bearing probe silently dropped
- * `__healthCheck` and `correlationId`, and the runtime (which dispatches on
- * `__healthCheck` before falling through to the invoke schema) reinterpreted
- * the probe as "replay this run". That made the queue handler POST
- * `run_started` for a run that doesn't exist yet (404), fail, and retry
- * forever, so the probe never answered and `start()` timed out.
+ * keys the matching member doesn't declare. A probe from an older caller can
+ * carry the legacy `runId`, which also satisfies `WorkflowInvokePayloadSchema`
+ * (whose only required field is `runId`). With the invoke member first,
+ * parsing such a probe silently drops `__healthCheck` and `correlationId`, and
+ * the runtime (which dispatches on `__healthCheck` before falling through to
+ * the invoke schema) reinterprets the probe as "replay this run".
  *
  * Ordering health check first is safe in the other direction: it requires
  * `__healthCheck: true`, which an invoke payload never carries.

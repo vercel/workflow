@@ -1,7 +1,7 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
-import { createRunId, describeRun } from './create-run-id.js';
+import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { validateRunExecutionContext } from './execution-context.js';
@@ -131,6 +131,7 @@ export function createWorld(config?: APIConfig): World {
         : createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
+    regionForRunId,
     describeRun,
     // Reports the environment this client's writes land in, so `start()` can
     // stamp it into the queue message and the consuming deployment can detect

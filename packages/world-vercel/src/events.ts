@@ -846,11 +846,14 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
-    data.eventType
-  )
-    ? 'resolve'
-    : 'lazy';
+  const remoteRefBehavior: 'resolve' | 'lazy' =
+    eventsNeedingResolve.has(data.eventType) ||
+    // Concurrent hook reconciliation consumes the committed event directly.
+    // Honor its explicit request for replay-ready metadata; other mutation
+    // responses keep their existing lightweight entity-only behavior.
+    (data.eventType === 'hook_created' && params?.resolveData === 'all')
+      ? 'resolve'
+      : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
@@ -988,12 +991,18 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  return createWorkflowRunEventV4(
+  const result = await createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
+  // This cursor addresses the committed event, not a complete history page.
+  // Construct it here, where the Vercel cursor format is owned, so the runtime
+  // can reconcile concurrent responses without interpreting opaque cursors.
+  return result.event
+    ? { ...result, eventCursor: `eid:${result.event.eventId}` }
+    : result;
 }
 
 /**

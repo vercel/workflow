@@ -97,6 +97,7 @@ export async function startSuspensionHookWrites({
   eventLog,
   forceClaimVictimWakes,
   createGuarded,
+  hookCreateEvent,
   eventSpecVersion,
   beforeWrites,
 }: {
@@ -114,6 +115,20 @@ export async function startSuspensionHookWrites({
     data: CreateEventRequest,
     params?: CreateEventParams
   ) => Promise<EventResult>;
+  /**
+   * The creator for one hook's `hook_created`, in place of `createGuarded`;
+   * `undefined` keeps `createGuarded`. Spec 8 creates independent concurrent
+   * registrations without their catch-up position and reconciles their
+   * responses together (see its `handleSuspension`).
+   */
+  hookCreateEvent?: (
+    queueItem: HookInvocationQueueItem
+  ) =>
+    | ((
+        data: CreateEventRequest,
+        params?: CreateEventParams
+      ) => Promise<EventResult>)
+    | undefined;
   /** The spec version the hook events are stamped with. */
   eventSpecVersion: number;
   /** Awaited before the first hook write. */
@@ -280,7 +295,7 @@ export async function startSuspensionHookWrites({
           queueItem,
           requestId,
           sinceCursor: hookDeltaCursor,
-          createEvent: createGuarded,
+          createEvent: hookCreateEvent?.(queueItem) ?? createGuarded,
           world,
           forceClaimVictimWakes,
         });

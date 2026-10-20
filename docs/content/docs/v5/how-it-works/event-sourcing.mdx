@@ -304,7 +304,7 @@ For an in-band write on a spec 9 run the report is authoritative. When the World
 | `hook_received` | `resumeHook()` or a webhook | Nothing, out-of-band |
 | `run_cancelled` | `cancel()` | Nothing, out-of-band |
 
-A hook create made alone in a suspension also asks for the events after the cursor the orchestrator had read to (`sinceCursor`), so a hook whose create commits a `hook_conflict` or whose payload already arrived resolves in the same invocation. A batch write (`events.createBatch()`) names the position for its whole block, and its report rides at the top level of the batch result. On a spec 9 run a batch is not atomic: an item can fail while others commit, and the failed item's position is sealed.
+A hook create made alone in a suspension also asks for the events after the cursor the orchestrator had read to (`sinceCursor`), so a hook whose create commits a `hook_conflict` or whose payload already arrived resolves in the same invocation. A batch write (`events.createBatch()`) names the position for its whole block, and its report rides at the top level of the batch result. On a spec 9 run a batch is not atomic: an item can fail while others commit, and the failed item's position is sealed. On a spec 8 run, independent hook registrations in a hooks-only suspension send neither: they are created concurrently, and their returned events are reconciled together, with a reload when they do not cover the positions right after the loaded log.
 
 See [Building a World](/worlds/building-a-world#event-id-allocation) for the World-side contract.
 

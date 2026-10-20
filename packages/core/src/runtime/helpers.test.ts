@@ -1098,10 +1098,30 @@ describe('health check run public key', () => {
     vi.mocked(getWorldLazy).mockReturnValue(world as any);
 
     await handleHealthCheckMessage(
-      { __healthCheck: true, correlationId: 'corr_1', runId: 'wrun_1' },
+      { __healthCheck: true, correlationId: 'corr_1', probeRunId: 'wrun_1' },
       'workflow'
     );
 
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    expect(writtenResponse(write).encryptionPublicKey).toBe(
+      bytesToBase64(publicKey)
+    );
+  });
+
+  it('returns the run public key for a probe using the legacy runId key', async () => {
+    // Callers released before the probeRunId rename still send runId; they
+    // should keep getting the key from this deployment.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+    const { world, write } = responderWorld(getEncryptionKeyForRun);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_legacy', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_1');
     const { publicKey } = await deriveRunKeyPair(MATERIAL);
     expect(writtenResponse(write).encryptionPublicKey).toBe(
       bytesToBase64(publicKey)
@@ -1145,7 +1165,7 @@ describe('health check run public key', () => {
     vi.mocked(getWorldLazy).mockReturnValue(world as any);
 
     await handleHealthCheckMessage(
-      { __healthCheck: true, correlationId: 'corr_3', runId: 'wrun_1' },
+      { __healthCheck: true, correlationId: 'corr_3', probeRunId: 'wrun_1' },
       'workflow'
     );
 
@@ -1164,7 +1184,7 @@ describe('health check run public key', () => {
     vi.mocked(getWorldLazy).mockReturnValue(world as any);
 
     await handleHealthCheckMessage(
-      { __healthCheck: true, correlationId: 'corr_4', runId: 'wrun_1' },
+      { __healthCheck: true, correlationId: 'corr_4', probeRunId: 'wrun_1' },
       'workflow'
     );
 
