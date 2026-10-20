@@ -878,6 +878,13 @@ export class EntityConflictError extends WorkflowWorldError {
 export const IDEMPOTENCY_KEY_CONFLICT_CODE = 'idempotency-key-conflict';
 
 /**
+ * Error code (HTTP 400) of a keyed `run_created` refused because the backend
+ * has run idempotency keys switched off. Nothing was written. Not retryable:
+ * the same request is refused until the backend switches them back on.
+ */
+export const IDEMPOTENCY_KEYS_DISABLED_CODE = 'idempotency-keys-disabled';
+
+/**
  * Thrown when `start()` is given an `experimental_idempotencyKey` that another
  * run already holds, and the key's reuse policy refuses to hand it over (HTTP
  * 409, `idempotency-key-conflict`).
@@ -892,7 +899,14 @@ export const IDEMPOTENCY_KEY_CONFLICT_CODE = 'idempotency-key-conflict';
  * {@link EntityConflictError}, not this error.
  *
  * Use the static `WorkflowRunAlreadyStartedError.is()` method for type-safe
- * checking in catch blocks.
+ * checking in catch blocks; the class identity differs between the workflow
+ * VM and the host, so `instanceof` is not reliable across that boundary.
+ *
+ * The refusal is definitive for the call that got it, so it is `fatal`: when
+ * `start()` runs as a step (called from workflow code), the step is not
+ * retried, and the workflow catches this error with its fields intact rather
+ * than the step executor's retry-exhaustion error. A retry would mint a new
+ * run id and be refused again.
  *
  * @example
  * ```ts
@@ -911,6 +925,8 @@ export const IDEMPOTENCY_KEY_CONFLICT_CODE = 'idempotency-key-conflict';
  * ```
  */
 export class WorkflowRunAlreadyStartedError extends WorkflowWorldError {
+  /** Never retried as a step failure; see the class doc. */
+  fatal = true;
   /** The run currently holding the idempotency key. */
   readonly runId: string;
   /**
@@ -1354,6 +1370,9 @@ const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
 const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
+const WORKFLOW_RUN_ALREADY_STARTED_ERROR_KEY = Symbol.for(
+  '@workflow/errors//WorkflowRunAlreadyStartedError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1399,6 +1418,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
     Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
       value: StreamError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, WORKFLOW_RUN_ALREADY_STARTED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, WORKFLOW_RUN_ALREADY_STARTED_ERROR_KEY, {
+      value: WorkflowRunAlreadyStartedError,
       writable: false,
       enumerable: false,
       configurable: false,

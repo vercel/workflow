@@ -262,6 +262,7 @@ const SYMBOL_NAMES = [
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
+  '@workflow/errors//WorkflowRunAlreadyStartedError',
 ] as const;
 type SymbolName = (typeof SYMBOL_NAMES)[number];
 
@@ -1248,6 +1249,27 @@ export function createQuickJSSerde(
     SyntaxError: namedErrorSubclassReducer('SyntaxError'),
     TypeError: namedErrorSubclassReducer('TypeError'),
     URIError: namedErrorSubclassReducer('URIError'),
+    WorkflowRunAlreadyStartedError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'WorkflowRunAlreadyStartedError') {
+        return false;
+      }
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      // Same key order as the reference codec (common-vm.ts): the base error
+      // shape, then `runId`, then the optional fields.
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+      };
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      reduced.runId = own(value, 'runId');
+      for (const field of ['runStatus', 'workflowName', 'idempotencyKey']) {
+        const handle = own(value, field);
+        if (handle && !handle.isUndefined) reduced[field] = handle;
+        else handle?.dispose();
+      }
+      return reduced;
+    },
     Error: (value) => {
       if (!isHandle(value) || !value.isError) return false;
       const shape = reduceErrorShape(value) as Record<string, unknown>;
@@ -1998,6 +2020,58 @@ export function createQuickJSSerde(
     SyntaxError: namedErrorSubclassReviver('SyntaxError'),
     TypeError: namedErrorSubclassReviver('TypeError'),
     URIError: namedErrorSubclassReviver('URIError'),
+    WorkflowRunAlreadyStartedError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass(
+        '@workflow/errors//WorkflowRunAlreadyStartedError'
+      );
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (runId, { runStatus, workflowName,
+        // idempotencyKey, cause }).
+        const options = vm.newObject();
+        for (const property of [
+          'runStatus',
+          'workflowName',
+          'idempotencyKey',
+          'cause',
+        ] as const) {
+          if (!guestHasOwn(value, property)) continue;
+          const propertyValue = own(value, property) ?? vm.undefined;
+          options.setProp(property, propertyValue);
+          if (propertyValue !== vm.undefined) propertyValue.dispose();
+        }
+        const runId = own(value, 'runId') ?? vm.undefined;
+        error = vm.construct(cls, runId, options);
+        if (runId !== vm.undefined) runId.dispose();
+        options.dispose();
+        // Keep the serialized message (see the host-side reviver).
+        const message = own(value, 'message');
+        if (message && !message.isUndefined) define(error, 'message', message);
+        message?.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, {
+          name: 'WorkflowRunAlreadyStartedError',
+        });
+        for (const property of [
+          'runId',
+          'runStatus',
+          'workflowName',
+          'idempotencyKey',
+        ] as const) {
+          const propertyValue = own(value, property);
+          if (propertyValue && !propertyValue.isUndefined) {
+            define(error, property, propertyValue);
+          }
+          propertyValue?.dispose();
+        }
+        define(error, 'fatal', vm.true);
+      }
+      return error;
+    },
     Error: (value: JSValueHandle) =>
       buildError(i.Error, value, {
         name: ownString(value, 'name') ?? 'Error',

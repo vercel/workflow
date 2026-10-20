@@ -8,6 +8,7 @@ import {
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
@@ -4835,6 +4836,40 @@ describe('Workflow error serialization', () => {
     expect(str).not.toContain('Instance');
   });
 
+  it('should round-trip WorkflowRunAlreadyStartedError preserving the holder and its message', async () => {
+    const error = new WorkflowRunAlreadyStartedError('wrun_holder', {
+      runStatus: 'running',
+      workflowName: 'workflow//./src/orders//process',
+      idempotencyKey: 'order-1',
+      message: 'Idempotency key is held by workflow run wrun_holder',
+    });
+    const hydrated = (await roundTrip(error)) as WorkflowRunAlreadyStartedError;
+    expect(hydrated).toBeInstanceOf(WorkflowRunAlreadyStartedError);
+    expect(WorkflowRunAlreadyStartedError.is(hydrated)).toBe(true);
+    expect(hydrated.runId).toBe('wrun_holder');
+    expect(hydrated.runStatus).toBe('running');
+    expect(hydrated.workflowName).toBe('workflow//./src/orders//process');
+    expect(hydrated.idempotencyKey).toBe('order-1');
+    expect(hydrated.status).toBe(409);
+    expect(hydrated.code).toBe('idempotency-key-conflict');
+    expect(hydrated.fatal).toBe(true);
+    // The backend's message survives as-is, docs frame included once.
+    expect(hydrated.message).toBe(error.message);
+  });
+
+  it('should serialize WorkflowRunAlreadyStartedError using its dedicated reducer key', async () => {
+    const serialized = await dehydrateStepReturnValue(
+      new WorkflowRunAlreadyStartedError('wrun_holder'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('["WorkflowRunAlreadyStartedError",');
+    expect(str).not.toContain('["Error",');
+  });
+
   it('should preserve cause on FatalError when present', async () => {
     const cause = new Error('underlying issue');
     const error = new FatalError('fatal with cause');
@@ -4920,6 +4955,58 @@ describe('dehydrate/hydrateStepError', () => {
     expect(hydrated.message).toBe('boom');
     expect(hydrated.stack).toBe(original.stack);
     expect(hydrated.fatal).toBe(true);
+  });
+
+  it('should hand workflow code a WorkflowRunAlreadyStartedError from a step that called start() with FAIL', async () => {
+    // The step executor does not retry it (it is fatal), so the step_failed
+    // payload carries this exact error, and the workflow revivers rebuild it.
+    const refusal = new WorkflowRunAlreadyStartedError('wrun_holder', {
+      runStatus: 'pending',
+      idempotencyKey: 'order-1',
+    });
+    expect(FatalError.is(refusal)).toBe(true);
+    const serialized = await dehydrateStepError(
+      refusal,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as WorkflowRunAlreadyStartedError;
+    expect(WorkflowRunAlreadyStartedError.is(hydrated)).toBe(true);
+    expect(hydrated).toBeInstanceOf(WorkflowRunAlreadyStartedError);
+    expect(hydrated.runId).toBe('wrun_holder');
+    expect(hydrated.runStatus).toBe('pending');
+    expect(hydrated.idempotencyKey).toBe('order-1');
+    expect(hydrated.message).toBe(refusal.message);
+  });
+
+  it('should rebuild a WorkflowRunAlreadyStartedError inside a workflow VM context', async () => {
+    // A VM context whose bundled @workflow/errors did not register the class
+    // still gets the name, fields and fatal marker `.is()` and callers read.
+    const { globalThis: vmGlobal } = createContext({
+      seed: 'idempotency-refusal',
+      fixedTimestamp: 1714857600000,
+    });
+    const serialized = await dehydrateStepError(
+      new WorkflowRunAlreadyStartedError('wrun_holder', {
+        runStatus: 'running',
+      }),
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobal
+    )) as WorkflowRunAlreadyStartedError;
+    expect(WorkflowRunAlreadyStartedError.is(hydrated)).toBe(true);
+    expect(hydrated.runId).toBe('wrun_holder');
+    expect(hydrated.runStatus).toBe('running');
+    expect(FatalError.is(hydrated)).toBe(true);
   });
 
   it('should round-trip a generic Error preserving name, message, and stack', async () => {

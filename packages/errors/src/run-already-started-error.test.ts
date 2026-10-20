@@ -60,7 +60,23 @@ describe('WorkflowRunAlreadyStartedError', () => {
     ).toBe(false);
     expect(WorkflowWorldError.is(error)).toBe(false);
     expect(error).toBeInstanceOf(WorkflowWorldError);
-    expect(FatalError.is(error)).toBe(false);
+  });
+
+  it('is fatal, so a step calling start() is not retried on a refusal', () => {
+    const error = new WorkflowRunAlreadyStartedError('wrun_holder');
+    expect(FatalError.is(error)).toBe(true);
+    expect(error.fatal).toBe(true);
+    // Fatal does not change its identity.
+    expect(WorkflowRunAlreadyStartedError.is(error)).toBe(true);
+    expect(FatalError.is(new EntityConflictError('x'))).toBe(false);
+  });
+
+  it('registers its class on globalThis for revivers in other realms', () => {
+    expect(
+      (globalThis as Record<symbol, unknown>)[
+        Symbol.for('@workflow/errors//WorkflowRunAlreadyStartedError')
+      ]
+    ).toBe(WorkflowRunAlreadyStartedError);
   });
 
   it('is recognized across realms by name', () => {
