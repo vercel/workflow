@@ -95,7 +95,10 @@ export function stepsToReenqueue(params: {
  * Only the invocation that wrote the wait's `wait_created` schedules its
  * timer, or a redelivery of that same message, or the timer delivery for the
  * wait itself (whose delay a queue may have capped short of the deadline, so
- * it re-arms what is left). Every other delivery leaves the timer alone, so
+ * it re-arms what is left). A timer delivery also schedules the waits created
+ * by the message that created its own wait (`timerCreatorMessageId`): that
+ * message armed only its earliest wait, so each timer arms the next one once
+ * its own completes. Every other delivery leaves the timer alone, so
  * timer messages do not pile up across suspensions. A late or duplicate
  * timer finds the wait completed and exits cheaply.
  */
@@ -104,9 +107,18 @@ export function schedulesWaitTimer(params: {
   correlationId: string;
   messageId: string;
   timerFor: string | undefined;
+  /** The creator of the wait `timerFor`, when this is a timer delivery. */
+  timerCreatorMessageId?: string;
 }): boolean {
-  const { wait, correlationId, messageId, timerFor } = params;
+  const { wait, correlationId, messageId, timerFor, timerCreatorMessageId } =
+    params;
   if (timerFor === correlationId) return true;
+  if (
+    timerCreatorMessageId !== undefined &&
+    waitCreatorMessageId(wait) === timerCreatorMessageId
+  ) {
+    return true;
+  }
   if (wait === undefined) {
     // Not in the log yet: this delivery is about to write it.
     return true;
@@ -114,5 +126,28 @@ export function schedulesWaitTimer(params: {
   return (
     wait.eventType === 'wait_created' &&
     wait.eventData.creatorMessageId === messageId
+  );
+}
+
+/** The message whose invocation wrote `wait`'s `wait_created`, if recorded. */
+export function waitCreatorMessageId(
+  wait: Event | undefined
+): string | undefined {
+  return wait?.eventType === 'wait_created'
+    ? wait.eventData.creatorMessageId
+    : undefined;
+}
+
+/** The creator of the wait a timer delivery (`timerFor`) is for. */
+export function timerWaitCreator(
+  events: readonly Event[],
+  timerFor: string | undefined
+): string | undefined {
+  if (timerFor === undefined) return undefined;
+  return waitCreatorMessageId(
+    events.find(
+      (event) =>
+        event.eventType === 'wait_created' && event.correlationId === timerFor
+    )
   );
 }

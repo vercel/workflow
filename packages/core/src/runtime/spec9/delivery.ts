@@ -146,7 +146,11 @@ import {
   isNoopDelivery,
   recordConsumedPosition,
 } from './consumed-position.js';
-import { schedulesWaitTimer, stepsToReenqueue } from './creator-rules.js';
+import {
+  schedulesWaitTimer,
+  stepsToReenqueue,
+  timerWaitCreator,
+} from './creator-rules.js';
 import {
   getInlineStepDeadlineMarginMs,
   mayStartInlineStep,
@@ -3651,12 +3655,15 @@ async function runDelivery(
 
     /** The open waits of `events` whose timer this delivery schedules. */
     function ownedOpenWaits(events: readonly Event[]) {
+      const timerFor = waitContinuation?.correlationId;
+      const timerCreatorMessageId = timerWaitCreator(events, timerFor);
       return openWaits(events).filter((wait) =>
         schedulesWaitTimer({
           wait: wait.event,
           correlationId: wait.correlationId,
           messageId: creatorMessageId,
-          timerFor: waitContinuation?.correlationId,
+          timerFor,
+          timerCreatorMessageId,
         })
       );
     }

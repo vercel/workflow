@@ -740,6 +740,40 @@ describe.each([
     expect(world.queueCalls.length).toBe(before);
   });
 
+  // The delivery that created several waits arms only the earliest. Each
+  // timer delivery arms the next wait that message created once its own
+  // wait completes, so every sleep of a Promise.all gets a timer.
+  it('arms the next sleep of a Promise.all once the earlier one completes', async () => {
+    const { world } = await setup(
+      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await Promise.all([sleep("1s"), sleep("2s")]); return "done"; }${transform('workflow')}`,
+      []
+    );
+    const timedWaits = () =>
+      new Set(
+        world.queueCalls.flatMap((call) => {
+          const continuation = (
+            call.message as { waitContinuation?: { correlationId: string } }
+          ).waitContinuation;
+          return continuation ? [continuation.correlationId] : [];
+        })
+      );
+    // The harness delivers a delayed message at once, and a timer that comes
+    // early re-arms itself, so this runs until the later sleep is due.
+    const deadline = Date.now() + 10_000;
+    while (
+      eventsOf(world, 'run_completed').length === 0 &&
+      Date.now() < deadline
+    ) {
+      await world.runUntilIdle();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(timedWaits()).toEqual(
+      new Set(eventsOf(world, 'wait_created').map((e) => e.correlationId))
+    );
+  });
+
   // A redelivery of a message (a crash, or a rejected delivery) holds that
   // message's creator identity: it alone may send again what an earlier
   // delivery of it created and never got out.

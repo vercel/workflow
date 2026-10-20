@@ -105,7 +105,11 @@ import {
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
-import { schedulesWaitTimer, stepsToReenqueue } from './creator-rules.js';
+import {
+  schedulesWaitTimer,
+  stepsToReenqueue,
+  timerWaitCreator,
+} from './creator-rules.js';
 import {
   type InBandWriter,
   OrchestratorSupersededError,
@@ -742,6 +746,10 @@ export async function runWorkflowWithQuickJS(params: {
       correlationId,
       messageId: ownerMessageId,
       timerFor: waitContinuation?.correlationId,
+      timerCreatorMessageId: timerWaitCreator(
+        events,
+        waitContinuation?.correlationId
+      ),
     });
   const writeEvent: EventCreator = (data, eventParams) =>
     params.writer

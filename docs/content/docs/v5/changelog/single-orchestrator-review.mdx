@@ -307,9 +307,11 @@ export async function digest(userId: string) {
 
 If the `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw the step first and the replay sees the wait first. A reliable wake-up under a running orchestrator would be a new out-of-band "wake requested" event, written like `hook_received` and turned into an in-band `wait_completed` by the orchestrator. Not implemented.
 
-### A second concurrent sleep can lose its timer (found, not fixed)
+### A second concurrent sleep lost its timer (fixed)
 
-Found while writing the fence-refusal tests; it predates this change. A spec 9 delivery arms one timer, for the earliest open wait it owns (`armTimers`). A timer delivery owns only its own wait (`schedulesWaitTimer`). So in `await Promise.all([sleep("1h"), sleep("2h")])`, the first timer delivery completes the first sleep and arms nothing for the second, and the run stays suspended until something else wakes it. Reproduced with the test harness (node engine): after the first timer, no timer is held and the run never completes. The fence-refusal path sends a timer for every open wait it owns that has none from it, so it does not have this gap.
+A spec 9 delivery arms one timer, for the earliest open wait it owns (`armTimers`), and a timer delivery used to own only its own wait (`schedulesWaitTimer`). So in `await Promise.all([sleep("1h"), sleep("2h")])`, the first timer delivery completed the first sleep and armed nothing for the second, and the run stayed suspended until something else woke it. Reproduced on both engines with the test harness. e2e did not catch it: its only parallel sleeps have equal durations, which one timer covers.
+
+A timer delivery now also owns the open waits created by the message that created its own wait, so each timer arms the next one once its own completes. There is still one timer per creating message at a time, so timers do not pile up across suspensions.
 
 ### Spec 8 retries and sleeps on Vercel (fixed)
 
