@@ -1429,12 +1429,17 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     const workflowRun = await makeRunningRun('wrun_throttle_inline');
     const durableEvents: Event[] = [];
     let seq = 0;
-    const rec = (data: any): Event => {
+    // An in-band write is stored at its `occurredAt`, as a spec 9 World
+    // stores it.
+    const rec = (data: any, params?: CreateEventParams): Event => {
       seq += 1;
       const e = {
         eventId: slotToEventId(seq),
         runId: workflowRun.runId,
-        createdAt: new Date(),
+        createdAt:
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date(),
         ...data,
       } as Event;
       durableEvents.push(e);
@@ -1444,40 +1449,42 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // create-claim); the first completes normally. Keyed by arrival order so we
     // don't depend on which correlationId the runtime starts first.
     let startedSeen = 0;
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType === 'run_started')
-        return { run: workflowRun, events: [] as Event[] };
-      if (data.eventType === 'step_started') {
-        const d = data.eventData as { stepName?: string; input?: unknown };
-        startedSeen += 1;
-        if (startedSeen === 2) {
-          throw new ThrottleError('rate limited', { retryAfter: 5 });
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: CreateEventParams) => {
+        if (data.eventType === 'run_started')
+          return { run: workflowRun, events: [] as Event[] };
+        if (data.eventType === 'step_started') {
+          const d = data.eventData as { stepName?: string; input?: unknown };
+          startedSeen += 1;
+          if (startedSeen === 2) {
+            throw new ThrottleError('rate limited', { retryAfter: 5 });
+          }
+          if (d?.input !== undefined)
+            rec({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: d.stepName, input: d.input },
+            });
+          return {
+            event: rec(data, params),
+            step: {
+              runId: workflowRun.runId,
+              stepId: data.correlationId,
+              stepName: d?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: d?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(d?.input !== undefined ? { stepCreated: true } : {}),
+          };
         }
-        if (d?.input !== undefined)
-          rec({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: data.correlationId,
-            eventData: { stepName: d.stepName, input: d.input },
-          });
-        return {
-          event: rec(data),
-          step: {
-            runId: workflowRun.runId,
-            stepId: data.correlationId,
-            stepName: d?.stepName,
-            status: 'running' as const,
-            attempt: 1,
-            input: d?.input,
-            startedAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...(d?.input !== undefined ? { stepCreated: true } : {}),
-        };
+        return { event: rec(data, params) };
       }
-      return { event: rec(data) };
-    });
+    );
     const stepIdMessages: unknown[] = [];
     const queue = vi.fn(async (_queueName: string, message: any) => {
       if (message && typeof message === 'object' && 'stepId' in message) {
@@ -1881,12 +1888,17 @@ describe('workflowEntrypoint turbo mode', () => {
     const order = turboOrder;
     const durable: Event[] = [];
     let seq = 0;
-    const rec = (data: any): Event => {
+    // An in-band write is stored at its `occurredAt`, as a spec 9 World
+    // stores it.
+    const rec = (data: any, params?: CreateEventParams): Event => {
       seq += 1;
       const e = {
         eventId: slotToEventId(seq),
         runId,
-        createdAt: new Date(),
+        createdAt:
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date(),
         ...data,
       } as Event;
       durable.push(e);
@@ -1903,42 +1915,44 @@ describe('workflowEntrypoint turbo mode', () => {
       deploymentId: 'test-deployment',
     };
 
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType === 'run_started') {
-        if (opts.runStartedGate) await opts.runStartedGate;
-        order.push('run_started_resolved');
-        return { run: runEntity, events: [] as Event[] };
-      }
-      if (data.eventType === 'step_started') {
-        order.push('step_started_called');
-        const d = data.eventData as { stepName?: string; input?: unknown };
-        if (d?.input !== undefined) {
-          rec({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: data.correlationId,
-            eventData: { stepName: d.stepName, input: d.input },
-          });
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: CreateEventParams) => {
+        if (data.eventType === 'run_started') {
+          if (opts.runStartedGate) await opts.runStartedGate;
+          order.push('run_started_resolved');
+          return { run: runEntity, events: [] as Event[] };
         }
-        return {
-          event: rec(data),
-          step: {
-            runId,
-            stepId: data.correlationId,
-            stepName: d?.stepName,
-            status: 'running' as const,
-            attempt: 1,
-            input: d?.input,
-            startedAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...(d?.input !== undefined ? { stepCreated: true } : {}),
-        };
+        if (data.eventType === 'step_started') {
+          order.push('step_started_called');
+          const d = data.eventData as { stepName?: string; input?: unknown };
+          if (d?.input !== undefined) {
+            rec({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: d.stepName, input: d.input },
+            });
+          }
+          return {
+            event: rec(data, params),
+            step: {
+              runId,
+              stepId: data.correlationId,
+              stepName: d?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: d?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(d?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
+        if (data.eventType === 'wait_created') order.push('wait_created');
+        return { event: rec(data, params) };
       }
-      if (data.eventType === 'wait_created') order.push('wait_created');
-      return { event: rec(data) };
-    });
+    );
 
     setWorld({
       capabilities: { inBandFence: true },
