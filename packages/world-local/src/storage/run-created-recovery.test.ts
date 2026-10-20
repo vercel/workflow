@@ -199,7 +199,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000) {
 
 // TODO: These tests check the world-local storage invariant (exactly one
 // run_created in slot 1, restored from the run record). They don't run a
-// workflow end to end through core replay, where #4836 actually surfaced
+// workflow end to end through core replay, where the bug actually surfaced
 // ("has no run_created event"). Add a more robust test system for data
 // migrations / cross-version upgrades that covers replay after interrupted
 // run creation.
