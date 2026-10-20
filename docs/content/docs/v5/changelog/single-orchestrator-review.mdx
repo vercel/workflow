@@ -293,7 +293,16 @@ export async function digest(userId: string) {
 }
 ```
 
-If an operator calls `run.wakeUp()` while this orchestrator is running ahead, and the out-of-band `wait_completed` commits below `fetchUpdates`'s outcome, the live run saw the step first and the replay sees the wait first. Allowing out-of-band completion would also mean run-ahead has to treat every awaited sleep the way it treats an awaited hook, and wait for its writes, which removes run-ahead from workflows like this one. **This is still open.** The PR keeps in-band completion with an unkeyed wake; the cost is a short second orchestrator that the fence resolves.
+If an operator calls `run.wakeUp()` while this orchestrator is running ahead, and the out-of-band `wait_completed` commits below `fetchUpdates`'s outcome, the live run saw the step first and the replay sees the wait first. Allowing out-of-band completion would also mean run-ahead has to treat every awaited sleep the way it treats an awaited hook, and wait for its writes, which removes run-ahead from workflows like this one. **This is still open.** The PR keeps in-band completion with an unkeyed wake, and that path has two bugs when an orchestrator is already running, both reproduced with the test harness:
+
+- If the running orchestrator wins the fence, the wake delivery's replacement drops `completeWaits`. The wake is lost and the sleep runs its full length, while `wakeUp()` reports the wait as stopped.
+- If the wake delivery wins, the running orchestrator's `step_completed` is refused and the open inline step's body runs a second time.
+
+A proposed fix is a new out-of-band "wake requested" event that `run.wakeUp()` writes the way `resumeHook()` writes `hook_received`, followed by an ordinary keyed wake. The orchestrator turns the request into an in-band `wait_completed`. The wake message no longer carries state, so it can be coalesced, and far-future waits keep run-ahead. It needs a world-vercel backend change to accept the event out-of-band. Not implemented.
+
+### Spec 8 retries and sleeps redeliver the same message on Vercel
+
+On `main`, world-vercel answers a `{ timeoutSeconds }` handler result by sending a new message with up to 23 hours of delay. In this PR it redelivers the same message (`RedeliverSameMessage`) for every run, spec 8 included. Vercel Queues caps a redelivery's delay at 900 seconds, and spec 8 counts every delivery toward `WORKFLOW_MAX_QUEUE_DELIVERIES` (48). From the code, a spec 8 sleep or step retry chain longer than about 12 hours would fail the run with `MAX_DELIVERIES_EXCEEDED`, and its message expires at 24 hours. Not reproduced. Spec 9 sleeps use keyed timer messages and are not affected. This also matters for runs created under `WORKFLOW_SPEC_VERSION=8`. The fix is part of restoring `main`'s queue behavior for spec 8 (section 5).
 
 ### Rollout coupling between builders and world-vercel
 
@@ -303,9 +312,16 @@ world-vercel sends spec 9 messages to `__wkf_keyed_*`. A deployment built by an 
 
 Vercel Queues bills operations on keyed messages at its premium rate (2x) for the send, the notify and the delete. Today, `maxConcurrency` topics bill the notify at 2x. Spec 9 runs therefore cost more queue units per orchestrator message, offset by fewer messages (coalescing) and fewer invocations. Not measured.
 
-### Storm workflows still see supersessions
+### Storm workflows cascade on unkeyed replacements
 
-After the key fix (section 8), fence refusals on typical e2e deployments dropped from 100 to 140 per deployment to 0 to 5. The `example-nextjs-workflow-turbopack` deployment still logged about 1,150, against 1,474 before. Almost all came from the event-log stress workflows (`wakeLoopReproWorkflow`, `blockedBranchReproWorkflow`, `hookStormReproWorkflow`, `stepStormReproWorkflow`), which drive bursts of hook resumes against heartbeat sleeps. After the queue's backend changes finished rolling out, head `16f7001` saw 19 supersessions and 99 re-runs of an open inline step on one turbopack deployment, and none on the three turbopack deployments after it. The cause is under investigation; a candidate is the unkeyed message kinds in section 5. The fence makes these overlaps safe, so they cost invocations, not correctness.
+Measured on Vercel for heads `16f7001` and `5d51` from the world-vercel backend's own fence-refusal logs. The client `[diag]` lines undercount: each request's console logs stop at 256 lines, and debug output fills that within seconds.
+
+- **Where.** 54 of 60 storm runs are clean (1 to 4 orchestrator invocations, at most 1 refusal). 6 runs cascade, 5 of 12 `stepStormReproWorkflow` runs and 1 of 12 `hookStormReproWorkflow` runs, with 48 to 164 orchestrator invocations and 48 to 159 refusals each, and up to 18 orchestrators running at once. The regular e2e suite shows none, because it runs no storm workflows.
+- **Mechanism.** In every cascade run, invocations equal refusals plus one to three. The extra invocations are `replacesMessage` replacements. They are unkeyed (section 5), so a replacement runs next to the keyed holder, loses or wins the fence, and the loser sends another unkeyed replacement. After `MAX_MESSAGE_REPLACEMENTS` a chain falls back to redelivering its unkeyed message, so a chain does not die out. No `run.wakeUp()` or replay-divergence messages, lease expiry, handoff overlap, or unenforced key were found.
+- **Chain root.** In the one run where it is visible, a keyed holder sent its own unkeyed replacement (a run-ahead stop, by elimination) and kept running as a coalesced re-run in the same invocation.
+- **Cost.** 46 to 162 extra orchestrator invocations and 120 to 225 extra function-seconds per cascade run (4 to 6 times a clean run), and 7 to 19 seconds more wall time. Each wasted replacement loads 300 to 760 events and replays before it is refused. Open inline steps can be re-run by each overlapping orchestrator; how often is not known.
+
+Candidate fixes, in order of expected effect: restart in place after a run-ahead stop in a delivery that holds the key, instead of sending a replacement; on a fence refusal, re-send the loser's own committed-but-unsent dispatches and then send a keyed wake (or nothing), instead of an unkeyed replacement; never overlap a sent replacement with a coalesced re-run; back replacements off by count. None are implemented.
 
 ### Handoffs verified live, and a long sequential run rarely reaches one
 
