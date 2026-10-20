@@ -872,6 +872,25 @@ export function lockConformance(options: LockConformanceOptions): void {
       });
     }
 
+    test("a queued scope's own retry prunes an expired lease and claims the slot it hands down", async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const leased = await createRun(events);
+      const held = await acquire(events, leased, key, 1, uniqueId('lock'), {
+        leaseTtlMs: 200,
+      });
+      expect(held.event.eventType).toBe('lock_acquired');
+      const w = await scope(events, key, 1);
+      expect(w.result.lock?.waiter).toBe('queued');
+      await sleep(400);
+      // The prune frees the slot and hands it to the head of the queue,
+      // which is the scope retrying: it claims in the same write.
+      const claimed = await retry(events, w, key, 1);
+      expect(claimed.event.eventType).toBe('lock_acquired');
+      expect(handoffsOf(claimed.result)).toEqual([]);
+      await expectInvariants(events, key);
+    });
+
     test('a waiting scope can release, leaving the queue', async () => {
       const events = options.events();
       const key = uniqueId('key');
