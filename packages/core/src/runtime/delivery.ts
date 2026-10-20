@@ -64,13 +64,11 @@ type QueueHandler = Parameters<Queue['createQueueHandler']>[1];
 export type DeliveryMetadata = Parameters<QueueHandler>[1];
 
 /**
- * What a delivery hands back to the queue: a redelivery delay, a handoff to
- * the next delivery (spec 9, see `Queue.createQueueHandler`), or nothing to
- * ack.
+ * What a delivery hands back to the queue: a redelivery delay (on a spec 9
+ * run, `0` is a handoff to the next delivery; see `Queue.createQueueHandler`),
+ * or nothing to ack.
  */
-export type DeliveryResult =
-  | { timeoutSeconds: number; handoff?: true }
-  | undefined;
+export type DeliveryResult = { timeoutSeconds: number } | undefined;
 
 /** One orchestrator delivery, set up by the shared entrypoint. */
 export interface WorkflowDelivery {

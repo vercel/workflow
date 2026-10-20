@@ -5,6 +5,8 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
+import { warnOnce } from './env-config.js';
+
 declare const SpecVersionBrand: unique symbol;
 
 /**
@@ -152,7 +154,9 @@ export const SPEC_VERSION_CURRENT =
  * allow several orchestrator invocations to write at once and need no fence.
  * A run keeps the version it was created with, so changing the setting only
  * affects new runs. Any other value is ignored. Earlier releases read
- * `WORKFLOW_SEALED_LOG=0` here instead; it is no longer read.
+ * `WORKFLOW_SEALED_LOG=0` here instead, which minted runs of an earlier spec
+ * version. It is no longer read, so it now mints the current version; a set
+ * value is warned about once per process.
  *
  * A function rather than a constant so a World reads the setting where it is
  * created.
@@ -160,6 +164,12 @@ export const SPEC_VERSION_CURRENT =
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env
 ): SpecVersion {
+  if (env.WORKFLOW_SEALED_LOG !== undefined && env.WORKFLOW_SEALED_LOG !== '') {
+    warnOnce(
+      'WORKFLOW_SEALED_LOG',
+      'WORKFLOW_SEALED_LOG is no longer read, and new runs use the current spec version whatever its value. Set WORKFLOW_SPEC_VERSION=8 to create runs of the previous spec version.'
+    );
+  }
   return env.WORKFLOW_SPEC_VERSION ===
     String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM)
     ? SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM

@@ -16,8 +16,8 @@ import { mergeReportedEvents } from '../helpers.js';
  *
  * - report empty: consume the own event now;
  * - report present and complete: merge it, then the own event;
- * - report incomplete (`reportIncomplete`, or a truncated page): reload the
- *   log before continuing.
+ * - report incomplete or truncated (`hasMore`): reload the log before
+ *   continuing.
  *
  * There is no optimistic fast path that consumes the own event before the
  * commit. The plan describes a structural check that would allow one, and a
@@ -33,7 +33,7 @@ export function consumeOwnResolvingWrite(
   log: Event[],
   result: EventResult
 ): ConsumeAfterCommit {
-  if (result.reportIncomplete === true || result.hasMore === true) {
+  if (result.hasMore === true) {
     return { type: 'reload' };
   }
   const own = result.event;

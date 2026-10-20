@@ -295,9 +295,8 @@ export async function runWorkflowWithQuickJS(params: {
   lingerDeadlineMs?: number;
   /**
    * Continues the run in a fresh delivery once this one ends: a handoff of
-   * the delivery's message on a World with `capabilities.orchestratorHandoff`,
-   * otherwise a new orchestrator message. Absent (standalone callers): a new
-   * message.
+   * the delivery's message (`{ timeoutSeconds: 0 }`). Absent (standalone
+   * callers): a new orchestrator message.
    */
   continueInNextDelivery?: () => Promise<void>;
   /**
@@ -1328,7 +1327,8 @@ export async function runWorkflowWithQuickJS(params: {
   /**
    * Writes a new inline step's creation: the first attempt's `step_started`,
    * carrying what a `step_created` carries (stepName, workflowName, input,
-   * `inline: true`, `creatorMessageId`). A single-orchestrator run records an
+   * `inline: true`) but no `creatorMessageId`, which only a background step's
+   * creation needs. A single-orchestrator run records an
    * inline step by that start alone, so the executor writes no start of its
    * own. A refusal is the start's refusal (a throttle defers the delivery, a
    * finished run ends the attempt). Mirrors the node engine's creation batch
@@ -1349,7 +1349,6 @@ export async function runWorkflowWithQuickJS(params: {
           workflowName: workflowRun.workflowName,
           input,
           inline: true,
-          ...(ownerMessageId ? { creatorMessageId: ownerMessageId } : {}),
           attempt: 1,
         },
       },

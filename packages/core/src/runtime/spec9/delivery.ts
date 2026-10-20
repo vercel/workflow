@@ -255,11 +255,12 @@ function startedFromBatch(
  *
  * A delivery that must end before the run's work does (its deadline, a
  * stream flush, the replay budget, a wait or write it cannot read yet)
- * continues the run in a fresh delivery. On a World with
- * `capabilities.orchestratorHandoff` that is a handoff of this message
- * (`{ timeoutSeconds: 0, handoff: true }`): on world-vercel a message the
- * orchestrator sent itself would be coalesced into its own delivery and run
- * again in this same invocation. Elsewhere it is a new orchestrator message.
+ * continues the run in a fresh delivery by handing its message off
+ * (`{ timeoutSeconds: 0 }`, see `Queue.createQueueHandler`): every World
+ * delivers the same message again at once and does not count the handed-off
+ * delivery toward `attempt`. A new message would not do on world-vercel: a
+ * message the orchestrator sent itself while it holds the run would be
+ * coalesced into its own delivery and run again in this same invocation.
  */
 export async function runSpec9Delivery(
   delivery: WorkflowDelivery
@@ -271,7 +272,7 @@ export async function runSpec9Delivery(
   if (
     continuation.exit !== undefined ||
     continuation.handoff ||
-    delivery.metadata.coalescedRerun !== undefined
+    (delivery.metadata.deliveryCount ?? 1) > delivery.metadata.attempt
   ) {
     runtimeLogger.warn('[diag] spec9 delivery exit', {
       workflowRunId: delivery.message.runId,
@@ -280,14 +281,13 @@ export async function runSpec9Delivery(
       result: JSON.stringify(result),
       deliveryCount: delivery.metadata.deliveryCount,
       attempt: delivery.metadata.attempt,
-      coalescedRerun: delivery.metadata.coalescedRerun,
       messageId: delivery.metadata.messageId,
       requestId: delivery.requestId,
     });
   }
   // A redelivery the delivery asked for anyway continues the run too.
   return continuation.handoff && result === undefined
-    ? { timeoutSeconds: 0, handoff: true }
+    ? { timeoutSeconds: 0 }
     : result;
 }
 
@@ -431,16 +431,15 @@ async function runDelivery(
   // empty log without loading it (the in-band count after the
   // run's creation is known), and starts inline step bodies
   // before their `step_created`/`step_started` commit. A
-  // redelivery (`{ timeoutSeconds }` after a fence refusal
-  // included) has a delivery count above 1 and takes the
-  // normal path, which loads the log, and so does a re-run of a
-  // delivery whose queue coalesced other messages into it.
+  // redelivery (a handoff included) has a delivery count above
+  // 1 and takes the normal path, which loads the log, and so
+  // does a re-run of a delivery whose queue coalesced other
+  // messages into it, which the World reports as one too.
   const turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
-    metadata.coalescedRerun === undefined &&
     !incomingStepId &&
     !replayDivergence &&
     !hookInput &&
@@ -519,7 +518,6 @@ async function runDelivery(
     event?: Event;
     events?: Event[];
     hasMore?: boolean;
-    reportIncomplete?: boolean;
   }[] = [];
   /**
    * Run-ahead: slots of the speculative step outcomes in the
@@ -561,7 +559,6 @@ async function runDelivery(
     event?: Event;
     events?: Event[];
     hasMore?: boolean;
-    reportIncomplete?: boolean;
   }): void => {
     // Turbo: the backgrounded `run_started` precedes every
     // other write of the delivery, so it joins the log first.
@@ -581,7 +578,7 @@ async function runDelivery(
       repairWrites.push(result);
       return;
     }
-    if (result.reportIncomplete || result.hasMore) {
+    if (result.hasMore) {
       logBehind = true;
       return;
     }
@@ -708,13 +705,12 @@ async function runDelivery(
     traceCarrier: await nextTraceCarrier(),
     requestedAt: new Date(),
   });
-  const handsOff = world.capabilities?.orchestratorHandoff === true;
   /**
    * Wakes this run's orchestrator once this delivery ends, after
    * `delaySeconds`. With no delay and nothing but a plain wake to carry,
-   * this delivery hands its message off instead where the World supports it
-   * (see {@link runSpec9Delivery}). `coalesce: false` marks a wake that
-   * carries state the log does not hold (`QueueOptions.coalesce`).
+   * this delivery hands its message off instead (see
+   * {@link runSpec9Delivery}). `coalesce: false` marks a wake that carries
+   * state the log does not hold (`QueueOptions.coalesce`).
    */
   const wakeSelf = async (
     extra?: Partial<WorkflowInvokePayload>,
@@ -722,7 +718,7 @@ async function runDelivery(
     options?: { coalesce: false }
   ): Promise<void> => {
     const delayed = delaySeconds !== undefined && delaySeconds > 0;
-    if (handsOff && !delayed && extra === undefined) {
+    if (!delayed && extra === undefined) {
       continuation.handoff = true;
       return;
     }
@@ -758,8 +754,12 @@ async function runDelivery(
   ): Promise<{ timeoutSeconds: number } | undefined> => {
     const count = (replacesMessage?.count ?? 0) + 1;
     if (count > MAX_MESSAGE_REPLACEMENTS) {
+      // At least a second: `{ timeoutSeconds: 0 }` is a handoff, whose
+      // redelivery does not count as one, and this one must (the steps and
+      // timers this message created may not have gone out).
       return {
         timeoutSeconds: Math.max(
+          1,
           delaySeconds,
           getFenceRedeliveryDelaySeconds()
         ),
@@ -1618,14 +1618,11 @@ async function runDelivery(
     // in-band writer in decision order, and a speculative one
     // is a required write: any failure stops the writer, so
     // nothing is written from a speculative state after it.
-    // Only a World that stores an in-band write at the time
-    // the orchestrator chose can show the workflow that time
-    // before the write commits (`inBandEventTime`).
-    const runAheadDepth =
-      world.capabilities?.inBandEventTime === true &&
-      !isRunAheadDisabledFor(world)
-        ? getRunAheadDepth()
-        : 0;
+    // The World stores an in-band write at the time the
+    // orchestrator chose (`Storage.events`), so the workflow can
+    // see that time before the write commits. One found not to
+    // is excluded for the rest of the process.
+    const runAheadDepth = isRunAheadDisabledFor(world) ? 0 : getRunAheadDepth();
     /** A speculative write in flight, by the slot it holds. */
     type Speculation = {
       event: Event;
@@ -1919,7 +1916,7 @@ async function runDelivery(
       const writes = [...repairWrites.splice(0), ...pendingAbsorbs.splice(0)];
       let complete = true;
       for (const write of writes) {
-        if (write.reportIncomplete || write.hasMore) {
+        if (write.hasMore) {
           complete = false;
           continue;
         }
@@ -2122,7 +2119,7 @@ async function runDelivery(
                 ...(firstItem
                   ? {
                       events: result.events,
-                      reportIncomplete: result.reportIncomplete,
+                      hasMore: result.hasMore,
                     }
                   : {}),
               });
@@ -3078,7 +3075,6 @@ async function runDelivery(
               messageId: metadata.messageId,
               deliveryCount: metadata.deliveryCount,
               attempt: metadata.attempt,
-              coalescedRerun: metadata.coalescedRerun,
               requestId,
               loopIteration,
             });

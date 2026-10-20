@@ -89,9 +89,10 @@ export interface StepWaitCreationResult {
  *   alone, carrying what a `step_created` carries plus `inline: true`. The
  *   rest are background steps: a `step_created` with `inline: false`, and
  *   they are enqueued once, right after this commit, and never run inline.
- * - Each creation records `creatorMessageId`, the queue message of this
- *   delivery: only a redelivery of it re-enqueues a background step or
- *   schedules a wait's timer.
+ * - Each background step's `step_created` and each `wait_created` records
+ *   `creatorMessageId`, the queue message of this delivery: only a
+ *   redelivery of it re-enqueues a background step or schedules a wait's
+ *   timer. An inline step's creating start records none.
  * - The events go out as one `createBatch` when the World has one, else one
  *   at a time. In-band writes are serialized, so a parallel fan-out of
  *   single writes would be refused by the fence.
@@ -157,7 +158,6 @@ export interface StepWaitCreationParams {
     event?: Event;
     events?: Event[];
     hasMore?: boolean;
-    reportIncomplete?: boolean;
   }) => void;
 }
 
@@ -251,7 +251,6 @@ export async function planStepsAndWaits(
           workflowName: run.workflowName,
           input: entry.input,
           inline: true,
-          creatorMessageId: params.creatorMessageId,
           attempt: 1,
         },
       });
@@ -442,7 +441,6 @@ async function writeAll(
       event?: Event;
       events?: Event[];
       hasMore?: boolean;
-      reportIncomplete?: boolean;
     }) => void;
   },
   events: CreateEventRequest[],
@@ -474,7 +472,7 @@ async function writeAll(
           ...(first
             ? {
                 events: batchResult.events,
-                reportIncomplete: batchResult.reportIncomplete,
+                hasMore: batchResult.hasMore,
               }
             : {}),
         });

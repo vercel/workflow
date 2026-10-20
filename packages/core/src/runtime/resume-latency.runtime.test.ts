@@ -300,6 +300,9 @@ const WORKFLOW_SOURCES = {
 } as const;
 
 async function runScenario(options: ScenarioOptions = {}) {
+  // The World below stamps events on its own fake clock rather than at the
+  // in-band `occurredAt`, so run-ahead (which needs the latter) stays off.
+  vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
   // Monotonic fake clock: every reading is distinct and increasing, so the
   // TTR boundary set is always well-ordered but never a fixed schedule.
   const clockStart = options.clockStart ?? CLOCK_BASE_MS;
@@ -640,6 +643,7 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     setWorld(undefined);
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     spanExporter.reset();
   });
 

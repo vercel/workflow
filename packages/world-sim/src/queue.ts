@@ -44,6 +44,11 @@ export interface QueuedMessage {
   seq: number;
   /** Delivery attempts already handed to a handler (the `attempt` header is this + 1). */
   deliveries: number;
+  /**
+   * Deliveries that ended in a handoff (`{ timeoutSeconds: 0 }` on a
+   * single-orchestrator run), which `attempt` leaves out.
+   */
+  handoffs?: number;
   idempotencyKey?: string;
 }
 
@@ -216,6 +221,9 @@ export function createSimQueue(opts: {
       const queueName = req.headers.get('x-vqs-queue-name');
       const messageId = req.headers.get('x-vqs-message-id');
       const attempt = Number(req.headers.get('x-vqs-message-attempt'));
+      const deliveryCount = Number(
+        req.headers.get('x-vqs-message-delivery-count') ?? attempt
+      );
       if (!queueName || !messageId || !Number.isFinite(attempt)) {
         return Response.json(
           { error: 'Missing required headers' },
@@ -229,6 +237,7 @@ export function createSimQueue(opts: {
       try {
         const result = await handler(body, {
           attempt,
+          ...(Number.isFinite(deliveryCount) ? { deliveryCount } : {}),
           queueName: ValidQueueName.parse(queueName),
           messageId: MessageId.parse(messageId),
         });

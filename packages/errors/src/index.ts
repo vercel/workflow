@@ -1050,10 +1050,13 @@ export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
  *
  * The in-band fence is what keeps a run to one orchestrator writer. An
  * invocation that receives this error has been superseded: it stops writing
- * and stops running step bodies, does not acknowledge its queue message, and
- * lets the same message be delivered again after a short delay. The next
- * delivery loads the log afresh. The runtime handles all of this; users
- * calling a World's storage API directly may encounter it.
+ * and stops running step bodies, acknowledges its queue message, and sends a
+ * fresh orchestrator message in its place (delivered after at most a second),
+ * which keeps the refused delivery's creator identity. After 10 such
+ * replacements in a row it asks for its own message again after
+ * `WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS` instead. The next delivery loads
+ * the log afresh. The runtime handles all of this; users calling a World's
+ * storage API directly may encounter it.
  *
  * @property seq - The run's allocated position count at the time of the
  *   refusal, when the World reports it. Diagnostic only.

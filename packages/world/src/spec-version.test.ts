@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as specVersions from './spec-version.js';
 import {
   CAPABILITY_ONLY_SPEC_VERSIONS,
@@ -89,13 +89,24 @@ describe('spec version constants', () => {
       );
     });
 
-    it('ignores the removed sealed-log opt-out', () => {
+    it('ignores the removed sealed-log opt-out, and warns once that it does', () => {
       // The single-orchestrator version requires the sealed log, so the old
-      // `WORKFLOW_SEALED_LOG=0` switch must not lower what gets minted.
-      for (const raw of ['0', 'false', '', '1']) {
-        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
-          SPEC_VERSION_CURRENT
+      // `WORKFLOW_SEALED_LOG=0` switch must not lower what gets minted. It
+      // used to mint an earlier version, so a deployment still setting it is
+      // told.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const raw of ['0', 'false', '', '1']) {
+          expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
+            SPEC_VERSION_CURRENT
+          );
+        }
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toContain(
+          'WORKFLOW_SEALED_LOG is no longer read'
         );
+      } finally {
+        warn.mockRestore();
       }
     });
 

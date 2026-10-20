@@ -332,7 +332,9 @@ describe('run-ahead against an append-only World (node engine)', () => {
     await world.runUntilIdle();
 
     expect(await runResult(world)).toBe(STEPS);
-    expect(world.reportSpans.length).toBeGreaterThan(STEPS);
+    // Several writes queued behind one another (batched, so fewer than one
+    // per event).
+    expect(world.reportSpans.length).toBeGreaterThan(2);
     // With no other writer, every write names the slot right below it.
     expect(
       world.reportSpans.filter(
@@ -359,11 +361,10 @@ describe('run-ahead against an append-only World (node engine)', () => {
     expect(world.createCalls).toBeLessThanOrEqual(STEPS + 3);
   });
 
-  // A World that orders a batch per entity lets one round trip carry
-  // several steps: a step's creation and its outcome share a batch.
-  it('sends several steps per batch on a World that orders a batch per entity', async () => {
+  // A World orders a batch per entity, so one round trip carries several
+  // steps: a step's creation and its outcome share a batch.
+  it('sends several steps per batch', async () => {
     const { world } = await run(sequential, [STEPS], {
-      entityOrder: true,
       beforeCreate: holdOutcomesUntilAhead(4),
     });
     await world.runUntilIdle();
@@ -374,8 +375,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
         (batch) => batch.filter((type) => type === 'step_completed').length > 1
       )
     ).toBe(true);
-    // Without entity order every step costs a round trip of its own, on top
-    // of the run's start and completion.
+    // Fewer round trips than steps, the run's start and completion
+    // included.
     expect(world.createCalls).toBeLessThanOrEqual(STEPS);
     // The log a cold replay reads decides the same way.
     const cold = await coldReplay(world, sequential);
@@ -383,12 +384,11 @@ describe('run-ahead against an append-only World (node engine)', () => {
   });
 
   // A creation the World refuses takes its outcome in the same batch with it.
-  it('leaves no outcome without its creation on a World that orders a batch per entity', async () => {
+  it('leaves no outcome without its creation when the World refuses the creation in a batch', async () => {
     let injected = false;
     let batchedCreations = 0;
     const { world, runId } = await run(sequential, [STEPS], {
       createDelayMs: 100,
-      entityOrder: true,
       async beforeCreate(data, _params, source) {
         if (
           !injected &&
@@ -680,16 +680,19 @@ describe('run-ahead against an append-only World (node engine)', () => {
   });
 
   it('stops with no orphan writes when the fence refuses a speculative write, and the redelivery completes', async () => {
-    let refused = false;
+    // Refuses the write that carries the third outcome, however the writer
+    // groups its writes into batches.
+    let outcomesSeen = 0;
+    let committedAtRefusal: number | undefined;
     const { world, start } = await run(sequential, [STEPS], {
       async beforeCreate(data, params) {
         await slowOutcomes.beforeCreate(data);
         if (
-          !refused &&
+          committedAtRefusal === undefined &&
           data.eventType === 'step_completed' &&
-          eventsOf(world, 'step_completed').length === 2
+          ++outcomesSeen === 3
         ) {
-          refused = true;
+          committedAtRefusal = world.events.length;
           throw new InBandSupersededError('in-band-superseded', {
             seq: world.seq,
             seqInBand: (params?.expectedSeqInBand ?? 0) + 1,
@@ -699,10 +702,14 @@ describe('run-ahead against an append-only World (node engine)', () => {
     });
 
     expectReplaced(world, await world.deliver(start), start);
-    // Nothing after the refused outcome reached the World: the log ends with
-    // the refused step's start.
-    expect(eventsOf(world, 'step_completed')).toHaveLength(2);
-    expect(world.events.at(-1)?.eventType).toBe('step_started');
+    // Nothing after the refused write reached the World, and every outcome
+    // that did has its creation.
+    expect(committedAtRefusal).toBeDefined();
+    expect(world.events).toHaveLength(committedAtRefusal!);
+    const created = new Set(creationsOf(world).map((e) => e.correlationId));
+    for (const completed of eventsOf(world, 'step_completed')) {
+      expect(created.has(completed.correlationId)).toBe(true);
+    }
 
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);

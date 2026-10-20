@@ -65,7 +65,7 @@ export interface LogStepState {
  * The creation a step event records: a `step_created`, or a creation-bearing
  * `step_started`. A single-orchestrator run (spec >= 9) records an inline
  * step by its first `step_started` alone, with what a `step_created` carries
- * (stepName, workflowName, input, `inline: true`, `creatorMessageId`). It is
+ * (stepName, workflowName, input, `inline: true`), less `creatorMessageId`. It is
  * told apart by `inline: true`, which no other start carries: a replay page
  * may omit the start's input.
  */
@@ -81,6 +81,8 @@ export function stepCreationOf(
       creatorMessageId: event.eventData.creatorMessageId,
     };
   }
+  // An inline step's creator is never read (only a background step is
+  // re-enqueued by its creator), so its creating start does not record one.
   if (
     event.eventType === 'step_started' &&
     event.eventData?.inline === true &&
@@ -88,8 +90,7 @@ export function stepCreationOf(
   ) {
     return {
       stepName: event.eventData.stepName,
-      inline: event.eventData.inline === true,
-      creatorMessageId: event.eventData.creatorMessageId,
+      inline: true,
     };
   }
   return undefined;

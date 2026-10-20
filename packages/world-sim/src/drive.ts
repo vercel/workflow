@@ -13,6 +13,7 @@
 
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createWorkflowUrl } from '@workflow/utils';
+import { isSingleOrchestratorMessage } from '@workflow/world';
 import { encodeMessage, type QueuedMessage } from './queue.js';
 import type { PendingMessageView } from './types.js';
 import type { SimWorld } from './world.js';
@@ -171,7 +172,8 @@ function selectMessage(
 /**
  * Hand one message to the flow handler and apply the queue's response
  * protocol: `{ timeoutSeconds }` reschedules the same message (same
- * `messageId`, which the runtime's inline step-ownership lease depends on),
+ * `messageId`, which the runtime's inline step-ownership lease depends on;
+ * `0` on a single-orchestrator run is a handoff, not counted as an attempt),
  * a non-2xx redelivers after a backoff, anything else settles it.
  *
  * An orchestrator delivery holds its run's lease until the handler responds,
@@ -225,7 +227,10 @@ async function deliverHoldingLease(
         'content-type': 'application/json',
         'x-vqs-queue-name': message.queueName,
         'x-vqs-message-id': message.messageId,
-        'x-vqs-message-attempt': String(message.deliveries),
+        'x-vqs-message-attempt': String(
+          message.deliveries - (message.handoffs ?? 0)
+        ),
+        'x-vqs-message-delivery-count': String(message.deliveries),
       },
       body: encodeMessage(message.payload),
     }
@@ -243,6 +248,13 @@ async function deliverHoldingLease(
       // Not a timeout response.
     }
     if (timeoutSeconds !== undefined) {
+      // A handoff: the redelivery is not an attempt.
+      if (
+        timeoutSeconds === 0 &&
+        isSingleOrchestratorMessage(message.payload)
+      ) {
+        message.handoffs = (message.handoffs ?? 0) + 1;
+      }
       world.simQueue.requeue(
         message,
         world.clock.now() + timeoutSeconds * 1000

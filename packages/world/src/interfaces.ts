@@ -417,9 +417,23 @@ export interface Storage {
    *   fence is what makes it safe. A World declares the fence with
    *   `WorldCapabilities.inBandFence`, and the runtime refuses a World that
    *   does not.
+   * - An in-band write's `createdAt` is the `occurredAt` it was sent with
+   *   ({@link CreateEventParams.occurredAt}), on creates and on batch items
+   *   alike. The runtime's run-ahead hands an inline step's outcome to the
+   *   workflow before the write commits, and the workflow clock
+   *   (`Date.now()`) moves to that event's `createdAt`; replay reads the
+   *   stored one, so the two must be the same. The runtime checks every
+   *   speculative write's stored time, and on a mismatch stops the delivery
+   *   before anything else is written and turns run-ahead off for the World
+   *   for the rest of the process.
    * - A `createBatch` on such a run is not atomic: an event of the batch may
    *   commit while another fails, and the runtime treats per-item results
-   *   independently.
+   *   independently. It is ordered per entity: once the World refuses an
+   *   item, it refuses every later item of the batch with the same
+   *   `correlationId` too, so a step's outcome never commits behind its
+   *   refused creation. The runtime relies on this to let one batch carry
+   *   several writes for one step. A World without `createBatch` meets it
+   *   trivially.
    */
   events: {
     /**
@@ -656,10 +670,11 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World's queue delivers a run's orchestrator messages one at a time
-   * (see `orchestratorRunIdOf`): on Vercel Queues, per-run topics consumed
-   * with `maxConcurrency: 1` for spec-8 runs and a concurrency key per run
-   * for spec-9 runs; an in-process per-run gate or a per-run job queue
+   * The World's queue delivers a single-orchestrator run's orchestrator
+   * messages one at a time (see `singleOrchestratorRunIdOf`): on Vercel
+   * Queues, a concurrency key per run (or, under
+   * `WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run topics consumed with
+   * `maxConcurrency: 1`); an in-process per-run gate or a per-run job queue
    * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
    * deliveries must leave this unset.
    *
@@ -707,44 +722,6 @@ export interface WorldCapabilities {
    * each of these against a World's `events` storage.
    */
   inBandFence?: boolean;
-
-  /**
-   * The World's queue implements the handoff result of an orchestrator
-   * delivery (`{ timeoutSeconds: 0, handoff: true }`, see
-   * `Queue.createQueueHandler`): it delivers the same message again at once
-   * and does not count the handed-off delivery toward `attempt`.
-   *
-   * A spec-9 orchestrator whose invocation must end before its work does
-   * hands its message off on such a World instead of sending itself a new
-   * message. Required where the queue coalesces a run's orchestrator
-   * messages into the running delivery (world-vercel), because a message the
-   * orchestrator sends itself while it holds the run would be coalesced into
-   * its own delivery and run again in the same invocation. A World without it
-   * gets the new message.
-   */
-  orchestratorHandoff?: boolean;
-  /**
-   * The World records an in-band write (`inBand: true`) with the
-   * `occurredAt` it was sent with as its `createdAt`, on creates and on
-   * batch items alike.
-   *
-   * The runtime's run-ahead hands an inline step's outcome to the workflow
-   * before the write commits, and the workflow clock (`Date.now()`) moves to
-   * that event's `createdAt`. Replay reads the stored one, so the two must be
-   * the same, and only a World declaring this gets run-ahead. The runtime
-   * still checks every speculative write's stored time, and stops the
-   * delivery on a mismatch before anything else is written.
-   */
-  inBandEventTime?: boolean;
-  /**
-   * The World orders a `createBatch` per entity: once it refuses an item,
-   * it refuses every later item of the batch with the same
-   * `correlationId` too, so a step's outcome never commits behind its
-   * refused creation. The runtime then lets one batch carry several steps'
-   * creations and outcomes. Without it, a batch never carries two writes for
-   * one step.
-   */
-  inBandBatchEntityOrder?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes

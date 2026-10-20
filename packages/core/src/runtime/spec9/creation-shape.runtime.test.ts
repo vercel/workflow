@@ -75,7 +75,7 @@ function toOlderShape(events: readonly Event[]): Event[] {
   for (const event of events) {
     const data = dataOf(event);
     if (event.eventType === 'step_started' && data?.inline === true) {
-      const { workflowName, input, inline, creatorMessageId, ...start } = data;
+      const { workflowName, input, inline, ...start } = data;
       out.push({
         ...event,
         eventType: 'step_created',
@@ -84,7 +84,6 @@ function toOlderShape(events: readonly Event[]): Event[] {
           workflowName,
           input,
           inline,
-          creatorMessageId,
         },
       } as Event);
       out.push({ ...event, eventData: start } as Event);
@@ -235,14 +234,9 @@ describe.each([
     const { cold, runId } = await seededWorld(world, log, oneStepWorkflow, {
       skipStepInputs: true,
     });
-    const creation = log.find(
-      (e) =>
-        e.eventType === 'step_created' ||
-        (e.eventType === 'step_started' && dataOf(e)?.inline === true)
-    );
     // A redelivery of the message that created the step.
     const redelivery = cold.enqueue(ORCHESTRATOR_QUEUE, { runId });
-    redelivery.messageId = dataOf(creation)?.creatorMessageId as string;
+    redelivery.messageId = world.deliveries[0]?.messageId as string;
     redelivery.deliveryCount = 2;
     await cold.runUntilIdle();
 

@@ -495,7 +495,7 @@ type DriveWorldOptions = {
    */
   conflictToken?: string;
   /**
-   * Answer a hook create with `reportIncomplete`, the way a World does when
+   * Answer a hook create with an incomplete report (`hasMore: true`), the way a World does when
    * it could not report every slot below the write. The delivery then cannot
    * fold the write into its log and reads before its next pass.
    */
@@ -535,6 +535,9 @@ async function drive(
   initialMode: DriveMode = { type: 'normal' },
   options: DriveWorldOptions = {}
 ) {
+  // These tests cover the retained VM across passes that each read their
+  // step's outcome back; run-ahead would fold those passes together.
+  vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
   let mode = initialMode;
   const run: WorkflowRun = {
     runId,
@@ -605,7 +608,11 @@ async function drive(
       const event = {
         eventId: slotToEventId(++seq),
         runId,
-        createdAt: new Date(),
+        // An in-band write is stored at its `occurredAt`, as every World's is.
+        createdAt:
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date(),
         ...committed,
       } as Event;
       events.push(event);
@@ -697,7 +704,7 @@ async function drive(
         ...(startedStepResult(runId, data, event) ?? { event }),
         ...delta,
         ...(options.hookReportIncomplete && data.eventType === 'hook_created'
-          ? { reportIncomplete: true }
+          ? { events: [], cursor: null, hasMore: true }
           : {}),
       };
     }
@@ -727,6 +734,7 @@ async function drive(
     }
   );
   const queueSend = vi.fn(async () => ({ messageId: null }));
+  let deliveryResult: unknown;
 
   setWorld({
     capabilities: { inBandFence: true },
@@ -734,7 +742,7 @@ async function drive(
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
         async () => {
-          await handler(
+          deliveryResult = await handler(
             { runId, requestedAt: new Date('2024-01-01T00:00:00.000Z') },
             {
               requestId: 'req_retained',
@@ -765,6 +773,8 @@ async function drive(
     listCalls: eventsList.mock.calls.length,
     listParams: eventsList.mock.calls.map(([params]) => params),
     queueSends: queueSend.mock.calls.length,
+    /** What the delivery handed back to the queue. */
+    deliveryResult,
     createParams,
     createdHook: createdEvents.some((e) => e.eventType === 'hook_created'),
     /** What the log actually holds, which a conflicting create diverges from. */
@@ -1209,22 +1219,24 @@ describe('retained VM through the inline replay loop', () => {
         // same continuation. Continuing again could not change that, so the
         // run goes to the queue, which is what keeps this bounded rather
         // than a loop.
-        const { result, createParams, queueSends } = await drive(
-          'wrun_retained_taken_stale_read',
-          conflictingAwaitWorkflow,
-          { type: 'normal' },
-          {
-            conflictToken: CONFLICTING_TOKEN,
-            withholdDelta: true,
-            hookReportIncomplete: true,
-            staleFirstReload: true,
-          }
-        );
+        const { result, createParams, queueSends, deliveryResult } =
+          await drive(
+            'wrun_retained_taken_stale_read',
+            conflictingAwaitWorkflow,
+            { type: 'normal' },
+            {
+              conflictToken: CONFLICTING_TOKEN,
+              withholdDelta: true,
+              hookReportIncomplete: true,
+              staleFirstReload: true,
+            }
+          );
 
-        // Handed back: the run finishes on a delivery this single-invocation
+        // Handed off: the run finishes on a delivery this single-invocation
         // harness never makes.
         expect(result).toBeUndefined();
-        expect(queueSends).toBe(1);
+        expect(deliveryResult).toEqual({ timeoutSeconds: 0 });
+        expect(queueSends).toBe(0);
         // Two create attempts for the hook: the first pass, and the one
         // repeat the guard then refuses to continue.
         expect(

@@ -320,7 +320,6 @@ describe.each([
         }${transform('workflow')}`;
       const { world, runId } = await setup(code, [], {
         coalesce: true,
-        handoff: true,
       });
       for (const key of Object.keys(hwRuns)) delete hwRuns[key];
       await world.runUntilIdle();

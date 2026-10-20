@@ -1,5 +1,6 @@
 import { z } from 'zod/v4';
 import { SerializedDataSchema } from './serialization.js';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from './spec-version.js';
 
 export type QueueKind = 'workflow';
 
@@ -612,12 +613,8 @@ export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
  * health check (`__healthCheck`, which may carry the `runId` it prepares) are
  * not, and keep full parallelism.
  *
- * Every World serializes orchestrator deliveries per run: at most one
- * delivery for a given run id is in flight at a time, the others wait
- * behind it, and step messages are never held back by it. That is the
- * queue half of the single-writer guarantee on single-orchestrator runs
- * (spec >= 9). The in-band fence is the other half: it makes an overlap that
- * the queue still lets through (a delivery that outlives its lease) safe.
+ * A run's orchestrator deliveries are serialized only on single-orchestrator
+ * runs (spec >= 9, see {@link singleOrchestratorRunIdOf}).
  */
 export function orchestratorRunIdOf(payload: unknown): string | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
@@ -625,6 +622,71 @@ export function orchestratorRunIdOf(payload: unknown): string | undefined {
   if (message.__healthCheck === true) return undefined;
   if (typeof message.stepId === 'string') return undefined;
   return typeof message.runId === 'string' ? message.runId : undefined;
+}
+
+/**
+ * The spec version of the run a queue message belongs to, as the message
+ * says it: a first delivery's `runInput.specVersion`, a step message's
+ * `runContext.specVersion`, or the `runSpecVersion` hint the runtime stamps
+ * on every other message of a run. `undefined` for a health check, a
+ * message without a run, and a message from a producer that predates the
+ * fields. A World treats `undefined` as a run below spec 9: every runtime
+ * that creates spec 9 runs stamps its messages.
+ */
+export function messageRunSpecVersion(payload: unknown): number | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const message = payload as Record<string, unknown>;
+  if (message.__healthCheck === true) return undefined;
+  if (typeof message.runId !== 'string') return undefined;
+  const version = (value: unknown) =>
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { specVersion?: unknown }).specVersion === 'number'
+      ? (value as { specVersion: number }).specVersion
+      : undefined;
+  return (
+    version(message.runInput) ??
+    version(message.runContext) ??
+    (typeof message.runSpecVersion === 'number'
+      ? message.runSpecVersion
+      : undefined)
+  );
+}
+
+/**
+ * Whether a queue message belongs to a single-orchestrator run (spec >= 9),
+ * by {@link messageRunSpecVersion}. The handler-result semantics of
+ * {@link Queue.createQueueHandler} and per-run serialization apply to these
+ * messages; a message of an earlier run keeps the World's earlier behavior.
+ */
+export function isSingleOrchestratorMessage(payload: unknown): boolean {
+  const specVersion = messageRunSpecVersion(payload);
+  return (
+    specVersion !== undefined && specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
+
+/**
+ * The run whose orchestrator deliveries a World serializes for this message:
+ * {@link orchestratorRunIdOf} for a message of a single-orchestrator run
+ * (spec >= 9), else `undefined`.
+ *
+ * A World serializes these per run: at most one delivery for a given run id
+ * is in flight at a time, the others wait behind it, and step messages are
+ * never held back by it. That is the queue half of the single-writer
+ * guarantee; the in-band fence is the other half, and makes an overlap that
+ * the queue still lets through (a delivery that outlives its lease) safe.
+ *
+ * Messages of earlier runs (spec <= 8) are not serialized: a spec 8
+ * orchestrator can hold an inline step until another wake of the same run
+ * aborts it, and run-level exclusion would hold that wake back.
+ */
+export function singleOrchestratorRunIdOf(
+  payload: unknown
+): string | undefined {
+  return isSingleOrchestratorMessage(payload)
+    ? orchestratorRunIdOf(payload)
+    : undefined;
 }
 
 export interface QueueOptions {
@@ -671,7 +733,7 @@ export interface QueueOptions {
    * does not hold (spec >= 9: a `replacesMessage` or `replayDivergence`
    * history, `completeWaits`). A World whose queue coalesces a run's
    * orchestrator messages into the delivery that is running (see
-   * {@link Queue.createQueueHandler}, `meta.coalescedRerun`) delivers such a
+   * {@link Queue.createQueueHandler}, `meta.deliveryCount`) delivers such a
    * message on its own instead, because a coalesced message is never
    * delivered and its holder re-reads only the log. Absent means the
    * message may be coalesced.
@@ -778,27 +840,37 @@ export interface Queue {
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
    *
-   * Handler outcomes, for a message that is not an `invoke: true` request:
+   * Handler outcomes, for a message that is not an `invoke: true` request.
+   * What a `{ timeoutSeconds }` result asks for depends on the run the
+   * message belongs to ({@link isSingleOrchestratorMessage}):
    *
-   * - **Resolves with `{ timeoutSeconds: n }`**: do NOT acknowledge the
-   *   message. Deliver the SAME message again (same `messageId`, next
-   *   `deliveryCount`) after about `n` seconds. The runtime returns this from
-   *   a step handler to retry a step in place after `retryAfter`, and from an
-   *   orchestrator delivery that the in-band fence superseded. A World MAY
-   *   clamp `n` to what its queue supports (Vercel Queues clamps a
-   *   redelivery delay to [5s, 900s]); the runtime tolerates an early
-   *   redelivery by checking the log and asking again. A World whose queue
-   *   cannot redeliver the same message may publish a new message with the
-   *   same payload instead, provided it carries the same `messageId` in
-   *   `meta` on delivery; otherwise the runtime's creator-redelivery rule
-   *   loses its anchor (see `meta.messageId`).
-   * - **Resolves with `{ timeoutSeconds: 0, handoff: true }`** (spec >= 9,
-   *   only on a World declaring `capabilities.orchestratorHandoff`): the
+   * - **Single-orchestrator run (spec >= 9), `{ timeoutSeconds: n }` with
+   *   `n > 0`**: do NOT acknowledge the message. Deliver the SAME message
+   *   again (same `messageId`, next `deliveryCount`) after about `n` seconds.
+   *   The runtime returns this from a step handler to retry a step in place
+   *   after `retryAfter`, and from an orchestrator delivery the in-band fence
+   *   refused after its replacements ran out. A World MAY clamp `n` to what
+   *   its queue supports (Vercel Queues clamps a redelivery delay to
+   *   [5s, 900s]); the runtime tolerates an early redelivery by checking the
+   *   log and asking again. A World whose queue cannot redeliver the same
+   *   message may publish a new message with the same payload instead,
+   *   provided it carries the same `messageId` in `meta` on delivery;
+   *   otherwise the runtime's creator-redelivery rule loses its anchor (see
+   *   `meta.messageId`).
+   * - **Single-orchestrator run, `{ timeoutSeconds: 0 }`: a handoff.** The
    *   delivery is not done and continues in a fresh one. Deliver the SAME
-   *   message again at once, and do not count this delivery toward `attempt`.
-   *   The orchestrator returns this when its invocation must end before its
-   *   work does (the invocation deadline, a stream flush, the replay budget,
-   *   a fence refusal).
+   *   message again at once, and do not count this delivery toward
+   *   `attempt`. The orchestrator returns this when its invocation must end
+   *   before its work does (the invocation deadline, a stream flush, the
+   *   replay budget, a wait or a write it cannot read yet). The runtime never
+   *   returns it where the next delivery has to count as a redelivery: a
+   *   fence-refused delivery acknowledges its message and sends a
+   *   replacement instead.
+   * - **Earlier runs (spec <= 8), `{ timeoutSeconds: n }`**: continue the run
+   *   after about `n` seconds (`0`: at once), by redelivering the same message
+   *   or by publishing a new message with the same payload. world-vercel
+   *   publishes a new message, with up to 23 hours of delay, before it
+   *   acknowledges this one; world-local and world-postgres redeliver.
    * - **Resolves with anything else**: acknowledge the message.
    * - **Rejects**: retry the same message, with a World-chosen backoff.
    *
@@ -814,25 +886,26 @@ export interface Queue {
    *   schedules a wait's timer.
    * - `deliveryCount` is 1 on a message's first delivery and increments on
    *   every redelivery, whatever caused it (lease lapse, a rejected handler, a
-   *   `{ timeoutSeconds }` result). Leave it `undefined` when the queue
-   *   cannot say: the runtime then treats every delivery as a possible
-   *   redelivery and reads the run's log before running a step body, which
-   *   is correct but slower. A queue that reports 1 for a redelivery breaks
+   *   `{ timeoutSeconds }` result, a coalesced re-run). Leave it `undefined`
+   *   when the queue cannot say: the runtime then treats every delivery as a
+   *   possible redelivery and reads the run's log before running a step
+   *   body, which is correct but slower. A queue that reports 1 for a redelivery breaks
    *   the at-most-once guarantee of a `maxRetries: 0` step.
    * - `createdAt` is when the message was first enqueued, when known.
-   * - `attempt` is `deliveryCount` less the deliveries that ended in a
-   *   handoff (`{ timeoutSeconds: 0, handoff: true }`). It is what the
-   *   runtime's delivery cap counts. On a World without handoffs it equals
-   *   `deliveryCount`.
-   * - `coalescedRerun` is set when the World runs the handler again within
-   *   the same delivery, because orchestrator messages for the run arrived
-   *   while it ran and the queue coalesced them into it instead of
-   *   delivering them (`@vercel/queue`'s experimental concurrency key). It
-   *   counts those re-runs from 1. A coalesced message is never delivered,
-   *   so a re-run must read the run's log, as a redelivery does: whatever
-   *   those messages were sent for was committed to the log before they
-   *   were sent. A message whose payload carries more than the log (see
-   *   {@link QueueOptions.coalesce}) is never coalesced.
+   * - `attempt` is `deliveryCount` less the deliveries that followed a
+   *   handoff (`{ timeoutSeconds: 0 }` on a single-orchestrator run) and less
+   *   coalesced re-runs (below). It is what the runtime's delivery cap
+   *   counts. On a World with neither it equals `deliveryCount`.
+   * - A World whose queue coalesces a run's orchestrator messages into the
+   *   delivery that is running (world-vercel, with `@vercel/queue`'s
+   *   experimental concurrency key) runs the handler again within that
+   *   delivery when coalesced messages arrived while it ran. Each such
+   *   re-run reports the next `deliveryCount` (the delivery's count plus the
+   *   re-runs so far) and leaves `attempt` unchanged: a coalesced message is
+   *   never delivered, so a re-run must read the run's log, as a redelivery
+   *   does, and whatever those messages were sent for was committed to the
+   *   log before they were sent. A message whose payload carries more than
+   *   the log (see {@link QueueOptions.coalesce}) is never coalesced.
    * - `invocationStartedAt` (epoch ms) is when the function invocation running
    *   this handler call began, when the World knows it. It is the same for
    *   every coalesced re-run of a delivery, which all share that invocation:
@@ -851,7 +924,6 @@ export interface Queue {
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
-        coalescedRerun?: number;
         invocationStartedAt?: number;
       }
     ) => Promise<unknown>

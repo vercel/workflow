@@ -342,11 +342,6 @@ const StepStartedEventSchema = BaseEventSchema.extend({
        * only an inline step is created by its start.
        */
       inline: z.boolean().optional(),
-      /**
-       * A creation-bearing start's creator, as
-       * `step_created.eventData.creatorMessageId` (spec >= 9).
-       */
-      creatorMessageId: z.string().optional(),
       // Inline step ownership: the queue message ID of the invocation whose
       // handler is executing this step's body inline. Stamped on the lazy
       // step_started (and re-stamped on an owner-recovery bare start) so
@@ -972,8 +967,8 @@ export interface CreateEventParams {
    * success response carries every event in positions `eventCount + 1` up to
    * (not including) the write's own first position, in position order, each
    * committed or sealed. When the World cannot produce all of it within its
-   * request budget it still answers success, with
-   * {@link EventResult.reportIncomplete} set. The orchestrator consumes an
+   * request budget it still answers success, with `hasMore: true`
+   * ({@link EventResult}). The orchestrator consumes an
    * event it wrote that resolves a promise only after merging this report,
    * so the VM consumes events in log order. Out-of-band writes get no report.
    */
@@ -1145,14 +1140,6 @@ export type EventResult<T extends EventType = EventType> = {
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
   /**
-   * Set on an in-band write's success response (spec >= 9) when the World
-   * could not produce the complete skipped-slot report in `events` within its
-   * request budget. The write committed; the writer must reload the log
-   * before it consumes anything the write resolves, since the report may be
-   * missing events that sit below its own.
-   */
-  reportIncomplete?: boolean;
-  /**
    * How many positions this write allocated (spec >= 9):
    * 1 for a create that appended its event, 0 for one that converged on an
    * event the log already held (an idempotent replay). The orchestrator
@@ -1192,7 +1179,14 @@ export type EventResult<T extends EventType = EventType> = {
       events: Event[];
       /** Pagination cursor for `events`, matching events.list semantics. */
       cursor: string | null;
-      /** Whether additional event pages are available for `events`. */
+      /**
+       * Whether additional event pages are available for `events`. On an
+       * in-band write's response (spec >= 9), `true` also means the World
+       * could not produce the complete skipped-slot report within its
+       * request budget: the write committed, and the writer must reload the
+       * log before it consumes anything the write resolves, since the report
+       * may be missing events that sit below its own.
+       */
       hasMore: boolean;
     }
   | {
@@ -1264,7 +1258,7 @@ export interface CreateEventBatchParams {
    * The position the batch was decided from, as
    * {@link CreateEventParams.eventCount}; required with `inBand: true`. The
    * response then carries the skipped-slot report for
-   * the block at the top level (`events` / `reportIncomplete` on
+   * the block at the top level (`events` / `hasMore` on
    * {@link EventBatchResult}).
    */
   eventCount?: number;
@@ -1340,8 +1334,12 @@ export interface EventBatchResult {
    * positions `eventCount + 1` up to the block's first position.
    */
   events?: Event[];
-  /** As {@link EventResult.reportIncomplete}, for an in-band batch. */
-  reportIncomplete?: boolean;
+  /**
+   * `true` when the skipped-slot report in `events` is incomplete, as
+   * `hasMore` on an in-band write's {@link EventResult}: the writer reloads
+   * the log before it consumes anything the batch resolves.
+   */
+  hasMore?: boolean;
   /**
    * How many positions the batch allocated: the admitted items, one block.
    * As {@link EventResult.allocated}; absent when the World does not report

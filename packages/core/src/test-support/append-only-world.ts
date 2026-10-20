@@ -31,9 +31,12 @@ export interface HeldMessage {
   deliveryCount: number;
   createdAt: Date;
   opts?: Record<string, unknown>;
-  /** Deliveries of this message that ended in a handoff (option `handoff`). */
+  /** Deliveries of this message that ended in a handoff. */
   handoffCount?: number;
-  /** Delivered as the given re-run of a coalesced delivery. */
+  /**
+   * Delivered as the given re-run of a coalesced delivery: the next
+   * `deliveryCount` by this many, `attempt` unchanged.
+   */
   coalescedRerun?: number;
   /** Passed as `meta.invocationStartedAt`. */
   invocationStartedAt?: number;
@@ -62,14 +65,16 @@ export interface RecordedCreate {
  * It implements the in-band writer fence every World must: it counts in-band
  * positions, returns `snapshot` from `list`, refuses a stale in-band write
  * with `InBandSupersededError`, and refuses an in-band write without an
- * expected count with a 400.
+ * expected count with a 400. It stores an in-band write at its `occurredAt`,
+ * orders a batch per entity, and treats `{ timeoutSeconds: 0 }` as a
+ * handoff, as every World does for a single-orchestrator run.
  *
  * It implements the optional parts of the single-orchestrator contract so
  * tests can switch them on and off:
  *
  * - `subscribe`: the live feed.
  * - `reportIncomplete`: answer in-band writes with an incomplete skipped-slot
- *   report.
+ *   report (`hasMore: true`).
  *
  * Every created event is recorded, so a test can assert what the runtime
  * wrote and with which params.
@@ -124,12 +129,6 @@ export class AppendOnlyWorld {
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
       /**
-       * Order a batch per entity, and declare it
-       * (`inBandBatchEntityOrder`): once an item is refused, the batch's
-       * later items of the same correlation id are refused too.
-       */
-      entityOrder?: boolean;
-      /**
        * Answer every `events.create` and `events.createBatch` this many
        * milliseconds late, after committing, as a remote World's round trip.
        */
@@ -152,18 +151,13 @@ export class AppendOnlyWorld {
        */
       advanceClock?: (seconds: number) => void;
       /**
-       * Declare `capabilities.orchestratorHandoff` and honor its result: a
-       * `{ timeoutSeconds: 0, handoff: true }` keeps the same message with
-       * the next delivery count and one more handoff, and `attempt` leaves
-       * handed-off deliveries out.
-       */
-      handoff?: boolean;
-      /**
        * Coalesce like a VQS concurrency key: an orchestrator message for the
        * run (no `stepId`, `coalesce` not `false`) enqueued while one of its
        * orchestrator deliveries runs is not held but counted on that
        * delivery, and a delivery that would acknowledge with messages
-       * counted runs its handler again (`coalescedRerun`) until none are.
+       * counted runs its handler again until none are, each re-run with the
+       * next `deliveryCount` and the same `attempt`, as world-vercel reports
+       * one.
        */
       coalesce?: boolean;
       /**
@@ -397,9 +391,11 @@ export class AppendOnlyWorld {
   private report(
     params: CreateEventParams | undefined,
     ownSlot: number
-  ): Pick<EventResult, 'events' | 'cursor' | 'hasMore' | 'reportIncomplete'> {
+  ): Pick<EventResult, 'events' | 'cursor' | 'hasMore'> {
     if (params?.inBand !== true || params.eventCount === undefined) return {};
-    if (this.options.reportIncomplete) return { reportIncomplete: true };
+    if (this.options.reportIncomplete) {
+      return { events: [], cursor: null, hasMore: true };
+    }
     const skipped = this.events.filter((event) => {
       const slot = Number(event.eventId.slice('evnt_'.length));
       return slot > (params.eventCount ?? 0) && slot < ownSlot;
@@ -490,10 +486,7 @@ export class AppendOnlyWorld {
     try {
       result = await this.handler(held.message, {
         attempt: held.deliveryCount - (held.handoffCount ?? 0),
-        deliveryCount: held.deliveryCount,
-        ...(held.coalescedRerun !== undefined && {
-          coalescedRerun: held.coalescedRerun,
-        }),
+        deliveryCount: held.deliveryCount + (held.coalescedRerun ?? 0),
         ...(held.invocationStartedAt !== undefined && {
           invocationStartedAt: held.invocationStartedAt,
         }),
@@ -527,8 +520,7 @@ export class AppendOnlyWorld {
         (result as { timeoutSeconds: number }).timeoutSeconds
       );
       const handedOff =
-        this.options.handoff === true &&
-        (result as { handoff?: unknown }).handoff === true;
+        (result as { timeoutSeconds: number }).timeoutSeconds === 0;
       const {
         coalescedRerun: _rerun,
         invocationStartedAt: _startedAt,
@@ -601,11 +593,7 @@ export class AppendOnlyWorld {
       ...this.report(params as CreateEventParams, firstSlot),
       results: batch.map(({ event: data }, index) => {
         const entity = (data as { correlationId?: string }).correlationId;
-        if (
-          this.options.entityOrder &&
-          entity !== undefined &&
-          refusedEntities.has(entity)
-        ) {
+        if (entity !== undefined && refusedEntities.has(entity)) {
           this.append({ eventType: 'noop' } as Partial<Event>);
           return {
             status: 409,
@@ -816,9 +804,6 @@ export class AppendOnlyWorld {
       },
       capabilities: {
         inBandFence: true,
-        inBandEventTime: true,
-        ...(self.options.entityOrder ? { inBandBatchEntityOrder: true } : {}),
-        ...(self.options.handoff ? { orchestratorHandoff: true } : {}),
       },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';

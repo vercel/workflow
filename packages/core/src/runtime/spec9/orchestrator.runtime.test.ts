@@ -169,9 +169,12 @@ describe.each([
       workflowName: expect.any(String),
       input: expect.anything(),
       inline: true,
-      creatorMessageId: world.deliveries[0]?.messageId,
       attempt: 1,
     });
+    // Only a background step's creation names its creator.
+    expect(data(eventsOf(world, 'step_started')[0])).not.toHaveProperty(
+      'creatorMessageId'
+    );
     expect(calls.so_add).toBe(1);
     // Every write after run_created came from the orchestrator.
     expect(world.creates.every((c) => c.params?.inBand === true)).toBe(true);
@@ -524,16 +527,16 @@ describe.each([
 
   // Node engine only: QuickJS keeps its VM live through both inline steps
   // and finishes in one pass whatever its replay budget.
-  it.runIf(engine === 'node').each([{ handoff: true }, { handoff: false }])(
-    'continues a delivery past its deadline in a fresh one (handoff: $handoff)',
-    async ({ handoff }) => {
+  it.runIf(engine === 'node')(
+    'continues a delivery past its deadline by handing its message off',
+    async () => {
       const code = `const slow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_slow_add");
        const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) {
          const first = await slow(a, b);
          return await add(first, 10);
        }${transform('workflow')}`;
-      const { world, start } = await setup(code, [1, 2], { handoff });
+      const { world, start } = await setup(code, [1, 2]);
 
       // The first step starts inline inside the first delivery's deadline and
       // its body moves the clock past it, so the pass that reads its outcome
@@ -548,27 +551,16 @@ describe.each([
         clock.mockRestore();
         vi.unstubAllEnvs();
       }
-      const fresh = world.held.filter((h) => h.messageId !== start.messageId);
-      if (handoff) {
-        // The same message, handed off: no new message, and the next
-        // delivery is not an attempt.
-        expect(result).toEqual({ timeoutSeconds: 0, handoff: true });
-        expect(fresh).toEqual([]);
-        expect(world.held).toEqual([
-          expect.objectContaining({
-            messageId: start.messageId,
-            deliveryCount: 2,
-            handoffCount: 1,
-          }),
-        ]);
-      } else {
-        // A World that cannot hand off gets a new orchestrator message.
-        expect(result).toBeUndefined();
-        expect(world.held.some((h) => h.messageId === start.messageId)).toBe(
-          false
-        );
-        expect(fresh).toHaveLength(1);
-      }
+      // The same message, handed off: no new message, and the next delivery
+      // is not an attempt.
+      expect(result).toEqual({ timeoutSeconds: 0 });
+      expect(world.held).toEqual([
+        expect.objectContaining({
+          messageId: start.messageId,
+          deliveryCount: 2,
+          handoffCount: 1,
+        }),
+      ]);
       expect(eventsOf(world, 'run_completed')).toHaveLength(0);
 
       await world.runUntilIdle();
@@ -594,7 +586,6 @@ describe.each([
          return await add(first, 10);
        }${transform('workflow')}`;
       const { world, start } = await setup(code, [1, 2], {
-        handoff: true,
         async beforeCreate(data) {
           if (data.eventType === 'step_completed') await outcomeHeld;
         },
@@ -610,7 +601,7 @@ describe.each([
         await new Promise((resolve) => setTimeout(resolve, 300));
         expect(delivered).toBe(false);
         releaseOutcome();
-        expect(await delivery).toEqual({ timeoutSeconds: 0, handoff: true });
+        expect(await delivery).toEqual({ timeoutSeconds: 0 });
       } finally {
         releaseOutcome();
         clock.mockRestore();
@@ -632,15 +623,14 @@ describe.each([
       const { world, start } = await setup(
         `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
          async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
-        [1, 2],
-        { handoff: true }
+        [1, 2]
       );
       const result = await world.deliver({
         ...start,
         coalescedRerun: 1,
         invocationStartedAt: Date.now() - 30 * 60_000,
       });
-      expect(result).toEqual({ timeoutSeconds: 0, handoff: true });
+      expect(result).toEqual({ timeoutSeconds: 0 });
       expect(calls.so_add).toBeUndefined();
 
       await world.runUntilIdle();

@@ -139,14 +139,10 @@ export function getFenceRedeliveryDelaySeconds(
  *   reorders writes. Each write's result is its slice of the batch, checked
  *   in order; a refusal or a failed check stops the writer for every write
  *   behind it, as it does for a required write. A batch on a spec >= 9 run is
- *   not atomic, so on a World that does not order a batch per entity
- *   (`WorldCapabilities.inBandBatchEntityOrder`) a group never carries two
- *   writes for one entity (a step's creation and its outcome): the later one
- *   waits for the next turn, and a refused creation stops the writer before
- *   its outcome is sent, as it did when each write went alone. A World that
- *   orders it refuses the outcome behind a refused creation itself, so a
- *   group there carries several steps. A group stays within {@link MAX_BATCH_EVENTS}
- *   events.
+ *   not atomic, but every World orders it per entity (see `Storage.events`):
+ *   it refuses a step's outcome behind its refused creation itself, so a
+ *   group may carry several writes for one step. A group stays within
+ *   {@link MAX_BATCH_EVENTS} events.
  * - The first refusal stops the writer for good: every later write throws
  *   {@link OrchestratorSupersededError} without reaching the World. The value
  *   the error carries is never adopted.
@@ -480,8 +476,6 @@ export class InBandWriter {
       this.pendingPositions += member.events.length;
       if (
         this.openGroup &&
-        (this.world.capabilities?.inBandBatchEntityOrder === true ||
-          !sharesEntity(this.openGroup, member)) &&
         groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS
       ) {
         this.openGroup.push(member);
@@ -614,9 +608,7 @@ export class InBandWriter {
                 ...(result.events !== undefined
                   ? { events: result.events }
                   : {}),
-                ...(result.reportIncomplete
-                  ? { reportIncomplete: true as const }
-                  : {}),
+                ...(result.hasMore ? { hasMore: true as const } : {}),
               }
             : {};
         try {
@@ -681,7 +673,7 @@ export class InBandWriter {
       answer = {
         results: written.event ? [{ status: 200, event: written.event }] : [],
         ...(written.events !== undefined ? { events: written.events } : {}),
-        ...(written.reportIncomplete ? { reportIncomplete: true } : {}),
+        ...(written.hasMore ? { hasMore: true } : {}),
         allocated: written.allocated ?? 1,
       } as EventBatchResult;
     } catch (error) {
@@ -858,11 +850,11 @@ export class InBandWriter {
    */
   private noteComplete(
     position: Pick<CreateEventParams, 'eventCount'>,
-    response: { reportIncomplete?: boolean; hasMore?: boolean },
+    response: { hasMore?: boolean },
     events: (Event | undefined)[]
   ): void {
     if (position.eventCount === undefined) return;
-    if (response.reportIncomplete || response.hasMore) return;
+    if (response.hasMore) return;
     for (const event of events) {
       const slot = event ? eventIdToSlot(event.eventId) : null;
       if (slot !== null && slot > this.completeThrough) {
@@ -931,20 +923,6 @@ export class InBandWriter {
 /** How many events a group of run-ahead writes would send. */
 function groupSize(group: AheadWrite[]): number {
   return group.reduce((sum, write) => sum + write.events.length, 0);
-}
-
-/** Whether `member` writes an entity a write already in `group` writes. */
-function sharesEntity(group: AheadWrite[], member: AheadWrite): boolean {
-  const ids = new Set<string>();
-  for (const write of group) {
-    for (const { event } of write.events) {
-      if (event.correlationId) ids.add(event.correlationId);
-    }
-  }
-  return member.events.some(
-    ({ event }) =>
-      event.correlationId !== undefined && ids.has(event.correlationId)
-  );
 }
 
 /** A run-ahead write waiting in an open group (see {@link InBandWriter}). */

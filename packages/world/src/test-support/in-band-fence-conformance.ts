@@ -29,6 +29,8 @@ import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
  * - An in-band write with no expected count is refused with a 400.
  * - The single-orchestrator step bookkeeping (`inline`, `creatorMessageId`,
  *   `stepName`, `attempt`) survives the round trip.
+ * - An in-band write is stored with the `occurredAt` it was sent with as its
+ *   `createdAt`.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -315,6 +317,25 @@ export function inBandFenceConformance(
       expect((await load(events, runId)).slots).toEqual([1]);
     });
 
+    test('stores an in-band write at the occurredAt it was sent with', async () => {
+      const events = options.events();
+      const runId = await createRun(events);
+      // Well clear of the write's own time, so a World that stamps its own
+      // clock cannot pass by accident.
+      const occurredAt = new Date(Date.now() - 3_600_000);
+      const written = await (events.create as CreateAny)(
+        runId,
+        waitCreated(uniqueId('wait')),
+        { inBand: true, expectedSeqInBand: atRunCreation, occurredAt }
+      );
+      expect(+new Date(written.event?.createdAt ?? 0)).toBe(+occurredAt);
+      const page = await events.list({ runId });
+      const stored = page.data.find(
+        (event) => event.eventId === written.event?.eventId
+      );
+      expect(+new Date(stored?.createdAt ?? 0)).toBe(+occurredAt);
+    });
+
     test('keeps the step bookkeeping fields on the stored events', async () => {
       const events = options.events();
       const runId = await createRun(events);
@@ -372,7 +393,6 @@ export function inBandFenceConformance(
             workflowName: 'fenceConformance',
             input: new Uint8Array([7, 8]),
             inline: true,
-            creatorMessageId: 'msg_creator',
             attempt: 1,
           },
         } as AnyEventRequest,
@@ -400,7 +420,6 @@ export function inBandFenceConformance(
       expect(started?.eventData).toMatchObject({
         stepName: 'add',
         inline: true,
-        creatorMessageId: 'msg_creator',
         attempt: 1,
       });
       const input = (started?.eventData as { input?: unknown }).input;

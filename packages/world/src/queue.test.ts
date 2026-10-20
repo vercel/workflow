@@ -4,15 +4,19 @@ import {
   getQueueTopicPrefix,
   getRunQueueNamespace,
   HealthCheckPayloadSchema,
+  isSingleOrchestratorMessage,
+  messageRunSpecVersion,
   orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from './spec-version.js';
 
 describe('getQueueTopicPrefix', () => {
   it('returns default workflow prefix without namespace', () => {
@@ -391,6 +395,69 @@ describe('orchestratorRunIdOf', () => {
     expect(orchestratorRunIdOf(undefined)).toBeUndefined();
     expect(orchestratorRunIdOf('wrun_a')).toBeUndefined();
     expect(orchestratorRunIdOf({ runId: 1 })).toBeUndefined();
+  });
+});
+
+describe('messageRunSpecVersion', () => {
+  const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+
+  it('reads runInput, then runContext, then the runSpecVersion hint', () => {
+    expect(
+      messageRunSpecVersion({
+        runId: 'wrun_a',
+        runInput: { specVersion: SPEC },
+      })
+    ).toBe(SPEC);
+    expect(
+      messageRunSpecVersion({
+        runId: 'wrun_a',
+        stepId: 'step_1',
+        runContext: { specVersion: SPEC },
+      })
+    ).toBe(SPEC);
+    expect(
+      messageRunSpecVersion({ runId: 'wrun_a', runSpecVersion: SPEC })
+    ).toBe(SPEC);
+  });
+
+  it('is undefined for health checks and unstamped messages', () => {
+    expect(
+      messageRunSpecVersion({
+        __healthCheck: true,
+        correlationId: 'hc_1',
+        runId: 'wrun_a',
+        runSpecVersion: SPEC,
+      })
+    ).toBeUndefined();
+    expect(messageRunSpecVersion({ runId: 'wrun_a' })).toBeUndefined();
+    expect(messageRunSpecVersion(undefined)).toBeUndefined();
+  });
+
+  it('treats only spec >= 9 messages as single-orchestrator ones', () => {
+    expect(
+      isSingleOrchestratorMessage({ runId: 'a', runSpecVersion: SPEC })
+    ).toBe(true);
+    expect(
+      isSingleOrchestratorMessage({ runId: 'a', runSpecVersion: SPEC - 1 })
+    ).toBe(false);
+    expect(isSingleOrchestratorMessage({ runId: 'a' })).toBe(false);
+  });
+
+  it('serializes the orchestrator deliveries of spec 9 runs only', () => {
+    expect(
+      singleOrchestratorRunIdOf({ runId: 'wrun_a', runSpecVersion: SPEC })
+    ).toBe('wrun_a');
+    expect(
+      singleOrchestratorRunIdOf({
+        runId: 'wrun_a',
+        stepId: 'step_1',
+        runSpecVersion: SPEC,
+      })
+    ).toBeUndefined();
+    expect(
+      singleOrchestratorRunIdOf({ runId: 'wrun_a', runSpecVersion: SPEC - 1 })
+    ).toBeUndefined();
+    expect(singleOrchestratorRunIdOf({ runId: 'wrun_a' })).toBeUndefined();
   });
 });
 

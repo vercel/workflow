@@ -264,7 +264,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   /**
    * The next event's slot and time. `at` is an in-band write's `occurredAt`:
    * its time is the one its orchestrator chose, as world-vercel and
-   * world-local record it (`WorldCapabilities.inBandEventTime`).
+   * world-local record it (the spec-9 `Storage.events` contract).
    */
   function eventPosition(
     runId: string,
