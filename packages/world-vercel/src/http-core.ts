@@ -451,6 +451,9 @@ export function errorForResponse(
   if (status === 409 && code === IDEMPOTENCY_KEY_CONFLICT_CODE) {
     // Must not degrade to EntityConflictError: start() treats that as its own
     // earlier write landing and would publish a run that was never created.
+    // A body without a holder still maps to the refusal, with the runId
+    // 'unknown'; start() validates the runId and refuses rather than hand
+    // back a handle to it.
     const holder =
       details && typeof details === 'object'
         ? (details as {
@@ -474,11 +477,16 @@ export function errorForResponse(
     );
   }
   if (status === 400 && code === IDEMPOTENCY_KEYS_DISABLED_CODE) {
-    return new WorkflowWorldError(
-      'Run idempotency keys are switched off on this Workflow backend, so no run was created. ' +
-        'Retrying the same start will be refused again; start without `experimental_idempotencyKey` instead. ' +
-        `(${IDEMPOTENCY_KEYS_DISABLED_CODE}: ${message})`,
-      { url, status, code }
+    // `fatal`: every keyed start is refused the same way while the switch is
+    // off, so a start() inside a step must not spend its retries on it.
+    return Object.assign(
+      new WorkflowWorldError(
+        'Run idempotency keys are switched off on this Workflow backend, so no run was created. ' +
+          'Retrying the same start will be refused again; start without `experimental_idempotencyKey` instead. ' +
+          `(${IDEMPOTENCY_KEYS_DISABLED_CODE}: ${message})`,
+        { url, status, code }
+      ),
+      { fatal: true as const }
     );
   }
   if (status === 409) return new EntityConflictError(message);

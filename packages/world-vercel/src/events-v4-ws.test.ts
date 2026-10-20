@@ -14,6 +14,7 @@ import {
   InBandSupersededError,
   PreconditionFailedError,
   ThrottleError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { decode, encode } from 'cbor-x';
@@ -452,6 +453,35 @@ describe('retry is owned by the shared policy, not the adapter', () => {
     expect(InBandSupersededError.is(err)).toBe(true);
     expect(PreconditionFailedError.is(err)).toBe(false);
     expect(err).toMatchObject({ seq: 9, seqInBand: 4 });
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a 409 idempotency-key-conflict reply to WorkflowRunAlreadyStartedError', async () => {
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'error', status: 409 },
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          success: false,
+          error: 'idempotency-key-conflict',
+          message: 'held',
+          runId: 'wrun_holder',
+          runStatus: 'running',
+          workflowName: 'workflow//./src/orders//process',
+        })
+      ),
+    });
+
+    const err = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    }).catch((e: unknown) => e);
+
+    expect(WorkflowRunAlreadyStartedError.is(err)).toBe(true);
+    expect(EntityConflictError.is(err)).toBe(false);
+    expect(err).toMatchObject({
+      runId: 'wrun_holder',
+      runStatus: 'running',
+      workflowName: 'workflow//./src/orders//process',
+    });
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
 

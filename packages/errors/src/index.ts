@@ -910,7 +910,7 @@ export const IDEMPOTENCY_KEYS_DISABLED_CODE = 'idempotency-keys-disabled';
  *
  * @example
  * ```ts
- * import { WorkflowRunAlreadyStartedError } from "workflow/internal/errors";
+ * import { WorkflowRunAlreadyStartedError } from "workflow/errors";
  *
  * try {
  *   await start(processOrder, [orderId], {

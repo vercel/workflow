@@ -137,6 +137,8 @@ describe('throwForErrorResponse', () => {
     });
   });
 
+  // start() validates the runId and refuses fatally on 'unknown' (see
+  // core's start.test.ts), so the placeholder never becomes a Run handle.
   it('keeps an idempotency-key-conflict without a holder typed as a refusal', () => {
     let thrown: unknown;
     try {
@@ -173,6 +175,8 @@ describe('throwForErrorResponse', () => {
       'Run idempotency keys are disabled'
     );
     expect(isRetryableEventPostError(thrown)).toBe(false);
+    // A start() inside a step is not retried on it.
+    expect((thrown as { fatal?: unknown }).fatal).toBe(true);
   });
 
   it('keeps the plain workflow-run-exists 409 an EntityConflictError', () => {
