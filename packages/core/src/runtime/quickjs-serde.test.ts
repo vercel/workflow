@@ -364,6 +364,8 @@ describe('wire parity: reference-codec bytes revive correctly in the VM', () => 
             workflowName: e.workflowName,
             idempotencyKey: e.idempotencyKey,
             fatal: e.fatal,
+            status: e.status,
+            code: e.code,
           };
         }`
       )
@@ -377,6 +379,8 @@ describe('wire parity: reference-codec bytes revive correctly in the VM', () => 
       workflowName: 'workflow//./src/orders//process',
       idempotencyKey: 'order-1',
       fatal: true,
+      status: 409,
+      code: 'idempotency-key-conflict',
     });
   });
 

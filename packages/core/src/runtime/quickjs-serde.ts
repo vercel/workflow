@@ -2069,6 +2069,14 @@ export function createQuickJSSerde(
           propertyValue?.dispose();
         }
         define(error, 'fatal', vm.true);
+        // Match the registered class (and the Node VM fallback).
+        const status = vm.newNumber(409);
+        define(error, 'status', status);
+        status.dispose();
+        // IDEMPOTENCY_KEY_CONFLICT_CODE in @workflow/errors.
+        const code = vm.newString('idempotency-key-conflict');
+        define(error, 'code', code);
+        code.dispose();
       }
       return error;
     },
