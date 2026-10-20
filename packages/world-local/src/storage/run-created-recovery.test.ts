@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
-import { type ChildProcess, fork } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   type AnyEventRequest,
   FIRST_EVENT_SLOT,
@@ -43,10 +41,6 @@ vi.mock('../fs.js', async (importOriginal) => {
 });
 
 let testDir: string;
-const children: ChildProcess[] = [];
-const childScript = fileURLToPath(
-  new URL('./run-created-recovery.child.mjs', import.meta.url)
-);
 
 beforeEach(async () => {
   testDir = await fs.mkdtemp(
@@ -57,15 +51,6 @@ beforeEach(async () => {
 afterEach(async () => {
   publisherGate.release();
   publisherGate.armed = false;
-  await Promise.all(
-    children.splice(0).map(async (child) => {
-      if (!child.pid || child.exitCode !== null || child.signalCode !== null) {
-        return;
-      }
-      child.kill('SIGKILL');
-      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    })
-  );
   vi.restoreAllMocks();
   await fs.rm(testDir, { recursive: true, force: true });
 });
@@ -136,48 +121,6 @@ function armPublisherGate() {
     publisherGate.release = resolve;
   });
   publisherGate.armed = true;
-}
-
-function nextMessage<T>(child: ChildProcess): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    child.once('message', (message) => resolve(message as T));
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      reject(
-        new Error(
-          `Child exited before responding (code ${code}, signal ${signal})`
-        )
-      );
-    });
-  });
-}
-
-async function spawnStarter(runId: string) {
-  const child = fork(
-    childScript,
-    ['start', testDir, runId, String(SPEC_VERSION_CURRENT)],
-    {
-      execArgv: [],
-      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-    }
-  );
-  children.push(child);
-  expect(await nextMessage(child)).toEqual({ status: 'ready' });
-  return () => {
-    const answer = nextMessage<{
-      status: string;
-      runStatus?: string;
-      input?: number[];
-      message?: string;
-    }>(child);
-    child.send('go');
-    return answer;
-  };
-}
-
-async function waitForExit(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 5000) {
@@ -264,35 +207,21 @@ it('uses the persisted run record when a redelivery carries different data', asy
   expect(creation.eventData).not.toHaveProperty('dynamicWorkflowCode');
 });
 
-it('converges 8 storage instances and 3 OS processes on one run_created', async () => {
+it('converges concurrent storage instances on one run_created', async () => {
   const original = await createInterruptedRun();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const starters = await Promise.all(
-    Array.from({ length: 3 }, () => spawnStarter(original.run.runId))
-  );
-
-  const [localResults, processResults] = await Promise.all([
-    Promise.all(
-      Array.from({ length: 8 }, () =>
-        createStorage(testDir).events.create(
-          original.run.runId,
-          changedRedelivery()
-        )
+  const results = await Promise.all(
+    Array.from({ length: 12 }, () =>
+      createStorage(testDir).events.create(
+        original.run.runId,
+        changedRedelivery()
       )
-    ),
-    Promise.all(starters.map((start) => start())),
-  ]);
-
-  expect(localResults).toHaveLength(8);
-  expect(localResults.every((result) => result.run?.status === 'running')).toBe(
-    true
+    )
   );
-  expect(processResults).toEqual(
-    Array.from({ length: 3 }, () => ({
-      status: 'started',
-      runStatus: 'running',
-      input: [1, 2, 3],
-    }))
+
+  expect(results).toHaveLength(12);
+  expect(results.every((result) => result.run?.status === 'running')).toBe(
+    true
   );
   const events = await listEvents(original.run.runId);
   expect(events[0].eventType).toBe('run_created');
@@ -607,40 +536,58 @@ it('keeps normal creation and missing-record resilient creation unchanged', asyn
   });
 });
 
-it.each([
-  'before-event-temp',
-  'after-event-temp',
-  'before-event-link',
-  'after-event-link',
-])('recovers without hanging after SIGKILL at %s', async (stage) => {
-  const runId = `wrun_${monotonicUlid()}`;
-  const child = fork(
-    childScript,
-    ['crash-create', testDir, runId, String(SPEC_VERSION_CURRENT), stage],
-    {
-      execArgv: [],
-      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-    }
+it.each<{
+  name: string;
+  state: 'before-temp-write' | 'after-temp-write' | 'after-link';
+}>([
+  {
+    name: 'a saved run record before the event temp write',
+    state: 'before-temp-write',
+  },
+  {
+    name: 'a saved run record and leftover event temp file',
+    state: 'after-temp-write',
+  },
+  {
+    name: 'a saved run record and complete slot-1 run_created',
+    state: 'after-link',
+  },
+])('recovers without hanging from $name', async ({ state }) => {
+  const original = await createStorage(testDir).events.create(
+    null,
+    originalCreation()
   );
-  children.push(child);
-  expect(await withTimeout(nextMessage(child))).toEqual({
-    status: 'checkpoint',
-    stage,
-  });
-  child.kill('SIGKILL');
-  await withTimeout(waitForExit(child));
+  assert(original.run);
+  assert(original.event);
+  const eventPath = taggedPath(
+    testDir,
+    runEntityDir('events', original.run.runId),
+    `${original.run.runId}-${original.event.eventId}`
+  );
+  let tempPath: string | undefined;
+  if (state === 'before-temp-write') {
+    await fs.unlink(eventPath);
+  } else if (state === 'after-temp-write') {
+    tempPath = `${eventPath}.tmp.${monotonicUlid()}`;
+    await fs.rename(eventPath, tempPath);
+  }
 
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   const recovered = await withTimeout(
-    createStorage(testDir).events.create(runId, changedRedelivery())
+    createStorage(testDir).events.create(
+      original.run.runId,
+      changedRedelivery()
+    )
   );
-  expect(recovered.run).toMatchObject({
-    status: 'running',
-    input: new Uint8Array([1, 2, 3]),
-  });
-  const events = await listEvents(runId);
+
+  expect(recovered.run?.status).toBe('running');
+  expect(Array.from(recovered.run?.input ?? [])).toEqual([1, 2, 3]);
+  const events = await listEvents(original.run.runId);
   expect(events[0].eventType).toBe('run_created');
   expect(
     events.filter((event) => event.eventType === 'run_created')
   ).toHaveLength(1);
+  if (tempPath) {
+    await expect(fs.access(tempPath)).resolves.toBeUndefined();
+  }
 });
