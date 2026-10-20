@@ -23,6 +23,7 @@ import type {
   ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
+  IdempotencyKeyReusePolicy,
   ListEventsParams,
   ListHooksParams,
   PaginatedResponse,
@@ -46,6 +47,7 @@ import {
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
   HookSchema,
+  IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
@@ -87,6 +89,7 @@ import {
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, type DrizzleHandle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
+import { claimRunIdempotencyKey } from './idempotency-keys.js';
 import {
   invocationDataExpired,
   invocationExpiredError,
@@ -1780,6 +1783,9 @@ function createUnfencedEventsStorage(
           encryptionPublicKey?: string;
           dynamicWorkflowCode?: SerializedData;
           dynamicWorkflowCodeRef?: string;
+          idempotencyKey?: string;
+          idempotencyKeyTtlMs?: number;
+          idempotencyKeyReusePolicy?: IdempotencyKeyReusePolicy;
         };
         if (eventData.dynamicWorkflowCodeRef !== undefined) {
           throw new Error(
@@ -1813,6 +1819,7 @@ function createUnfencedEventsStorage(
               attributes: eventData.attributes,
               encryptionPublicKey: eventData.encryptionPublicKey,
               dynamicWorkflowCode: eventData.dynamicWorkflowCode,
+              idempotencyKey: eventData.idempotencyKey,
               status: 'pending',
             })
             .onConflictDoNothing()
@@ -1822,10 +1829,26 @@ function createUnfencedEventsStorage(
           // it. Surface the conflict rather than returning `{ run: undefined }`.
           // start() already treats EntityConflictError as benign, and falling
           // through would append a duplicate run_created event to the log.
+          // This is also a keyed start's self-conflict, answered before its
+          // key is looked at.
           if (!runValue) {
             throw new EntityConflictError(
               `Workflow run "${effectiveRunId}" already exists`
             );
+          }
+          // A keyed start claims its key in this same transaction, so a
+          // refusal rolls the run back and a claim never names a run that was
+          // not created. See idempotency-keys.ts.
+          if (eventData.idempotencyKey !== undefined) {
+            await claimRunIdempotencyKey(tx, {
+              runId: effectiveRunId,
+              workflowName: eventData.workflowName,
+              key: eventData.idempotencyKey,
+              ttlMs:
+                eventData.idempotencyKeyTtlMs ?? IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
+              reusePolicy:
+                eventData.idempotencyKeyReusePolicy ?? 'REJECT_DUPLICATE',
+            });
           }
           // Open the run's slot counter. Doing it here, rather than lazily on
           // first allocation, is what makes "no row" mean "created before slots

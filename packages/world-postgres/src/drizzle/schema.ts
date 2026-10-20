@@ -11,6 +11,7 @@ import {
 } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   customType,
@@ -148,6 +149,13 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
+    /**
+     * The idempotency key the run was started with
+     * (`start({ experimental_idempotencyKey })`), echoed on reads. Plaintext.
+     * The claim itself lives in `workflow_run_idempotency_keys`; this column
+     * is the run's own record of it and outlives a takeover.
+     */
+    idempotencyKey: varchar('idempotency_key'),
     createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     updatedAt: timestamptz('updated_at')
       .default(sql`now()`)
@@ -240,6 +248,31 @@ export const eventSlots = schema.table('workflow_event_slots', {
    */
   seqInBand: integer('seq_in_band').notNull().default(1),
 });
+
+/**
+ * Run idempotency key claims: which run holds each (workflowName, key), for
+ * `start({ experimental_idempotencyKey })`. See
+ * `WorldCapabilities.runIdempotencyKeys` for the contract.
+ *
+ * A row is inserted in the same transaction as the run it names and its
+ * `run_created` event, and re-pointed at a new run (`UPDATE ... WHERE run_id =
+ * <old holder>`) on a takeover, under a `SELECT ... FOR UPDATE` of the row.
+ * `ttl_ms` is the window the holder's own start chose: the key stays held
+ * until the holder closes and `completed_at + ttl_ms` passes. A row whose
+ * holder run no longer exists is free. `bigint` because the maximum TTL (30
+ * days in milliseconds) does not fit an `integer`.
+ */
+export const runIdempotencyKeys = schema.table(
+  'workflow_run_idempotency_keys',
+  {
+    workflowName: varchar('workflow_name').notNull(),
+    idempotencyKey: varchar('idempotency_key').notNull(),
+    runId: varchar('run_id').notNull(),
+    ttlMs: bigint('ttl_ms', { mode: 'number' }).notNull(),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+  },
+  (tb) => [primaryKey({ columns: [tb.workflowName, tb.idempotencyKey] })]
+);
 
 export const steps = schema.table(
   'workflow_steps',

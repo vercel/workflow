@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
+import { deleteExpiredRunIdempotencyKeys } from './idempotency-keys.js';
 import { createQueue } from './queue.js';
 import {
   createRunStatusListener,
@@ -90,6 +91,9 @@ export function createWorld(
       hookForceClaim: true,
       // The events storage fences in-band writes; see storage.ts.
       inBandFence: true,
+      // A keyed run_created claims its key in the transaction that inserts
+      // the run and its event; see idempotency-keys.ts.
+      runIdempotencyKeys: true,
     },
     ...storage,
     ...streamer,
@@ -99,6 +103,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Retention for idempotency key claims: drop the ones nothing can hold
+      // any more. Best effort, since such claims are already free.
+      await deleteExpiredRunIdempotencyKeys(drizzle).catch((error) => {
+        console.warn(
+          '[workflow] failed to delete expired idempotency key claims',
+          error
+        );
+      });
       await reenqueueActiveRuns(
         storage.runs,
         queue.queue,
