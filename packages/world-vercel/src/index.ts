@@ -117,11 +117,11 @@ export function createWorld(config?: APIConfig): World {
       // opt-in: a stage-1 backend knows nothing of the wake target the
       // runtime sends a FIFO World, and without `fifo` the runtime sends none
       // and polls.
-      ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, false)
+      ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, true)
         ? {
             locks: {
               concurrency: true,
-              ...(envFlag(EXPERIMENTAL_LOCKS_FIFO_ENV_VAR, false) && {
+              ...(envFlag(EXPERIMENTAL_LOCKS_FIFO_ENV_VAR, true) && {
                 fifo: true,
               }),
             },
