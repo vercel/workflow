@@ -55,6 +55,18 @@ const abortProbe: {
   /** How long the step runs when nothing aborts it. */
   runMs?: number;
 } = {};
+const hwRuns: Record<string, number> = {};
+let onFirstBody: (() => Promise<void>) | undefined;
+registerStepFunction('hw_handle', async (label: string) => {
+  hwRuns[label] = (hwRuns[label] ?? 0) + 1;
+  if (label === 'first') {
+    const hook = onFirstBody;
+    onFirstBody = undefined;
+    await hook?.();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return label;
+});
 registerStepFunction('hw_abortable', async (signal: AbortSignal) => {
   abortProbe.started?.();
   return await new Promise<string>((resolve) => {
@@ -293,6 +305,41 @@ describe.each([
   });
 
   describe('hook resume', () => {
+    it('runs each step once when resumes arrive while its orchestrator delivery runs (coalescing queue)', async () => {
+      const code = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        const handle = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("hw_handle");
+        async function workflow() {
+          const hooks = [createHook({ token: "c1" }), createHook({ token: "c2" }), createHook({ token: "c3" })];
+          const out = [];
+          let i = 0;
+          for (const hook of hooks) {
+            const payload = await hook;
+            out.push(await handle(["first", "second", "third"][i++]));
+          }
+          return out.join(",");
+        }${transform('workflow')}`;
+      const { world, runId } = await setup(code, [], {
+        coalesce: true,
+        handoff: true,
+      });
+      for (const key of Object.keys(hwRuns)) delete hwRuns[key];
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'hook_created')).toHaveLength(3);
+
+      // The other two webhooks arrive while the first step runs inline, so
+      // their wakes are coalesced into the running delivery.
+      onFirstBody = async () => {
+        await resumeHook('c2', { value: 2 });
+        await resumeHook('c3', { value: 3 });
+      };
+      await resumeHook('c1', { value: 1 });
+      await world.runUntilIdle();
+
+      expect(await output(world, runId)).toBe('first,second,third');
+      expect(hwRuns).toEqual({ first: 1, second: 1, third: 1 });
+      expect(world.coalescedMessages).toBeGreaterThan(0);
+    });
+
     it('writes hook_received out-of-band, wakes without a key, and the wake replays the payload', async () => {
       const { world, runId } = await setup(HOOK_WORKFLOW, [TOKEN]);
       await world.runUntilIdle();

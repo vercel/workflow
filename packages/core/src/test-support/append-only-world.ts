@@ -102,6 +102,10 @@ export class AppendOnlyWorld {
     onEvent: (event: Event) => void;
   }>();
   private run: WorkflowRun | undefined;
+  /** The orchestrator delivery in flight, in `coalesce` mode. */
+  private activeOrchestrator: { coalesced: number } | undefined;
+  /** How many messages were coalesced into a delivery, in `coalesce` mode. */
+  coalescedMessages = 0;
 
   constructor(
     readonly options: {
@@ -152,6 +156,14 @@ export class AppendOnlyWorld {
        * handed-off deliveries out.
        */
       handoff?: boolean;
+      /**
+       * Coalesce like a VQS concurrency key: an orchestrator message for the
+       * run (no `stepId`, `coalesce` not `false`) enqueued while one of its
+       * orchestrator deliveries runs is not held but counted on that
+       * delivery, and a delivery that would acknowledge with messages
+       * counted runs its handler again (`coalescedRerun`) until none are.
+       */
+      coalesce?: boolean;
       /**
        * Called before every `events.create`, before anything is checked or
        * written. A test throws from it to refuse a write, or awaits in it to
@@ -447,6 +459,31 @@ export class AppendOnlyWorld {
     if (!this.handler) throw new Error('no queue handler registered');
     const index = this.held.indexOf(held);
     if (index !== -1) this.held.splice(index, 1);
+    const orchestrator =
+      this.options.coalesce === true &&
+      (held.message as { stepId?: unknown }).stepId === undefined &&
+      this.activeOrchestrator === undefined;
+    if (!orchestrator) return this.deliverOnce(held);
+    const active = { coalesced: 0 };
+    this.activeOrchestrator = active;
+    try {
+      let covered = 0;
+      let current = held;
+      for (let rerun = 1; ; rerun++) {
+        const result = await this.deliverOnce(current);
+        if (result !== undefined || active.coalesced === covered) {
+          return result;
+        }
+        covered = active.coalesced;
+        current = { ...held, coalescedRerun: rerun };
+      }
+    } finally {
+      this.activeOrchestrator = undefined;
+    }
+  }
+
+  private async deliverOnce(held: HeldMessage): Promise<unknown> {
+    if (!this.handler) throw new Error('no queue handler registered');
     let result: unknown;
     try {
       result = await this.handler(held.message, {
@@ -724,6 +761,19 @@ export class AppendOnlyWorld {
         const options = opts as Record<string, unknown> | undefined;
         self.queueCalls.push({ queueName, message, opts: options });
         const messageId = `msg_${self.queueCalls.length}`;
+        if (
+          self.activeOrchestrator &&
+          (message as { stepId?: unknown }).stepId === undefined &&
+          options?.coalesce !== false &&
+          !(
+            options?.delaySeconds !== undefined &&
+            (options.delaySeconds as number) > 0
+          )
+        ) {
+          self.activeOrchestrator.coalesced++;
+          self.coalescedMessages++;
+          return { messageId };
+        }
         const key = options?.idempotencyKey;
         // Deduplicate like a queue does while the keyed message exists.
         if (

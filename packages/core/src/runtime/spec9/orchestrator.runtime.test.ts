@@ -565,6 +565,53 @@ describe.each([
     }
   );
 
+  it.runIf(engine === 'node')(
+    'commits its in-band writes before it continues in another delivery',
+    async () => {
+      // The inline step's outcome commits slowly, after run-ahead handed it
+      // to the workflow. A continuation must not start before it lands: the
+      // next delivery would find the step open and run its body again.
+      let releaseOutcome!: () => void;
+      const outcomeHeld = new Promise<void>((resolve) => {
+        releaseOutcome = resolve;
+      });
+      const code = `const slow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_slow_add");
+       const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) {
+         const first = await slow(a, b);
+         return await add(first, 10);
+       }${transform('workflow')}`;
+      const { world, start } = await setup(code, [1, 2], {
+        handoff: true,
+        async beforeCreate(data) {
+          if (data.eventType === 'step_completed') await outcomeHeld;
+        },
+      });
+
+      vi.stubEnv('WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS', '0');
+      vi.stubEnv('WORKFLOW_V2_TIMEOUT_MS', String(SLOW_STEP_MS / 2));
+      let delivered = false;
+      const delivery = world.deliver(start).then((result) => {
+        delivered = true;
+        return result;
+      });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, SLOW_STEP_MS * 3));
+        expect(delivered).toBe(false);
+        releaseOutcome();
+        expect(await delivery).toEqual({ timeoutSeconds: 0, handoff: true });
+      } finally {
+        releaseOutcome();
+        vi.unstubAllEnvs();
+      }
+      expect(eventsOf(world, 'step_completed')).toHaveLength(1);
+
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(calls).toMatchObject({ so_slow_add: 1, so_add: 1 });
+    }
+  );
+
   it('fails an orchestrator past the delivery cap in-band, and never a step message', async () => {
     const { world, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");

@@ -289,10 +289,23 @@ export function rewriteDependencySpecs(
   return { replacedWithTarballs, replacedCatalogEntries };
 }
 
+/**
+ * Default-catalog entries pinned to a tarball URL (a pre-release dependency
+ * under test). The packed packages declare them by URL, which pnpm refuses in
+ * a subdependency (`blockExoticSubdeps`, on by default), so the staged
+ * workspace turns that check off while any exist.
+ */
+export function urlCatalogEntries(catalogs) {
+  return Object.entries(catalogs.default ?? {}).filter(
+    ([, spec]) => typeof spec === 'string' && /^https?:\/\//u.test(spec)
+  );
+}
+
 function writeStagedWorkspaceConfig(
   destinationDir,
   yamlPath,
-  tarballPathByPackageName
+  tarballPathByPackageName,
+  catalogs
 ) {
   let workspaceYaml = fs.readFileSync(yamlPath, 'utf8');
   const packagesBlock = /^packages:\r?\n(?:(?: {2}- .*?)(?:\r?\n|$))+/u;
@@ -328,6 +341,10 @@ function writeStagedWorkspaceConfig(
       recursive: true,
     });
     workspaceYaml += '\nallowUnusedPatches: true\n';
+  }
+
+  if (urlCatalogEntries(catalogs).length > 0) {
+    workspaceYaml += '\nblockExoticSubdeps: false\n';
   }
 
   fs.writeFileSync(
@@ -417,7 +434,8 @@ function main() {
   const overridesApplied = writeStagedWorkspaceConfig(
     stagedWorkbenchDir,
     workspaceYamlPath,
-    tarballPathByPackageName
+    tarballPathByPackageName,
+    catalogs
   );
 
   console.log(

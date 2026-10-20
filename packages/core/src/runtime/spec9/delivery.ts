@@ -264,8 +264,27 @@ function startedFromBatch(
 export async function runSpec9Delivery(
   delivery: WorkflowDelivery
 ): Promise<DeliveryResult> {
-  const continuation = { handoff: false };
+  const continuation: { handoff: boolean; exit?: string } = { handoff: false };
   const result = await runDelivery(delivery, continuation);
+  // TEMPORARY diagnostic for the e2e webhook duplicate-start investigation;
+  // remove before merge.
+  if (
+    continuation.exit !== undefined ||
+    continuation.handoff ||
+    delivery.metadata.coalescedRerun !== undefined
+  ) {
+    runtimeLogger.warn('[diag] spec9 delivery exit', {
+      workflowRunId: delivery.message.runId,
+      exit: continuation.exit,
+      handoff: continuation.handoff,
+      result: JSON.stringify(result),
+      deliveryCount: delivery.metadata.deliveryCount,
+      attempt: delivery.metadata.attempt,
+      coalescedRerun: delivery.metadata.coalescedRerun,
+      messageId: delivery.metadata.messageId,
+      requestId: delivery.requestId,
+    });
+  }
   // A redelivery the delivery asked for anyway continues the run too.
   return continuation.handoff && result === undefined
     ? { timeoutSeconds: 0, handoff: true }
@@ -274,7 +293,7 @@ export async function runSpec9Delivery(
 
 async function runDelivery(
   delivery: WorkflowDelivery,
-  continuation: { handoff: boolean }
+  continuation: { handoff: boolean; exit?: string }
 ): Promise<DeliveryResult> {
   const {
     workflowCode,
@@ -917,6 +936,7 @@ async function runDelivery(
         }
       );
       span?.setAttributes(Attribute.WorkflowSuperseded(true));
+      continuation.exit = `superseded:${(err as Error)?.message?.slice(0, 200)}`;
       return await replaceThisMessage(delaySeconds);
     }
     if (RunAheadStopError.is(err) || RunAheadStopError.is(writer.stopCause)) {
@@ -936,6 +956,11 @@ async function runDelivery(
           replacements: replacesMessage?.count ?? 0,
         }
       );
+      continuation.exit = `run-ahead-stop:${
+        RunAheadStopError.is(err)
+          ? err.reason
+          : (writer.stopCause as RunAheadStopError).reason
+      }`;
       return await replaceThisMessage(0);
     }
     if (turboStartFailure) {
@@ -1352,7 +1377,10 @@ async function runDelivery(
             invocationStartTime +
             noInlineReplayAfterMs -
             getInlineStepDeadlineMarginMs(),
-          continueInNextDelivery: () => wakeSelf(),
+          continueInNextDelivery: () => {
+            continuation.exit = 'quickjs-continue';
+            return wakeSelf();
+          },
           requestId,
           writer,
           ...(wakeUpWaits.size > 0 ? { wakeUpWaits } : {}),
@@ -2235,6 +2263,7 @@ async function runDelivery(
               elapsedMs: Date.now() - invocationStartTime,
             }
           );
+          continuation.exit = 'deadline';
           await wakeSelf();
           return undefined;
         }
@@ -2724,6 +2753,7 @@ async function runDelivery(
           for (const id of fresh) continuedHookIds.add(id);
           return { type: 'continue', retainSession: true };
         }
+        continuation.exit = 'hook-conflict';
         await wakeSelf();
         return { type: 'return', result: undefined };
       }
@@ -3036,6 +3066,20 @@ async function runDelivery(
           });
         }
         for (const step of runnableInline) {
+          if (step.starts > 0) {
+            // TEMPORARY diagnostic; remove before merge.
+            runtimeLogger.warn('[diag] re-running an open inline step', {
+              workflowRunId: runId,
+              correlationId: step.correlationId,
+              starts: step.starts,
+              messageId: metadata.messageId,
+              deliveryCount: metadata.deliveryCount,
+              attempt: metadata.attempt,
+              coalescedRerun: metadata.coalescedRerun,
+              requestId,
+              loopIteration,
+            });
+          }
           const createdEvent = replayedEvents.find(
             (event) => event.eventId === step.createdEventId
           );
@@ -3412,6 +3456,7 @@ async function runDelivery(
         // Stream writes are still flushing through
         // `waitUntil`; hand the run to the next delivery so
         // this one can end.
+        continuation.exit = 'pending-stream-ops';
         await wakeSelf();
         return { type: 'return', result: undefined };
       }
