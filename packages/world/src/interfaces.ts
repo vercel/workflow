@@ -789,6 +789,15 @@ export interface World extends Queue, Streamer, Storage {
   getRuntimeDeadline?(): Promise<Date | undefined>;
 
   /**
+   * Subscribe to notice that the hosting platform has begun stopping this
+   * process's instance (it no longer receives new requests, while in-flight
+   * work continues). The listener is called at most once per subscription,
+   * with a short reason. Returns an unsubscribe function. Used so long-lived
+   * runtime work can finish cleanly rather than wait out its own timeouts.
+   */
+  onRuntimeTermination?(listener: (reason: string) => void): () => void;
+
+  /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.
    */

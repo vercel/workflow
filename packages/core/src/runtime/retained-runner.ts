@@ -55,6 +55,7 @@ import {
 import { isRetryableOwnerDelivery } from './owner-delivery.js';
 import { ownerLog, trackOwner } from './owner-diagnostics.js';
 import { reduceStep, runFromCreation } from './owner-state.js';
+import { watchOwnerTermination } from './owner-termination.js';
 import { isSingleOwnerRun } from './single-owner.js';
 import { type AdmittedStart, StepDispatcher } from './step-dispatcher.js';
 import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
@@ -1475,12 +1476,16 @@ export class RetainedRunner {
     await this.expireQueuedSteps();
     for (;;) {
       if (this.fault) throw this.fault;
-      // Near the function deadline: take no more work. The input is rejected
-      // retryably (committed events stay) and a fresh owner continues.
+      // Near the function deadline, or when the instance is stopping: take no
+      // more work. The input is rejected retryably (committed events stay)
+      // and a fresh owner continues.
       if (this.handoffDue())
-        throw new HandoffPending('Owner is handing off at its deadline', {
-          status: 503,
-        });
+        throw new HandoffPending(
+          this.terminating === undefined
+            ? 'Owner is handing off at its deadline'
+            : 'Owner is handing off: its instance is stopping',
+          { status: 503 }
+        );
       await this.completeDueWaits();
       const before = this.events.length;
       // A retained VM advances only on new events. Wakes that bring none (for
@@ -1885,7 +1890,25 @@ export class RetainedRunner {
   }
 
   private handoffDue() {
-    return Date.now() >= this.deadline - HANDOFF_MARGIN_MS;
+    return (
+      this.terminating !== undefined ||
+      Date.now() >= this.deadline - HANDOFF_MARGIN_MS
+    );
+  }
+
+  /** Why this owner is ending early: its instance is stopping. */
+  private terminating?: string;
+
+  /**
+   * End cleanly now, as at the deadline: take no new work, finish the current
+   * input, hand the run to the next owner and stop. Called when this process's
+   * instance is stopping (see `owner-termination.ts`).
+   */
+  terminate(reason: string) {
+    if (this.terminating !== undefined || this.closing) return;
+    this.terminating = reason;
+    ownerLog('owner_terminating', { ...this.diagnostics(), reason });
+    this.signal?.();
   }
 
   /** Hand the run to the next owner invocation: an immediate durable wake.
@@ -2429,15 +2452,18 @@ export class RetainedRunner {
 
   private async runOwnerLoop() {
     const untrack = trackOwner(this);
+    const unwatch = watchOwnerTermination(this.backend, this);
     ownerLog('owner_start', { runId: this.runId, ownerId: this.id });
     try {
       await this.runOwnerLoopBody();
     } finally {
+      unwatch();
       untrack();
       ownerLog('owner_end', {
         runId: this.runId,
         ownerId: this.id,
         fault: this.fault?.kind,
+        terminated: this.terminating,
       });
     }
   }

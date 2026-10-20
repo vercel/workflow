@@ -10,6 +10,7 @@ import { instrumentObject } from './instrumentObject.js';
 import { invocationConfig } from './invocation.js';
 import { createQueue, recordStepExecution } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
+import { onRuntimeTermination } from './runtime-termination.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import { type APIConfig, resolveClientEnvironment } from './utils.js';
@@ -95,6 +96,7 @@ export function createWorld(config?: APIConfig): World {
     },
     validateRunExecutionContext,
     getRuntimeDeadline: getDeadline,
+    onRuntimeTermination,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.

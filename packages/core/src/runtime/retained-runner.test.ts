@@ -2433,6 +2433,66 @@ it('does not expire a hybrid step that is still running in the live owner', asyn
   );
 });
 
+it('hands off at once when its instance is stopping instead of idling to its timeout', async () => {
+  let calls = 0;
+  registerStepFunction('slowLocal', async (value) => {
+    if (++calls === 1)
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    return value;
+  });
+  // A 60 s idle timeout: only termination can end this owner promptly.
+  const fixture = await setup(slowStepCode, false, false, 60_000);
+  let notify: ((reason: string) => void) | undefined;
+  const unsubscribe = vi.fn();
+  fixture.world.onRuntimeTermination = (listener) => {
+    notify = listener;
+    return unsubscribe;
+  };
+  const keys: string[] = [];
+  vi.spyOn(fixture.world, 'queue').mockImplementation(
+    async (_name, _message, options) => {
+      keys.push(options?.idempotencyKey ?? '');
+      return { messageId: null };
+    }
+  );
+  const logs: Array<Record<string, unknown>> = [];
+  const info = vi.spyOn(console, 'info').mockImplementation((line) => {
+    try {
+      logs.push(JSON.parse(String(line)));
+    } catch {}
+  });
+  cleanups.push(async () => info.mockRestore());
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await vi.waitFor(() => expect(notify).toBeDefined());
+  const started = Date.now();
+  notify!('shutting_down');
+  await fixture.finished;
+  expect(Date.now() - started).toBeLessThan(5000);
+  // Like a deadline handoff: a wake for the next owner, and no failure.
+  expect(keys.some((k) => k.startsWith('retained-handoff:'))).toBe(true);
+  expect(fixture.owner.events.some((e) => e.eventType === 'run_failed')).toBe(
+    false
+  );
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
+  expect(unsubscribe).toHaveBeenCalled();
+  expect(logs).toContainEqual(
+    expect.objectContaining({
+      event: 'owner_terminating',
+      reason: 'shutting_down',
+    })
+  );
+  expect(logs).toContainEqual(
+    expect.objectContaining({ event: 'owner_end', terminated: 'shutting_down' })
+  );
+  // A later input to the ended owner is refused retryably.
+  await expect(
+    fixture.owner.submit(
+      { runId: fixture.runId },
+      { ...fixture.metadata, messageId: MessageId.parse('late-wake') }
+    )
+  ).rejects.toMatchObject({ status: 503 });
+});
+
 it('hands off to a fresh owner at its deadline instead of failing the run', async () => {
   let calls = 0;
   registerStepFunction('slowLocal', async (value) => {
