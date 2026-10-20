@@ -34,6 +34,7 @@
 import {
   HookForceClaimedError,
   HookNotFoundError,
+  LockUnsupportedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -55,7 +56,6 @@ import {
   isLockEventType,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
-  type LockEventType,
   mintedSpecVersion,
   validateUlidTimestamp,
   type WorkflowRun,
@@ -111,16 +111,7 @@ function validateWorkflowRunIdTimestamp(id: string): string | null {
  * below. Event types with no `eventData` (run_cancelled) and with optional
  * `eventData` (run_started, step_started, …) both contribute correctly.
  */
-/**
- * Lock events (`lock_created`, `lock_released`, `lock_waiter_queued`) are not
- * part of the v4 wire contract yet: this World does not declare the `locks`
- * capability, so the runtime never sends them, and `createWorkflowRunEvent`
- * refuses them outright rather than drop their fields on the wire. They come
- * back into this union when the backend implements locks.
- */
-type WireEventRequest = Exclude<AnyEventRequest, { eventType: LockEventType }>;
-
-type EventDataField<E = WireEventRequest> = E extends { eventData?: infer D }
+type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
   ? keyof NonNullable<D> & string
   : never;
 
@@ -153,6 +144,14 @@ interface SplitEventData {
     hookIsSystem?: boolean;
     /** `createHook({ experimental_force })`: take the token over if held. */
     hookForce?: boolean;
+    /** lock_created / lock_released: the lock key (`eventData.key`). */
+    lockKey?: string;
+    /** lock_created: requested concurrency (`eventData.concurrency`). */
+    lockConcurrency?: number;
+    /** lock_created: opt-in lease (`eventData.leaseTtlMs`). */
+    lockLeaseTtlMs?: number;
+    /** lock_created: reserved acquisition deadline (`eventData.expiresAt`). */
+    lockExpiresAt?: Date;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -246,7 +245,17 @@ type MetaSourceField =
   | 'eventCount'
   | 'rsfs'
   | 'finalSchedulingReplay'
-  | 'optimizations';
+  | 'optimizations'
+  // lock_created / lock_released: routed to the `lock*` frame meta below.
+  | 'key'
+  | 'concurrency'
+  | 'leaseTtlMs'
+  | 'expiresAt'
+  // World-written on the committed lock_created (ignored on a request), and
+  // lock_waiter_queued's fields, which this adapter refuses before the wire.
+  | 'retryAt'
+  | 'runId'
+  | 'correlationId';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -354,6 +363,21 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // the persisted row and is never part of a request.
   if (eventData.force === true) {
     meta.hookForce = true;
+  }
+  // Lock events: the contract's generic names (`key`, `concurrency`) are
+  // namespaced on the wire, and only read for lock events. A request-side
+  // `retryAt` is World-written and never sent.
+  if (isLockEventType(data.eventType)) {
+    if (typeof eventData.key === 'string') meta.lockKey = eventData.key;
+    if (typeof eventData.concurrency === 'number') {
+      meta.lockConcurrency = eventData.concurrency;
+    }
+    if (typeof eventData.leaseTtlMs === 'number') {
+      meta.lockLeaseTtlMs = eventData.leaseTtlMs;
+    }
+    if (eventData.expiresAt instanceof Date) {
+      meta.lockExpiresAt = eventData.expiresAt;
+    }
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
@@ -689,9 +713,9 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult<T['eventType']>> {
-  if (isLockEventType(data.eventType)) {
+  if (data.eventType === 'lock_waiter_queued') {
     throw new WorkflowWorldError(
-      `${data.eventType} is not supported by this World: it does not declare the \`locks\` capability`,
+      'lock_waiter_queued is not supported: the lock waitlist is not implemented',
       { status: 400 }
     );
   }
@@ -741,6 +765,13 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
     if (err instanceof AfterCommitError) throw err.error;
+    // A server with locks switched off for the project (`lock-unsupported`),
+    // or one that predates them (an unknown event type), refuses the write:
+    // fail closed, exactly as a World without the capability would.
+    if (isLockEventType(data.eventType) && isLockUnsupportedRefusal(err)) {
+      const key = (data.eventData as { key?: unknown } | undefined)?.key;
+      throw new LockUnsupportedError(typeof key === 'string' ? key : '');
+    }
     // 409 hook-force-claimed on hook_received: the hook's token was taken
     // over by another run and the server has already re-pointed it. Re-key
     // with the token this write carried so `resumeHook()` can follow it.
@@ -763,6 +794,15 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     throw err;
   }
+}
+
+/** A 400 that says the server cannot take lock events. */
+function isLockUnsupportedRefusal(err: unknown): boolean {
+  if (!WorkflowWorldError.is(err) || err.status !== 400) return false;
+  const code = (err as { code?: unknown }).code;
+  return (
+    code === 'lock-unsupported' || /unknown event type 'lock_/.test(err.message)
+  );
 }
 
 async function createWorkflowRunEventInner(

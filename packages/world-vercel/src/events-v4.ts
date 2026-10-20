@@ -40,6 +40,7 @@ import {
   EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
+  LockAttemptSchema,
   type PaginationOptions,
   StructuredErrorSchema,
   WaitSchema,
@@ -281,6 +282,14 @@ interface CreateEventV4InputBase {
   hookIsSystem?: boolean;
   /** hook_created: `createHook({ experimental_force })`. */
   hookForce?: boolean;
+  /** lock_created / lock_released: the lock key. */
+  lockKey?: string;
+  /** lock_created: requested concurrency. */
+  lockConcurrency?: number;
+  /** lock_created: opt-in lease, ms. */
+  lockLeaseTtlMs?: number;
+  /** lock_created: reserved acquisition deadline. */
+  lockExpiresAt?: Date;
   /** Lazy hook resume idempotency key. Set only on a `hook_received` written
    *  from a queue message's `hookInput`; routes the event through the
    *  server's `(runId, resumeId)` constraint so repeated deliveries of one
@@ -487,6 +496,9 @@ const CreateEventV4BodyBaseSchema = z.object({
   step: StepWireSchema.transform(deserializeStep).optional(),
   hook: HookSchema.optional(),
   wait: WaitSchema.optional(),
+  // A lock write's scope after the write (`EventResult.lock`): the fresh
+  // `retryAt` of a refused attempt travels here, not on the event.
+  lock: LockAttemptSchema.optional(),
   stepCreated: z.literal(true).optional(),
   maxEvents: z.number().int().positive().optional(),
   // Positions the backend allocated for this write, when it reports them
@@ -551,8 +563,8 @@ const CreateEventV4BodySchemas: {
   // Never POSTed by the SDK (server-originated sealed-log filler); present
   // only because the map is exhaustive over EventType.
   noop: CreateEventV4BodySchema,
-  // Never POSTed by this World yet: it does not declare `locks`, and
-  // `createWorkflowRunEvent` refuses lock events before they reach the wire.
+  // lock_acquired is server-originated (committed in place of a granted
+  // lock_created); lock_waiter_queued is refused before the wire.
   lock_created: CreateEventV4BodySchema,
   lock_acquired: CreateEventV4BodySchema,
   lock_released: CreateEventV4BodySchema,
@@ -725,6 +737,16 @@ function buildPostFrameMeta(
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
   if (input.hookForce !== undefined) meta.hookForce = input.hookForce;
+  if (input.lockKey !== undefined) meta.lockKey = input.lockKey;
+  if (input.lockConcurrency !== undefined) {
+    meta.lockConcurrency = input.lockConcurrency;
+  }
+  if (input.lockLeaseTtlMs !== undefined) {
+    meta.lockLeaseTtlMs = input.lockLeaseTtlMs;
+  }
+  if (input.lockExpiresAt !== undefined) {
+    meta.lockExpiresAt = input.lockExpiresAt;
+  }
   if (input.resumeId !== undefined) meta.resumeId = input.resumeId;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;

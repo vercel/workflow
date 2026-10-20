@@ -33,7 +33,7 @@ Note the two `await`s: `await using` only awaits the release at scope exit, so a
 
 - **Not FIFO.** Waiting runs poll for a free slot with backoff (starting at 1 second, capped at 30 seconds), and whichever polls first after a release wins it. Under heavy contention a particular run can wait a long time.
 - **Run-level only.** `experimental_lock()` works in workflow functions, not in steps. To limit a step, wrap its call site, as shown below.
-- **World support.** The Local and Postgres Worlds support locks, and the Vercel World will once its backend ships them. On a World without the `locks` capability, `experimental_lock()` throws [`LockUnsupportedError`](/docs/errors/lock-unsupported) instead of running the section unbounded.
+- **World support.** The Local and Postgres Worlds support locks. The Vercel World supports them once its backend ships them; until then it declares support only with [`WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS=1`](/docs/configuration/worlds#workflow_vercel_experimental_locks). On a World without the `locks` capability, `experimental_lock()` throws [`LockUnsupportedError`](/docs/errors/lock-unsupported) instead of running the section unbounded.
 </Callout>
 
 A run waiting for a slot is suspended like a run in `sleep()`: nothing executes, and retries add no events to its event log, however long it waits.

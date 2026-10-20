@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { mintedSpecVersion } from '@workflow/world';
+import { envFlag, mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
@@ -38,6 +38,13 @@ export type { APIConfig } from './utils.js';
  * open socket keeps the process alive.
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
+
+/**
+ * Opts this adapter into declaring the `locks` capability, so
+ * `experimental_lock()` writes lock events to the backend instead of throwing
+ * `LockUnsupportedError`. Read per `createWorld()` call.
+ */
+export const EXPERIMENTAL_LOCKS_ENV_VAR = 'WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS';
 
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
@@ -92,6 +99,15 @@ export function createWorld(config?: APIConfig): World {
       // for large definitions). The server refuses a dynamic `run_created`
       // for a project outside its rollout, so `start()` fails at the write.
       dynamicWorkflowCode: true,
+      // `experimental_lock()`, opt-in until every backend this adapter talks
+      // to implements locks (workflow-server docs/locks.md). Static once
+      // declared, like `hookForceClaim`: a server with locks switched off for
+      // the project, or one that predates them, refuses the write, and the
+      // adapter maps that to `LockUnsupportedError`, so a lock still fails
+      // closed rather than running unbounded.
+      ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, false)
+        ? { locks: { concurrency: true } }
+        : {}),
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

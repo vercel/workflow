@@ -3,6 +3,7 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
+  LockUnsupportedError,
   PreconditionFailedError,
   RunExpiredError,
   SerializationError,
@@ -2033,6 +2034,15 @@ export async function handleSuspension({
             { requestId }
           );
         } catch (err) {
+          // The World declared the capability but its backend refused lock
+          // events (switched off, or too old). Fail the run, as `lock()`
+          // would on a World without the capability: replaying into the same
+          // refusal can never succeed, and running unbounded is not an option.
+          if (LockUnsupportedError.is(err)) {
+            const fatal = new FatalError(err.message);
+            fatal.cause = err;
+            throw fatal;
+          }
           // The run reached a terminal state: it no longer wants the slot.
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info('Lock acquisition refused for a finished run', {
