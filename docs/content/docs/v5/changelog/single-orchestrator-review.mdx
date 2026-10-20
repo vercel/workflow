@@ -42,7 +42,7 @@ async function chargeCard(order: Order) {
 }
 ```
 
-A run of `checkout` typically completes in one orchestrator invocation. If a step fails with a retryable error, its retry moves to its own queue message, and that step invocation only reports the outcome. The orchestrator decides what happens next.
+A run of `checkout` typically completes in one orchestrator invocation. If a step fails with a retryable error, its retry moves to its own queue message, and that step invocation only reports the outcome. The orchestrator decides what happens next. `main` does the same with an inline step's retry. The step's message then owns its remaining attempts: the queue holds the backoff instead of a live invocation, and the at-most-once and retention rules for retries are enforced on that one message. Retrying a short backoff inline, within the inline deadline, is possible and is not implemented.
 
 ### The in-band fence
 
@@ -148,14 +148,20 @@ world-local and world-postgres declare the fence and keep their in-process per-r
 
 ## 5. Vercel queue serialization
 
-### Before
+### Before (`main`)
 
-Every run's orchestrator messages went to a per-run topic (`__wkf_workflow_<name>_<runId>`), consumed by the flow route with `maxConcurrency: 1`. Step messages went to per-step topics so they ran in parallel. Spec 8 runs still work this way.
+All flow messages, orchestrator and step, go to one topic per workflow name (`__wkf_workflow_<name>`). Its consumer has no `maxConcurrency`, so two orchestrator invocations of one run can run at the same time, and the World's step and wait rows refuse the loser's duplicate writes.
+
+`WORKFLOW_SEQUENTIAL_REPLAYS=1` is an opt-in on `main`. It gives each run its own topic (`__wkf_workflow_<name>_<runId>`), each step its own topic, and the flow trigger `maxConcurrency: 1`, so a run has at most one orchestrator invocation at a time.
+
+<Callout type="warn">
+**Spec 8 behavior differs from `main`.** This PR removes `WORKFLOW_SEQUENTIAL_REPLAYS` and makes the per-run `maxConcurrency: 1` topics the default for spec 8 runs. That is a change to spec 8 behavior compared to `main`, and it is the only reason the PR needs a second topic family and trigger (see below). Returning spec 8 runs to `main`'s shared, unserialized topic would let spec 8 and spec 9 messages share `__wkf_workflow_*`, with spec 9 orchestrator messages keyed. This is open.
+</Callout>
 
 ### After, for spec 9 runs
 
 - **A second topic family and trigger.** Spec 9 messages go to `__wkf_keyed_<name>` (or `__<namespace>_wkf_keyed_<name>`). `@workflow/builders` now emits two triggers for the flow route (`getWorkflowQueueTriggers()`): the existing `__wkf_workflow_*` one with `maxConcurrency: 1`, and a `__wkf_keyed_*` one with no `maxConcurrency`. Next.js, Nitro, SvelteKit and the Build Output API builder all use it.
-- **Why the topics can't be shared.** Vercel Queues refuses a keyed send to a topic that a `maxConcurrency` consumer reads, with a 400. Spec 8 messages have to stay on a `maxConcurrency` topic so their behavior doesn't change, so spec 9 messages need topics of their own.
+- **Why the topics are separate today.** Vercel Queues refuses a keyed send to a topic that a `maxConcurrency` consumer reads, with a 400. In this PR spec 8 messages are on `maxConcurrency` topics (see the callout above), so spec 9 messages need topics of their own. With spec 8 back on `main`'s topology, one topic family and one trigger would do.
 - **Keyed vs unkeyed.** Orchestrator messages carry the run id as the concurrency key. Step messages and health checks carry none. A spec 9 run's step dispatches now share one topic, so a fan-out batches into one request again.
 - **One delivery per run.** Vercel Queues keeps at most one delivery per key active. A keyed message claimed while another delivery holds the key is **coalesced**: it is never delivered, and it is counted on the holder.
 - **Coalesced re-runs.** The holder's acknowledgment is refused while coalesced messages it has not covered are pending. The client then runs the handler again within the same delivery, with the lease still held (`experimental_maxCoalescedReruns`, 32 in world-vercel), and acknowledges again covering the reported count. The runtime treats a re-run as a redelivery: turbo is off and the log is read.
@@ -196,7 +202,7 @@ export async function nightlyReport() {
 }
 ```
 
-The run needs about 12 minutes of inline work, longer than one invocation's inline budget. At the deadline, the orchestrator hands its message off and the next invocation continues from the log. A year of handoffs counts as zero attempts, so the run is not failed by the delivery cap (`WORKFLOW_MAX_QUEUE_DELIVERIES`, 48 by default).
+The run needs about 12 minutes of inline work, longer than one invocation's inline budget. Near the deadline, the orchestrator ends its delivery and the next invocation continues from the log: with a handoff when an inline step runs into the deadline, or through one background step when the inline-start margin comes first (section 7). A year of handoffs counts as zero attempts, so the run is not failed by the delivery cap (`WORKFLOW_MAX_QUEUE_DELIVERIES`, 48 by default).
 
 **Example: a webhook whose response stream is still flushing.**
 
@@ -258,7 +264,7 @@ Spec 8 runs keep the previous orchestrator unchanged instead of being migrated. 
 
 ### Spec 8 messages are not keyed
 
-Spec 8 runs keep per-run `maxConcurrency: 1` topics. Keying them would also have serialized them, but would change their behavior: a coalesced wake becomes a re-run inside the same invocation, not a separate delivery. Keeping them unkeyed requires the second trigger described in section 5.
+Spec 8 messages carry no concurrency key. Keying them would serialize them, and a coalesced wake would become a re-run inside the same invocation instead of a separate delivery, which changes spec 8 behavior. In this PR spec 8 runs use per-run `maxConcurrency: 1` topics by default, which differs from `main` (section 5) and is why the second trigger exists.
 
 ### Per-run and per-step topics are dropped for spec 9
 
@@ -299,19 +305,29 @@ Vercel Queues bills operations on keyed messages at its premium rate (2x) for th
 
 ### Storm workflows still see supersessions
 
-After the key fix (section 8), fence refusals on typical e2e deployments dropped from 100 to 140 per deployment to 0 to 5. The `example-nextjs-workflow-turbopack` deployment still logged about 1,150, against 1,474 before. Almost all came from the event-log stress workflows (`wakeLoopReproWorkflow`, `blockedBranchReproWorkflow`, `hookStormReproWorkflow`, `stepStormReproWorkflow`), which drive bursts of hook resumes against heartbeat sleeps. The cause has not been determined. Candidates: the partial rollout of the queue's backend changes, and the unkeyed message kinds in section 5. The fence makes these overlaps safe, so they cost invocations, not correctness.
+After the key fix (section 8), fence refusals on typical e2e deployments dropped from 100 to 140 per deployment to 0 to 5. The `example-nextjs-workflow-turbopack` deployment still logged about 1,150, against 1,474 before. Almost all came from the event-log stress workflows (`wakeLoopReproWorkflow`, `blockedBranchReproWorkflow`, `hookStormReproWorkflow`, `stepStormReproWorkflow`), which drive bursts of hook resumes against heartbeat sleeps. After the queue's backend changes finished rolling out, head `16f7001` saw 19 supersessions and 99 re-runs of an open inline step on one turbopack deployment, and none on the three turbopack deployments after it. The cause is under investigation; a candidate is the unkeyed message kinds in section 5. The fence makes these overlaps safe, so they cost invocations, not correctness.
 
-### Handoff outcomes and counts not verified live
+### Handoffs verified live, and a long sequential run rarely reaches one
 
-The client sends the handoff header, and the `[diag]` logs show handoffs on the stream-flush path on Vercel. Not verified:
+Verified on Vercel with a throwaway probe deployment of this head:
 
-- the queue's answer to a handoff (`accepted`, `not_immediate` or `limit_reached`), which the client does not log;
-- that the handoff count reaches the next delivery, so that `attempt` leaves handoffs out;
-- a deadline-triggered handoff in production, because no e2e run lasts long enough.
+- **Deadline handoff.** A run of 100-second inline steps reached the 5-minute inline deadline (`elapsedMs: 300421`) and handed off. The same queue message was redelivered 1.2 seconds later with `deliveryCount: 2` and `attempt: 1`: the handoff count reaches the next delivery, and `attempt` leaves the handoff out.
+- **Stream-flush handoffs.** All 28 stream-flush handoffs (`readableStreamWorkflow`, `fetchWorkflow`) on the e2e deployments were redelivered once, on the same message, about 2 seconds after the first invocation started.
+- **Not observed directly:** the queue's answer to a handoff (`accepted`, `not_immediate` or `limit_reached`), which the client does not log. A redelivery within about a second implies `accepted`.
 
-### Partial rollout of the queue's backend changes
+The deadline handoff fires only when an inline step runs into the deadline. A run of short sequential inline steps reaches the inline-start margin first (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`, 60 seconds before the inline deadline), and its next step goes to the background on its own message. The step's completion then wakes the orchestrator on a fresh message.
 
-The queue's backend changes for the concurrency key and handoff are not fully rolled out yet. Until they are, some claim paths may not enforce the key, and inline callbacks may not carry the handoff count. In the second case `attempt` counts handoffs, and a long run could hit the delivery cap.
+{/* @skip-typecheck - illustrative workflow */}
+```typescript
+export async function nightlyReport() {
+  "use workflow";
+  for (let day = 0; day < 365; day++) {
+    await aggregateDay(day); // about 1 second each
+  }
+}
+```
+
+Each invocation runs about 4 minutes of `aggregateDay` inline, then sends one step to the background and ends. That costs a step invocation and a queue hop where a handoff would cost a redelivery. Handing off at the margin, when the World supports handoffs, would remove that hop. Not implemented.
 
 ### QuickJS continuation path covered by typecheck only
 
@@ -364,8 +380,8 @@ After 32 re-runs, a refused acknowledgment used to go to the retry handler, whic
 - Release the `@vercel/queue` change and pin its version in place of the preview tarball URL. Then drop the `blockExoticSubdeps` exception from workbench staging if nothing else needs it.
 - Revert `WORKFLOW_SERVER_URL_OVERRIDE`.
 - Deploy the world-vercel backend change first.
-- Wait for the queue's backend rollout, then re-check the supersession counts and the handoff counts.
 - Decide the `run.wakeUp()` question (section 7).
+- Decide whether spec 8 runs return to `main`'s queue topology, which would remove the second topic family and trigger (section 5).
 - Decide the release channel: a 5.x minor or a v6 beta.
 - Decide whether to close the earlier stacked PRs that this one supersedes.
 - Deferred, not required for merge:
