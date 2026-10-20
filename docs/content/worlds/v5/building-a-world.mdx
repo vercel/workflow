@@ -45,6 +45,7 @@ interface WorldCapabilities {
   inBandFence?: boolean;
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
+  runIdempotencyKeys?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
@@ -64,7 +65,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence).
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence). Set `runIdempotencyKeys` only when the World enforces [run idempotency keys](#optional-run-idempotency-keys). Without it, `start()` refuses any call that passes `experimental_idempotencyKey`, before writing anything.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -290,6 +291,62 @@ A writer that finds no snapshot takes its count from a refusal:
 A writer that was refused while writing stops writing from the log it held; only a writer that loads the log again, as above, takes up the refusal's counters.
 
 The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the counters (from the snapshot, or from a refusal where the World lists none) and a stale in-band write end to end when the World declares the capability.
+
+### Optional: run idempotency keys
+
+Run idempotency keys back [`start({ experimental_idempotencyKey })`](/docs/api-reference/workflow-api/start#idempotency-keys), which is experimental. Within one scope of tenant, `workflowName`, and key, at most one run holds a key at a time. A keyed `run_created` carries `eventData.idempotencyKey`, `eventData.idempotencyKeyTtlMs`, and `eventData.idempotencyKeyReusePolicy`, always together and with defaults resolved (see [Run idempotency keys](/docs/api-reference/workflow-runtime/world/storage#run-idempotency-keys) for the fields).
+
+`start()` fails closed: it refuses a keyed start, before any write, on a World that does not declare `capabilities.runIdempotencyKeys`. A World that would accept the fields but not enforce them must leave the capability unset, or every keyed start would silently create duplicates. The same goes for a backend that can have keys switched off: refuse a keyed `run_created` with a 400 instead of creating an unkeyed run.
+
+Declare `capabilities.runIdempotencyKeys: true` when you implement all of the following:
+
+1. **Atomic claims.** Claim the key in the same atomic write that creates the run and its `run_created` event. A claim never names a run that was not created, and a created run never lacks the claim it asked for.
+2. **Self-conflict first.** Check "this run ID already exists" before the key. A re-post of the same run ID, which is a retry of the caller's own write that already landed, answers `EntityConflictError`, never `WorkflowRunAlreadyStartedError`, even though that run holds the key. The runtime treats the `EntityConflictError` as its own write succeeding.
+3. **The decision table.** With H the run currently holding the key:
+
+   | H | Result |
+   | --- | --- |
+   | No claim | Create. The new run holds the key |
+   | A claim whose holder run no longer exists | Create, and take the key over |
+   | H closed (`completed`, `failed`, or `cancelled`) and `now > H.completedAt + ttlMs`, where `ttlMs` is the TTL recorded by H's own `run_created` | Create, and take the key over (the window expired) |
+   | H `pending` or `running` | Refuse, whatever the TTL or policy |
+   | H closed, inside its window, new caller's policy `ALLOW_DUPLICATE` | Create, and take the key over |
+   | H closed, inside its window, new caller's policy `ALLOW_DUPLICATE_FAILED_ONLY` | H `failed` or `cancelled`: create, and take the key over. H `completed`: refuse |
+   | H closed, inside its window, new caller's policy `REJECT_DUPLICATE` | Refuse |
+
+   Make a takeover conditional on the claim still naming the old holder, atomically with creating the new run. Of concurrent claimers exactly one wins, and the others re-evaluate against the new holder.
+4. **Refusals name the holder.** A refusal throws `WorkflowRunAlreadyStartedError` from `@workflow/errors` (HTTP 409, `code: 'idempotency-key-conflict'`, exported as `IDEMPOTENCY_KEY_CONFLICT_CODE`) with the holder's `runId` and `runStatus`, plus `workflowName` and `idempotencyKey` when available. It writes nothing: no run, no event, and no claim. Release anything the attempt staged, such as an uploaded input.
+5. **Echo.** The run returned from `run_created`, and every later read of it, carries `idempotencyKey`. The runtime treats a created run without it as a backend that ignored the key, and logs a warning.
+6. **Deleted holders are free.** A claim whose holder run no longer exists, because it was deleted or expired out of storage, does not block a new start.
+
+The runtime applies the caller's conflict policy itself: on a refusal it either returns a handle to the holder or rethrows. It never sends the conflict policy to the World. When it returns a `pending` holder, it publishes that run's start message again with the queue idempotency key `start-<runId>`, the same key a keyed start uses for its own publish, so a queue that deduplicates by key delivers it once.
+
+A few more rules apply:
+
+- **Physical cleanup.** Logical expiry is always computed from the holder's `completedAt` and its recorded TTL when a conflict is evaluated. Use storage-level expiry only to clean up claims that are already logically expired, never to decide one.
+- **Regions.** If your World stores runs per region, decide whether claims are per region or global, and document it. The runtime helps either way: a keyed `start()` inside a step that sets no `region` passes the parent run's region (from `regionForRunId()`) to `createRunId()`, so a retried step claims the key in the same region as before. The Vercel World keeps claims in the run's region, so its keys are unique per run region.
+- **Arguments are never compared.** A refused start's arguments and other options are ignored; the first writer wins.
+
+The conformance suite in [`packages/world/src/test-support/run-idempotency-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/run-idempotency-conformance.ts) checks each rule against a World's `events` and `runs` storage: the policy matrix, self-conflict, concurrent claimers, window expiry (through an injectable clock or a real 1-second TTL), holder deletion when the World can delete a run, workflow scoping, and the echo. The World packages in this repository import it by relative path from their own test files, like the other test-support modules, and call it at module level:
+
+{/* @skip-typecheck - test harness, not runnable docs code */}
+```typescript
+import { runIdempotencyConformance } from "../../world/src/test-support/run-idempotency-conformance.js";
+
+runIdempotencyConformance({
+  name: "my-world",
+  events: () => storage.events,
+  runs: () => storage.runs,
+  capabilities: () => world.capabilities,
+  newRunId: () => `wrun_${ulid()}`,
+  // Optional: remove a run so the "holder no longer exists" row is checked.
+  deleteRun: async (runId) => { /* ... */ },
+  // Optional: move an injectable clock instead of waiting out a 1s TTL.
+  advanceClock: async (ms) => { /* ... */ },
+});
+```
+
+`world-local`, `world-postgres`, and `world-vercel` declare the capability.
 
 ## Queue interface
 

@@ -1,15 +1,15 @@
 ---
 title: Idempotency
-description: Make step retries safe and coordinate duplicate workflow starts with hook tokens.
+description: Make step retries safe and deduplicate workflow starts with an idempotency key.
 type: guide
-summary: Use step IDs for retry-safe external calls, and use deterministic hook tokens when duplicate requests must route to one active workflow.
+summary: Use step IDs for retry-safe external calls, an idempotency key on start() to start at most one run per key, and deterministic hook tokens when duplicate requests must reach an active workflow.
 ---
 
 <CopyPrompt
-  text="Make this workflow's side effects idempotent. For retry-safe external calls, read the deterministic step ID inside the &quot;use step&quot; function with `getStepMetadata()` from `workflow` and pass `stepId` as the idempotency key to the external API (for example Stripe's `Idempotency-Key` header) so step retries deduplicate. For duplicate workflow starts, derive a deterministic hook token from the domain key (for example `order:${orderId}`): in the API route, look up the active hook with `getHookByToken(token)` from `workflow/api` (catching `HookNotFoundError` from `workflow/errors`) and reuse its `runId`, otherwise call `start(...)`; inside the workflow, create the hook with the same token and check `await hook.getConflict()` before duplicate-sensitive work. Verify retried steps deduplicate, duplicate starts reuse the active run, and conflicts are handled."
+  text="Make this workflow's side effects idempotent. For retry-safe external calls, read the deterministic step ID inside the &quot;use step&quot; function with `getStepMetadata()` from `workflow` and pass `stepId` as the idempotency key to the external API (for example Stripe's `Idempotency-Key` header) so step retries deduplicate. For duplicate workflow starts, derive a deterministic key from the domain (for example `order:${orderId}`) and pass it to `start(...)` from `workflow/api` as `experimental_idempotencyKey`; return `run.runId`, and treat `run.experimental_started === false` as a duplicate that received the existing run. Only if duplicate requests carry data the active run must receive, also create a hook with the same token inside the workflow, check `await hook.getConflict()` before duplicate-sensitive work, and deliver the data with `resumeHook(token, payload)`. Verify retried steps deduplicate, concurrent duplicate starts return one run ID, and conflicts are handled."
 />
 
-Use idempotency when a retry or duplicate request should not repeat the underlying work. In Workflow, there are two common patterns: use the step ID for retry-safe external calls, and use hook tokens to coordinate duplicate workflow starts.
+Use idempotency when a retry or duplicate request should not repeat the underlying work. In Workflow, there are two common patterns: use the step ID for retry-safe external calls, and use an idempotency key on `start()` to deduplicate workflow starts.
 
 ## When to use this
 
@@ -59,30 +59,29 @@ See [Step Idempotency](/docs/foundations/idempotency#step-idempotency) for why `
 
 ## Run idempotency
 
-For duplicate workflow-start requests, derive a hook token from your domain key. You can avoid obvious duplicate starts by checking whether an active hook already owns that token before calling `start()`:
+For duplicate workflow-start requests, derive a key from your domain and pass it to `start()` as `experimental_idempotencyKey`. Concurrent and repeated requests with the same key converge on one run: the first creates it, and the rest receive that run with `experimental_started: false`.
 
 ```typescript
-import { getHookByToken, start } from "workflow/api";
-import { HookNotFoundError } from "workflow/errors";
+import { start } from "workflow/api";
 import { processOrder } from "./workflows/process-order";
 
 export async function POST(request: Request) {
   const { orderId } = await request.json();
-  const token = `order:${orderId}`;
 
-  try {
-    const hook = await getHookByToken(token); // [!code highlight]
-    return Response.json({ runId: hook.runId, reused: true });
-  } catch (error) {
-    if (!HookNotFoundError.is(error)) throw error;
-  }
+  const run = await start(processOrder, [orderId], {
+    experimental_idempotencyKey: `order:${orderId}`, // [!code highlight]
+  });
 
-  const run = await start(processOrder, [orderId]); // [!code highlight]
-  return Response.json({ runId: run.runId, reused: false });
+  return Response.json({
+    runId: run.runId,
+    reused: run.experimental_started === false, // [!code highlight]
+  });
 }
 ```
 
-The workflow should create the deterministic hook and check `await hook.getConflict()` before duplicate-sensitive work: awaiting `getConflict()` suspends the workflow to commit the hook registration and resolves with the conflicting run when another active run already owns the token (or `null` once the hook is registered). See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and how to handle the current race between `start()` and hook registration.
+By default, the key stays held while the run is active and for 24 hours after it closes. Use `experimental_idempotencyKeyTTL` to change that window, `experimental_idempotencyKeyReusePolicy` to let a new run replace a closed one, and `experimental_idempotencyKeyConflictPolicy: "FAIL"` to throw [`WorkflowRunAlreadyStartedError`](/docs/errors/run-already-started) instead of returning the existing run. The option is experimental; see [`start()`](/docs/api-reference/workflow-api/start#idempotency-keys) for the decision table and the per-region behavior on Vercel.
+
+When a duplicate request carries data the active run should receive, have the workflow create a deterministic hook with the same token and check `await hook.getConflict()` before duplicate-sensitive work, then deliver the data with `resumeHook()`. See [Run idempotency](/docs/foundations/idempotency#route-duplicate-requests-to-the-active-run) for the full pattern.
 
 ## Key APIs
 
@@ -92,4 +91,4 @@ The workflow should create the deterministic hook and check `await hook.getConfl
 - [`createHook()`](/docs/api-reference/workflow/create-hook): Creates a hook with an optional deterministic token.
 - [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Finds the hook that owns a token.
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resumes the active hook when the duplicate request carries data.
-- [`start()`](/docs/api-reference/workflow-api/start): Starts a new workflow run.
+- [`start()`](/docs/api-reference/workflow-api/start): Starts a workflow run, or returns the run holding its idempotency key.

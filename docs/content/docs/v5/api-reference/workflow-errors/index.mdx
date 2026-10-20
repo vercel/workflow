@@ -48,6 +48,9 @@ All errors extend [`WorkflowError`](/docs/api-reference/workflow-errors/workflow
     <Card href="/docs/api-reference/workflow-errors/workflow-run-not-completed-error" title="WorkflowRunNotCompletedError">
         Thrown when requesting the result of a workflow run that has not completed yet.
     </Card>
+    <Card href="/docs/api-reference/workflow-errors/workflow-run-already-started-error" title="WorkflowRunAlreadyStartedError">
+        Thrown by `start()` when another run already holds the call's idempotency key.
+    </Card>
     <Card href="/docs/api-reference/workflow-errors/workflow-runtime-error" title="WorkflowRuntimeError">
         Thrown when the workflow runtime encounters an execution error, such as serialization failures or timeouts.
     </Card>
