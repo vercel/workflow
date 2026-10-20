@@ -1,7 +1,10 @@
 import {
   EntityConflictError,
+  FatalError,
+  IDEMPOTENCY_KEYS_DISABLED_CODE,
   WorkflowRunAlreadyStartedError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
@@ -22,6 +25,7 @@ import {
   IdempotencyKeyConflictPolicySchema,
   IdempotencyKeyReusePolicySchema,
   isLegacySpecVersion,
+  isWellFormedString,
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
@@ -564,7 +568,27 @@ type IdempotencyStartOptions = Pick<
   StartOptionsBase,
   | 'experimental_idempotencyKey'
   | (typeof IDEMPOTENCY_KEY_DEPENDENT_OPTIONS)[number]
+  | 'specVersion'
 >;
+
+/**
+ * The error `start()` throws when it refuses a keyed start: invalid key
+ * options, a World without `capabilities.runIdempotencyKeys`, a legacy spec
+ * version, or a refusal that names no valid holder run.
+ *
+ * Each is deterministic, so a retry fails the same way. `fatal` tells the
+ * step executor so when `start()` runs inside a step, the same way
+ * {@link dynamicStartRefusal} does for dynamic starts; the error is
+ * otherwise a plain `WorkflowRuntimeError`.
+ */
+function keyedStartRefusal(
+  message: string,
+  options?: ErrorOptions
+): WorkflowRuntimeError & { fatal: true } {
+  return Object.assign(new WorkflowRuntimeError(message, options), {
+    fatal: true as const,
+  });
+}
 
 function assertIdempotencyKey(key: unknown): asserts key is string {
   if (
@@ -572,12 +596,18 @@ function assertIdempotencyKey(key: unknown): asserts key is string {
     key.length === 0 ||
     key.length > IDEMPOTENCY_KEY_MAX_LENGTH
   ) {
-    throw new WorkflowRuntimeError(
+    throw keyedStartRefusal(
       `start({ experimental_idempotencyKey }) must be a string of 1 to ${IDEMPOTENCY_KEY_MAX_LENGTH} characters; received ${
         typeof key === 'string'
           ? `a string of ${key.length} characters`
           : typeof key
       }.`
+    );
+  }
+  // A lone surrogate has no UTF-8 encoding, so no backend can store the key.
+  if (!isWellFormedString(key)) {
+    throw keyedStartRefusal(
+      'start({ experimental_idempotencyKey }) must be well-formed UTF-16: it contains a lone surrogate.'
     );
   }
 }
@@ -601,7 +631,7 @@ function resolveIdempotencyKeyTtlMs(ttl: unknown): number {
     ttlMs < IDEMPOTENCY_KEY_TTL_MIN_MS ||
     ttlMs > IDEMPOTENCY_KEY_TTL_MAX_MS
   ) {
-    throw new WorkflowRuntimeError(
+    throw keyedStartRefusal(
       `start({ experimental_idempotencyKeyTTL }) must be a duration between '1s' and '30d' (a duration string or whole milliseconds); received ${JSON.stringify(
         ttl
       )}.`
@@ -622,7 +652,7 @@ function resolveIdempotencyPolicy<T extends string>(
 ): T {
   if (value === undefined) return fallback;
   if (!schema.safeParse(value).success) {
-    throw new WorkflowRuntimeError(
+    throw keyedStartRefusal(
       `start({ ${option} }) must be one of ${schema.options
         .map((name) => `'${name}'`)
         .join(', ')}; received ${JSON.stringify(value)}.`
@@ -647,13 +677,19 @@ export function resolveIdempotencyOptions(
       (name) => opts[name] !== undefined
     );
     if (orphans.length > 0) {
-      throw new WorkflowRuntimeError(
+      throw keyedStartRefusal(
         `start({ ${orphans.join(', ')} }) requires experimental_idempotencyKey.`
       );
     }
     return undefined;
   }
   assertIdempotencyKey(key);
+  // The legacy (spec version 1) write path drops the key, so a keyed start
+  // there would silently create duplicates. An explicit version is refused
+  // here; one resolved from the target deployment is checked once known.
+  if (opts.specVersion !== undefined && isLegacySpecVersion(opts.specVersion)) {
+    throw legacyKeyedStartRefusal(opts.specVersion);
+  }
   return {
     key,
     ttlMs: resolveIdempotencyKeyTtlMs(opts.experimental_idempotencyKeyTTL),
@@ -672,6 +708,14 @@ export function resolveIdempotencyOptions(
   };
 }
 
+function legacyKeyedStartRefusal(
+  specVersion: number
+): WorkflowRuntimeError & { fatal: true } {
+  return keyedStartRefusal(
+    `start({ experimental_idempotencyKey }) requires spec version ${SPEC_VERSION_SUPPORTS_EVENT_SOURCING} or later; this run would be stamped with spec version ${specVersion}, whose writes do not carry the key, so no run was created.`
+  );
+}
+
 /**
  * The queue idempotency key for a run's initial message. Shared by a keyed
  * start's own publish and by the re-publish for a pending holder it adopts,
@@ -679,6 +723,83 @@ export function resolveIdempotencyOptions(
  */
 function startMessageIdempotencyKey(runId: string): string {
   return `start-${runId}`;
+}
+
+/**
+ * Handle a refusal naming the run that holds the key, before the conflict
+ * policy is applied (so for `FAIL` too), and return the holder's run id.
+ *
+ * - The holder must be a real run id. A backend that refused without naming
+ *   one leaves nothing to return or adopt, so the start is refused outright
+ *   rather than handing back a handle to a run that does not exist.
+ * - A `pending` holder may be a run whose own start never published (the
+ *   publish failed, or its response was lost before the caller retried).
+ *   Its initial message is published again, with the same queue key its own
+ *   start used, so the key never stays locked by a run nothing will execute.
+ *   A failure is thrown, so the caller retries.
+ * - When the refusal does not report the holder's status, it is read.
+ */
+async function adoptKeyHolder(
+  world: World,
+  refusal: WorkflowRunAlreadyStartedError,
+  traceCarrier: Record<string, string>
+): Promise<string> {
+  if (!workflowRunIdSchema.safeParse(refusal.runId).success) {
+    throw keyedStartRefusal(
+      `The Workflow backend refused this keyed start but did not name a valid run holding the key (received ${JSON.stringify(
+        String(refusal.runId).slice(0, 64)
+      )}), so there is no run to return. No run was created.`,
+      { cause: refusal }
+    );
+  }
+  let holder: Awaited<ReturnType<World['runs']['get']>> | undefined;
+  let runStatus = refusal.runStatus;
+  if (runStatus === undefined) {
+    holder = await world.runs.get(refusal.runId, { resolveData: 'none' });
+    runStatus = holder.status;
+    (refusal as { runStatus?: string }).runStatus = runStatus;
+  }
+  if (runStatus === 'pending') {
+    holder ??= await world.runs.get(refusal.runId, { resolveData: 'none' });
+    await world.queue(
+      getWorkflowQueueName(
+        holder.workflowName,
+        getRunQueueNamespace(holder.executionContext)
+      ),
+      { runId: holder.runId, traceCarrier } satisfies WorkflowInvokePayload,
+      {
+        deploymentId: holder.deploymentId,
+        specVersion: holder.specVersion,
+        idempotencyKey: startMessageIdempotencyKey(holder.runId),
+      }
+    );
+  }
+  return refusal.runId;
+}
+
+/**
+ * A backend with run idempotency keys switched off refuses every keyed
+ * start the same way, so its error is made `fatal` (a `start()` step is not
+ * retried on it). Other errors pass through unchanged.
+ */
+function markKeysDisabledFatal(err: unknown): unknown {
+  if (
+    WorkflowWorldError.is(err) &&
+    err.code === IDEMPOTENCY_KEYS_DISABLED_CODE &&
+    !FatalError.is(err)
+  ) {
+    try {
+      Object.defineProperty(err, 'fatal', {
+        value: true,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    } catch {
+      // A frozen error keeps its own shape.
+    }
+  }
+  return err;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -866,7 +987,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // lookup, upload, or any write: a World that does not enforce keys
       // would otherwise create a duplicate run for every keyed start.
       if (idempotency && world.capabilities?.runIdempotencyKeys !== true) {
-        throw new WorkflowRuntimeError(
+        throw keyedStartRefusal(
           'start({ experimental_idempotencyKey }) requires a World that declares `capabilities.runIdempotencyKeys`. This World does not support run idempotency keys, so no run was created.'
         );
       }
@@ -1103,6 +1224,11 @@ export async function start<TArgs extends unknown[], TResult>(
       // explicit `specVersion` still wins.
       const specVersion = opts.specVersion ?? targetSpecVersion;
       if (opts.specVersion !== undefined) specVersionSource = 'explicit';
+      // Before the key lookup, upload, or any write (see
+      // resolveIdempotencyOptions for an explicit legacy version).
+      if (idempotency && isLegacySpecVersion(specVersion)) {
+        throw legacyKeyedStartRefusal(specVersion);
+      }
       span?.setAttributes({
         ...Attribute.WorkflowRunSpecVersion(specVersion),
         ...Attribute.WorkflowRunSpecVersionSource(specVersionSource),
@@ -1470,6 +1596,20 @@ export async function start<TArgs extends unknown[], TResult>(
             }
           );
         });
+      // For a keyed start whose run was not created: the writes target a
+      // run that does not exist, so they are neither waited on nor allowed
+      // to reject unhandled.
+      const discardArgumentStreams = () => {
+        if (ops.length === 0) return;
+        void Promise.allSettled(ops).then((results) => {
+          if (results.some((result) => result.status === 'rejected')) {
+            runtimeLogger.debug(
+              'Argument streams of a keyed start that created no run failed',
+              { workflowRunId: runId }
+            );
+          }
+        });
+      };
 
       // A keyed start publishes only once `run_created` has answered: the
       // World may refuse the key, and a message published beside the write
@@ -1482,46 +1622,29 @@ export async function start<TArgs extends unknown[], TResult>(
         try {
           created = await runCreated;
         } catch (err) {
-          flushArgumentStreams();
+          if (!EntityConflictError.is(err)) {
+            // No run was created under this id (or none this call can
+            // confirm), so its argument streams must not keep the function
+            // alive. They cannot be recalled once started; settle them
+            // quietly so a failure is not an unhandled rejection.
+            discardArgumentStreams();
+          }
           if (EntityConflictError.is(err)) {
             // Self-conflict: an earlier attempt of this very write landed
             // (the World checks the run id before the key), so this run
             // holds the key. Publish as if the write had just succeeded.
+            flushArgumentStreams();
           } else if (WorkflowRunAlreadyStartedError.is(err)) {
             err.idempotencyKey ??= idempotency.key;
+            const holderRun = await adoptKeyHolder(world, err, traceCarrier);
             if (idempotency.conflictPolicy === 'FAIL') throw err;
             span?.setAttributes({
               ...Attribute.WorkflowStartIdempotencyOutcome('existing'),
-              ...Attribute.WorkflowRunId(err.runId),
+              ...Attribute.WorkflowRunId(holderRun),
             });
-            if (err.runStatus === 'pending') {
-              // The holder may have been created by a start whose publish
-              // never landed. Re-publish its initial message, deduplicated
-              // against that start's own publish by the shared queue key, so
-              // returning it never hands back a run nothing will execute. A
-              // failure is thrown so the caller retries.
-              const holder = await world.runs.get(err.runId, {
-                resolveData: 'none',
-              });
-              await world.queue(
-                getWorkflowQueueName(
-                  holder.workflowName,
-                  getRunQueueNamespace(holder.executionContext)
-                ),
-                {
-                  runId: holder.runId,
-                  traceCarrier,
-                } satisfies WorkflowInvokePayload,
-                {
-                  deploymentId: holder.deploymentId,
-                  specVersion: holder.specVersion,
-                  idempotencyKey: startMessageIdempotencyKey(holder.runId),
-                }
-              );
-            }
-            return new Run<TResult>(err.runId, { started: false });
+            return new Run<TResult>(holderRun, { started: false });
           } else {
-            throw err;
+            throw markKeysDisabledFatal(err);
           }
         }
 
