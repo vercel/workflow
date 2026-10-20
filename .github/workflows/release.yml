@@ -22,11 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       # `contents: write` lets the default `GITHUB_TOKEN` push the release
-      # tags and create the GitHub Release. The "Version Packages" PR is
-      # maintained with a gh-sts App token instead (see below), so
-      # `pull-requests: write` is not needed. `id-token: write` is for npm
-      # provenance and for the OIDC token that gh-sts exchanges.
+      # tags and create the GitHub Release. On `main` the "Version Packages"
+      # PR is maintained with a gh-sts App token (see below); other branches
+      # (`stable`) still use `GITHUB_TOKEN` for it, hence
+      # `pull-requests: write`. `id-token: write` is for npm provenance and
+      # for the OIDC token that gh-sts exchanges.
       contents: write
+      pull-requests: write
       id-token: write
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -214,14 +216,16 @@ jobs:
       # not trigger other workflows, so the "Version Packages" PR's CI sat at
       # "action required" until someone approved or re-ran it. The gh-sts
       # policy that authorizes this token only matches this workflow file on
-      # `main` and `stable` (pinned by repository and owner ID), and the token
-      # is scoped to `contents: write` and `pull_requests: write` on this
-      # repository. It is minted after every publish step has run, so no
-      # package lifecycle script sees it, and it is revoked at the end of the
-      # job.
+      # `main` (pinned by repository and owner ID) for `push` and
+      # `workflow_dispatch`, and the token is scoped to `contents: write` and
+      # `pull_requests: write` on this repository. It is minted after every
+      # publish step has run and is revoked at the end of the job. (Earlier
+      # steps in this job can request OIDC tokens too, since the job needs
+      # `id-token: write` for npm publishing; this token is no broader than
+      # what those steps already hold.)
       - name: Mint scoped GitHub token via gh-sts
         id: gh-sts
-        if: ${{ !cancelled() && steps.reset.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' && github.ref == 'refs/heads/main' }}
         uses: actions/github-script@v7
         env:
           GH_STS_POLICY: vercel-workflow-release-pr
@@ -262,10 +266,10 @@ jobs:
             );
 
       - name: Create or update the release pull request
-        if: ${{ !cancelled() && steps.gh-sts.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' && steps.gh-sts.outcome != 'failure' }}
         uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          github-token: ${{ steps.gh-sts.outputs.token }}
+          github-token: ${{ steps.gh-sts.outputs.token || github.token }}
           script: pnpm ci:version
 
       - name: Revoke gh-sts token
