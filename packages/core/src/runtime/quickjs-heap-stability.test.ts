@@ -201,6 +201,11 @@ describe('QuickJS heap stability over many events', () => {
       // The last step, the last hook, and its not-yet-recorded dispose.
       { pending: 3, hooks: 1 },
     ],
+    [
+      'one hook token reused across create and dispose',
+      `for (var i = 0; i < ${ITERATIONS}; i++) { var h = createHook({ token: "tok", metadata: PAD }); await step(i); h.dispose(); }`,
+      { pending: 3, hooks: 1 },
+    ],
   ])('%s: settled ops are released', async (_name, body, finalIteration) => {
     const { session, run } = await start(body);
     try {
@@ -210,6 +215,22 @@ describe('QuickJS heap stability over many events', () => {
       expect(result).toEqual({ ...finalIteration, terminal: 0 });
       const growth = (heap.get(late) ?? 0) - (heap.get(early) ?? 0);
       expect(growth).toBeLessThan(MAX_GROWTH_BYTES);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it('answers getConflict() after a disposed hook is released', async () => {
+    // Releasing a disposed hook drops its __hooks entry; the hook object's
+    // closures hold that state directly, so getConflict() still resolves.
+    const { session, run } = await start(
+      'var h = createHook({ token: "tok" }); await step(0); h.dispose(); await step(1);' +
+        ' if (Object.keys(globalThis.__hooks).length !== 0) throw new Error("hook not released");' +
+        ' var c = await h.getConflict(); if (c !== null) throw new Error("conflict: " + c);'
+    );
+    try {
+      const { result } = await drive(session, run.runId, []);
+      expect(result).toEqual({ pending: 1, hooks: 0, terminal: 0 });
     } finally {
       session.dispose();
     }
