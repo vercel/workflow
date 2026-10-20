@@ -25,6 +25,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import {
@@ -2725,6 +2726,24 @@ async function workflow() {
         start(keyedWorkflow, [], { experimental_idempotencyKey: KEY })
       ).rejects.toBe(error);
       expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the backend kill switch as a non-retryable error, with nothing published', async () => {
+      keyedWorld();
+      const disabled = new WorkflowWorldError(
+        'Run idempotency keys are switched off on this Workflow backend, so no run was created.',
+        { status: 400, code: 'idempotency-keys-disabled' }
+      );
+      eventsCreate.mockRejectedValue(disabled);
+
+      const thrown = await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+      }).catch((err: unknown) => err);
+
+      expect(thrown).toBe(disabled);
+      expect(isRetryableWorldError(thrown)).toBe(false);
+      expect(queue).not.toHaveBeenCalled();
+      expect(runsGet).not.toHaveBeenCalled();
     });
 
     it('throws when the publish of a created run fails', async () => {

@@ -15,7 +15,7 @@ import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AfterCommitError } from './event-retry.js';
+import { AfterCommitError, isRetryableEventPostError } from './event-retry.js';
 import { createWorkflowRunEventBatch, splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventsBatchV4,
@@ -149,6 +149,30 @@ describe('throwForErrorResponse', () => {
     expect(
       (thrown as WorkflowRunAlreadyStartedError).runStatus
     ).toBeUndefined();
+  });
+
+  it('maps the 400 idempotency-keys-disabled kill switch to a clear, non-retryable error', () => {
+    let thrown: unknown;
+    try {
+      call(
+        400,
+        '{"success":false,"error":"idempotency-keys-disabled","message":"Run idempotency keys are disabled"}'
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(WorkflowWorldError.is(thrown)).toBe(true);
+    expect(thrown).toMatchObject({
+      status: 400,
+      code: 'idempotency-keys-disabled',
+    });
+    expect((thrown as Error).message).toMatch(
+      /idempotency keys are switched off.*no run was created/i
+    );
+    expect((thrown as Error).message).toContain(
+      'Run idempotency keys are disabled'
+    );
+    expect(isRetryableEventPostError(thrown)).toBe(false);
   });
 
   it('keeps the plain workflow-run-exists 409 an EntityConflictError', () => {

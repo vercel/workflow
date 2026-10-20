@@ -23,6 +23,7 @@ import {
   EntityConflictError,
   HookForceClaimedError,
   IDEMPOTENCY_KEY_CONFLICT_CODE,
+  IDEMPOTENCY_KEYS_DISABLED_CODE,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
@@ -390,6 +391,10 @@ export function inBandCounter(value: unknown): number | undefined {
  *     (a run_created refused because another run holds its idempotency key;
  *     `details` carries the holder's `runId`, `runStatus` and `workflowName`)
  *   - 409 with code `hook-force-claimed` → HookForceClaimedError
+ *   - 400 with code `idempotency-keys-disabled` → WorkflowWorldError (status
+ *     400, same code) whose message says what happened: the backend has run
+ *     idempotency keys switched off, nothing was written, and retrying the
+ *     same keyed start will not help
  *   - other 409 → EntityConflictError (start() dedupe, including a re-post of
  *     a keyed run_created whose first attempt landed; terminal-state
  *     transitions)
@@ -466,6 +471,14 @@ export function errorForResponse(
           ? { workflowName: holder.workflowName }
           : {}),
       }
+    );
+  }
+  if (status === 400 && code === IDEMPOTENCY_KEYS_DISABLED_CODE) {
+    return new WorkflowWorldError(
+      'Run idempotency keys are switched off on this Workflow backend, so no run was created. ' +
+        'Retrying the same start will be refused again; start without `experimental_idempotencyKey` instead. ' +
+        `(${IDEMPOTENCY_KEYS_DISABLED_CODE}: ${message})`,
+      { url, status, code }
     );
   }
   if (status === 409) return new EntityConflictError(message);
