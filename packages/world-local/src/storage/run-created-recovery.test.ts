@@ -232,7 +232,7 @@ it('restores an interrupted run_created from the original run record before star
     input: new Uint8Array([1, 2, 3]),
   });
   expect(warning).toHaveBeenCalledWith(
-    `[world-local] restored missing run_created for ${original.run.runId}`
+    `[world-local] restored missing run_created for ${original.run.runId} (creation was interrupted or is still in flight)`
   );
 });
 
@@ -346,9 +346,8 @@ it('does not duplicate run_created when repair overtakes resilient start', async
   expect(original.run?.status).toBe('running');
   expect(repaired.run?.status).toBe('running');
   const events = await listEvents(runId);
-  expect(events[0]?.eventType).toBe('run_created');
-  expect(events.slice(1).map((event) => event.eventType)).toEqual([
-    'run_started',
+  expect(events.map((event) => event.eventType)).toEqual([
+    'run_created',
     'run_started',
   ]);
   expect(
@@ -408,6 +407,83 @@ it('rejects a non-empty log without run_created and leaves it unchanged', async 
 
   expect(await storage.runs.get(original.run.runId)).toEqual(before);
   expect(await listEvents(original.run.runId)).toEqual([unexpectedEvent]);
+});
+
+it.each<{
+  name: string;
+  request: AnyEventRequest;
+  status: string;
+}>([
+  {
+    name: 'run_cancelled',
+    request: {
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+    },
+    status: 'cancelled',
+  },
+  {
+    name: 'run_failed',
+    request: {
+      eventType: 'run_failed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { error: new Uint8Array([7]) },
+    },
+    status: 'failed',
+  },
+])('$name continues when run_created repair fails', async ({
+  request,
+  status,
+}) => {
+  const nonEmpty = await createInterruptedRun();
+  const eventId = slotToEventId(FIRST_EVENT_SLOT);
+  await writeJSON(
+    taggedPath(
+      testDir,
+      runEntityDir('events', nonEmpty.run.runId),
+      `${nonEmpty.run.runId}-${eventId}`
+    ),
+    {
+      eventType: 'attr_set',
+      runId: nonEmpty.run.runId,
+      eventId,
+      createdAt: new Date(),
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        changes: [{ key: 'unexpected', value: 'first' }],
+        writer: { type: 'workflow' },
+      },
+    }
+  );
+
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const nonEmptyResult = await createStorage(testDir).events.create(
+    nonEmpty.run.runId,
+    request
+  );
+  expect(nonEmptyResult.run?.status).toBe(status);
+  expect(warning).toHaveBeenNthCalledWith(
+    1,
+    expect.stringContaining(
+      'the event log is not empty (its first event is "attr_set")'
+    )
+  );
+
+  const missingInput = await createInterruptedRun();
+  await writeJSON(
+    taggedPath(testDir, 'runs', missingInput.run.runId),
+    { ...missingInput.run, input: undefined },
+    { overwrite: true }
+  );
+  const missingInputResult = await createStorage(testDir).events.create(
+    missingInput.run.runId,
+    request
+  );
+  expect(missingInputResult.run?.status).toBe(status);
+  expect(warning).toHaveBeenNthCalledWith(
+    2,
+    expect.stringContaining('the original input is missing')
+  );
 });
 
 it.each<{

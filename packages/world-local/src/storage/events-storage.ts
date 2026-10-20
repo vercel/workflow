@@ -1074,7 +1074,7 @@ export function createEventsStorage(
     };
     if (await publishRunCreatedAtFirstSlot(event)) {
       console.warn(
-        `[world-local] restored missing run_created for ${run.runId}`
+        `[world-local] restored missing run_created for ${run.runId} (creation was interrupted or is still in flight)`
       );
     }
   }
@@ -1332,8 +1332,17 @@ export function createEventsStorage(
                     encryptionPublicKey: runInputData.encryptionPublicKey,
                   },
                 };
-                await publishRunCreatedAtFirstSlot(runCreatedEvent);
-                currentRun = createdRun;
+                const published =
+                  await publishRunCreatedAtFirstSlot(runCreatedEvent);
+                currentRun = published
+                  ? createdRun
+                  : await readJSONWithFallback(
+                      basedir,
+                      'runs',
+                      effectiveRunId,
+                      WorkflowRunSchema,
+                      tag
+                    );
                 createdByResilientStart = true;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -1364,7 +1373,22 @@ export function createEventsStorage(
             data.eventType === 'run_cancelled' ||
             data.eventType === 'run_failed')
         ) {
-          await restoreMissingRunCreated(currentRun);
+          if (
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed'
+          ) {
+            try {
+              await restoreMissingRunCreated(currentRun);
+            } catch (error) {
+              const reason =
+                error instanceof Error ? error.message : String(error);
+              console.warn(
+                `[world-local] could not restore missing run_created for ${currentRun.runId}: ${reason}`
+              );
+            }
+          } else {
+            await restoreMissingRunCreated(currentRun);
+          }
         }
 
         // Draw this event's id now that any synthetic `run_created` above has
