@@ -59,7 +59,7 @@ See [Step Idempotency](/docs/foundations/idempotency#step-idempotency) for why `
 
 ## Run idempotency
 
-For duplicate workflow-start requests, derive a key from your domain and pass it to `start()` as `experimental_idempotencyKey`. Concurrent and repeated requests with the same key converge on one run: the first creates it, and the rest receive that run with `experimental_started: false`.
+For duplicate workflow-start requests, derive a key from your domain and pass it to `start()` as `experimental_idempotencyKey`. Concurrent and repeated requests with the same key converge on one run: the first creates it, and the rest receive that run with `experimental_started: false`. On the Vercel World, this holds per run region: pass the same `region` to every keyed `start()` when a key must be unique across regions. See [Regions on Vercel](/docs/api-reference/workflow-api/start#regions-on-vercel).
 
 ```typescript
 import { start } from "workflow/api";

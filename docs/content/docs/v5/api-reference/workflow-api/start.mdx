@@ -58,7 +58,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * In v5, you can also call `start()` directly from a workflow function to spawn a child run or continue work in a new run. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) and [Versioning](/docs/foundations/versioning).
 * This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
 * The function returns immediately after enqueuing the workflow. It doesn't wait for the workflow to complete.
-* Without an idempotency key, each call to `start()` creates a new workflow run. To start at most one run per business key, such as an order ID, pass [`experimental_idempotencyKey`](#idempotency-keys): a duplicate call returns the run that already holds the key instead of creating another, decided atomically with creating the run. To also deliver a duplicate request's data to the active run, combine it with a deterministic hook token. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
+* Without an idempotency key, each call to `start()` creates a new workflow run. To start at most one run per business key, such as an order ID, pass [`experimental_idempotencyKey`](#idempotency-keys): a duplicate call returns the run that already holds the key instead of creating another, decided atomically with creating the run (per run region on the Vercel World; see [Regions on Vercel](#regions-on-vercel)). To also deliver a duplicate request's data to the active run, combine it with a deterministic hook token. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
 * The returned `Run` has `experimental_started: true` when this call created the run, and `false` when it returned an existing run that holds the call's idempotency key.
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When you provide `deploymentId`, the argument types and return type become `unknown` because the workflow function's types may differ across deployments.
@@ -214,7 +214,7 @@ The outcome depends on the run currently holding the key and on the new call's r
 
 The TTL window starts when the holding run closes, and its length is the TTL that run's own `start()` recorded. The reuse and conflict policies always come from the new call. When several calls race to take over the same key, exactly one wins and the others are evaluated against the winner.
 
-When a call returns an existing run, its arguments and every other option it passed are ignored. The first call to claim the key wins, and arguments are never compared, so a duplicate with different arguments still receives the original run.
+When a call returns an existing run, its arguments and every other option it passed are ignored. The first call to claim the key wins, and arguments are never compared, so a duplicate with different arguments still receives the original run. A keyed call's stream arguments are not read until its run is created, so a refused duplicate leaves a `ReadableStream` argument, such as a webhook's `request.body`, unread and unlocked, and never connects a `WritableStream` argument.
 
 To reject duplicates instead, and to let a failed run's key be reused right away:
 
