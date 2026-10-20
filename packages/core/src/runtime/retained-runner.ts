@@ -181,6 +181,11 @@ const STARTUP_PHASES = new Set([
 ]);
 /** Any other phase is logged only when it takes at least this long. */
 const SLOW_PHASE_MS = 1000;
+/** Slow occurrences of one phase logged individually per owner; later ones
+ * are only counted in the heartbeat (`slowPhases`). An owner's lines share
+ * the platform's per-request log budget (256 lines) with its heartbeats, so a
+ * fan-out with one slow line per step would silence the owner. */
+const SLOW_PHASE_LINES = 5;
 /** Durable step starts committed (then dispatched) per prefix. */
 const START_PREFIX_SIZE = 50;
 // Extend deliberately: shared-resource operations and failure/retry decisions
@@ -787,14 +792,22 @@ export class RetainedRunner {
     return ack ? Promise.race([ack.promise, done]) : done;
   }
 
-  /** Start-up phases always; anything else only when slow. */
+  /** Start-up phases always; anything else only when slow, and only its
+   * first SLOW_PHASE_LINES slow occurrences (the rest are counted). */
   private logPhase(
     phase: string,
     status: string,
     elapsedMs: number,
     details: Record<string, unknown>
   ) {
-    if (!STARTUP_PHASES.has(phase) && elapsedMs < SLOW_PHASE_MS) return;
+    if (!STARTUP_PHASES.has(phase)) {
+      if (elapsedMs < SLOW_PHASE_MS) return;
+      const slow = this.slowPhases.get(phase) ?? { count: 0, maxMs: 0 };
+      slow.count++;
+      slow.maxMs = Math.max(slow.maxMs, Math.round(elapsedMs));
+      this.slowPhases.set(phase, slow);
+      if (slow.count > SLOW_PHASE_LINES) return;
+    }
     const { parentSpanId: _parent, ...fields } = details;
     ownerLog('phase', {
       runId: this.runId,
@@ -829,8 +842,12 @@ export class RetainedRunner {
       deadlineInMs: Number.isFinite(this.deadline)
         ? this.deadline - Date.now()
         : null,
+      ...(this.slowPhases.size
+        ? { slowPhases: Object.fromEntries(this.slowPhases) }
+        : {}),
     };
   }
+  private slowPhases = new Map<string, { count: number; maxMs: number }>();
 
   private async observed<T>(
     phase: string,

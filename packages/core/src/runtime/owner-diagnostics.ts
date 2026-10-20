@@ -7,8 +7,12 @@ import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
  * then distinguishable: heartbeats keep arriving while it waits, a large
  * `event_loop_lag` follows a blocked event loop, and nothing at all means the
  * process ended.
+ *
+ * Every line here is attributed to the request that started the owner, and
+ * the platform keeps at most 256 lines per request: a 10 s heartbeat stays
+ * within that for a whole 800 s owner lifetime.
  */
-const HEARTBEAT_MS = 5000;
+const HEARTBEAT_MS = 10_000;
 const TICK_MS = 1000;
 const LAG_LOG_MS = 500;
 
