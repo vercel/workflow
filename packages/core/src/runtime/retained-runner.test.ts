@@ -16,6 +16,17 @@ import {
 import { createWorld } from '@workflow/world-local';
 import { ulid } from 'ulid';
 import { afterEach, expect, it, vi } from 'vitest';
+
+const waitUntil = vi.hoisted(() =>
+  vi.fn((promise: Promise<unknown>) => {
+    promise.catch(() => {});
+  })
+);
+vi.mock('@vercel/functions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@vercel/functions')>()),
+  waitUntil,
+}));
+
 import { registerStepFunction } from '../private.js';
 import { deriveRunKeyPair } from '../sealed-box.js';
 import { sealTo } from '../serialization/encryption.js';
@@ -263,6 +274,61 @@ it('starts the first steps of a wide fan-out before every step is created', asyn
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
     'completed'
   );
+});
+
+it('registers the owner lifetime with waitUntil once, not once per input', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup(code, false, false, 500);
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  fixture.world.invoke = vi.fn();
+  const handler = withRetainedRunner(
+    fixture.world,
+    '__wkf_workflow_',
+    code
+  )(vi.fn());
+  const lifetimes = () => waitUntil.mock.calls.length;
+  const before = lifetimes();
+  await handler({ runId: fixture.runId }, fixture.metadata);
+  for (const value of ['one', 'two']) {
+    const hook = await vi.waitFor(async () => {
+      const events = await fixture.world.events.list({
+        runId: fixture.runId,
+        resolveData: 'all',
+      });
+      const created = events.data.find((e) => e.eventType === 'hook_created');
+      expect(created).toBeDefined();
+      return created!;
+    });
+    if (hook.eventType !== 'hook_created') throw new Error('not a hook');
+    await handler(
+      {
+        runId: fixture.runId,
+        invoke: true,
+        requestId: value,
+        input: {
+          type: 'hook_resume',
+          version: 1,
+          hookId: hook.correlationId,
+          token: hook.eventData.token,
+          payload: await dehydrateStepReturnValue(
+            value,
+            fixture.runId,
+            undefined,
+            [],
+            globalThis,
+            false
+          ),
+        },
+      },
+      fixture.metadata
+    );
+  }
+  await vi.waitFor(() => expect(values).toEqual(['one', 'two']));
+  // Three inputs reached the same owner; its lifetime is registered once.
+  expect(lifetimes() - before).toBe(1);
 });
 
 it('keeps the retained session when a wake brings no new events', async () => {

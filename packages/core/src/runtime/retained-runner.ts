@@ -587,10 +587,19 @@ export class RetainedRunner {
     return completion.promise;
   }
 
+  /** Keep the instance alive for this runner's lifetime. Registered once per
+   * lifetime: work registered with waitUntil keeps its request in flight, so
+   * registering it on every input would hold every request the owner ever
+   * accepted open until the runner retires, exhausting the instance's
+   * request slots while the owner sits idle. */
   async retain() {
+    const lifetime = this.lifetime;
+    if (!lifetime || this.retainedLifetime === lifetime) return;
+    this.retainedLifetime = lifetime;
     const { waitUntil } = await import('@vercel/functions');
-    if (this.lifetime) waitUntil(this.lifetime);
+    waitUntil(lifetime);
   }
+  private retainedLifetime?: Promise<void>;
 
   submit(message: unknown, metadata: Metadata) {
     const parsed = WorkflowInvokePayloadSchema.parse(message);
