@@ -682,10 +682,12 @@ export async function createWorkflowRunEventBatch(
   // The skipped-slot report of an in-band batch, and the positions the
   // backend allocated for it (`allocated` is not declared on
   // `EventBatchResult`; it rides along under that name).
+  // The backend's `reportIncomplete` is the World contract's `hasMore`: the
+  // writer reloads before it consumes what the batch resolves.
   const report = {
     ...(wire.events !== undefined ? { events: wire.events } : {}),
-    ...(wire.reportIncomplete !== undefined
-      ? { reportIncomplete: wire.reportIncomplete }
+    ...(wire.reportIncomplete === true || wire.hasMore === true
+      ? { hasMore: true }
       : {}),
     ...(wire.allocated !== undefined ? { allocated: wire.allocated } : {}),
   };

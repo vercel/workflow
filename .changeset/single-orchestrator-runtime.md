@@ -5,8 +5,6 @@
 "@workflow/world-vercel": minor
 "@workflow/world-local": minor
 "@workflow/world-postgres": minor
-"@workflow/builders": patch
-"@workflow/nitro": patch
 "@workflow/web-shared": patch
 "workflow": minor
 ---

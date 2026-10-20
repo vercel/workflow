@@ -140,16 +140,16 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // `createHook({ experimental_force: true })`; see the hook_created
       // branch of storage/events-storage.ts.
       hookForceClaim: true,
-      // The queue delivers a run's orchestrator messages one at a time (an
-      // in-process per-run gate, see queue.ts): with the fence, the two
-      // halves of the single-writer guarantee.
+      // The queue delivers a single-orchestrator run's orchestrator messages
+      // one at a time (an in-process per-run gate, see queue.ts): with the
+      // fence, the two halves of the single-writer guarantee. An in-band
+      // write is stored at its `occurredAt` (events-storage.ts), as the
+      // spec-9 contract requires.
       maxConcurrency: true,
       // A per-run in-band count on disk, under a lock file, so every process
       // on the data directory shares it; see the in-band writer fence in
       // storage/events-storage.ts.
       inBandFence: true,
-      // An in-band write is stored at its `occurredAt` (events-storage.ts).
-      inBandEventTime: true,
     },
     ...queue,
     ...storage,

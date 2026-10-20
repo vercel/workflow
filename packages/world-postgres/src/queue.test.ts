@@ -8,6 +8,7 @@ import {
   parseQueueName,
   type Queue,
   type QueuePayload,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   ValidQueueName,
 } from '@workflow/world';
 import * as nodeHttp from '@workflow/world/node-http';
@@ -339,6 +340,57 @@ describe('postgres queue http execution', () => {
   it.each([
     undefined,
     'custom',
+  ])('delivers a spec 8 wake while the same run is awaiting an inline step (namespace: %s)', async (namespace) => {
+    const firstRequestStarted = Promise.withResolvers<void>();
+    const releaseFirstRequest = Promise.withResolvers<void>();
+    let requestCount = 0;
+    const server = await startWorkflowHttpServer([], 0, undefined, async () => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        firstRequestStarted.resolve();
+        await releaseFirstRequest.promise;
+      }
+    });
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', namespace },
+      pool
+    );
+    await queue.start();
+    const task = getTaskHandler('workflow_flows');
+    const queueName = namespace
+      ? `__${namespace}_wkf_workflow_test-workflow`
+      : '__wkf_workflow_test-workflow';
+    const payload = { runId: 'wrun_01ABC' };
+    const firstExecution = task(
+      buildMessageData(queueName, payload, {
+        messageId: MessageId.parse('msg_01ABC'),
+      }),
+      {}
+    );
+    let wakeExecution: Promise<void> | undefined;
+    try {
+      await firstRequestStarted.promise;
+      // A wake must reach the runtime before the inline step completes:
+      // it may be the hook resumption that aborts that very step.
+      wakeExecution = task(
+        buildMessageData(queueName, payload, {
+          messageId: MessageId.parse('msg_01ABD'),
+        }),
+        {}
+      );
+      await expect.poll(() => requestCount, { timeout: 1_000 }).toBe(2);
+      await wakeExecution;
+    } finally {
+      releaseFirstRequest.resolve();
+      await Promise.all([firstExecution, wakeExecution]);
+    }
+  });
+
+  it.each([
+    undefined,
+    'custom',
   ])('routes a run’s orchestrator deliveries to its own named queue (namespace: %s)', async (namespace) => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', namespace },
@@ -350,19 +402,28 @@ describe('postgres queue http execution', () => {
         ? `__${namespace}_wkf_workflow_test-workflow`
         : '__wkf_workflow_test-workflow'
     ) as ValidQueueName;
-    await queue.queue(queueName, { runId: 'run_a' });
-    await queue.queue(queueName, { runId: 'run_a' }, { delaySeconds: 60 });
-    await queue.queue(queueName, { runId: 'run_b' });
+    const spec9 = { runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR };
+    await queue.queue(queueName, { runId: 'run_a', ...spec9 });
+    await queue.queue(
+      queueName,
+      { runId: 'run_a', ...spec9 },
+      { delaySeconds: 60 }
+    );
+    await queue.queue(queueName, { runId: 'run_b', ...spec9 });
     await queue.queue(queueName, {
       runId: 'run_a',
       stepId: 'step_a',
       stepName: 'step',
+      ...spec9,
     });
     await queue.queue(queueName, {
       __healthCheck: true,
       correlationId: 'hc_a',
       runId: 'run_a',
     });
+    // A spec 8 (or unstamped) run's orchestrator deliveries are not
+    // serialized: one can hold an inline step until another wake aborts it.
+    await queue.queue(queueName, { runId: 'run_c' });
     const options = vi
       .mocked(workerUtilsMock.addJob)
       .mock.calls.map((call) => call[2]);
@@ -370,7 +431,7 @@ describe('postgres queue http execution', () => {
     // named queue alone is what serializes them.
     expect(
       vi.mocked(workerUtilsMock.addJob).mock.calls.map((call) => call[0])
-    ).toEqual(Array(5).fill('workflow_flows'));
+    ).toEqual(Array(6).fill('workflow_flows'));
     expect(options[0]).toMatchObject({
       queueName: 'workflow_flows:run_a:executor',
     });
@@ -382,6 +443,7 @@ describe('postgres queue http execution', () => {
     });
     expect(options[3]).not.toHaveProperty('queueName');
     expect(options[4]).not.toHaveProperty('queueName');
+    expect(options[5]).not.toHaveProperty('queueName');
   });
 
   it('keeps a rescheduled orchestrator delivery in its run’s named queue', async () => {
@@ -392,7 +454,10 @@ describe('postgres queue http execution', () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
     await getTaskHandler('workflow_flows')(
-      buildMessageData('__wkf_workflow_test-workflow', { runId: 'run_a' }),
+      buildMessageData('__wkf_workflow_test-workflow', {
+        runId: 'run_a',
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      }),
       {}
     );
     expect(workerUtilsMock.addJob).toHaveBeenCalledWith(

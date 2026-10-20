@@ -5,8 +5,11 @@ import {
   ConsumerDiscoveryError,
   QueueClient,
 } from '@vercel/queue';
+import { globalSingleton } from '@workflow/utils';
 import {
+  isSingleOrchestratorMessage,
   MessageId,
+  orchestratorRunIdOf,
   parseQueueName,
   type Queue,
   type QueueBatchResult,
@@ -14,7 +17,6 @@ import {
   type QueuePayload,
   QueuePayloadSchema,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   ValidQueueName,
 } from '@workflow/world';
@@ -217,9 +219,11 @@ const MessageWrapper = z.compile(
 /**
  * Message lifetime: delays and retention.
  *
- * A timer (a sleep's wake) is a NEW message sent with `delaySeconds`. VQS
- * caps a message's delay at its retention, which defaults to 24 hours, so a
- * delayed message sent without `retentionSeconds` is clamped to
+ * A timer (a sleep's wake), and every continuation of a spec-8 run (a
+ * `{ timeoutSeconds }` handler result), is a NEW message sent with
+ * `delaySeconds`. VQS caps a message's delay at its retention, which
+ * defaults to 24 hours, so a delayed message sent without
+ * `retentionSeconds` is clamped to
  * {@link MAX_DELAY_SECONDS} (23 hours by default, leaving a buffer before the
  * default TTL). The runtime chains timers for longer sleeps: when one fires
  * early it schedules the next for the remaining time.
@@ -281,34 +285,37 @@ export function resolveMessageLifetime(opts?: QueueOptions): {
 
 /**
  * Thrown out of the VQS callback when the workflow handler resolved with
- * `{ timeoutSeconds }`: the callback's `retry` hook turns it into
- * `{ afterSeconds }`, which leaves the message unacknowledged and makes VQS
- * deliver the SAME message (same id, next `deliveryCount`) again after that
- * delay. VQS clamps the delay to what it supports (5s to 900s per hop); the
- * runtime tolerates an early redelivery by checking the log and asking again.
+ * `{ timeoutSeconds }` for a single-orchestrator run's message (spec >= 9):
+ * the callback's `retry` hook turns it into `{ afterSeconds }`, which leaves
+ * the message unacknowledged and makes VQS deliver the SAME message (same
+ * id, next `deliveryCount`) again after that delay. VQS clamps the delay to
+ * what it supports (5s to 900s per hop); the runtime tolerates an early
+ * redelivery by checking the log and asking again.
  *
- * With `handoff` (`{ timeoutSeconds: 0, handoff: true }`) the lease change is
- * a VQS handoff: the redelivery starts at once, and VQS counts it toward
- * neither its retry backoff nor `maxAttempts`, and reports it in the next
- * delivery's handoff count, which `attempt` subtracts.
+ * `{ timeoutSeconds: 0 }` is a handoff: the lease change carries
+ * `experimental_handoff`, the redelivery starts at once, and VQS counts it
+ * toward neither its retry backoff nor `maxAttempts`, and reports it in the
+ * next delivery's handoff count, which `attempt` subtracts.
+ *
+ * A spec-8 run's `{ timeoutSeconds }` never gets here: it continues on a new
+ * message (see `createQueueHandler`).
  */
 class RedeliverSameMessage extends Error {
-  constructor(
-    readonly afterSeconds: number,
-    readonly handoff = false
-  ) {
+  readonly handoff: boolean;
+  constructor(readonly afterSeconds: number) {
     super(
-      handoff
+      afterSeconds === 0
         ? 'hand the message off to its next delivery'
         : `redeliver the same message after ${afterSeconds}s`
     );
     this.name = 'RedeliverSameMessage';
+    this.handoff = afterSeconds === 0;
   }
 }
 
 /**
  * Handler re-runs per delivery when its acknowledgment finds orchestrator
- * messages coalesced into it (see {@link getPhysicalQueueName}). Each re-run
+ * messages coalesced into it (see {@link concurrencyKeyOf}). Each re-run
  * is a replay that read the log those messages' senders committed to, and a
  * run whose messages keep arriving faster than a replay finishes would
  * otherwise re-run until the invocation's deadline, which the orchestrator
@@ -538,21 +545,17 @@ function getHeadersFromPayload(
 /**
  * Resolves the physical VQS topic for a message.
  *
- * Messages on flow (workflow) topics get a payload-dependent physical topic.
- * Other topics keep the logical queue name.
+ * Normally this is the logical queue name: every flow message of a workflow,
+ * orchestrator or step, spec 8 or spec 9, goes to one shared topic
+ * (`__wkf_workflow_<name>`), whose consumer has no `maxConcurrency`. A
+ * spec-9 run's orchestrator messages carry its run id as their concurrency
+ * key there (see {@link concurrencyKeyOf}), which keeps that run to one
+ * orchestrator invocation at a time; a spec-8 run's messages carry none.
  *
- * A message for a single-orchestrator run (spec >= 9, see
- * {@link runSpecVersionOf}) goes to the KEYED flow topic,
- * `__[<namespace>_]wkf_keyed_<rest>`. Its consumer (`getWorkflowQueueTriggers`
- * in `@workflow/builders`) has no `maxConcurrency`, and orchestrator messages
- * carry the run id as their `Vqs-Experimental-Concurrency-Key` (see
- * {@link concurrencyKeyOf}): VQS keeps one delivery per run active and
- * coalesces the run's other orchestrator messages into it, so the run's
- * orchestrator runs one invocation at a time with no per-run topic. Step
- * messages ride the same topic unkeyed and run in parallel.
- *
- * Everything else keeps the topics of the `maxConcurrency: 1` consumer.
- * VQS scopes `maxConcurrency` per concrete topic, so:
+ * When `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, messages on flow (workflow)
+ * topics get a payload-dependent physical topic. VQS scopes `maxConcurrency`
+ * per concrete topic, so combined with `maxConcurrency: 1` on the flow
+ * trigger:
  *
  * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
  *   per-run topic: at most one replay per run at a time.
@@ -563,8 +566,10 @@ function getHeadersFromPayload(
  * - Health checks get a per-probe topic (their correlation id) so concurrent
  *   probes never queue behind one shared `…_health_check` slot.
  *
- * The two consumers cannot share topics: VQS rejects a keyed send to a topic
- * that a `maxConcurrency` consumer subscribes to.
+ * That applies to spec-9 runs too, and their messages are then sent without
+ * a concurrency key: VQS refuses a keyed send (400) to a topic a
+ * `maxConcurrency` consumer subscribes to. The per-run topic serializes the
+ * run's orchestrator instead, and nothing is coalesced.
  *
  * The flow-topic match allows an optional queue namespace prefix
  * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants) so the
@@ -578,79 +583,41 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
-/** `wkf_workflow_` → `wkf_keyed_`; mirrors `@workflow/builders`. */
-function toKeyedFlowTopic(queueName: string): string {
-  return queueName.replace(
-    FLOW_TOPIC_PATTERN,
-    (_match, namespace: string | undefined) => `__${namespace ?? ''}wkf_keyed_`
-  );
-}
+// Logged at most once per process; a field rather than a module-level `let`
+// because a bundler can put several copies of this file in one process and
+// "once" should not become once per copy (see `globalSingleton`).
+const queueLogs = globalSingleton(
+  '@workflow/world-vercel//queueLogLatches',
+  1,
+  () => ({ loggedSequentialReplays: false })
+);
 
 /**
- * The spec version of the run a workflow message is for, from the payload
- * (the `runSpecVersion` hint the runtime stamps, a first delivery's
- * `runInput`, a step message's `runContext`) or else `opts.specVersion`.
- * `undefined` when neither says, which routes like a spec-8 run: a spec-9
- * run's message on the `maxConcurrency` topics still delivers, and the
- * in-band fence keeps it safe.
+ * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+ * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders`; world-vercel
+ * must not depend on the build-time package, so the check is duplicated.
  */
-function runSpecVersionOf(
-  payload: QueuePayload,
-  opts?: QueueOptions
-): number | undefined {
-  if ('__healthCheck' in payload) return undefined;
-  if (!('runId' in payload)) return undefined;
-  return (
-    payload.runSpecVersion ??
-    payload.runInput?.specVersion ??
-    payload.runContext?.specVersion ??
-    opts?.specVersion
-  );
-}
-
-function isKeyedRunMessage(
-  queueName: ValidQueueName,
-  payload: QueuePayload,
-  opts?: QueueOptions
-): boolean {
-  if (!FLOW_TOPIC_PATTERN.test(queueName)) return false;
-  const specVersion = runSpecVersionOf(payload, opts);
-  return (
-    specVersion !== undefined && specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
-  );
-}
-
-/**
- * The concurrency key of a message on the keyed flow topic: the run id, for
- * an orchestrator message. `undefined` for a step message, and for an
- * orchestrator message sent with `coalesce: false`, which carries state the
- * run's log does not hold and so must not be coalesced into another
- * delivery that would never see it (see `QueueOptions.coalesce`).
- */
-function concurrencyKeyOf(
-  payload: QueuePayload,
-  opts?: QueueOptions
-): string | undefined {
-  if (opts?.coalesce === false) return undefined;
-  if (!('runId' in payload) || typeof payload.runId !== 'string') {
-    return undefined;
-  }
-  if ('stepId' in payload && typeof payload.stepId === 'string') {
-    return undefined;
-  }
-  return payload.runId;
+function isSequentialReplaysEnabled(): boolean {
+  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
 }
 
 function getPhysicalQueueName(
   queueName: ValidQueueName,
-  payload: QueuePayload,
-  opts?: QueueOptions
+  payload: QueuePayload
 ): string {
-  if (!FLOW_TOPIC_PATTERN.test(queueName)) {
+  if (!isSequentialReplaysEnabled() || !FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
   }
-  if (isKeyedRunMessage(queueName, payload, opts)) {
-    return toKeyedFlowTopic(queueName);
+  if (!queueLogs.loggedSequentialReplays) {
+    queueLogs.loggedSequentialReplays = true;
+    // One-time breadcrumb so a half-applied configuration (env var set without
+    // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
+    // from function logs. Must go to stderr: this code also runs inside CLI
+    // commands whose stdout is a machine-parsed JSON contract (e.g.
+    // `workflow health --json`).
+    console.warn(
+      '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
+    );
   }
   // Health checks are matched before the runId branch: a probe issued to
   // prepare a cross-deployment `start()` carries the run id it is about to
@@ -664,10 +631,36 @@ function getPhysicalQueueName(
     if ('stepId' in payload && typeof payload.stepId === 'string') {
       return `${queueName}_${payload.runId}_${payload.stepId}`;
     }
-    // Orchestrator delivery: one at a time per run.
+    // Orchestrator replay: serialize per run.
     return `${queueName}_${payload.runId}`;
   }
   return queueName;
+}
+
+/**
+ * The concurrency key of a flow message: the run id, for an orchestrator
+ * message of a single-orchestrator run (spec >= 9, by the payload's own
+ * spec stamp, see `isSingleOrchestratorMessage`). VQS keeps one delivery per
+ * key active and coalesces the key's other messages into it.
+ *
+ * `undefined` for everything else: a step message, a health check, a spec-8
+ * run's message (keying it would serialize it, and turn a wake into a
+ * coalesced re-run inside the running invocation), an orchestrator message
+ * sent with `coalesce: false` (it carries state the run's log does not hold,
+ * and a coalesced message is never delivered; see `QueueOptions.coalesce`),
+ * and every message under `WORKFLOW_SEQUENTIAL_REPLAYS=1` (see
+ * {@link getPhysicalQueueName}).
+ */
+function concurrencyKeyOf(
+  queueName: ValidQueueName,
+  payload: QueuePayload,
+  opts?: QueueOptions
+): string | undefined {
+  if (opts?.coalesce === false) return undefined;
+  if (!FLOW_TOPIC_PATTERN.test(queueName)) return undefined;
+  if (isSequentialReplaysEnabled()) return undefined;
+  if (!isSingleOrchestratorMessage(payload)) return undefined;
+  return orchestratorRunIdOf(payload);
 }
 
 type QueueFunction = (
@@ -737,13 +730,11 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const topic = getPhysicalQueueName(queueName, payload, opts).replace(
+    const topic = getPhysicalQueueName(queueName, payload).replace(
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    const concurrencyKey = isKeyedRunMessage(queueName, payload, opts)
-      ? concurrencyKeyOf(payload, opts)
-      : undefined;
+    const concurrencyKey = concurrencyKeyOf(queueName, payload, opts);
 
     return {
       deploymentId,
@@ -853,12 +844,12 @@ export function createQueue(config?: APIConfig): Queue {
     // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
     // one request per distinct route.
     //
-    // `topic` is one of those dimensions. A spec-9 run's step dispatches share
-    // the keyed flow topic and batch as described. A spec-8 run's do not:
-    // `getPhysicalQueueName` gives each one a per-step physical topic, so every
-    // message lands in a group of its own. That fan-out still publishes
-    // correctly, at one request per step, and each goes through the batch
-    // endpoint rather than `send()` — which does not
+    // `topic` is one of those dimensions, which makes this a no-op under
+    // WORKFLOW_SEQUENTIAL_REPLAYS=1: step dispatches ride the flow topic,
+    // `getPhysicalQueueName` gives each one a per-step physical topic, and
+    // every message therefore lands in a group of its own. The fan-out still
+    // publishes correctly, just at one request per step as before, and each
+    // goes through the batch endpoint rather than `send()` — which does not
     // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
     // 503). No caller on this path classifies that error today, so nothing
     // changes behaviorally; worth knowing before one starts.
@@ -932,7 +923,8 @@ export function createQueue(config?: APIConfig): Queue {
         const requestId = invocation?.requestId;
         // The CborTransport handles CBOR decoding inside deserialize(),
         // so message is already a plain object with Uint8Array values intact.
-        const { payload, queueName } = MessageWrapper.parse(message);
+        const { payload, queueName, deploymentId } =
+          MessageWrapper.parse(message);
 
         // Earliest point in an invocation where the run id is known, so the WS
         // handshake happens here instead of on the runtime's first event write
@@ -956,18 +948,19 @@ export function createQueue(config?: APIConfig): Queue {
               // ones a `{ timeoutSeconds }` result asks for below.
               messageId: MessageId.parse(metadata.messageId),
               // A handed-off delivery is not an attempt (see
-              // `RedeliverSameMessage`).
+              // `RedeliverSameMessage`), and neither is a coalesced re-run.
               attempt: Math.max(
                 1,
                 metadata.deliveryCount -
                   (metadata.experimental_handoffCount ?? 0)
               ),
-              deliveryCount: metadata.deliveryCount,
+              // A coalesced re-run reports the next count: it must read the
+              // log, as a redelivery does (`Queue.createQueueHandler`).
+              deliveryCount:
+                metadata.deliveryCount +
+                (metadata.experimental_coalesced?.rerun ?? 0),
               createdAt: metadata.createdAt,
               requestId,
-              ...(metadata.experimental_coalesced && {
-                coalescedRerun: metadata.experimental_coalesced.rerun,
-              }),
               ...(invocation && { invocationStartedAt: invocation.startedAt }),
             });
           const result = await (invocation
@@ -984,20 +977,35 @@ export function createQueue(config?: APIConfig): Queue {
             'timeoutSeconds' in result &&
             typeof result.timeoutSeconds === 'number'
           ) {
-            // Leave this message unacknowledged and have VQS deliver it again
-            // after the delay: a step retried in place, or an orchestrator
-            // delivery the in-band fence superseded. The same message keeps
-            // its id, so a redelivery of the delivery that created a step
-            // still recognizes itself.
+            if (!isSingleOrchestratorMessage(payload)) {
+              // A spec-8 run continues on a NEW message. When timeoutSeconds
+              // is 0, skip delaySeconds entirely for immediate re-enqueue.
+              // Otherwise, clamp to one continuation hop (23h by default).
+              // Longer sleeps chain delayed messages until the full duration
+              // has elapsed. A new message starts with a fresh retention and
+              // delivery count, so a long sleep or retry chain is bounded by
+              // neither VQS's 900s redelivery delay nor the delivery cap.
+              const delaySeconds =
+                result.timeoutSeconds > 0
+                  ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+                  : undefined;
+
+              // Send new message BEFORE acknowledging current message.
+              // This ensures crash safety: if process dies after send but before ack,
+              // we may get a duplicate invocation but won't lose the scheduled wakeup.
+              await queue(queueName, payload, { deploymentId, delaySeconds });
+              return;
+            }
+            // A single-orchestrator run: leave this message unacknowledged
+            // and have VQS deliver it again after the delay, a step retried
+            // in place, or an orchestrator delivery the in-band fence refused
+            // past its replacements. The same message keeps its id, so a
+            // redelivery of the delivery that created a step still recognizes
+            // itself. `0` is a handoff.
             const afterSeconds = Number.isFinite(result.timeoutSeconds)
               ? Math.max(0, Math.ceil(result.timeoutSeconds))
               : 0;
-            throw new RedeliverSameMessage(
-              afterSeconds,
-              afterSeconds === 0 &&
-                'handoff' in result &&
-                result.handoff === true
-            );
+            throw new RedeliverSameMessage(afterSeconds);
           }
         } finally {
           // The only point in the SDK that knows an invocation has no writes

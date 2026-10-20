@@ -62,26 +62,18 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // One orchestrator delivery per run at a time: a spec-8 run's messages
-      // go to a per-run topic consumed with `maxConcurrency: 1`, and a spec-9
-      // run's carry its run id as a VQS concurrency key on the keyed flow
-      // topic (see queue.ts and @workflow/builders).
+      // One orchestrator delivery per single-orchestrator run at a time: its
+      // orchestrator messages carry the run id as a VQS concurrency key on
+      // the flow topic (or, under WORKFLOW_SEQUENTIAL_REPLAYS=1, go to a
+      // per-run topic consumed with `maxConcurrency: 1`; see queue.ts).
+      // Spec-8 runs keep the shared, unserialized flow topic.
+      //
+      // Part of the spec-9 contract rather than capabilities: the backend
+      // stores an in-band event's `occurredAt` as its `createdAt` (clamped
+      // only for clock skew beyond an hour ahead or a week behind), and
+      // orders a batch per entity (409 `batch-earlier-item-failed` behind a
+      // refused item of the same correlation id).
       maxConcurrency: true,
-      // A spec-9 orchestrator's `{ timeoutSeconds: 0, handoff: true }` is a VQS
-      // lease handoff: the same message, redelivered at once, not counted as
-      // an attempt. Required here: on the keyed flow topic a message the
-      // orchestrator sends itself is coalesced into its own delivery.
-      orchestratorHandoff: true,
-      // The backend stores a single-orchestrator event's `occurredAt` as its
-      // `createdAt` (clamped only for clock skew beyond an hour ahead or a
-      // week behind), on creates and batch items alike, so run-ahead may
-      // hand an outcome to the workflow before its write commits. The
-      // runtime checks every speculative write's stored time anyway.
-      inBandEventTime: true,
-      // A spec-9 batch is ordered per entity: once the backend refuses an
-      // item, it refuses the batch's later items of the same correlation id
-      // (409 `batch-earlier-item-failed`).
-      inBandBatchEntityOrder: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,

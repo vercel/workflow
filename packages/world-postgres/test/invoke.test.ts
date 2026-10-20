@@ -478,10 +478,7 @@ describe.skipIf(process.platform === 'win32')(
       const created = events.data.find(
         (event) => event.eventType === 'step_started'
       );
-      expect(created?.eventData).toMatchObject({
-        inline: true,
-        creatorMessageId: expect.any(String),
-      });
+      expect(created?.eventData).toMatchObject({ inline: true });
     });
 
     it('moves a legacy job behind an active executor instead of starting a second input consumer', async () => {

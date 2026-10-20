@@ -331,6 +331,12 @@ const NOT_NULL_VIOLATION = '23502';
 interface PendingFence {
   runId: string;
   expected: number;
+  /**
+   * The write's `occurredAt`, stored as the event's `createdAt`: an in-band
+   * write's time is the one its orchestrator chose, which a workflow that ran
+   * ahead of the write has already read (see `Storage.events`).
+   */
+  occurredAt?: Date;
   /** Set once the fenced insert committed; later inserts are unfenced. */
   consumed: boolean;
 }
@@ -388,6 +394,7 @@ async function fencedInsertAttempt(
       .insert(Schema.events)
       .values({
         ...values,
+        ...(fence.occurredAt ? { createdAt: fence.occurredAt } : {}),
         eventId: sql<string>`(select ${values.eventId} from ${advanced})`,
       } as unknown as typeof Schema.events.$inferInsert)
       .onConflictDoNothing({
@@ -1191,8 +1198,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           data: AnyEventRequest,
           params?: CreateEventParams
         ) => Promise<EventResult>;
-        return pendingFence.run({ runId, expected, consumed: false }, () =>
-          inTransaction(runId, data, params)
+        const occurredAt =
+          params?.occurredAt !== undefined
+            ? new Date(params.occurredAt)
+            : undefined;
+        return pendingFence.run(
+          {
+            runId,
+            expected,
+            consumed: false,
+            ...(occurredAt && !Number.isNaN(+occurredAt) ? { occurredAt } : {}),
+          },
+          () => inTransaction(runId, data, params)
         );
       }, SLOT_INSERT_TRANSACTION);
       for (const terminalRunId of terminalRuns) {

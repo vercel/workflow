@@ -1266,7 +1266,28 @@ async function decodeCreateEventResponse<T extends EventType>(
       cause: parsedBody.error,
     });
   }
-  return parsedBody.data;
+  return foldReportIncomplete(parsedBody.data);
+}
+
+/**
+ * The backend's `reportIncomplete` (an in-band write whose skipped-slot
+ * report it could not complete) as the World contract says it: `hasMore:
+ * true` on the report page, which the writer reads as "reload before
+ * consuming what this write resolves".
+ */
+function foldReportIncomplete<R extends EventResult & { event: Event }>(
+  result: R
+): R {
+  const { reportIncomplete, ...rest } = result as R & {
+    reportIncomplete?: boolean;
+  };
+  if (reportIncomplete !== true) return rest as R;
+  return {
+    ...rest,
+    events: rest.events ?? [],
+    cursor: rest.cursor ?? null,
+    hasMore: true,
+  } as R;
 }
 
 export async function createWorkflowRunStartedEventV4(

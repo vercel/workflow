@@ -293,7 +293,7 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
     expect(splitEventDataForV4(data).payload).toEqual(input);
   });
 
-  it('parses reportIncomplete and the skipped-slot report off an in-band write', async () => {
+  it("reports the backend's reportIncomplete as hasMore, with the skipped-slot report", async () => {
     const reported = {
       eventId: 'evnt_4',
       runId: 'wrun_1',
@@ -318,7 +318,8 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
         allocated: 1,
       }
     );
-    expect(result.reportIncomplete).toBe(true);
+    expect(result.hasMore).toBe(true);
+    expect(result).not.toHaveProperty('reportIncomplete');
     expect((result as { allocated?: number }).allocated).toBe(1);
     expect(result.events?.map((event) => event.eventId)).toEqual(['evnt_4']);
   });
@@ -756,8 +757,45 @@ describe('fenced batch', () => {
       config(agent)
     );
     expect(result.events?.map((event) => event.eventId)).toEqual(['evnt_3']);
-    expect(result.reportIncomplete).toBe(false);
+    expect(result.hasMore).toBeUndefined();
+    expect(result).not.toHaveProperty('reportIncomplete');
     expect((result as { allocated?: number }).allocated).toBe(2);
+  });
+
+  it("reports an in-band batch's incomplete skipped-slot report as hasMore", async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${EVENTS_API_VERSION}/runs/wrun_1/events/batch`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          results: events.map(({ event }, index) => ({
+            status: 200,
+            event: {
+              ...event,
+              eventId: `evnt_${index + 4}`,
+              runId: 'wrun_1',
+              createdAt: CREATED_AT,
+            },
+          })),
+          events: [],
+          reportIncomplete: true,
+          allocated: 2,
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+    const result = await createWorkflowRunEventBatch(
+      'wrun_1',
+      events,
+      { inBand: true, expectedSeqInBand: 5, eventCount: 2 },
+      config(agent)
+    );
+    expect(result.hasMore).toBe(true);
+    expect(result).not.toHaveProperty('reportIncomplete');
   });
 
   it('throws InBandSupersededError when the batch was refused by the fence', async () => {

@@ -7,12 +7,13 @@ import {
 } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
+  isSingleOrchestratorMessage,
   MessageId,
-  orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
   type Queue,
   QueuePrefix,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
   WORKFLOW_FLOW_ROUTE,
 } from '@workflow/world';
@@ -206,11 +207,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
-  // A run's orchestrator deliveries go one at a time, like a per-run topic
-  // consumed with `maxConcurrency: 1` on Vercel Queues: the single-writer
-  // guarantee's queue half (the in-band fence is the other). Step messages
-  // and health checks are not gated, so a run's steps keep running in
-  // parallel with each other and with its orchestrator.
+  // A single-orchestrator run's (spec >= 9) orchestrator deliveries go one at
+  // a time, like a concurrency key on Vercel Queues: the single-writer
+  // guarantee's queue half (the in-band fence is the other). Step messages,
+  // health checks and earlier runs' messages are not gated (see
+  // `singleOrchestratorRunIdOf`), so a run's steps keep running in parallel
+  // with each other and with its orchestrator.
   const runGate = createRunGate();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
@@ -267,9 +269,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     // Keyed by prefix as well, so a run id never gates deliveries on another
     // prefix (a queue consumer of its own, or another namespace).
     const orchestratorRunKey = (() => {
-      const id = orchestratorRunIdOf(message);
+      const id = singleOrchestratorRunIdOf(message);
       return id === undefined ? undefined : `${prefix}${id}`;
     })();
+    // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a handoff: the
+    // redelivery starts at once and the handed-off delivery is not an attempt.
+    const handsOff = isSingleOrchestratorMessage(message);
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -323,6 +328,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // The actual max delivery enforcement happens in the workflow handler
       // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
+      // Handoffs counted as such per message, as Vercel Queues bounds them;
+      // past it a handoff counts toward `attempt` and the safety limit.
+      const MAX_LOCAL_HANDOFFS = 10_000;
       // Number of times the message has actually reached a handler (returned
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
       // not the loop counter, is the attempt the handler sees via
@@ -330,13 +338,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
       let delivery = 0;
+      // Deliveries that ended in a handoff, which `attempt` and the safety
+      // limit leave out.
+      let handoffs = 0;
       let releaseDelivery: (() => void) | undefined;
       const endDelivery = () => {
         releaseDelivery?.();
         releaseDelivery = undefined;
       };
       try {
-        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+        for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           releaseDelivery = await acquireDelivery();
           if (closeSignal.aborted) return;
           const headers: Record<string, string> = {
@@ -344,7 +355,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1),
+            'x-vqs-message-attempt': String(delivery + 1 - handoffs),
+            'x-vqs-message-delivery-count': String(delivery + 1),
             'x-vqs-message-created-at': createdAt,
           };
           const directHandler = directHandlers.get(prefix);
@@ -432,6 +444,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   await setTimeout(timeoutMs, undefined, {
                     signal: closeSignal,
                   });
+                } else if (handsOff && handoffs < MAX_LOCAL_HANDOFFS) {
+                  handoffs++;
                 }
                 continue;
               }
