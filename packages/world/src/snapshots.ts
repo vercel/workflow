@@ -76,6 +76,14 @@ export const SnapshotMetadataSchema = z.object({
    */
   clockMs: z.number().optional(),
   /**
+   * Size in bytes of the uncompressed heap image the snapshot was taken
+   * from (before framing, compression and encryption). Informational only:
+   * nothing restores from it, so it is not part of the sealed metadata.
+   * Worlds may report it (world-vercel sends it as `X-Snapshot-Plaintext-Bytes`)
+   * so snapshot sizes can be tracked against the runtime's size ceiling.
+   */
+  plaintextBytes: z.number().int().nonnegative().optional(),
+  /**
    * Snapshot format tag. A reader that doesn't recognize the version
    * treats the snapshot as a clean miss (full replay) instead of handing
    * an incompatible heap to the WASM engine.
