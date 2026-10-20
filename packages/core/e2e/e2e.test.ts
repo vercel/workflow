@@ -2585,16 +2585,44 @@ describe.concurrent('e2e', () => {
             start(workflow, [key, concurrency, 1_500])
           )
         );
-        const results = (await Promise.all(
+        const settled = await Promise.allSettled(
           runs.map((run) => run.returnValue)
-        )) as {
+        );
+        // A backend that refuses lock events (switched off, or older than
+        // locks) fails the run closed. Its refused lock_created must have
+        // persisted nothing: no lock event of any kind in the run's log.
+        const refused = settled.filter(
+          (s): s is PromiseRejectedResult =>
+            s.status === 'rejected' &&
+            String(s.reason?.message ?? s.reason).includes(
+              'requires a World that supports concurrency locks'
+            )
+        );
+        if (refused.length > 0) {
+          expect(refused).toHaveLength(runs.length);
+          const world = await getWorld();
+          for (const run of runs) {
+            const { data } = await world.events.list({
+              runId: run.runId,
+              pagination: { limit: 1000 },
+            });
+            expect(data.filter((e) => e.eventType.startsWith('lock_'))).toEqual(
+              []
+            );
+          }
+          ctx.skip();
+        }
+        const results = settled.map((s) => {
+          if (s.status === 'rejected') throw s.reason;
+          return s.value;
+        }) as {
           supported: boolean;
           startedAt?: number;
           endedAt?: number;
           fencingToken?: number;
         }[];
-        // A World without the `locks` capability (world-vercel until its
-        // backend ships them) fails closed with LockUnsupportedError.
+        // A World without the `locks` capability fails closed in the
+        // workflow with LockUnsupportedError, before writing anything.
         if (results.some((r) => !r.supported)) ctx.skip();
 
         expect(new Set(results.map((r) => r.fencingToken)).size).toBe(
