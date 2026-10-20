@@ -348,7 +348,6 @@ globalThis.__releasePending = function(op) {
 globalThis.__releaseIfSettled = function(op) {
   if (
     op.hasCreatedEvent &&
-    !op.abortRequested &&
     (op.type === "step" || op.type === "wait" || op.type === "attribute") &&
     !globalThis.__resolvers[op.correlationId]
   ) {
@@ -986,6 +985,7 @@ globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
 // workflow's own abort() call becomes a no-op.
 var __ABORT_STREAM_NAME = Symbol.for("WORKFLOW_ABORT_STREAM_NAME");
 var __ABORT_HOOK_TOKEN = Symbol.for("WORKFLOW_ABORT_HOOK_TOKEN");
+var __ABORT_HOOK_CID = Symbol.for("WORKFLOW_ABORT_HOOK_CID");
 
 function __makeAbortError() {
   if (typeof DOMException !== "undefined") {
@@ -1057,6 +1057,7 @@ globalThis.AbortController = function WorkflowAbortController() {
   this[__ABORT_HOOK_TOKEN] = hookToken;
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
   var correlationId = "hook_" + globalThis.__generateUlid();
+  this[__ABORT_HOOK_CID] = correlationId;
   // Register an internal system hook. isSystem prevents token namespace
   // conflicts with user hooks.
   globalThis.__pushPending({
@@ -1075,18 +1076,13 @@ globalThis.AbortController.prototype.abort = function(reason) {
   // Mark the pending hook op so the host records the abort. The payload
   // stays a RAW value; the host serializes it through a handle with full
   // type fidelity (Errors, DOMException, custom values).
-  var token = this[__ABORT_HOOK_TOKEN];
-  var ops = globalThis.__pendingList();
-  for (var i = 0; i < ops.length; i++) {
-    var item = ops[i];
-    if (item.type === "hook" && item.token === token) {
-      item.abortRequested = true;
-      item.abortPayload = {
-        aborted: true,
-        reason: reason,
-      };
-      break;
-    }
+  var item = globalThis.__findPending(this[__ABORT_HOOK_CID], "hook");
+  if (item) {
+    item.abortRequested = true;
+    item.abortPayload = {
+      aborted: true,
+      reason: reason,
+    };
   }
 };
 
@@ -3180,12 +3176,13 @@ function dumpPendingOps(
   using projected = vm.evalCode(`(function(){
     var ops = ${filterExpr};
     globalThis.__rawFields = [];
-    // Settled ops — created, resolver-less, no abort in flight — are
-    // never collected again by either the suspension or the drain
-    // filter, so their cached bytes are dead weight; surface their cids
+    // Ops whose cached bytes are dead weight: released ops (already gone
+    // from __pending; their ids come from __releasedCids, drained here),
+    // and ops still in __pending that are never collected again by either
+    // the suspension or the drain filter: created hooks that are not
+    // currently awaited and have no abort in flight. Surface their cids
     // so the host can evict them (see the byte-cache eviction below).
-    // Released ops are already gone from __pending, so their ids come
-    // from __releasedCids, drained here. (Map#forEach visits values.)
+    // (Map#forEach visits values.)
     var settled = globalThis.__releasedCids;
     globalThis.__releasedCids = [];
     globalThis.__pending.forEach(function(p){
