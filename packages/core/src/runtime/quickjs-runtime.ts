@@ -29,6 +29,7 @@
  * `node:vm` engine's replay determinism.
  */
 
+import { createHash } from 'node:crypto';
 import { SerializationError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
@@ -59,6 +60,8 @@ import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
+import { stripInlineSourceMap } from '../source-map.js';
+import { version as coreVersion } from '../version.js';
 import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
@@ -1153,6 +1156,9 @@ globalThis[Symbol.for("WORKFLOW_GET_STREAM_ID")] = function(namespace) {
 
 // ---- Runtime ----
 
+/** Memory limit of every workflow VM (`JS_SetMemoryLimit`). */
+const QUICKJS_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
+
 /**
  * Phase 1: static (run-independent) VM initialization.
  *
@@ -1266,7 +1272,7 @@ async function initWorkflowVM(
   const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
     wasm: assets.wasm as never,
-    memoryLimit: 256 * 1024 * 1024,
+    memoryLimit: QUICKJS_MEMORY_LIMIT_BYTES,
     interruptHandler: createInterruptHandler(interruptBudget),
     extensions: assets.extensions,
     wasi: makeDeterministicClockWasi(getNowMs),
@@ -1305,6 +1311,15 @@ async function initWorkflowVM(
 // (reference-stable: the generated flow route holds it in a module-level
 // const). Capped at a few entries so tests with many distinct bundles
 // don't accumulate 16MB snapshots.
+//
+// Reproducibility: the hydrate runs against a constant clock and constant
+// entropy, so the heap is a pure function of the engine fingerprint
+// (quickjsBaselineEngineId) and the bundle. Two consequences:
+// - The build can produce it ahead of time (createPrebuiltQuickJSBaseline)
+//   and ship it with the deployment, sparing each instance the hydrate.
+// - Every instance of a deployment derives the same bytes, so the baseline
+//   doubles as the zstd dictionary for per-run snapshots
+//   (getQuickJSBaselineDictionary): a run's heap mostly repeats it.
 
 /**
  * Eval filename used when hydrating the baseline VM. The baseline is
@@ -1331,6 +1346,11 @@ type BaselineEntry =
        * identical to the fresh path.
        */
       serdeRootPtr: number;
+      /**
+       * The serialized heap and its SHA-256, computed on first use as a
+       * snapshot dictionary (or carried in from a prebuilt baseline).
+       */
+      dictionary?: { bytes: Uint8Array; digest: string };
     }
   | { state: 'ineligible'; reason: string };
 
@@ -1339,16 +1359,189 @@ type BaselineEntry =
 // bundler layer while each enforcing its own bound.
 const baselines = globalSingleton(
   '@workflow/core//quickjsBaselines',
-  1,
+  2,
   () => ({
     byKey: new Map<string, Promise<BaselineEntry>>(),
+    /** Prebuilt baselines shipped with the deployment, by code digest. */
+    prebuilt: new Map<string, PrebuiltQuickJSBaseline>(),
   })
 );
 const BASELINE_CACHE_MAX_ENTRIES = 4;
+const PREBUILT_BASELINE_MAX_ENTRIES = 4;
 
 /** Test-only: reset the baseline cache between test cases. */
 export function __clearBaselineSnapshotCacheForTests(): void {
   baselines.byKey.clear();
+  baselines.prebuilt.clear();
+}
+
+function sha256Hex(data: Uint8Array | string): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/**
+ * Identity of everything other than the bundle that shapes a baseline heap:
+ * the engine build, this package's version, and the bootstrap source (which
+ * changes between versions during development). A prebuilt baseline is only
+ * used when it matches, since restoring a heap built by different code would
+ * run that code instead.
+ */
+export function quickjsBaselineEngineId(): string {
+  return sha256Hex(
+    `${quickjsWasiVersion}\0${coreVersion}\0${VM_BOOTSTRAP}`
+  ).slice(0, 32);
+}
+
+/**
+ * A baseline heap built ahead of time (by the workflow builder) and shipped
+ * inside the generated flow route, so an instance restores it instead of
+ * evaluating the bundle to produce it. Plain JSON, so the builder can emit
+ * it as a literal.
+ */
+export interface PrebuiltQuickJSBaseline {
+  /** Format of this object. */
+  v: 1;
+  /** {@link quickjsBaselineEngineId} of the code that built it. */
+  engineId: string;
+  /** SHA-256 of the workflow code it was built from, source map stripped. */
+  codeDigest: string;
+  /**
+   * Why the bundle cannot use a baseline (module scope drew randomness or
+   * read the clock, or threw). Recorded so instances skip the hydrate that
+   * would only rediscover it. When set, the fields below are absent.
+   */
+  ineligible?: string;
+  /** See `BaselineEntry.serdeRootPtr`. */
+  serdeRootPtr?: number;
+  /** SHA-256 of the serialized heap. */
+  digest?: string;
+  /** The serialized heap, zstd-compressed, base64. */
+  data?: string;
+}
+
+/**
+ * Make a prebuilt baseline available to this process. Matched against a
+ * bundle by code digest the first time that bundle needs a baseline; a
+ * baseline built by different engine code is ignored.
+ */
+export function registerPrebuiltQuickJSBaseline(
+  prebuilt: PrebuiltQuickJSBaseline | undefined
+): void {
+  if (!prebuilt || prebuilt.v !== 1) return;
+  if (baselines.prebuilt.has(prebuilt.codeDigest)) return;
+  if (baselines.prebuilt.size >= PREBUILT_BASELINE_MAX_ENTRIES) {
+    const oldest = baselines.prebuilt.keys().next().value;
+    if (oldest !== undefined) baselines.prebuilt.delete(oldest);
+  }
+  baselines.prebuilt.set(prebuilt.codeDigest, prebuilt);
+}
+
+/** Decode a prebuilt baseline, or undefined when it can't be used here. */
+function loadPrebuiltBaseline(
+  prebuilt: PrebuiltQuickJSBaseline
+): BaselineEntry | undefined {
+  if (prebuilt.engineId !== quickjsBaselineEngineId()) {
+    runtimeLogger.debug(
+      'QuickJS prebuilt baseline was built by a different engine; hydrating instead',
+      { prebuiltEngineId: prebuilt.engineId }
+    );
+    return undefined;
+  }
+  if (prebuilt.ineligible !== undefined) {
+    return { state: 'ineligible', reason: prebuilt.ineligible };
+  }
+  if (
+    prebuilt.data === undefined ||
+    prebuilt.digest === undefined ||
+    prebuilt.serdeRootPtr === undefined
+  ) {
+    return undefined;
+  }
+  const zlib = (
+    globalThis as {
+      process?: {
+        getBuiltinModule?: (id: string) => typeof import('node:zlib');
+      };
+    }
+  ).process?.getBuiltinModule?.('node:zlib');
+  if (typeof zlib?.zstdDecompressSync !== 'function') return undefined;
+  const bytes = new Uint8Array(
+    zlib.zstdDecompressSync(Buffer.from(prebuilt.data, 'base64'), {
+      maxOutputLength: QUICKJS_MEMORY_LIMIT_BYTES * 2,
+    })
+  );
+  if (sha256Hex(bytes) !== prebuilt.digest) {
+    runtimeLogger.warn(
+      'QuickJS prebuilt baseline is corrupt (digest mismatch); hydrating instead'
+    );
+    return undefined;
+  }
+  return {
+    state: 'ready',
+    snapshot: QuickJS.deserializeSnapshot(bytes),
+    serdeRootPtr: prebuilt.serdeRootPtr,
+    dictionary: { bytes, digest: prebuilt.digest },
+  };
+}
+
+/**
+ * Build a {@link PrebuiltQuickJSBaseline} for a workflow bundle. Called by
+ * the workflow builder at build time; produces the same heap an instance
+ * would hydrate (see prepareBaselineSnapshot). Returns undefined where the
+ * build runtime lacks zstd.
+ */
+export async function createPrebuiltQuickJSBaseline(
+  workflowCode: string
+): Promise<PrebuiltQuickJSBaseline | undefined> {
+  const zlib = (
+    globalThis as {
+      process?: {
+        getBuiltinModule?: (id: string) => typeof import('node:zlib');
+      };
+    }
+  ).process?.getBuiltinModule?.('node:zlib');
+  if (typeof zlib?.zstdCompressSync !== 'function') return undefined;
+  const code = stripInlineSourceMap(workflowCode);
+  const header = {
+    v: 1 as const,
+    engineId: quickjsBaselineEngineId(),
+    codeDigest: sha256Hex(code),
+  };
+  const entry = await prepareBaselineSnapshot(code, 'build');
+  if (entry.state === 'ineligible') {
+    return { ...header, ineligible: entry.reason };
+  }
+  const bytes = QuickJS.serializeSnapshot(entry.snapshot);
+  const compressed = zlib.zstdCompressSync(bytes, {
+    params: {
+      [zlib.constants.ZSTD_c_compressionLevel]: 12,
+      [zlib.constants.ZSTD_c_windowLog]: 27,
+    },
+  });
+  return {
+    ...header,
+    serdeRootPtr: entry.serdeRootPtr,
+    digest: sha256Hex(bytes),
+    data: Buffer.from(compressed).toString('base64'),
+  };
+}
+
+/**
+ * The baseline heap of a bundle as a snapshot compression dictionary, or
+ * undefined when the bundle has none (ineligible, or the hydrate failed).
+ * Prepares the baseline when this process has not yet.
+ */
+export async function getQuickJSBaselineDictionary(
+  workflowCode: string,
+  workflowId: string
+): Promise<{ bytes: Uint8Array; digest: string } | undefined> {
+  const entry = await getBaselineEntry(workflowCode, workflowId);
+  if (entry.state !== 'ready') return undefined;
+  if (!entry.dictionary) {
+    const bytes = QuickJS.serializeSnapshot(entry.snapshot);
+    entry.dictionary = { bytes, digest: sha256Hex(bytes) };
+  }
+  return entry.dictionary;
 }
 
 /** Test-only: observe how a bundle was classified. */
@@ -1374,14 +1567,24 @@ async function prepareBaselineSnapshot(
   const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
     wasm: assets.wasm as never,
-    memoryLimit: 256 * 1024 * 1024,
+    memoryLimit: QUICKJS_MEMORY_LIMIT_BYTES,
     interruptHandler: createInterruptHandler(budget),
     extensions: assets.extensions,
+    // Constant clock and entropy: the hydrated heap must be a pure function
+    // of (engine, bootstrap, bundle), so every process (and the build,
+    // which can prebuild it) produces byte-identical bytes. That is what
+    // lets the baseline double as the per-run snapshots' compression
+    // dictionary (see getQuickJSBaselineDictionary). The engine reads both
+    // while booting (its own PRNG seed); module scope reading the clock
+    // makes the bundle ineligible below anyway.
     wasi: ((memory) => ({
       clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
         clockReads++;
-        const timeNs = BigInt(hydrateStart) * 1_000_000n;
-        new DataView(memory.buffer).setBigUint64(resultPtr, timeNs, true);
+        new DataView(memory.buffer).setBigUint64(resultPtr, 0n, true);
+        return 0;
+      },
+      random_get(bufPtr: number, bufLen: number) {
+        new Uint8Array(memory.buffer, bufPtr, bufLen).fill(0x5a);
         return 0;
       },
     })) satisfies WasiOptions,
@@ -1485,7 +1688,23 @@ function getBaselineEntry(
       const oldest = baselines.byKey.keys().next().value;
       if (oldest !== undefined) baselines.byKey.delete(oldest);
     }
-    entry = prepareBaselineSnapshot(workflowCode, workflowId);
+    entry = (async () => {
+      if (baselines.prebuilt.size > 0) {
+        const prebuilt = baselines.prebuilt.get(sha256Hex(workflowCode));
+        if (prebuilt) {
+          try {
+            const loaded = loadPrebuiltBaseline(prebuilt);
+            if (loaded) return loaded;
+          } catch (err) {
+            runtimeLogger.warn(
+              'QuickJS prebuilt baseline could not be loaded; hydrating instead',
+              { workflowId, error: err }
+            );
+          }
+        }
+      }
+      return prepareBaselineSnapshot(workflowCode, workflowId);
+    })();
     baselines.byKey.set(workflowCode, entry);
     entry.catch(() => baselines.byKey.delete(workflowCode));
   }
@@ -1542,7 +1761,7 @@ async function restoreWorkflowVM(
   const snapshot = QuickJS.deserializeSnapshot(data);
   return QuickJS.restore(snapshot, {
     wasm: assets.wasm as never,
-    memoryLimit: 256 * 1024 * 1024,
+    memoryLimit: QUICKJS_MEMORY_LIMIT_BYTES,
     interruptHandler: createInterruptHandler(interruptBudget),
     extensions: assets.extensions,
     wasi: makeDeterministicClockWasi(getNowMs),
@@ -1947,7 +2166,7 @@ export async function startQuickJSWorkflow(
     const assets = await getCompiledAssets();
     vm = await QuickJS.restore(baselineSnapshot, {
       wasm: assets.wasm as never,
-      memoryLimit: 256 * 1024 * 1024,
+      memoryLimit: QUICKJS_MEMORY_LIMIT_BYTES,
       interruptHandler: createInterruptHandler(interruptBudget),
       extensions: assets.extensions,
       wasi: makeDeterministicClockWasi(() => vmNowMs),

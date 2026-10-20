@@ -7,6 +7,8 @@
  * The QuickJS VM is mocked: `startQuickJSWorkflow` records whether it was
  * handed a snapshot and returns a canned result.
  */
+
+import { createHash } from 'node:crypto';
 import {
   type Event,
   SNAPSHOT_FORMAT_VERSION,
@@ -24,8 +26,11 @@ import {
 import { dehydrateStepReturnValue } from '../serialization.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import {
+  isSnapshotDictionaryCompressionAvailable,
   MAX_SNAPSHOT_PLAINTEXT_BYTES,
   MAX_SNAPSHOT_RNG_DRAWS,
+  openSnapshot,
+  type SnapshotDictionary,
   sealSnapshot,
 } from './quickjs-snapshot-codec.js';
 import { setWorld } from './world.js';
@@ -36,8 +41,18 @@ vi.mock('./get-port-lazy.js', () => ({
 }));
 
 const startQuickJSWorkflow = vi.fn();
+const quickjsBaselineStubs = vi.hoisted(() => ({
+  // The VM is mocked, so there is no baseline heap: snapshots are
+  // compressed without a dictionary.
+  registerPrebuiltQuickJSBaseline: () => {},
+  getQuickJSBaselineDictionary: async () => undefined,
+}));
 vi.mock('./quickjs-runtime.js', () => ({
   startQuickJSWorkflow: (...args: unknown[]) => startQuickJSWorkflow(...args),
+  registerPrebuiltQuickJSBaseline: () => {},
+  // Delegates, so a test can spy on the stub after the mock is built.
+  getQuickJSBaselineDictionary: () =>
+    quickjsBaselineStubs.getQuickJSBaselineDictionary(),
 }));
 
 const runId = 'wrun_quickjs_snapshot_lifecycle';
@@ -100,12 +115,29 @@ function snapshotMetadata(
 async function sealed(
   metadata: SnapshotMetadata,
   key: RunPayloadKeys | undefined,
-  heap = new Uint8Array(2048).fill(1)
+  heap = new Uint8Array(2048).fill(1),
+  dictionary?: SnapshotDictionary
 ) {
   return {
-    data: await sealSnapshot({ runId, heap, metadata, encryptionKey: key }),
+    data: await sealSnapshot({
+      runId,
+      heap,
+      metadata,
+      encryptionKey: key,
+      dictionary,
+    }),
     metadata,
   };
+}
+
+function makeDictionary(seed: number): SnapshotDictionary {
+  const bytes = new Uint8Array(64 * 1024);
+  let x = seed;
+  for (let i = 0; i < bytes.length; i++) {
+    x = (x * 1103515245 + 12345) >>> 0;
+    bytes[i] = x >>> 24;
+  }
+  return { bytes, digest: createHash('sha256').update(bytes).digest('hex') };
 }
 
 async function invoke(options: {
@@ -114,7 +146,14 @@ async function invoke(options: {
   withKey: boolean;
   stored: { data: Uint8Array; metadata: SnapshotMetadata } | null;
   restoreThrows?: boolean;
+  /** The baseline heap this instance derives for the bundle, if any. */
+  dictionary?: SnapshotDictionary;
+  /** Suspend instead of completing, with this heap to snapshot. */
+  suspendWithHeap?: Uint8Array;
 }) {
+  const getDictionary = vi
+    .spyOn(quickjsBaselineStubs, 'getQuickJSBaselineDictionary')
+    .mockImplementation(async () => options.dictionary as never);
   const startedAt = new Date('2026-05-19T12:00:00.000Z');
   const workflowRun: WorkflowRun = {
     runId,
@@ -143,6 +182,7 @@ async function invoke(options: {
   });
   const load = vi.fn(async () => options.stored);
   const del = vi.fn(async () => {});
+  const save = vi.fn(async () => {});
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
@@ -158,7 +198,7 @@ async function invoke(options: {
     getEncryptionKeyForRun: vi
       .fn()
       .mockResolvedValue(options.withKey ? rawKey : undefined),
-    experimental_snapshots: { load, save: vi.fn(), delete: del },
+    experimental_snapshots: { load, save, delete: del },
   } as unknown as World);
 
   const completed = {
@@ -171,12 +211,26 @@ async function invoke(options: {
     snapshot: vi.fn(),
     dispose: vi.fn(),
   };
+  const heap = options.suspendWithHeap;
+  const suspended = heap && {
+    result: { suspended: { pendingOperations: [] } },
+    continueWithEvents: vi.fn(),
+    snapshot: vi.fn(() => ({
+      data: heap,
+      rngDraws: 0,
+      lastUlid: undefined,
+      serdeRootPtr: 1024,
+      clockMs: 0,
+      engineVersion: quickjsWasiVersion,
+    })),
+    dispose: vi.fn(),
+  };
   startQuickJSWorkflow.mockImplementation(
     async (opts: { existingSnapshot?: unknown }) => {
       if (opts.existingSnapshot && options.restoreThrows) {
         throw new Error('restore failed');
       }
-      return completed;
+      return suspended ?? completed;
     }
   );
 
@@ -194,7 +248,7 @@ async function invoke(options: {
       (opts as { existingSnapshot?: { data: Uint8Array } | null })
         .existingSnapshot ?? undefined
   );
-  return { load, del, restoredFrom };
+  return { load, del, save, restoredFrom, getDictionary };
 }
 
 describe('QuickJS snapshot lifecycle', () => {
@@ -212,6 +266,7 @@ describe('QuickJS snapshot lifecycle', () => {
     delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
     setWorld(undefined);
     vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('restores a sealed, encrypted snapshot and deletes it when the run completes', async () => {
@@ -334,6 +389,160 @@ describe('QuickJS snapshot lifecycle', () => {
       stored,
     });
     expect(restoredFrom).toEqual([undefined]);
+  });
+
+  describe.skipIf(!isSnapshotDictionaryCompressionAvailable())(
+    'compressed against the baseline heap',
+    () => {
+      it('restores a snapshot compressed against the baseline this instance derives', async () => {
+        const dictionary = makeDictionary(1);
+        // A heap that mostly repeats the baseline, as a run's heap does.
+        const heap = dictionary.bytes.slice();
+        heap.fill(5, 0, 512);
+        const metadata = snapshotMetadata({
+          baselineDigest: dictionary.digest,
+        });
+        const stored = await sealed(metadata, key, heap, dictionary);
+        const plain = await sealed(snapshotMetadata(), key, heap);
+        expect(stored.data.byteLength).toBeLessThan(plain.data.byteLength / 4);
+        const { restoredFrom, getDictionary } = await invoke({
+          log: makeLog(3),
+          threshold: 1,
+          withKey: true,
+          stored,
+          dictionary,
+        });
+        expect(getDictionary).toHaveBeenCalled();
+        expect(restoredFrom[0]?.data).toEqual(heap);
+      });
+
+      it('saves a snapshot compressed against the baseline heap', async () => {
+        const dictionary = makeDictionary(3);
+        const heap = dictionary.bytes.slice();
+        heap.fill(7, 100, 300);
+        const { save } = await invoke({
+          log: makeLog(3),
+          threshold: 1,
+          withKey: true,
+          stored: null,
+          dictionary,
+          suspendWithHeap: heap,
+        });
+        expect(save).toHaveBeenCalledTimes(1);
+        const [, data, metadata] = save.mock.calls[0] as unknown as [
+          string,
+          Uint8Array,
+          SnapshotMetadata,
+        ];
+        expect(metadata.baselineDigest).toBe(dictionary.digest);
+        await expect(
+          openSnapshot({
+            runId,
+            stored: data,
+            metadata,
+            encryptionKey: key,
+            dictionary,
+          })
+        ).resolves.toEqual(heap);
+        // Without the dictionary it cannot be opened.
+        await expect(
+          openSnapshot({ runId, stored: data, metadata, encryptionKey: key })
+        ).rejects.toMatchObject({ reason: 'dictionary_unavailable' });
+      });
+
+      it('saves without a digest when there is no baseline heap', async () => {
+        const heap = new Uint8Array(8192).fill(4);
+        const { save } = await invoke({
+          log: makeLog(3),
+          threshold: 1,
+          withKey: true,
+          stored: null,
+          dictionary: undefined,
+          suspendWithHeap: heap,
+        });
+        expect(save).toHaveBeenCalledTimes(1);
+        const [, data, metadata] = save.mock.calls[0] as unknown as [
+          string,
+          Uint8Array,
+          SnapshotMetadata,
+        ];
+        expect(metadata.baselineDigest).toBeUndefined();
+        await expect(
+          openSnapshot({ runId, stored: data, metadata, encryptionKey: key })
+        ).resolves.toEqual(heap);
+      });
+
+      it('treats a snapshot as a miss when this instance has no baseline', async () => {
+        const dictionary = makeDictionary(1);
+        const metadata = snapshotMetadata({
+          baselineDigest: dictionary.digest,
+        });
+        const { restoredFrom, del } = await invoke({
+          log: makeLog(3),
+          threshold: 1,
+          withKey: true,
+          stored: await sealed(metadata, key, undefined, dictionary),
+          dictionary: undefined,
+        });
+        expect(restoredFrom).toEqual([undefined]);
+        expect(del).toHaveBeenCalledTimes(1);
+      });
+
+      it('treats a snapshot as a miss when the baseline differs', async () => {
+        const dictionary = makeDictionary(1);
+        const metadata = snapshotMetadata({
+          baselineDigest: dictionary.digest,
+        });
+        const { restoredFrom } = await invoke({
+          log: makeLog(3),
+          threshold: 1,
+          withKey: true,
+          stored: await sealed(metadata, key, undefined, dictionary),
+          dictionary: makeDictionary(2),
+        });
+        expect(restoredFrom).toEqual([undefined]);
+      });
+
+      it('rejects bytes compressed against another baseline than the digest names', async () => {
+        // The digest is sealed, but the dictionary is not: a frame built
+        // against different bytes must fail its checksum, not decode.
+        const real = makeDictionary(1);
+        const other = makeDictionary(2);
+        const metadata = snapshotMetadata({ baselineDigest: real.digest });
+        const data = await sealSnapshot({
+          runId,
+          // Matches the dictionary it is compressed against, so the frame
+          // references it.
+          heap: other.bytes,
+          metadata,
+          encryptionKey: key,
+          dictionary: { bytes: other.bytes, digest: real.digest },
+        });
+        const { restoredFrom } = await invoke({
+          log: makeLog(3),
+          threshold: 1,
+          withKey: true,
+          stored: { data, metadata },
+          dictionary: real,
+        });
+        expect(restoredFrom).toEqual([undefined]);
+      });
+    }
+  );
+
+  it('rejects a baselineDigest that is not a SHA-256 digest', async () => {
+    const stored = await sealed(snapshotMetadata(), key);
+    const { restoredFrom, getDictionary } = await invoke({
+      log: makeLog(3),
+      threshold: 1,
+      withKey: true,
+      stored: {
+        data: stored.data,
+        metadata: { ...stored.metadata, baselineDigest: 'not-a-digest' },
+      },
+    });
+    expect(restoredFrom).toEqual([undefined]);
+    expect(getDictionary).not.toHaveBeenCalled();
   });
 
   it('restores an unencrypted snapshot only when opted in', async () => {

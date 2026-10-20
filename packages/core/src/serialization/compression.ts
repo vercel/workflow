@@ -115,7 +115,7 @@ interface NodeZlib {
   zstdCompressSync?: (data: Uint8Array, opts?: unknown) => Uint8Array;
   zstdDecompressSync?: (
     data: Uint8Array,
-    opts?: { maxOutputLength?: number }
+    opts?: { maxOutputLength?: number; dictionary?: Uint8Array }
   ) => Uint8Array;
   zstdCompress?: (
     data: Uint8Array,
@@ -280,6 +280,139 @@ function unzstdBytes(data: Uint8Array, maxOutputBytes?: number): Uint8Array {
     );
   } catch (err) {
     if ((err as { code?: string })?.code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new DecompressedSizeLimitError(maxOutputBytes);
+    }
+    throw err;
+  }
+}
+
+// ---- Dictionary (raw-content prefix) compression ----
+//
+// zstd can compress a payload against a dictionary that both sides hold,
+// encoding only what differs from it. The QuickJS engine uses this for its
+// per-run VM snapshots, with the deployment's baseline heap (the bundle
+// evaluated, before any run) as the dictionary: a run's heap is mostly that
+// baseline, so only the run's own state is stored. The frame records no
+// dictionary id (raw-content dictionaries have none), so the CALLER must
+// record which dictionary was used and only decode with that one.
+
+/**
+ * zstd parameters for dictionary compression. An explicit window is what
+ * makes the dictionary reachable at all: without one, zstd sizes its
+ * window and match tables for the payload alone and finds almost nothing
+ * in a multi-megabyte dictionary. 2^27 is the largest window a decoder
+ * accepts without raising its limit, so no decoder option is needed.
+ */
+function zstdDictionaryParams(z: NodeZlib): Record<number, number> {
+  const c = z.constants ?? {};
+  const params: Record<number, number> = {};
+  if (c.ZSTD_c_compressionLevel !== undefined) {
+    params[c.ZSTD_c_compressionLevel] = ZSTD_LEVEL;
+  }
+  if (c.ZSTD_c_windowLog !== undefined) params[c.ZSTD_c_windowLog] = 27;
+  if (c.ZSTD_c_hashLog !== undefined) params[c.ZSTD_c_hashLog] = 20;
+  // Raw-content dictionaries carry no id, so the checksum is what turns a
+  // decode against the wrong dictionary into an error instead of garbage.
+  if (c.ZSTD_c_checksumFlag !== undefined) params[c.ZSTD_c_checksumFlag] = 1;
+  return params;
+}
+
+// per-copy-ok: a memo of a pure runtime capability check; every copy computes
+// the same answer, so a copy that probes again only repeats a ~0.1 ms test.
+let zstdDictionarySupport: boolean | undefined;
+
+/**
+ * Whether this runtime's `node:zlib` honors the zstd `dictionary` option.
+ * Older Node.js releases with zstd silently ignore it, which would record a
+ * dictionary that was never used, so it is detected by compressing a
+ * random block against itself: with a dictionary that is a few bytes.
+ */
+export function isZstdDictionaryAvailable(): boolean {
+  if (zstdDictionarySupport !== undefined) return zstdDictionarySupport;
+  zstdDictionarySupport = false;
+  const z = getNodeZlib();
+  if (!isZstdAvailable() || !z) return false;
+  try {
+    const sample = new Uint8Array(4096);
+    let x = 0x9e3779b9;
+    for (let i = 0; i < sample.length; i++) {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      sample[i] = x & 0xff;
+    }
+    // biome-ignore lint/style/noNonNullAssertion: guarded by isZstdAvailable()
+    const out = z.zstdCompressSync!(sample, {
+      params: zstdDictionaryParams(z),
+      dictionary: sample,
+    });
+    zstdDictionarySupport = out.byteLength < 512;
+  } catch {
+    zstdDictionarySupport = false;
+  }
+  return zstdDictionarySupport;
+}
+
+/**
+ * zstd-compress `data` against `dictionary`. Returns the bare zstd frame
+ * (no format prefix): decoding needs the same dictionary, which the caller
+ * records. Requires {@link isZstdDictionaryAvailable}.
+ */
+export async function zstdCompressWithDictionary(
+  data: Uint8Array,
+  dictionary: Uint8Array,
+  opts?: { preferAsync?: boolean }
+): Promise<Uint8Array> {
+  const z = getNodeZlib();
+  if (!z?.zstdCompressSync || !isZstdDictionaryAvailable()) {
+    throw new Error('zstd dictionary compression is not available');
+  }
+  const options = { params: zstdDictionaryParams(z), dictionary };
+  if (
+    opts?.preferAsync &&
+    data.length >= COMPRESSION_ASYNC_MIN_BYTES &&
+    typeof z.zstdCompress === 'function'
+  ) {
+    return new Promise((resolve, reject) => {
+      // biome-ignore lint/style/noNonNullAssertion: checked above
+      z.zstdCompress!(data, options, (err, result) => {
+        if (err) reject(err);
+        else resolve(new Uint8Array(result));
+      });
+    });
+  }
+  return new Uint8Array(z.zstdCompressSync(data, options));
+}
+
+/**
+ * Inverse of {@link zstdCompressWithDictionary}. Throws
+ * {@link DecompressedSizeLimitError} past `maxOutputBytes`, and an error
+ * (checksum mismatch, corrupt frame) when `dictionary` is not the one the
+ * data was compressed with.
+ */
+export function zstdDecompressWithDictionary(
+  data: Uint8Array,
+  dictionary: Uint8Array,
+  maxOutputBytes?: number
+): Uint8Array {
+  const z = getNodeZlib();
+  if (!z?.zstdDecompressSync || !isZstdDictionaryAvailable()) {
+    throw new Error('zstd dictionary decompression is not available');
+  }
+  try {
+    return new Uint8Array(
+      z.zstdDecompressSync(data, {
+        dictionary,
+        ...(maxOutputBytes !== undefined
+          ? { maxOutputLength: maxOutputBytes }
+          : {}),
+      } as { maxOutputLength?: number })
+    );
+  } catch (err) {
+    if (
+      maxOutputBytes !== undefined &&
+      (err as { code?: string })?.code === 'ERR_BUFFER_TOO_LARGE'
+    ) {
       throw new DecompressedSizeLimitError(maxOutputBytes);
     }
     throw err;

@@ -228,6 +228,16 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Evaluates the workflow bundle once per function instance, snapshots the resulting VM, and restores that snapshot at the start of every invocation instead of re-evaluating the bundle. This is the dominant share of QuickJS VM startup: roughly 77 ms to 3 ms to first suspension for a 1.3 MB bundle.
 - A bundle whose module scope consumes randomness, reads the clock, or replaces a serialization intrinsic cannot be snapshotted safely. The runtime detects these cases when preparing the snapshot and falls back to per-invocation evaluation.
 - Set `0` or `false` to always evaluate the bundle per invocation.
+- The baseline is built against a fixed clock and fixed entropy, so every instance of a deployment produces the same bytes. That lets it serve as the compression dictionary for per-run snapshots (see [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold)). With it disabled, snapshots are compressed without one.
+
+### `WORKFLOW_QUICKJS_PREBUILT_BASELINE`
+
+- Default: enabled when `WORKFLOW_VM=quickjs` is set **at build time**, disabled otherwise.
+- Read by the workflow builder, not at runtime. Set `1` or `true` to force it on, or `0` or `false` to force it off.
+- Builds the baseline snapshot described in [`WORKFLOW_QUICKJS_BASELINE_SNAPSHOT`](#workflow_quickjs_baseline_snapshot) during the build and embeds it, compressed, in the generated flow route. Instances then restore it on their first QuickJS run instead of evaluating the bundle to build it. The result is identical to the snapshot an instance builds itself.
+- Adds the compressed baseline (typically a few hundred KB to a few MB, depending on the bundle) to the flow route. Runs on the `node` engine never read it.
+- A bundle that cannot be snapshotted (see above) is recorded as such, so instances skip the attempt. A baseline built by a different SDK or engine version than the one serving the run is ignored.
+- Never applied in watch mode (`next dev` and similar), where the bundle changes on every edit.
 
 ### `WORKFLOW_SNAPSHOT_THRESHOLD`
 
@@ -246,7 +256,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 What a snapshot contains, and how it is protected:
 
 - A snapshot is the workflow VM's memory: the workflow's code and in-memory state, including step results and hook payloads it holds, and the copy of `process.env` the VM exposes. It is executable state, so write access to snapshot storage is equivalent to running code in the workflow VM.
-- Snapshots are compressed and then encrypted with the run's encryption key. The encryption also authenticates the snapshot: on restore, the runtime rejects any snapshot that isn't encrypted with the run's key, or whose stored metadata doesn't match the metadata sealed inside it.
+- Snapshots are compressed and then encrypted with the run's encryption key. When a [baseline snapshot](#workflow_quickjs_baseline_snapshot) is available, compression uses it as a zstd dictionary: a run's heap mostly repeats the baseline, so only the run's own state takes space. A snapshot compressed this way records the baseline's digest and can only be restored by an instance that derives the same baseline, which every instance of the deployment does. Otherwise it falls back to a full replay. Requires a Node.js release whose `node:zlib` supports zstd dictionaries; without one, snapshots are compressed without a dictionary. The encryption also authenticates the snapshot: on restore, the runtime rejects any snapshot that isn't encrypted with the run's key, or whose stored metadata doesn't match the metadata sealed inside it.
 - By default, runs without an encryption key are never snapshotted. Only world-vercel provides run encryption keys. On world-local and world-postgres, set `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` on the workflow handler to snapshot anyway. Those snapshots are stored in plaintext (in `.workflow-data/snapshots/` or the `workflow_snapshots` table) and are not authenticated, so only enable this where snapshot storage is as trusted as your deployment.
 - A restored run sees `process.env` as of the current invocation, the same as a full replay.
 - Snapshots are deleted after the run reaches a terminal state. world-local and world-postgres have no separate retention for them, so a snapshot of a run that ends without any invocation observing it (for example, one cancelled externally) stays until you remove it.
