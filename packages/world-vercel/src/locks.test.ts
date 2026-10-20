@@ -125,6 +125,58 @@ describe('lock events on the v4 wire', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('accepts the lock_acquired the server commits in place of a granted lock_created', async () => {
+    const agent = mockAgent();
+    const createdAt = new Date('2026-10-19T12:00:00.000Z');
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/lock_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          event: {
+            eventType: 'lock_acquired',
+            correlationId: 'lock_01',
+            specVersion: 8,
+            eventData: {
+              key: 'stripe:cus_1',
+              concurrency: 5,
+              effectiveConcurrency: 5,
+              fencingToken: 7,
+            },
+            eventId: 'evnt_3',
+            runId: 'wrun_1',
+            createdAt,
+          },
+          lock: {
+            key: 'stripe:cus_1',
+            status: 'held',
+            fencingToken: 7,
+            concurrency: 5,
+          },
+        }),
+        {
+          headers: {
+            'content-type': 'application/cbor',
+            'x-wf-event-id': 'evnt_3',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': createdAt.toISOString(),
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent('wrun_1', lockCreated, {}, {
+      token: 't',
+      dispatcher: agent,
+    } as never);
+    expect(result.event?.eventType).toBe('lock_acquired');
+    expect(result.lock).toMatchObject({ status: 'held', fencingToken: 7 });
+    agent.assertNoPendingInterceptors();
+  });
+
   it.each([
     ['lock-unsupported', 'Concurrency locks are off for this project'],
     [undefined, "meta.eventType: unknown event type 'lock_created'"],

@@ -1191,7 +1191,10 @@ export function createEventResponseSchema<T extends EventType>(
   return CreateEventV4BodySchemas[eventType].refine(
     ({ event }) =>
       event.eventType === eventType ||
-      (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+      // The two writes the World answers with a different event committed
+      // in their place: a refused hook claim, and a granted lock.
+      (eventType === 'hook_created' && event.eventType === 'hook_conflict') ||
+      (eventType === 'lock_created' && event.eventType === 'lock_acquired'),
     { path: ['event', 'eventType'] }
   );
 }
