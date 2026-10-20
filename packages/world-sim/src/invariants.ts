@@ -20,6 +20,7 @@ import {
   isTerminalRunEventType,
   type Lock,
   type LockHolder,
+  type LockWaiter,
   type Step,
   type Wait,
   type WorkflowRun,
@@ -404,6 +405,14 @@ export interface LockInvariantInput {
   /** The store's lock rows and live holders, to check against the log. */
   locks: Lock[];
   holders: LockHolder[];
+  /** Stage 2: live waiter rows, whose reserved slots `count` includes. */
+  waiters?: LockWaiter[];
+  /**
+   * Stage 2: the World ran the FIFO waitlist, so the FIFO rules apply.
+   * `movedBack` names the scopes grant grace sent to the tail (as
+   * `runId:correlationId`), which the log cannot show.
+   */
+  fifo?: { movedBack: Set<string> };
 }
 
 /**
@@ -419,8 +428,18 @@ export interface LockInvariantInput {
  * - `lock.one-event-per-type`: a scope records each lock event type once, so
  *   waiting K attempts left exactly one `lock_created`.
  * - `lock.grant-after-terminal`: no grant lands in a finished run.
- * - `lock.count-matches-holders`: the store's `count` and holder rows are
- *   what the log implies at the end.
+ * - `lock.count-matches-holders`: the store's `count` is its holder rows
+ *   plus its reserved waiter rows, and the holder rows are what the log
+ *   implies at the end.
+ *
+ * With `fifo` (stage 2), for keys of concurrency 1, where a reservation fills
+ * the key and claims therefore follow reservations one at a time:
+ *
+ * - `lock.fifo`: queued scopes are granted in the order they queued (their
+ *   `lock_created`), apart from the ones grace moved back.
+ * - `lock.admitted-past-queue`: no scope is granted straight off (a
+ *   `lock_acquired` with no `lock_created` before it) while another scope is
+ *   queued for the key.
  */
 export function checkLockInvariants(
   input: LockInvariantInput
@@ -440,6 +459,9 @@ export function checkLockInvariants(
   };
 
   type Hold = { runId: string; correlationId: string; leaseExpiresAt?: number };
+  /** Per key: scopes that queued and are not yet granted, in queue order. */
+  const queuedByKey = new Map<string, string[]>();
+  const queuedScopes = new Set<string>();
   const holdersByKey = new Map<string, Map<string, Hold>>();
   const lastToken = new Map<string, number>();
   const seenScopeEvents = new Set<string>();
@@ -459,6 +481,12 @@ export function checkLockInvariants(
     }
     if (isTerminalRunEventType(event.eventType)) {
       terminalRuns.add(event.runId);
+      for (const [key, queue] of queuedByKey) {
+        queuedByKey.set(
+          key,
+          queue.filter((id) => !id.startsWith(`${event.runId}:`))
+        );
+      }
       for (const holds of holdersByKey.values()) {
         for (const [id, hold] of holds) {
           if (hold.runId === event.runId) holds.delete(id);
@@ -482,6 +510,42 @@ export function checkLockInvariants(
     const key = String(data?.key);
     const holds = holdersByKey.get(key) ?? new Map<string, Hold>();
     holdersByKey.set(key, holds);
+
+    const id = scopeKey(event.runId, event.correlationId);
+    const queue = queuedByKey.get(key) ?? [];
+    queuedByKey.set(key, queue);
+    if (event.eventType === 'lock_created') {
+      queue.push(id);
+      queuedScopes.add(id);
+    }
+    if (event.eventType === 'lock_acquired' && input.fifo) {
+      const single = Number(data?.effectiveConcurrency) === 1;
+      const eligible = queue.filter((q) => !input.fifo?.movedBack.has(q));
+      if (single && queuedScopes.has(id)) {
+        if (!input.fifo.movedBack.has(id) && eligible[0] !== id) {
+          add(
+            'lock.fifo',
+            `Scope ${event.correlationId} was granted "${key}" ahead of ${eligible[0]}, which queued first`,
+            event
+          );
+        }
+      } else if (single && queue.length > 0) {
+        add(
+          'lock.admitted-past-queue',
+          `Scope ${event.correlationId} was granted "${key}" straight off while ${queue[0]} was queued`,
+          event
+        );
+      }
+      const index = queue.indexOf(id);
+      if (index >= 0) queue.splice(index, 1);
+    }
+    if (
+      event.eventType === 'lock_released' ||
+      event.eventType === 'lock_failed'
+    ) {
+      const index = queue.indexOf(id);
+      if (index >= 0) queue.splice(index, 1);
+    }
 
     if (event.eventType === 'lock_acquired') {
       if (terminalRuns.has(event.runId)) {
@@ -526,11 +590,25 @@ export function checkLockInvariants(
   for (const lock of input.locks) {
     const derived = holdersByKey.get(lock.key)?.size ?? 0;
     const rows = input.holders.filter((h) => h.key === lock.key).length;
-    if (lock.count !== rows || lock.count !== derived) {
+    const reserved = (input.waiters ?? []).filter(
+      (w) => w.key === lock.key && w.grantedAt
+    ).length;
+    if (lock.count !== rows + reserved || rows !== derived) {
       add(
         'lock.count-matches-holders',
-        `"${lock.key}" stores count ${lock.count} with ${rows} holder row(s); the log implies ${derived}`
+        `"${lock.key}" stores count ${lock.count} with ${rows} holder row(s) and ${reserved} reservation(s); the log implies ${derived} holder(s)`
       );
+    }
+    if (lock.count < lock.concurrency) {
+      const queued = (input.waiters ?? []).filter(
+        (w) => w.key === lock.key && !w.grantedAt
+      );
+      if (queued.length > 0) {
+        add(
+          'lock.no-waiter-behind-free-slot',
+          `"${lock.key}" has a free slot and ${queued.length} queued waiter(s)`
+        );
+      }
     }
   }
   return violations;

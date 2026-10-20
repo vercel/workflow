@@ -1,6 +1,7 @@
 import {
   FatalError,
   LockUnsupportedError,
+  LockWaitlistFullError,
   ReplayDivergenceError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
@@ -70,7 +71,7 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       throw new LockUnsupportedError(key);
     }
 
-    const { promise, resolve } = withResolvers<LockSlot>();
+    const { promise, resolve, reject } = withResolvers<LockSlot>();
     const correlationId = `lock_${ctx.generateUlid()}`;
 
     const item: LockInvocationQueueItem = {
@@ -149,7 +150,8 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
 
       if (
         event.eventType === 'lock_created' ||
-        event.eventType === 'lock_acquired'
+        event.eventType === 'lock_acquired' ||
+        event.eventType === 'lock_failed'
       ) {
         const recorded = event.eventData;
         if (recorded.key !== key || recorded.concurrency !== concurrency) {
@@ -203,6 +205,36 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
             resolve(slot);
           });
         return EventConsumerResult.Consumed;
+      }
+
+      if (event.eventType === 'lock_failed') {
+        // Refused for good (the key's waitlist was full). Journaled, so
+        // every replay rejects here, ordered like a grant.
+        if (acquired) {
+          return diverge(event.eventId, 'lock_failed after lock_acquired');
+        }
+        ctx.invocationsQueue.delete(correlationId);
+        const error = new LockWaitlistFullError(
+          key,
+          event.eventData.waitlistCap
+        );
+        const eventIndex = ctx.eventsConsumer.eventIndex;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'lock', {
+          deliveredAt: +event.createdAt,
+        });
+        const earlierDelivered = awaitEarlierDeliveries(
+          ctx,
+          eventIndex,
+          'lock'
+        );
+        const queueAtRefusal = ctx.promiseQueue;
+        void queueAtRefusal
+          .then(() => earlierDelivered)
+          .then(() => {
+            barrier.markDelivered();
+            reject(error);
+          });
+        return EventConsumerResult.Finished;
       }
 
       if (event.eventType === 'lock_released') {

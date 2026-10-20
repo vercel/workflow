@@ -8,7 +8,11 @@ import {
   createWorkflowRunEventBatch,
   splitEventDataForV4,
 } from './events.js';
-import { createWorld, EXPERIMENTAL_LOCKS_ENV_VAR } from './index.js';
+import {
+  createWorld,
+  EXPERIMENTAL_LOCKS_ENV_VAR,
+  EXPERIMENTAL_LOCKS_FIFO_ENV_VAR,
+} from './index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -57,6 +61,19 @@ describe('lock events on the v4 wire', () => {
         eventData: { key: 'stripe:cus_1' },
       } as AnyEventRequest).meta
     ).toMatchObject({ lockKey: 'stripe:cus_1' });
+  });
+
+  it('carries a FIFO wake target as lockWake', () => {
+    const wake = {
+      queueName: '__wkf_workflow_w',
+      deploymentId: 'dpl_1',
+      specVersion: 8,
+    };
+    const { meta } = splitEventDataForV4({
+      ...lockCreated,
+      eventData: { ...(lockCreated as any).eventData, wake },
+    } as AnyEventRequest);
+    expect(meta.lockWake).toEqual(wake);
   });
 
   it('never reads `key` or `concurrency` off a non-lock event', () => {
@@ -177,6 +194,100 @@ describe('lock events on the v4 wire', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('reads lockHandoffs off a release, and lock_failed off a refused acquisition', async () => {
+    const agent = mockAgent();
+    const grantedAt = new Date('2026-10-20T12:00:00.000Z');
+    const headers = {
+      'content-type': 'application/cbor',
+      'x-wf-event-id': 'evnt_4',
+      'x-wf-run-id': 'wrun_1',
+      'x-wf-created-at': grantedAt.toISOString(),
+    };
+    const base = {
+      correlationId: 'lock_01',
+      specVersion: 8,
+      eventId: 'evnt_4',
+      runId: 'wrun_1',
+      createdAt: grantedAt,
+    };
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/lock_released',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          event: {
+            ...base,
+            eventType: 'lock_released',
+            eventData: { key: 'stripe:cus_1' },
+          },
+          lock: { key: 'stripe:cus_1', status: 'released' },
+          lockHandoffs: [
+            {
+              key: 'stripe:cus_1',
+              runId: 'wrun_2',
+              correlationId: 'lock_02',
+              grantedAt,
+              wake: { queueName: '__wkf_workflow_w', deploymentId: 'dpl_2' },
+            },
+          ],
+        }),
+        { headers }
+      );
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/lock_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          event: {
+            ...base,
+            eventType: 'lock_failed',
+            eventData: {
+              key: 'stripe:cus_1',
+              concurrency: 5,
+              reason: 'waitlist_full',
+              waitlistCap: 100_000,
+            },
+          },
+          lock: {
+            key: 'stripe:cus_1',
+            status: 'failed',
+            reason: 'waitlist_full',
+          },
+        }),
+        { headers }
+      );
+
+    const released = await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'lock_released',
+        correlationId: 'lock_01',
+        specVersion: 8,
+        eventData: { key: 'stripe:cus_1' },
+      } as AnyEventRequest,
+      {},
+      { token: 't', dispatcher: agent } as never
+    );
+    expect(released.lockHandoffs).toEqual([
+      expect.objectContaining({ runId: 'wrun_2', grantedAt }),
+    ]);
+    const refused = await createWorkflowRunEvent('wrun_1', lockCreated, {}, {
+      token: 't',
+      dispatcher: agent,
+    } as never);
+    expect(refused.event?.eventType).toBe('lock_failed');
+    expect(refused.lock).toMatchObject({ status: 'failed' });
+    agent.assertNoPendingInterceptors();
+  });
+
   it.each([
     ['lock-unsupported', 'Concurrency locks are off for this project'],
     [undefined, "meta.eventType: unknown event type 'lock_created'"],
@@ -237,5 +348,20 @@ describe(`the locks capability (${EXPERIMENTAL_LOCKS_ENV_VAR})`, () => {
   it('is declared when opted in', () => {
     process.env[EXPERIMENTAL_LOCKS_ENV_VAR] = '1';
     expect(createWorld().capabilities?.locks).toEqual({ concurrency: true });
+  });
+
+  it('declares fifo only with its own opt-in', () => {
+    process.env[EXPERIMENTAL_LOCKS_ENV_VAR] = '1';
+    process.env[EXPERIMENTAL_LOCKS_FIFO_ENV_VAR] = '1';
+    try {
+      expect(createWorld().capabilities?.locks).toEqual({
+        concurrency: true,
+        fifo: true,
+      });
+      delete process.env[EXPERIMENTAL_LOCKS_ENV_VAR];
+      expect(createWorld().capabilities?.locks).toBeUndefined();
+    } finally {
+      delete process.env[EXPERIMENTAL_LOCKS_FIFO_ENV_VAR];
+    }
   });
 });

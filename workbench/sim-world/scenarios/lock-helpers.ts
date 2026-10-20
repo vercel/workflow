@@ -46,3 +46,51 @@ export async function startWaiter(
   await sim.deliverQueued(flowMessageFor(waiter));
   return waiter;
 }
+
+/** The stage-2 World: the FIFO waitlist with direct handoff. */
+export const FIFO = { fifo: true } as const;
+
+/** The handoff wake a release sent `runId` (keyed `lock-wake:<runId>:…`). */
+export const wakeFor =
+  (runId: string) =>
+  (pending: PendingMessageView[]): string | undefined =>
+    pending.find((m) => m.idempotencyKey?.startsWith(`lock-wake:${runId}:`))
+      ?.messageId;
+
+/** `runId`'s armed lock retry: its backstop on a FIFO World. */
+export const backstopFor =
+  (runId: string) =>
+  (pending: PendingMessageView[]): string | undefined =>
+    pending.find(
+      (m) => m.runId === runId && /:r\d+$/.test(m.idempotencyKey ?? '')
+    )?.messageId;
+
+/** When `runId`'s armed lock retry becomes deliverable. */
+export function backstopAt(sim: Tempo, runId: string): number | undefined {
+  const pending = sim.world.pendingMessages();
+  const id = backstopFor(runId)(pending);
+  return pending.find((m) => m.messageId === id)?.readyAtMs;
+}
+
+/** The fencing token `runId` was granted, from its `lock_acquired`. */
+export function tokenOf(sim: Tempo, runId: string): number | undefined {
+  const acquired = sim.world
+    .events(runId)
+    .find((e) => e.eventType === 'lock_acquired') as
+    | { eventData: { fencingToken: number } }
+    | undefined;
+  return acquired?.eventData.fencingToken;
+}
+
+/**
+ * Hold the run under test's `run_completed` write: its release (and the
+ * handoff wake that release sent) has happened, and the delivery loop is
+ * stopped inside the holder's invocation, so the wake cannot be delivered
+ * until the returned handle is released.
+ */
+export function parkHolderCompletion(sim: Tempo) {
+  return sim.park(
+    { eventType: 'run_completed', phase: 'before', runId: sim.runId },
+    'holder released, completion held'
+  );
+}

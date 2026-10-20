@@ -28,6 +28,12 @@ import { SPEC_VERSION_CURRENT } from '../spec-version.js';
  * - Fencing tokens strictly increase per key.
  * - First writer wins on `concurrency`.
  *
+ * On a World that declares `locks.fifo` (and passes `fifo`), the stage-2
+ * waitlist too: FIFO handoff, never admitting past a queue, claim, grant
+ * grace, terminal removal of waiters, the release-vs-enqueue race, and the
+ * waitlist cap, with the counter invariants of `locks.ts` checked after each
+ * step.
+ *
  * Every key is namespaced with a fresh id per test, so suites sharing one
  * backend (or a CI run sharing one tenant) never contend with each other.
  *
@@ -58,6 +64,15 @@ export interface LockConformanceOptions {
   concurrentAcquirers?: number;
   /** Rounds of the release-vs-reclaim race. Defaults to 6. */
   reclaimRaceRounds?: number;
+  /**
+   * The stage-2 waitlist policy the World under test runs with, when it
+   * declares `locks.fifo`. The grace tests sleep past `graceMs`, so keep it
+   * short (a few hundred ms); the cap test fills `waitlistCap` waiters, so
+   * keep it small, but above `concurrentAcquirers`.
+   */
+  fifo?: { graceMs: number; waitlistCap: number };
+  /** Rounds of each release-vs-enqueue interleaving. Defaults to 6. */
+  enqueueRaceRounds?: number;
 }
 
 const SPEC = SPEC_VERSION_CURRENT;
@@ -167,7 +182,7 @@ export function lockConformance(options: LockConformanceOptions): void {
               eventData: { error: new Uint8Array([1]) },
             }
           : { eventType: 'run_cancelled', specVersion: SPEC };
-    await create(events)(runId, request as AnyEventRequest);
+    return create(events)(runId, request as AnyEventRequest);
   }
 
   /** How many fresh scopes on fresh runs fit under `key` right now. */
@@ -180,7 +195,12 @@ export function lockConformance(options: LockConformanceOptions): void {
     for (let i = 0; i < concurrency + 1; i++) {
       const runId = await createRun(events);
       const { event } = await acquire(events, runId, key, concurrency);
-      if (event.eventType !== 'lock_acquired') break;
+      if (event.eventType !== 'lock_acquired') {
+        // Withdraw the refused probe, so on a FIFO World it does not stay
+        // queued and take the next freed slot.
+        await terminate(events, runId, 'cancelled');
+        break;
+      }
       granted++;
     }
     return granted;
@@ -595,5 +615,356 @@ export function lockConformance(options: LockConformanceOptions): void {
         expect(await freeSlots(events, key, 1)).toBe(1);
       });
     }
+  });
+  const fifo = options.fifo;
+  describe.skipIf(!fifo)(`lock waitlist conformance (${options.name})`, () => {
+    const policy = fifo ?? { graceMs: 0, waitlistCap: 1 };
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    test('declares locks.fifo', () => {
+      expect(options.capabilities()?.locks?.fifo).toBe(true);
+    });
+
+    function admin(events: Storage['events']) {
+      const locks = options.locks?.(events);
+      if (!locks?.listWaiters) {
+        throw new Error('a FIFO World must implement locks.listWaiters');
+      }
+      return locks as Required<NonNullable<Storage['locks']>>;
+    }
+
+    /** The counter invariants of `locks.ts`, from the admin reads. */
+    async function expectInvariants(events: Storage['events'], key: string) {
+      const locks = admin(events);
+      const lock = await locks.get(key);
+      if (!lock) return;
+      const holders = await locks.listHolders({ key });
+      const waiters = await locks.listWaiters({ key });
+      const reserved = waiters.filter((w) => w.grantedAt);
+      const queued = waiters.filter((w) => !w.grantedAt);
+      expect(lock.count).toBe(holders.length + reserved.length);
+      expect(lock.count).toBeLessThanOrEqual(lock.concurrency);
+      expect(lock.queuedCount ?? 0).toBe(queued.length);
+      expect(lock.reservedCount ?? 0).toBe(reserved.length);
+      if (lock.count < lock.concurrency) expect(queued).toEqual([]);
+      const maxReserved = Math.max(-1, ...reserved.map((w) => w.seq));
+      for (const w of queued) expect(w.seq).toBeGreaterThan(maxReserved);
+      return { lock, holders, reserved, queued };
+    }
+
+    /** A scope on a fresh run, and its first acquisition attempt. */
+    async function scope(
+      events: Storage['events'],
+      key: string,
+      concurrency: number
+    ) {
+      const runId = await createRun(events);
+      const attempt = await acquire(events, runId, key, concurrency);
+      return { runId, ...attempt };
+    }
+
+    const retry = (
+      events: Storage['events'],
+      s: { runId: string; correlationId: string },
+      key: string,
+      concurrency: number
+    ) => acquire(events, s.runId, key, concurrency, s.correlationId);
+
+    const handoffsOf = (result: EventResult) =>
+      (result.lockHandoffs ?? []).map((h) => h.correlationId);
+
+    test('queues refused scopes and hands each freed slot to the head, in order', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const holder = await scope(events, key, 1);
+      expect(holder.event.eventType).toBe('lock_acquired');
+      const waiters = [];
+      for (let i = 0; i < 4; i++) {
+        const w = await scope(events, key, 1);
+        expect(w.event.eventType).toBe('lock_created');
+        expect(w.result.lock).toMatchObject({
+          status: 'pending',
+          waiter: 'queued',
+        });
+        waiters.push(w);
+      }
+      await expectInvariants(events, key);
+
+      let current = holder;
+      for (const next of waiters) {
+        const released = await create(events)(
+          current.runId,
+          lockReleased(current.correlationId, key)
+        );
+        expect(handoffsOf(released)).toEqual([next.correlationId]);
+        const state = await expectInvariants(events, key);
+        // The slot was reserved, not freed.
+        expect(state?.lock.count).toBe(1);
+        const claimed = await retry(events, next, key, 1);
+        expect(claimed.event.eventType).toBe('lock_acquired');
+        current = { ...next, ...claimed };
+      }
+    });
+
+    test('a reservation is never admitted past, and a claim appends one event', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const holder = await scope(events, key, 1);
+      const waiter = await scope(events, key, 1);
+      await create(events)(
+        holder.runId,
+        lockReleased(holder.correlationId, key)
+      );
+      // The freed slot is the waiter's: a newcomer queues behind it.
+      const newcomer = await scope(events, key, 1);
+      expect(newcomer.event.eventType).toBe('lock_created');
+      await expectInvariants(events, key);
+
+      const before = (await logOf(events, waiter.runId)).length;
+      const claimed = await retry(events, waiter, key, 1);
+      expect(claimed.event.eventType).toBe('lock_acquired');
+      expect(claimed.result.lock?.status).toBe('held');
+      // A duplicate claim converges on the same lock_acquired.
+      const again = await retry(events, waiter, key, 1);
+      expect(again.event.eventId).toBe(claimed.event.eventId);
+      // lock_created stayed; lock_acquired is the one event the claim added.
+      expect((await logOf(events, waiter.runId)).length).toBe(before + 1);
+      // Fencing tokens are issued at claim, in grant order.
+      expect(
+        (claimed.event as { eventData: { fencingToken: number } }).eventData
+          .fencingToken
+      ).toBeGreaterThan(
+        (holder.event as { eventData: { fencingToken: number } }).eventData
+          .fencingToken
+      );
+      await expectInvariants(events, key);
+    });
+
+    test('reservations do not block a slot nobody is queued for', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const a = await scope(events, key, 2);
+      const b = await scope(events, key, 2);
+      const w = await scope(events, key, 2);
+      expect(w.event.eventType).toBe('lock_created');
+      // a's slot goes to w (reserved); b's then frees outright.
+      await create(events)(a.runId, lockReleased(a.correlationId, key));
+      const freed = await create(events)(
+        b.runId,
+        lockReleased(b.correlationId, key)
+      );
+      expect(handoffsOf(freed)).toEqual([]);
+      const state = await expectInvariants(events, key);
+      expect(state?.reserved).toHaveLength(1);
+      expect(state?.lock.count).toBe(1);
+      // A newcomer takes the free slot without waiting for w to claim.
+      const newcomer = await scope(events, key, 2);
+      expect(newcomer.event.eventType).toBe('lock_acquired');
+      await expectInvariants(events, key);
+    });
+
+    test('grant grace moves a stale reservation to the next waiter and the slow grantee to the tail', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const holder = await scope(events, key, 1);
+      const slow = await scope(events, key, 1);
+      const next = await scope(events, key, 1);
+      const released = await create(events)(
+        holder.runId,
+        lockReleased(holder.correlationId, key)
+      );
+      expect(handoffsOf(released)).toEqual([slow.correlationId]);
+      await sleep(policy.graceMs + 100);
+
+      // next's backstop retry finds slow's reservation stale: the slot
+      // moves to next (who claims it in the same write), and slow goes back
+      // to the tail without being dropped.
+      const claimed = await retry(events, next, key, 1);
+      expect(claimed.event.eventType).toBe('lock_acquired');
+      expect(handoffsOf(claimed.result)).toEqual([]);
+      const state = await expectInvariants(events, key);
+      expect(state?.queued.map((w) => w.correlationId)).toEqual([
+        slow.correlationId,
+      ]);
+      const late = await retry(events, slow, key, 1);
+      expect(late.result.lock).toMatchObject({
+        status: 'pending',
+        waiter: 'queued',
+      });
+      // And slow is next in line.
+      const handed = await create(events)(
+        next.runId,
+        lockReleased(next.correlationId, key)
+      );
+      expect(handoffsOf(handed)).toEqual([slow.correlationId]);
+      await expectInvariants(events, key);
+    });
+
+    test('a stale reservation with nobody queued stays claimable', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const holder = await scope(events, key, 1);
+      const slow = await scope(events, key, 1);
+      await create(events)(
+        holder.runId,
+        lockReleased(holder.correlationId, key)
+      );
+      await sleep(policy.graceMs + 100);
+      const claimed = await retry(events, slow, key, 1);
+      expect(claimed.event.eventType).toBe('lock_acquired');
+      await expectInvariants(events, key);
+    });
+
+    test('a stale reservation is moved on by an unrelated acquirer and reported as a handoff', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const holder = await scope(events, key, 1);
+      const slow = await scope(events, key, 1);
+      const queued = await scope(events, key, 1);
+      await create(events)(
+        holder.runId,
+        lockReleased(holder.correlationId, key)
+      );
+      await sleep(policy.graceMs + 100);
+      const newcomer = await scope(events, key, 1);
+      expect(newcomer.event.eventType).toBe('lock_created');
+      expect(handoffsOf(newcomer.result)).toEqual([queued.correlationId]);
+      const state = await expectInvariants(events, key);
+      // Grace runs before the write's own step: slow goes back to the tail
+      // first, and the newcomer queues behind it.
+      expect(state?.queued.map((w) => w.correlationId)).toEqual([
+        slow.correlationId,
+        newcomer.correlationId,
+      ]);
+    });
+
+    for (const how of ['completed', 'failed', 'cancelled'] as const) {
+      test(`a ${how} run's waiters leave the queue, and its reservation passes on`, async () => {
+        const events = options.events();
+        const key = uniqueId('key');
+        const holder = await scope(events, key, 1);
+        const gone = await scope(events, key, 1);
+        const queued = await scope(events, key, 1);
+        const behind = await scope(events, key, 1);
+        await terminate(events, queued.runId, how);
+        let state = await expectInvariants(events, key);
+        expect(state?.queued.map((w) => w.correlationId)).toEqual([
+          gone.correlationId,
+          behind.correlationId,
+        ]);
+        // gone gets the next slot, then its run ends before it claims.
+        await create(events)(
+          holder.runId,
+          lockReleased(holder.correlationId, key)
+        );
+        const ended = await terminate(events, gone.runId, how);
+        expect(handoffsOf(ended)).toEqual([behind.correlationId]);
+        state = await expectInvariants(events, key);
+        expect(state?.reserved.map((w) => w.correlationId)).toEqual([
+          behind.correlationId,
+        ]);
+        expect(
+          (await admin(events).listWaiters({ key })).some(
+            (w) => w.runId === gone.runId || w.runId === queued.runId
+          )
+        ).toBe(false);
+      });
+    }
+
+    test("a queued scope's own retry prunes an expired lease and claims the slot it hands down", async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      const leased = await createRun(events);
+      const held = await acquire(events, leased, key, 1, uniqueId('lock'), {
+        leaseTtlMs: 200,
+      });
+      expect(held.event.eventType).toBe('lock_acquired');
+      const w = await scope(events, key, 1);
+      expect(w.result.lock?.waiter).toBe('queued');
+      await sleep(400);
+      // The prune frees the slot and hands it to the head of the queue,
+      // which is the scope retrying: it claims in the same write.
+      const claimed = await retry(events, w, key, 1);
+      expect(claimed.event.eventType).toBe('lock_acquired');
+      expect(handoffsOf(claimed.result)).toEqual([]);
+      await expectInvariants(events, key);
+    });
+
+    test('a waiting scope can release, leaving the queue', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      await scope(events, key, 1);
+      const w = await scope(events, key, 1);
+      const released = await create(events)(
+        w.runId,
+        lockReleased(w.correlationId, key)
+      );
+      expect(released.event?.eventType).toBe('lock_released');
+      const state = await expectInvariants(events, key);
+      expect(state?.queued).toEqual([]);
+      // A duplicate lock_created after the withdrawal neither queues nor
+      // grants the scope again.
+      const again = await retry(events, w, key, 1);
+      expect(again.event.eventType).toBe('lock_created');
+      expect(again.result.lock?.status).toBe('released');
+      expect((await expectInvariants(events, key))?.queued).toEqual([]);
+    });
+
+    for (const order of ['release first', 'enqueue first'] as const) {
+      test(`a release racing an enqueue never strands the waiter (${order})`, async () => {
+        const first = options.events();
+        const second = options.secondEvents?.(first) ?? first;
+        for (let round = 0; round < (options.enqueueRaceRounds ?? 6); round++) {
+          const key = uniqueId('key');
+          const holder = await scope(first, key, 1);
+          const runId = await createRun(second);
+          const release = () =>
+            create(first)(
+              holder.runId,
+              lockReleased(holder.correlationId, key)
+            );
+          const enqueue = () => acquire(second, runId, key, 1);
+          const [a, b] =
+            order === 'release first'
+              ? await Promise.all([release(), enqueue()])
+              : await Promise.all([enqueue(), release()]).then(
+                  ([x, y]) => [y, x] as const
+                );
+          const released = a as EventResult;
+          const attempt = b as Awaited<ReturnType<typeof acquire>>;
+          // Either the acquirer was granted outright, or the release handed
+          // it the slot. It is never left queued behind a free slot.
+          const handedOff = handoffsOf(released).includes(
+            attempt.correlationId
+          );
+          expect(attempt.event.eventType === 'lock_acquired' || handedOff).toBe(
+            true
+          );
+          await expectInvariants(first, key);
+        }
+      });
+    }
+
+    test('refuses past the waitlist cap with a journaled lock_failed', async () => {
+      const events = options.events();
+      const key = uniqueId('key');
+      await scope(events, key, 1);
+      for (let i = 0; i < policy.waitlistCap; i++) {
+        const w = await scope(events, key, 1);
+        expect(w.event.eventType).toBe('lock_created');
+      }
+      const refused = await scope(events, key, 1);
+      expect(refused.event.eventType).toBe('lock_failed');
+      expect(refused.result.lock).toMatchObject({
+        status: 'failed',
+        reason: 'waitlist_full',
+      });
+      // Terminal for the scope: a re-POST returns the same event.
+      const again = await retry(events, refused, key, 1);
+      expect(again.event.eventId).toBe(refused.event.eventId);
+      const state = await expectInvariants(events, key);
+      expect(state?.queued).toHaveLength(policy.waitlistCap);
+    });
   });
 }

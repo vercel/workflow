@@ -14,6 +14,12 @@ import { TestPool } from './pool.js';
  * Native concurrency locks on the Postgres World: the shared conformance
  * suite, with a second events storage on the same database racing the first.
  */
+// A short grace and a small cap, so the waitlist conformance can reach both.
+// Read by the World per write.
+const fifo = { graceMs: 300, waitlistCap: 20 };
+process.env.WORKFLOW_LOCK_GRANT_GRACE_MS = String(fifo.graceMs);
+process.env.WORKFLOW_LOCK_WAITLIST_CAP = String(fifo.waitlistCap);
+
 describe('locks (world-postgres)', () => {
   if (process.platform === 'win32') {
     test.skip('skipped on Windows since it relies on a docker container', () => {});
@@ -52,5 +58,6 @@ describe('locks (world-postgres)', () => {
     capabilities: () => createWorld({ pool }).capabilities,
     newRunId: () => `wrun_${ulid()}`,
     concurrentAcquirers: 16,
+    fifo,
   });
 });

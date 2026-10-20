@@ -2968,7 +2968,8 @@ async function processEvents(
         break;
       }
       case 'lock_created':
-      case 'lock_acquired': {
+      case 'lock_acquired':
+      case 'lock_failed': {
         // Same divergence rule as workflow/lock.ts: the recorded request must
         // be the one this replay computed. A mismatch rejects the awaiter.
         const scope = vm.dump(
@@ -2991,6 +2992,15 @@ async function processEvents(
         ) {
           const message = `Replay divergence: ${event.eventType} recorded experimental_lock(${JSON.stringify(recordedKey)}, { concurrency: ${recordedConcurrency} }) but the workflow now asks for experimental_lock(${JSON.stringify(scope.key)}, { concurrency: ${scope.concurrency} }) (lock ${cid})`;
           settleJs = `var err = new Error(${JSON.stringify(message)}); err.name = "ReplayDivergenceError"; err.fatal = true; globalThis.__resolvers[${cidJs}].reject(err);`;
+        } else if (event.eventType === 'lock_failed') {
+          // Refused for good: the same LockWaitlistFullError shape the node
+          // engine throws (`LockWaitlistFullError.is()` checks the name).
+          const cap = eventData?.waitlistCap as number | undefined;
+          const message = `experimental_lock(${JSON.stringify(scope.key)}) was refused: the key's waitlist is full${cap === undefined ? '' : ` (${cap} waiters)`}`;
+          settleJs = `var err = new Error(${JSON.stringify(message)}); err.name = "LockWaitlistFullError"; err.slug = "lock-waitlist-full"; err.key = ${JSON.stringify(scope.key)}; err.waitlistCap = ${cap === undefined ? 'undefined' : Number(cap)}; globalThis.__resolvers[${cidJs}].reject(err);`;
+          vm.evalCode(
+            `(function(){var i=globalThis.__pending.findIndex(function(p){return p.correlationId===${cidJs}&&p.type==="lock";}); if(i>=0) globalThis.__pending.splice(i,1);})();`
+          ).dispose();
         } else if (event.eventType === 'lock_created') {
           vm.evalCode(
             `globalThis.__pending.find(function(p){return p.correlationId===${cidJs}&&p.type==="lock";}).waiting = true;`

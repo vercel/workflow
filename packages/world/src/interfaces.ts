@@ -18,7 +18,7 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
-import type { Lock, LockHolder } from './locks.js';
+import type { Lock, LockHolder, LockWaiter } from './locks.js';
 import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
@@ -581,6 +581,14 @@ export interface Storage {
       runId?: string;
     }): Promise<LockHolder[]>;
     /**
+     * Stage 2 (`locks.fifo`): waiter rows for `key`, reserved and queued, in
+     * `seq` order. A FIFO World implements it.
+     */
+    listWaiters?(params: {
+      key: string;
+      limit?: number;
+    }): Promise<LockWaiter[]>;
+    /**
      * Force-release one holder: delete its row and decrement the key, in the
      * same atomic step every other decrement uses. The holder's run is not
      * told; its eventual `lock_released` is then a no-op, and a fencing token
@@ -780,14 +788,23 @@ export interface WorldCapabilities {
    *   the terminal transition deletes the run's holder rows and decrements
    *   their keys, so a grant racing it either lands before the reclaim sees it
    *   or after the run reads terminal.
-   * - `lock_waiter_queued` is rejected until the World implements the stage-2
-   *   waitlist.
+   * - `lock_waiter_queued` is rejected (reserved, unused).
    *
    * `@workflow/world`'s `test-support/lock-conformance.ts` checks these
    * against a World's `events` storage.
    */
   locks?: {
     concurrency: boolean;
+    /**
+     * Stage 2: the FIFO waitlist and direct handoff, as specified in
+     * `locks.ts`. A refused `lock_created` queues the scope instead of
+     * leaving it to poll, its `retryAt` is the backstop, every write that
+     * reserves a slot returns `EventResult.lockHandoffs`, and a scope past
+     * the waitlist cap gets `lock_failed`. The runtime sends a wake target
+     * on `lock_created` and wakes grantees only when this is `true`; without
+     * it, waiters poll on the stage-1 schedule.
+     */
+    fifo?: boolean;
   };
 
   /**

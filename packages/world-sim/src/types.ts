@@ -199,6 +199,8 @@ export interface PendingMessageView {
   readyAtMs: number;
   /** How many times it has already been handed to a handler. */
   deliveries: number;
+  /** The key it was enqueued under, if any (a lock handoff wake has one). */
+  idempotencyKey?: string;
 }
 
 /**
@@ -429,6 +431,14 @@ export interface ScenarioApi {
    * load", the precondition a real deployment reaches through concurrency.
    */
   withholdNextEvent(reads?: number): void;
+  /**
+   * Lose one pending queue message: remove it without delivering it, as a
+   * publish that never arrived. `select` works as in {@link deliverQueued}.
+   * Resolves `false` when nothing matched.
+   */
+  dropQueued(
+    select: (pending: PendingMessageView[]) => string | undefined
+  ): Promise<boolean>;
   /** Record a free-text marker in the scenario trace. */
   note(message: string): void;
   /** Record a named assertion in the trace; a false value fails the scenario. */

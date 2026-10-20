@@ -39,6 +39,7 @@ import {
 } from './drive.js';
 import { checkInvariants, checkLockInvariants } from './invariants.js';
 import { verifyReplay } from './replay.js';
+import type { SimLockPolicy } from './store.js';
 import { createTempo, ScenarioAborted } from './tempo.js';
 import type {
   InvariantViolation,
@@ -127,6 +128,12 @@ export interface ScenarioSpec {
    */
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
+  /**
+   * The World's `experimental_lock()` waitlist policy. Absent: stage 1, where
+   * a refused acquisition polls; `{ fifo: true }` runs the stage-2 FIFO
+   * waitlist with direct handoff (and declares `locks.fifo`).
+   */
+  locks?: SimLockPolicy;
   /** Enforce (and advertise) the optimistic-concurrency fence. */
   preconditionGuard?: boolean;
   /**
@@ -224,6 +231,7 @@ export async function runScenario(
     options.preconditionGuard ?? spec.preconditionGuard ?? false;
   const world = createSimWorld({
     clock,
+    ...(spec.locks && { locks: spec.locks }),
     preconditionGuard,
     countGuard: spec.countGuard ?? preconditionGuard,
   });
@@ -336,6 +344,18 @@ export async function runScenario(
       if (!message) return false;
       clock.advanceTo(message.readyAtMs);
       await deliver(world, message);
+      return true;
+    },
+    async dropQueued(select) {
+      const chosen = select(world.simQueue.view());
+      if (!chosen) return false;
+      const message = world.simQueue.takeById(chosen);
+      if (!message) return false;
+      world.simQueue.settle(message);
+      world.pushTrace({
+        kind: 'note',
+        message: `dropped queue message ${chosen}`,
+      });
       return true;
     },
     note(message) {
@@ -540,6 +560,10 @@ export async function runScenario(
             events: world.store.allEventsInCommitOrder(),
             locks: world.store.allLocks(),
             holders: world.store.allLockHolders(),
+            waiters: world.store.allLockWaiters(),
+            ...(world.capabilities?.locks?.fifo && {
+              fifo: { movedBack: world.store.lockMovedBack() },
+            }),
           })
         )
         .concat(replayViolations)

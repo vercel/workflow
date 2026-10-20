@@ -24,6 +24,7 @@ import type {
   Hook,
   HookCreatedEventRequest,
   ListEventsParams,
+  LockHandoff,
   PaginatedResponse,
   PaginationOptions,
   SerializedData,
@@ -1115,7 +1116,7 @@ export function createEventsStorage(
               tag
             ),
         };
-        const { event, lock } =
+        const { event, lock, lockHandoffs } =
           data.eventType === 'lock_created'
             ? await createLockAcquisition(ctx, data as any)
             : await createLockRelease(ctx, data as any);
@@ -1123,6 +1124,7 @@ export function createEventsStorage(
         const result: EventResult = {
           event: stripEventDataRefs(event, resolveData),
           lock,
+          ...(lockHandoffs && { lockHandoffs }),
         };
         if (typeof params?.sinceCursor !== 'string') return result;
         const delta = await queryRunEvents(effectiveRunId, {
@@ -1771,6 +1773,8 @@ export function createEventsStorage(
 
         // Track entity created/updated for EventResult
         let run: WorkflowRun | undefined;
+        // Slots the terminal reclaim handed to waiters, for the caller to wake.
+        let terminalLockHandoffs: LockHandoff[] = [];
         /**
          * Whether the lifecycle write below purged the run's own payloads for
          * `$retention: '0'`. The rest of the run's user data is deleted on the
@@ -1831,7 +1835,11 @@ export function createEventsStorage(
           // the marker, so a grant racing this transition either inserted its
           // holder row before the walk (and is deleted here) or reads the
           // marker and refuses; see locks-storage.ts.
-          await reclaimRunLocks(basedir, effectiveRunId, tag);
+          terminalLockHandoffs = await reclaimRunLocks(
+            basedir,
+            effectiveRunId,
+            tag
+          );
           // Re-derive this terminal event's replay-ordering key at the
           // linearization point. The eventId/createdAt allocated at
           // createImpl() entry can predate a hook_received that
@@ -3561,6 +3569,9 @@ export function createEventsStorage(
           hook,
           wait,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
+          ...(terminalLockHandoffs.length > 0 && {
+            lockHandoffs: terminalLockHandoffs,
+          }),
           // Per-run event ceiling (mirrors the Vercel World, including the
           // QuickJS-snapshot exemption).
           ...(run ? { maxEvents: getMaxEventsForRun(run) } : {}),

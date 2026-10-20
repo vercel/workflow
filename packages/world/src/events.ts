@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { AttributeChangesSchema } from './attributes.js';
 import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
-import { type LockAttempt, LockKeySchema } from './locks.js';
+import {
+  type LockAttempt,
+  type LockHandoff,
+  LockKeySchema,
+  LockWakeTargetSchema,
+} from './locks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type {
@@ -44,6 +49,7 @@ export const EventTypeSchema = z.compile(
     // Lock lifecycle events (`experimental_lock()`; requires the `locks` capability)
     'lock_created',
     'lock_acquired', // Created by world when a lock_created is granted
+    'lock_failed', // Created by world when a lock_created can never be granted
     'lock_released',
     'lock_waiter_queued', // Reserved for the stage-2 waitlist handoff
     // Sealed-log filler (specVersion >= 7): written ONLY by the World's backend
@@ -161,6 +167,7 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
 const LockEventTypeSchema = EventTypeSchema.extract([
   'lock_created',
   'lock_acquired',
+  'lock_failed',
   'lock_released',
   'lock_waiter_queued',
 ] as const);
@@ -563,6 +570,13 @@ const LockCreatedEventSchema = BaseEventSchema.extend({
      * runtime gives up waiting. Not interpreted yet.
      */
     expiresAt: z.coerce.date().optional(),
+    /**
+     * Stage 2 (`locks.fifo`): where a releasing run should send this
+     * scope's wake once a slot is reserved for it. The World stores it on
+     * the waiter row; it may omit it from the committed event. Sent only to
+     * a World that declares `locks.fifo`.
+     */
+    wake: LockWakeTargetSchema.optional(),
   }),
 });
 
@@ -588,6 +602,27 @@ const LockAcquiredEventSchema = BaseEventSchema.extend({
 });
 
 /**
+ * World-written, in place of a `lock_created`, when the scope will never be
+ * granted. Not user-creatable. Terminal for the scope: a re-POST returns it,
+ * and the runtime rejects the scope's `experimental_lock()` with the matching
+ * error (`waitlist_full`: `LockWaitlistFullError`), deterministically on every
+ * replay.
+ */
+const LockFailedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_failed'),
+  correlationId: z.string(),
+  eventData: z.object({
+    key: LockKeySchema,
+    /** The concurrency this scope requested. */
+    concurrency: z.number().int().positive(),
+    /** `waitlist_full`: the key already had the World's cap of waiters. */
+    reason: z.enum(['waitlist_full']),
+    /** The cap that refused it, for the error message. */
+    waitlistCap: z.number().int().positive().optional(),
+  }),
+});
+
+/**
  * Runtime-written when the scope exits (`slot.release()` or disposal). The
  * World deletes the scope's holder row and decrements in one atomic step; if
  * the row is already gone (lease expiry, admin release) nothing is
@@ -602,8 +637,9 @@ const LockReleasedEventSchema = BaseEventSchema.extend({
 });
 
 /**
- * Reserved for stage 2: the releasing run handed its slot to the head of the
- * waitlist and woke it. A World without a waitlist rejects it.
+ * Reserved and unused. Stage 2's handoff is not journaled: a release that
+ * reserves a slot reports it on `EventResult.lockHandoffs`, and nothing
+ * waits on the wake. Every World rejects it.
  */
 const LockWaiterQueuedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('lock_waiter_queued'),
@@ -835,6 +871,7 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Lock lifecycle events
   LockCreatedEventSchema,
   LockAcquiredEventSchema, // World-only: created when a lock_created is granted
+  LockFailedEventSchema, // World-only: created when a lock_created can never be granted
   LockReleasedEventSchema,
   LockWaiterQueuedEventSchema,
   NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
@@ -875,6 +912,7 @@ export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
 export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 export type LockCreatedEvent = EventOfType<'lock_created'>;
 export type LockAcquiredEvent = EventOfType<'lock_acquired'>;
+export type LockFailedEvent = EventOfType<'lock_failed'>;
 export type LockReleasedEvent = EventOfType<'lock_released'>;
 
 /**
@@ -1217,6 +1255,14 @@ export type EventResult<T extends EventType = EventType> = {
    * with a fresh `retryAt`, or already released) or a `lock_released`.
    */
   lock?: LockAttempt;
+  /**
+   * Stage 2 (`locks.fifo`): slots this write reserved for waiters, on any
+   * event type that can free one (`lock_created` that moved a stale grant,
+   * `lock_released`, and the terminal run events, whose reclaim can hand a
+   * slot off). The caller sends each grantee a best-effort wake; see
+   * `@workflow/world`'s `locks.ts`.
+   */
+  lockHandoffs?: LockHandoff[];
   /**
    * Lazy step start: set to `true` only when a `step_started` event with
    * step-creation data atomically *created* the step on this call (the

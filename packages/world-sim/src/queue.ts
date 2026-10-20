@@ -234,6 +234,7 @@ export function createSimQueue(opts: {
           stepId: payload.stepId,
           readyAtMs: m.readyAtMs,
           deliveries: m.deliveries,
+          ...(m.idempotencyKey && { idempotencyKey: m.idempotencyKey }),
         };
       });
     },

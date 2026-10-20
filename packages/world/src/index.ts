@@ -97,15 +97,22 @@ export type {
 } from './invocation.js';
 export type * from './locks.js';
 export {
+  getLockWaitlistPolicy,
+  LOCK_BACKSTOP_MS,
+  LOCK_GRANT_GRACE_MS,
   LOCK_KEY_MAX_LENGTH,
   LOCK_RETRY_BASE_MS,
   LOCK_RETRY_CAP_MS,
   LOCK_RETRY_MIN_MS,
+  LOCK_WAITLIST_CAP,
   LockAttemptSchema,
+  LockHandoffSchema,
   LockHolderSchema,
   LockKeySchema,
   LockSchema,
   LockWaiterSchema,
+  LockWakeTargetSchema,
+  lockBackstopAt,
   lockRetryAt,
   lockRetryDelayMs,
 } from './locks.js';
