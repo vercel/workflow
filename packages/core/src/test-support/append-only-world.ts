@@ -35,6 +35,8 @@ export interface HeldMessage {
   handoffCount?: number;
   /** Delivered as the given re-run of a coalesced delivery. */
   coalescedRerun?: number;
+  /** Passed as `meta.invocationStartedAt`. */
+  invocationStartedAt?: number;
 }
 
 /** One delivery a test made, with what the handler returned. */
@@ -492,6 +494,9 @@ export class AppendOnlyWorld {
         ...(held.coalescedRerun !== undefined && {
           coalescedRerun: held.coalescedRerun,
         }),
+        ...(held.invocationStartedAt !== undefined && {
+          invocationStartedAt: held.invocationStartedAt,
+        }),
         createdAt: held.createdAt,
         messageId: held.messageId,
         queueName: held.queueName,
@@ -524,7 +529,11 @@ export class AppendOnlyWorld {
       const handedOff =
         this.options.handoff === true &&
         (result as { handoff?: unknown }).handoff === true;
-      const { coalescedRerun: _rerun, ...next } = held;
+      const {
+        coalescedRerun: _rerun,
+        invocationStartedAt: _startedAt,
+        ...next
+      } = held;
       this.held.push({
         ...next,
         deliveryCount: held.deliveryCount + 1,

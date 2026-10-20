@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
-import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
+import {
+  ConcurrencyCoalescedPendingError,
+  ConsumerDiscoveryError,
+  QueueClient,
+} from '@vercel/queue';
 import {
   MessageId,
   parseQueueName,
@@ -157,6 +161,8 @@ interface QueueInvocationContext {
   collectStepIds: boolean;
   requestId?: string;
   stepIds: Set<string>;
+  /** When the request began, epoch ms; shared by its coalesced re-runs. */
+  startedAt: number;
 }
 
 // per-copy-ok: the route wrapper and the World hook exported from this module
@@ -962,6 +968,7 @@ export function createQueue(config?: APIConfig): Queue {
               ...(metadata.experimental_coalesced && {
                 coalescedRerun: metadata.experimental_coalesced.rerun,
               }),
+              ...(invocation && { invocationStartedAt: invocation.startedAt }),
             });
           const result = await (invocation
             ? invocationStorage.run(
@@ -1014,6 +1021,14 @@ export function createQueue(config?: APIConfig): Queue {
               ? { afterSeconds: 0, experimental_handoff: true }
               : { afterSeconds: error.afterSeconds };
           }
+          if (error instanceof ConcurrencyCoalescedPendingError) {
+            // The handler finished, but messages kept being coalesced into
+            // the delivery through every re-run: a busy run, not a failing
+            // one. Hand the message off: its next delivery replays from the
+            // log, which holds what those messages were sent for, and it is
+            // not counted as an attempt.
+            return { afterSeconds: 0, experimental_handoff: true };
+          }
           const afterSeconds = getHandlerErrorRetryAfterSeconds(
             error,
             deliveryCount
@@ -1034,6 +1049,7 @@ export function createQueue(config?: APIConfig): Queue {
         collectStepIds: false,
         requestId,
         stepIds: new Set(),
+        startedAt: Date.now(),
       };
       const response = await invocationStorage.run(invocation, () =>
         vqsHandler(req)

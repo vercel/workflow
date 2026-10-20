@@ -624,6 +624,31 @@ describe.each([
     }
   );
 
+  it.runIf(engine === 'node')(
+    'measures the deadline of a coalesced re-run from its invocation start',
+    async () => {
+      // A re-run within an invocation that began long ago has no inline time
+      // left: it hands off at once instead of starting a fresh budget.
+      const { world, start } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+        [1, 2],
+        { handoff: true }
+      );
+      const result = await world.deliver({
+        ...start,
+        coalescedRerun: 1,
+        invocationStartedAt: Date.now() - 30 * 60_000,
+      });
+      expect(result).toEqual({ timeoutSeconds: 0, handoff: true });
+      expect(calls.so_add).toBeUndefined();
+
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(calls.so_add).toBe(1);
+    }
+  );
+
   it('fails an orchestrator past the delivery cap in-band, and never a step message', async () => {
     const { world, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");

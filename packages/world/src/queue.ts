@@ -833,6 +833,12 @@ export interface Queue {
    *   those messages were sent for was committed to the log before they
    *   were sent. A message whose payload carries more than the log (see
    *   {@link QueueOptions.coalesce}) is never coalesced.
+   * - `invocationStartedAt` (epoch ms) is when the function invocation running
+   *   this handler call began, when the World knows it. It is the same for
+   *   every coalesced re-run of a delivery, which all share that invocation:
+   *   the runtime measures its inline deadline from it, so a late re-run does
+   *   not get a fresh budget the invocation no longer has. Absent: the runtime
+   *   measures from the start of each handler call.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -846,6 +852,7 @@ export interface Queue {
         messageId: MessageId;
         requestId?: string;
         coalescedRerun?: number;
+        invocationStartedAt?: number;
       }
     ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;

@@ -26,10 +26,17 @@ import {
 const {
   mockSend,
   mockSendBatch,
+  MockConcurrencyCoalescedPendingError,
   MockConsumerDiscoveryError,
   MockQueueClient,
   mockHandleCallback,
 } = vi.hoisted(() => {
+  class MockConcurrencyCoalescedPendingError extends Error {
+    constructor(readonly coalescedCount: number) {
+      super('coalesced');
+      this.name = 'ConcurrencyCoalescedPendingError';
+    }
+  }
   class MockConsumerDiscoveryError extends Error {
     constructor(message: string) {
       super(message);
@@ -54,6 +61,7 @@ const {
   return {
     mockSend,
     mockSendBatch,
+    MockConcurrencyCoalescedPendingError,
     MockConsumerDiscoveryError,
     MockQueueClient,
     mockHandleCallback,
@@ -61,6 +69,7 @@ const {
 });
 
 vi.mock('@vercel/queue', () => ({
+  ConcurrencyCoalescedPendingError: MockConcurrencyCoalescedPendingError,
   QueueClient: MockQueueClient,
   ConsumerDiscoveryError: MockConsumerDiscoveryError,
 }));
@@ -1114,6 +1123,66 @@ describe('createQueue', () => {
         { afterSeconds: 0, experimental_handoff: true }
       );
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('hands the message off once coalesced re-runs are used up', () => {
+      const { retry } = captureHandler(undefined);
+      const consoleErrorSpy = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      try {
+        expect(
+          retry(new MockConcurrencyCoalescedPendingError(3), {
+            messageId: 'msg-123',
+            deliveryCount: 4,
+          })
+        ).toEqual({ afterSeconds: 0, experimental_handoff: true });
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('passes the invocation start to every coalesced re-run', async () => {
+      const seen: Record<string, unknown>[] = [];
+      let captured!: (message: unknown, metadata: unknown) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        captured = handler;
+        // The client re-runs the handler within one request.
+        return async () => {
+          const message = {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+          };
+          await captured(message, {
+            messageId: 'msg-123',
+            deliveryCount: 1,
+            createdAt: new Date(),
+          });
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await captured(message, {
+            messageId: 'msg-123',
+            deliveryCount: 1,
+            createdAt: new Date(),
+            experimental_coalesced: { rerun: 1, coalescedCount: 1 },
+          });
+          return new Response('ok');
+        };
+      });
+      const routeHandler = createQueue().createQueueHandler(
+        '__wkf_workflow_',
+        async (_m, meta) => {
+          seen.push(meta as Record<string, unknown>);
+          return undefined;
+        }
+      );
+      const before = Date.now();
+      await routeHandler(new Request('https://example.test'));
+
+      expect(seen).toHaveLength(2);
+      const startedAt = seen[0]!.invocationStartedAt as number;
+      expect(startedAt).toBeGreaterThanOrEqual(before);
+      expect(seen[1]!.invocationStartedAt).toBe(startedAt);
     });
 
     it('does not hand off a delayed redelivery', async () => {

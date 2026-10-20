@@ -343,7 +343,10 @@ async function runDelivery(
     ? Math.max(2, deliveryAttempts ?? 1)
     : deliveryAttempts;
 
-  const invocationStartTime = Date.now();
+  // The inline deadline is measured from the start of the function
+  // invocation, which every coalesced re-run of this delivery shares
+  // (`metadata.invocationStartedAt`), so a late re-run hands off on time.
+  const invocationStartTime = metadata.invocationStartedAt ?? Date.now();
   const noInlineReplayAfterMs = await getMaxInlineDurationMs(
     world,
     invocationStartTime
