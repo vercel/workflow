@@ -1,13 +1,7 @@
-import {
-  getKeyedWorkflowQueueTrigger,
-  WORKFLOW_QUEUE_TRIGGER,
-} from '@workflow/builders';
+import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import fs from 'fs-extra';
 
-const WORKFLOW_QUEUE_TOPICS = new Set([
-  WORKFLOW_QUEUE_TRIGGER.topic,
-  getKeyedWorkflowQueueTrigger().topic,
-]);
+const WORKFLOW_QUEUE_TOPICS = new Set([WORKFLOW_QUEUE_TRIGGER.topic]);
 
 function isWorkflowQueueTrigger(trigger: unknown) {
   if (typeof trigger !== 'object' || trigger === null) {

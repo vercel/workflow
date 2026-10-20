@@ -1,20 +1,35 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
-  getKeyedWorkflowQueueTrigger,
   getWorkflowQueueTrigger,
-  getWorkflowQueueTriggers,
-  isSequentialReplaysEnabled,
 } from './constants.js';
 
 describe('getWorkflowQueueTrigger', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
+  let originalStrict: string | undefined;
+
+  beforeEach(() => {
+    originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
   });
 
-  it('always sets maxConcurrency: 1', () => {
+  afterEach(() => {
+    if (originalStrict !== undefined) {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
+    } else {
+      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    }
+  });
+
+  it('omits maxConcurrency by default', () => {
+    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    const trigger = getWorkflowQueueTrigger();
+    expect(trigger.topic).toBe('__wkf_workflow_*');
+    expect('maxConcurrency' in trigger).toBe(false);
+  });
+
+  it('sets maxConcurrency: 1 when WORKFLOW_SEQUENTIAL_REPLAYS=1', () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
     const trigger = getWorkflowQueueTrigger();
     expect(trigger).toMatchObject({
       topic: '__wkf_workflow_*',
@@ -22,17 +37,14 @@ describe('getWorkflowQueueTrigger', () => {
     });
   });
 
-  it.each([
-    '0',
-    'false',
-    '',
-  ])('ignores the removed WORKFLOW_SEQUENTIAL_REPLAYS=%j', (value) => {
-    vi.stubEnv('WORKFLOW_SEQUENTIAL_REPLAYS', value);
-    expect(getWorkflowQueueTrigger().maxConcurrency).toBe(1);
-    expect(isSequentialReplaysEnabled()).toBe(true);
+  it('does not set maxConcurrency for non-"1" values', () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
+    const trigger = getWorkflowQueueTrigger();
+    expect('maxConcurrency' in trigger).toBe(false);
   });
 
   it('composes with an explicit namespace option', () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
     expect(getWorkflowQueueTrigger({ namespace: 'custom' })).toMatchObject({
       topic: '__custom_wkf_workflow_*',
       maxConcurrency: 1,
@@ -40,49 +52,13 @@ describe('getWorkflowQueueTrigger', () => {
   });
 
   it('resolves WORKFLOW_QUEUE_NAMESPACE at call time', () => {
-    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'callns');
-    expect(getWorkflowQueueTrigger().topic).toBe('__callns_wkf_workflow_*');
-  });
-});
-
-describe('getWorkflowQueueTriggers', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it('pairs the maxConcurrency trigger with a keyed trigger that has none', () => {
-    const [serialized, keyed] = getWorkflowQueueTriggers();
-    expect(serialized).toEqual(getWorkflowQueueTrigger());
-    expect(keyed).toEqual(getKeyedWorkflowQueueTrigger());
-    expect(keyed).toMatchObject({
-      type: serialized!.type,
-      consumer: serialized!.consumer,
-      topic: '__wkf_keyed_*',
-    });
-    // VQS refuses a keyed send to a topic a maxConcurrency consumer reads.
-    expect(keyed).not.toHaveProperty('maxConcurrency');
-  });
-
-  it('keeps the two topic patterns disjoint', () => {
-    const [serialized, keyed] = getWorkflowQueueTriggers({
-      namespace: 'custom',
-    });
-    expect(keyed!.topic).toBe('__custom_wkf_keyed_*');
-    const prefix = (topic: string) => topic.slice(0, -1);
-    expect(prefix(keyed!.topic).startsWith(prefix(serialized!.topic))).toBe(
-      false
-    );
-    expect(prefix(serialized!.topic).startsWith(prefix(keyed!.topic))).toBe(
-      false
-    );
-  });
-
-  it('resolves WORKFLOW_QUEUE_NAMESPACE at call time for both', () => {
-    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'callns');
-    expect(getWorkflowQueueTriggers().map((t) => t.topic)).toEqual([
-      '__callns_wkf_workflow_*',
-      '__callns_wkf_keyed_*',
-    ]);
+    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+    process.env.WORKFLOW_QUEUE_NAMESPACE = 'callns';
+    try {
+      expect(getWorkflowQueueTrigger().topic).toBe('__callns_wkf_workflow_*');
+    } finally {
+      delete process.env.WORKFLOW_QUEUE_NAMESPACE;
+    }
   });
 });
 
