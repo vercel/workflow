@@ -407,7 +407,7 @@ export interface LockInvariantInput {
 }
 
 /**
- * `lock()` safety, re-derived from the event logs alone. Lock keys are shared
+ * `experimental_lock()` safety, re-derived from the event logs alone. Lock keys are shared
  * across runs, so unlike {@link checkInvariants} this walks every run's log at
  * once, in commit order (the order the World decided grants in).
  *

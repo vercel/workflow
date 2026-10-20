@@ -810,7 +810,7 @@ export class HookForceClaimedError extends WorkflowError {
 }
 
 /**
- * Thrown from `lock()` when the configured World does not declare the `locks`
+ * Thrown from `experimental_lock()` when the configured World does not declare the `locks`
  * capability (`WorldCapabilities.locks.concurrency`).
  *
  * Fails closed on purpose: a World that cannot enforce the limit would let
@@ -825,7 +825,7 @@ export class LockUnsupportedError extends WorkflowError {
 
   constructor(key: string) {
     super(
-      `lock("${key}") requires a World that supports concurrency locks, and the configured World does not declare the \`locks\` capability`,
+      `experimental_lock("${key}") requires a World that supports concurrency locks, and the configured World does not declare the \`locks\` capability`,
       { slug: ERROR_SLUGS.LOCK_UNSUPPORTED }
     );
     this.name = 'LockUnsupportedError';

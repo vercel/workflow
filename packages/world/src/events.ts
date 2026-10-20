@@ -41,7 +41,7 @@ export const EventTypeSchema = z.compile(
     // Wait lifecycle events
     'wait_created',
     'wait_completed',
-    // Lock lifecycle events (`lock()`; requires the `locks` capability)
+    // Lock lifecycle events (`experimental_lock()`; requires the `locks` capability)
     'lock_created',
     'lock_acquired', // Created by world when a lock_created is granted
     'lock_released',
@@ -518,7 +518,7 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
 });
 
 // =============================================================================
-// Lock lifecycle events (`lock()`, WorldCapabilities.locks)
+// Lock lifecycle events (`experimental_lock()`, WorldCapabilities.locks)
 // =============================================================================
 //
 // One correlation id (`lock_<ulid>`) per lock scope in the workflow body. The

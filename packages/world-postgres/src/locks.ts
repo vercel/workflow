@@ -1,5 +1,5 @@
 /**
- * Native concurrency locks (`lock()`) for the Postgres World, stage 1.
+ * Native concurrency locks (`experimental_lock()`) for the Postgres World, stage 1.
  *
  * `workflow_locks.count` equals the key's rows in `workflow_lock_holders`,
  * and every statement keeps it so:

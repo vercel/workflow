@@ -754,9 +754,9 @@ export interface WorldCapabilities {
   deploymentAffinity?: boolean;
 
   /**
-   * Native concurrency: `lock(key, { concurrency })` in workflow code. The
+   * Native concurrency: `experimental_lock(key, { concurrency })` in workflow code. The
    * runtime only ever writes lock events to a World that declares
-   * `locks.concurrency === true`, and `lock()` throws `LockUnsupportedError`
+   * `locks.concurrency === true`, and `experimental_lock()` throws `LockUnsupportedError`
    * on any other, so a workflow can never silently run unbounded.
    *
    * Declaring it commits the World to the lock entity contract in

@@ -2190,7 +2190,7 @@ function warnOnLockGrant(
   const { effectiveConcurrency } = result.event.eventData;
   if (effectiveConcurrency !== queueItem.concurrency) {
     runtimeLogger.warn(
-      `lock("${queueItem.key}") asked for concurrency ${queueItem.concurrency}, but the key is already limited to ${effectiveConcurrency}; the existing limit applies`,
+      `experimental_lock("${queueItem.key}") asked for concurrency ${queueItem.concurrency}, but the key is already limited to ${effectiveConcurrency}; the existing limit applies`,
       {
         workflowRunId: runId,
         correlationId: queueItem.correlationId,

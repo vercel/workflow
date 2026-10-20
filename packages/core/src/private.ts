@@ -307,7 +307,7 @@ interface DeliveryBarrierEntry {
  *    branch that may draw the next correlation ID, so it is as branch-deciding
  *    as a step result; gating only one direction would still let a later
  *    delivery overtake a branch resuming from an attribute write (#4770).
- *  - a lock grant (the `lock_acquired` that resolves `lock()`) is ordered
+ *  - a lock grant (the `lock_acquired` that resolves `experimental_lock()`) is ordered
  *    exactly like an attribute, for the same reason: the branch it resumes
  *    draws correlation IDs, and a workflow may `Promise.race` it against a
  *    hook payload or a step result.

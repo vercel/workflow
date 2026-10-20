@@ -172,7 +172,7 @@ export interface WorldSnapshot {
   steps(runId?: string): Step[];
   hooks(runId?: string): Hook[];
   waits(runId?: string): Wait[];
-  /** Every `lock()` key's semaphore row. */
+  /** Every `experimental_lock()` key's semaphore row. */
   locks(): Lock[];
   /** Live lock holder rows. */
   lockHolders(): LockHolder[];
@@ -376,7 +376,7 @@ export interface ScenarioApi {
   /**
    * Start another run of a workflow alongside the run under test, as a
    * second `start()` would. Its messages join the same delivery loop, so
-   * scenarios about several runs contending for one resource (a `lock()`
+   * scenarios about several runs contending for one resource (a `experimental_lock()`
    * key) can steer all of them. Resolves the new run's id. Only the run under
    * test is checked against `expect`; check the others with `sim.check`.
    */

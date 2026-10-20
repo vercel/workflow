@@ -1,5 +1,5 @@
 /**
- * `lock()` end to end through the real workflow handler, over world-local's
+ * `experimental_lock()` end to end through the real workflow handler, over world-local's
  * real lock storage, with a queue the test delivers by hand. Covers what only
  * the composed runtime can show:
  *
@@ -217,7 +217,7 @@ registerStepFunction('lock_gate', async (tag: string) => {
 describe.each([
   'node',
   'quickjs',
-] as const)('lock() over the runtime (%s engine)', (engine) => {
+] as const)('experimental_lock() over the runtime (%s engine)', (engine) => {
   let h: Awaited<ReturnType<typeof createHarness>>;
   beforeEach(async () => {
     // Only the clock is faked, so a retry can be delivered when it is due

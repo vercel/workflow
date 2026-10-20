@@ -335,7 +335,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   /** hookIds that have been explicitly disposed; disposal is permanent. */
   const disposedHooks = new Set<string>();
   /**
-   * Lock keys (`lock()`). Holders live with the row they count, so `count`
+   * Lock keys (`experimental_lock()`). Holders live with the row they count, so `count`
    * is the holder map's size by construction; every decrement is the delete
    * of a specific holder.
    */

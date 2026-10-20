@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
- * `lock()` end to end through a World's real queue: never more holders than
+ * `experimental_lock()` end to end through a World's real queue: never more holders than
  * `concurrency`, every scope's log holds at most one `lock_created` however
  * long it waited, and fencing tokens are distinct. Skipped for a World that
  * does not declare the `locks` capability. The storage-level contract is
@@ -11,7 +11,7 @@ import { createFetcher, startServer } from './util.mjs';
  */
 export function locks(world: string) {
   test(
-    'lock(): admits at most `concurrency` holders, and waiting adds no events',
+    'experimental_lock(): admits at most `concurrency` holders, and waiting adds no events',
     { timeout: 120_000 },
     async (ctx) => {
       const server = await startServer({ world }).then(createFetcher);

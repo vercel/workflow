@@ -1,8 +1,8 @@
 ---
-title: lock
+title: experimental_lock
 description: Limit how many workflow runs execute a section at once with a distributed semaphore.
 type: reference
-summary: Use lock to cap concurrency per key across runs; a waiting run is suspended and costs nothing while it waits.
+summary: Use experimental_lock to cap concurrency per key across runs; a waiting run is suspended and costs nothing while it waits.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -13,14 +13,14 @@ related:
 Acquires one slot of a distributed semaphore identified by a key, suspending the workflow run until a slot is free. At most `concurrency` runs hold a slot of the same key at once, across every run of every workflow that uses the key.
 
 ```typescript lineNumbers
-import { lock } from "workflow";
+import { experimental_lock } from "workflow";
 
 declare function charge(customerId: string): Promise<void>; // @setup
 
 export async function chargeCustomer(customerId: string) {
   "use workflow";
 
-  await using slot = await lock(`stripe:${customerId}`, { concurrency: 5 }); // [!code highlight]
+  await using slot = await experimental_lock(`stripe:${customerId}`, { concurrency: 5 }); // [!code highlight]
   await charge(customerId);
   // released when the scope exits
 }
@@ -29,11 +29,11 @@ export async function chargeCustomer(customerId: string) {
 Note the two `await`s: `await using` only awaits the release at scope exit, so acquiring the slot needs its own `await`.
 
 <Callout type="warn">
-`lock()` is experimental. The first release has these limits:
+`experimental_lock()` is experimental: its API may change in a minor release, and it will be renamed `lock()` when it is stable. The event log it writes is stable, so runs that use it keep replaying across releases. The first release has these limits:
 
 - **Not FIFO.** Waiting runs poll for a free slot with backoff (starting at 1 second, capped at 30 seconds), and whichever polls first after a release wins it. Under heavy contention a particular run can wait a long time.
-- **Run-level only.** `lock()` works in workflow functions, not in steps. To limit a step, wrap its call site, as shown below.
-- **World support.** The Local and Postgres Worlds support locks. On a World without the `locks` capability, `lock()` throws [`LockUnsupportedError`](/docs/errors/lock-unsupported) instead of running the section unbounded.
+- **Run-level only.** `experimental_lock()` works in workflow functions, not in steps. To limit a step, wrap its call site, as shown below.
+- **World support.** The Local and Postgres Worlds support locks, and the Vercel World will once its backend ships them. On a World without the `locks` capability, `experimental_lock()` throws [`LockUnsupportedError`](/docs/errors/lock-unsupported) instead of running the section unbounded.
 </Callout>
 
 A run waiting for a slot is suspended like a run in `sleep()`: nothing executes, and retries add no events to its event log, however long it waits.
@@ -44,8 +44,8 @@ A run waiting for a slot is suspended like a run in `sleep()`: nothing executes,
 
 <TSDoc
 definition={`
-import { lock } from "workflow";
-export default lock;`}
+import { experimental_lock } from "workflow";
+export default experimental_lock;`}
 showSections={['parameters']}
 />
 
@@ -64,10 +64,10 @@ A `LockSlot`:
 
 ### Limiting a step
 
-`lock()` is called in the workflow function. To cap how many runs execute a step at once, hold the slot around the call:
+`experimental_lock()` is called in the workflow function. To cap how many runs execute a step at once, hold the slot around the call:
 
 ```typescript lineNumbers
-import { lock } from "workflow";
+import { experimental_lock } from "workflow";
 
 declare function callProvider(prompt: string): Promise<string>; // @setup
 
@@ -76,7 +76,7 @@ export async function summarize(prompt: string) {
 
   let summary: string;
   {
-    await using slot = await lock("provider:acme", { concurrency: 10 }); // [!code highlight]
+    await using slot = await experimental_lock("provider:acme", { concurrency: 10 }); // [!code highlight]
     summary = await callProvider(prompt); // a step
   }
   return summary;
@@ -88,7 +88,7 @@ export async function summarize(prompt: string) {
 Call `release()` when the scope does not fit the critical section. A slot that is never released is freed when its run completes, fails, or is cancelled.
 
 ```typescript lineNumbers
-import { lock } from "workflow";
+import { experimental_lock } from "workflow";
 
 declare function reserve(sku: string): Promise<void>; // @setup
 declare function notify(sku: string): Promise<void>; // @setup
@@ -96,7 +96,7 @@ declare function notify(sku: string): Promise<void>; // @setup
 export async function restock(sku: string) {
   "use workflow";
 
-  const slot = await lock(`inventory:${sku}`, { concurrency: 1 });
+  const slot = await experimental_lock(`inventory:${sku}`, { concurrency: 1 });
   try {
     await reserve(sku);
   } finally {
@@ -115,14 +115,14 @@ A run keeps its slot until it releases it or until the run completes, fails, or 
 Pass `leaseTtlMs` to let the World take a slot back after a time limit, even from a run that is still running:
 
 ```typescript lineNumbers
-import { lock } from "workflow";
+import { experimental_lock } from "workflow";
 
 declare function exportAll(): Promise<void>; // @setup
 
 export async function nightlyExport() {
   "use workflow";
 
-  await using slot = await lock("export:nightly", {
+  await using slot = await experimental_lock("export:nightly", {
     concurrency: 1,
     leaseTtlMs: 3_600_000, // [!code highlight]
   });

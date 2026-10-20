@@ -196,7 +196,7 @@ export const scenarios: ScenarioSpec[] = [
   cancelMidStep,
 
   // -------------------------------------------------------------------------
-  // Locks: several runs contending for one `lock()` key. Each holds the run
+  // Locks: several runs contending for one `experimental_lock()` key. Each holds the run
   // under test inside its critical section and steers the others by runId.
   // The lock invariants (no position over-admits, fencing tokens increase,
   // count matches holders) are checked against every run's log.

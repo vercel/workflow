@@ -60,7 +60,7 @@ export interface WaitInvocationQueueItem {
 }
 
 /**
- * One `lock()` scope. Stays queued from the call until its `lock_released`
+ * One `experimental_lock()` scope. Stays queued from the call until its `lock_released`
  * is in the log: pending while it waits for a slot, held after
  * `lock_acquired`, and flagged `released` once workflow code releases it so
  * the next suspension writes the `lock_released`.

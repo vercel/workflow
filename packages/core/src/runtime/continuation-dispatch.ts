@@ -6,7 +6,7 @@
  * collide:
  *
  * - a pending `sleep()` (`wait_<ulid>`), described below;
- * - a `lock()` scope waiting for a slot (`lock_<ulid>`), whose World-computed
+ * - a `experimental_lock()` scope waiting for a slot (`lock_<ulid>`), whose World-computed
  *   `retryAt` says when to re-POST its `lock_created`. See
  *   {@link getLockContinuationDispatch}.
  *
@@ -161,7 +161,7 @@ export function getWaitContinuationDispatch(
 export const getContinuationDispatch = getWaitContinuationDispatch;
 
 /**
- * Dispatch for a `lock()` scope still waiting for a slot: wake the run at the
+ * Dispatch for a `experimental_lock()` scope still waiting for a slot: wake the run at the
  * World's `retryAt` (floored at 1s, the queue's delay granularity) so its next
  * replay re-POSTs the scope's `lock_created`.
  *

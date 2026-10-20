@@ -454,7 +454,7 @@ export const WorkflowInvokePayloadSchema = z.compile(
       .optional()
       .catch(undefined),
     /**
-     * The `lock()` scope this message is the delayed retry for, and the
+     * The `experimental_lock()` scope this message is the delayed retry for, and the
      * World-computed `retryAt` (epoch ms) it was armed for. Diagnostic only:
      * unlike a wait's, a lock retry's idempotency key needs no attempt
      * counter, because it is derived from that `retryAt`, which is fresh on

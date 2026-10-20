@@ -4,12 +4,12 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_lock,
   FatalError,
   fetch,
   getStepMetadata,
   getWorkflowMetadata,
   getWritable,
-  lock,
   type RequestWithResponse,
   RetryableError,
   setAttributes,
@@ -4339,7 +4339,7 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
 }
 
 //////////////////////////////////////////////////////////
-// lock(): native concurrency
+// experimental_lock(): native concurrency
 
 async function lockedCriticalSection(holdMs: number) {
   'use step';
@@ -4359,7 +4359,7 @@ export async function lockWorkflow(
 ) {
   'use workflow';
   try {
-    const slot = await lock(key, { concurrency });
+    const slot = await experimental_lock(key, { concurrency });
     try {
       const window = await lockedCriticalSection(holdMs);
       return { ...window, fencingToken: slot.fencingToken, supported: true };

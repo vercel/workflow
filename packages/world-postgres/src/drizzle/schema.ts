@@ -345,7 +345,7 @@ export const waits = schema.table(
 );
 
 /**
- * A `lock()` key's semaphore. `count` equals the number of the key's rows in
+ * A `experimental_lock()` key's semaphore. `count` equals the number of the key's rows in
  * {@link lockHolders}: every statement that changes one changes the other in
  * the same transaction, and every decrement is computed from the rows a
  * `DELETE ... RETURNING` actually removed (see `locks.ts`).

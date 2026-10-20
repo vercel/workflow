@@ -2569,7 +2569,7 @@ describe.concurrent('e2e', () => {
     }
   );
 
-  describe('lock()', () => {
+  describe('experimental_lock()', () => {
     test(
       'admits at most `concurrency` runs into the critical section, with distinct fencing tokens',
       { timeout: 180_000 },

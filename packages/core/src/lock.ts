@@ -59,21 +59,25 @@ export interface LockSlot {
  * until a slot is free.
  *
  * ```ts
- * await using slot = await lock(`stripe:${customerId}`, { concurrency: 5 });
+ * await using slot = await experimental_lock(`stripe:${customerId}`, { concurrency: 5 });
  * await charge(customerId); // a step, gated by the lock
  * ```
  *
  * Note the two `await`s: `await using` only awaits the release at scope exit,
  * so acquisition needs its own.
  *
+ * Experimental: the API may change. Stage 1 is not FIFO (waiting runs poll
+ * with backoff), and it is supported on the Local and Postgres Worlds, and on
+ * Vercel once the backend ships it.
+ *
  * Only available in workflow functions. To limit a step's concurrency, wrap
  * its call site. A run waiting for a slot is suspended and costs nothing
  * while it waits: retries add no events to its log.
  *
- * Requires a World that supports locks; on any other `lock()` throws
+ * Requires a World that supports locks; on any other `experimental_lock()` throws
  * `LockUnsupportedError` rather than run unbounded.
  */
-export async function lock(
+export async function experimental_lock(
   key: string,
   options: LockOptions
 ): Promise<LockSlot> {
@@ -81,9 +85,9 @@ export async function lock(
   const lockFn = (globalThis as any)[WORKFLOW_LOCK];
   if (!lockFn) {
     throwNotInWorkflowContext(
-      'lock()',
-      'https://workflow-sdk.dev/docs/api-reference/workflow/lock',
-      lock
+      'experimental_lock()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/experimental-lock',
+      experimental_lock
     );
   }
   return lockFn(key, options);

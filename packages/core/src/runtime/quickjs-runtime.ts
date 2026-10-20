@@ -191,7 +191,7 @@ export interface PendingHookDispose {
 }
 
 /**
- * A `lock()` scope. Collected while its acquisition promise is unresolved
+ * A `experimental_lock()` scope. Collected while its acquisition promise is unresolved
  * (the entrypoint re-POSTs its `lock_created`); `hasCreatedEvent` becomes true
  * only on `lock_acquired`, since a `lock_created` alone means it is waiting.
  */
@@ -731,18 +731,18 @@ globalThis[Symbol.for("WORKFLOW_LOCK")] = function(key, options) {
   return new Promise(function(resolve, reject) {
     options = options || {};
     if (typeof key !== "string" || key.length === 0 || key.length > ${LOCK_KEY_MAX_LENGTH}) {
-      throw fatal("lock() key must be a non-empty string of at most ${LOCK_KEY_MAX_LENGTH} characters");
+      throw fatal("experimental_lock() key must be a non-empty string of at most ${LOCK_KEY_MAX_LENGTH} characters");
     }
     var concurrency = options.concurrency;
     if (typeof concurrency !== "number" || !Number.isInteger(concurrency) || concurrency < 1) {
-      throw fatal('lock("' + key + '") requires an integer \`concurrency\` of at least 1');
+      throw fatal('experimental_lock("' + key + '") requires an integer \`concurrency\` of at least 1');
     }
     var leaseTtlMs = options.leaseTtlMs;
     if (leaseTtlMs !== undefined && (typeof leaseTtlMs !== "number" || !Number.isInteger(leaseTtlMs) || leaseTtlMs < 1)) {
-      throw fatal('lock("' + key + '") \`leaseTtlMs\` must be a positive integer of milliseconds');
+      throw fatal('experimental_lock("' + key + '") \`leaseTtlMs\` must be a positive integer of milliseconds');
     }
     if (globalThis.__worldCapabilities?.locks?.concurrency !== true) {
-      throw fatal('lock("' + key + '") requires a World that supports concurrency locks, and the configured World does not declare the \`locks\` capability', "LockUnsupportedError");
+      throw fatal('experimental_lock("' + key + '") requires a World that supports concurrency locks, and the configured World does not declare the \`locks\` capability', "LockUnsupportedError");
     }
     var correlationId = "lock_" + globalThis.__generateUlid();
     var op = {
@@ -2989,7 +2989,7 @@ async function processEvents(
           recordedKey !== scope.key ||
           recordedConcurrency !== scope.concurrency
         ) {
-          const message = `Replay divergence: ${event.eventType} recorded lock(${JSON.stringify(recordedKey)}, { concurrency: ${recordedConcurrency} }) but the workflow now asks for lock(${JSON.stringify(scope.key)}, { concurrency: ${scope.concurrency} }) (lock ${cid})`;
+          const message = `Replay divergence: ${event.eventType} recorded experimental_lock(${JSON.stringify(recordedKey)}, { concurrency: ${recordedConcurrency} }) but the workflow now asks for experimental_lock(${JSON.stringify(scope.key)}, { concurrency: ${scope.concurrency} }) (lock ${cid})`;
           settleJs = `var err = new Error(${JSON.stringify(message)}); err.name = "ReplayDivergenceError"; err.fatal = true; globalThis.__resolvers[${cidJs}].reject(err);`;
         } else if (event.eventType === 'lock_created') {
           vm.evalCode(

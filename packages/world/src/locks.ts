@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * Entities behind the native concurrency primitive, `lock()`.
+ * Entities behind the native concurrency primitive, `experimental_lock()`.
  *
  * A lock key is a distributed semaphore scoped to the World's tenant (for
  * world-vercel: owner, project and environment; for the local Worlds: the data

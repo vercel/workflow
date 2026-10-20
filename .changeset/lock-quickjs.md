@@ -2,4 +2,4 @@
 "@workflow/core": patch
 ---
 
-Support `lock()` on the QuickJS workflow VM.
+Support `experimental_lock()` on the QuickJS workflow VM.

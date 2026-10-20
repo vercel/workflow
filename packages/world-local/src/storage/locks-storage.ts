@@ -1,5 +1,5 @@
 /**
- * Native concurrency locks (`lock()`) for the Local World, stage 1: a per-key
+ * Native concurrency locks (`experimental_lock()`) for the Local World, stage 1: a per-key
  * counter with polling waiters (no waitlist).
  *
  * Layout under the data directory:

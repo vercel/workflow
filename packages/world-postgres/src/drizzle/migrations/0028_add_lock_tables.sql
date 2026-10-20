@@ -1,4 +1,4 @@
--- Native concurrency locks (`lock()`), stage 1: a per-key counter and one
+-- Native concurrency locks (`experimental_lock()`), stage 1: a per-key counter and one
 -- holder row per held slot. `count` always equals the key's holder rows; the
 -- CHECKs are a backstop for that invariant, not the mechanism (see locks.ts).
 CREATE TABLE IF NOT EXISTS "workflow"."workflow_locks" (

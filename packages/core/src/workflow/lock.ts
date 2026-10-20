@@ -25,7 +25,7 @@ function validateLockArguments(
     key.length > LOCK_KEY_MAX_LENGTH
   ) {
     throw new FatalError(
-      `lock() key must be a non-empty string of at most ${LOCK_KEY_MAX_LENGTH} characters`
+      `experimental_lock() key must be a non-empty string of at most ${LOCK_KEY_MAX_LENGTH} characters`
     );
   }
   const opts = (options ?? {}) as Partial<LockOptions>;
@@ -35,7 +35,7 @@ function validateLockArguments(
     opts.concurrency < 1
   ) {
     throw new FatalError(
-      `lock("${key}") requires an integer \`concurrency\` of at least 1`
+      `experimental_lock("${key}") requires an integer \`concurrency\` of at least 1`
     );
   }
   if (
@@ -45,7 +45,7 @@ function validateLockArguments(
       opts.leaseTtlMs < 1)
   ) {
     throw new FatalError(
-      `lock("${key}") \`leaseTtlMs\` must be a positive integer of milliseconds`
+      `experimental_lock("${key}") \`leaseTtlMs\` must be a positive integer of milliseconds`
     );
   }
   return {
@@ -155,7 +155,7 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
         if (recorded.key !== key || recorded.concurrency !== concurrency) {
           return diverge(
             event.eventId,
-            `${event.eventType} recorded lock("${recorded.key}", { concurrency: ${recorded.concurrency} }) but the workflow now asks for lock("${key}", { concurrency: ${concurrency} })`
+            `${event.eventType} recorded experimental_lock("${recorded.key}", { concurrency: ${recorded.concurrency} }) but the workflow now asks for experimental_lock("${key}", { concurrency: ${concurrency} })`
           );
         }
       }

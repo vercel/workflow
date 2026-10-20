@@ -1,4 +1,4 @@
-import { lock } from 'workflow';
+import { experimental_lock } from 'workflow';
 
 async function criticalSection(holdMs: number): Promise<void> {
   'use step';
@@ -15,7 +15,7 @@ export async function lockFanout(
   holdMs: number
 ): Promise<number> {
   'use workflow';
-  const slot = await lock(key, { concurrency });
+  const slot = await experimental_lock(key, { concurrency });
   try {
     await criticalSection(holdMs);
   } finally {
