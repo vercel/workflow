@@ -547,7 +547,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
   // outcomes of steps it already ran, whose creation committed, are facts and
   // still get written: the redelivery runs none of them again.
   it('writes the outcomes of steps it already ran when a hazard stops run-ahead', async () => {
-    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
+    const runAheadDepth = 2;
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(runAheadDepth));
     let injected = false;
     const code = withSleep('1h');
     const { world, runId, start } = await run(code, [STEPS], {
@@ -583,9 +584,10 @@ describe('run-ahead against an append-only World (node engine)', () => {
     // The hazard stopped the first delivery and the redelivery finished.
     expect(world.deliveries.length).toBeGreaterThan(1);
     expect(await runResult(world)).toBe(STEPS);
-    // At most the one step whose speculative creation the stop refused ran
-    // twice: its first run had no committed start, so nothing recorded it.
-    expect(bodiesStarted).toBeLessThanOrEqual(STEPS + 1);
+    // Only steps whose speculative creation the stop refused ran twice: their
+    // first run had no committed start, so nothing recorded it. One batch
+    // carries at most the run-ahead depth of them.
+    expect(bodiesStarted).toBeLessThanOrEqual(STEPS + runAheadDepth);
     const starts = eventsOf(world, 'step_started');
     expect(starts).toHaveLength(STEPS);
     for (const start of starts) {

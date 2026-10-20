@@ -6,6 +6,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  type CreateEventParams,
   type Event,
   SPEC_VERSION_CURRENT,
   slotToEventId,
@@ -2238,12 +2239,17 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
           } as Event,
         ];
     let seq = durable.length;
-    const rec = (data: any): Event => {
+    // An in-band write is stored at its `occurredAt`, as a spec 9 World
+    // stores it.
+    const rec = (data: any, params?: CreateEventParams): Event => {
       seq += 1;
       const e = {
         eventId: slotToEventId(seq),
         runId,
-        createdAt: new Date(),
+        createdAt:
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date(),
         ...data,
       } as Event;
       durable.push(e);
@@ -2261,39 +2267,41 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     };
     const queued: unknown[] = [];
 
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType === 'run_started') {
-        // Preload mirrors the real server: the durable log as of now.
-        return { run: runEntity, events: [...durable] };
-      }
-      if (data.eventType === 'step_started') {
-        const d = data.eventData as { stepName?: string; input?: unknown };
-        if (d?.input !== undefined) {
-          rec({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: data.correlationId,
-            eventData: { stepName: d.stepName, input: d.input },
-          });
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: CreateEventParams) => {
+        if (data.eventType === 'run_started') {
+          // Preload mirrors the real server: the durable log as of now.
+          return { run: runEntity, events: [...durable] };
         }
-        return {
-          event: rec(data),
-          step: {
-            runId,
-            stepId: data.correlationId,
-            stepName: d?.stepName,
-            status: 'running' as const,
-            attempt: 1,
-            input: d?.input,
-            startedAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...(d?.input !== undefined ? { stepCreated: true } : {}),
-        };
+        if (data.eventType === 'step_started') {
+          const d = data.eventData as { stepName?: string; input?: unknown };
+          if (d?.input !== undefined) {
+            rec({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: d.stepName, input: d.input },
+            });
+          }
+          return {
+            event: rec(data, params),
+            step: {
+              runId,
+              stepId: data.correlationId,
+              stepName: d?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: d?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(d?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
+        return { event: rec(data, params) };
       }
-      return { event: rec(data) };
-    });
+    );
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,

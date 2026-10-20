@@ -25,9 +25,14 @@ export function inBandFence(world: string) {
         'addition',
         [1, 2]
       );
-      await vi.waitFor(
+      // Settled once `run_completed` is in the log. The run's status alone is
+      // not enough: a World may show the terminal status before the terminal
+      // event is listable.
+      const events = await vi.waitFor(
         async () => {
-          expect((await server.getRun(result.runId)).status).toBe('completed');
+          const listed = await server.getEvents(result.runId);
+          expect(listed.at(-1)?.eventType).toBe('run_completed');
+          return listed;
         },
         { interval: 200, timeout: 25_000 }
       );
@@ -37,7 +42,6 @@ export function inBandFence(world: string) {
       // own writes are in-band, so the count is at least 1 and at most `seq`.
       // The counters come from the list snapshot, or from a refusal where the
       // World lists none.
-      const events = await server.getEvents(result.runId);
       const counters = await server.getFenceCounters(result.runId);
       expect(counters).not.toBeNull();
       expect(counters?.seq).toBe(eventIdToSlot(events.at(-1)?.eventId ?? ''));
