@@ -7,7 +7,9 @@
  * step body never returns: that process "exits" with the step's latest
  * `step_started` stamped with a queue message nothing will redeliver. A second
  * World on the same data directory then recovers the run through `start()`,
- * and the run must finish in far less time than the lease.
+ * and the run must finish in far less time than the lease. Both workflow VM
+ * engines are covered: each derives inline ownership from the event log on its
+ * own.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -27,6 +29,42 @@ import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
+// Pass-through spy proving the QuickJS case really runs on QuickJS.
+const quickJSStarts = vi.fn();
+vi.mock('./quickjs-runtime.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quickjs-runtime.js')>();
+  return {
+    ...actual,
+    startQuickJSWorkflow: (
+      ...args: Parameters<typeof actual.startQuickJSWorkflow>
+    ) => {
+      quickJSStarts();
+      return actual.startQuickJSWorkflow(...args);
+    },
+  };
+});
+
+/**
+ * Put this test's realm in the state of a freshly started process. The two
+ * Worlds below share one realm, so the process-wide state a real restart
+ * would discard is reset by hand. Both keys and shape versions mirror their
+ * definitions: `stepSingleFlight` in `step-single-flight.ts` and `realmBoot`
+ * in world-local's `orphaned-steps.ts`. If either is bumped there, this reset
+ * silently targets a stale object and the test times out like an unfixed run;
+ * update the key here.
+ */
+async function simulateProcessRestart() {
+  // A new process has none of the dead one's in-flight step executions.
+  globalSingleton('@workflow/core//stepSingleFlight', 1, () => ({
+    inFlight: new Map(),
+  })).inFlight.clear();
+  // ...and loaded world-local after the dead process wrote its stamps.
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  globalSingleton('@workflow/world-local//realmBoot', 1, () => ({
+    bootedAt: 0,
+  })).bootedAt = Date.now();
+}
+
 const STEP_NAME = 'restartRecoveryStep';
 const WORKFLOW_CODE = `
   const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(STEP_NAME)});
@@ -42,6 +80,7 @@ describe('world-local restart recovery of an inline step', () => {
 
   beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), 'wf-restart-recovery-'));
+    quickJSStarts.mockClear();
   });
 
   afterEach(async () => {
@@ -66,7 +105,12 @@ describe('world-local restart recovery of an inline step', () => {
     return data.filter((e: Event) => e.eventType.startsWith('step_'));
   }
 
-  it('dispatches the step at once instead of waiting out the lease', async () => {
+  it.each([
+    { engine: 'node', workflowVm: undefined },
+    { engine: 'quickjs', workflowVm: 'quickjs' },
+  ])('dispatches the step at once instead of waiting out the lease ($engine)', async ({
+    workflowVm,
+  }) => {
     let bodyRuns = 0;
     let entered!: () => void;
     const firstBodyEntered = new Promise<void>((resolve) => {
@@ -91,6 +135,7 @@ describe('world-local restart recovery of an inline step', () => {
         deploymentId: 'dpl_restart_recovery',
         workflowName: 'workflow',
         input: await dehydrateWorkflowArguments([], 'wrun_', undefined, []),
+        ...(workflowVm && { executionContext: { workflowVm } }),
       },
     });
     const runId = created.run?.runId as string;
@@ -103,10 +148,7 @@ describe('world-local restart recovery of an inline step', () => {
       eventData: { ownerMessageId: expect.stringMatching(/^msg_/) },
     });
     await previous.close();
-    // A new process starts without the dead one's in-flight step executions.
-    globalSingleton('@workflow/core//stepSingleFlight', 1, () => ({
-      inFlight: new Map(),
-    })).inFlight.clear();
+    await simulateProcessRestart();
 
     const restarted = bootWorld();
     const restartedAt = Date.now();
@@ -122,6 +164,7 @@ describe('world-local restart recovery of an inline step', () => {
     // Far below the 860s lease the run used to wait out.
     expect(Date.now() - restartedAt).toBeLessThan(20_000);
     expect(bodyRuns).toBe(2);
+    expect(quickJSStarts.mock.calls.length > 0).toBe(workflowVm === 'quickjs');
 
     const events = await stepEvents(restarted, runId);
     expect(events.map((e) => e.eventType)).toEqual([

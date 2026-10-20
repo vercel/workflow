@@ -54,10 +54,13 @@ export type LocalWorld = World & {
    * the queue, so the next delivery dispatches them at once instead of
    * waiting out the inline-ownership lease. `start()` does this for every run
    * it recovers; call it yourself before re-enqueueing a run when recovering
-   * with `recoverActiveRuns: false`. It treats every inline owner as dead, so
-   * call it only before this process has delivered any message for the run,
-   * and only when no other live process runs workflows on this data
-   * directory and tag: a step such a process is still running would run twice.
+   * with `recoverActiveRuns: false`.
+   *
+   * Steps started since world-local loaded in this process or worker thread
+   * are never released, so calling it late, or while this process runs the
+   * run, is safe. Steps started earlier are treated as abandoned: call it only
+   * when no other live process or worker thread runs workflows on this data
+   * directory and tag, or a step still running there would run twice.
    */
   releaseOrphanedSteps(runId: string): Promise<void>;
 };
@@ -193,6 +196,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // in-flight queue-owned steps are dispatched again by the replays
       // below. Under that assumption the previous process's queue is gone, so
       // release the steps its messages owned before the run is re-enqueued.
+      // Runs re-enqueued earlier in this loop can already wake later ones;
+      // steps those deliveries start are newer than this realm's boot, so
+      // releaseOrphanedSteps leaves them alone.
       const releaseThenEnqueue: typeof queue.queue = async (
         queueName,
         message,
@@ -200,7 +206,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       ) => {
         const { runId } = message as { runId: string };
         try {
-          await releaseOrphanedSteps(storage.events, runId);
+          await releaseOrphanedSteps(storage, runId);
         } catch (err) {
           // Still recoverable: the run resumes once the lease expires.
           console.warn(
@@ -216,7 +222,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       );
     },
     releaseOrphanedSteps(runId) {
-      return releaseOrphanedSteps(storage.events, runId);
+      return releaseOrphanedSteps(storage, runId);
     },
     async close() {
       clearStorageCache();

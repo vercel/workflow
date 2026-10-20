@@ -1,4 +1,5 @@
 import { EntityConflictError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
   isStepEventType,
@@ -8,6 +9,22 @@ import {
 
 export const ORPHANED_STEP_ERROR_MESSAGE =
   'The process running this step exited before it finished.';
+
+/**
+ * When world-local first loaded in this JavaScript realm (process or worker
+ * thread). Any step this realm starts is stamped after it, so a stamp at or
+ * after it may belong to a live owner here and is never released.
+ *
+ * On `globalThis` (see `globalSingleton`) so every module copy in the realm
+ * shares the earliest load time. `performance.timeOrigin` is not used because
+ * Node shares it across a process's worker threads, so it can't mark a reload
+ * into a new worker.
+ */
+export const realmBoot = globalSingleton(
+  '@workflow/world-local//realmBoot',
+  1,
+  () => ({ bootedAt: Date.now() })
+);
 
 /**
  * Hand every step still inline-owned by a queue message of a previous process
@@ -21,23 +38,30 @@ export const ORPHANED_STEP_ERROR_MESSAGE =
  * lease (vercel/workflow#4939). Core treats `step_retrying` as the permanent
  * end of inline ownership, so the replay dispatches the step at once.
  *
- * A step is released only when core would still honor its stamp: its latest
- * `step_started` carries an owner, it has no `step_retrying`, and it has no
- * terminal event. Queue-owned and finished steps are left alone.
+ * A step is released only when core would still honor its stamp: it is
+ * `running`, its latest `step_started` carries an owner, and it has no
+ * `step_retrying` or terminal event. Queue-owned and finished steps are left
+ * alone, and so is any step started since this realm booted
+ * ({@link realmBoot}), whose owner may be a live delivery in this realm.
  *
- * Every stamp is treated as dead, so this must run before this process
- * delivers any message for the run, and only while no other live process runs
- * workflows on the same data directory and tag. Releasing a step that is
- * still running, in this process or another, would let the step run twice.
+ * A stamp from before this realm booted is treated as dead, so this must only
+ * run while no other live process or worker thread runs workflows on the same
+ * data directory and tag. Releasing a step that is still running there would
+ * let the step run twice: core's in-process duplicate guard (step single-flight)
+ * is per realm too, so an older worker thread of this process is as foreign as
+ * another process.
  */
 export async function releaseOrphanedSteps(
-  events: Storage['events'],
+  storage: Pick<Storage, 'events' | 'steps'>,
   runId: string
 ): Promise<void> {
-  for (const [stepId, step] of await readStepOwnership(events, runId)) {
-    if (step.owner === undefined || step.retried || step.finished) continue;
+  const running = await listRunningStepIds(storage.steps, runId);
+  // Every releasable step is `running`, so most runs need no event scan.
+  if (running.size === 0) return;
+  for (const [stepId, step] of await readStepOwnership(storage.events, runId)) {
+    if (!running.has(stepId) || !isOrphaned(step)) continue;
     try {
-      await events.create(runId, {
+      await storage.events.create(runId, {
         eventType: 'step_retrying',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: stepId,
@@ -56,9 +80,41 @@ export async function releaseOrphanedSteps(
 interface StepOwnership {
   /** `ownerMessageId` of the latest `step_started`. */
   owner?: string;
+  /** When the latest `step_started` was written, in epoch milliseconds. */
+  startedAt?: number;
   stepName?: string;
   retried: boolean;
   finished: boolean;
+}
+
+function isOrphaned(step: StepOwnership): boolean {
+  return (
+    step.owner !== undefined &&
+    !step.retried &&
+    !step.finished &&
+    step.startedAt !== undefined &&
+    step.startedAt < realmBoot.bootedAt
+  );
+}
+
+async function listRunningStepIds(
+  steps: Storage['steps'],
+  runId: string
+): Promise<Set<string>> {
+  const running = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await steps.list({
+      runId,
+      resolveData: 'none',
+      pagination: { cursor },
+    });
+    for (const step of page.data) {
+      if (step.status === 'running') running.add(step.stepId);
+    }
+    cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+  } while (cursor);
+  return running;
 }
 
 async function readStepOwnership(
@@ -100,6 +156,7 @@ function applyStepEvent(step: StepOwnership, event: Event): void {
         typeof data?.ownerMessageId === 'string'
           ? data.ownerMessageId
           : undefined;
+      step.startedAt = new Date(event.createdAt).getTime();
       break;
     case 'step_retrying':
       step.retried = true;
@@ -113,9 +170,11 @@ function applyStepEvent(step: StepOwnership, event: Event): void {
 
 /**
  * The error recorded on the released attempt, in the format core's
- * `dehydrateStepError` writes for an unencrypted, uncompressed thrown `Error`:
- * the `devl` prefix followed by devalue's encoding of the error's reduced
- * form. Local runs are never encrypted, so no key is involved.
+ * `dehydrateStepError` writes for an uncompressed thrown `Error`: the `devl`
+ * prefix followed by devalue's encoding of the error's reduced form. It is
+ * written unencrypted even when the run has a key: hydration passes bytes that
+ * carry no encryption prefix through regardless of the key, and the payload is
+ * a fixed message with nothing sensitive in it.
  */
 function orphanedStepError(): Uint8Array {
   const devalue = JSON.stringify([

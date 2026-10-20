@@ -1,10 +1,10 @@
-import { rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { Event, Storage } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld, type LocalWorld } from './index.js';
-import { ORPHANED_STEP_ERROR_MESSAGE } from './orphaned-steps.js';
+import { ORPHANED_STEP_ERROR_MESSAGE, realmBoot } from './orphaned-steps.js';
 import {
   createRun,
   createStep,
@@ -46,6 +46,15 @@ async function stepEvents(world: Storage, runId: string, stepId: string) {
 
 const types = (events: Event[]) => events.map((e) => e.eventType);
 
+/**
+ * Model the restarting process loading world-local after everything written
+ * so far: the worlds below share this test's realm, and so its boot time.
+ */
+async function bootNewRealm() {
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 2));
+  realmBoot.bootedAt = Date.now();
+}
+
 /** Restart on `dataDir` and resolve with the step events seen at delivery. */
 async function restart(
   config: Parameters<typeof createWorld>[0],
@@ -60,6 +69,7 @@ async function restart(
     }
     return Response.json({ ok: true });
   });
+  await bootNewRealm();
   await world.start();
   return {
     world,
@@ -73,13 +83,14 @@ async function restart(
 describe('orphaned inline steps on restart', () => {
   let dataDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
-    dataDir = path.join(os.tmpdir(), `wf-orphaned-steps-${Date.now()}`);
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wf-orphaned-steps-'));
   });
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -210,6 +221,7 @@ describe('orphaned inline steps on restart', () => {
     await previous.close();
 
     const world = createWorld({ dataDir, recoverActiveRuns: false });
+    await bootNewRealm();
     await world.start();
     expect(types(await stepEvents(world, runId, 'step_inline'))).toEqual([
       'step_created',
@@ -224,6 +236,63 @@ describe('orphaned inline steps on restart', () => {
       'step_created',
       'step_started',
       'step_retrying',
+    ]);
+    await world.close();
+  });
+
+  it('leaves a step started since this realm booted alone', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await startInlineStep(previous, runId, 'step_dead');
+    await previous.close();
+
+    const world = createWorld({ dataDir, recoverActiveRuns: false });
+    await bootNewRealm();
+    await world.start();
+    // A delivery in this realm (a run recovered earlier waking this one, or a
+    // webhook) starts another inline step before the run is released.
+    await startInlineStep(world, runId, 'step_live');
+
+    await world.releaseOrphanedSteps(runId);
+
+    expect(types(await stepEvents(world, runId, 'step_dead'))).toEqual([
+      'step_created',
+      'step_started',
+      'step_retrying',
+    ]);
+    expect(types(await stepEvents(world, runId, 'step_live'))).toEqual([
+      'step_created',
+      'step_started',
+    ]);
+    await world.close();
+  });
+
+  it('still re-enqueues a run whose steps could not be released', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await startInlineStep(previous, runId, 'step_inline');
+    await previous.close();
+
+    const world = createWorld({ dataDir });
+    vi.spyOn(world.steps, 'list').mockRejectedValue(new Error('disk hiccup'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const delivered: string[] = [];
+    world.registerHandler('__wkf_workflow_', async (req) => {
+      delivered.push((await req.json()).runId);
+      return Response.json({ ok: true });
+    });
+    await bootNewRealm();
+    await world.start();
+
+    await vi.waitFor(() => expect(delivered).toEqual([runId]));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `Failed to release orphaned steps of run ${runId}`
+      )
+    );
+    expect(types(await stepEvents(world, runId, 'step_inline'))).toEqual([
+      'step_created',
+      'step_started',
     ]);
     await world.close();
   });
