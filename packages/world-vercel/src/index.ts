@@ -105,7 +105,7 @@ export function createWorld(config?: APIConfig): World {
       // the project, or one that predates them, refuses the write, and the
       // adapter maps that to `LockUnsupportedError`, so a lock still fails
       // closed rather than running unbounded.
-      ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, false)
+      ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, true)
         ? { locks: { concurrency: true } }
         : {}),
       // NOTE: the backend half of resumeHook()'s lazy path (that
