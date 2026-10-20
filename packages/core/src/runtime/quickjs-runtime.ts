@@ -1387,8 +1387,11 @@ function sha256Hex(data: Uint8Array | string): string {
  * run that code instead.
  */
 export function quickjsBaselineEngineId(): string {
+  // Joined, not a template with `\0` separators: a bundler that inlines the
+  // version constants would turn `\0` followed by a digit into an octal
+  // escape, which is a syntax error in a template literal.
   return sha256Hex(
-    `${quickjsWasiVersion}\0${coreVersion}\0${VM_BOOTSTRAP}`
+    [quickjsWasiVersion, coreVersion, VM_BOOTSTRAP].join('\n')
   ).slice(0, 32);
 }
 
