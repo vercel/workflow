@@ -8,6 +8,7 @@ import {
   IDEMPOTENCY_KEY_TTL_MIN_MS,
   IdempotencyKeyConflictPolicySchema,
   IdempotencyKeyReusePolicySchema,
+  isWellFormedString,
 } from './index.js';
 import { WorkflowRunSchema } from './runs.js';
 
@@ -84,6 +85,8 @@ describe('run_created idempotency fields', () => {
       { idempotencyKey: 'k'.repeat(IDEMPOTENCY_KEY_MAX_LENGTH + 1) },
     ],
     ['a non-string key', { idempotencyKey: 42 }],
+    ['a key with a lone high surrogate', { idempotencyKey: 'order-\uD800' }],
+    ['a key with a lone low surrogate', { idempotencyKey: '\uDC00-order' }],
     [
       'a TTL under the minimum',
       { ...keyed, idempotencyKeyTtlMs: IDEMPOTENCY_KEY_TTL_MIN_MS - 1 },
@@ -157,6 +160,24 @@ describe('WorkflowRun idempotencyKey', () => {
 
   it('leaves it absent on runs started without one', () => {
     expect(WorkflowRunSchema.parse(run)).not.toHaveProperty('idempotencyKey');
+  });
+});
+
+describe('isWellFormedString', () => {
+  it('accepts paired surrogates and plain text', () => {
+    expect(isWellFormedString('order-1')).toBe(true);
+    expect(isWellFormedString('\uD83D\uDE00')).toBe(true);
+    expect(
+      CreateEventSchema.safeParse(
+        runCreated({ idempotencyKey: '\uD83D\uDE00' })
+      ).success
+    ).toBe(true);
+  });
+
+  it('rejects lone surrogates', () => {
+    expect(isWellFormedString('\uD800')).toBe(false);
+    expect(isWellFormedString('a\uDC00')).toBe(false);
+    expect(isWellFormedString('\uDE00\uD83D')).toBe(false);
   });
 });
 

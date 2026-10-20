@@ -58,9 +58,24 @@ export type IdempotencyKeyConflictPolicy = z.infer<
   typeof IdempotencyKeyConflictPolicySchema
 >;
 
+/** A lone UTF-16 surrogate: a high one not followed by a low one, or the reverse. */
+const LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * Whether a string is well-formed UTF-16 (no lone surrogates), the same test
+ * as `String.prototype.isWellFormed()`. A key with a lone surrogate has no
+ * UTF-8 encoding, so a backend cannot store it and refuses it.
+ */
+export function isWellFormedString(value: string): boolean {
+  return !LONE_SURROGATE.test(value);
+}
+
 /** An idempotency key as it travels on `run_created` and on a run. */
 export const IdempotencyKeySchema = z.compile(
-  z.string().min(1).max(IDEMPOTENCY_KEY_MAX_LENGTH)
+  z.string().min(1).max(IDEMPOTENCY_KEY_MAX_LENGTH).refine(isWellFormedString, {
+    message: 'idempotencyKey must be well-formed UTF-16 (no lone surrogates)',
+  })
 );
 
 /** A resolved idempotency key TTL in whole milliseconds, within bounds. */

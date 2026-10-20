@@ -101,6 +101,7 @@ export {
   IdempotencyKeyReusePolicySchema,
   IdempotencyKeySchema,
   IdempotencyKeyTtlMsSchema,
+  isWellFormedString,
 } from './idempotency.js';
 export type * from './interfaces.js';
 export type {
