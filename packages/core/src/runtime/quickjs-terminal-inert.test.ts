@@ -73,6 +73,43 @@ class Log {
   }
 }
 
+function start(code: string, events: Event[]) {
+  return startQuickJSWorkflow({
+    workflowCode: code,
+    workflowId: WORKFLOW_ID,
+    workflowRun: run,
+    events,
+  });
+}
+
+/** Snapshots a suspended session, disposes it, and restores onto `delta`. */
+async function restoreOnto(
+  session: Awaited<ReturnType<typeof start>>,
+  code: string,
+  delta: Event[]
+) {
+  const captured = session.snapshot();
+  session.dispose();
+  return startQuickJSWorkflow({
+    workflowCode: code,
+    workflowId: WORKFLOW_ID,
+    workflowRun: run,
+    events: delta,
+    existingSnapshot: {
+      data: captured.data,
+      metadata: {
+        eventsCursor: 'cursor_1',
+        createdAt: new Date(),
+        rngDraws: captured.rngDraws,
+        lastUlid: captured.lastUlid,
+        serdeRootPtr: captured.serdeRootPtr,
+        clockMs: captured.clockMs,
+        engineVersion: captured.engineVersion,
+      },
+    },
+  });
+}
+
 function replay(code: string, events: Event[]) {
   return runQuickJSWorkflow({
     workflowCode: code,
@@ -225,5 +262,135 @@ describe('QuickJS terminal-inert', () => {
     } finally {
       restored.dispose();
     }
+  });
+
+  // A batch learns which entities an EARLIER batch closed from the VM's own
+  // state (a settled resolver, a buffered outcome, a released hook) plus a
+  // record of the terminals that state does not show. Each case below feeds
+  // the straggler in a later batch than its terminal, once to the live
+  // session and once to a VM restored from a snapshot taken between them.
+  describe.each([
+    ['a later batch', 'live'],
+    ['a snapshot restore', 'restore'],
+  ] as const)('across batches (%s)', (_label, mode) => {
+    async function continueWith(
+      session: Awaited<ReturnType<typeof start>>,
+      code: string,
+      delta: Event[]
+    ) {
+      if (mode === 'live') {
+        return { result: await session.continueWithEvents(delta), session };
+      }
+      const restored = await restoreOnto(session, code, delta);
+      return { result: restored.result, session: restored };
+    }
+
+    it('drops a payload after a disposal this run matched', async () => {
+      const code = workflowCode(`
+        var hook = createHook({ token: "tok" });
+        var first = await hook;
+        hook.dispose();
+        var a = await add(1);
+        var late = await hook;
+        return [first, a, late];`);
+      const [hook] = await pendingIds(code, new Log().events);
+      const log = new Log()
+        .add('hook_created', hook, { token: 'tok', isWebhook: false })
+        .add('hook_received', hook, { payload: 'first' })
+        .add('hook_disposed', hook, { token: 'tok' });
+      const step = stepId(await pendingIds(code, log.events));
+      const boundary = log.events.length;
+      log
+        .add('hook_received', hook, { payload: 'second' })
+        .add('step_created', step, { stepName: 'step//test//add' })
+        .add('step_completed', step, { result: 2 });
+
+      const session = await start(code, log.events.slice(0, boundary));
+      expect(session.result.suspended).toBeDefined();
+      const next = await continueWith(
+        session,
+        code,
+        log.events.slice(boundary)
+      );
+      try {
+        expect(next.result.completed).toBeUndefined();
+        expect(next.result.suspended).toBeDefined();
+      } finally {
+        next.session.dispose();
+      }
+    });
+
+    it('drops a payload after a disposal the log holds before this VM disposed the hook', async () => {
+      // A concurrent invocation recorded the disposal while this VM was
+      // still asleep, so nothing in the VM's state shows it yet: only the
+      // record of unreflected terminals carries it to the next batch.
+      const code = workflowCode(`
+        var hook = createHook({ token: "tok" });
+        await sleep("10s");
+        hook.dispose();
+        var late = await hook;
+        return late;`);
+      const [hook, wait] = await pendingIds(code, new Log().events);
+      expect([hook, wait].map((id) => id.split('_')[0])).toEqual([
+        'hook',
+        'wait',
+      ]);
+      const log = new Log()
+        .add('hook_created', hook, { token: 'tok', isWebhook: false })
+        .add('wait_created', wait, { resumeAt: new Date() })
+        .add('hook_disposed', hook, { token: 'tok' });
+      const boundary = log.events.length;
+      log
+        .add('wait_completed', wait)
+        .add('hook_received', hook, { payload: 'late' });
+
+      const session = await start(code, log.events.slice(0, boundary));
+      expect(session.result.suspended).toBeDefined();
+      const next = await continueWith(
+        session,
+        code,
+        log.events.slice(boundary)
+      );
+      const fresh = await replay(code, log.events);
+      try {
+        expect(next.result.completed).toBeUndefined();
+        expect(fresh.completed).toBeUndefined();
+      } finally {
+        next.session.dispose();
+      }
+    });
+
+    it('keeps the first outcome buffered for a step this VM has not called yet', async () => {
+      const code = workflowCode(`
+        await sleep("10s");
+        return await add(1);`);
+      const [wait] = await pendingIds(code, new Log().events);
+      const afterWait = new Log()
+        .add('wait_created', wait, { resumeAt: new Date() })
+        .add('wait_completed', wait);
+      const step = stepId(await pendingIds(code, afterWait.events));
+      const log = new Log()
+        .add('wait_created', wait, { resumeAt: new Date() })
+        .add('step_created', step, { stepName: 'step//test//add' })
+        .add('step_completed', step, { result: 1 });
+      const boundary = log.events.length;
+      log
+        .add('step_completed', step, { result: 2 })
+        .add('wait_completed', wait);
+
+      const session = await start(code, log.events.slice(0, boundary));
+      expect(session.result.suspended).toBeDefined();
+      const next = await continueWith(
+        session,
+        code,
+        log.events.slice(boundary)
+      );
+      try {
+        expect(next.result.completed).toBeDefined();
+        expect(deserialize(next.result.completed?.result)).toBe(1);
+      } finally {
+        next.session.dispose();
+      }
+    });
   });
 });
