@@ -6,6 +6,7 @@ import {
   HookConflictError,
   HookNotFoundError,
   RetryableError,
+  WorkflowRunAlreadyStartedError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -5291,6 +5292,221 @@ describe.concurrent('e2e', () => {
       expect(returnValue.reason).toBe('Test complete');
     }
   );
+
+  // ==========================================================================
+  // start({ experimental_idempotencyKey })
+  // ==========================================================================
+
+  describe('start() idempotency keys', () => {
+    const idem = (fn: string) => {
+      requireFixture(fn);
+      return getWorkflowMetadata(
+        deploymentUrl,
+        'workflows/104_start_idempotency.ts',
+        fn
+      );
+    };
+    const newKey = (label: string) =>
+      `idem-${label}-${Math.random().toString(36).slice(2)}`;
+
+    /**
+     * Keyed starts go through the raw start plus `trackRun`, not the tracked
+     * `start()` wrapper: its pickup watchdog re-starts a stalled run with the
+     * same arguments, which for a keyed start returns (or refuses with) the
+     * very run it then cancels.
+     */
+    async function startKeyed<T>(
+      ...args: Parameters<typeof rawStart<T>>
+    ): Promise<Run<T>> {
+      const run = await rawStart<T>(...args);
+      trackRun(run);
+      return run;
+    }
+
+    /**
+     * Why this lane cannot run these tests, or undefined when it can. The
+     * World must declare `capabilities.runIdempotencyKeys` (a community or
+     * custom World may not), and its backend must actually record the key: a
+     * Vercel backend that predates keys drops them, and one with the kill
+     * switch on refuses them with `idempotency-keys-disabled`. Memoized: one
+     * probe per lane.
+     */
+    let unsupportedReason: Promise<string | undefined> | undefined;
+    const whyUnsupported = () =>
+      (unsupportedReason ??= (async () => {
+        const world = await getWorld();
+        if (world.capabilities?.runIdempotencyKeys !== true) {
+          return 'the World does not declare capabilities.runIdempotencyKeys';
+        }
+        const key = newKey('probe');
+        try {
+          const run = await startKeyed(
+            await idem('idempotentEchoWorkflow'),
+            ['probe'],
+            { experimental_idempotencyKey: key }
+          );
+          const stored = await world.runs.get(run.runId, {
+            resolveData: 'none',
+          });
+          if (stored.idempotencyKey !== key) {
+            return "the World's backend did not record the idempotency key";
+          }
+          return undefined;
+        } catch (error) {
+          if (
+            WorkflowWorldError.is(error) &&
+            error.code === 'idempotency-keys-disabled'
+          ) {
+            return "the World's backend has idempotency keys switched off";
+          }
+          throw error;
+        }
+      })());
+    const skipUnlessSupported = async (ctx: TestContext) => {
+      const reason = await whyUnsupported();
+      if (reason) {
+        ctx.skip(`run idempotency keys unavailable: ${reason}`);
+      }
+    };
+
+    test(
+      'concurrent keyed starts converge on one run, created exactly once',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx);
+        const key = newKey('concurrent');
+        const workflow = await idem('idempotentEchoWorkflow');
+
+        const runs = await Promise.all(
+          Array.from({ length: 10 }, (_, i) =>
+            startKeyed(workflow, [`caller-${i}`], {
+              experimental_idempotencyKey: key,
+            })
+          )
+        );
+
+        expect(new Set(runs.map((run) => run.runId)).size).toBe(1);
+        expect(runs.filter((run) => run.experimental_started)).toHaveLength(1);
+        expect(
+          runs.filter((run) => run.experimental_started === false)
+        ).toHaveLength(9);
+        // The creator's arguments win; everyone else's are ignored.
+        const winner = runs.findIndex((run) => run.experimental_started);
+        expect(await runs[0].returnValue).toBe(`caller-${winner}`);
+      }
+    );
+
+    test(
+      'a keyed restart after completion returns the same run',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx);
+        const key = newKey('restart');
+        const workflow = await idem('idempotentEchoWorkflow');
+
+        const first = await startKeyed(workflow, ['first'], {
+          experimental_idempotencyKey: key,
+        });
+        expect(first.experimental_started).toBe(true);
+        expect(await first.returnValue).toBe('first');
+
+        const again = await startKeyed(workflow, ['second'], {
+          experimental_idempotencyKey: key,
+        });
+        expect(again.runId).toBe(first.runId);
+        expect(again.experimental_started).toBe(false);
+        expect(await again.returnValue).toBe('first');
+      }
+    );
+
+    test(
+      'ALLOW_DUPLICATE after completion starts a new run',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx);
+        const key = newKey('allow-duplicate');
+        const workflow = await idem('idempotentEchoWorkflow');
+
+        const first = await startKeyed(workflow, ['first'], {
+          experimental_idempotencyKey: key,
+        });
+        expect(await first.returnValue).toBe('first');
+
+        const second = await startKeyed(workflow, ['second'], {
+          experimental_idempotencyKey: key,
+          experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE',
+        });
+        expect(second.runId).not.toBe(first.runId);
+        expect(second.experimental_started).toBe(true);
+        expect(await second.returnValue).toBe('second');
+      }
+    );
+
+    test(
+      'FAIL against a running holder throws WorkflowRunAlreadyStartedError naming it',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx);
+        const key = newKey('fail');
+        const token = newKey('fail-token');
+        const workflow = await idem('idempotentHoldWorkflow');
+
+        const holder = await startKeyed(workflow, [token], {
+          experimental_idempotencyKey: key,
+        });
+        try {
+          await waitForHook(token, { runId: holder.runId });
+
+          const error = await startKeyed(workflow, [newKey('other-token')], {
+            experimental_idempotencyKey: key,
+            experimental_idempotencyKeyConflictPolicy: 'FAIL',
+          }).catch((err: unknown) => err);
+
+          expect(WorkflowRunAlreadyStartedError.is(error)).toBe(true);
+          expect((error as WorkflowRunAlreadyStartedError).runId).toBe(
+            holder.runId
+          );
+          expect((error as WorkflowRunAlreadyStartedError).runStatus).toBe(
+            'running'
+          );
+        } finally {
+          await resumeHook(token, { done: true }).catch(() => {});
+        }
+        expect(await holder.returnValue).toBe('released');
+      }
+    );
+
+    test(
+      'workflow code that starts with FAIL catches the refusal and reads the holder',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx);
+        const key = newKey('fail-in-workflow');
+        const token = newKey('fail-in-workflow-token');
+
+        const holder = await startKeyed(
+          await idem('idempotentHoldWorkflow'),
+          [token],
+          { experimental_idempotencyKey: key }
+        );
+        try {
+          await waitForHook(token, { runId: holder.runId });
+
+          const caller = await start(await idem('idempotentFailFromWorkflow'), [
+            key,
+          ]);
+          expect(await caller.returnValue).toEqual({
+            refused: true,
+            runId: holder.runId,
+            runStatus: 'running',
+            idempotencyKey: key,
+          });
+        } finally {
+          await resumeHook(token, { done: true }).catch(() => {});
+        }
+      }
+    );
+  });
 
   // ==========================================================================
   // setAttributes
