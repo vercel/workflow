@@ -1,13 +1,17 @@
 /**
- * Native concurrency locks (`experimental_lock()`) for the Local World, stage 1: a per-key
- * counter with polling waiters (no waitlist).
+ * Native concurrency locks (`experimental_lock()`) for the Local World: a
+ * per-key counter with a FIFO waitlist and direct handoff (stage 2, the
+ * contract in `@workflow/world`'s `locks.ts`), or polling waiters with
+ * `WORKFLOW_LOCKS_FIFO=0` (stage 1).
  *
  * Layout under the data directory:
  *
- * - `locks/keys/<sha256(key)>[.tag].json`: the key's semaphore, holder rows
- *   included. Holders live in the same file as `count`, and every write
- *   recomputes `count` from them, so `count == live holder rows` holds by
- *   construction and every decrement is the delete of a specific row.
+ * - `locks/keys/<sha256(key)>[.tag].json`: the key's semaphore, holder and
+ *   waiter rows included. The rows live in the same file as the counters, and
+ *   every write recomputes `count`, `queuedCount` and `reservedCount` from
+ *   them, so the counter invariants hold by construction and every decrement
+ *   is the delete of a specific row. Every write holds the key lock, so the
+ *   release-vs-enqueue race the contract conditions against cannot occur.
  * - `locks/scopes/<runId>/<correlationId>[.tag].json`: one record per lock
  *   scope, naming its key and the events it committed. It is the idempotency
  *   record for re-POSTs, and the per-run index the terminal reclaim walks.
@@ -31,11 +35,18 @@ import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
+  getLockWaitlistPolicy,
   type Lock,
   type LockAttempt,
+  type LockHandoff,
   type LockHolder,
   LockHolderSchema,
   LockSchema,
+  type LockWaiter,
+  LockWaiterSchema,
+  type LockWaitlistPolicy,
+  type LockWakeTarget,
+  lockBackstopAt,
   lockRetryAt,
   type Storage,
 } from '@workflow/world';
@@ -55,6 +66,8 @@ import { isRunTerminalCommitted } from './helpers.js';
 const LockStateSchema = z.compile(
   LockSchema.extend({
     holders: z.record(z.string(), LockHolderSchema),
+    /** Stage 2. Absent on a file written before the waitlist existed. */
+    waiters: z.record(z.string(), LockWaiterSchema).optional(),
   })
 );
 type LockState = z.infer<typeof LockStateSchema>;
@@ -68,6 +81,8 @@ const LockScopeSchema = z.compile(
     requestedAt: z.coerce.date(),
     createdEventId: z.string().optional(),
     acquiredEventId: z.string().optional(),
+    /** Stage 2: the scope's `lock_failed` (waitlist full). Terminal. */
+    failedEventId: z.string().optional(),
     releasedEventId: z.string().optional(),
   })
 );
@@ -162,16 +177,107 @@ async function readState(
   return readJSON(keyStatePath(basedir, key, tag), LockStateSchema);
 }
 
+const waitersOf = (state: LockState) => Object.values(state.waiters ?? {});
+const bySeq = (a: LockWaiter, b: LockWaiter) => a.seq - b.seq;
+const queuedOf = (state: LockState) =>
+  waitersOf(state)
+    .filter((w) => !w.grantedAt)
+    .sort(bySeq);
+const reservedOf = (state: LockState) =>
+  waitersOf(state)
+    .filter((w) => w.grantedAt)
+    .sort(bySeq);
+/** `count`: holders plus reserved slots. */
+const slotsTaken = (state: LockState) =>
+  Object.keys(state.holders).length + reservedOf(state).length;
+
+/** The counters, derived from the rows they count. */
+function withCounters(state: LockState): LockState {
+  const waiters = waitersOf(state);
+  return {
+    ...state,
+    count: slotsTaken(state),
+    ...(state.waiters && {
+      queuedCount: waiters.filter((w) => !w.grantedAt).length,
+      reservedCount: waiters.filter((w) => w.grantedAt).length,
+      tailSeq: state.tailSeq ?? 0,
+    }),
+  };
+}
+
+/**
+ * Reserve the slot one removal just freed for the head of the queue, if
+ * anyone is queued (contract: Handoff). Returns the grantee.
+ */
+function handOff(state: LockState, now: Date): LockHandoff | null {
+  const head = queuedOf(state)[0];
+  if (!head) return null;
+  head.grantedAt = now;
+  return {
+    key: state.key,
+    runId: head.runId,
+    correlationId: head.correlationId,
+    grantedAt: now,
+    ...(head.wake && { wake: head.wake }),
+  };
+}
+
+/**
+ * Grant grace: move every stale reservation other than `callerId`'s on to the
+ * head of the queue, oldest first, while anyone is queued. The slow grantee
+ * goes back to the tail.
+ */
+function expireStaleGrants(
+  state: LockState,
+  now: Date,
+  policy: LockWaitlistPolicy,
+  callerId: string | undefined,
+  handoffs: LockHandoff[]
+): boolean {
+  let changed = false;
+  for (const stale of reservedOf(state)) {
+    if (holderId(stale.runId, stale.correlationId) === callerId) continue;
+    if ((stale.grantedAt as Date).getTime() + policy.graceMs > now.getTime()) {
+      continue;
+    }
+    const next = handOff(state, now);
+    if (!next) break;
+    handoffs.push(next);
+    stale.grantedAt = undefined;
+    state.tailSeq = (state.tailSeq ?? 0) + 1;
+    stale.seq = state.tailSeq;
+    changed = true;
+  }
+  return changed;
+}
+
+/** Remove a scope's holder or waiter row, handing its slot off if it had one. */
+function removeRow(
+  state: LockState,
+  id: string,
+  now: Date,
+  handoffs: LockHandoff[]
+): boolean {
+  if (state.holders[id]) {
+    delete state.holders[id];
+  } else if (state.waiters?.[id]) {
+    const waiter = state.waiters[id];
+    delete state.waiters[id];
+    if (!waiter.grantedAt) return true;
+  } else {
+    return false;
+  }
+  const next = handOff(state, now);
+  if (next) handoffs.push(next);
+  return true;
+}
+
 async function writeState(
   basedir: string,
   state: LockState,
   tag?: string
 ): Promise<void> {
-  // `count` is derived from the rows it counts, on every write.
-  const next: LockState = {
-    ...state,
-    count: Object.keys(state.holders).length,
-  };
+  const next = withCounters(state);
   await writeJSON(keyStatePath(basedir, state.key, tag), next, {
     overwrite: true,
   });
@@ -202,8 +308,8 @@ async function writeScope(
 }
 
 function toLock(state: LockState): Lock {
-  const { holders: _holders, ...lock } = state;
-  return { ...lock, count: Object.keys(state.holders).length };
+  const { holders: _holders, waiters: _waiters, ...lock } = withCounters(state);
+  return lock;
 }
 
 /** What a lock event handler needs from the events storage that calls it. */
@@ -220,10 +326,22 @@ export interface LockEventContext {
   readEvent: (eventId: string) => Promise<Event | null>;
 }
 
+/** A lock write's result, as `events.create` returns it. */
+export interface LockWriteResult {
+  event: Event;
+  lock: LockAttempt;
+  lockHandoffs?: LockHandoff[];
+}
+
 type LockCreatedRequest = {
   eventType: 'lock_created';
   correlationId: string;
-  eventData: { key: string; concurrency: number; leaseTtlMs?: number };
+  eventData: {
+    key: string;
+    concurrency: number;
+    leaseTtlMs?: number;
+    wake?: LockWakeTarget;
+  };
 };
 type LockReleasedRequest = {
   eventType: 'lock_released';
@@ -279,30 +397,43 @@ function acquiredEvent(
  */
 async function pruneHolders(
   ctx: LockEventContext,
-  state: LockState
-): Promise<void> {
+  state: LockState,
+  handoffs: LockHandoff[]
+): Promise<boolean> {
+  let changed = false;
   const nowMs = ctx.now.getTime();
   for (const [id, holder] of Object.entries(state.holders)) {
     if (holder.leaseExpiresAt && holder.leaseExpiresAt.getTime() <= nowMs) {
-      delete state.holders[id];
+      changed = removeRow(state, id, ctx.now, handoffs) || changed;
     }
   }
-  if (Object.keys(state.holders).length < state.concurrency) return;
-  for (const [id, holder] of Object.entries(state.holders)) {
-    if (await isRunTerminalCommitted(ctx.basedir, holder.runId, ctx.tag)) {
-      delete state.holders[id];
+  if (slotsTaken(state) < state.concurrency) return changed;
+  // Rows that take a slot (holders and reservations) whose run ended
+  // without its reclaim finishing.
+  const slotRows = [
+    ...Object.entries(state.holders).map(([id, row]) => [id, row.runId]),
+    ...reservedOf(state).map((w) => [
+      holderId(w.runId, w.correlationId),
+      w.runId,
+    ]),
+  ];
+  for (const [id, rowRunId] of slotRows) {
+    if (await isRunTerminalCommitted(ctx.basedir, rowRunId, ctx.tag)) {
+      changed = removeRow(state, id, ctx.now, handoffs) || changed;
     }
   }
+  return changed;
 }
 
 export async function createLockAcquisition(
   outer: LockEventContext,
   data: LockCreatedRequest
-): Promise<{ event: Event; lock: LockAttempt }> {
+): Promise<LockWriteResult> {
   const { basedir, tag, runId } = outer;
-  const { key, concurrency, leaseTtlMs } = data.eventData;
+  const { key, concurrency, leaseTtlMs, wake } = data.eventData;
   const correlationId = data.correlationId;
   const id = holderId(runId, correlationId);
+  const policy = getLockWaitlistPolicy();
 
   return withKeyLock(basedir, key, tag, async () => {
     // Stamp inside the key lock, so a grant's events and lease are timed
@@ -340,6 +471,28 @@ export async function createLockAcquisition(
         },
       };
     }
+    // Converged: the scope was refused for good.
+    if (scope?.failedEventId) {
+      return {
+        event: await requireEvent(ctx, scope.failedEventId),
+        lock: {
+          key,
+          status: 'failed',
+          reason: 'waitlist_full',
+          concurrency: state.concurrency,
+        },
+      };
+    }
+
+    const handoffs: LockHandoff[] = [];
+    // The caller's own reservation is not a handoff: it claims it in this
+    // same write, or learns of it from its own result.
+    const withHandoffs = (result: LockWriteResult): LockWriteResult => {
+      const others = handoffs.filter(
+        (h) => h.runId !== runId || h.correlationId !== correlationId
+      );
+      return others.length > 0 ? { ...result, lockHandoffs: others } : result;
+    };
 
     // A grant whose state write landed but whose event did not (a crash in
     // between): finish it with the token it was granted.
@@ -379,14 +532,19 @@ export async function createLockAcquisition(
       );
     }
 
-    await pruneHolders(ctx, state);
-    // First writer wins on concurrency; a key nobody holds adopts the
-    // request's value.
-    if (Object.keys(state.holders).length === 0) {
+    let changed = await pruneHolders(ctx, state, handoffs);
+    changed =
+      expireStaleGrants(state, ctx.now, policy, id, handoffs) || changed;
+    // First writer wins on concurrency; a key nobody holds or waits on
+    // adopts the request's value.
+    if (
+      Object.keys(state.holders).length === 0 &&
+      waitersOf(state).length === 0
+    ) {
       state = { ...state, concurrency };
     }
 
-    if (Object.keys(state.holders).length < state.concurrency) {
+    const grant = async (fromWaiter: boolean): Promise<LockWriteResult> => {
       const holder: LockHolder = {
         key,
         runId,
@@ -397,6 +555,10 @@ export async function createLockAcquisition(
           leaseExpiresAt: new Date(ctx.now.getTime() + leaseTtlMs),
         }),
       };
+      if (fromWaiter && state.waiters) {
+        const { [id]: _claimed, ...waiters } = state.waiters;
+        state.waiters = waiters;
+      }
       state = {
         ...state,
         grantSeq: holder.fencingToken,
@@ -409,10 +571,10 @@ export async function createLockAcquisition(
       );
       await writeScope(
         basedir,
-        { ...scope, acquiredEventId: stored.eventId },
+        { ...(scope as LockScope), acquiredEventId: stored.eventId },
         tag
       );
-      return {
+      return withHandoffs({
         event: stored,
         lock: {
           key,
@@ -420,61 +582,151 @@ export async function createLockAcquisition(
           fencingToken: holder.fencingToken,
           concurrency: state.concurrency,
         },
-      };
+      });
+    };
+
+    const own = state.waiters?.[id];
+    // Claim: the scope's reserved slot, however late it came for it.
+    if (own?.grantedAt) return grant(true);
+    // Grant: a free slot nobody is queued for. Never admits past a queue.
+    if (!own && slotsTaken(state) < state.concurrency && !queuedOf(state)[0]) {
+      return grant(false);
     }
 
-    // Refused. Persist pruning only if it changed something; a plain failed
-    // attempt writes nothing.
-    if (Object.keys(state.holders).length !== state.count) {
-      await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
+    const pending = async (lock: LockAttempt): Promise<LockWriteResult> => {
+      if (changed) {
+        await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
+      }
+      if (scope?.createdEventId) {
+        return withHandoffs({
+          event: await requireEvent(ctx, scope.createdEventId),
+          lock,
+        });
+      }
+      const stored = await ctx.storeEvent({
+        eventType: 'lock_created',
+        correlationId,
+        runId,
+        eventId: await ctx.mintEventId(),
+        createdAt: ctx.now,
+        specVersion: ctx.specVersion,
+        eventData: {
+          key,
+          concurrency,
+          ...(leaseTtlMs !== undefined && { leaseTtlMs }),
+          ...(lock.retryAt && { retryAt: lock.retryAt }),
+          ...(wake && { wake }),
+        },
+      } as Event);
+      await writeScope(
+        basedir,
+        { ...(scope as LockScope), createdEventId: stored.eventId },
+        tag
+      );
+      return withHandoffs({ event: stored, lock });
+    };
+
+    if (!policy.fifo && !own) {
+      // Stage 1: the scope's deterministic polling schedule. Every attempt
+      // in this window gets the same instant, so the runtime's retry
+      // messages collapse onto one.
+      return pending({
+        key,
+        status: 'pending',
+        retryAt: new Date(
+          lockRetryAt(
+            `${runId}:${correlationId}`,
+            scope.requestedAt.getTime(),
+            ctx.now.getTime()
+          )
+        ),
+        concurrency: state.concurrency,
+      });
     }
-    // The scope's deterministic schedule: every attempt in this window gets
-    // the same instant, so the runtime's retry messages collapse onto one.
-    const retryAt = new Date(
-      lockRetryAt(
-        `${runId}:${correlationId}`,
-        scope.requestedAt.getTime(),
-        ctx.now.getTime()
-      )
-    );
-    const lock: LockAttempt = {
+
+    let waiter = own;
+    if (!waiter) {
+      // Refused past the cap: journaled, so the workflow's catch of
+      // LockWaitlistFullError replays deterministically.
+      if (waitersOf(state).length >= policy.waitlistCap) {
+        if (changed) {
+          await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
+        }
+        const stored = await ctx.storeEvent({
+          eventType: 'lock_failed',
+          correlationId,
+          runId,
+          eventId: await ctx.mintEventId(),
+          createdAt: ctx.now,
+          specVersion: ctx.specVersion,
+          eventData: {
+            key,
+            concurrency,
+            reason: 'waitlist_full',
+            waitlistCap: policy.waitlistCap,
+          },
+        } as Event);
+        await writeScope(
+          basedir,
+          { ...scope, failedEventId: stored.eventId },
+          tag
+        );
+        return withHandoffs({
+          event: stored,
+          lock: {
+            key,
+            status: 'failed',
+            reason: 'waitlist_full',
+            concurrency: state.concurrency,
+          },
+        });
+      }
+      // Enqueue at the tail.
+      state.tailSeq = (state.tailSeq ?? 0) + 1;
+      waiter = {
+        key,
+        seq: state.tailSeq,
+        runId,
+        correlationId,
+        enqueuedAt: ctx.now,
+        ...(wake && { wake }),
+      };
+      state.waiters = { ...(state.waiters ?? {}), [id]: waiter };
+      changed = true;
+    }
+    return pending({
       key,
       status: 'pending',
-      retryAt,
+      waiter: 'queued',
+      retryAt: new Date(
+        lockBackstopAt(
+          `${runId}:${correlationId}`,
+          waiter.enqueuedAt.getTime(),
+          ctx.now.getTime(),
+          policy.backstopMs
+        )
+      ),
       concurrency: state.concurrency,
-    };
-    if (scope.createdEventId) {
-      return { event: await requireEvent(ctx, scope.createdEventId), lock };
-    }
-    const stored = await ctx.storeEvent({
-      eventType: 'lock_created',
-      correlationId,
-      runId,
-      eventId: await ctx.mintEventId(),
-      createdAt: ctx.now,
-      specVersion: ctx.specVersion,
-      eventData: { ...data.eventData, retryAt },
-    } as Event);
-    await writeScope(
-      basedir,
-      { ...scope, createdEventId: stored.eventId },
-      tag
-    );
-    return { event: stored, lock };
+    });
   });
 }
 
 export async function createLockRelease(
   outer: LockEventContext,
   data: LockReleasedRequest
-): Promise<{ event: Event; lock: LockAttempt }> {
+): Promise<LockWriteResult> {
   const { basedir, tag, runId } = outer;
   const { key } = data.eventData;
   const correlationId = data.correlationId;
+  const policy = getLockWaitlistPolicy();
   return withKeyLock(basedir, key, tag, async () => {
     const ctx: LockEventContext = { ...outer, now: new Date() };
     const scope = await readScope(basedir, runId, correlationId, tag);
-    if (!scope?.acquiredEventId || scope.key !== key) {
+    const state = await readState(basedir, key, tag);
+    const id = holderId(runId, correlationId);
+    // A scope that holds its slot, or (stage 2) one still waiting for it.
+    const waiting = !scope?.acquiredEventId && !!state?.waiters?.[id];
+    if ((!scope?.acquiredEventId && !waiting) || scope?.key !== key) {
       throw new EntityConflictError(
         `Lock scope "${correlationId}" does not hold "${key}"`
       );
@@ -489,11 +741,15 @@ export async function createLockRelease(
         `Cannot release lock "${key}" for run "${runId}" in a terminal state`
       );
     }
-    const state = await readState(basedir, key, tag);
-    const id = holderId(runId, correlationId);
-    if (state?.holders[id]) {
-      const { [id]: _released, ...holders } = state.holders;
-      await writeState(basedir, { ...state, holders, updatedAt: ctx.now }, tag);
+    const handoffs: LockHandoff[] = [];
+    if (state) {
+      let changed = removeRow(state, id, ctx.now, handoffs);
+      changed =
+        expireStaleGrants(state, ctx.now, policy, undefined, handoffs) ||
+        changed;
+      if (changed) {
+        await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
+      }
     }
     const stored = await ctx.storeEvent({
       eventType: 'lock_released',
@@ -509,7 +765,11 @@ export async function createLockRelease(
       { ...scope, releasedEventId: stored.eventId },
       tag
     );
-    return { event: stored, lock: { key, status: 'released' } };
+    return {
+      event: stored,
+      lock: { key, status: 'released' },
+      ...(handoffs.length > 0 && { lockHandoffs: handoffs }),
+    };
   });
 }
 
@@ -534,36 +794,38 @@ async function listRunScopes(
 }
 
 /**
- * Terminal reclaim: delete every holder row the run still has, each in the
- * same key-locked write that recomputes its key's count. Called after the
- * run-terminal marker is published.
+ * Terminal reclaim: delete every holder and waiter row the run still has,
+ * each in the same key-locked write that recomputes its key's counters, and
+ * hand each freed slot to its key's queue. Called after the run-terminal
+ * marker is published. Returns the handoffs, for the terminal event's result.
  */
 export async function reclaimRunLocks(
   basedir: string,
   runId: string,
   tag?: string
-): Promise<void> {
+): Promise<LockHandoff[]> {
   const scopes = await listRunScopes(basedir, runId, tag);
   const keys = [...new Set(scopes.map((scope) => scope.key))].sort();
+  const handoffs: LockHandoff[] = [];
   for (const key of keys) {
     await withKeyLock(basedir, key, tag, async () => {
       const state = await readState(basedir, key, tag);
       if (!state) return;
-      const holders = Object.fromEntries(
-        Object.entries(state.holders).filter(
-          ([, holder]) => holder.runId !== runId
-        )
-      );
-      if (Object.keys(holders).length === Object.keys(state.holders).length) {
-        return;
-      }
-      await writeState(
-        basedir,
-        { ...state, holders, updatedAt: new Date() },
-        tag
-      );
+      const now = new Date();
+      const ids = [
+        ...Object.entries(state.holders)
+          .filter(([, holder]) => holder.runId === runId)
+          .map(([id]) => id),
+        ...Object.entries(state.waiters ?? {})
+          .filter(([, waiter]) => waiter.runId === runId)
+          .map(([id]) => id),
+      ];
+      if (ids.length === 0) return;
+      for (const id of ids) removeRow(state, id, now, handoffs);
+      await writeState(basedir, { ...state, updatedAt: now }, tag);
     });
   }
+  return handoffs;
 }
 
 /** The optional `Storage['locks']` namespace for the Local World. */
@@ -613,6 +875,12 @@ export function createLocksStorage(
         .flatMap((state) => Object.values(state.holders))
         .filter((holder) => runId === undefined || holder.runId === runId);
     },
+    async listWaiters({ key, limit }) {
+      const state = await readState(basedir, key, tag);
+      if (!state) return [];
+      const waiters = waitersOf(state).sort(bySeq);
+      return limit === undefined ? waiters : waiters.slice(0, limit);
+    },
     async releaseHolder({ runId, correlationId }) {
       const scope = await readScope(basedir, runId, correlationId, tag);
       if (!scope) return { released: false };
@@ -620,12 +888,11 @@ export function createLocksStorage(
         const state = await readState(basedir, scope.key, tag);
         const id = holderId(runId, correlationId);
         if (!state?.holders[id]) return { released: false };
-        const { [id]: _released, ...holders } = state.holders;
-        await writeState(
-          basedir,
-          { ...state, holders, updatedAt: new Date() },
-          tag
-        );
+        // The freed slot goes to the queue's head. Nobody wakes it here: an
+        // admin release has no runtime to send the wake, so the grantee
+        // claims at its backstop.
+        removeRow(state, id, new Date(), []);
+        await writeState(basedir, { ...state, updatedAt: new Date() }, tag);
         return { released: true };
       });
     },

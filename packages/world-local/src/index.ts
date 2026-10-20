@@ -2,7 +2,11 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
-import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import {
+  getLockWaitlistPolicy,
+  mintedSpecVersion,
+  reenqueueActiveRuns,
+} from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
@@ -147,7 +151,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // A per-key semaphore file under a lock file, with terminal reclaim
       // ordered against grants by the run-terminal marker; see
       // storage/locks-storage.ts.
-      locks: { concurrency: true },
+      // Stage 2 (the FIFO waitlist) unless WORKFLOW_LOCKS_FIFO=0.
+      locks: { concurrency: true, fifo: getLockWaitlistPolicy().fifo },
     },
     ...queue,
     ...storage,

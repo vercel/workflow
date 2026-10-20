@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { envFlag, envNumber } from './env-config.js';
 
 /**
  * Entities behind the native concurrency primitive, `experimental_lock()`.
@@ -101,7 +102,9 @@ import { z } from 'zod';
  *
  * ### Waking
  *
- * The World never wakes a run. Every write that reserved a slot (an enqueue
+ * The World never wakes a run. A handoff to the writing scope itself is not
+ * reported: a grace move that reserves the caller's slot is claimed in the
+ * same write. Every write that reserved a slot (an enqueue
  * or claim that expired a stale grant, a release, a terminal run event that
  * reclaimed a holder or a reserved waiter) returns the grantees, and the
  * runtime that made the write sends each a best-effort wake to its stored
@@ -413,3 +416,39 @@ export const LOCK_BACKSTOP_MS = 300_000;
 export const LOCK_GRANT_GRACE_MS = 60_000;
 /** Reference cap on a key's waiter rows (queued plus reserved). */
 export const LOCK_WAITLIST_CAP = 100_000;
+
+/**
+ * The waitlist policy of a World that implements stage 2 itself (the Local
+ * and Postgres Worlds), from the environment, read per write so a test or an
+ * operator can change it without a restart:
+ *
+ * - `WORKFLOW_LOCKS_FIFO` (default on): `0` keeps the stage-1 behavior, where
+ *   a refused acquisition polls instead of queueing. The World then does not
+ *   declare `locks.fifo`.
+ * - `WORKFLOW_LOCK_GRANT_GRACE_MS` (default {@link LOCK_GRANT_GRACE_MS}).
+ * - `WORKFLOW_LOCK_WAITLIST_CAP` (default {@link LOCK_WAITLIST_CAP}).
+ * - `WORKFLOW_LOCK_BACKSTOP_MS` (default {@link LOCK_BACKSTOP_MS}).
+ */
+export interface LockWaitlistPolicy {
+  fifo: boolean;
+  graceMs: number;
+  waitlistCap: number;
+  backstopMs: number;
+}
+
+export function getLockWaitlistPolicy(): LockWaitlistPolicy {
+  return {
+    fifo: envFlag('WORKFLOW_LOCKS_FIFO', true),
+    graceMs: envNumber('WORKFLOW_LOCK_GRANT_GRACE_MS', LOCK_GRANT_GRACE_MS, {
+      integer: true,
+    }),
+    waitlistCap: envNumber('WORKFLOW_LOCK_WAITLIST_CAP', LOCK_WAITLIST_CAP, {
+      integer: true,
+      min: 1,
+    }),
+    backstopMs: envNumber('WORKFLOW_LOCK_BACKSTOP_MS', LOCK_BACKSTOP_MS, {
+      integer: true,
+      min: 1_000,
+    }),
+  };
+}

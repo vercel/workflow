@@ -97,6 +97,7 @@ export type {
 } from './invocation.js';
 export type * from './locks.js';
 export {
+  getLockWaitlistPolicy,
   LOCK_BACKSTOP_MS,
   LOCK_GRANT_GRACE_MS,
   LOCK_KEY_MAX_LENGTH,
