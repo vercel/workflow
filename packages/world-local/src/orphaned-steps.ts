@@ -26,8 +26,9 @@ export const ORPHANED_STEP_ERROR_MESSAGE =
  * terminal event. Queue-owned and finished steps are left alone.
  *
  * Every stamp is treated as dead, so this must run before this process
- * delivers any message for the run. Releasing a step this process is still
- * running would let the step run twice.
+ * delivers any message for the run, and only while no other live process runs
+ * workflows on the same data directory and tag. Releasing a step that is
+ * still running, in this process or another, would let the step run twice.
  */
 export async function releaseOrphanedSteps(
   events: Storage['events'],

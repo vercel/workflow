@@ -54,8 +54,10 @@ export type LocalWorld = World & {
    * the queue, so the next delivery dispatches them at once instead of
    * waiting out the inline-ownership lease. `start()` does this for every run
    * it recovers; call it yourself before re-enqueueing a run when recovering
-   * with `recoverActiveRuns: false`. Only call it before this process has
-   * delivered any message for the run: it treats every inline owner as dead.
+   * with `recoverActiveRuns: false`. It treats every inline owner as dead, so
+   * call it only before this process has delivered any message for the run,
+   * and only when no other live process runs workflows on this data
+   * directory and tag: a step such a process is still running would run twice.
    */
   releaseOrphanedSteps(runId: string): Promise<void>;
 };
@@ -186,8 +188,11 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             fileIdFilter,
           })) as typeof storage.runs.list,
       };
-      // The previous process's queue is gone, so release the steps its
-      // messages owned before the run goes back on the queue.
+      // Recovery assumes this is the only live process on this data directory
+      // and tag, as re-enqueueing already does: a concurrent process's
+      // in-flight queue-owned steps are dispatched again by the replays
+      // below. Under that assumption the previous process's queue is gone, so
+      // release the steps its messages owned before the run is re-enqueued.
       const releaseThenEnqueue: typeof queue.queue = async (
         queueName,
         message,
