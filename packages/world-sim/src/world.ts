@@ -37,7 +37,12 @@ import {
 import { createVirtualClock, type VirtualClock } from './clock.js';
 import { createIdFactory, type IdFactory } from './ids.js';
 import { createSimQueue, type DirectHandler, type SimQueue } from './queue.js';
-import { createSimStore, type LoadedSnapshot, type SimStore } from './store.js';
+import {
+  createSimStore,
+  type LoadedSnapshot,
+  type SimLockPolicy,
+  type SimStore,
+} from './store.js';
 import { createSimStreamer, type SimStreamer } from './streams.js';
 import type {
   CallContext,
@@ -90,6 +95,8 @@ export interface SimWorldOptions {
    * would be a world that exists nowhere.
    */
   countGuard?: boolean;
+  /** See `SimStoreOptions.locks`. */
+  locks?: SimLockPolicy;
 }
 
 export interface SimWorld extends World {
@@ -179,6 +186,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     ids,
     preconditionGuard: options.preconditionGuard,
     countGuard: options.countGuard,
+    ...(options.locks && { locks: options.locks }),
     // Fires synchronously inside `events.create`, so it runs in that call's
     // async context and `isExternal()` still describes who is writing.
     onEvent: (event) =>
@@ -736,7 +744,10 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // The store fences in-band writes; see store.ts.
       inBandFence: true,
       // In-memory per-key semaphores with terminal reclaim; see store.ts.
-      locks: { concurrency: true },
+      locks: {
+        concurrency: true,
+        ...(options.locks?.fifo && { fifo: true }),
+      },
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()

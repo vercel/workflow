@@ -16,6 +16,7 @@ import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { wakeLockGrantees } from './lock-wakes.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import { start } from './start.js';
 
@@ -174,7 +175,11 @@ export async function cancelRun(
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
     };
-    await world.events.create(runId, eventRequest, { v1Compat: compatMode });
+    const result = await world.events.create(runId, eventRequest, {
+      v1Compat: compatMode,
+    });
+    // The run's lock reclaim (FIFO Worlds) may have handed its slots on.
+    await wakeLockGrantees(world, result.lockHandoffs, { runId });
   } catch (err) {
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,

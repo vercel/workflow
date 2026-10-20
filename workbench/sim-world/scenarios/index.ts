@@ -40,6 +40,13 @@ import { scenario as inFlightBeforeDecisionCounted } from './in-flight-before-de
 import { scenario as lockAcquireBeforeRelease } from './lock-acquire-before-release.ts';
 import { scenario as lockCancelledWaiter } from './lock-cancelled-waiter.ts';
 import { scenario as lockDuplicateDelivery } from './lock-duplicate-delivery.ts';
+import { scenario as lockFifoBurst } from './lock-fifo-burst.ts';
+import { scenario as lockFifoCancelledHead } from './lock-fifo-cancelled-head.ts';
+import { scenario as lockFifoEnqueueBeforeRelease } from './lock-fifo-enqueue-before-release.ts';
+import { scenario as lockFifoGranteeCrash } from './lock-fifo-grantee-crash.ts';
+import { scenario as lockFifoHandoff } from './lock-fifo-handoff.ts';
+import { scenario as lockFifoLostWake } from './lock-fifo-lost-wake.ts';
+import { scenario as lockFifoReleaseBeforeEnqueue } from './lock-fifo-release-before-enqueue.ts';
 import { scenario as lockRaceLastSlot } from './lock-race-last-slot.ts';
 import { scenario as lockReleaseBeforeAcquire } from './lock-release-before-acquire.ts';
 import { scenario as lockReleaseVsReclaim } from './lock-release-vs-reclaim.ts';
@@ -208,4 +215,13 @@ export const scenarios: ScenarioSpec[] = [
   lockReleaseVsReclaim,
   lockDuplicateDelivery,
   lockCancelledWaiter,
+  // Stage 2 (`locks.fifo`): the FIFO waitlist with direct handoff. The lock
+  // invariants add FIFO order and never admitting past a queue.
+  lockFifoHandoff,
+  lockFifoLostWake,
+  lockFifoGranteeCrash,
+  lockFifoCancelledHead,
+  lockFifoReleaseBeforeEnqueue,
+  lockFifoEnqueueBeforeRelease,
+  lockFifoBurst,
 ];

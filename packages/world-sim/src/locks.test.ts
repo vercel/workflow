@@ -24,6 +24,45 @@ lockConformance({
   newRunId: () => null,
 });
 
+// The stage-2 waitlist, on a wall clock (the grace tests sleep past it).
+const fifo = { graceMs: 300, waitlistCap: 20 };
+const fifoStores = new WeakMap<object, ReturnType<typeof createSimStore>>();
+lockConformance({
+  name: 'world-sim (fifo)',
+  events: () => {
+    const store = createSimStore({
+      now: () => Date.now(),
+      ids: createIdFactory(() => Date.now()),
+      locks: { fifo: true, ...fifo },
+    });
+    fifoStores.set(store.events, store);
+    return store.events;
+  },
+  locks: (events) => {
+    const store = fifoStores.get(events);
+    if (!store) throw new Error('unknown events storage');
+    return {
+      get: async (key) => store.allLocks().find((l) => l.key === key) ?? null,
+      listHolders: async ({ key, runId }) =>
+        store
+          .allLockHolders()
+          .filter(
+            (h) =>
+              (key === undefined || h.key === key) &&
+              (runId === undefined || h.runId === runId)
+          ),
+      listWaiters: async ({ key, limit }) =>
+        store
+          .allLockWaiters()
+          .filter((w) => w.key === key)
+          .slice(0, limit),
+    };
+  },
+  capabilities: () => createSimWorld({ locks: { fifo: true } }).capabilities,
+  newRunId: () => null,
+  fifo,
+});
+
 describe('checkLockInvariants', () => {
   let seq = 0;
   const at = (ms: number) => new Date(1_704_067_200_000 + ms);
@@ -135,5 +174,104 @@ describe('checkLockInvariants', () => {
     expect(violations.map((v) => v.rule)).toEqual([
       'lock.count-matches-holders',
     ]);
+  });
+  describe('stage 2 (fifo)', () => {
+    const created = (runId: string, cid: string, ms: number) =>
+      lockEvent(runId, 'lock_created', cid, { key: 'k', concurrency: 1 }, ms);
+    const fifoRules = (events: Event[], movedBack: string[] = []) =>
+      checkLockInvariants({
+        events,
+        locks: [],
+        holders: [],
+        fifo: { movedBack: new Set(movedBack) },
+      }).map((v) => v.rule);
+
+    it('accepts queued scopes granted in the order they queued', () => {
+      expect(
+        fifoRules([
+          acquired('r1', 'h', 1, 0),
+          created('r2', 'a', 1),
+          created('r3', 'b', 2),
+          released('r1', 'h', 3),
+          acquired('r2', 'a', 2, 4),
+          released('r2', 'a', 5),
+          acquired('r3', 'b', 3, 6),
+        ])
+      ).toEqual([]);
+    });
+
+    it('flags a queued scope granted ahead of an earlier one', () => {
+      expect(
+        fifoRules([
+          acquired('r1', 'h', 1, 0),
+          created('r2', 'a', 1),
+          created('r3', 'b', 2),
+          released('r1', 'h', 3),
+          acquired('r3', 'b', 2, 4),
+        ])
+      ).toEqual(['lock.fifo']);
+    });
+
+    it('allows grace to move a slow grantee back, and an ended waiter to leave', () => {
+      expect(
+        fifoRules(
+          [
+            acquired('r1', 'h', 1, 0),
+            created('r2', 'a', 1),
+            created('r3', 'b', 2),
+            created('r4', 'c', 3),
+            terminal('r3', 4),
+            released('r1', 'h', 5),
+            acquired('r4', 'c', 2, 6),
+          ],
+          ['r2:a']
+        )
+      ).toEqual([]);
+    });
+
+    it('flags a grant straight past the queue', () => {
+      expect(
+        fifoRules([
+          acquired('r1', 'h', 1, 0),
+          created('r2', 'a', 1),
+          released('r1', 'h', 2),
+          acquired('r3', 'n', 2, 3),
+        ])
+      ).toEqual(['lock.admitted-past-queue']);
+    });
+
+    it('counts reservations in the stored count, and flags a waiter left behind a free slot', () => {
+      const lock = {
+        key: 'k',
+        concurrency: 1,
+        count: 1,
+        grantSeq: 1,
+        createdAt: at(0),
+        updatedAt: at(0),
+      };
+      const waiter = {
+        key: 'k',
+        seq: 1,
+        runId: 'r2',
+        correlationId: 'a',
+        enqueuedAt: at(1),
+      };
+      expect(
+        checkLockInvariants({
+          events: [acquired('r1', 'h', 1, 0), released('r1', 'h', 2)],
+          locks: [lock],
+          holders: [],
+          waiters: [{ ...waiter, grantedAt: at(2) }],
+        }).map((v) => v.rule)
+      ).toEqual([]);
+      expect(
+        checkLockInvariants({
+          events: [acquired('r1', 'h', 1, 0), released('r1', 'h', 2)],
+          locks: [{ ...lock, count: 0 }],
+          holders: [],
+          waiters: [waiter],
+        }).map((v) => v.rule)
+      ).toEqual(['lock.no-waiter-behind-free-slot']);
+    });
   });
 });

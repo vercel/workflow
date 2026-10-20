@@ -44,9 +44,16 @@ import {
   isTerminalStepEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  LOCK_BACKSTOP_MS,
+  LOCK_GRANT_GRACE_MS,
+  LOCK_WAITLIST_CAP,
   type Lock,
   type LockAttempt,
+  type LockHandoff,
   type LockHolder,
+  type LockWaiter,
+  type LockWakeTarget,
+  lockBackstopAt,
   lockRetryAt,
   type PaginatedResponse,
   type PaginationOptions,
@@ -163,10 +170,29 @@ export interface SimStoreOptions {
    * reconstructs; see `SimWorldOptions.countGuard`.
    */
   countGuard?: boolean;
+  /**
+   * Stage-2 lock waitlist policy (`locks.fifo`). Absent: stage 1, where a
+   * refused acquisition polls. See {@link SimLockPolicy}.
+   */
+  locks?: SimLockPolicy;
   /** Invoked after every successful append, before the create call returns. */
   onEvent?(event: Event): void;
   /** Invoked when a read was served an incomplete log. */
   onStaleRead?(read: StaleRead): void;
+}
+
+/**
+ * The sim World's stage-2 lock policy: the FIFO waitlist of `@workflow/world`'s
+ * `locks.ts`, timed on the virtual clock.
+ */
+export interface SimLockPolicy {
+  fifo: boolean;
+  /** Default `LOCK_GRANT_GRACE_MS`. */
+  graceMs?: number;
+  /** Default `LOCK_WAITLIST_CAP`. */
+  waitlistCap?: number;
+  /** Default `LOCK_BACKSTOP_MS`. */
+  backstopMs?: number;
 }
 
 /** One event-log read that did not see everything the log already held. */
@@ -219,6 +245,13 @@ export interface SimStore extends Storage {
   allLocks(): Lock[];
   /** Live lock holder rows. */
   allLockHolders(): LockHolder[];
+  /** Stage 2: live waiter rows, queued and reserved, in `seq` order per key. */
+  allLockWaiters(): LockWaiter[];
+  /**
+   * Stage 2: scopes grant grace moved back to the tail, as `runId:correlationId`.
+   * The log cannot show a move-back, so the FIFO invariant reads it here.
+   */
+  lockMovedBack(): Set<string>;
 }
 
 /** Brand check that survives a swapped global constructor (see `clock.ts`). */
@@ -318,6 +351,8 @@ interface AppliedEntities {
   step?: Step;
   hook?: Hook;
   wait?: Wait;
+  /** A terminal run event's reclaim handed these slots to waiters. */
+  lockHandoffs?: LockHandoff[];
 }
 
 export function createSimStore(options: SimStoreOptions): SimStore {
@@ -339,10 +374,23 @@ export function createSimStore(options: SimStoreOptions): SimStore {
    * is the holder map's size by construction; every decrement is the delete
    * of a specific holder.
    */
-  const lockRows = new Map<
-    string,
-    Omit<Lock, 'count'> & { holders: Map<string, LockHolder> }
-  >();
+  type LockRow = Omit<
+    Lock,
+    'count' | 'queuedCount' | 'reservedCount' | 'tailSeq'
+  > & {
+    holders: Map<string, LockHolder>;
+    /** Stage 2. Not folded from the log: no event records a queued scope. */
+    waiters: Map<string, LockWaiter>;
+    tailSeq: number;
+  };
+  const lockRows = new Map<string, LockRow>();
+  const lockPolicy = {
+    fifo: options.locks?.fifo ?? false,
+    graceMs: options.locks?.graceMs ?? LOCK_GRANT_GRACE_MS,
+    waitlistCap: options.locks?.waitlistCap ?? LOCK_WAITLIST_CAP,
+    backstopMs: options.locks?.backstopMs ?? LOCK_BACKSTOP_MS,
+  };
+  const movedBack = new Set<string>();
   const holderKey = (runId: string, correlationId: string) =>
     `${runId}:${correlationId}`;
   function lockRow(key: string, concurrency: number, at: Date) {
@@ -353,12 +401,78 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         concurrency,
         grantSeq: 0,
         holders: new Map(),
+        waiters: new Map(),
+        tailSeq: 0,
         createdAt: at,
         updatedAt: at,
       };
       lockRows.set(key, row);
     }
     return row;
+  }
+  const queuedOf = (row: LockRow) =>
+    [...row.waiters.values()]
+      .filter((w) => !w.grantedAt)
+      .sort((a, b) => a.seq - b.seq);
+  const reservedOf = (row: LockRow) =>
+    [...row.waiters.values()]
+      .filter((w) => w.grantedAt)
+      .sort((a, b) => a.seq - b.seq);
+  /** `count`: holders plus reserved slots. */
+  const slotsTaken = (row: LockRow) =>
+    row.holders.size + reservedOf(row).length;
+  /** Reserve a just-freed slot for the head of the queue (contract: Handoff). */
+  function handOff(row: LockRow, at: Date): LockHandoff | null {
+    const head = queuedOf(row)[0];
+    if (!head) return null;
+    head.grantedAt = at;
+    return {
+      key: row.key,
+      runId: head.runId,
+      correlationId: head.correlationId,
+      grantedAt: at,
+      ...(head.wake && { wake: head.wake }),
+    };
+  }
+  /** Remove one scope's holder or waiter row, handing a freed slot off. */
+  function removeLockRow(
+    row: LockRow,
+    id: string,
+    at: Date,
+    handoffs: LockHandoff[]
+  ): void {
+    if (row.holders.delete(id)) {
+      const next = handOff(row, at);
+      if (next) handoffs.push(next);
+      return;
+    }
+    const waiter = row.waiters.get(id);
+    if (!waiter) return;
+    row.waiters.delete(id);
+    if (waiter.grantedAt) {
+      const next = handOff(row, at);
+      if (next) handoffs.push(next);
+    }
+  }
+  /** Grant grace: move stale reservations other than `callerId`'s on. */
+  function expireStaleGrants(
+    row: LockRow,
+    at: Date,
+    callerId: string | undefined,
+    handoffs: LockHandoff[]
+  ): void {
+    for (const stale of reservedOf(row)) {
+      const id = holderKey(stale.runId, stale.correlationId);
+      if (id === callerId) continue;
+      if (+(stale.grantedAt as Date) + lockPolicy.graceMs > +at) continue;
+      const next = handOff(row, at);
+      if (!next) return;
+      handoffs.push(next);
+      stale.grantedAt = undefined;
+      row.tailSeq += 1;
+      stale.seq = row.tailSeq;
+      movedBack.add(id);
+    }
   }
   /**
    * Per run: ULID time of the newest externally-originated event. Only read
@@ -488,12 +602,18 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     for (const [key, wait] of waits) {
       if (wait.runId === runId) waits.delete(key);
     }
-    // Terminal reclaim: the run's lock slots go with it.
+    // Terminal reclaim: the run's lock slots, and its places in line, go
+    // with it; freed slots pass to each key's queue.
+    const handoffs: LockHandoff[] = [];
+    const at = new Date(nowMs());
     for (const row of lockRows.values()) {
-      for (const [id, holder] of row.holders) {
-        if (holder.runId === runId) row.holders.delete(id);
-      }
+      const ids = [
+        ...[...row.holders.values()].filter((h) => h.runId === runId),
+        ...[...row.waiters.values()].filter((w) => w.runId === runId),
+      ].map((r) => holderKey(r.runId, r.correlationId));
+      for (const id of ids) removeLockRow(row, id, at, handoffs);
     }
+    return handoffs.filter((h) => h.runId !== runId);
   }
 
   function eventsForRun(runId: string): Event[] {
@@ -581,8 +701,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           updatedAt: at,
         } as WorkflowRun;
         runs.set(runId, run);
-        releaseRunResources(runId);
-        return { run };
+        const lockHandoffs = releaseRunResources(runId);
+        return lockHandoffs.length > 0 ? { run, lockHandoffs } : { run };
       }
 
       case 'attr_set': {
@@ -733,6 +853,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         return {};
       }
 
+      case 'lock_failed':
+        return {};
+
       case 'wait_created': {
         if (!correlationId) return {};
         const key = waitKey(runId, correlationId);
@@ -839,7 +962,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     if (!currentRun) throw new WorkflowRunNotFoundError(runId);
     if (data.eventType === 'lock_waiter_queued') {
       throw new WorkflowWorldError(
-        'lock_waiter_queued is not supported: the sim World has no lock waitlist',
+        'lock_waiter_queued is not supported: it is reserved and unused',
         { status: 400 }
       );
     }
@@ -849,19 +972,35 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       );
     }
     const correlationId = data.correlationId as string;
+    const id = holderKey(runId, correlationId);
     const request = data.eventData as {
       key: string;
       concurrency: number;
       leaseTtlMs?: number;
+      wake?: LockWakeTarget;
     };
     const scope = eventsForRun(runId).filter(
       (e) => e.correlationId === correlationId
     );
     const created = scope.find((e) => e.eventType === 'lock_created');
     const acquired = scope.find((e) => e.eventType === 'lock_acquired');
+    const failed = scope.find((e) => e.eventType === 'lock_failed');
     const released = scope.find((e) => e.eventType === 'lock_released');
+    const handoffs: LockHandoff[] = [];
+    const withHandoffs = (result: EventResult): EventResult => {
+      const others = handoffs.filter(
+        (h) => h.runId !== runId || h.correlationId !== correlationId
+      );
+      return others.length > 0
+        ? { ...result, lockHandoffs: others.map(clone) }
+        : result;
+    };
     const commit = (
-      eventType: 'lock_created' | 'lock_acquired' | 'lock_released',
+      eventType:
+        | 'lock_created'
+        | 'lock_acquired'
+        | 'lock_failed'
+        | 'lock_released',
       eventData: Record<string, unknown>,
       lock: LockAttempt
     ): EventResult => {
@@ -875,16 +1014,33 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       } as Event;
       applyEvent(event, now);
       append(event);
-      return { event: stripEventDataRefs(clone(event), resolveData), lock };
+      return withHandoffs({
+        event: stripEventDataRefs(clone(event), resolveData),
+        lock,
+      });
     };
     const tokenOf = (e: Event) =>
       (e as { eventData: { fencingToken: number } }).eventData.fencingToken;
 
     if (data.eventType === 'lock_released') {
-      if (!acquired || released) {
+      const row = lockRows.get(request.key);
+      const waiting = !acquired && !!row?.waiters.has(id);
+      if ((!acquired && !waiting) || released) {
         throw new EntityConflictError(
           `Lock scope "${correlationId}" does not hold "${request.key}"`
         );
+      }
+      if (row) {
+        // The holder row itself goes in `applyEvent`; a waiting scope's
+        // row, and the handoff either one owes, go here.
+        if (acquired && row.holders.has(id)) {
+          row.holders.delete(id);
+          const next = handOff(row, now);
+          if (next) handoffs.push(next);
+        } else {
+          removeLockRow(row, id, now, handoffs);
+        }
+        expireStaleGrants(row, now, undefined, handoffs);
       }
       return commit(
         'lock_released',
@@ -908,13 +1064,30 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         },
       };
     }
-    for (const [id, holder] of row.holders) {
+    if (failed) {
+      return {
+        event: stripEventDataRefs(clone(failed), resolveData),
+        lock: {
+          key: request.key,
+          status: 'failed',
+          reason: 'waitlist_full',
+          concurrency: row.concurrency,
+        },
+      };
+    }
+    for (const [holderId, holder] of row.holders) {
       if (holder.leaseExpiresAt && +holder.leaseExpiresAt <= +now) {
-        row.holders.delete(id);
+        removeLockRow(row, holderId, now, handoffs);
       }
     }
-    if (row.holders.size === 0) row.concurrency = request.concurrency;
-    if (row.holders.size < row.concurrency) {
+    expireStaleGrants(row, now, id, handoffs);
+    if (row.holders.size === 0 && row.waiters.size === 0) {
+      row.concurrency = request.concurrency;
+    }
+    const own = row.waiters.get(id);
+    const grant = (): EventResult => {
+      // A claim: the reserved row becomes the holder row `applyEvent` adds.
+      if (own) row.waiters.delete(id);
       const fencingToken = row.grantSeq + 1;
       return commit(
         'lock_acquired',
@@ -935,22 +1108,92 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           concurrency: row.concurrency,
         }
       );
+    };
+    // Claim a reserved slot, or take a free one nobody is queued for.
+    if (own?.grantedAt) return grant();
+    if (!own && slotsTaken(row) < row.concurrency && !queuedOf(row)[0]) {
+      return grant();
     }
-    // Refused. The scope's deterministic retry schedule (see `lockRetryAt`).
-    const waitingSince = created ? +created.createdAt : +now;
-    const retryAt = new Date(
-      lockRetryAt(`${runId}:${correlationId}`, waitingSince, +now)
-    );
-    const lock: LockAttempt = {
+
+    const pending = (lock: LockAttempt): EventResult => {
+      if (created) {
+        return withHandoffs({
+          event: stripEventDataRefs(clone(created), resolveData),
+          lock,
+        });
+      }
+      return commit(
+        'lock_created',
+        {
+          key: request.key,
+          concurrency: request.concurrency,
+          ...(request.leaseTtlMs !== undefined && {
+            leaseTtlMs: request.leaseTtlMs,
+          }),
+          ...(lock.retryAt && { retryAt: lock.retryAt }),
+          ...(request.wake && { wake: request.wake }),
+        },
+        lock
+      );
+    };
+
+    if (!lockPolicy.fifo && !own) {
+      // Stage 1: the scope's deterministic retry schedule (`lockRetryAt`).
+      const waitingSince = created ? +created.createdAt : +now;
+      return pending({
+        key: request.key,
+        status: 'pending',
+        retryAt: new Date(
+          lockRetryAt(`${runId}:${correlationId}`, waitingSince, +now)
+        ),
+        concurrency: row.concurrency,
+      });
+    }
+
+    let waiter = own;
+    if (!waiter) {
+      if (row.waiters.size >= lockPolicy.waitlistCap) {
+        return commit(
+          'lock_failed',
+          {
+            key: request.key,
+            concurrency: request.concurrency,
+            reason: 'waitlist_full',
+            waitlistCap: lockPolicy.waitlistCap,
+          },
+          {
+            key: request.key,
+            status: 'failed',
+            reason: 'waitlist_full',
+            concurrency: row.concurrency,
+          }
+        );
+      }
+      row.tailSeq += 1;
+      waiter = {
+        key: request.key,
+        seq: row.tailSeq,
+        runId,
+        correlationId,
+        enqueuedAt: now,
+        ...(request.wake && { wake: request.wake }),
+      };
+      row.waiters.set(id, waiter);
+    }
+    return pending({
       key: request.key,
       status: 'pending',
-      retryAt,
+      waiter: 'queued',
+      retryAt: new Date(
+        lockBackstopAt(
+          `${runId}:${correlationId}`,
+          +waiter.enqueuedAt,
+          +now,
+          lockPolicy.backstopMs
+        )
+      ),
       concurrency: row.concurrency,
-    };
-    if (created) {
-      return { event: stripEventDataRefs(clone(created), resolveData), lock };
-    }
-    return commit('lock_created', { ...request, retryAt }, lock);
+    });
   }
 
   async function create(
@@ -1372,7 +1615,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     }
 
     // ---- The fold ----------------------------------------------------------
-    const { run, step, hook, wait } = applyEvent(event, now);
+    const { run, step, hook, wait, lockHandoffs } = applyEvent(event, now);
 
     event = append(event);
 
@@ -1441,6 +1684,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       // keep this from widening to `boolean`, and the field is `true | undefined`.
       ...(stepCreatedLazily ? { stepCreated: true as const } : {}),
       ...(run ? { maxEvents: MAX_EVENTS_PER_RUN } : {}),
+      ...(lockHandoffs ? { lockHandoffs: lockHandoffs.map(clone) } : {}),
     };
     // Spread as a whole or not at all, and as a *conditional* rather than an
     // optional spread: the latter widens the three fields to `T | undefined`,
@@ -1657,13 +1901,27 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       return found ? clone(found) : undefined;
     },
     allLocks: () =>
-      [...lockRows.values()].map(({ holders, ...row }) =>
-        clone({ ...row, count: holders.size })
-      ),
+      [...lockRows.values()].map(({ holders, waiters, ...row }) => {
+        const all = [...waiters.values()];
+        const reserved = all.filter((w) => w.grantedAt).length;
+        return clone({
+          ...row,
+          count: holders.size + reserved,
+          ...(lockPolicy.fifo && {
+            queuedCount: all.length - reserved,
+            reservedCount: reserved,
+          }),
+        });
+      }),
     allLockHolders: () =>
       [...lockRows.values()].flatMap((row) =>
         [...row.holders.values()].map(clone)
       ),
+    allLockWaiters: () =>
+      [...lockRows.values()].flatMap((row) =>
+        [...row.waiters.values()].sort((a, b) => a.seq - b.seq).map(clone)
+      ),
+    lockMovedBack: () => new Set(movedBack),
   };
 
   return storage;
