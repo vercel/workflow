@@ -1,10 +1,7 @@
 import {
   EntityConflictError,
-  FatalError,
-  IDEMPOTENCY_KEYS_DISABLED_CODE,
   WorkflowRunAlreadyStartedError,
   WorkflowRuntimeError,
-  WorkflowWorldError,
 } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
@@ -16,16 +13,8 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  getRunQueueNamespace,
   HOOK_RESUME_INPUT_VERSION,
-  IDEMPOTENCY_KEY_MAX_LENGTH,
-  IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
-  IDEMPOTENCY_KEY_TTL_MAX_MS,
-  IDEMPOTENCY_KEY_TTL_MIN_MS,
-  IdempotencyKeyConflictPolicySchema,
-  IdempotencyKeyReusePolicySchema,
   isLegacySpecVersion,
-  isWellFormedString,
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
@@ -38,7 +27,6 @@ import {
   workflowRunIdSchema,
 } from '@workflow/world';
 import type { StringValue } from 'ms';
-import ms from 'ms';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import {
@@ -85,6 +73,15 @@ import {
   healthCheck,
 } from './helpers.js';
 import { Run } from './run.js';
+import {
+  adoptKeyHolder,
+  createArgumentStreamGate,
+  keyedStartRefusal,
+  legacyKeyedStartRefusal,
+  markKeysDisabledFatal,
+  resolveIdempotencyOptions,
+  startMessageIdempotencyKey,
+} from './start-idempotency.js';
 import {
   getSnapshotThresholdForStart,
   getWorkflowVmFromEnv,
@@ -549,257 +546,25 @@ export interface StartOptionsBase {
 
 export type { IdempotencyKeyConflictPolicy, IdempotencyKeyReusePolicy };
 
-/** A validated idempotency key with its defaults resolved. */
-interface ResolvedIdempotencyOptions {
-  key: string;
-  ttlMs: number;
-  reusePolicy: IdempotencyKeyReusePolicy;
-  conflictPolicy: IdempotencyKeyConflictPolicy;
-}
-
-/** Every option that requires `experimental_idempotencyKey`. */
-const IDEMPOTENCY_KEY_DEPENDENT_OPTIONS = [
-  'experimental_idempotencyKeyTTL',
-  'experimental_idempotencyKeyReusePolicy',
-  'experimental_idempotencyKeyConflictPolicy',
-] as const;
-
-type IdempotencyStartOptions = Pick<
-  StartOptionsBase,
-  | 'experimental_idempotencyKey'
-  | (typeof IDEMPOTENCY_KEY_DEPENDENT_OPTIONS)[number]
-  | 'specVersion'
->;
-
 /**
- * The error `start()` throws when it refuses a keyed start: invalid key
- * options, a World without `capabilities.runIdempotencyKeys`, a legacy spec
- * version, or a refusal that names no valid holder run.
- *
- * Each is deterministic, so a retry fails the same way. `fatal` tells the
- * step executor so when `start()` runs inside a step, the same way
- * {@link dynamicStartRefusal} does for dynamic starts; the error is
- * otherwise a plain `WorkflowRuntimeError`.
+ * A dynamic run publishes only once the backend has confirmed it stored the
+ * code. A backend that predates dynamic-source support ignores the field
+ * rather than rejecting it (dropping unrecognized metadata is by design), so
+ * the write succeeds and the run looks fine, but nothing could ever replay
+ * it. The created run echoes what it persisted; without the code it is
+ * refused here, before it is queued.
  */
-function keyedStartRefusal(
-  message: string,
-  options?: ErrorOptions
-): WorkflowRuntimeError & { fatal: true } {
-  return Object.assign(new WorkflowRuntimeError(message, options), {
-    fatal: true as const,
-  });
-}
-
-function assertIdempotencyKey(key: unknown): asserts key is string {
+function assertDynamicCodeStored(run: object, runId: string): void {
   if (
-    typeof key !== 'string' ||
-    key.length === 0 ||
-    key.length > IDEMPOTENCY_KEY_MAX_LENGTH
+    (run as { dynamicWorkflowCode?: unknown }).dynamicWorkflowCode !== undefined
   ) {
-    throw keyedStartRefusal(
-      `start({ experimental_idempotencyKey }) must be a string of 1 to ${IDEMPOTENCY_KEY_MAX_LENGTH} characters; received ${
-        typeof key === 'string'
-          ? `a string of ${key.length} characters`
-          : typeof key
-      }.`
-    );
+    return;
   }
-  // A lone surrogate has no UTF-8 encoding, so no backend can store the key.
-  if (!isWellFormedString(key)) {
-    throw keyedStartRefusal(
-      'start({ experimental_idempotencyKey }) must be well-formed UTF-16: it contains a lone surrogate.'
-    );
-  }
-}
-
-/** Whole milliseconds for a TTL option, or `undefined` when unparseable. */
-function idempotencyKeyTtlToMs(ttl: unknown): number | undefined {
-  if (typeof ttl === 'string') {
-    const value = ms(ttl as StringValue);
-    return typeof value === 'number' && Number.isFinite(value)
-      ? Math.round(value)
-      : undefined;
-  }
-  return typeof ttl === 'number' && Number.isInteger(ttl) ? ttl : undefined;
-}
-
-function resolveIdempotencyKeyTtlMs(ttl: unknown): number {
-  if (ttl === undefined) return IDEMPOTENCY_KEY_TTL_DEFAULT_MS;
-  const ttlMs = idempotencyKeyTtlToMs(ttl);
-  if (
-    ttlMs === undefined ||
-    ttlMs < IDEMPOTENCY_KEY_TTL_MIN_MS ||
-    ttlMs > IDEMPOTENCY_KEY_TTL_MAX_MS
-  ) {
-    throw keyedStartRefusal(
-      `start({ experimental_idempotencyKeyTTL }) must be a duration between '1s' and '30d' (a duration string or whole milliseconds); received ${JSON.stringify(
-        ttl
-      )}.`
-    );
-  }
-  return ttlMs;
-}
-
-/** `value` if it is one of `schema`'s options (or `fallback` when unset). */
-function resolveIdempotencyPolicy<T extends string>(
-  option: string,
-  value: unknown,
-  schema: {
-    options: readonly T[];
-    safeParse(value: unknown): { success: boolean };
-  },
-  fallback: T
-): T {
-  if (value === undefined) return fallback;
-  if (!schema.safeParse(value).success) {
-    throw keyedStartRefusal(
-      `start({ ${option} }) must be one of ${schema.options
-        .map((name) => `'${name}'`)
-        .join(', ')}; received ${JSON.stringify(value)}.`
-    );
-  }
-  return value as T;
-}
-
-/**
- * Validate the idempotency options of a `start()` call and resolve their
- * defaults. Pure: runs before any I/O, so an invalid combination never
- * reaches the World. Returns `undefined` for an unkeyed start.
- *
- * Exported for tests.
- */
-export function resolveIdempotencyOptions(
-  opts: IdempotencyStartOptions
-): ResolvedIdempotencyOptions | undefined {
-  const key: unknown = opts.experimental_idempotencyKey;
-  if (key === undefined) {
-    const orphans = IDEMPOTENCY_KEY_DEPENDENT_OPTIONS.filter(
-      (name) => opts[name] !== undefined
-    );
-    if (orphans.length > 0) {
-      throw keyedStartRefusal(
-        `start({ ${orphans.join(', ')} }) requires experimental_idempotencyKey.`
-      );
-    }
-    return undefined;
-  }
-  assertIdempotencyKey(key);
-  // The legacy (spec version 1) write path drops the key, so a keyed start
-  // there would silently create duplicates. An explicit version is refused
-  // here; one resolved from the target deployment is checked once known.
-  if (opts.specVersion !== undefined && isLegacySpecVersion(opts.specVersion)) {
-    throw legacyKeyedStartRefusal(opts.specVersion);
-  }
-  return {
-    key,
-    ttlMs: resolveIdempotencyKeyTtlMs(opts.experimental_idempotencyKeyTTL),
-    reusePolicy: resolveIdempotencyPolicy(
-      'experimental_idempotencyKeyReusePolicy',
-      opts.experimental_idempotencyKeyReusePolicy,
-      IdempotencyKeyReusePolicySchema,
-      'REJECT_DUPLICATE'
-    ),
-    conflictPolicy: resolveIdempotencyPolicy(
-      'experimental_idempotencyKeyConflictPolicy',
-      opts.experimental_idempotencyKeyConflictPolicy,
-      IdempotencyKeyConflictPolicySchema,
-      'USE_EXISTING'
-    ),
-  };
-}
-
-function legacyKeyedStartRefusal(
-  specVersion: number
-): WorkflowRuntimeError & { fatal: true } {
-  return keyedStartRefusal(
-    `start({ experimental_idempotencyKey }) requires spec version ${SPEC_VERSION_SUPPORTS_EVENT_SOURCING} or later; this run would be stamped with spec version ${specVersion}, whose writes do not carry the key, so no run was created.`
+  throw new WorkflowRuntimeError(
+    `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
+      'It was not queued, so it will not execute. ' +
+      'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
   );
-}
-
-/**
- * The queue idempotency key for a run's initial message. Shared by a keyed
- * start's own publish and by the re-publish for a pending holder it adopts,
- * so the two collapse onto one delivery where the queue deduplicates.
- */
-function startMessageIdempotencyKey(runId: string): string {
-  return `start-${runId}`;
-}
-
-/**
- * Handle a refusal naming the run that holds the key, before the conflict
- * policy is applied (so for `FAIL` too), and return the holder's run id.
- *
- * - The holder must be a real run id. A backend that refused without naming
- *   one leaves nothing to return or adopt, so the start is refused outright
- *   rather than handing back a handle to a run that does not exist.
- * - A `pending` holder may be a run whose own start never published (the
- *   publish failed, or its response was lost before the caller retried).
- *   Its initial message is published again, with the same queue key its own
- *   start used, so the key never stays locked by a run nothing will execute.
- *   A failure is thrown, so the caller retries.
- * - When the refusal does not report the holder's status, it is read.
- */
-async function adoptKeyHolder(
-  world: World,
-  refusal: WorkflowRunAlreadyStartedError,
-  traceCarrier: Record<string, string>
-): Promise<string> {
-  if (!workflowRunIdSchema.safeParse(refusal.runId).success) {
-    throw keyedStartRefusal(
-      `The Workflow backend refused this keyed start but did not name a valid run holding the key (received ${JSON.stringify(
-        String(refusal.runId).slice(0, 64)
-      )}), so there is no run to return. No run was created.`,
-      { cause: refusal }
-    );
-  }
-  let holder: Awaited<ReturnType<World['runs']['get']>> | undefined;
-  let runStatus = refusal.runStatus;
-  if (runStatus === undefined) {
-    holder = await world.runs.get(refusal.runId, { resolveData: 'none' });
-    runStatus = holder.status;
-    (refusal as { runStatus?: string }).runStatus = runStatus;
-  }
-  if (runStatus === 'pending') {
-    holder ??= await world.runs.get(refusal.runId, { resolveData: 'none' });
-    await world.queue(
-      getWorkflowQueueName(
-        holder.workflowName,
-        getRunQueueNamespace(holder.executionContext)
-      ),
-      { runId: holder.runId, traceCarrier } satisfies WorkflowInvokePayload,
-      {
-        deploymentId: holder.deploymentId,
-        specVersion: holder.specVersion,
-        idempotencyKey: startMessageIdempotencyKey(holder.runId),
-      }
-    );
-  }
-  return refusal.runId;
-}
-
-/**
- * A backend with run idempotency keys switched off refuses every keyed
- * start the same way, so its error is made `fatal` (a `start()` step is not
- * retried on it). Other errors pass through unchanged.
- */
-function markKeysDisabledFatal(err: unknown): unknown {
-  if (
-    WorkflowWorldError.is(err) &&
-    err.code === IDEMPOTENCY_KEYS_DISABLED_CODE &&
-    !FatalError.is(err)
-  ) {
-    try {
-      Object.defineProperty(err, 'fatal', {
-        value: true,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    } catch {
-      // A frozen error keeps its own shape.
-    }
-  }
-  return err;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -1441,6 +1206,11 @@ export async function start<TArgs extends unknown[], TResult>(
           : false;
       const argumentCompression: CompressionMode =
         opts.compressArguments === false ? false : compression;
+      // A keyed start's argument streams wait until its run exists, so a
+      // refused duplicate never reads them. Unkeyed starts pipe immediately.
+      const argumentStreams = idempotency
+        ? createArgumentStreamGate()
+        : undefined;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -1449,7 +1219,9 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        argumentCompression
+        argumentCompression,
+        ops,
+        argumentStreams?.gate
       );
 
       // Dynamic workflow code goes through the same serialization pipeline as
@@ -1596,20 +1368,6 @@ export async function start<TArgs extends unknown[], TResult>(
             }
           );
         });
-      // For a keyed start whose run was not created: the writes target a
-      // run that does not exist, so they are neither waited on nor allowed
-      // to reject unhandled.
-      const discardArgumentStreams = () => {
-        if (ops.length === 0) return;
-        void Promise.allSettled(ops).then((results) => {
-          if (results.some((result) => result.status === 'rejected')) {
-            runtimeLogger.debug(
-              'Argument streams of a keyed start that created no run failed',
-              { workflowRunId: runId }
-            );
-          }
-        });
-      };
 
       // A keyed start publishes only once `run_created` has answered: the
       // World may refuse the key, and a message published beside the write
@@ -1617,81 +1375,74 @@ export async function start<TArgs extends unknown[], TResult>(
       // already holds the key for. For the same reason there is no resilient
       // start here: a retryable failure is thrown, and the caller retries
       // with the same key.
-      if (idempotency) {
-        let created: Awaited<typeof runCreated> | undefined;
+      if (idempotency && argumentStreams) {
+        // Claim the key, adopt the run that holds it, or publish the run this
+        // start created. Any exit that has not opened the gate closes it: no
+        // run exists for this id, so its argument streams are never read.
         try {
-          created = await runCreated;
-        } catch (err) {
-          if (!EntityConflictError.is(err)) {
-            // No run was created under this id (or none this call can
-            // confirm), so its argument streams must not keep the function
-            // alive. They cannot be recalled once started; settle them
-            // quietly so a failure is not an unhandled rejection.
-            discardArgumentStreams();
+          let created: Awaited<typeof runCreated> | undefined;
+          try {
+            created = await runCreated;
+          } catch (err) {
+            if (EntityConflictError.is(err)) {
+              // Self-conflict: an earlier attempt of this very write landed
+              // (the World checks the run id before the key), so this run
+              // holds the key. Publish as if the write had just succeeded.
+              argumentStreams.open();
+              flushArgumentStreams();
+            } else if (WorkflowRunAlreadyStartedError.is(err)) {
+              err.idempotencyKey ??= idempotency.key;
+              const holderRun = await adoptKeyHolder(world, err, traceCarrier);
+              if (idempotency.conflictPolicy === 'FAIL') throw err;
+              span?.setAttributes({
+                ...Attribute.WorkflowStartIdempotencyOutcome('existing'),
+                ...Attribute.WorkflowRunId(holderRun),
+              });
+              return new Run<TResult>(holderRun, { started: false });
+            } else {
+              throw markKeysDisabledFatal(err);
+            }
           }
-          if (EntityConflictError.is(err)) {
-            // Self-conflict: an earlier attempt of this very write landed
-            // (the World checks the run id before the key), so this run
-            // holds the key. Publish as if the write had just succeeded.
-            flushArgumentStreams();
-          } else if (WorkflowRunAlreadyStartedError.is(err)) {
-            err.idempotencyKey ??= idempotency.key;
-            const holderRun = await adoptKeyHolder(world, err, traceCarrier);
-            if (idempotency.conflictPolicy === 'FAIL') throw err;
-            span?.setAttributes({
-              ...Attribute.WorkflowStartIdempotencyOutcome('existing'),
-              ...Attribute.WorkflowRunId(holderRun),
-            });
-            return new Run<TResult>(holderRun, { started: false });
-          } else {
-            throw markKeysDisabledFatal(err);
+
+          if (created) {
+            if (!v1Compat && created.run.runId !== runId) {
+              throw new WorkflowRuntimeError(
+                `Server returned different runId than requested: expected ${runId}, got ${created.run.runId}`
+              );
+            }
+            if (dynamicWorkflow) assertDynamicCodeStored(created.run, runId);
+            // The World declared the capability, but this backend did not
+            // record the key (e.g. an older server behind a newer adapter).
+            // The run exists, so it still has to be published; say loudly
+            // that the key was not enforced.
+            if (created.run.idempotencyKey !== idempotency.key) {
+              runtimeLogger.warn(
+                'The World created the run but did not record its idempotency key, so the key was not enforced for this start.',
+                { workflowRunId: runId, workflowName }
+              );
+            }
+            // The run exists: its argument streams are written even if the
+            // publish below fails, as a retry adopts this run as the holder.
+            argumentStreams.open();
           }
+
+          await world.queue(queueName, queuePayload, {
+            ...queueOptions,
+            idempotencyKey: startMessageIdempotencyKey(runId),
+          });
+          flushArgumentStreams();
+
+          span?.setAttributes({
+            ...Attribute.WorkflowStartIdempotencyOutcome('created'),
+            ...Attribute.WorkflowRunId(runId),
+            ...Attribute.DeploymentId(deploymentId),
+            ...(created ? Attribute.WorkflowRunStatus(created.run.status) : {}),
+          });
+
+          return new Run<TResult>(runId, { started: true });
+        } finally {
+          argumentStreams.close();
         }
-
-        if (created) {
-          if (!v1Compat && created.run.runId !== runId) {
-            throw new WorkflowRuntimeError(
-              `Server returned different runId than requested: expected ${runId}, got ${created.run.runId}`
-            );
-          }
-          // See the dynamic-code echo check below.
-          if (
-            dynamicWorkflow &&
-            (created.run as { dynamicWorkflowCode?: unknown })
-              .dynamicWorkflowCode === undefined
-          ) {
-            throw new WorkflowRuntimeError(
-              `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
-                'It was not queued, so it will not execute. ' +
-                'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
-            );
-          }
-          // The World declared the capability, but this backend did not
-          // record the key (e.g. an older server behind a newer adapter).
-          // The run exists, so it still has to be published; say loudly
-          // that the key was not enforced.
-          if (created.run.idempotencyKey !== idempotency.key) {
-            runtimeLogger.warn(
-              'The World created the run but did not record its idempotency key, so the key was not enforced for this start.',
-              { workflowRunId: runId, workflowName }
-            );
-          }
-        }
-
-        await world.queue(queueName, queuePayload, {
-          ...queueOptions,
-          idempotencyKey: startMessageIdempotencyKey(runId),
-        });
-        flushArgumentStreams();
-
-        span?.setAttributes({
-          ...Attribute.WorkflowStartIdempotencyOutcome('created'),
-          ...Attribute.WorkflowRunId(runId),
-          ...Attribute.DeploymentId(deploymentId),
-          ...(created ? Attribute.WorkflowRunStatus(created.run.status) : {}),
-        });
-
-        return new Run<TResult>(runId, { started: true });
       }
 
       // A dynamic run publishes only once the backend has confirmed it stored
@@ -1706,20 +1457,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // pays for.
       if (dynamicWorkflow) {
         const { run } = await runCreated;
-        // A backend that predates dynamic-source support ignores the field
-        // rather than rejecting it (dropping unrecognized metadata is by
-        // design), so the write succeeds and the run looks fine, but nothing
-        // could ever replay it. The created run echoes what it persisted.
-        if (
-          (run as { dynamicWorkflowCode?: unknown }).dynamicWorkflowCode ===
-          undefined
-        ) {
-          throw new WorkflowRuntimeError(
-            `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
-              'It was not queued, so it will not execute. ' +
-              'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
-          );
-        }
+        assertDynamicCodeStored(run, runId);
       }
 
       // Call events.create (run_created) and queue in parallel (for a dynamic

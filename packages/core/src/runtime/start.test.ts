@@ -47,11 +47,8 @@ import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
-import {
-  _resetLatestNoOpWarnForTests,
-  resolveIdempotencyOptions,
-  start,
-} from './start.js';
+import { _resetLatestNoOpWarnForTests, start } from './start.js';
+import { resolveIdempotencyOptions } from './start-idempotency.js';
 import { setWorld } from './world.js';
 
 // Mock @vercel/functions
@@ -2733,6 +2730,162 @@ async function workflow() {
       resolveCreate();
       const run = await pending;
       expect(run.experimental_started).toBe(true);
+    });
+
+    describe('stream arguments', () => {
+      /** A one-shot source that records whether it was ever read. */
+      function oneShotSource() {
+        const reads = { count: 0 };
+        // No queue to pre-fill (highWaterMark 0), so `pull` runs only when
+        // a consumer actually reads.
+        const stream = new ReadableStream<string>(
+          {
+            pull(controller) {
+              reads.count++;
+              controller.enqueue('webhook body');
+              controller.close();
+            },
+          },
+          { highWaterMark: 0 }
+        );
+        return { stream, reads };
+      }
+
+      function streamWorld() {
+        const streams = {
+          write: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+        keyedWorld({ streams });
+        return streams;
+      }
+
+      it.each([
+        ['USE_EXISTING', 'running'],
+        ['USE_EXISTING', 'pending'],
+        ['FAIL', 'running'],
+      ] as const)('never reads a refused duplicate start stream argument (%s, %s holder)', async (conflictPolicy, status) => {
+        const streams = streamWorld();
+        eventsCreate.mockRejectedValue(refusal(status));
+        runsGet.mockResolvedValue({
+          runId: HOLDER,
+          status,
+          workflowName: 'keyed-workflow',
+          deploymentId: 'deploy_123',
+          specVersion: SPEC_VERSION_CURRENT,
+          executionContext: {},
+        });
+        const { stream, reads } = oneShotSource();
+
+        await start(keyedWorkflow, [stream], {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyConflictPolicy: conflictPolicy,
+        }).catch(() => {});
+        // Give any pipe that wrongly started time to pull.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(reads.count).toBe(0);
+        // Untouched: the caller can still read it.
+        expect(stream.locked).toBe(false);
+        expect(streams.write).not.toHaveBeenCalled();
+        expect(streams.close).not.toHaveBeenCalled();
+      });
+
+      it('never opens the readback into a refused duplicate start writable argument', async () => {
+        const streams = streamWorld();
+        const streamsGet = vi.fn();
+        keyedWorld({ streams: { ...streams, get: streamsGet } });
+        eventsCreate.mockRejectedValue(refusal('running'));
+        const sink = new WritableStream<string>();
+
+        await start(keyedWorkflow, [sink], {
+          experimental_idempotencyKey: KEY,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(sink.locked).toBe(false);
+        expect(streamsGet).not.toHaveBeenCalled();
+      });
+
+      it('never reads a stream argument when run_created fails', async () => {
+        const streams = streamWorld();
+        eventsCreate.mockRejectedValue(
+          new WorkflowWorldError('Internal Server Error', { status: 500 })
+        );
+        const { stream, reads } = oneShotSource();
+
+        await expect(
+          start(keyedWorkflow, [stream], { experimental_idempotencyKey: KEY })
+        ).rejects.toThrow('Internal Server Error');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(reads.count).toBe(0);
+        expect(stream.locked).toBe(false);
+        expect(streams.write).not.toHaveBeenCalled();
+      });
+
+      it('does not read the stream before run_created resolves, and pipes it once the run is created', async () => {
+        const streams = streamWorld();
+        let resolveCreate!: () => void;
+        eventsCreate.mockImplementation(
+          (runId, event) =>
+            new Promise((resolve) => {
+              resolveCreate = () =>
+                resolve({
+                  run: {
+                    runId,
+                    status: 'pending',
+                    idempotencyKey: event.eventData.idempotencyKey,
+                  },
+                });
+            })
+        );
+        const { stream, reads } = oneShotSource();
+
+        const pending = start(keyedWorkflow, [stream], {
+          experimental_idempotencyKey: KEY,
+        });
+        await vi.waitFor(() => expect(eventsCreate).toHaveBeenCalledOnce());
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(reads.count).toBe(0);
+
+        resolveCreate();
+        const run = await pending;
+        expect(run.experimental_started).toBe(true);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
+        await vi.waitFor(() => expect(streams.close).toHaveBeenCalled());
+        expect(streams.write).toHaveBeenCalledWith(
+          run.runId,
+          expect.stringMatching(/^strm_/),
+          expect.anything()
+        );
+      });
+
+      it('pipes the stream on a self-conflict, whose run exists', async () => {
+        const streams = streamWorld();
+        eventsCreate.mockRejectedValue(
+          new EntityConflictError('Workflow run already exists')
+        );
+        const { stream, reads } = oneShotSource();
+
+        await start(keyedWorkflow, [stream], {
+          experimental_idempotencyKey: KEY,
+        });
+
+        await vi.waitFor(() => expect(reads.count).toBe(1));
+        await vi.waitFor(() => expect(streams.close).toHaveBeenCalled());
+      });
+
+      it('still pipes an unkeyed start stream immediately, beside run_created', async () => {
+        const streams = streamWorld();
+        eventsCreate.mockImplementation(() => new Promise(() => {}));
+        const { stream, reads } = oneShotSource();
+
+        void start(keyedWorkflow, [stream]);
+
+        await vi.waitFor(() => expect(reads.count).toBe(1));
+        await vi.waitFor(() => expect(streams.close).toHaveBeenCalled());
+      });
     });
 
     it('re-publishes a pending holder before rethrowing under FAIL', async () => {
