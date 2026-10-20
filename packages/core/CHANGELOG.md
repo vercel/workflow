@@ -1,5 +1,30 @@
 # @workflow/core
 
+## 5.2.3
+
+### Patch Changes
+
+- [#4335](https://github.com/vercel/workflow/pull/4335) [`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95) Thanks [@pranaygp](https://github.com/pranaygp)! - Security: remove the `nanoid` dependency (pinned at 5.1.6, affected by [GHSA-28wg-ghj8-5hjv](https://github.com/advisories/GHSA-28wg-ghj8-5hjv)). Default hook tokens now come from a built-in copy of the same generator, so tokens and seeded random values stay identical for runs recorded on earlier versions. Upgrading `nanoid` itself would have changed them, because `nanoid@5.1.16` draws a different number of random bytes per id.
+
+- [#4758](https://github.com/vercel/workflow/pull/4758) [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b) Thanks [@pranaygp](https://github.com/pranaygp)! - Resolve a run's encryption key from metadata only, so `Run#getReadable()` and resuming a hook stored without a resume context no longer make the server resolve the run's whole input and output first.
+
+- [#4916](https://github.com/vercel/workflow/pull/4916) [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix cross-deployment `start()` to 4.x deployments being misread as a run invocation, and keep replayed runs in the original run's region.
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stamp the default snapshot threshold into QuickJS runs at `start()` so they qualify for the event limit exemption, warn when a run approaches the event limit, and recommend `WORKFLOW_VM=quickjs` in `MAX_EVENTS_EXCEEDED` and `REPLAY_TIMEOUT` errors
+
+- [#4866](https://github.com/vercel/workflow/pull/4866) [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a step's creation is recorded on its `step_started` alone, with no separate `step_created`.
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Preserve `workflowVm` and `snapshotThreshold` from `executionContext` in `hydrateResourceIO` for observability UIs
+
+- [#4895](https://github.com/vercel/workflow/pull/4895) [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Avoid redundant history reads when independent hooks register concurrently. Keep existing single-event requests parallel and reconcile their committed events together before continuing, with the normal history reload when the responses do not cover a complete consecutive suffix.
+
+- [#4819](https://github.com/vercel/workflow/pull/4819) [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ignore events a step or hook writes after its outcome during replay instead of failing the run
+- Updated dependencies [[`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/world-local@5.1.2
+  - @workflow/world@5.0.5
+  - @workflow/world-vercel@5.2.3
+  - @workflow/errors@5.0.5
+
 ## 5.2.2
 
 ### Patch Changes
