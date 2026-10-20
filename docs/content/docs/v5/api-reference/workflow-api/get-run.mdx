@@ -169,7 +169,9 @@ export async function POST(req: Request) {
 }
 ```
 
-`wakeUp()` returns once the run's orchestrator has been asked to complete the sleeps: it writes their `wait_completed` events itself, in order with the run's other decisions, shortly after. `stoppedCount` is the number of sleeps it was asked to complete.
+`wakeUp()` returns once the run's orchestrator has been asked to complete the sleeps: it writes their `wait_completed` events itself, in order with the run's other decisions, shortly after. `stoppedCount` is the number of sleeps it asked to complete, not the number completed.
+
+The request is best-effort on the Vercel World while an orchestrator invocation of the run is running. The request is a queue message to the run's orchestrator, and Vercel Queues folds such a message into the running invocation, which only re-reads the event log and so never sees which sleeps to complete. The sleeps then run their full length. When the run is suspended on its sleeps, which is when a wake-up is useful, the message is delivered on its own and completes them. The Local and Postgres Worlds hold the message until the running invocation ends, then deliver it.
 
 You can also target specific sleep calls by correlation ID:
 

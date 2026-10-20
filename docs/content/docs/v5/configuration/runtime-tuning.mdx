@@ -82,6 +82,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `3`
 - Recovery replays before replay divergence is recorded as corruption.
+- On a spec 9 run each recovery replay runs in the same delivery: the orchestrator reloads the log and replays it from cold in a fresh VM. Once the budget is spent the run fails with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log). A crash or redelivery starts the count again, bounded by [`WORKFLOW_MAX_QUEUE_DELIVERIES`](#workflow_max_queue_deliveries). On a spec 8 run each recovery replay is a new queue message that carries the count.
 
 ### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`
 
@@ -96,7 +97,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Not a variable: this is how a run stays correct when two invocations of its orchestrator overlap.
 - One orchestrator invocation per run makes every decision: it replays the log, writes `step_created`, `wait_created`, `wait_completed`, hook and attribute events, runs inline steps, and completes or fails the run. Its writes are **in-band**. Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`.
 - The queue delivers a run's orchestrator messages one at a time, so two orchestrators rarely run at once. That is a frequency mechanism. An invocation whose event loop stalls past its queue lease can still be redelivered while it is alive.
-- Every World fences in-band writes, and the runtime refuses a World that does not declare it (`capabilities.inBandFence`; see [Building a World](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). Its log load returns the count of in-band positions (`snapshot.seqInBand`), the orchestrator sends that count with each in-band write and advances it locally, and the World refuses a write whose count is stale with `InBandSupersededError`. The refused invocation stops writing, runs no further inline step bodies, acknowledges its message, and sends a fresh orchestrator message in its place, delivered after one second. The replacement loads the log afresh and keeps the refused delivery's identity, so it can still send the background steps and timers that delivery created. After 10 replacements in a row, a refused invocation instead asks for its own message again after [`WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`](#workflow_fence_redelivery_delay_seconds). A delivery that stops running ahead replaces its message the same way, with no delay. The Vercel, Local and Postgres Worlds implement the fence.
+- Every World fences in-band writes, and the runtime refuses a World that does not declare it (`capabilities.inBandFence`; see [Building a World](/worlds/building-a-world#single-writer-guarantee-and-the-in-band-fence)). Its log load returns the count of in-band positions (`snapshot.seqInBand`), the orchestrator sends that count with each in-band write and advances it locally, and the World refuses a write whose count is stale with `InBandSupersededError`. The refused invocation stops writing and runs no further inline step bodies. It sends the queue messages its own committed writes still owe (the message of a background step it created, a timer for a wait it created), then acknowledges its message. It sends no wake: the invocation that superseded it holds every write it committed and drives the run on. If it dies before those messages go out, the queue redelivers its message, and the redelivery sends them. The Vercel, Local and Postgres Worlds implement the fence.
 - A write that resolves a promise in the workflow (a `wait_completed`, an inline step's outcome) is consumed only after it commits, behind whatever its response reports landed below it, so the workflow sees events in log order.
 - The precondition guard of earlier releases (a 412 on a stale snapshot, with in-process restarts and re-invocations) is gone. The fence replaces it.
 
@@ -122,13 +123,6 @@ An out-of-band terminal event has these effects, all of them benign:
 - A position can be briefly empty while the write that occupies it is still committing, so the check re-reads the log a few times before it decides, and the replay continues from whichever log it settled on.
 - The check trades one failure for another. Most holes stand for an event that never happened, and replaying past those is correct. A hole standing for an event that did happen looks identical, and replaying past that one produces a run whose result is silently wrong. Failing is the recoverable side of that trade.
 - Set `0` to replay across holes instead.
-
-### `WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`
-
-- Default: `5`
-- Delay before an orchestrator delivery whose in-band write was refused as superseded is delivered again, once it has replaced itself 10 times in a row. Before that, a refused delivery replaces its message with a fresh one delivered after one second, or at once when this is set to `0`.
-- The redelivery itself waits at least one second, even when this is `0`: a `{ timeoutSeconds: 0 }` result is a handoff, whose next delivery does not count as a redelivery, and this one must (the steps and timers the refused delivery created may not have gone out). Vercel Queues applies its own minimum redelivery delay of 5 seconds on top.
-- Small on purpose: another invocation holds the run, and the redelivery only needs to come after it.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 
@@ -195,7 +189,7 @@ An out-of-band terminal event has these effects, all of them benign:
 - Clamp: `0` to `16`
 - Node.js VM engine only, on Worlds that record an in-band write at the time the orchestrator sent with it (world-local does). When no other writer could change what the workflow does next (no hook the workflow waits on, no `AbortController`, no step running elsewhere, no wait due within the invocation), an inline step's outcome reaches the workflow as soon as its body returns, and the next step's creation and body start before that outcome's write commits. Every write still lands in the order the workflow made it.
 - At most this many step outcomes are unconfirmed at once. When a boundary is not eligible, the orchestrator waits for its writes to commit and reads what landed below them before it continues, and runs ahead again at the next eligible boundary.
-- A refused or failed write while running ahead stops the delivery before anything else is written, and the message is delivered again.
+- A refused or failed write while running ahead, or an event landing below a speculative write that could change the workflow's path, stops the delivery's decisions before anything else is written. The outcomes of steps whose start committed are still written. The delivery then continues in place: it reloads the log and replays from cold, with run-ahead off for the rest of the delivery. A fence refusal is handled as for any in-band write (see [One orchestrator per run](#one-orchestrator-per-run-and-the-in-band-fence)).
 - `0` disables run-ahead.
 
 ### `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`
@@ -234,6 +228,7 @@ Only the spec 8 orchestrator reads these. Spec 9 runs ignore them.
 These no longer exist. Remove them if you set them.
 
 - `WORKFLOW_RESILIENT_STEP_DISPATCH`: a background step's message is enqueued once, after its `step_created` commits.
+- `WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`: an orchestrator delivery the in-band fence refuses is no longer delivered again. It sends what its own writes owe the queue and acknowledges (see [One orchestrator per run](#one-orchestrator-per-run-and-the-in-band-fence)).
 - `WORKFLOW_SEALED_LOG`: new runs always use the sealed log. **`WORKFLOW_SEALED_LOG=0` used to create runs of an earlier spec version; it is now ignored, so a deployment that still sets it creates spec 9 runs.** The runtime logs a one-time warning when the variable is set. Use `WORKFLOW_SPEC_VERSION=8` to create runs of the previous spec version.
 
 `WORKFLOW_SEQUENTIAL_REPLAYS` (Vercel World) is still read. Spec 9 runs are kept to one orchestrator at a time by a queue concurrency key without it; the setting serializes spec 8 runs too. See [Vercel World](/worlds/vercel#workflow_sequential_replays).
