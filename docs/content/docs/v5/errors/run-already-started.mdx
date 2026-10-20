@@ -27,7 +27,7 @@ The first line can differ when the World's backend supplies its own message. The
 
 ## Why this happens
 
-Within one workflow, at most one run holds an idempotency key at a time. On the Vercel World, this applies within each run region. A keyed `start()` claims the key in the same atomic write that creates its run. When the key is already held, the outcome depends on the holding run and on the new call's reuse policy:
+Within one workflow, at most one run holds an idempotency key at a time. On the Vercel World, this applies within each run region. A keyed `start()` claims the key atomically with creating its run. When the key is already held, the outcome depends on the holding run and on the new call's reuse policy:
 
 1. **The holding run is `pending` or `running`.** It always keeps the key, whatever the TTL or reuse policy.
 2. **The holding run has closed, but its TTL window hasn't expired.** The window starts when the run completes, fails, or is cancelled, and lasts for the `experimental_idempotencyKeyTTL` that run was started with (24 hours by default). The default reuse policy, `'REJECT_DUPLICATE'`, keeps the key with the holding run until the window expires. `'ALLOW_DUPLICATE_FAILED_ONLY'` keeps it only when the holding run completed.

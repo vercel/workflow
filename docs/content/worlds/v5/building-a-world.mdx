@@ -300,7 +300,7 @@ Run idempotency keys back [`start({ experimental_idempotencyKey })`](/docs/api-r
 
 Declare `capabilities.runIdempotencyKeys: true` when you implement all of the following:
 
-1. **Atomic claims.** Claim the key in the same atomic write that creates the run and its `run_created` event. A claim never names a run that was not created, and a created run never lacks the claim it asked for.
+1. **Atomic claims.** Claim the key in the same atomic write that creates the run and its `run_created` event. A claim never names a run that was not created, and a created run never lacks the claim it asked for. A store without multi-object writes needs an equivalent. The Local World serializes the claims for a key with a cross-process lock and writes the claim just before the run and its event. A claim left by a process that died in between records the holder it replaced, and the next claimer evaluates that holder instead.
 2. **Self-conflict first.** Check "this run ID already exists" before the key. A re-post of the same run ID, which is a retry of the caller's own write that already landed, answers `EntityConflictError`, never `WorkflowRunAlreadyStartedError`, even though that run holds the key. The runtime treats the `EntityConflictError` as its own write succeeding.
 3. **The decision table.** With H the run currently holding the key:
 
@@ -319,7 +319,7 @@ Declare `capabilities.runIdempotencyKeys: true` when you implement all of the fo
 5. **Echo.** The run returned from `run_created`, and every later read of it, carries `idempotencyKey`. The runtime treats a created run without it as a backend that ignored the key, and logs a warning.
 6. **Deleted holders are free.** A claim whose holder run no longer exists, because it was deleted or expired out of storage, does not block a new start.
 
-The runtime applies the caller's conflict policy itself: on a refusal it either returns a handle to the holder or rethrows. It never sends the conflict policy to the World. When it returns a `pending` holder, it publishes that run's start message again with the queue idempotency key `start-<runId>`, the same key a keyed start uses for its own publish, so a queue that deduplicates by key delivers it once.
+The runtime applies the caller's conflict policy itself: on a refusal it either returns a handle to the holder or rethrows. It never sends the conflict policy to the World. Before applying it, when the holder is `pending`, it publishes that run's start message again with the queue idempotency key `start-<runId>`, the same key a keyed start uses for its own publish, so a queue that deduplicates by key delivers it once. A refusal without `runStatus` makes the runtime read the holder, and one whose `runId` is not a valid run ID is thrown as a fatal error, never returned as a handle.
 
 A few more rules apply:
 

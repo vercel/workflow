@@ -186,7 +186,7 @@ export async function POST(request: Request) {
 }
 ```
 
-The World claims the key in the same atomic write that creates the run and its `run_created` event. Concurrent calls with one key therefore converge on one run: exactly one of them creates it, and the others receive a handle to it. Keys are scoped to the workflow, so the same key passed to two different workflows starts two runs. On the Vercel World, keys are also scoped to the run's region; see [Regions on Vercel](#regions-on-vercel).
+The World claims the key atomically with creating the run. On the Vercel and Postgres Worlds the claim is part of the same write that creates the run and its `run_created` event; the Local World serializes the claims for a key with a cross-process file lock instead (see [Good to know](#good-to-know)). Concurrent calls with one key therefore converge on one run: exactly one of them creates it, and the others receive a handle to it. Keys are scoped to the workflow, so the same key passed to two different workflows starts two runs. On the Vercel World, keys are also scoped to the run's region; see [Regions on Vercel](#regions-on-vercel).
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -195,7 +195,7 @@ The World claims the key in the same atomic write that creates the run and its `
 | `experimental_idempotencyKeyReusePolicy` | `IdempotencyKeyReusePolicy` | `'REJECT_DUPLICATE'` | Whether this call may take the key over from a holder that has closed but is still inside its TTL window: `'REJECT_DUPLICATE'`, `'ALLOW_DUPLICATE_FAILED_ONLY'`, or `'ALLOW_DUPLICATE'`. |
 | `experimental_idempotencyKeyConflictPolicy` | `IdempotencyKeyConflictPolicy` | `'USE_EXISTING'` | What to do when the key is held and the reuse policy doesn't allow taking it over: `'USE_EXISTING'` returns the holding run, and `'FAIL'` throws [`WorkflowRunAlreadyStartedError`](/docs/errors/run-already-started). |
 
-`IdempotencyKeyReusePolicy` and `IdempotencyKeyConflictPolicy` are exported from `workflow/api`. Passing the TTL or either policy without a key, a key outside 1 to 256 characters, a TTL outside `'1s'` to `'30d'`, or an unknown policy throws a `WorkflowRuntimeError` before anything is written.
+`IdempotencyKeyReusePolicy` and `IdempotencyKeyConflictPolicy` are exported from `workflow/api`. Passing the TTL or either policy without a key, a key outside 1 to 256 characters or containing a lone UTF-16 surrogate, a TTL outside `'1s'` to `'30d'`, an unknown policy, or a key with `specVersion: 1` throws a `WorkflowRuntimeError` before anything is written. So does a keyed call on a World that does not declare `capabilities.runIdempotencyKeys`, or one whose target deployment only supports spec version 1. These errors are fatal: a `start()` inside a step that hits one is not retried.
 
 #### When the key is already held
 
@@ -264,9 +264,12 @@ When a keyed `start()` runs inside a workflow or step without `region`, the chil
 
 #### Good to know
 
-- Retrying a keyed `start()` is safe. If a call fails after its run was created, a retry with the same key returns that run under `'USE_EXISTING'`, or throws `WorkflowRunAlreadyStartedError` naming it under `'FAIL'`.
+- Retrying a keyed `start()` is safe under either conflict policy. If a call fails after its run was created, a retry with the same key returns that run under `'USE_EXISTING'`, or throws `WorkflowRunAlreadyStartedError` naming it under `'FAIL'`. In both cases a run that is still `pending` is queued again first (see below), so a run whose own start failed before queueing it still executes.
 - A keyed `start()` creates the run before it queues the run, instead of doing both at once, and it doesn't use the background recovery that an unkeyed `start()` uses when creating the run fails transiently. The failure is thrown, so retry the call with the same key.
-- When `'USE_EXISTING'` returns a run that is still `pending`, `start()` queues that run's start message again, deduplicated against the original, so the handle never points at a run that nothing will execute.
+- When the run holding the key is still `pending`, `start()` queues that run's start message again before it applies the conflict policy, so under `'FAIL'` too, and a pending holder never keeps its key while nothing will execute it. The message carries the same queue idempotency key as the original start's. The Vercel World deduplicates on it, the Postgres World collapses it onto a message that has not run yet, and the Local World onto one still in flight. Any copy that is delivered anyway finds the run already started.
+- When the refusal from the World does not name a valid run holding the key, `start()` throws a fatal `WorkflowRuntimeError` instead of returning a handle.
+- On the [Vercel World](/worlds/vercel), a backend with idempotency keys switched off answers every keyed `start()` with HTTP 400 `idempotency-keys-disabled`. `start()` throws it as a non-retryable, fatal `WorkflowWorldError` with that `code`, and no run is created. Start without `experimental_idempotencyKey` instead.
+- On the [Local World](/worlds/local), the claim for a key is written just before its run, under the key's lock. A claim left by a process that died between the two still records the run it took the key from, so that run keeps the key. Claim files are never deleted (a claim whose run no longer exists is free), and they are shared by every `tag` on the data directory.
 - The key is recorded on the run as `idempotencyKey`, readable through [`world.runs.get()`](/docs/api-reference/workflow-runtime/world/storage#workflowrun-type).
 - Re-running a run from the Workflow CLI or the web UI never copies its key: a re-run always creates a new run.
 - If the World's backend creates the run without recording its key, for example a backend that predates idempotency keys, `start()` logs a warning and the key is not enforced for that call.

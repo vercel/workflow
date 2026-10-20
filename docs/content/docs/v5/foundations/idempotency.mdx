@@ -84,7 +84,7 @@ export async function POST(request: Request) {
 }
 ```
 
-The World claims the key in the same atomic write that creates the run, so concurrent requests with the same key converge on one run. One of them creates it, and the others receive a handle to that run with `experimental_started: false`. A duplicate's arguments and other options are ignored, and arguments are never compared: the first start wins. Keys are scoped to the workflow, so different workflows can use the same key independently.
+The World claims the key atomically with creating the run, so concurrent requests with the same key converge on one run. One of them creates it, and the others receive a handle to that run with `experimental_started: false`. A duplicate's arguments and other options are ignored, and arguments are never compared: the first start wins. Keys are scoped to the workflow, so different workflows can use the same key independently.
 
 By default, the run holds its key while it is `pending` or `running` and for 24 hours after it completes, fails, or is cancelled, and a duplicate start in that time receives the existing run. Three options change that:
 
