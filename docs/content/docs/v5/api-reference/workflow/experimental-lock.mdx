@@ -8,6 +8,7 @@ prerequisites:
 related:
   - /docs/api-reference/workflow/sleep
   - /docs/errors/lock-unsupported
+  - /docs/errors/lock-waitlist-full
 ---
 
 Acquires one slot of a distributed semaphore identified by a key, suspending the workflow run until a slot is free. At most `concurrency` runs hold a slot of the same key at once, across every run of every workflow that uses the key.
@@ -31,12 +32,11 @@ Note the two `await`s: `await using` only awaits the release at scope exit, so a
 <Callout type="warn">
 `experimental_lock()` is experimental: its API may change in a minor release, and it will be renamed `lock()` when it is stable. The event log it writes is stable, so runs that use it keep replaying across releases. The first release has these limits:
 
-- **Not FIFO.** Waiting runs poll for a free slot with backoff (starting at 1 second, capped at 30 seconds), and whichever polls first after a release wins it. Under heavy contention a particular run can wait a long time.
 - **Run-level only.** `experimental_lock()` works in workflow functions, not in steps. To limit a step, wrap its call site, as shown below.
-- **World support.** The Local and Postgres Worlds support locks. The Vercel World supports them once its backend ships them; until then it declares support only with [`WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS=1`](/docs/configuration/worlds#workflow_vercel_experimental_locks). On a World without the `locks` capability, `experimental_lock()` throws [`LockUnsupportedError`](/docs/errors/lock-unsupported) instead of running the section unbounded.
+- **World support.** The Local and Postgres Worlds support locks, with the FIFO waitlist described in [Waiting](#waiting). The Vercel World supports them once its backend ships them; until then it declares support only with [`WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS=1`](/docs/configuration/worlds#workflow_vercel_experimental_locks), and the waitlist only with [`WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS_FIFO=1`](/docs/configuration/worlds#workflow_vercel_experimental_locks_fifo). On a World without the `locks` capability, `experimental_lock()` throws [`LockUnsupportedError`](/docs/errors/lock-unsupported) instead of running the section unbounded.
 </Callout>
 
-A run waiting for a slot is suspended like a run in `sleep()`: nothing executes, and retries add no events to its event log, however long it waits.
+A run waiting for a slot is suspended like a run in `sleep()`: nothing executes, and it adds no events to its event log, however long it waits.
 
 ## API signature
 
@@ -135,6 +135,41 @@ Once the lease expires, another run can be admitted while the first is still ins
 ### Fencing tokens
 
 Every grant of a key gets a `fencingToken` higher than every earlier grant of that key. Pass it to the systems the critical section writes to, and have them reject a write that carries a lower token than one they have already accepted. Such a write comes from a holder that has since lost its slot to an expired lease.
+
+## Waiting
+
+Runs that find every slot taken wait in a queue per key, in the order they asked. When a slot frees, it is handed straight to the run at the head of the queue, which is woken to take it. A new run never takes a slot ahead of a run that is already waiting.
+
+A run handed a slot has a grace period (60 seconds by default) to take it. If it has not taken it by then, for example because the wake that was sent to it was lost, the next run in the queue gets the slot and the slow run moves to the back of the queue. It keeps its place in the queue and is handed a later slot. As a backstop, a waiting run also checks for its slot on its own every few minutes.
+
+A World caps how many runs can wait for one key (100,000 by default). An acquisition past the cap throws [`LockWaitlistFullError`](/docs/errors/lock-waitlist-full) rather than wait, and you can catch it:
+
+```typescript lineNumbers
+import { experimental_lock } from "workflow";
+import { LockWaitlistFullError } from "workflow/errors";
+
+declare function charge(customerId: string): Promise<void>; // @setup
+declare function deferCharge(customerId: string): Promise<void>; // @setup
+
+export async function chargeCustomer(customerId: string) {
+  "use workflow";
+
+  try {
+    await using slot = await experimental_lock(`stripe:${customerId}`, { concurrency: 5 });
+    await charge(customerId);
+  } catch (error) {
+    if (LockWaitlistFullError.is(error)) { // [!code highlight]
+      await deferCharge(customerId);
+      return;
+    }
+    throw error;
+  }
+}
+```
+
+The refusal is recorded in the run's event log, so the run takes the same branch every time it replays.
+
+A World without the waitlist (the Vercel World without `WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS_FIFO`, or the Local and Postgres Worlds with `WORKFLOW_LOCKS_FIFO=0`) does not queue: waiting runs poll for a free slot with backoff (starting at 1 second, capped at 30 seconds), and whichever polls first after a release wins it.
 
 ## Concurrency is fixed by the first run
 
