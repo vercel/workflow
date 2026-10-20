@@ -79,6 +79,7 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
+import { lockWakeTargetFor, wakeLockGrantees } from './lock-wakes.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
@@ -413,6 +414,12 @@ async function dispatchPendingOps(params: {
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
   const grantedLockCids = new Set<string>();
+  // Where a FIFO World should wake this run once a slot is reserved for it.
+  const lockWake = lockWakeTargetFor(
+    params.world,
+    params.workflowRun,
+    params.namespace
+  );
   const opsPromises: Promise<void>[] = [];
   const hooksNeedingCreation = pendingOperations.filter(
     (op) => op.type === 'hook' && !op.hasCreatedEvent
@@ -808,11 +815,15 @@ async function dispatchPendingOps(params: {
       opsPromises.push(
         (async () => {
           try {
-            await createEvent({
+            const released = await createEvent({
               eventType: 'lock_released',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: release.correlationId,
               eventData: { key: release.key },
+            });
+            // A FIFO World reserved the slot for the head of the queue.
+            await wakeLockGrantees(params.world, released.lockHandoffs, {
+              runId: params.runId,
             });
           } catch (err) {
             // Already released, or the run ended and the World reclaimed it.
@@ -846,13 +857,23 @@ async function dispatchPendingOps(params: {
                 ...(lock.leaseTtlMs !== undefined && {
                   leaseTtlMs: lock.leaseTtlMs,
                 }),
+                ...(lockWake && { wake: lockWake }),
               },
             });
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) return;
             throw err;
           }
-          if (result.event?.eventType === 'lock_acquired') {
+          // This write may have moved a stale grant on to another waiter.
+          await wakeLockGrantees(params.world, result.lockHandoffs, {
+            runId: params.runId,
+          });
+          // Granted, or refused for good: either way the VM must replay
+          // over the committed event before anything else.
+          if (
+            result.event?.eventType === 'lock_acquired' ||
+            result.event?.eventType === 'lock_failed'
+          ) {
             probes.delete(lock.correlationId);
             grantedLockCids.add(lock.correlationId);
             return;
@@ -1493,8 +1514,13 @@ export async function runWorkflowWithQuickJS(params: {
    * asked for, because nothing replays a finished run's log. The node
    * engine's `deltaRequestCursor` makes the same exclusion for `sinceCursor`.
    */
-  const terminalCreateEvent: EventCreator = (data, eventParams) =>
-    world.events.create(runId, data, eventParams);
+  const terminalCreateEvent: EventCreator = async (data, eventParams) => {
+    const result = await world.events.create(runId, data, eventParams);
+    // A terminal run event's lock reclaim (FIFO Worlds) may have handed this
+    // run's slots to waiters.
+    await wakeLockGrantees(world, result.lockHandoffs, { runId });
+    return result;
+  };
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling. With a restored snapshot `events` is only

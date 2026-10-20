@@ -36,7 +36,15 @@ const { dehydrateWorkflowArguments } = await import('./serialization.js');
 const holderWorkflow = `const lock = globalThis[Symbol.for("WORKFLOW_LOCK")];
   const gate = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("lock_gate");
   async function workflow(key, concurrency, tag) {
-    const slot = await lock(key, { concurrency });
+    let slot;
+    try {
+      slot = await lock(key, { concurrency });
+    } catch (error) {
+      if (error && error.name === "LockWaitlistFullError") {
+        return "waitlist_full:" + error.key;
+      }
+      throw error;
+    }
     try {
       await gate(tag);
     } finally {
@@ -61,9 +69,11 @@ interface QueuedMessage {
 type Engine = 'node' | 'quickjs';
 
 async function createHarness(
-  options: { locks?: boolean; engine?: Engine } = {}
+  options: { locks?: boolean; engine?: Engine; fifo?: boolean } = {}
 ) {
   const dir = await mkdtemp(join(tmpdir(), 'lock-runtime-'));
+  // world-local's storage reads its waitlist policy per write.
+  process.env.WORKFLOW_LOCKS_FIFO = options.fifo ? '1' : '0';
   const local = createWorld({ dataDir: dir }) as unknown as World;
   const pending: QueuedMessage[] = [];
   const seenKeys = new Set<string>();
@@ -78,7 +88,10 @@ async function createHarness(
     ...local,
     capabilities: {
       ...local.capabilities,
-      locks: options.locks === false ? undefined : { concurrency: true },
+      locks:
+        options.locks === false
+          ? undefined
+          : { concurrency: true, ...(options.fifo && { fifo: true }) },
     },
     events: {
       ...local.events,
@@ -181,6 +194,8 @@ async function createHarness(
       return local.runs.get(runId);
     },
     async cleanup() {
+      delete process.env.WORKFLOW_LOCKS_FIFO;
+      delete process.env.WORKFLOW_LOCK_WAITLIST_CAP;
       setWorld(undefined as unknown as World);
       await rm(dir, { recursive: true, force: true });
     },
@@ -374,6 +389,140 @@ describe.each([
     expect(statuses.map((r) => r.status)).toEqual(tags.map(() => 'completed'));
     expect(maxInside).toBeLessThanOrEqual(2);
     expect(maxInside).toBeGreaterThanOrEqual(1);
+  });
+
+  it('hands a released slot straight to the queued waiter: no polling, one wake, one claim', async () => {
+    h = await createHarness({ engine, fifo: true });
+    const key = `handoff:${randomUUID()}`;
+    const holder = await h.start([key, 1, 'holder']);
+    const waiter = await h.start([key, 1, 'waiter']);
+    const holderDone = h.deliver(h.messagesFor(holder)[0]);
+    await gateFor(entered, 'holder').promise;
+
+    // The waiter queues: its one lock_created, and only a backstop retry.
+    const createsBefore = h.creates.length;
+    await h.deliver(h.messagesFor(waiter)[0]);
+    const [backstop] = h.messagesFor(waiter);
+    const backstopAt = (
+      backstop.payload.lockContinuation as { retryAtMs: number }
+    ).retryAtMs;
+    expect(backstopAt - Date.now()).toBeGreaterThan(1_000);
+
+    // The holder releases: its lock_released reserves the slot for the
+    // waiter and the runtime wakes it, keyed per grant.
+    gateFor(gates, 'holder').resolve();
+    await holderDone;
+    const wakes = h
+      .messagesFor(waiter)
+      .filter((m) => m.idempotencyKey?.startsWith('lock-wake:'));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].idempotencyKey).toMatch(
+      new RegExp(`^lock-wake:${waiter}:lock_\\w+:\\d+$`)
+    );
+
+    // The wake replays the waiter, which claims without waiting for its
+    // backstop.
+    const waiterDone = h.deliver(wakes[0]);
+    await gateFor(entered, 'waiter').promise;
+    gateFor(gates, 'waiter').resolve();
+    await waiterDone;
+    expect((await h.run(waiter)).status).toBe('completed');
+    expect(Date.now()).toBeLessThan(backstopAt);
+
+    const waiterWrites = h.creates
+      .slice(createsBefore)
+      .filter((c) => c.runId === waiter && c.eventType.startsWith('lock_'));
+    // Reported in the PR: one enqueue write, one claim write, one release.
+    console.log(
+      'lock handoff cost',
+      JSON.stringify({
+        waiterLockWrites: waiterWrites.map((c) => c.eventType),
+        wakes: wakes.length,
+      })
+    );
+    expect(waiterWrites.map((c) => c.eventType)).toEqual([
+      'lock_created',
+      'lock_created',
+      'lock_released',
+    ]);
+    expect(
+      (await h.events(waiter))
+        .map((e) => e.eventType)
+        .filter((t) => t.startsWith('lock_'))
+    ).toEqual(['lock_created', 'lock_acquired', 'lock_released']);
+  });
+
+  it('cycles a queue of runs through handoffs alone, in FIFO order and never over the concurrency', async () => {
+    h = await createHarness({ engine, fifo: true });
+    const key = `fifo:${randomUUID()}`;
+    const tags = Array.from({ length: 6 }, (_, i) => `fifo${i}`);
+    const runs: string[] = [];
+    const order: string[] = [];
+    for (const tag of tags) {
+      runs.push(await h.start([key, 2, tag]));
+      void gateFor(entered, tag).promise.then(() => {
+        order.push(tag);
+        setTimeout(() => gateFor(gates, tag).resolve(), 5);
+      });
+    }
+    // Admit the runs in tag order, so the queue order is known.
+    for (const runId of runs) await h.deliver(h.messagesFor(runId)[0]);
+
+    const inflight = new Set<Promise<void>>();
+    for (let round = 0; round < 3_000; round++) {
+      const statuses = await Promise.all(runs.map((r) => h.run(r)));
+      if (statuses.every((r) => r.status === 'completed')) break;
+      for (const runId of runs) {
+        for (const message of h.messagesFor(runId)) {
+          // Backstop retries are never delivered: progress must come from
+          // handoff wakes (and steps) alone.
+          if (message.payload.lockContinuation) continue;
+          const p = h.deliver(message).finally(() => inflight.delete(p));
+          inflight.add(p);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await Promise.all(inflight);
+    const statuses = await Promise.all(runs.map((r) => h.run(r)));
+    expect(statuses.map((r) => r.status)).toEqual(tags.map(() => 'completed'));
+    expect(maxInside).toBeLessThanOrEqual(2);
+    // The two first admitted run in either order; everyone after them is
+    // admitted in queue order.
+    expect(order.slice(2)).toEqual(tags.slice(2));
+  });
+
+  it('rejects with LockWaitlistFullError past the cap, deterministically', async () => {
+    h = await createHarness({ engine, fifo: true });
+    process.env.WORKFLOW_LOCK_WAITLIST_CAP = '1';
+    const key = `cap:${randomUUID()}`;
+    const holder = await h.start([key, 1, 'capholder']);
+    const queued = await h.start([key, 1, 'capqueued']);
+    const refused = await h.start([key, 1, 'caprefused']);
+    const holderDone = h.deliver(h.messagesFor(holder)[0]);
+    await gateFor(entered, 'capholder').promise;
+    await h.deliver(h.messagesFor(queued)[0]);
+    // The refused run's first pass commits lock_failed; it replays at once
+    // and its workflow catches the error.
+    for (
+      let i = 0;
+      i < 5 && (await h.run(refused)).status !== 'completed';
+      i++
+    ) {
+      const [next] = h
+        .messagesFor(refused)
+        .filter((m) => !m.payload.lockContinuation);
+      if (!next) break;
+      await h.deliver(next);
+    }
+    expect((await h.run(refused)).status).toBe('completed');
+    expect(
+      (await h.events(refused))
+        .map((e) => e.eventType)
+        .filter((t) => t.startsWith('lock_'))
+    ).toEqual(['lock_failed']);
+    gateFor(gates, 'capholder').resolve();
+    await holderDone;
   });
 
   it('fails the run when the World does not support locks', async () => {

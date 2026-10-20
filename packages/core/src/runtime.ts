@@ -110,6 +110,7 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './runtime/lifecycle-hooks.js';
+import { lockWakeTargetFor, wakeLockGrantees } from './runtime/lock-wakes.js';
 import {
   hasOpenWaitDueBy,
   openHookAndWaitState,
@@ -1209,6 +1210,11 @@ export function workflowEntrypoint(
                     if (sinceCursor !== undefined) {
                       absorbCreateDelta(sinceCursor, result);
                     }
+                    // A terminal run event's lock reclaim (FIFO Worlds) may
+                    // have handed this run's slots to waiters.
+                    await wakeLockGrantees(world, result.lockHandoffs, {
+                      runId,
+                    });
                     return result;
                   };
 
@@ -3648,6 +3654,11 @@ export function workflowEntrypoint(
                             replayRecoveryReporter,
                             forceClaimVictimWakes,
                             lockProbes,
+                            lockWake: lockWakeTargetFor(
+                              world,
+                              workflowRun,
+                              namespace
+                            ),
                             // Lets the batched fan-out publish each eagerly
                             // created step's execution message after its
                             // chunk commits. Steps queued there are reported

@@ -14,6 +14,7 @@ import {
   type CreateEventParams,
   type CreateEventRequest,
   type EventResult,
+  type LockWakeTarget,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -67,6 +68,7 @@ import {
   publishForceClaimVictimWake,
   republishOwedForceClaimVictimWakes,
 } from './hook-wake.js';
+import { wakeLockGrantees } from './lock-wakes.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
@@ -75,6 +77,12 @@ export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
   run: WorkflowRun;
+  /**
+   * Where a FIFO World should send this run's wake once a slot is reserved
+   * for one of its lock scopes (`lockWakeTargetFor`). Absent on a World
+   * without `locks.fifo`.
+   */
+  lockWake?: LockWakeTarget;
   span?: Span;
   requestId?: string;
   /**
@@ -285,7 +293,8 @@ export interface SuspensionHandlerResult {
   lockRetry?: { seconds: number; correlationId: string; retryAtMs: number };
   /**
    * Correlation ids of the lock scopes this suspension's `lock_created`
-   * writes were granted: their `lock_acquired` is committed but not in the
+   * writes settled: granted (`lock_acquired`) or refused for good
+   * (`lock_failed`), committed but not in the
    * caller's log. The caller replays over a reloaded log before running
    * anything else this suspension scheduled, so the grant can decide a
    * `Promise.race` the way the log orders it (as `hasAttributeEvents` does).
@@ -526,6 +535,7 @@ export async function handleSuspension({
   allowDeferredBatchWork,
   forceClaimVictimWakes,
   lockProbes,
+  lockWake,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -1981,7 +1991,7 @@ export async function handleSuspension({
         (async () => {
           try {
             await ensureRunReady();
-            await createGuarded(
+            const released = await createGuarded(
               {
                 eventType: 'lock_released',
                 specVersion: SPEC_VERSION_CURRENT,
@@ -1990,6 +2000,8 @@ export async function handleSuspension({
               },
               { requestId }
             );
+            // A FIFO World reserved the slot for the head of the queue.
+            await wakeLockGrantees(world, released.lockHandoffs, { runId });
           } catch (err) {
             // Already released by a concurrent invocation, or the run ended
             // and the World's terminal reclaim freed the slot.
@@ -2029,6 +2041,7 @@ export async function handleSuspension({
                 ...(queueItem.leaseTtlMs !== undefined && {
                   leaseTtlMs: queueItem.leaseTtlMs,
                 }),
+                ...(lockWake && { wake: lockWake }),
               },
             },
             { requestId }
@@ -2053,6 +2066,13 @@ export async function handleSuspension({
             return;
           }
           throw err;
+        }
+        // This write may have moved a stale grant on to another waiter.
+        await wakeLockGrantees(world, result.lockHandoffs, { runId });
+        if (result.event?.eventType === 'lock_failed') {
+          lockAcquiredCorrelationIds.push(queueItem.correlationId);
+          lockProbes?.delete(queueItem.correlationId);
+          return;
         }
         if (result.event?.eventType === 'lock_acquired') {
           lockAcquiredCorrelationIds.push(queueItem.correlationId);
