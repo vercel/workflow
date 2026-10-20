@@ -218,6 +218,8 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type IdempotencyKeyConflictPolicy,
+  type IdempotencyKeyReusePolicy,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,

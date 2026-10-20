@@ -1,13 +1,26 @@
-import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  WorkflowRunAlreadyStartedError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
+  IdempotencyKeyConflictPolicy,
+  IdempotencyKeyReusePolicy,
   RunRetention,
   WorkflowInvokePayload,
   World,
 } from '@workflow/world';
 import {
+  getRunQueueNamespace,
   HOOK_RESUME_INPUT_VERSION,
+  IDEMPOTENCY_KEY_MAX_LENGTH,
+  IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
+  IDEMPOTENCY_KEY_TTL_MAX_MS,
+  IDEMPOTENCY_KEY_TTL_MIN_MS,
+  IdempotencyKeyConflictPolicySchema,
+  IdempotencyKeyReusePolicySchema,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
@@ -20,6 +33,8 @@ import {
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   workflowRunIdSchema,
 } from '@workflow/world';
+import type { StringValue } from 'ms';
+import ms from 'ms';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import {
@@ -466,6 +481,204 @@ export interface StartOptionsBase {
    * consumer for is never picked up.
    */
   namespace?: string;
+
+  /**
+   * Start at most one run per key. **Experimental.**
+   *
+   * Within one scope of (workflow, key), and on Vercel within one run region,
+   * at most one run holds a key at a time. A `start()` whose key is already
+   * held either returns the holding run or throws, depending on
+   * `experimental_idempotencyKeyReusePolicy` and
+   * `experimental_idempotencyKeyConflictPolicy`. When it returns the holder,
+   * this call's arguments and every other option are ignored (the first
+   * writer wins; arguments are never compared), and the returned run's
+   * `experimental_started` is `false`.
+   *
+   * 1 to 256 characters. Stored in plaintext on the run, so do not put
+   * personal or secret data in it; use an identifier such as an order id.
+   *
+   * Requires a World that declares `capabilities.runIdempotencyKeys`; on any
+   * other World the start is refused before anything is written.
+   */
+  experimental_idempotencyKey?: string;
+
+  /**
+   * How long the key stays held after the run that holds it closes
+   * (completes, fails or is cancelled). **Experimental.** While the run is
+   * pending or running it always holds the key, whatever this says.
+   *
+   * A duration string such as `'1h'` or a number of milliseconds. Defaults to
+   * `'24h'`; must be between `'1s'` and `'30d'`. The TTL recorded by the
+   * holding run's own start is the one that applies. Requires
+   * `experimental_idempotencyKey`.
+   */
+  experimental_idempotencyKeyTTL?: StringValue | number;
+
+  /**
+   * Whether this start may take the key over from a run that already closed
+   * but is still inside its TTL window. **Experimental.** A pending or
+   * running holder always keeps its key.
+   *
+   * - `'REJECT_DUPLICATE'` (default): never; the holder keeps the key until
+   *   its window expires.
+   * - `'ALLOW_DUPLICATE_FAILED_ONLY'`: only when the holder failed or was
+   *   cancelled.
+   * - `'ALLOW_DUPLICATE'`: whenever the holder has closed.
+   *
+   * Requires `experimental_idempotencyKey`.
+   */
+  experimental_idempotencyKeyReusePolicy?: IdempotencyKeyReusePolicy;
+
+  /**
+   * What to do when the key is held and the reuse policy does not allow
+   * taking it over. **Experimental.**
+   *
+   * - `'USE_EXISTING'` (default): return a `Run` for the holding run, with
+   *   `experimental_started: false`.
+   * - `'FAIL'`: throw `WorkflowRunAlreadyStartedError`, whose `runId` names
+   *   the holding run.
+   *
+   * Requires `experimental_idempotencyKey`.
+   */
+  experimental_idempotencyKeyConflictPolicy?: IdempotencyKeyConflictPolicy;
+}
+
+export type { IdempotencyKeyConflictPolicy, IdempotencyKeyReusePolicy };
+
+/** A validated idempotency key with its defaults resolved. */
+interface ResolvedIdempotencyOptions {
+  key: string;
+  ttlMs: number;
+  reusePolicy: IdempotencyKeyReusePolicy;
+  conflictPolicy: IdempotencyKeyConflictPolicy;
+}
+
+/** Every option that requires `experimental_idempotencyKey`. */
+const IDEMPOTENCY_KEY_DEPENDENT_OPTIONS = [
+  'experimental_idempotencyKeyTTL',
+  'experimental_idempotencyKeyReusePolicy',
+  'experimental_idempotencyKeyConflictPolicy',
+] as const;
+
+type IdempotencyStartOptions = Pick<
+  StartOptionsBase,
+  | 'experimental_idempotencyKey'
+  | (typeof IDEMPOTENCY_KEY_DEPENDENT_OPTIONS)[number]
+>;
+
+function assertIdempotencyKey(key: unknown): asserts key is string {
+  if (
+    typeof key !== 'string' ||
+    key.length === 0 ||
+    key.length > IDEMPOTENCY_KEY_MAX_LENGTH
+  ) {
+    throw new WorkflowRuntimeError(
+      `start({ experimental_idempotencyKey }) must be a string of 1 to ${IDEMPOTENCY_KEY_MAX_LENGTH} characters; received ${
+        typeof key === 'string'
+          ? `a string of ${key.length} characters`
+          : typeof key
+      }.`
+    );
+  }
+}
+
+/** Whole milliseconds for a TTL option, or `undefined` when unparseable. */
+function idempotencyKeyTtlToMs(ttl: unknown): number | undefined {
+  if (typeof ttl === 'string') {
+    const value = ms(ttl as StringValue);
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.round(value)
+      : undefined;
+  }
+  return typeof ttl === 'number' && Number.isInteger(ttl) ? ttl : undefined;
+}
+
+function resolveIdempotencyKeyTtlMs(ttl: unknown): number {
+  if (ttl === undefined) return IDEMPOTENCY_KEY_TTL_DEFAULT_MS;
+  const ttlMs = idempotencyKeyTtlToMs(ttl);
+  if (
+    ttlMs === undefined ||
+    ttlMs < IDEMPOTENCY_KEY_TTL_MIN_MS ||
+    ttlMs > IDEMPOTENCY_KEY_TTL_MAX_MS
+  ) {
+    throw new WorkflowRuntimeError(
+      `start({ experimental_idempotencyKeyTTL }) must be a duration between '1s' and '30d' (a duration string or whole milliseconds); received ${JSON.stringify(
+        ttl
+      )}.`
+    );
+  }
+  return ttlMs;
+}
+
+/** `value` if it is one of `schema`'s options (or `fallback` when unset). */
+function resolveIdempotencyPolicy<T extends string>(
+  option: string,
+  value: unknown,
+  schema: {
+    options: readonly T[];
+    safeParse(value: unknown): { success: boolean };
+  },
+  fallback: T
+): T {
+  if (value === undefined) return fallback;
+  if (!schema.safeParse(value).success) {
+    throw new WorkflowRuntimeError(
+      `start({ ${option} }) must be one of ${schema.options
+        .map((name) => `'${name}'`)
+        .join(', ')}; received ${JSON.stringify(value)}.`
+    );
+  }
+  return value as T;
+}
+
+/**
+ * Validate the idempotency options of a `start()` call and resolve their
+ * defaults. Pure: runs before any I/O, so an invalid combination never
+ * reaches the World. Returns `undefined` for an unkeyed start.
+ *
+ * Exported for tests.
+ */
+export function resolveIdempotencyOptions(
+  opts: IdempotencyStartOptions
+): ResolvedIdempotencyOptions | undefined {
+  const key: unknown = opts.experimental_idempotencyKey;
+  if (key === undefined) {
+    const orphans = IDEMPOTENCY_KEY_DEPENDENT_OPTIONS.filter(
+      (name) => opts[name] !== undefined
+    );
+    if (orphans.length > 0) {
+      throw new WorkflowRuntimeError(
+        `start({ ${orphans.join(', ')} }) requires experimental_idempotencyKey.`
+      );
+    }
+    return undefined;
+  }
+  assertIdempotencyKey(key);
+  return {
+    key,
+    ttlMs: resolveIdempotencyKeyTtlMs(opts.experimental_idempotencyKeyTTL),
+    reusePolicy: resolveIdempotencyPolicy(
+      'experimental_idempotencyKeyReusePolicy',
+      opts.experimental_idempotencyKeyReusePolicy,
+      IdempotencyKeyReusePolicySchema,
+      'REJECT_DUPLICATE'
+    ),
+    conflictPolicy: resolveIdempotencyPolicy(
+      'experimental_idempotencyKeyConflictPolicy',
+      opts.experimental_idempotencyKeyConflictPolicy,
+      IdempotencyKeyConflictPolicySchema,
+      'USE_EXISTING'
+    ),
+  };
+}
+
+/**
+ * The queue idempotency key for a run's initial message. Shared by a keyed
+ * start's own publish and by the re-publish for a pending holder it adopts,
+ * so the two collapse onto one delivery where the queue deduplicates.
+ */
+function startMessageIdempotencyKey(runId: string): string {
+  return `start-${runId}`;
 }
 
 export interface StartOptionsWithDeploymentId extends StartOptionsBase {
@@ -592,6 +805,10 @@ export async function start<TArgs extends unknown[], TResult>(
       opts = argsOrOptions;
     }
 
+    // Validated before anything else (compilation, world lookup, any I/O), so
+    // an invalid combination never reaches the World.
+    const idempotency = resolveIdempotencyOptions(opts);
+
     // Dynamic source: compile it up front so the derived workflow id is
     // available for the span name, the queue topic, and the ref key — all of
     // which are decided before anything is written.
@@ -645,6 +862,19 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      // Fail closed, before the deployment lookup, capability probe, key
+      // lookup, upload, or any write: a World that does not enforce keys
+      // would otherwise create a duplicate run for every keyed start.
+      if (idempotency && world.capabilities?.runIdempotencyKeys !== true) {
+        throw new WorkflowRuntimeError(
+          'start({ experimental_idempotencyKey }) requires a World that declares `capabilities.runIdempotencyKeys`. This World does not support run idempotency keys, so no run was created.'
+        );
+      }
+      if (idempotency) {
+        span?.setAttributes({
+          ...Attribute.WorkflowStartIdempotencyKeyPresent(true),
+        });
+      }
       // `undefined` when this process is not itself a deployment and the
       // caller named a concrete target; see below.
       let currentDeploymentId: string | undefined;
@@ -733,9 +963,27 @@ export async function start<TArgs extends unknown[], TResult>(
       // metadata (e.g., region) into the ID, forwarding the full options
       // bag so worlds can read whichever fields they recognise; otherwise
       // fall back to a standard monotonic ULID.
+      //
+      // A keyed start from inside a step defaults its region to the parent
+      // run's. Keys are unique per run region on Worlds that have regions, so
+      // a retried step must mint its child in the same region as the attempt
+      // before it, whatever region this attempt happens to execute in, or the
+      // retry would claim the key afresh in another region.
+      const parentRunId =
+        idempotency && opts.region === undefined
+          ? contextStorage.getStore()?.workflowMetadata?.workflowRunId
+          : undefined;
+      const createRunIdOptions = parentRunId
+        ? {
+            ...opts,
+            region: world.regionForRunId?.(parentRunId) ?? undefined,
+          }
+        : opts;
       const runId = `wrun_${
         world.createRunId
-          ? world.createRunId(opts as Readonly<Record<string, unknown>>)
+          ? world.createRunId(
+              createRunIdOptions as Readonly<Record<string, unknown>>
+            )
           : ulid()
       }`;
 
@@ -1162,10 +1410,166 @@ export async function start<TArgs extends unknown[], TResult>(
             ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
             ...attributeSeed,
             ...dynamicWorkflowSeed,
+            // Always sent together, with defaults resolved, so the World
+            // records the TTL and evaluates the policy this caller chose.
+            ...(idempotency
+              ? {
+                  idempotencyKey: idempotency.key,
+                  idempotencyKeyTtlMs: idempotency.ttlMs,
+                  idempotencyKeyReusePolicy: idempotency.reusePolicy,
+                }
+              : {}),
           },
         },
         { v1Compat }
       );
+
+      // Shared by the publish below and by a keyed start's own publish.
+      const queuePayload = {
+        runId,
+        traceCarrier,
+        ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+          ? {
+              runInput: {
+                input: workflowArguments,
+                deploymentId,
+                workflowName,
+                specVersion,
+                executionContext,
+                ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                ...(creatorEnvironment !== undefined
+                  ? { environment: creatorEnvironment }
+                  : {}),
+                ...attributeSeed,
+                ...dynamicWorkflowSeed,
+              },
+            }
+          : {}),
+      } satisfies WorkflowInvokePayload;
+      const queueOptions = {
+        deploymentId,
+        specVersion,
+        // Forward any caller-supplied region hint so worlds with
+        // per-region queue routing (e.g. world-vercel) can target the
+        // matching queue. Worlds without a regional dimension ignore
+        // this field.
+        ...(opts.region !== undefined ? { region: opts.region } : {}),
+      };
+
+      // These argument-stream ops are flushed in the background; the promise
+      // handed to waitUntil must never reject (an unconsumed waitUntil
+      // rejection crashes the process as unhandledRejection), so unexpected
+      // failures are logged instead.
+      const flushArgumentStreams = () =>
+        safeWaitUntil(Promise.all(ops), (err) => {
+          runtimeLogger.warn(
+            'Background flush of workflow argument streams failed',
+            {
+              workflowRunId: runId,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          );
+        });
+
+      // A keyed start publishes only once `run_created` has answered: the
+      // World may refuse the key, and a message published beside the write
+      // could execute a run that was never created, or that another start
+      // already holds the key for. For the same reason there is no resilient
+      // start here: a retryable failure is thrown, and the caller retries
+      // with the same key.
+      if (idempotency) {
+        let created: Awaited<typeof runCreated> | undefined;
+        try {
+          created = await runCreated;
+        } catch (err) {
+          flushArgumentStreams();
+          if (EntityConflictError.is(err)) {
+            // Self-conflict: an earlier attempt of this very write landed
+            // (the World checks the run id before the key), so this run
+            // holds the key. Publish as if the write had just succeeded.
+          } else if (WorkflowRunAlreadyStartedError.is(err)) {
+            err.idempotencyKey ??= idempotency.key;
+            if (idempotency.conflictPolicy === 'FAIL') throw err;
+            span?.setAttributes({
+              ...Attribute.WorkflowStartIdempotencyOutcome('existing'),
+              ...Attribute.WorkflowRunId(err.runId),
+            });
+            if (err.runStatus === 'pending') {
+              // The holder may have been created by a start whose publish
+              // never landed. Re-publish its initial message, deduplicated
+              // against that start's own publish by the shared queue key, so
+              // returning it never hands back a run nothing will execute. A
+              // failure is thrown so the caller retries.
+              const holder = await world.runs.get(err.runId, {
+                resolveData: 'none',
+              });
+              await world.queue(
+                getWorkflowQueueName(
+                  holder.workflowName,
+                  getRunQueueNamespace(holder.executionContext)
+                ),
+                {
+                  runId: holder.runId,
+                  traceCarrier,
+                } satisfies WorkflowInvokePayload,
+                {
+                  deploymentId: holder.deploymentId,
+                  specVersion: holder.specVersion,
+                  idempotencyKey: startMessageIdempotencyKey(holder.runId),
+                }
+              );
+            }
+            return new Run<TResult>(err.runId, { started: false });
+          } else {
+            throw err;
+          }
+        }
+
+        if (created) {
+          if (!v1Compat && created.run.runId !== runId) {
+            throw new WorkflowRuntimeError(
+              `Server returned different runId than requested: expected ${runId}, got ${created.run.runId}`
+            );
+          }
+          // See the dynamic-code echo check below.
+          if (
+            dynamicWorkflow &&
+            (created.run as { dynamicWorkflowCode?: unknown })
+              .dynamicWorkflowCode === undefined
+          ) {
+            throw new WorkflowRuntimeError(
+              `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
+                'It was not queued, so it will not execute. ' +
+                'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
+            );
+          }
+          // The World declared the capability, but this backend did not
+          // record the key (e.g. an older server behind a newer adapter).
+          // The run exists, so it still has to be published; say loudly
+          // that the key was not enforced.
+          if (created.run.idempotencyKey !== idempotency.key) {
+            runtimeLogger.warn(
+              'The World created the run but did not record its idempotency key, so the key was not enforced for this start.',
+              { workflowRunId: runId, workflowName }
+            );
+          }
+        }
+
+        await world.queue(queueName, queuePayload, {
+          ...queueOptions,
+          idempotencyKey: startMessageIdempotencyKey(runId),
+        });
+        flushArgumentStreams();
+
+        span?.setAttributes({
+          ...Attribute.WorkflowStartIdempotencyOutcome('created'),
+          ...Attribute.WorkflowRunId(runId),
+          ...Attribute.DeploymentId(deploymentId),
+          ...(created ? Attribute.WorkflowRunStatus(created.run.status) : {}),
+        });
+
+        return new Run<TResult>(runId, { started: true });
+      }
 
       // A dynamic run publishes only once the backend has confirmed it stored
       // the code. The queue message carries that code too, and its first
@@ -1201,39 +1605,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // via the queue and creation will be re-tried async by the runtime.
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
-        world.queue(
-          queueName,
-          {
-            runId,
-            traceCarrier,
-            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? {
-                  runInput: {
-                    input: workflowArguments,
-                    deploymentId,
-                    workflowName,
-                    specVersion,
-                    executionContext,
-                    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-                    ...(creatorEnvironment !== undefined
-                      ? { environment: creatorEnvironment }
-                      : {}),
-                    ...attributeSeed,
-                    ...dynamicWorkflowSeed,
-                  },
-                }
-              : {}),
-          } satisfies WorkflowInvokePayload,
-          {
-            deploymentId,
-            specVersion,
-            // Forward any caller-supplied region hint so worlds with
-            // per-region queue routing (e.g. world-vercel) can target the
-            // matching queue. Worlds without a regional dimension ignore
-            // this field.
-            ...(opts.region !== undefined ? { region: opts.region } : {}),
-          }
-        ),
+        world.queue(queueName, queuePayload, queueOptions),
       ]);
 
       // Queue failure is always fatal: the run was not enqueued
@@ -1274,19 +1646,7 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
-      // These argument-stream ops are flushed in the background; the promise
-      // handed to waitUntil must never reject (an unconsumed waitUntil
-      // rejection crashes the process as unhandledRejection), so unexpected
-      // failures are logged instead.
-      safeWaitUntil(Promise.all(ops), (err) => {
-        runtimeLogger.warn(
-          'Background flush of workflow argument streams failed',
-          {
-            workflowRunId: runId,
-            error: err instanceof Error ? err.message : String(err),
-          }
-        );
-      });
+      flushArgumentStreams();
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
@@ -1296,7 +1656,7 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       });
 
-      return new Run<TResult>(runId, { resilientStart });
+      return new Run<TResult>(runId, { resilientStart, started: true });
     });
   });
 }

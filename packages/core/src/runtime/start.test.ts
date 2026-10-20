@@ -2,6 +2,7 @@ import {
   EntityConflictError,
   FatalError,
   ThrottleError,
+  WorkflowRunAlreadyStartedError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -39,11 +40,17 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
-import { serializeTraceCarrier } from '../telemetry.js';
+import { contextStorage } from '../step/context-storage.js';
+import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
-import type { Run } from './run.js';
+import { getWorkflowQueueName } from './helpers.js';
+import { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
-import { _resetLatestNoOpWarnForTests, start } from './start.js';
+import {
+  _resetLatestNoOpWarnForTests,
+  resolveIdempotencyOptions,
+  start,
+} from './start.js';
 import { setWorld } from './world.js';
 
 // Mock @vercel/functions
@@ -2439,6 +2446,634 @@ async function workflow() {
         expect(
           peekFormatPrefix(mockEventsCreate.mock.calls[0][1].eventData.input)
         ).toBe(SerializationFormat.ENCRYPTED);
+      });
+    });
+  });
+
+  describe('idempotency keys', () => {
+    const KEY = 'order-1';
+    const keyedWorkflow = Object.assign(
+      (..._args: unknown[]) => Promise.resolve('result'),
+      { workflowId: 'keyed-workflow' }
+    );
+    const HOLDER = 'wrun_01HOLDER0000000000000000000';
+
+    let eventsCreate: ReturnType<typeof vi.fn>;
+    let queue: ReturnType<typeof vi.fn>;
+    let runsGet: ReturnType<typeof vi.fn>;
+    let getDeploymentId: ReturnType<typeof vi.fn>;
+
+    function keyedWorld(overrides: Record<string, unknown> = {}) {
+      const world = {
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { runIdempotencyKeys: true },
+        getDeploymentId,
+        events: { create: eventsCreate },
+        runs: { get: runsGet },
+        queue,
+        ...overrides,
+      } as any;
+      setWorld(world);
+      return world;
+    }
+
+    /** Resolve run_created the way a keyed World does: echoing the key. */
+    function echoKey() {
+      eventsCreate.mockImplementation(async (runId, event) => ({
+        run: {
+          runId,
+          status: 'pending',
+          idempotencyKey: event.eventData.idempotencyKey,
+        },
+      }));
+    }
+
+    const refusal = (runStatus: string) =>
+      new WorkflowRunAlreadyStartedError(HOLDER, {
+        runStatus,
+        workflowName: 'keyed-workflow',
+      });
+
+    beforeEach(() => {
+      eventsCreate = vi.fn();
+      queue = vi.fn().mockResolvedValue({ messageId: null });
+      runsGet = vi.fn();
+      getDeploymentId = vi.fn().mockResolvedValue('deploy_123');
+      echoKey();
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+      vi.restoreAllMocks();
+    });
+
+    it('sends the key with its resolved defaults on run_created', async () => {
+      keyedWorld();
+      await start(keyedWorkflow, [1], { experimental_idempotencyKey: KEY });
+
+      expect(eventsCreate.mock.calls[0][1].eventData).toMatchObject({
+        idempotencyKey: KEY,
+        idempotencyKeyTtlMs: 86_400_000,
+        idempotencyKeyReusePolicy: 'REJECT_DUPLICATE',
+      });
+      // The conflict policy is applied by the runtime, never sent.
+      expect(eventsCreate.mock.calls[0][1].eventData).not.toHaveProperty(
+        'idempotencyKeyConflictPolicy'
+      );
+    });
+
+    it('sends the caller TTL and reuse policy', async () => {
+      keyedWorld();
+      await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+        experimental_idempotencyKeyTTL: '2h',
+        experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+      });
+      expect(eventsCreate.mock.calls[0][1].eventData).toMatchObject({
+        idempotencyKeyTtlMs: 7_200_000,
+        idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+      });
+    });
+
+    it('does not publish until run_created has resolved', async () => {
+      keyedWorld();
+      let resolveCreate!: (value: unknown) => void;
+      eventsCreate.mockImplementation(
+        (runId, event) =>
+          new Promise((resolve) => {
+            resolveCreate = () =>
+              resolve({
+                run: {
+                  runId,
+                  status: 'pending',
+                  idempotencyKey: event.eventData.idempotencyKey,
+                },
+              });
+          })
+      );
+
+      const pending = start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+      });
+      await vi.waitFor(() => expect(eventsCreate).toHaveBeenCalledOnce());
+      // Give any parallel publish every chance to happen.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(queue).not.toHaveBeenCalled();
+
+      resolveCreate(undefined);
+      const run = await pending;
+      expect(queue).toHaveBeenCalledOnce();
+      expect(run.experimental_started).toBe(true);
+    });
+
+    it('publishes a created run with its runInput and a start queue key', async () => {
+      keyedWorld();
+      const run = await start(keyedWorkflow, [42], {
+        experimental_idempotencyKey: KEY,
+      });
+
+      expect(run).toBeInstanceOf(Run);
+      expect(run.experimental_started).toBe(true);
+      const runId = eventsCreate.mock.calls[0][0];
+      expect(run.runId).toBe(runId);
+      expect(queue).toHaveBeenCalledOnce();
+      const [queueName, payload, queueOpts] = queue.mock.calls[0];
+      expect(queueName).toBe(getWorkflowQueueName('keyed-workflow'));
+      expect(payload.runId).toBe(runId);
+      expect(payload.runInput).toMatchObject({
+        deploymentId: 'deploy_123',
+        workflowName: 'keyed-workflow',
+      });
+      // A resilient run_started never carries the key.
+      expect(JSON.stringify(Object.keys(payload.runInput))).not.toMatch(
+        /idempotency/i
+      );
+      expect(queueOpts).toMatchObject({
+        deploymentId: 'deploy_123',
+        idempotencyKey: `start-${runId}`,
+      });
+      expect(runsGet).not.toHaveBeenCalled();
+    });
+
+    it('publishes and reports started when its own earlier write already landed', async () => {
+      keyedWorld();
+      eventsCreate.mockRejectedValue(
+        new EntityConflictError('Workflow run already exists')
+      );
+
+      const run = await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+      });
+
+      const runId = eventsCreate.mock.calls[0][0];
+      expect(run.runId).toBe(runId);
+      expect(run.experimental_started).toBe(true);
+      expect(queue).toHaveBeenCalledOnce();
+      expect(queue.mock.calls[0][1].runInput).toBeDefined();
+      expect(queue.mock.calls[0][2]).toMatchObject({
+        idempotencyKey: `start-${runId}`,
+      });
+    });
+
+    it('returns a pending holder and re-publishes its initial message', async () => {
+      keyedWorld();
+      eventsCreate.mockRejectedValue(refusal('pending'));
+      runsGet.mockResolvedValue({
+        runId: HOLDER,
+        status: 'pending',
+        workflowName: 'holder-workflow',
+        deploymentId: 'dpl_holder',
+        specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        executionContext: { queueNamespace: 'eve' },
+      });
+
+      const run = await start(keyedWorkflow, [1], {
+        experimental_idempotencyKey: KEY,
+      });
+
+      expect(run).toBeInstanceOf(Run);
+      expect(run.runId).toBe(HOLDER);
+      expect(run.experimental_started).toBe(false);
+      expect(runsGet).toHaveBeenCalledWith(HOLDER, { resolveData: 'none' });
+      expect(queue).toHaveBeenCalledOnce();
+      expect(queue).toHaveBeenCalledWith(
+        getWorkflowQueueName('holder-workflow', 'eve'),
+        { runId: HOLDER, traceCarrier: {} },
+        {
+          deploymentId: 'dpl_holder',
+          specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+          idempotencyKey: `start-${HOLDER}`,
+        }
+      );
+    });
+
+    it('throws when re-publishing a pending holder fails', async () => {
+      keyedWorld();
+      eventsCreate.mockRejectedValue(refusal('pending'));
+      runsGet.mockResolvedValue({
+        runId: HOLDER,
+        status: 'pending',
+        workflowName: 'holder-workflow',
+        deploymentId: 'dpl_holder',
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      queue.mockRejectedValue(new Error('Queue unavailable'));
+
+      await expect(
+        start(keyedWorkflow, [], { experimental_idempotencyKey: KEY })
+      ).rejects.toThrow('Queue unavailable');
+    });
+
+    it.each([
+      'running',
+      'completed',
+      'failed',
+      'cancelled',
+    ])('returns a %s holder without publishing anything', async (status) => {
+      keyedWorld();
+      eventsCreate.mockRejectedValue(refusal(status));
+
+      const run = await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+      });
+
+      expect(run.runId).toBe(HOLDER);
+      expect(run.experimental_started).toBe(false);
+      expect(queue).not.toHaveBeenCalled();
+      expect(runsGet).not.toHaveBeenCalled();
+    });
+
+    it('rethrows the refusal under the FAIL conflict policy', async () => {
+      keyedWorld();
+      const error = refusal('running');
+      eventsCreate.mockRejectedValue(error);
+
+      const thrown = await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+        experimental_idempotencyKeyConflictPolicy: 'FAIL',
+      }).catch((err: unknown) => err);
+
+      expect(thrown).toBe(error);
+      expect(WorkflowRunAlreadyStartedError.is(thrown)).toBe(true);
+      expect(thrown).toMatchObject({
+        runId: HOLDER,
+        runStatus: 'running',
+        idempotencyKey: KEY,
+      });
+      expect(queue).not.toHaveBeenCalled();
+      expect(runsGet).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a throttle', () => new ThrottleError('rate limited')],
+      [
+        'a 5xx',
+        () => new WorkflowWorldError('Internal Server Error', { status: 500 }),
+      ],
+      [
+        'a transport failure',
+        () => new WorkflowWorldError('socket hang up', { code: 'TRANSPORT' }),
+      ],
+      ['a 400', () => new WorkflowWorldError('Bad Request', { status: 400 })],
+    ])('throws %s with nothing published: keyed starts have no resilient start', async (_label, makeError) => {
+      keyedWorld();
+      const error = makeError();
+      eventsCreate.mockRejectedValue(error);
+
+      await expect(
+        start(keyedWorkflow, [], { experimental_idempotencyKey: KEY })
+      ).rejects.toBe(error);
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('throws when the publish of a created run fails', async () => {
+      keyedWorld();
+      queue.mockRejectedValue(new Error('Queue unavailable'));
+      await expect(
+        start(keyedWorkflow, [], { experimental_idempotencyKey: KEY })
+      ).rejects.toThrow('Queue unavailable');
+    });
+
+    it('warns and still publishes when the backend does not echo the key', async () => {
+      keyedWorld();
+      const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+      eventsCreate.mockImplementation(async (runId) => ({
+        run: { runId, status: 'pending' },
+      }));
+
+      const run = await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+      });
+
+      expect(run.experimental_started).toBe(true);
+      expect(queue).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/did not record its idempotency key/),
+        expect.objectContaining({ workflowRunId: run.runId })
+      );
+    });
+
+    it.each([
+      ['no capabilities', undefined],
+      ['the capability unset', {}],
+      ['the capability false', { runIdempotencyKeys: false }],
+    ])('refuses a keyed start on a World with %s, before any I/O', async (_label, capabilities) => {
+      const getEncryptionKeyForRun = vi.fn();
+      const createRunId = vi.fn();
+      keyedWorld({ capabilities, getEncryptionKeyForRun, createRunId });
+
+      const error = await start(keyedWorkflow, [], {
+        experimental_idempotencyKey: KEY,
+      }).catch((err: unknown) => err);
+
+      expect(WorkflowRuntimeError.is(error)).toBe(true);
+      expect((error as Error).message).toMatch(
+        /capabilities\.runIdempotencyKeys/
+      );
+      expect(getDeploymentId).not.toHaveBeenCalled();
+      expect(createRunId).not.toHaveBeenCalled();
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ['an empty key', { experimental_idempotencyKey: '' }],
+      [
+        'a key over 256 characters',
+        { experimental_idempotencyKey: 'k'.repeat(257) },
+      ],
+      ['a non-string key', { experimental_idempotencyKey: 42 }],
+      ['a TTL without a key', { experimental_idempotencyKeyTTL: '1h' }],
+      [
+        'a reuse policy without a key',
+        { experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE' },
+      ],
+      [
+        'a conflict policy without a key',
+        { experimental_idempotencyKeyConflictPolicy: 'FAIL' },
+      ],
+      [
+        'a TTL under 1s',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: '999ms',
+        },
+      ],
+      [
+        'a numeric TTL under 1s',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: 999,
+        },
+      ],
+      [
+        'a TTL over 30d',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: '31d',
+        },
+      ],
+      [
+        'a numeric TTL over 30d',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: 2_592_000_001,
+        },
+      ],
+      [
+        'an unparseable TTL',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: 'soon',
+        },
+      ],
+      [
+        'a fractional numeric TTL',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: 1500.5,
+        },
+      ],
+      [
+        'a negative TTL',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyTTL: -1,
+        },
+      ],
+      [
+        'an unknown reuse policy',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyReusePolicy: 'SOMETIMES',
+        },
+      ],
+      [
+        'an unknown conflict policy',
+        {
+          experimental_idempotencyKey: KEY,
+          experimental_idempotencyKeyConflictPolicy: 'OVERWRITE',
+        },
+      ],
+    ])('rejects %s before any I/O', async (_label, options) => {
+      // Even a World with the capability never sees an invalid start.
+      keyedWorld();
+
+      const error = await start(keyedWorkflow, [], options as any).catch(
+        (err: unknown) => err
+      );
+
+      expect(WorkflowRuntimeError.is(error)).toBe(true);
+      expect((error as Error).message).toMatch(/experimental_idempotencyKey/);
+      expect(getDeploymentId).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('names every orphaned option in one error', () => {
+      expect(() =>
+        resolveIdempotencyOptions({
+          experimental_idempotencyKeyTTL: '1h',
+          experimental_idempotencyKeyConflictPolicy: 'FAIL',
+        })
+      ).toThrow(
+        /experimental_idempotencyKeyTTL, experimental_idempotencyKeyConflictPolicy.*requires experimental_idempotencyKey/
+      );
+    });
+
+    it('resolves defaults and accepts the bounds', () => {
+      expect(resolveIdempotencyOptions({})).toBeUndefined();
+      expect(
+        resolveIdempotencyOptions({ experimental_idempotencyKey: KEY })
+      ).toEqual({
+        key: KEY,
+        ttlMs: 86_400_000,
+        reusePolicy: 'REJECT_DUPLICATE',
+        conflictPolicy: 'USE_EXISTING',
+      });
+      for (const [ttl, ttlMs] of [
+        ['1s', 1_000],
+        [1_000, 1_000],
+        ['30d', 2_592_000_000],
+        [2_592_000_000, 2_592_000_000],
+        [60_000, 60_000],
+      ] as const) {
+        expect(
+          resolveIdempotencyOptions({
+            experimental_idempotencyKey: KEY,
+            experimental_idempotencyKeyTTL: ttl,
+          })?.ttlMs
+        ).toBe(ttlMs);
+      }
+      expect(
+        resolveIdempotencyOptions({
+          experimental_idempotencyKey: 'k'.repeat(256),
+          experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE',
+          experimental_idempotencyKeyConflictPolicy: 'FAIL',
+        })
+      ).toMatchObject({
+        reusePolicy: 'ALLOW_DUPLICATE',
+        conflictPolicy: 'FAIL',
+      });
+    });
+
+    describe('region inside a step', () => {
+      function insideRun<T>(parentRunId: string, fn: () => Promise<T>) {
+        return contextStorage.run(
+          {
+            stepMetadata: {
+              stepName: 'start',
+              stepId: 'step_1',
+              stepStartedAt: new Date(),
+              attempt: 2,
+            },
+            workflowMetadata: {
+              workflowName: 'parent',
+              workflowRunId: parentRunId,
+              workflowStartedAt: new Date(),
+              url: 'http://localhost:3000',
+              features: { encryption: false },
+            },
+            ops: [],
+          } as any,
+          fn
+        );
+      }
+
+      it("mints a keyed child in the parent run's region by default", async () => {
+        const createRunId = vi
+          .fn()
+          .mockReturnValue('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+        const regionForRunId = vi.fn().mockReturnValue('cle1');
+        keyedWorld({ createRunId, regionForRunId });
+
+        await insideRun('wrun_parent', () =>
+          start(keyedWorkflow, [], { experimental_idempotencyKey: KEY })
+        );
+
+        expect(regionForRunId).toHaveBeenCalledWith('wrun_parent');
+        expect(createRunId).toHaveBeenCalledWith(
+          expect.objectContaining({ region: 'cle1' })
+        );
+        // The queue routes by the region tagged into the run id.
+        expect(queue.mock.calls[0][2]).not.toHaveProperty('region');
+      });
+
+      it('keeps an explicit region', async () => {
+        const createRunId = vi
+          .fn()
+          .mockReturnValue('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+        const regionForRunId = vi.fn().mockReturnValue('cle1');
+        keyedWorld({ createRunId, regionForRunId });
+
+        await insideRun('wrun_parent', () =>
+          start(keyedWorkflow, [], {
+            experimental_idempotencyKey: KEY,
+            region: 'fra1',
+          })
+        );
+
+        expect(regionForRunId).not.toHaveBeenCalled();
+        expect(createRunId).toHaveBeenCalledWith(
+          expect.objectContaining({ region: 'fra1' })
+        );
+      });
+
+      it('leaves unkeyed and top-level starts alone', async () => {
+        const createRunId = vi
+          .fn()
+          .mockReturnValue('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+        const regionForRunId = vi.fn().mockReturnValue('cle1');
+        keyedWorld({ createRunId, regionForRunId });
+
+        await insideRun('wrun_parent', () => start(keyedWorkflow, []));
+        await start(keyedWorkflow, [], { experimental_idempotencyKey: KEY });
+
+        expect(regionForRunId).not.toHaveBeenCalled();
+        expect(createRunId.mock.calls[0][0]).not.toHaveProperty('region');
+        expect(createRunId.mock.calls[1][0]).not.toHaveProperty('region');
+      });
+    });
+
+    describe('span attributes', () => {
+      function captureSpan() {
+        const attributes: Record<string, unknown> = {};
+        const span = {
+          setAttributes: (attrs: Record<string, unknown>) =>
+            Object.assign(attributes, attrs),
+        };
+        vi.mocked(trace).mockImplementationOnce(((_name: string, fn: any) =>
+          fn(span)) as any);
+        return attributes;
+      }
+
+      it('records a created keyed start', async () => {
+        keyedWorld();
+        const attributes = captureSpan();
+        const run = await start(keyedWorkflow, [], {
+          experimental_idempotencyKey: KEY,
+        });
+        expect(attributes).toMatchObject({
+          'workflow.start.idempotency_key_present': true,
+          'workflow.start.idempotency_outcome': 'created',
+          'workflow.run.id': run.runId,
+        });
+      });
+
+      it('records a start that returned the existing holder', async () => {
+        keyedWorld();
+        eventsCreate.mockRejectedValue(refusal('running'));
+        const attributes = captureSpan();
+        await start(keyedWorkflow, [], { experimental_idempotencyKey: KEY });
+        expect(attributes).toMatchObject({
+          'workflow.start.idempotency_key_present': true,
+          'workflow.start.idempotency_outcome': 'existing',
+          'workflow.run.id': HOLDER,
+        });
+      });
+
+      it('records nothing about keys on an unkeyed start', async () => {
+        keyedWorld();
+        const attributes = captureSpan();
+        await start(keyedWorkflow, []);
+        expect(attributes).not.toHaveProperty(
+          'workflow.start.idempotency_key_present'
+        );
+        expect(attributes).not.toHaveProperty(
+          'workflow.start.idempotency_outcome'
+        );
+      });
+    });
+
+    describe('unkeyed starts', () => {
+      it('report experimental_started and keep the parallel publish', async () => {
+        keyedWorld();
+        const run = await start(keyedWorkflow, []);
+        expect(run.experimental_started).toBe(true);
+        expect(eventsCreate.mock.calls[0][1].eventData).not.toHaveProperty(
+          'idempotencyKey'
+        );
+        expect(queue.mock.calls[0][2]).not.toHaveProperty('idempotencyKey');
+      });
+
+      it('report experimental_started on a resilient start too', async () => {
+        keyedWorld();
+        eventsCreate.mockRejectedValue(
+          new WorkflowWorldError('Internal Server Error', { status: 500 })
+        );
+        vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+        const run = await start(keyedWorkflow, [], {
+          specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        });
+        expect(run.experimental_started).toBe(true);
+      });
+
+      it('work on a World without the capability', async () => {
+        keyedWorld({ capabilities: undefined });
+        const run = await start(keyedWorkflow, []);
+        expect(run.experimental_started).toBe(true);
       });
     });
   });

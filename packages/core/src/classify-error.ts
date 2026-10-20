@@ -10,6 +10,7 @@ import {
   ThrottleError,
   WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
+  WorkflowRunAlreadyStartedError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -98,10 +99,18 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
  * - `WorkflowWorldError` with a retryable transport `code` (`TRANSPORT` /
  *   `TIMEOUT`): the request never produced a usable response
  *
+ * Never retryable: `WorkflowRunAlreadyStartedError`, a definitive refusal
+ * naming the run that holds an idempotency key. Retrying the same write
+ * cannot change the answer, and `start()` must apply the caller's conflict
+ * policy to it rather than treat it as a transient failure.
+ *
  * Uses `.is()` name-based duck checks (not `instanceof`) for the same
  * cross-`vm`-realm reason described on `classifyRunError`.
  */
 export function isRetryableWorldError(err: unknown): boolean {
+  if (WorkflowRunAlreadyStartedError.is(err)) {
+    return false;
+  }
   if (ThrottleError.is(err)) {
     return true;
   }
