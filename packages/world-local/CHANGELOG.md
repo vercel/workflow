@@ -1,5 +1,18 @@
 # @workflow/world-local
 
+## 5.1.2
+
+### Patch Changes
+
+- [#4922](https://github.com/vercel/workflow/pull/4922) [`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Restore missing `run_created` events for interrupted local run creation.
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Exempt QuickJS runs with a positive snapshot threshold from the default per-run event limit, matching the Vercel World
+
+- [#4924](https://github.com/vercel/workflow/pull/4924) [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Fix an edge case in `createHook({ experimental_force: true })` where a racing `resumeHook` could be dropped during the handover
+- Updated dependencies [[`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7)]:
+  - @workflow/world@5.0.5
+  - @workflow/errors@5.0.5
+
 ## 5.1.1
 
 ### Patch Changes

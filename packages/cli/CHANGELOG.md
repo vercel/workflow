@@ -1,5 +1,19 @@
 # @workflow/cli
 
+## 5.0.6
+
+### Patch Changes
+
+- [#4758](https://github.com/vercel/workflow/pull/4758) [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b) Thanks [@pranaygp](https://github.com/pranaygp)! - Resolve a run's encryption key from metadata only when decrypting in `workflow inspect --decrypt` and the web UI, instead of making the server resolve the run's whole input and output for each lookup.
+- Updated dependencies [[`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95), [`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/core@5.2.3
+  - @workflow/world-local@5.1.2
+  - @workflow/web@5.0.6
+  - @workflow/world@5.0.5
+  - @workflow/world-vercel@5.2.3
+  - @workflow/errors@5.0.5
+  - @workflow/builders@5.0.6
+
 ## 5.0.5
 
 ### Patch Changes
