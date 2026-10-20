@@ -86,6 +86,8 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 
 Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
 
+Recovery also hands back to the queue any step that was running inline when the previous process exited. The step runs again right away instead of after the inline-ownership lease (about 14 minutes), and the interrupted attempt counts toward its retries. If you turn recovery off and re-enqueue runs yourself, call `world.releaseOrphanedSteps(runId)` before re-enqueueing each run. Call it only before this process has delivered any message for that run: it treats every inline step as abandoned.
+
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during local development.

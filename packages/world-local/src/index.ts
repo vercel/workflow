@@ -18,6 +18,7 @@ import {
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
+import { releaseOrphanedSteps } from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
@@ -48,6 +49,15 @@ export type LocalWorld = World & {
   registerRoute(prefix: QueuePrefix, path: string): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
+  /**
+   * Hand a run's steps that were running inline in a previous process back to
+   * the queue, so the next delivery dispatches them at once instead of
+   * waiting out the inline-ownership lease. `start()` does this for every run
+   * it recovers; call it yourself before re-enqueueing a run when recovering
+   * with `recoverActiveRuns: false`. Only call it before this process has
+   * delivered any message for the run: it treats every inline owner as dead.
+   */
+  releaseOrphanedSteps(runId: string): Promise<void>;
 };
 
 /**
@@ -176,7 +186,32 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             fileIdFilter,
           })) as typeof storage.runs.list,
       };
-      await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
+      // The previous process's queue is gone, so release the steps its
+      // messages owned before the run goes back on the queue.
+      const releaseThenEnqueue: typeof queue.queue = async (
+        queueName,
+        message,
+        opts
+      ) => {
+        const { runId } = message as { runId: string };
+        try {
+          await releaseOrphanedSteps(storage.events, runId);
+        } catch (err) {
+          // Still recoverable: the run resumes once the lease expires.
+          console.warn(
+            `[world-local] Failed to release orphaned steps of run ${runId}: ${err}`
+          );
+        }
+        return queue.queue(queueName, message, opts);
+      };
+      await reenqueueActiveRuns(
+        recoveryRuns,
+        releaseThenEnqueue,
+        'world-local'
+      );
+    },
+    releaseOrphanedSteps(runId) {
+      return releaseOrphanedSteps(storage.events, runId);
     },
     async close() {
       clearStorageCache();
