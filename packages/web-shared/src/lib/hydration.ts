@@ -141,7 +141,7 @@ export function getWebRevivers(): Revivers {
     // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
     // entry for each built-in Error subclass plus the workflow-specific
     // `FatalError` / `RetryableError` / `HookConflictError` /
-    // `HookForceClaimedError` /
+    // `HookForceClaimedError` / `WorkflowRunAlreadyStartedError` /
     // `RuntimeDecryptionError` and `AggregateError`. Without
     // matching revivers here, `devalue.unflatten` throws "Unknown type X",
     // which surfaces in the web o11y UI as "Failed to load resource
@@ -216,6 +216,26 @@ export function getWebRevivers(): Revivers {
       error.claimedByRunId = value.claimedByRunId;
       if (value.claimedByHookId !== undefined) {
         error.claimedByHookId = value.claimedByHookId;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    WorkflowRunAlreadyStartedError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        runId?: string;
+        runStatus?: string;
+        workflowName?: string;
+        idempotencyKey?: string;
+      };
+      error.name = 'WorkflowRunAlreadyStartedError';
+      error.runId = value.runId;
+      for (const field of [
+        'runStatus',
+        'workflowName',
+        'idempotencyKey',
+      ] as const) {
+        if (value[field] !== undefined) error[field] = value[field];
       }
       if (value.stack !== undefined) error.stack = value.stack;
       return error;

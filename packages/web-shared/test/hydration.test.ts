@@ -147,6 +147,60 @@ describe('getWebRevivers — error family', () => {
     expect(revived.claimedByHookId).toBe('hook_claimer');
   });
 
+  it('hydrates a WorkflowRunAlreadyStartedError with the holder preserved', () => {
+    const revived = hydrateData(
+      [
+        ['WorkflowRunAlreadyStartedError', 1],
+        {
+          message: 2,
+          stack: 3,
+          runId: 4,
+          runStatus: 5,
+          workflowName: 6,
+          idempotencyKey: 7,
+        },
+        'Idempotency key "order-1" is already held by run "wrun_holder" (running)',
+        'WorkflowRunAlreadyStartedError: Idempotency key "order-1" is already held',
+        'wrun_holder',
+        'running',
+        'workflow//./src/orders//process',
+        'order-1',
+      ],
+      REVIVERS
+    ) as Error & {
+      runId?: string;
+      runStatus?: string;
+      workflowName?: string;
+      idempotencyKey?: string;
+    };
+
+    expect(revived).toBeInstanceOf(Error);
+    expect(revived.name).toBe('WorkflowRunAlreadyStartedError');
+    expect(revived.message).toContain('already held');
+    expect(revived.runId).toBe('wrun_holder');
+    expect(revived.runStatus).toBe('running');
+    expect(revived.workflowName).toBe('workflow//./src/orders//process');
+    expect(revived.idempotencyKey).toBe('order-1');
+  });
+
+  it('hydrates a WorkflowRunAlreadyStartedError without the optional fields', () => {
+    const revived = hydrateData(
+      [
+        ['WorkflowRunAlreadyStartedError', 1],
+        { message: 2, runId: 3 },
+        'held',
+        'wrun_holder',
+      ],
+      REVIVERS
+    ) as Error & Record<string, unknown>;
+
+    expect(revived.name).toBe('WorkflowRunAlreadyStartedError');
+    expect(revived.runId).toBe('wrun_holder');
+    expect(revived).not.toHaveProperty('runStatus');
+    expect(revived).not.toHaveProperty('workflowName');
+    expect(revived).not.toHaveProperty('idempotencyKey');
+  });
+
   it('hydrates a RetryableError with retryAfter as a Date', async () => {
     const retryAt = new Date('2025-01-01T00:00:00.000Z');
     const revived = await roundTrip<Error & { retryAfter: Date }>(
