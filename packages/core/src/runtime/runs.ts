@@ -179,7 +179,7 @@ export async function cancelRun(
       v1Compat: compatMode,
     });
     // The run's lock reclaim (FIFO Worlds) may have handed its slots on.
-    await wakeLockGrantees(world, result.lockHandoffs, { runId });
+    await wakeLockGrantees(world, result?.lockHandoffs, { runId });
   } catch (err) {
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
