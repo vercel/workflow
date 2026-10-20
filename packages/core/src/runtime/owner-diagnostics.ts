@@ -38,7 +38,42 @@ const monitor = globalSingleton('@workflow/core//ownerDiagnostics', 1, () => ({
   timer: undefined as ReturnType<typeof setInterval> | undefined,
   /** Highest maxProcFds sampled since the last logged line. */
   peakFds: 0,
+  processListeners: false,
 }));
+
+function errorFields(error: unknown) {
+  return {
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorMessage: String(error instanceof Error ? error.message : error).slice(
+      0,
+      500
+    ),
+    errorStack:
+      error instanceof Error ? error.stack?.slice(0, 2000) : undefined,
+  };
+}
+
+/**
+ * Log process-level failures while an owner is active. On Vercel the function
+ * runtime treats any unhandled rejection or uncaught exception as
+ * unrecoverable: the instance stops accepting requests (in-flight work,
+ * including the owner's waitUntil, continues) and a strict-affinity instance
+ * is retired, so the owner stops receiving inputs. The runtime does not
+ * surface the error in runtime logs. Observation only: the exception monitor
+ * never changes behavior, and the rejection listener is added only where one
+ * is already installed (as the runtime does), so default handling is kept.
+ */
+function watchProcessFailures() {
+  if (monitor.processListeners) return;
+  monitor.processListeners = true;
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    ownerLog('uncaught_exception', { origin, ...errorFields(error) });
+  });
+  if (process.listenerCount('unhandledRejection') > 0)
+    process.on('unhandledRejection', (reason) => {
+      ownerLog('unhandled_rejection', errorFields(reason));
+    });
+}
 
 /** Open file descriptors (entries, not numbers) of one process. */
 function fdCount(pid: string): number | undefined {
@@ -95,6 +130,7 @@ function snapshot() {
 /** Track an active owner; the returned function stops tracking it. */
 export function trackOwner(source: OwnerDiagnosticsSource): () => void {
   monitor.sources.add(source);
+  watchProcessFailures();
   if (!monitor.timer) {
     let expected = Date.now() + TICK_MS;
     let lastBeat = Date.now();
