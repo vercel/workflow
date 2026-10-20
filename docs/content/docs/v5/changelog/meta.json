@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "single-orchestrator",
+    "single-orchestrator-review",
     "lazy-hook-resume",
     "eager-processing",
     "resilient-resume",
