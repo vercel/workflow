@@ -104,10 +104,12 @@ async function listRunningStepIds(
   const running = new Set<string>();
   let cursor: string | undefined;
   do {
+    // The largest page: each page re-reads the run's step files, so the
+    // default of 20 would make a long run quadratic.
     const page = await steps.list({
       runId,
       resolveData: 'none',
-      pagination: { cursor },
+      pagination: { cursor, limit: 1000 },
     });
     for (const step of page.data) {
       if (step.status === 'running') running.add(step.stepId);
