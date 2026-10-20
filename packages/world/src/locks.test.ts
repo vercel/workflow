@@ -3,11 +3,15 @@ import {
   CreateEventSchema,
   classifyEntityEvent,
   EventSchema,
+  isLockEventType,
   TERMINAL_EVENT_CLASSES,
 } from './events.js';
 import {
+  LOCK_BACKSTOP_MS,
   LOCK_RETRY_CAP_MS,
   LOCK_RETRY_MIN_MS,
+  LockSchema,
+  lockBackstopAt,
   lockRetryAt,
   lockRetryDelayMs,
 } from './locks.js';
@@ -112,5 +116,73 @@ describe('lock event schemas', () => {
       ).toEqual({ eventClass: eventType, entity: 'lock_a' });
     }
     expect(TERMINAL_EVENT_CLASSES.has('lock_released')).toBe(true);
+  });
+});
+
+describe('lock backstop (stage 2)', () => {
+  const P = LOCK_BACKSTOP_MS;
+
+  test('one point per period-wide window, the same for every attempt in it', () => {
+    const since = 1_000_000;
+    const first = lockBackstopAt('wrun_1:lock_1', since, since);
+    expect(first).toBeGreaterThan(since);
+    expect(first).toBeLessThanOrEqual(since + P);
+    // Every attempt before the point (short of the 1s floor) gets the same
+    // point: duplicate wakes collapse onto one retry message.
+    for (const now of [
+      since + 1,
+      Math.floor((since + first) / 2),
+      first - LOCK_RETRY_MIN_MS,
+    ]) {
+      expect(lockBackstopAt('wrun_1:lock_1', since, now)).toBe(first);
+    }
+    const second = lockBackstopAt('wrun_1:lock_1', since, first);
+    expect(second).toBeGreaterThan(first);
+    expect(second).toBeLessThanOrEqual(since + 2 * P);
+  });
+
+  test('scopes are jittered independently', () => {
+    const points = new Set(
+      Array.from({ length: 20 }, (_, i) =>
+        lockBackstopAt(`wrun_${i}:lock_1`, 0, 0)
+      )
+    );
+    expect(points.size).toBeGreaterThan(15);
+  });
+});
+
+describe('stage-2 lock schemas', () => {
+  test('a stage-1 lock row (no waitlist fields) still parses', () => {
+    const row = LockSchema.parse({
+      key: 'k',
+      concurrency: 2,
+      count: 1,
+      grantSeq: 4,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    expect(row.queuedCount ?? 0).toBe(0);
+    expect(row.reservedCount ?? 0).toBe(0);
+  });
+
+  test('lock_failed is a World-only lock event', () => {
+    expect(isLockEventType('lock_failed')).toBe(true);
+    expect(
+      EventSchema.safeParse({
+        eventType: 'lock_failed',
+        correlationId: 'lock_1',
+        runId: 'wrun_1',
+        eventId: 'evnt_1',
+        createdAt: new Date(),
+        eventData: { key: 'k', concurrency: 1, reason: 'waitlist_full' },
+      }).success
+    ).toBe(true);
+    expect(
+      CreateEventSchema.safeParse({
+        eventType: 'lock_failed',
+        correlationId: 'lock_1',
+        eventData: { key: 'k', concurrency: 1, reason: 'waitlist_full' },
+      }).success
+    ).toBe(false);
   });
 });

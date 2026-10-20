@@ -243,6 +243,10 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },
+  lock_failed: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
   // A second release of one scope is a 409, which the runtime swallows.
   lock_released: {
     retryable: true,

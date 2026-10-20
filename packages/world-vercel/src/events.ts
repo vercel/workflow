@@ -56,6 +56,7 @@ import {
   isLockEventType,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
+  type LockWakeTarget,
   mintedSpecVersion,
   validateUlidTimestamp,
   type WorkflowRun,
@@ -152,6 +153,8 @@ interface SplitEventData {
     lockLeaseTtlMs?: number;
     /** lock_created: reserved acquisition deadline (`eventData.expiresAt`). */
     lockExpiresAt?: Date;
+    /** lock_created on a FIFO server: the wake target (`eventData.wake`). */
+    lockWake?: LockWakeTarget;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -251,6 +254,7 @@ type MetaSourceField =
   | 'concurrency'
   | 'leaseTtlMs'
   | 'expiresAt'
+  | 'wake'
   // World-written on the committed lock_created (ignored on a request), and
   // lock_waiter_queued's fields, which this adapter refuses before the wire.
   | 'retryAt'
@@ -377,6 +381,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     }
     if (eventData.expiresAt instanceof Date) {
       meta.lockExpiresAt = eventData.expiresAt;
+    }
+    if (eventData.wake && typeof eventData.wake === 'object') {
+      meta.lockWake = eventData.wake as LockWakeTarget;
     }
   }
   if (typeof eventData.errorCode === 'string') {

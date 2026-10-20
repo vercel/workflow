@@ -41,6 +41,8 @@ import {
   getEventDataPayloadField,
   HookSchema,
   LockAttemptSchema,
+  LockHandoffSchema,
+  type LockWakeTarget,
   type PaginationOptions,
   StructuredErrorSchema,
   WaitSchema,
@@ -290,6 +292,8 @@ interface CreateEventV4InputBase {
   lockLeaseTtlMs?: number;
   /** lock_created: reserved acquisition deadline. */
   lockExpiresAt?: Date;
+  /** lock_created on a FIFO server: the scope's wake target. */
+  lockWake?: LockWakeTarget;
   /** Lazy hook resume idempotency key. Set only on a `hook_received` written
    *  from a queue message's `hookInput`; routes the event through the
    *  server's `(runId, resumeId)` constraint so repeated deliveries of one
@@ -499,6 +503,8 @@ const CreateEventV4BodyBaseSchema = z.object({
   // A lock write's scope after the write (`EventResult.lock`): the fresh
   // `retryAt` of a refused attempt travels here, not on the event.
   lock: LockAttemptSchema.optional(),
+  // Slots the write reserved for waiters; the runtime wakes each grantee.
+  lockHandoffs: z.array(LockHandoffSchema).optional(),
   stepCreated: z.literal(true).optional(),
   maxEvents: z.number().int().positive().optional(),
   // Positions the backend allocated for this write, when it reports them
@@ -567,6 +573,7 @@ const CreateEventV4BodySchemas: {
   // lock_created); lock_waiter_queued is refused before the wire.
   lock_created: CreateEventV4BodySchema,
   lock_acquired: CreateEventV4BodySchema,
+  lock_failed: CreateEventV4BodySchema,
   lock_released: CreateEventV4BodySchema,
   lock_waiter_queued: CreateEventV4BodySchema,
 };
@@ -747,6 +754,7 @@ function buildPostFrameMeta(
   if (input.lockExpiresAt !== undefined) {
     meta.lockExpiresAt = input.lockExpiresAt;
   }
+  if (input.lockWake !== undefined) meta.lockWake = input.lockWake;
   if (input.resumeId !== undefined) meta.resumeId = input.resumeId;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
@@ -1194,7 +1202,9 @@ export function createEventResponseSchema<T extends EventType>(
       // The two writes the World answers with a different event committed
       // in their place: a refused hook claim, and a granted lock.
       (eventType === 'hook_created' && event.eventType === 'hook_conflict') ||
-      (eventType === 'lock_created' && event.eventType === 'lock_acquired'),
+      (eventType === 'lock_created' &&
+        (event.eventType === 'lock_acquired' ||
+          event.eventType === 'lock_failed')),
     { path: ['event', 'eventType'] }
   );
 }
