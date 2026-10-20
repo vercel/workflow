@@ -1,5 +1,9 @@
 import type { Queue, Storage, World } from '@workflow/world';
-import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import {
+  getLockWaitlistPolicy,
+  mintedSpecVersion,
+  reenqueueActiveRuns,
+} from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
@@ -94,7 +98,8 @@ export function createWorld(
       inBandFence: true,
       // A per-key counter row and one holder row per slot, kept equal in
       // every transaction that touches either; see locks.ts.
-      locks: { concurrency: true },
+      // Stage 2 (the FIFO waitlist) unless WORKFLOW_LOCKS_FIFO=0.
+      locks: { concurrency: true, fifo: getLockWaitlistPolicy().fifo },
     },
     ...storage,
     ...streamer,

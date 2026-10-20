@@ -825,7 +825,9 @@ export async function reclaimRunLocks(
       await writeState(basedir, { ...state, updatedAt: now }, tag);
     });
   }
-  return handoffs;
+  // A slot freed here can land on another of this run's own rows before the
+  // loop removes it, which frees it again; drop those intermediate handoffs.
+  return handoffs.filter((h) => h.runId !== runId);
 }
 
 /** The optional `Storage['locks']` namespace for the Local World. */

@@ -1,6 +1,7 @@
 import {
   type Event,
   type Hook,
+  type LockWakeTarget,
   type SerializedData,
   type Step,
   StepStatusSchema,
@@ -355,9 +356,34 @@ export const locks = schema.table('workflow_locks', {
   concurrency: integer('concurrency').notNull(),
   count: integer('count').default(0).notNull(),
   grantSeq: bigint('grant_seq', { mode: 'number' }).default(0).notNull(),
+  /** Stage 2: waiter rows not yet granted. */
+  queuedCount: integer('queued_count').default(0).notNull(),
+  /** Stage 2: waiter rows holding a reserved slot (counted in `count`). */
+  reservedCount: integer('reserved_count').default(0).notNull(),
+  /** Stage 2: the last waiter `seq` assigned. */
+  tailSeq: bigint('tail_seq', { mode: 'number' }).default(0).notNull(),
   createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
   updatedAt: timestamptz('updated_at').default(sql`now()`).notNull(),
 });
+
+/** Stage 2: one waiting lock scope, queued or reserved. */
+export const lockWaiters = schema.table(
+  'workflow_lock_waiters',
+  {
+    runId: varchar('run_id').notNull(),
+    correlationId: varchar('correlation_id').notNull(),
+    key: text('key').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    enqueuedAt: timestamptz('enqueued_at').default(sql`now()`).notNull(),
+    grantedAt: timestamptz('granted_at'),
+    wake: jsonb('wake').$type<LockWakeTarget>(),
+  },
+  (tb) => [
+    primaryKey({ columns: [tb.runId, tb.correlationId] }),
+    uniqueIndex().on(tb.key, tb.seq),
+    index().on(tb.runId),
+  ]
+);
 
 /** One held slot, per `(runId, correlationId)` lock scope. */
 export const lockHolders = schema.table(

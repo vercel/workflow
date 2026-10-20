@@ -25,6 +25,7 @@ import type {
   Hook,
   ListEventsParams,
   ListHooksParams,
+  LockHandoff,
   PaginatedResponse,
   ResolveData,
   SerializedData,
@@ -1387,6 +1388,8 @@ function createUnfencedEventsStorage(
 
       // Track entity created/updated for EventResult
       let run: WorkflowRun | undefined;
+      // Slots the terminal reclaim handed to waiters, for the caller to wake.
+      let terminalLockHandoffs: LockHandoff[] = [];
       let step: Step | undefined;
       let hook: Hook | undefined;
       let wait: Wait | undefined;
@@ -1606,7 +1609,8 @@ function createUnfencedEventsStorage(
             specVersion: effectiveSpecVersion,
           });
         };
-        const { event, lock } = await (data.eventType === 'lock_created'
+        const { event, lock, lockHandoffs } = await (data.eventType ===
+        'lock_created'
           ? acquireLock(drizzle, insertLockEvent, effectiveRunId, data)
           : releaseLock(
               drizzle,
@@ -1628,6 +1632,7 @@ function createUnfencedEventsStorage(
         const lockResult: EventResult = {
           event: stripEventDataRefs(event, resolveData),
           lock,
+          ...(lockHandoffs && { lockHandoffs }),
         };
         if (!report) return lockResult;
         return {
@@ -2125,7 +2130,7 @@ function createUnfencedEventsStorage(
             .where(eq(Schema.waits.runId, effectiveRunId));
           // Terminal reclaim: free every lock slot the run still holds, in
           // the transaction that makes it terminal (see locks.ts).
-          await reclaimRunLocks(tx, effectiveRunId);
+          terminalLockHandoffs = await reclaimRunLocks(tx, effectiveRunId);
 
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);
@@ -3464,6 +3469,9 @@ function createUnfencedEventsStorage(
         hook,
         wait,
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
+        ...(terminalLockHandoffs.length > 0 && {
+          lockHandoffs: terminalLockHandoffs,
+        }),
       };
 
       if (!eventPage) return eventResult;
