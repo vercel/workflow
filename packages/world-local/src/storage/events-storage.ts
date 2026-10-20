@@ -1849,6 +1849,11 @@ export function createEventsStorage(
             // the key's claim lock, so the claim never names a run that was
             // not created and concurrent claimers take turns. See
             // idempotency-keys.ts.
+            //
+            // `run_created` is journaled under that lock too, right after the
+            // run file, and the run file is removed if it cannot be: a run
+            // without its creation event cannot be replayed, yet as a
+            // `pending` holder it would keep the key from every later start.
             await createRunClaimingIdempotencyKey({
               basedir,
               tag,
@@ -1859,7 +1864,17 @@ export function createEventsStorage(
                 runData.idempotencyKeyTtlMs ?? IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
               reusePolicy:
                 runData.idempotencyKeyReusePolicy ?? 'REJECT_DUPLICATE',
-              writeRun: () => writeExclusive(runPath, runJson),
+              writeRun: async () => {
+                if (!(await writeExclusive(runPath, runJson))) return false;
+                try {
+                  prePublishedEvent = await storeEvent(event);
+                  eventId = prePublishedEvent.eventId;
+                } catch (error) {
+                  await deleteJSON(runPath).catch(() => {});
+                  throw error;
+                }
+                return true;
+              },
             });
           } else {
             const created = await writeExclusive(runPath, runJson);
