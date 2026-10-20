@@ -273,6 +273,7 @@ const attributeOrder: AttributeKey[] = [
   'disposedAt',
   'correlationId',
   'eventType',
+  'idempotencyKey',
   'deploymentId',
   'vercelId',
   'computeInstanceId',
@@ -331,6 +332,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   claimedFrom: 'Token Taken From Run',
   eventType: 'Event Type',
   errorCode: 'Error Code',
+  idempotencyKey: 'Idempotency Key',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
   vercelId: 'Request ID',
@@ -691,6 +693,11 @@ const attributeToDisplayFn: Record<
     if (typeof value !== 'string' || value.length === 0) return null;
     return String(value);
   },
+  // The key the run was started with (`experimental_idempotencyKey`).
+  idempotencyKey: (value: unknown) => {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return value;
+  },
   // Internal encryption plumbing: the run's X25519 public key, used by
   // cross-run writers to seal payloads to this run. Not actionable for users
   // and not secret, so hidden rather than rendered as 44 opaque base64 chars.
@@ -765,6 +772,7 @@ const ExpiredDataMessage = () => (
 );
 
 const copyableBasicAttributes = new Set<AttributeKey>([
+  'idempotencyKey',
   'stepId',
   'hookId',
   'eventId',
