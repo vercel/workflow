@@ -2649,6 +2649,95 @@ describe.concurrent('e2e', () => {
     );
   });
 
+  describe('experimental_lock() FIFO waitlist', () => {
+    test(
+      'queues waiters and hands each released slot to the next in line within seconds',
+      { timeout: 240_000 },
+      async (ctx) => {
+        const world = await getWorld();
+        // Only where the World declares the waitlist (world-vercel needs both
+        // WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS and _FIFO). Elsewhere waiters
+        // poll, and this test has nothing to prove.
+        if (world.capabilities?.locks?.fifo !== true) ctx.skip();
+
+        const key = `e2e-lock-fifo:${process.env.VERCEL_DEPLOYMENT_ID ?? 'local'}:${Math.random().toString(36).slice(2)}`;
+        const waiters = 4;
+        // The holder keeps the slot long enough that a polling waiter would
+        // be in its capped 30s backoff windows by the release; each waiter
+        // then holds briefly so the handoffs chain.
+        const holdMs = 40_000;
+        const workflow = await e2e('lockWorkflow');
+        const holder = await start(workflow, [key, 1, holdMs]);
+        await sleep(5_000);
+        const queued = [];
+        for (let i = 0; i < waiters; i++) {
+          queued.push(await start(workflow, [key, 1, 1_000]));
+          await sleep(500);
+        }
+
+        // Where the World exposes its admin reads (Local and Postgres), the
+        // waiters must be rows in the queue, each carrying the wake target
+        // the runtime only sends to a FIFO World.
+        const admin = world.locks;
+        if (admin?.listWaiters) {
+          let rows: Awaited<ReturnType<typeof admin.listWaiters>> = [];
+          for (let i = 0; i < 40 && rows.length < waiters; i++) {
+            rows = await admin.listWaiters({ key });
+            if (rows.length < waiters) await sleep(500);
+          }
+          expect(rows.map((w) => w.runId).sort()).toEqual(
+            queued.map((r) => r.runId).sort()
+          );
+          for (const row of rows) expect(row.wake?.queueName).toBeTruthy();
+        }
+
+        const runs = [holder, ...queued];
+        const results = (await Promise.all(runs.map((r) => r.returnValue))) as {
+          supported: boolean;
+        }[];
+        expect(results.every((r) => r.supported)).toBe(true);
+
+        // Grants, releases and enqueues from the World's own clock.
+        const timeline = await Promise.all(
+          runs.map(async (run) => {
+            const { data } = await world.events.list({
+              runId: run.runId,
+              pagination: { limit: 1000 },
+            });
+            const at = (type: string) => {
+              const e = data.find((ev) => ev.eventType === type);
+              return e ? +e.createdAt : undefined;
+            };
+            return {
+              runId: run.runId,
+              created: at('lock_created'),
+              acquired: at('lock_acquired') ?? 0,
+              released: at('lock_released') ?? 0,
+            };
+          })
+        );
+        const byGrant = [...timeline].sort((a, b) => a.acquired - b.acquired);
+        // FIFO: the runs that queued were granted in the order they queued.
+        const waited = byGrant.filter((t) => t.created !== undefined);
+        expect(waited.map((t) => t.runId)).toEqual(
+          [...waited]
+            .sort((a, b) => (a.created ?? 0) - (b.created ?? 0))
+            .map((t) => t.runId)
+        );
+        expect(waited.length).toBeGreaterThanOrEqual(waiters);
+        // Handoff: each grant lands seconds after the release before it.
+        // Polling waiters 40s into their wait retry in 30s windows, so a
+        // chain of four such gaps would almost never fit; only the wake
+        // the release sends explains it.
+        const gaps = byGrant
+          .slice(1)
+          .map((t, i) => t.acquired - byGrant[i].released);
+        console.log('lock handoff gaps (ms)', JSON.stringify(gaps));
+        for (const gap of gaps) expect(gap).toBeLessThan(10_000);
+      }
+    );
+  });
+
   describe('createHook({ experimental_force: true })', () => {
     /** Every event of a run, in log order, across pages. */
     async function allRunEvents(runId: string) {
