@@ -97,7 +97,7 @@ export function createWorld(): World {
 
 The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
 
-`mintedSpecVersion()` returns the current spec version, or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) opts new runs out. Call it inside `createWorld()` so a process can create Worlds in both modes. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
+`mintedSpecVersion()` returns the current spec version, or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) makes new runs spec 8 runs. Call it inside `createWorld()` so a process can create Worlds in both modes. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
 
 Calling it keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number, or `SPEC_VERSION_CURRENT`, which does not follow `WORKFLOW_SEALED_LOG`, leaves your World out of step. Keep `@workflow/world` in the same release channel as the `workflow` version your users install. See [Spec versions](/worlds/upgrading-to-v5#spec-versions) for what each version requires of a World.
 

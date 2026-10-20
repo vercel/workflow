@@ -42,8 +42,8 @@ import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
-  type LoadedEventLog,
   findEventSlotGap,
+  type LoadedEventLog,
   maxEventSlot,
   mergeReportedEvents,
   queueMessages,
