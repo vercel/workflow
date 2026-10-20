@@ -157,6 +157,55 @@ export function createFetcher(control: Control) {
       return data;
     },
     /**
+     * A keyed start (see the `/invoke-keyed` route in server.mts): the run
+     * and whether this call created it, or the holder when the start was
+     * refused under the FAIL conflict policy.
+     */
+    async invokeKeyed<F extends Files, W extends Workflows<F>>(
+      file: F,
+      workflow: W,
+      args: unknown[],
+      options: {
+        key: string;
+        reusePolicy?:
+          | 'ALLOW_DUPLICATE'
+          | 'ALLOW_DUPLICATE_FAILED_ONLY'
+          | 'REJECT_DUPLICATE';
+        conflictPolicy?: 'USE_EXISTING' | 'FAIL';
+      }
+    ): Promise<
+      | { refused: false; runId: string; started: boolean | null }
+      | { refused: true; name: string; runId: string; runStatus: string | null }
+    > {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/invoke-keyed`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ file, workflow, args, options }),
+        }
+      );
+      if (x.status === 409) {
+        const refusal = (await x.json()) as {
+          name: string;
+          runId: string;
+          runStatus: string | null;
+        };
+        return { refused: true, ...refusal };
+      }
+      if (!x.ok) {
+        throw new Error(`Keyed start failed: ${x.status} ${await x.text()}`);
+      }
+      const data = (await x.json()) as {
+        runId: string;
+        started: boolean | null;
+      };
+      onTestFailed(() => {
+        console.error('Workflow run:', data.runId);
+      });
+      return { refused: false, ...data };
+    },
+    /**
      * Every event of a run, oldest first, as the World stored it.
      *
      * Ids included on purpose: they are the one part of the storage contract a
