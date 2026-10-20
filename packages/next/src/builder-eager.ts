@@ -1,9 +1,17 @@
 import { constants } from 'node:fs';
 import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import {
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from 'node:path';
 import {
   assertFlowBundleIsSandboxSafe,
   type NextConfig as BuilderNextConfig,
+  FLOW_ASSETS_DIR,
   type WorkflowManifest,
 } from '@workflow/builders';
 import type { NextConfig as ProjectNextConfig } from 'next';
@@ -830,6 +838,25 @@ export async function getNextBuilderEager(
         join(outputDir, '.well-known/workflow/v1/config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );
+    }
+
+    /**
+     * The flow route is re-bundled by Next.js into `.next/server`, where
+     * `import.meta.url` does not point at the generated route, so the files
+     * next to it are read relative to the project directory instead: the
+     * working directory under `next start`, on Vercel, and in `standalone`
+     * output. `withWorkflow` adds them to the flow function's file traces.
+     * The path is resolved per call, so Turbopack doesn't trace the
+     * directory as a dependency of the route.
+     */
+    protected override getFlowAssetLoaderCode(
+      flowOutfile: string
+    ): string | undefined {
+      const assetsDir = relative(
+        this.config.workingDir,
+        join(dirname(flowOutfile), FLOW_ASSETS_DIR)
+      ).replaceAll('\\', '/');
+      return `(name) => Promise.all([import('node:fs/promises'), import('node:path')]).then(([fs, path]) => fs.readFile(path.join(/* turbopackIgnore: true */ process.cwd(), ${JSON.stringify(assetsDir)}, name)))`;
     }
 
     /**

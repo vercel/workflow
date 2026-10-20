@@ -2,6 +2,7 @@ import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  FLOW_ASSETS_DIR,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
@@ -445,6 +446,37 @@ function externalizeWsNativeAccelerators(webpackConfig: {
   }
 }
 
+/**
+ * Add file-tracing includes for a route, preserving any the user configured.
+ * Top-level `outputFileTracingIncludes` since Next.js 15; under
+ * `experimental` before.
+ */
+function addOutputFileTracingIncludes(
+  nextConfig: NextConfig,
+  nextVersion: string,
+  route: string,
+  globs: string[]
+): void {
+  type Includes = Record<string, string[]>;
+  const merge = (existing: Includes | undefined): Includes => ({
+    ...existing,
+    [route]: [...new Set([...(existing?.[route] ?? []), ...globs])],
+  });
+  if (semver.valid(nextVersion) && semver.lt(nextVersion, '15.0.0')) {
+    const experimental = { ...(nextConfig.experimental ?? {}) } as Record<
+      string,
+      unknown
+    >;
+    experimental.outputFileTracingIncludes = merge(
+      experimental.outputFileTracingIncludes as Includes | undefined
+    );
+    nextConfig.experimental = experimental as NextConfig['experimental'];
+    return;
+  }
+  const config = nextConfig as { outputFileTracingIncludes?: Includes };
+  config.outputFileTracingIncludes = merge(config.outputFileTracingIncludes);
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -585,6 +617,22 @@ export function withWorkflow(
       ? resolveConfiguredProjectRoot(workingDir, configuredProjectRoot)
       : resolveProjectRoot(workingDir);
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
+
+    // Ship the files the builder writes next to the flow route (the QuickJS
+    // baseline heap) with the flow function. Next.js only traces what the
+    // route's code statically references, and the generated route reads
+    // them by a computed path, so list them explicitly. Globs are relative
+    // to the project directory; the route may live under `app/` or
+    // `src/app/`.
+    addOutputFileTracingIncludes(
+      nextConfig,
+      nextVersion,
+      '/.well-known/workflow/v1/flow',
+      [
+        `./app/.well-known/workflow/v1/flow/${FLOW_ASSETS_DIR}/**`,
+        `./src/app/.well-known/workflow/v1/flow/${FLOW_ASSETS_DIR}/**`,
+      ]
+    );
 
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;

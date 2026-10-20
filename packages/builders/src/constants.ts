@@ -48,6 +48,14 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
 }
 
 /**
+ * Directory, next to the generated flow route, holding the files the builder
+ * ships with it (the QuickJS engine's prebuilt baseline heap). Integrations
+ * whose framework re-bundles the route copy it into their output and point
+ * the route's asset loader at the copy.
+ */
+export const FLOW_ASSETS_DIR = '__workflow_assets';
+
+/**
  * Creates the optional second argument for generated `workflowEntrypoint()`
  * calls. The namespace is resolved while building so generated route files do
  * not need `WORKFLOW_QUEUE_NAMESPACE` at runtime.
@@ -59,6 +67,8 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   routeModuleBodyStartedAt?: string;
   /** Raw code identifier of the prebuilt QuickJS baseline constant, not data. */
   quickjsBaseline?: string;
+  /** Raw code identifier of the flow asset loader, not data. */
+  loadAsset?: string;
 }) {
   const namespace = resolveQueueNamespace(options?.namespace);
   const fields: string[] = [];
@@ -81,6 +91,10 @@ export function createWorkflowEntrypointOptionsCode(options?: {
 
   if (options?.quickjsBaseline) {
     fields.push(`quickjsBaseline: ${options.quickjsBaseline}`);
+  }
+
+  if (options?.loadAsset) {
+    fields.push(`loadAsset: ${options.loadAsset}`);
   }
 
   if (fields.length === 0) {

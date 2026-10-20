@@ -11,6 +11,7 @@ import {
   __peekBaselineEntryForTests,
   createPrebuiltQuickJSBaseline,
   getQuickJSBaselineDictionary,
+  QUICKJS_BASELINE_ASSET,
   quickjsBaselineEngineId,
   registerPrebuiltQuickJSBaseline,
   startQuickJSWorkflow,
@@ -111,47 +112,83 @@ describe('QuickJS baseline heap', () => {
   });
 
   describe('prebuilt', () => {
+    /** Build it, and a loader that serves its asset like a deployment would. */
+    async function prebuild(code = workflowCode) {
+      const build = await createPrebuiltQuickJSBaseline(code);
+      assert(build);
+      const reads: string[] = [];
+      const loadAsset = async (name: string) => {
+        reads.push(name);
+        if (name !== QUICKJS_BASELINE_ASSET || !build.asset) {
+          throw new Error(`ENOENT: ${name}`);
+        }
+        return build.asset;
+      };
+      __clearBaselineSnapshotCacheForTests();
+      return { ...build, loadAsset, reads };
+    }
+
     it('matches the heap an instance hydrates, and is used instead of hydrating', async () => {
-      const prebuilt = await createPrebuiltQuickJSBaseline(workflowCode);
-      expect(prebuilt).toMatchObject({
-        v: 1,
+      const hydrated = await getQuickJSBaselineDictionary(workflowCode, 'w');
+      const { header, asset, loadAsset, reads } = await prebuild();
+      expect(header).toMatchObject({
+        v: 2,
         engineId: quickjsBaselineEngineId(),
       });
-      expect(prebuilt?.ineligible).toBeUndefined();
-      const hydrated = await getQuickJSBaselineDictionary(workflowCode, 'w');
-      expect(prebuilt?.digest).toBe(hydrated?.digest);
+      expect(header.ineligible).toBeUndefined();
+      expect(header.digest).toBe(hydrated?.digest);
+      // The asset is compressed.
+      expect(asset?.byteLength).toBeLessThan(
+        (hydrated?.bytes.byteLength ?? 0) / 2
+      );
 
-      __clearBaselineSnapshotCacheForTests();
-      registerPrebuiltQuickJSBaseline(prebuilt);
+      registerPrebuiltQuickJSBaseline(header, loadAsset);
       expect(await run()).toBe(2005);
+      expect(reads).toEqual([QUICKJS_BASELINE_ASSET]);
       // A hydrated entry computes its dictionary lazily; a prebuilt one
       // arrives with it.
       const entry = await __peekBaselineEntryForTests(workflowCode);
       expect(entry).toMatchObject({
         state: 'ready',
-        dictionary: { digest: prebuilt?.digest },
+        dictionary: { digest: header.digest },
       });
     });
 
-    it('is ignored when built by different engine code', async () => {
-      const prebuilt = await createPrebuiltQuickJSBaseline(workflowCode);
-      assert(prebuilt);
-      __clearBaselineSnapshotCacheForTests();
-      registerPrebuiltQuickJSBaseline({ ...prebuilt, engineId: 'other' });
+    it('is read at most once per process', async () => {
+      const { header, loadAsset, reads } = await prebuild();
+      registerPrebuiltQuickJSBaseline(header, loadAsset);
       expect(await run()).toBe(2005);
+      expect(await run()).toBe(2005);
+      expect(reads).toHaveLength(1);
+    });
+
+    it.each([
+      ['built by different engine code', { engineId: 'other' }, false],
+      ['corrupt', { digest: '0'.repeat(64) }, true],
+    ])('is ignored when %s', async (_name, override, reads) => {
+      const { header, loadAsset, reads: read } = await prebuild();
+      registerPrebuiltQuickJSBaseline({ ...header, ...override }, loadAsset);
+      expect(await run()).toBe(2005);
+      // An engine mismatch is decided from the header alone.
+      expect(read.length > 0).toBe(reads);
       const entry = await __peekBaselineEntryForTests(workflowCode);
       expect(entry?.state).toBe('ready');
       expect(entry && 'dictionary' in entry && entry.dictionary).toBeFalsy();
     });
 
-    it('is ignored when corrupt', async () => {
-      const prebuilt = await createPrebuiltQuickJSBaseline(workflowCode);
-      assert(prebuilt);
-      __clearBaselineSnapshotCacheForTests();
-      registerPrebuiltQuickJSBaseline({
-        ...prebuilt,
-        digest: '0'.repeat(64),
-      });
+    it.each([
+      ['its asset cannot be read', true],
+      ['there is no asset loader', false],
+    ])('falls back to hydrating when %s', async (_name, withLoader) => {
+      const { header } = await prebuild();
+      registerPrebuiltQuickJSBaseline(
+        header,
+        withLoader
+          ? async () => {
+              throw new Error('ENOENT');
+            }
+          : undefined
+      );
       expect(await run()).toBe(2005);
       const entry = await __peekBaselineEntryForTests(workflowCode);
       expect(entry?.state).toBe('ready');
@@ -160,24 +197,37 @@ describe('QuickJS baseline heap', () => {
 
     it('records an ineligible bundle so instances skip the hydrate', async () => {
       const code = `${workflowCode}\nvar startedAt = Date.now();`;
-      const prebuilt = await createPrebuiltQuickJSBaseline(code);
-      expect(prebuilt?.ineligible).toMatch(/clock read/);
-      expect(prebuilt?.data).toBeUndefined();
-      __clearBaselineSnapshotCacheForTests();
-      registerPrebuiltQuickJSBaseline(prebuilt);
+      const { header, asset, error, loadAsset, reads } = await prebuild(code);
+      expect(header.ineligible).toMatch(/clock read/);
+      expect(asset).toBeUndefined();
+      expect(error).toBeUndefined();
+      registerPrebuiltQuickJSBaseline(header, loadAsset);
       expect(await run(code)).toBe(2005);
+      expect(reads).toEqual([]);
       expect(await __peekBaselineEntryForTests(code)).toEqual({
         state: 'ineligible',
-        reason: prebuilt?.ineligible,
+        reason: header.ineligible,
       });
     });
 
+    it('reports what module scope threw', async () => {
+      const code = `${workflowCode}\nnew Intl.NumberFormat("en-US");`;
+      const { header, asset, error } = await prebuild(code);
+      expect(asset).toBeUndefined();
+      expect(header.ineligible).toMatch(/module scope threw/);
+      expect(error).toMatchObject({
+        name: 'WorkflowRuntimeError',
+        message: expect.stringContaining('Intl.NumberFormat'),
+      });
+      expect(error?.stack).toEqual(expect.any(String));
+    });
+
     it('does not apply to other workflow code', async () => {
-      const prebuilt = await createPrebuiltQuickJSBaseline(workflowCode);
-      __clearBaselineSnapshotCacheForTests();
-      registerPrebuiltQuickJSBaseline(prebuilt);
+      const { header, loadAsset, reads } = await prebuild();
+      registerPrebuiltQuickJSBaseline(header, loadAsset);
       const other = `${workflowCode}\n// another deployment`;
       expect(await run(other)).toBe(2005);
+      expect(reads).toEqual([]);
       const entry = await __peekBaselineEntryForTests(other);
       expect(entry && 'dictionary' in entry && entry.dictionary).toBeFalsy();
     });

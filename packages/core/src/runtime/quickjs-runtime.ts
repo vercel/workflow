@@ -1348,18 +1348,26 @@ type BaselineEntry =
        */
       dictionary?: { bytes: Uint8Array; digest: string };
     }
-  | { state: 'ineligible'; reason: string };
+  | {
+      state: 'ineligible';
+      reason: string;
+      /** What module scope threw, when that is the reason. */
+      error?: { name?: string; message: string; stack?: string };
+    };
 
 // On `globalThis` (see `globalSingleton`): a snapshot is expensive to build and
 // is keyed by bundle, so per-copy caches would build the same baseline once per
 // bundler layer while each enforcing its own bound.
 const baselines = globalSingleton(
   '@workflow/core//quickjsBaselines',
-  2,
+  3,
   () => ({
     byKey: new Map<string, Promise<BaselineEntry>>(),
     /** Prebuilt baselines shipped with the deployment, by code digest. */
-    prebuilt: new Map<string, PrebuiltQuickJSBaseline>(),
+    prebuilt: new Map<
+      string,
+      { header: PrebuiltQuickJSBaseline; loadAsset?: WorkflowAssetLoader }
+    >(),
   })
 );
 const BASELINE_CACHE_MAX_ENTRIES = 4;
@@ -1392,136 +1400,180 @@ export function quickjsBaselineEngineId(): string {
 }
 
 /**
- * A baseline heap built ahead of time (by the workflow builder) and shipped
- * inside the generated flow route, so an instance restores it instead of
- * evaluating the bundle to produce it. Plain JSON, so the builder can emit
- * it as a literal.
+ * File name of the prebuilt baseline heap among the flow route's assets
+ * (see {@link WorkflowAssetLoader}): the serialized heap, zstd-compressed.
+ */
+export const QUICKJS_BASELINE_ASSET = 'quickjs-baseline.bin';
+
+/**
+ * Reads a file the workflow builder shipped with the flow route, by name.
+ * Each framework integration ships the files and supplies the loader that
+ * finds them in its deployment output (see `workflowEntrypoint`'s
+ * `loadAsset` option).
+ */
+export type WorkflowAssetLoader = (name: string) => Promise<Uint8Array>;
+
+/**
+ * The header of a baseline heap built ahead of time by the workflow
+ * builder. It is emitted inline in the generated flow route, so a mismatch
+ * (different engine, different code) never costs a file read; the heap
+ * itself is the {@link QUICKJS_BASELINE_ASSET} file. Plain JSON.
  */
 export interface PrebuiltQuickJSBaseline {
   /** Format of this object. */
-  v: 1;
+  v: 2;
   /** {@link quickjsBaselineEngineId} of the code that built it. */
   engineId: string;
   /** SHA-256 of the workflow code it was built from, source map stripped. */
   codeDigest: string;
   /**
-   * Why the bundle cannot use a baseline (module scope drew randomness or
+   * Why the bundle cannot use a baseline (module scope drew randomness,
    * read the clock, or threw). Recorded so instances skip the hydrate that
-   * would only rediscover it. When set, the fields below are absent.
+   * would only rediscover it. When set there is no asset, and the fields
+   * below are absent.
    */
   ineligible?: string;
   /** See `BaselineEntry.serdeRootPtr`. */
   serdeRootPtr?: number;
-  /** SHA-256 of the serialized heap. */
+  /** SHA-256 of the serialized (uncompressed) heap. */
   digest?: string;
-  /** The serialized heap, zstd-compressed, base64. */
-  data?: string;
+}
+
+/**
+ * What {@link createPrebuiltQuickJSBaseline} produces: the header for the
+ * route, and the asset file to ship next to it.
+ */
+export interface PrebuiltQuickJSBaselineBuild {
+  header: PrebuiltQuickJSBaseline;
+  /** Contents of {@link QUICKJS_BASELINE_ASSET}; absent when ineligible. */
+  asset?: Uint8Array;
+  /**
+   * The error the bundle's module scope threw in the QuickJS VM, when that
+   * is why it is ineligible. QuickJS runs of this bundle would fail with it.
+   */
+  error?: { name?: string; message: string; stack?: string };
 }
 
 /**
  * Make a prebuilt baseline available to this process. Matched against a
  * bundle by code digest the first time that bundle needs a baseline; a
- * baseline built by different engine code is ignored.
+ * baseline built by different engine code is ignored, and one whose asset
+ * cannot be read falls back to building it in memory.
  */
 export function registerPrebuiltQuickJSBaseline(
-  prebuilt: PrebuiltQuickJSBaseline | undefined
+  header: PrebuiltQuickJSBaseline | undefined,
+  loadAsset?: WorkflowAssetLoader
 ): void {
-  if (!prebuilt || prebuilt.v !== 1) return;
-  if (baselines.prebuilt.has(prebuilt.codeDigest)) return;
+  if (!header || header.v !== 2) return;
+  if (baselines.prebuilt.has(header.codeDigest)) return;
   if (baselines.prebuilt.size >= PREBUILT_BASELINE_MAX_ENTRIES) {
     const oldest = baselines.prebuilt.keys().next().value;
     if (oldest !== undefined) baselines.prebuilt.delete(oldest);
   }
-  baselines.prebuilt.set(prebuilt.codeDigest, prebuilt);
+  baselines.prebuilt.set(header.codeDigest, { header, loadAsset });
 }
 
-/** Decode a prebuilt baseline, or undefined when it can't be used here. */
-function loadPrebuiltBaseline(
-  prebuilt: PrebuiltQuickJSBaseline
-): BaselineEntry | undefined {
-  if (prebuilt.engineId !== quickjsBaselineEngineId()) {
-    runtimeLogger.debug(
-      'QuickJS prebuilt baseline was built by a different engine; hydrating instead',
-      { prebuiltEngineId: prebuilt.engineId }
-    );
-    return undefined;
-  }
-  if (prebuilt.ineligible !== undefined) {
-    return { state: 'ineligible', reason: prebuilt.ineligible };
-  }
-  if (
-    prebuilt.data === undefined ||
-    prebuilt.digest === undefined ||
-    prebuilt.serdeRootPtr === undefined
-  ) {
-    return undefined;
-  }
-  const zlib = (
+function getNodeZlib(): typeof import('node:zlib') | undefined {
+  return (
     globalThis as {
       process?: {
         getBuiltinModule?: (id: string) => typeof import('node:zlib');
       };
     }
   ).process?.getBuiltinModule?.('node:zlib');
+}
+
+/** Load a prebuilt baseline, or undefined when it can't be used here. */
+async function loadPrebuiltBaseline(prebuilt: {
+  header: PrebuiltQuickJSBaseline;
+  loadAsset?: WorkflowAssetLoader;
+}): Promise<BaselineEntry | undefined> {
+  const { header, loadAsset } = prebuilt;
+  if (header.engineId !== quickjsBaselineEngineId()) {
+    runtimeLogger.debug(
+      'QuickJS prebuilt baseline was built by a different engine; hydrating instead',
+      { prebuiltEngineId: header.engineId }
+    );
+    return undefined;
+  }
+  if (header.ineligible !== undefined) {
+    return { state: 'ineligible', reason: header.ineligible };
+  }
+  if (
+    !loadAsset ||
+    header.digest === undefined ||
+    header.serdeRootPtr === undefined
+  ) {
+    return undefined;
+  }
+  const zlib = getNodeZlib();
   if (typeof zlib?.zstdDecompressSync !== 'function') return undefined;
+  const loadStart = Date.now();
+  const compressed = await loadAsset(QUICKJS_BASELINE_ASSET);
   const bytes = new Uint8Array(
-    zlib.zstdDecompressSync(Buffer.from(prebuilt.data, 'base64'), {
+    zlib.zstdDecompressSync(compressed, {
       maxOutputLength: QUICKJS_MEMORY_LIMIT_BYTES * 2,
     })
   );
-  if (sha256Hex(bytes) !== prebuilt.digest) {
+  if (sha256Hex(bytes) !== header.digest) {
     runtimeLogger.warn(
       'QuickJS prebuilt baseline is corrupt (digest mismatch); hydrating instead'
     );
     return undefined;
   }
+  runtimeLogger.debug('QuickJS prebuilt baseline loaded', {
+    loadMs: Date.now() - loadStart,
+    storedBytes: compressed.byteLength,
+    heapBytes: bytes.byteLength,
+  });
   return {
     state: 'ready',
     snapshot: QuickJS.deserializeSnapshot(bytes),
-    serdeRootPtr: prebuilt.serdeRootPtr,
-    dictionary: { bytes, digest: prebuilt.digest },
+    serdeRootPtr: header.serdeRootPtr,
+    dictionary: { bytes, digest: header.digest },
   };
 }
 
 /**
- * Build a {@link PrebuiltQuickJSBaseline} for a workflow bundle. Called by
- * the workflow builder at build time; produces the same heap an instance
- * would hydrate (see prepareBaselineSnapshot). Returns undefined where the
- * build runtime lacks zstd.
+ * Build the prebuilt baseline for a workflow bundle. Called by the workflow
+ * builder at build time; produces the same heap an instance would hydrate
+ * (see prepareBaselineSnapshot). Returns undefined where the build runtime
+ * lacks zstd.
  */
 export async function createPrebuiltQuickJSBaseline(
   workflowCode: string
-): Promise<PrebuiltQuickJSBaseline | undefined> {
-  const zlib = (
-    globalThis as {
-      process?: {
-        getBuiltinModule?: (id: string) => typeof import('node:zlib');
-      };
-    }
-  ).process?.getBuiltinModule?.('node:zlib');
+): Promise<PrebuiltQuickJSBaselineBuild | undefined> {
+  const zlib = getNodeZlib();
   if (typeof zlib?.zstdCompressSync !== 'function') return undefined;
   const code = stripInlineSourceMap(workflowCode);
   const header = {
-    v: 1 as const,
+    v: 2 as const,
     engineId: quickjsBaselineEngineId(),
     codeDigest: sha256Hex(code),
   };
   const entry = await prepareBaselineSnapshot(code, 'build');
   if (entry.state === 'ineligible') {
-    return { ...header, ineligible: entry.reason };
+    return {
+      header: { ...header, ineligible: entry.reason },
+      ...(entry.error ? { error: entry.error } : {}),
+    };
   }
   const bytes = QuickJS.serializeSnapshot(entry.snapshot);
-  const compressed = zlib.zstdCompressSync(bytes, {
-    params: {
-      [zlib.constants.ZSTD_c_compressionLevel]: 12,
-      [zlib.constants.ZSTD_c_windowLog]: 27,
-    },
-  });
+  const asset = new Uint8Array(
+    zlib.zstdCompressSync(bytes, {
+      params: {
+        [zlib.constants.ZSTD_c_compressionLevel]: 12,
+        [zlib.constants.ZSTD_c_windowLog]: 27,
+      },
+    })
+  );
   return {
-    ...header,
-    serdeRootPtr: entry.serdeRootPtr,
-    digest: sha256Hex(bytes),
-    data: Buffer.from(compressed).toString('base64'),
+    header: {
+      ...header,
+      serdeRootPtr: entry.serdeRootPtr,
+      digest: sha256Hex(bytes),
+    },
+    asset,
   };
 }
 
@@ -1541,6 +1593,32 @@ export async function getQuickJSBaselineDictionary(
     entry.dictionary = { bytes, digest: sha256Hex(bytes) };
   }
   return entry.dictionary;
+}
+
+/** The name, message and stack of an error thrown out of guest code. */
+function describeHydrateError(
+  vm: QuickJS,
+  err: unknown
+): { name?: string; message: string; stack?: string } {
+  if (err instanceof JSException) {
+    try {
+      const dumped = vm.dump(err.handle) as Record<string, unknown> | null;
+      if (dumped && typeof dumped === 'object') {
+        return {
+          name: typeof dumped.name === 'string' ? dumped.name : undefined,
+          message: String(dumped.message ?? err.message),
+          stack: typeof dumped.stack === 'string' ? dumped.stack : undefined,
+        };
+      }
+      return { message: String(dumped ?? err.message) };
+    } finally {
+      err.handle.dispose();
+    }
+  }
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, stack: err.stack };
+  }
+  return { message: String(err) };
 }
 
 /** Test-only: observe how a bundle was classified. */
@@ -1636,12 +1714,15 @@ async function prepareBaselineSnapshot(
     try {
       // Workflow-independent filename. See BASELINE_BUNDLE_FILENAME.
       vm.evalCode(workflowCode, BASELINE_BUNDLE_FILENAME).dispose();
-    } catch {
+    } catch (err) {
       // Let the fresh path re-evaluate and surface the real error with
-      // proper filename / source-map handling.
+      // proper filename / source-map handling. The error is kept for the
+      // build, which reports it (see createPrebuiltQuickJSBaseline).
+      const error = describeHydrateError(vm, err);
       return {
         state: 'ineligible',
-        reason: 'module scope threw during hydrate',
+        reason: `module scope threw during hydrate: ${error.message}`,
+        error,
       };
     }
 
@@ -1692,7 +1773,7 @@ function getBaselineEntry(
         const prebuilt = baselines.prebuilt.get(sha256Hex(workflowCode));
         if (prebuilt) {
           try {
-            const loaded = loadPrebuiltBaseline(prebuilt);
+            const loaded = await loadPrebuiltBaseline(prebuilt);
             if (loaded) return loaded;
           } catch (err) {
             runtimeLogger.warn(

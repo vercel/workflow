@@ -1,14 +1,22 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
+import { FLOW_ASSETS_DIR } from './constants.js';
 import type { StandaloneConfig } from './types.js';
 
 /**
- * The builder prebuilds the QuickJS engine's baseline heap into the flow
- * route when the build selects that engine, so instances restore it
- * instead of evaluating the bundle to build it.
+ * The builder prebuilds the QuickJS engine's baseline heap for every
+ * production build: the header goes inline in the flow route, and the heap
+ * ships as a file next to it that the route's asset loader reads.
  */
 
 class TestBuilder extends BaseBuilder {
@@ -28,6 +36,8 @@ class TestBuilder extends BaseBuilder {
   }
 }
 
+const ASSET = 'quickjs-baseline.bin';
+
 describe('prebuilt QuickJS baseline', () => {
   const repoRoot = resolve(import.meta.dirname, '../../..');
   const outputDirs: string[] = [];
@@ -37,18 +47,17 @@ describe('prebuilt QuickJS baseline', () => {
       rmSync(outputDir, { recursive: true, force: true });
     }
     outputDirs.length = 0;
-    delete process.env.WORKFLOW_QUICKJS_PREBUILT_BASELINE;
     delete process.env.WORKFLOW_VM;
   });
 
-  async function buildRoute() {
+  async function buildRoute(
+    source = 'export async function wf() { "use workflow"; return 1; }\n',
+    options: { watch?: boolean } = {}
+  ) {
     const outputDir = mkdtempSync(join(import.meta.dirname, '.qjs-baseline-'));
     outputDirs.push(outputDir);
     const inputFile = join(outputDir, 'workflow.ts');
-    writeFileSync(
-      inputFile,
-      'export async function wf() { "use workflow"; return 1; }\n'
-    );
+    writeFileSync(inputFile, source);
     const config: StandaloneConfig = {
       buildTarget: 'standalone',
       workingDir: outputDir,
@@ -56,54 +65,100 @@ describe('prebuilt QuickJS baseline', () => {
       moduleSpecifierRoot: repoRoot,
       dirs: ['.'],
       stepsBundlePath: join(outputDir, 'steps.js'),
-      workflowsBundlePath: join(outputDir, 'workflow.js'),
+      workflowsBundlePath: join(outputDir, 'flow', 'workflow.mjs'),
       webhookBundlePath: join(outputDir, 'webhook.js'),
       sourcemap: false,
+      watch: options.watch,
       suppressCreateWorkflowsBundleLogs: true,
       suppressCreateWorkflowsBundleWarnings: true,
     };
-    const { interimBundleText } = await new TestBuilder(
-      config
-    ).createWorkflowBundle(inputFile, config.workflowsBundlePath, {
-      discoveredSteps: new Set(),
-      discoveredWorkflows: new Set([inputFile]),
-      discoveredSerdeFiles: new Set(),
-    });
+    const result = await new TestBuilder(config).createWorkflowBundle(
+      inputFile,
+      config.workflowsBundlePath,
+      {
+        discoveredSteps: new Set(),
+        discoveredWorkflows: new Set([inputFile]),
+        discoveredSerdeFiles: new Set(),
+      }
+    );
+    await result.interimBundleCtx?.dispose();
+    const routePath = config.workflowsBundlePath;
     return {
-      route: readFileSync(config.workflowsBundlePath, 'utf8'),
-      interimBundleText: interimBundleText as string,
+      routePath,
+      route: readFileSync(routePath, 'utf8'),
+      interimBundleText: result.interimBundleText as string,
+      assetPath: join(dirname(routePath), FLOW_ASSETS_DIR, ASSET),
     };
   }
 
-  function prebuiltIn(route: string) {
-    const match = route.match(/^const workflowQuickJSBaseline = (.*);$/m);
-    return match ? JSON.parse(match[1]) : undefined;
+  function constant(route: string, name: string): string | undefined {
+    return route.match(new RegExp(`^const ${name} = (.*);$`, 'm'))?.[1];
   }
 
-  it('is not emitted by default', async () => {
-    const { route } = await buildRoute();
-    expect(prebuiltIn(route)).toBeUndefined();
-    expect(route).not.toContain('quickjsBaseline');
-  });
-
-  it('is emitted when the build selects the QuickJS engine', async () => {
-    process.env.WORKFLOW_VM = 'quickjs';
-    const { route, interimBundleText } = await buildRoute();
-    const prebuilt = prebuiltIn(route);
-    expect(prebuilt).toMatchObject({ v: 1 });
-    expect(prebuilt.ineligible).toBeUndefined();
-    expect(typeof prebuilt.data).toBe('string');
+  it('ships the heap as a file next to the route, and the header inline', async () => {
+    const { route, routePath, interimBundleText, assetPath } =
+      await buildRoute();
+    const header = JSON.parse(
+      constant(route, 'workflowQuickJSBaseline') ?? 'null'
+    );
+    expect(header).toMatchObject({ v: 2 });
+    expect(header.ineligible).toBeUndefined();
     // Keyed to the exact code the route hands the runtime.
-    expect(prebuilt.codeDigest).toBe(
+    expect(header.codeDigest).toBe(
       createHash('sha256').update(interimBundleText).digest('hex')
     );
-    expect(route).toContain('quickjsBaseline: workflowQuickJSBaseline');
+    expect(route).toContain(
+      'quickjsBaseline: workflowQuickJSBaseline, loadAsset: workflowLoadAsset'
+    );
+    // No heap bytes in the route itself.
+    expect(route.length).toBeLessThan(interimBundleText.length + 4096);
+    expect(existsSync(assetPath)).toBe(true);
+
+    // The route's loader finds the file relative to the route module.
+    const loader = constant(route, 'workflowLoadAsset');
+    const probe = join(dirname(routePath), 'probe.mjs');
+    writeFileSync(probe, `export default ${loader};\n`);
+    const { default: loadAsset } = await import(pathToFileURL(probe).href);
+    const bytes: Uint8Array = await loadAsset(ASSET);
+    expect(Buffer.compare(bytes, readFileSync(assetPath))).toBe(0);
   });
 
-  it('can be forced off for a QuickJS build', async () => {
-    process.env.WORKFLOW_VM = 'quickjs';
-    process.env.WORKFLOW_QUICKJS_PREBUILT_BASELINE = '0';
-    const { route } = await buildRoute();
-    expect(prebuiltIn(route)).toBeUndefined();
+  it('is not built in watch mode', async () => {
+    const { route, assetPath } = await buildRoute(undefined, { watch: true });
+    expect(route).not.toContain('quickjsBaseline');
+    expect(existsSync(assetPath)).toBe(false);
+  });
+
+  it('records an ineligible bundle inline and ships no file', async () => {
+    const { route, assetPath } = await buildRoute(
+      'const startedAt = Date.now();\nexport async function wf() { "use workflow"; return startedAt; }\n'
+    );
+    const header = JSON.parse(
+      constant(route, 'workflowQuickJSBaseline') ?? 'null'
+    );
+    expect(header.ineligible).toMatch(/clock read/);
+    expect(route).not.toContain('loadAsset');
+    expect(existsSync(assetPath)).toBe(false);
+  });
+
+  describe('a bundle whose module scope throws in the QuickJS engine', () => {
+    const source =
+      'const fmt = new Intl.NumberFormat("en-US");\nexport async function wf() { "use workflow"; return fmt.format(1); }\n';
+
+    it('fails the build when the build selects the QuickJS engine', async () => {
+      process.env.WORKFLOW_VM = 'quickjs';
+      await expect(buildRoute(source)).rejects.toThrow(
+        /threw while evaluating in the QuickJS engine[\s\S]*Intl\.NumberFormat/
+      );
+    });
+
+    it('does not fail a build for the node engine', async () => {
+      const { route, assetPath } = await buildRoute(source);
+      const header = JSON.parse(
+        constant(route, 'workflowQuickJSBaseline') ?? 'null'
+      );
+      expect(header.ineligible).toMatch(/module scope threw/);
+      expect(existsSync(assetPath)).toBe(false);
+    });
   });
 });
