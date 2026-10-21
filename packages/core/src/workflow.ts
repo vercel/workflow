@@ -13,8 +13,8 @@ import {
 } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
+import { entityEventClass } from '@workflow/world/event-metadata';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -28,6 +28,7 @@ import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -491,9 +492,7 @@ async function createWorkflowSessionInner(
     mintCount += 1;
     return ulid(fixedTimestamp);
   };
-  const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-    new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
-  );
+  const generateNanoid = createSeededNanoid(() => vmGlobalThis.Math.random());
 
   // Create a mutable holder for the promise queue so the EventsConsumer
   // can access the current queue state via a getter. The queue is mutated
@@ -551,7 +550,10 @@ async function createWorkflowSessionInner(
         firstEventType,
         correlationId: event.correlationId,
       };
-      if (firstEventType !== event.eventType) {
+      if (
+        firstEventType !== event.eventType &&
+        entityEventClass(firstEventType) === entityEventClass(event.eventType)
+      ) {
         // Two writers reached opposite conclusions about one entity: a
         // `step_failed` behind a `step_completed`, or the reverse. Ignoring it
         // is still correct and still deterministic (replay reads the first one
@@ -560,6 +562,17 @@ async function createWorkflowSessionInner(
         // so the discarded outcome gets its own message.
         runtimeLogger.debug(
           'Ignoring inert event that decides an already-decided outcome differently',
+          details
+        );
+        return;
+      }
+      if (firstEventType !== event.eventType) {
+        // `firstEventType` is the entity's terminal event: the entity closed
+        // before this event, so nothing was left to consume it (a step
+        // invocation that stalled past its lease writing a start after the
+        // step's outcome, or a payload committed behind a hook's disposal).
+        runtimeLogger.debug(
+          'Ignoring inert event for an entity whose terminal event is already in the event log',
           details
         );
         return;

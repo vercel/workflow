@@ -1,4 +1,10 @@
-import { FatalError, RUN_ERROR_CODES } from '@workflow/errors';
+import {
+  ERROR_SLUGS,
+  FatalError,
+  formatErrorMessageWithDetails,
+  QUICKJS_SNAPSHOT_REMEDIATION,
+  RUN_ERROR_CODES,
+} from '@workflow/errors';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
@@ -163,7 +169,13 @@ export async function handleReplayBudgetExhausted(args: {
 
   const getEncryptionKey = memoizeEncryptionKey(world, runId);
   const timeoutErr = new FatalError(
-    `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`
+    formatErrorMessageWithDetails(
+      `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`,
+      {
+        hint: `Replay time grows with the size of the event log. ${QUICKJS_SNAPSHOT_REMEDIATION}`,
+        slug: ERROR_SLUGS.REPLAY_TIMEOUT,
+      }
+    )
   );
   const encryptionKey = await getEncryptionKey();
   const dehydratedError = await dehydrateRunError(

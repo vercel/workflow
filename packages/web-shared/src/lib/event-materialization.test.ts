@@ -39,6 +39,25 @@ describe('materializeSteps', () => {
     expect(step.completedAt?.getTime()).toBe(BASE_TIME + 5000);
   });
 
+  it('materializes a step whose creation is recorded on its step_started', () => {
+    const started = event('step_started', { correlationId: 'step_a', at: 2 });
+    const events = [
+      { ...started, eventData: { stepName: 'doWork' } } as Event,
+      event('step_completed', { correlationId: 'step_a', at: 5 }),
+    ];
+
+    const [step] = materializeSteps(events);
+
+    expect(step).toMatchObject({
+      stepId: 'step_a',
+      stepName: 'doWork',
+      status: 'completed',
+      attempt: 1,
+    });
+    expect(step.createdAt.getTime()).toBe(BASE_TIME + 2000);
+    expect(step.startedAt?.getTime()).toBe(BASE_TIME + 2000);
+  });
+
   it('counts one attempt per start across retries', () => {
     const events = [
       event('step_created', { correlationId: 'step_a', at: 1 }),

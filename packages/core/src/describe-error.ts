@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  QUICKJS_SNAPSHOT_REMEDIATION,
   RUN_ERROR_CODES,
   type RunErrorCode,
   SerializationError,
@@ -79,12 +80,10 @@ const RUNTIME_ERROR_HINT =
   'This is an internal workflow SDK error, not a bug in your code. If it keeps happening, please report it with the stack trace and the runId.';
 const CORRUPTED_EVENT_LOG_HINT =
   'The workflow event log contains orphaned or mismatched events and cannot be replayed. This is an internal workflow SDK error; please report it with the runId.';
-const REPLAY_TIMEOUT_HINT =
-  'The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (`"use step"` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.';
+const REPLAY_TIMEOUT_HINT = `The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (\`"use step"\` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. ${QUICKJS_SNAPSHOT_REMEDIATION} You can also override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var.`;
 const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
-const MAX_EVENTS_HINT =
-  'The workflow exceeded the maximum number of events per run. This usually means unbounded work in the workflow function — e.g. a loop that keeps creating steps without terminating. Break long-running workflows into child workflows to stay under the limit.';
+const MAX_EVENTS_HINT = `The workflow exceeded the maximum number of events per run. If the run is expected to be long-running: ${QUICKJS_SNAPSHOT_REMEDIATION} Otherwise, check for unbounded work in the workflow function (e.g. a loop that keeps creating steps without terminating), or split the work into child workflows.`;
 const STREAM_ERROR_HINT =
   'Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure, not an error in your workflow code; please retry the run and report persistent failures with the runId.';
 const WORLD_CONTRACT_HINT =

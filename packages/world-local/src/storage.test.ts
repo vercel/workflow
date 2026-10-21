@@ -335,6 +335,54 @@ describe('Storage', () => {
       });
     });
 
+    describe('maxEvents', () => {
+      const startRun = async (executionContext?: Record<string, unknown>) => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          ...(executionContext ? { executionContext } : {}),
+        });
+        const start = () =>
+          storage.events.create(created.runId, {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          });
+        return { first: await start(), second: await start() };
+      };
+
+      it('advertises the default ceiling for node runs', async () => {
+        const { first, second } = await startRun({ workflowVm: 'node' });
+        expect(first.maxEvents).toBe(25_000);
+        // Idempotent run_started on an already-running run.
+        expect(second.maxEvents).toBe(25_000);
+      });
+
+      it('honors WORKFLOW_MAX_EVENTS for non-exempt runs', async () => {
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '10');
+        const { first } = await startRun();
+        expect(first.maxEvents).toBe(10);
+      });
+
+      it('exempts QuickJS runs with a positive snapshot threshold', async () => {
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '10');
+        const { first, second } = await startRun({
+          workflowVm: 'quickjs',
+          snapshotThreshold: 1000,
+        });
+        expect(first.maxEvents).toBe(Number.MAX_SAFE_INTEGER);
+        expect(second.maxEvents).toBe(Number.MAX_SAFE_INTEGER);
+      });
+
+      it('keeps the ceiling for QuickJS runs with snapshotting disabled', async () => {
+        const { first } = await startRun({
+          workflowVm: 'quickjs',
+          snapshotThreshold: 0,
+        });
+        expect(first.maxEvents).toBe(25_000);
+      });
+    });
+
     describe('update via events', () => {
       it('should update run status to running via run_started event', async () => {
         const created = await createRun(storage, {

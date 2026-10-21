@@ -44,7 +44,6 @@ import {
   AttributeValidationError,
   validateAttributeEventDataSize,
 } from '@workflow/world/attributes-validation';
-import * as nanoid from 'nanoid';
 import {
   type ExtensionDescriptor,
   JSException,
@@ -55,6 +54,7 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import { createSeededNanoid } from '../seeded-nanoid.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
@@ -288,7 +288,8 @@ export interface QuickJSRuntimeOptions {
  * primitives. This sets up:
  * - globalThis.__private_workflows (Map) - workflow registry
  * - globalThis.__resolvers (Object) - pending promise resolve/reject functions
- * - globalThis.__pending (Array) - metadata about pending operations
+ * - globalThis.__pending (Map) - metadata about pending operations, released
+ *   once settled
  * - globalThis[Symbol.for("WORKFLOW_USE_STEP")] - step proxy factory
  * - globalThis[Symbol.for("WORKFLOW_SLEEP")] - sleep function
  */
@@ -303,7 +304,84 @@ if (typeof Symbol.asyncDispose === "undefined") {
 
 globalThis.__private_workflows = new Map();
 globalThis.__resolvers = {};
-globalThis.__pending = [];
+globalThis.__pending = new Map();
+
+// ---- Pending-op bookkeeping ----
+// Every primitive call (step, sleep, hook, attribute, AbortController)
+// records an op in __pending, a Map keyed by __pendingKey and iterated in
+// insertion (creation) order. Ops must not outlive their usefulness: a VM
+// whose heap is persisted by snapshotting carries every retained op (and
+// the raw step arguments it references) for the rest of the run, and event
+// lookups used to scan every op the run ever created, making replay
+// quadratic.
+//
+// An op is RELEASED (deleted) once nothing can ever read it again: a step,
+// wait or attribute that is durably created and whose promise has settled,
+// or a hook once this run's own disposal is durably recorded.
+// __releasedCids lists released ids until the host drains it at the next
+// collection, so it can evict their cached serialized bytes.
+globalThis.__releasedCids = [];
+// A hook and its hook_dispose op share a correlationId; every other op
+// owns its id.
+globalThis.__pendingKey = function(correlationId, type) {
+  return type === "hook_dispose" ? "hook_dispose:" + correlationId : correlationId;
+};
+globalThis.__pushPending = function(op) {
+  globalThis.__pending.set(globalThis.__pendingKey(op.correlationId, op.type), op);
+  return op;
+};
+globalThis.__pendingList = function() {
+  return Array.from(globalThis.__pending.values());
+};
+globalThis.__findPending = function(correlationId, type) {
+  var op = globalThis.__pending.get(globalThis.__pendingKey(correlationId, type));
+  return op && (type === undefined || op.type === type) ? op : undefined;
+};
+globalThis.__releasePending = function(op) {
+  if (!globalThis.__pending.delete(globalThis.__pendingKey(op.correlationId, op.type))) return;
+  globalThis.__releasedCids.push(op.correlationId);
+};
+// Releases a step, wait or attribute op once it is durably created and its
+// promise has settled: it is excluded from every collection from then on,
+// and no later event can reach it (its resolver is gone, and re-scanned
+// terminals are dropped: see isConsumedTerminal on the host).
+globalThis.__releaseIfSettled = function(op) {
+  if (
+    op.hasCreatedEvent &&
+    (op.type === "step" || op.type === "wait" || op.type === "attribute") &&
+    !globalThis.__resolvers[op.correlationId]
+  ) {
+    globalThis.__releasePending(op);
+  }
+};
+globalThis.__markCreated = function(correlationId, type) {
+  var op = globalThis.__findPending(correlationId, type);
+  if (!op) return false;
+  op.hasCreatedEvent = true;
+  globalThis.__releaseIfSettled(op);
+  return true;
+};
+// This run's own disposal of a hook is durably recorded: the hook can no
+// longer be awaited, created, or conflicted, so release both of its ops and
+// its lifecycle state (the hook object's closures keep their own reference
+// to it). Payloads buffered before the disposal stay in
+// __hookPayloadBuffer, so the hook can still drain them.
+globalThis.__releaseDisposedHook = function(correlationId) {
+  var dispose = globalThis.__findPending(correlationId, "hook_dispose");
+  if (dispose) globalThis.__releasePending(dispose);
+  var hook = globalThis.__findPending(correlationId, "hook");
+  if (
+    hook &&
+    !hook.isSystem &&
+    !hook.abortRequested &&
+    !globalThis.__resolvers[correlationId]
+  ) {
+    globalThis.__releasePending(hook);
+  }
+  if (globalThis.__hooks) delete globalThis.__hooks[correlationId];
+  var buf = globalThis.__hookPayloadBuffer[correlationId];
+  if (buf && buf.length === 0) delete globalThis.__hookPayloadBuffer[correlationId];
+};
 globalThis.__workflowResult = undefined;
 globalThis.__workflowError = undefined;
 // Buffer for hook_received payloads that arrive before the hook is awaited.
@@ -324,23 +402,12 @@ globalThis.__hookPayloadBuffer = {};
 // and attrs settle exactly once).
 globalThis.__terminalBuffer = {};
 
-// Correlation ids this VM has constructed an awaiting promise for. A
-// resolver is only ever removed by settling it, so a terminal that finds
-// no resolver for an id listed here is a re-scan of one already consumed
-// (continueWithEvents re-scans a batch while it makes progress), not an
-// early arrival. Such terminals must NOT be buffered: nothing would ever
-// drain them, and in a VM whose heap is persisted by snapshotting every
-// step result would accumulate across the whole run. One short key per
-// id, instead of a whole result.
-globalThis.__awaitedCids = {};
-
 // Registers a resolver for an awaited primitive, first draining any
 // buffered terminal recorded for the correlationId. Entries are prepared
 // host-side: bytes are decrypted AND deserialized into VM values by the
 // host serde before buffering (the VM has no in-guest deserializer on
 // the host-serde engine), so draining only forwards the stored value.
 globalThis.__registerResolver = function(correlationId, resolve, reject) {
-  globalThis.__awaitedCids[correlationId] = 1;
   var buffered = globalThis.__terminalBuffer[correlationId];
   if (buffered) {
     delete globalThis.__terminalBuffer[correlationId];
@@ -511,7 +578,7 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
       closureVars: closureVarsFn ? closureVarsFn() : undefined,
       thisVal: thisVal,
     };
-    globalThis.__pending.push({
+    globalThis.__pushPending({
       type: "step",
       correlationId: correlationId,
       stepId: stepId,
@@ -595,7 +662,7 @@ globalThis[Symbol.for("WORKFLOW_SLEEP")] = function(param) {
   } else {
     throw new Error("Invalid sleep parameter: " + param);
   }
-  globalThis.__pending.push({
+  globalThis.__pushPending({
     type: "wait",
     correlationId: correlationId,
     resumeAt: resumeAt,
@@ -753,15 +820,18 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
-  globalThis.__pending.push(pendingOp);
+  globalThis.__pushPending(pendingOp);
 
   // Per-hook lifecycle state backing hook.getConflict(): resolves null
   // once creation is confirmed (hook_created), or resolves with the
   // conflicting Run handle / rejects with HookConflictError on
   // hook_conflict. State transitions are driven by the host during event
   // processing (see processEvents).
+  // The hook's own closures hold this object directly: the host releases
+  // the __hooks entry once the hook's disposal is durably recorded (see
+  // __releaseDisposedHook), and a later getConflict() must still answer.
   globalThis.__hooks = globalThis.__hooks || {};
-  globalThis.__hooks[correlationId] = {
+  var hookState = globalThis.__hooks[correlationId] = {
     token: token,
     created: false,
     conflict: null,
@@ -783,9 +853,8 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     if (buf && buf.length > 0) {
       return Promise.resolve(buf.shift());
     }
-    var claimedState = globalThis.__hooks[correlationId];
-    if (claimedState && claimedState.forceClaimed) {
-      return Promise.reject(claimedState.forceClaimed);
+    if (hookState.forceClaimed) {
+      return Promise.reject(hookState.forceClaimed);
     }
     return new Promise(function(resolve, reject) {
       globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
@@ -801,15 +870,14 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // the invocation-queue item before dispose can mark it. Emitting a
     // hook_disposed here would be rejected by the world's
     // hook-existence validation.
-    var state = globalThis.__hooks[correlationId];
     // A force-claimed hook is already disposed — the takeover journaled
     // its hook_disposed — so there is nothing left to dispose either.
-    if (!state || (!state.conflict && !state.forceClaimed)) {
+    if (!hookState.conflict && !hookState.forceClaimed) {
       // Signal to the entrypoint to create a hook_disposed event. The
       // token is carried so the entrypoint can order same-token hook
       // operations sequentially (a dispose must release the token before
       // a later same-token hook's creation is validated).
-      globalThis.__pending.push({
+      globalThis.__pushPending({
         type: "hook_dispose",
         correlationId: correlationId,
         token: token,
@@ -824,7 +892,7 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   }
 
   function getConflict() {
-    var state = globalThis.__hooks[correlationId];
+    var state = hookState;
     if (state.conflict) {
       return state.conflict.run
         ? Promise.resolve(state.conflict.run)
@@ -896,7 +964,7 @@ globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
     error.fatal = true;
     return Promise.reject(error);
   }
-  globalThis.__pending.push({
+  globalThis.__pushPending({
     type: "attribute",
     correlationId: correlationId,
     changes: changes,
@@ -917,6 +985,7 @@ globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
 // workflow's own abort() call becomes a no-op.
 var __ABORT_STREAM_NAME = Symbol.for("WORKFLOW_ABORT_STREAM_NAME");
 var __ABORT_HOOK_TOKEN = Symbol.for("WORKFLOW_ABORT_HOOK_TOKEN");
+var __ABORT_HOOK_CID = Symbol.for("WORKFLOW_ABORT_HOOK_CID");
 
 function __makeAbortError() {
   if (typeof DOMException !== "undefined") {
@@ -988,9 +1057,10 @@ globalThis.AbortController = function WorkflowAbortController() {
   this[__ABORT_HOOK_TOKEN] = hookToken;
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
   var correlationId = "hook_" + globalThis.__generateUlid();
+  this[__ABORT_HOOK_CID] = correlationId;
   // Register an internal system hook. isSystem prevents token namespace
   // conflicts with user hooks.
-  globalThis.__pending.push({
+  globalThis.__pushPending({
     type: "hook",
     correlationId: correlationId,
     token: hookToken,
@@ -1006,17 +1076,13 @@ globalThis.AbortController.prototype.abort = function(reason) {
   // Mark the pending hook op so the host records the abort. The payload
   // stays a RAW value; the host serializes it through a handle with full
   // type fidelity (Errors, DOMException, custom values).
-  var token = this[__ABORT_HOOK_TOKEN];
-  for (var i = 0; i < globalThis.__pending.length; i++) {
-    var item = globalThis.__pending[i];
-    if (item.type === "hook" && item.token === token) {
-      item.abortRequested = true;
-      item.abortPayload = {
-        aborted: true,
-        reason: reason,
-      };
-      break;
-    }
+  var item = globalThis.__findPending(this[__ABORT_HOOK_CID], "hook");
+  if (item) {
+    item.abortRequested = true;
+    item.abortPayload = {
+      aborted: true,
+      reason: reason,
+    };
   }
 };
 
@@ -1520,9 +1586,19 @@ export interface QuickJSWorkflowSession {
     /** Exact engine build (quickjs-wasi version) that captured the heap. */
     engineVersion: string;
   };
+  /**
+   * The live QuickJS heap's allocation counters. Only valid while the last
+   * result was `suspended`. Unlike a snapshot's byte length (the WASM linear
+   * memory, a high-water mark that never shrinks), `memoryUsedSize` falls
+   * when the VM frees memory, so it is the signal for heap growth.
+   */
+  memoryUsage(): QuickJSMemoryUsage;
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
+
+/** See {@link QuickJSWorkflowSession.memoryUsage}. */
+export type QuickJSMemoryUsage = ReturnType<QuickJS['getMemoryUsage']>;
 
 /**
  * Run a workflow invocation to its first settled state and dispose the
@@ -1589,11 +1665,9 @@ export async function startQuickJSWorkflow(
     return baseRng();
   };
 
-  // Seeded nanoid generator: uses the same nanoid package and seeded PRNG
+  // Seeded nanoid generator: uses the same generator and seeded PRNG
   // as the node:vm engine for consistent token generation.
-  const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-    new Uint8Array(size).map(() => 256 * rng())
-  );
+  const generateNanoid = createSeededNanoid(rng);
 
   // Deterministic replay clock, mirroring the node:vm engine (see
   // workflow.ts): the initial value is the run's creation time recovered
@@ -1793,6 +1867,7 @@ export async function startQuickJSWorkflow(
             serde,
             events,
             advanceClock,
+            () => lastUlid,
             options.encryptionKey
           );
           let batch: number;
@@ -1816,6 +1891,7 @@ export async function startQuickJSWorkflow(
           engineVersion: quickjsWasiVersion,
         }),
         historicalAttributeIds,
+        () => lastUlid,
         options.encryptionKey
       );
     } catch (err) {
@@ -2097,6 +2173,7 @@ export async function startQuickJSWorkflow(
           serde,
           events,
           advanceClock,
+          () => lastUlid,
           options.encryptionKey
         );
         do {
@@ -2133,6 +2210,7 @@ export async function startQuickJSWorkflow(
         engineVersion: quickjsWasiVersion,
       }),
       historicalAttributeIds,
+      () => lastUlid,
       options.encryptionKey
     );
   }
@@ -2152,6 +2230,11 @@ function makeSettledSession(
     snapshot: () => {
       throw new Error(
         'QuickJS workflow session is settled — snapshot is only valid while suspended'
+      );
+    },
+    memoryUsage: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — memoryUsage is only valid while suspended'
       );
     },
     dispose: () => {},
@@ -2182,6 +2265,8 @@ function makeLiveSession(
     engineVersion: string;
   },
   historicalAttributeIds: Set<string>,
+  /** The last correlation-id ULID the VM drew (see isConsumedTerminal). */
+  getLastUlid: () => string | undefined,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -2222,6 +2307,7 @@ function makeLiveSession(
           serde,
           newEvents,
           advanceClock,
+          getLastUlid,
           encryptionKey
         );
         do {
@@ -2257,6 +2343,14 @@ function makeLiveSession(
       const snap = vm.snapshot();
       return { data: QuickJS.serializeSnapshot(snap), ...state };
     },
+    memoryUsage(): QuickJSMemoryUsage {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — memoryUsage is only valid while suspended'
+        );
+      }
+      return vm.getMemoryUsage();
+    },
     dispose(): void {
       if (alive) {
         alive = false;
@@ -2278,6 +2372,8 @@ async function processEvents(
   serde: QuickJSSerde,
   events: Event[],
   advanceClock: (ms: number) => void,
+  /** The last correlation-id ULID this VM drew (see isConsumedTerminal). */
+  getLastUlid: () => string | undefined,
   encryptionKey?: DecryptionKey
 ): Promise<boolean> {
   let resolved = false;
@@ -2375,7 +2471,7 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-        } else if (!isConsumedTerminal(vm, cidJs)) {
+        } else if (!isConsumedTerminal(cid, getLastUlid())) {
           // No resolver yet, so buffer the prepared outcome so the promise
           // settles the moment the VM constructs it (see __terminalBuffer
           // in the bootstrap). Without this, the live-continuation path
@@ -2463,7 +2559,7 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-        } else if (!isConsumedTerminal(vm, cidJs)) {
+        } else if (!isConsumedTerminal(cid, getLastUlid())) {
           // No resolver yet, so buffer the prepared rejection (see the
           // step_completed branch above for the rationale).
           const errorData = eventData?.error;
@@ -2515,7 +2611,7 @@ async function processEvents(
               b = vm.executePendingJobs();
             } while (b > 0);
           }
-        } else if (!isConsumedTerminal(vm, cidJs)) {
+        } else if (!isConsumedTerminal(cid, getLastUlid())) {
           // No resolver yet, so buffer (see step_completed above).
           vm.evalCode(
             `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
@@ -2534,7 +2630,7 @@ async function processEvents(
         const hasResolver = vm.dump(
           vm.evalCode(`!!globalThis.__resolvers[${cidJs}]`)
         );
-        if (!hasResolver && !isConsumedTerminal(vm, cidJs)) {
+        if (!hasResolver && !isConsumedTerminal(cid, getLastUlid())) {
           // No resolver yet, so buffer (see step_completed above).
           vm.evalCode(
             `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
@@ -2659,7 +2755,7 @@ async function processEvents(
           // and hook_received events are not unique per correlationId).
           vm.evalCode(
             `(function(){` +
-              `var p=globalThis.__pending.find(function(q){return q.correlationId===${JSON.stringify(cid)}&&q.type==="hook";});` +
+              `var p=globalThis.__findPending(${cidJs},"hook");` +
               `if(p)p.abortRequested=false;` +
               `})()`
           ).dispose();
@@ -2963,7 +3059,18 @@ async function processEvents(
         }
         // Disambiguate from the `hook` pending op with the same
         // correlationId: we want to mark the `hook_dispose` entry.
-        markCreated(vm, cidJs, 'hook_dispose');
+        if (claimedBy && typeof claimedBy.runId === 'string') {
+          markCreated(vm, cidJs, 'hook_dispose');
+        } else {
+          // This run's own disposal is durable: once the VM's dispose op
+          // is matched, nothing can await, create, or conflict the hook
+          // again, so release its ops and lifecycle state (an unmatched
+          // event — the VM has not reached dispose() yet — leaves them for
+          // the re-scan that matches it).
+          vm.evalCode(
+            `if(globalThis.__markCreated(${cidJs},"hook_dispose"))globalThis.__releaseDisposedHook(${cidJs});`
+          ).dispose();
+        }
         break;
       }
     }
@@ -2972,17 +3079,34 @@ async function processEvents(
 }
 
 /**
- * Whether the VM already consumed the terminal for this correlation id: it
- * constructed an awaiting promise for it (see `__awaitedCids` in the
- * bootstrap) and that resolver has since settled. Terminals for such ids are
- * dropped instead of buffered, since nothing will ever drain them.
+ * The ULID part of a step, wait or attribute correlation id. These are the
+ * ids whose promise the VM constructs (via __registerResolver) in the same
+ * synchronous call that draws the id.
  */
-function isConsumedTerminal(vm: QuickJS, cidJs: string): boolean {
-  return vm.dump(
-    vm.evalCode(
-      `!!(globalThis.__awaitedCids && globalThis.__awaitedCids[${cidJs}])`
-    )
-  ) as boolean;
+const AWAITED_CORRELATION_ID = /^(?:step|wait|attr)_([0-9A-HJKMNP-TV-Z]{26})$/;
+
+/**
+ * Whether the VM already consumed the terminal for this correlation id.
+ *
+ * Every step, wait and attribute id is drawn from the run's monotonic ULID
+ * sequence by the call that also constructs its awaiting promise, and a
+ * resolver is only removed by settling it. So a terminal that finds no
+ * resolver for an id this VM has already drawn (at or before `lastUlid`;
+ * the sequence shares one timestamp prefix, so it orders lexically) is a
+ * re-scan of one already consumed (continueWithEvents re-scans a batch
+ * while it makes progress, and a restore re-feeds events past its cursor),
+ * not an early arrival. Such terminals must NOT be buffered: nothing would
+ * ever drain them, and a snapshotted heap would carry every one of them for
+ * the rest of the run. A watermark answers this in constant memory, where a
+ * set of consumed ids grew with every step of the run.
+ */
+function isConsumedTerminal(
+  correlationId: string,
+  lastUlid: string | undefined
+): boolean {
+  if (lastUlid === undefined) return false;
+  const match = AWAITED_CORRELATION_ID.exec(correlationId);
+  return match !== null && match[1] <= lastUlid;
 }
 
 function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
@@ -2992,12 +3116,11 @@ function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
   // type: otherwise `.find()` returns the original `hook` op and the
   // `hook_dispose` op is never marked, causing the entrypoint to keep
   // retrying a hook_disposed for an already-deleted entity.
-  const predicate = opType
-    ? `function(p){return p.correlationId===${cidJs}&&p.type===${JSON.stringify(opType)};}`
-    : `function(p){return p.correlationId===${cidJs};}`;
+  // Keyed lookup (see __pendingKey in the bootstrap): a linear scan
+  // here ran once per event over every op the run ever created, making
+  // replay quadratic in the run's length.
   vm.evalCode(
-    `var __p=globalThis.__pending.find(${predicate});` +
-      `if(__p)__p.hasCreatedEvent=true;`
+    `globalThis.__markCreated(${cidJs}${opType ? `,${JSON.stringify(opType)}` : ''});`
   ).dispose();
 }
 
@@ -3053,11 +3176,15 @@ function dumpPendingOps(
   using projected = vm.evalCode(`(function(){
     var ops = ${filterExpr};
     globalThis.__rawFields = [];
-    // Settled ops — created, resolver-less, no abort in flight — are
-    // never collected again by either the suspension or the drain
-    // filter, so their cached bytes are dead weight; surface their cids
+    // Ops whose cached bytes are dead weight: released ops (already gone
+    // from __pending; their ids come from __releasedCids, drained here),
+    // and ops still in __pending that are never collected again by either
+    // the suspension or the drain filter: created hooks that are not
+    // currently awaited and have no abort in flight. Surface their cids
     // so the host can evict them (see the byte-cache eviction below).
-    var settled = [];
+    // (Map#forEach visits values.)
+    var settled = globalThis.__releasedCids;
+    globalThis.__releasedCids = [];
     globalThis.__pending.forEach(function(p){
       if (p.hasCreatedEvent && !globalThis.__resolvers[p.correlationId] && !p.abortRequested) {
         settled.push(p.correlationId);
@@ -3178,8 +3305,8 @@ function collectDrainOperations(
         }
       }
     });
-    toDispose.forEach(function(d){ globalThis.__pending.push(d); });
-    return globalThis.__pending.filter(function(p){
+    toDispose.forEach(function(d){ globalThis.__pushPending(d); });
+    return globalThis.__pendingList().filter(function(p){
       if (p.abortRequested) return true;
       if (p.hasCreatedEvent) return false;
       // Skip system hooks that were disposed before ever being created.
@@ -3282,7 +3409,7 @@ function checkWorkflowState(
   // upfront but not yet awaited)
   {
     using h = vm.evalCode(
-      'Object.keys(globalThis.__resolvers).length > 0 || globalThis.__pending.some(function(p){return!p.hasCreatedEvent;})'
+      'Object.keys(globalThis.__resolvers).length > 0 || globalThis.__pendingList().some(function(p){return!p.hasCreatedEvent;})'
     );
     if (vm.dump(h)) {
       // Ops with an active resolver or without a created event are
@@ -3291,7 +3418,7 @@ function checkWorkflowState(
       const pendingOps = dumpPendingOps(
         vm,
         serde,
-        `globalThis.__pending.filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent || p.abortRequested;})`,
+        `globalThis.__pendingList().filter(function(p){return!!globalThis.__resolvers[p.correlationId] || !p.hasCreatedEvent || p.abortRequested;})`,
         ensurePendingByteCache(vm)
       );
       if (!opts.keepAliveOnSuspend) vm.dispose();

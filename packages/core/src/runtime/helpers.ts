@@ -193,9 +193,10 @@ export async function handleHealthCheckMessage(
   // Best-effort: a failure here must not fail the health check itself, which
   // callers also rely on for plain capability detection.
   let encryptionPublicKey: string | undefined;
-  if (healthCheck.runId) {
+  const probeRunId = healthCheck.probeRunId ?? healthCheck.runId;
+  if (probeRunId) {
     try {
-      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      const rawKey = await world.getEncryptionKeyForRun?.(probeRunId);
       if (rawKey) {
         encryptionPublicKey = bytesToBase64(
           (await deriveRunKeyPair(rawKey)).publicKey
@@ -423,7 +424,10 @@ export async function healthCheck(
       {
         __healthCheck: true,
         correlationId,
-        ...(options?.runId ? { runId: options.runId } : {}),
+        // Sent as `probeRunId`, never `runId`: a 4.x responder would parse a
+        // `runId`-bearing probe as a run invocation (see
+        // `HealthCheckPayloadSchema`).
+        ...(options?.runId ? { probeRunId: options.runId } : {}),
       },
       {
         // Use JSON transport so the health check works against both
@@ -1119,7 +1123,7 @@ export interface SlotSnapshotParams {
  * | `run_started` | replay loop, first write of a delivery | `eventCount` when a log is loaded; no cursor, the `run_started` preload owns the response fields | the preload already returns the full log |
  * | `step_created`, `wait_created`, `hook_disposed`, `attr_set` | suspension handler (`createGuarded`) | `eventCount` | the handler keeps writing from, and resumes replay from, this log |
  * | `step_created` | queue-consumer re-ensure (raw) | nothing | runs from a queue message, no log |
- * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook) | the delta is how an already-received hook resolves without a re-invocation; two creates against one cursor would give two deltas of which only the first could be taken |
+ * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook); independent concurrent node registrations in a hooks-only suspension defer both | a lone create returns a delta; concurrent registrations reconcile committed responses together, reloading when they do not prove a consecutive suffix |
  * | `hook_received` | replay loop lazy resume; handler in-suspension resume | `eventCount` (preload owns the cursor fields) | both replay from the log right after |
  * | `hook_received` | webhook / `resumeHook` (raw) | nothing | out-of-band, enqueues a delivery that loads the log |
  * | `wait_completed` | replay loop timer path | `eventCount` | the loop keeps replaying from the log |

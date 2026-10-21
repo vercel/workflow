@@ -172,9 +172,13 @@ export const stepEventsToStepEntity = (
     (event) => event.eventType === 'step_created'
   );
 
-  // V1 runs don't emit step_created events. Fall back to the earliest event
-  // in the group so we can still build a step span.
+  // V1 runs don't emit step_created events, and a World may record an inline
+  // step's creation on its `step_started` alone. Fall back to the earliest
+  // event in the group so we can still build a step span.
   const anchorEvent = createdEvent ?? events[0];
+  const firstStartedEvent = events.find(
+    (event) => event.eventType === 'step_started'
+  );
   if (!anchorEvent) {
     return null;
   }
@@ -218,7 +222,10 @@ export const stepEventsToStepEntity = (
   return {
     stepId: anchorEvent.correlationId ?? '',
     runId: anchorEvent.runId,
-    stepName: createdEvent?.eventData?.stepName ?? '',
+    stepName:
+      createdEvent?.eventData?.stepName ??
+      firstStartedEvent?.eventData?.stepName ??
+      '',
     status,
     attempt,
     createdAt: getEventTimestamp(anchorEvent) ?? anchorEvent.createdAt,

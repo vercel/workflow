@@ -1810,6 +1810,11 @@ async function workflow() {
       // step_started no longer removes from queue - step stays in queue for re-enqueueing
       expect(error.message).toEqual('1 step has not been run yet');
       expect((error as WorkflowSuspension).items).toHaveLength(1);
+      // A step_started proves the step exists even with no step_created
+      // before it, so the suspension handler must not create it again.
+      expect((error as WorkflowSuspension).items[0]).toMatchObject({
+        hasCreatedEvent: true,
+      });
     });
 
     it('should throw `WorkflowSuspension` for multiple steps with `Promise.all()`', async () => {
