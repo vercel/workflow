@@ -52,6 +52,13 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** Hops followed before giving up, matching fetch's own redirect limit. */
 const MAX_REDIRECTS = 20;
 
+/** The headers `fetch` drops when a redirect it follows crosses an origin. */
+const CROSS_ORIGIN_STRIPPED_HEADERS = [
+  'authorization',
+  'cookie',
+  'proxy-authorization',
+];
+
 /**
  * @typedef {object} Hop
  * @property {URL} target
@@ -94,7 +101,10 @@ function nextHop(response, hop) {
  * hands over `x-vercel-trusted-oidc-idp-token` (a Trusted Source for every
  * project in the team) or `x-vercel-protection-bypass`. Redirects are
  * therefore followed here, one hop at a time, with the credential attached
- * only while the chain stays on the origin the caller named.
+ * only while the chain stays on the origin the caller named. Following them
+ * here also takes over the stripping `fetch` would have done, so a caller's
+ * own `Authorization`, `Cookie` and `Proxy-Authorization` come off a hop that
+ * leaves that origin.
  *
  * `init.redirect` is honoured: `'manual'` and `'error'` are handed to `fetch`
  * as-is, since neither leaves this origin.
@@ -121,6 +131,8 @@ export async function fetchWithTrustedSources(url, init = {}) {
       for (const [name, value] of Object.entries(credentials)) {
         headers.set(name, value);
       }
+    } else {
+      for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) headers.delete(name);
     }
 
     const response = await fetch(hop.target, {

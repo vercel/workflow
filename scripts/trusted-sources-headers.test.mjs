@@ -113,6 +113,53 @@ test('honours redirect: manual without following the hop', async () => {
   assert.deepEqual(elsewhere.seen, []);
 });
 
+test('drops the caller’s own credentials when a hop leaves the origin', async () => {
+  const seen = [];
+  const record = (request) =>
+    seen.push({
+      authorization: request.headers.authorization,
+      cookie: request.headers.cookie,
+      proxyAuthorization: request.headers['proxy-authorization'],
+      accept: request.headers.accept,
+    });
+  const target = await listen((request, response) => {
+    record(request);
+    request.resume();
+    response.end('ok');
+  });
+  const origin = await listen((request, response) => {
+    record(request);
+    request.resume();
+    response.writeHead(307, { location: `${target}/landing` });
+    response.end();
+  });
+
+  await fetchWithTrustedSources(origin, {
+    headers: {
+      authorization: 'Bearer caller',
+      cookie: 'session=1',
+      'proxy-authorization': 'Basic cHJveHk=',
+      accept: 'text/html',
+    },
+  });
+
+  assert.deepEqual(seen, [
+    {
+      authorization: 'Bearer caller',
+      cookie: 'session=1',
+      proxyAuthorization: 'Basic cHJveHk=',
+      accept: 'text/html',
+    },
+    // Everything `fetch` would have stripped itself is gone; the rest rides on.
+    {
+      authorization: undefined,
+      cookie: undefined,
+      proxyAuthorization: undefined,
+      accept: 'text/html',
+    },
+  ]);
+});
+
 test('forwards caller headers on every hop', async () => {
   const accepts = [];
   const target = await listen((request, response) => {
