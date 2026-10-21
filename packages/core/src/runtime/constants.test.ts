@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
+  ADVANCE_ONLY_REPLAY_MAX_PENDING,
+  getAdvanceOnlyReplayMaxPending,
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
   INLINE_OWNERSHIP_LEASE_SECONDS,
+  isAdvanceOnlyReplayEnabled,
   isInlineOwnershipEnabled,
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -355,6 +358,86 @@ describe('isInlineOwnershipEnabled', () => {
     expect(isInlineOwnershipEnabled()).toBe(true);
     process.env.WORKFLOW_INLINE_OWNERSHIP = 'yes';
     expect(isInlineOwnershipEnabled()).toBe(true);
+  });
+});
+
+describe('isAdvanceOnlyReplayEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+    } else {
+      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = originalEnv;
+    }
+  });
+
+  it('defaults to enabled when unset or empty', () => {
+    delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+    expect(isAdvanceOnlyReplayEnabled()).toBe(true);
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '';
+    expect(isAdvanceOnlyReplayEnabled()).toBe(true);
+  });
+
+  it('is disabled by "0" or "false" (kill switch)', () => {
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
+    expect(isAdvanceOnlyReplayEnabled()).toBe(false);
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = 'False';
+    expect(isAdvanceOnlyReplayEnabled()).toBe(false);
+  });
+
+  it('stays enabled for other values', () => {
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '1';
+    expect(isAdvanceOnlyReplayEnabled()).toBe(true);
+  });
+});
+
+describe('getAdvanceOnlyReplayMaxPending', () => {
+  const ENV = 'WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING';
+  const originalEnv = process.env[ENV];
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env[ENV];
+    else process.env[ENV] = originalEnv;
+    warnSpy.mockRestore();
+  });
+
+  it('defaults when unset or empty', () => {
+    delete process.env[ENV];
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(
+      ADVANCE_ONLY_REPLAY_MAX_PENDING
+    );
+    process.env[ENV] = '';
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(
+      ADVANCE_ONLY_REPLAY_MAX_PENDING
+    );
+  });
+
+  it('takes a non-negative integer, zero included', () => {
+    process.env[ENV] = '64';
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(64);
+    process.env[ENV] = '0';
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the default and warns once on anything else', () => {
+    process.env[ENV] = '-7';
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(
+      ADVANCE_ONLY_REPLAY_MAX_PENDING
+    );
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(
+      ADVANCE_ONLY_REPLAY_MAX_PENDING
+    );
+    process.env[ENV] = 'many-branches';
+    expect(getAdvanceOnlyReplayMaxPending()).toBe(
+      ADVANCE_ONLY_REPLAY_MAX_PENDING
+    );
+    expect(warnSpy).toHaveBeenCalledTimes(2);
   });
 });
 

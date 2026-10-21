@@ -75,8 +75,25 @@ When a workflow suspends with multiple pending steps (for example, from `Promise
 Each background step message is handled by a separate function invocation of the same handler. When a message arrives with `stepId` and `stepName`, the handler executes that specific step, then checks if all parallel steps from the batch are done by comparing `step_created` events against terminal events (`step_completed`/`step_failed`):
 
 - **All steps done**: The handler replays the workflow inline, continuing the execution loop without a queue roundtrip.
-- **Steps still pending**: The handler returns without queuing a continuation. The last handler to complete its step will see all steps done and replay inline.
+- **Steps still pending**: The handler replays anyway, in advance-only mode (see below), so the branch its step belongs to can start its next step now. Past the bound on pending steps described below, it returns without queuing a continuation instead. Either way, the last handler to complete its step sees all steps done and replays the ordinary way.
 - **Pending ops (stream writes)**: The handler queues a continuation and returns, so `waitUntil` can flush the pending stream data.
+
+### Branches advance independently
+
+A branch of a `Promise.all` doesn't wait for its slowest sibling before starting its next step. Two places could hold it back, and both replay early instead, within the limits described below:
+
+- **A background step** whose siblings are still pending replays as described above.
+- **An inline step** in the default two-branch case advances in its current handler: the directly awaited, last-scheduled step stays inline and its sibling is dispatched. When a raised pending limit admits a wider multi-inline batch, a step that settles early hands the run to another invocation through a continuation marked `advanceOnly`. That hand-off waits until `run_started`, every claim, dispatch, and deferred write is durable, and its send is joined before the delivery acknowledges.
+
+Both replays are **advance-only**: they act on the work their own replay creates (a branch's next step, hook, or wait) and leave the steps still in flight to the invocations running them, which replay when those settle. A pass that reaches nothing new returns without writing or sending anything, so a settlement whose branch has nothing left to do costs one replay and no extra queue traffic. A background step's advance-only replay also builds the run row from the message's run identity and the run's `run_created` instead of reading it back.
+
+An advance-only replay still drives the steps no one else would: one its own message claimed inline (owned recovery), and, on a redelivery, any step created but never started, which the delivery being retried may have created before it crashed.
+
+A replay can't know ahead of time whether the settled branch has another step, and in a wide fan-out of one-step branches none does until the last. So a branch advances early only when at most `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` (default 1) other steps were pending when its attempt started. Eligibility does not change as a wide batch drains, so its tail does not add replays.
+
+The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and `run_created`. A widened multi-inline batch may add one deduplicated continuation per settled branch. An advance-only pass that creates no work performs no writes or sends.
+
+Before this, each round of a fan-out took as long as its slowest step: a branch of 1-second steps next to a branch of 30-second steps waited 30 seconds before each of its own. `WORKFLOW_ADVANCE_ONLY_REPLAY=0` restores that behavior, and fan-outs wider than the bound keep it. So does the QuickJS engine (`WORKFLOW_VM=quickjs`) for now.
 
 ### Convergence after parallel steps
 
@@ -96,7 +113,7 @@ The design enforces one invariant: **exactly one handler owns each step, and onl
 1. **Atomic `step_created`**: `events.create('step_created', correlationId=X)` is serialized per correlation ID in every world. Exactly one concurrent caller succeeds; the rest receive `EntityConflictError`.
 2. **Suspension handler reports ownership**: Only `step_created` writes that succeeded (not those that caught 409) count toward ownership.
 3. **Inline execution is gated on ownership**: A handler that didn't win any `step_created` race performs no inline execution.
-4. **Queueing is unconditional**: For every pending step except the one being executed inline, the handler enqueues a background step message with `idempotencyKey: correlationId`. This makes crash recovery work: if a prior handler wrote `step_created` but crashed before enqueueing, a later handler will enqueue the orphaned step. Concurrent handlers' redundant enqueues deduplicate on the idempotency key.
+4. **Queueing is unconditional**: For every pending step except the one being executed inline, the handler enqueues a background step message with `idempotencyKey: correlationId`. This makes crash recovery work: if a prior handler wrote `step_created` but crashed before enqueueing, a later handler will enqueue the orphaned step. Concurrent handlers' redundant enqueues deduplicate on the idempotency key. The exception is an [advance-only replay](#branches-advance-independently), which enqueues only the steps it created, plus any never-started step when it is itself a redelivery.
 
 Together these give: every `step_created` event has exactly one inline executor **and** at least one queued dispatch. Step bodies are never executed concurrently, and `step_started` events never land in the log after `step_completed` for the same step.
 
@@ -122,6 +139,8 @@ If a single step takes longer than the timeout threshold, the step runs to compl
 ## Queue message changes
 
 The `WorkflowInvokePayload` schema has two new optional fields: `stepId` and `stepName`. When `stepId` is present, the handler executes that specific step before (or instead of) replaying the workflow. Background steps are queued with both set, so the handler knows which step function to call without loading the event log. Previously, `stepName` was resolved by loading all events and searching for the `step_created` event matching the `stepId`, an O(N) operation on the full event history for every background step arrival.
+
+A continuation an inline batch hands off sets `advanceOnly: true`, which makes the receiving invocation replay advance-only. A consumer that predates the field replays the ordinary way.
 
 The queue trigger configuration uses `WORKFLOW_QUEUE_TRIGGER` on the `__wkf_workflow_*` topic. The `__wkf_step_*` topic and its separate trigger are no longer generated.
 

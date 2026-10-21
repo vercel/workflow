@@ -1438,9 +1438,11 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   // `getMaxInlineSteps()` both would run inline and nothing would be queued.)
   beforeEach(() => {
     process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
   });
   afterEach(() => {
     delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+    delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
     setWorld(undefined);
     vi.clearAllMocks();
     waitUntilPromises.length = 0;
@@ -1979,7 +1981,15 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
 });
 
 describe('workflowEntrypoint queued step consumption', () => {
+  // These tests cover the queued step's prologue and nothing after it. With
+  // advance-only replay on, a step that settles beside a pending sibling
+  // replays advance-only, which this harness's log (no `run_created`) cannot
+  // support; that path has its own tests in advance-only-replay.test.ts.
+  beforeEach(() => {
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
+  });
   afterEach(() => {
+    delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
     setWorld(undefined);
     vi.clearAllMocks();
   });
@@ -1989,8 +1999,9 @@ describe('workflowEntrypoint queued step consumption', () => {
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
   // The workflow body is never replayed by these tests: the seeded log keeps
-  // an unrelated step pending, so the background-step path returns right
-  // after executing the message's step.
+  // an unrelated step pending, so the background-step path (with eager
+  // branch replay off, above) returns right after executing the message's
+  // step.
   const queuedStepWorkflow = `const queuedAdd = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("queuedAdd");
     async function workflow() {
       return await queuedAdd(2, 3);

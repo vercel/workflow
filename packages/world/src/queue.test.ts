@@ -197,6 +197,24 @@ describe('QueuePayloadSchema', () => {
     ).toEqual({ runId: 'wrun_01ABC', stepId: 'step_1' });
   });
 
+  it('preserves a valid advance-only continuation marker', () => {
+    expect(
+      WorkflowInvokePayloadSchema.parse({
+        runId: 'wrun_01ABC',
+        advanceOnly: true,
+      })
+    ).toMatchObject({ runId: 'wrun_01ABC', advanceOnly: true });
+  });
+
+  it('ignores a malformed advance-only marker instead of rejecting the delivery', () => {
+    expect(
+      WorkflowInvokePayloadSchema.parse({
+        runId: 'wrun_01ABC',
+        advanceOnly: 'invalid',
+      })
+    ).toEqual({ runId: 'wrun_01ABC', advanceOnly: undefined });
+  });
+
   // Resilient step dispatch: a step message may carry `stepInput` with the
   // serialized (binary) step input, which the consumer re-ensures the
   // step_created event from. The bytes must survive parsing untouched.

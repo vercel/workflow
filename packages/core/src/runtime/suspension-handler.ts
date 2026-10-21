@@ -159,6 +159,8 @@ export interface SuspensionHandlerParams {
    * suspension. Omitted, every suspension republishes on its own.
    */
   forceClaimVictimWakes?: Set<string>;
+  /** Optional per-suspension cap below the process-wide inline-step limit. */
+  maxInlineSteps?: number;
 }
 
 /**
@@ -501,6 +503,7 @@ export async function handleSuspension({
   ownerMessageId,
   allowDeferredBatchWork,
   forceClaimVictimWakes,
+  maxInlineSteps,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -1160,18 +1163,24 @@ export async function handleSuspension({
   // (it continues the workflow to resolve the awaiter instead), so deferring
   // would leave the steps uncreated and unqueued. That is decided from the
   // queue rather than from the creates' outcomes, which are still in flight
-  // while the steps are written. We pick the first N uncreated steps —
-  // matching the caller's inline-candidate selection — and dehydrate their
-  // input here so executeStep can ship it as the step_started payload.
+  // while the steps are written. Ordinarily we pick the first N uncreated
+  // steps. The runtime's eligible two-branch override picks the last step so
+  // the directly awaited branch stays in the warm handler while its detached
+  // sibling is dispatched. Inputs are dehydrated here so executeStep can ship
+  // them as the step_started payload.
   const hasHookConflictAwaiter = hooksNeedingCreation.some(
     (item) => item.hasConflictAwaiter === true
   );
+  const inlineCandidates = stepItems.filter((item) =>
+    stepsNeedingCreation.has(item.correlationId)
+  );
+  const selectedInlineCandidates =
+    maxInlineSteps === 1
+      ? inlineCandidates.slice(-1)
+      : inlineCandidates.slice(0, maxInlineSteps ?? getMaxInlineSteps());
   const lazyInlineCorrelationIds = new Set<string>(
     !hasHookConflictAwaiter
-      ? stepItems
-          .filter((item) => stepsNeedingCreation.has(item.correlationId))
-          .slice(0, getMaxInlineSteps())
-          .map((item) => item.correlationId)
+      ? selectedInlineCandidates.map((item) => item.correlationId)
       : []
   );
   // Collected by correlationId because the per-step ops below run concurrently
