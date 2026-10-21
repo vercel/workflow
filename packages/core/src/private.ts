@@ -135,6 +135,8 @@ export interface WorkflowOrchestratorContext {
   runId: string;
   encryptionKey: PayloadKey | undefined;
   worldCapabilities?: WorldCapabilities;
+  /** Explicit recovery of a run recorded before ordered attribute delivery. */
+  legacyAttributeDelivery?: boolean;
   globalThis: typeof globalThis;
   /**
    * Increments when a suspension is accepted and on every retained-session

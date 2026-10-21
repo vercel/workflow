@@ -144,6 +144,22 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens after the in-process budget fails to catch up. The delay gives the other writers time to quiesce.
 
+### `WORKFLOW_LEGACY_ATTRIBUTE_RUN_IDS`
+
+- Default: empty (all runs use ordered attribute delivery).
+- Comma-separated, exact run IDs. Whitespace around each ID is ignored.
+- For self-hosted recovery of Node VM runs recorded before the attribute-ordering fix in `@workflow/core` 5.2.2. Selected runs resolve `setAttributes()` using the old scheduling behavior; other runs keep ordered delivery.
+
+An upgrade can change which branch wins a race involving `setAttributes()`, even with unchanged workflow code. Neither the stored SDK version nor the event order shows which runs are affected: runs with the same version and event order can need either behavior, and selecting a run that does not need it can make its replay inconsistent without failing it. A selected run also keeps the old scheduling for the rest of its execution, including the out-of-order resumption that 5.2.2 fixed.
+
+Check each run before selecting it. Using separate copies of its saved state, with the workflow code and `WORKFLOW_LOG_ORDER_DRAWS` unchanged, replay it on the upgraded runtime once unselected and once selected. Select the run only if the arguments computed for already-saved steps (visible in a debugger, for example) differ from their saved `step_created` inputs when unselected and match when selected. The SDK does not perform this check, and the setting cannot repair a run that already replays inconsistently on its original runtime. A run recorded with the default `WORKFLOW_LOG_ORDER_DRAWS` setting can still replay inconsistently with `0`, even when selected.
+
+Set the same list on every worker before resuming the selected runs, and keep it unchanged until they finish. QuickJS is unaffected. For example:
+
+```sh
+export WORKFLOW_LEGACY_ATTRIBUTE_RUN_IDS="wrun_<first-id>,wrun_<second-id>"
+```
+
 ### `WORKFLOW_LOG_ORDER_DRAWS`
 
 - Default: enabled
