@@ -374,11 +374,21 @@ type ScopeEventField =
   | 'failedEventId'
   | 'releasedEventId';
 
+const SCOPE_EVENT_FIELD: Record<
+  NonNullable<LockScope['publishing']>,
+  ScopeEventField
+> = {
+  lock_created: 'createdEventId',
+  lock_acquired: 'acquiredEventId',
+  lock_failed: 'failedEventId',
+  lock_released: 'releasedEventId',
+};
+
 /**
  * Publishes one of a scope's lock events and records its id on the scope.
- * The scope first notes which event it is publishing, so a retry after a
- * crash between the publish and the record returns the published event
- * rather than appending a second one. The log is searched only then.
+ * The scope first notes which event it is publishing, so that a crash between
+ * the publish and the record is repaired by the next write that reads the
+ * scope ({@link readScopeRepaired}) rather than published again.
  */
 async function publishScopeEvent(
   ctx: LockEventContext,
@@ -387,23 +397,38 @@ async function publishScopeEvent(
   event: Event
 ): Promise<Event> {
   const { basedir, tag } = ctx;
-  const { publishing, ...rest } = scope;
-  if (publishing === event.eventType) {
-    const found = await ctx.findEvent(scope.correlationId, event.eventType);
-    if (found) {
-      await writeScope(basedir, { ...rest, [field]: found.eventId }, tag);
-      return found;
-    }
-  } else {
-    await writeScope(
-      basedir,
-      { ...rest, publishing: event.eventType as LockScope['publishing'] },
-      tag
-    );
-  }
+  const { publishing: _publishing, ...rest } = scope;
+  await writeScope(
+    basedir,
+    { ...rest, publishing: event.eventType as LockScope['publishing'] },
+    tag
+  );
   const stored = await ctx.storeEvent(event);
   await writeScope(basedir, { ...rest, [field]: stored.eventId }, tag);
   return stored;
+}
+
+/**
+ * Reads a scope, first finishing a publish a crash interrupted: an event the
+ * scope was publishing is recorded if it reached the log, and the note is
+ * dropped if it did not. Every decision a lock write makes from the scope
+ * (converged, refused, withdrawn) then sees each of its published events,
+ * whatever this write is about to publish. The log is searched only then.
+ */
+async function readScopeRepaired(
+  ctx: LockEventContext,
+  correlationId: string
+): Promise<LockScope | null> {
+  const { basedir, tag, runId } = ctx;
+  const scope = await readScope(basedir, runId, correlationId, tag);
+  if (!scope?.publishing) return scope;
+  const { publishing, ...rest } = scope;
+  const found = await ctx.findEvent(correlationId, publishing);
+  const repaired: LockScope = found
+    ? { ...rest, [SCOPE_EVENT_FIELD[publishing]]: found.eventId }
+    : rest;
+  await writeScope(basedir, repaired, tag);
+  return repaired;
 }
 
 async function requireEvent(
@@ -505,7 +530,7 @@ export async function createLockAcquisition(
       createdAt: ctx.now,
       updatedAt: ctx.now,
     };
-    let scope = await readScope(basedir, runId, correlationId, tag);
+    let scope = await readScopeRepaired(ctx, correlationId);
     if (scope && scope.key !== key) {
       throw new WorkflowWorldError(
         `Lock scope "${correlationId}" was created for key "${scope.key}", not "${key}"`,
@@ -778,7 +803,7 @@ export async function createLockRelease(
   const policy = getLockWaitlistPolicy();
   return withKeyLock(basedir, key, tag, async () => {
     const ctx: LockEventContext = { ...outer, now: new Date() };
-    const scope = await readScope(basedir, runId, correlationId, tag);
+    const scope = await readScopeRepaired(ctx, correlationId);
     const state = await readState(basedir, key, tag);
     const id = holderId(runId, correlationId);
     // A scope that holds its slot, or one still waiting for it.
