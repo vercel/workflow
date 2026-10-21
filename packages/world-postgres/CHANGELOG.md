@@ -1,5 +1,24 @@
 # @workflow/world-postgres
 
+## 4.3.11
+
+### Patch Changes
+
+- [#4883](https://github.com/vercel/workflow/pull/4883) [`a31ab3b`](https://github.com/vercel/workflow/commit/a31ab3b66bf3465593c0559888d6c690c0d71b47) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Write `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `step_retrying`, `wait_created` and `wait_completed` in one transaction with the entity change they record. A process that died between the two used to leave an entity in a state its event log did not explain; a completed wait with no `wait_completed` made the run retry the wait forever. A wait left in that state by an earlier version now gets its missing event on the next attempt.
+
+- [#4882](https://github.com/vercel/workflow/pull/4882) [`486a7d2`](https://github.com/vercel/workflow/commit/486a7d259f656f6ce82c15af34f04446580a8442) Thanks [@dretanacr](https://github.com/dretanacr)! - Write a step's `step_completed` or `step_failed` row update and its event in one transaction, as `step_started` already does. A process that died between the two used to leave a terminal step with no terminal event, so the replayed `step_started` was refused as terminal and the run never advanced.
+
+- [#4817](https://github.com/vercel/workflow/pull/4817) [`fdaf4ae`](https://github.com/vercel/workflow/commit/fdaf4ae05748367ebe3a09f9ed3459a8f9062507) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a process crash when the database closes an idle connection
+
+- [#4756](https://github.com/vercel/workflow/pull/4756) [`8d9f05f`](https://github.com/vercel/workflow/commit/8d9f05fc7725798a7df440f3db1d00d0f131b230) Thanks [@pranaygp](https://github.com/pranaygp)! - Honor `pagination.sortOrder` in `runs.list` and `steps.list`, which always returned newest first.
+
+- [#4812](https://github.com/vercel/workflow/pull/4812) [`4a32790`](https://github.com/vercel/workflow/commit/4a32790142561e4203c7ce02b9ad30cf92f1f840) Thanks [@pranaygp](https://github.com/pranaygp)! - Keep a checked-out client in the World's own `pg` pool from ending the process when the database drops its connection.
+
+- [#4757](https://github.com/vercel/workflow/pull/4757) [`f4b491e`](https://github.com/vercel/workflow/commit/f4b491ec3bdb8cfbfa8de550795528b3b27bebbd) Thanks [@pranaygp](https://github.com/pranaygp)! - Store timestamps as `timestamp with time zone` so `createdAt` is correct when the Postgres server or session is not in UTC. Migration 0027 converts the columns and repairs `created_at` values written by earlier versions.
+
+- Updated dependencies [[`12cf587`](https://github.com/vercel/workflow/commit/12cf587db0403e24eb2c3a918004b1816769ea74)]:
+  - @workflow/world-local@4.4.4
+
 ## 4.3.10
 
 ### Patch Changes
