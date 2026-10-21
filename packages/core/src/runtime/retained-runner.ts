@@ -2185,12 +2185,39 @@ export class RetainedRunner {
     }
   }
 
-  /** End an attempt that will never report (timed out, or its worker lost):
-   * retry the step, or fail it once its retry budget is spent. */
+  /**
+   * An ending owner's in-process step bodies cannot report to the next owner,
+   * which would otherwise see their attempts running until the abandoned-
+   * attempt bound. End them durably now so the next owner retries them
+   * promptly. A body may still finish here; steps are retried at least once.
+   */
+  private async interruptLocalAttempts() {
+    for (const stepId of [...this.localWorkers]) {
+      const step = this.steps.get(stepId);
+      const start = this.stepStarts.get(stepId);
+      if (step?.status !== 'running' || !start) continue;
+      try {
+        await this.supersedeAttempt(step, start, 'interrupted');
+      } catch (error) {
+        // The attempt bound still recovers it, later.
+        console.error('[workflow] Could not end an interrupted step attempt', {
+          runId: this.runId,
+          ownerId: this.id,
+          stepId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+  }
+
+  /** End an attempt that will never report (timed out, its worker lost, or
+   * its owner ending): retry the step, or fail it once its retry budget is
+   * spent. */
   private async supersedeAttempt(
     step: Step,
     start: { event: Event; attempt: number },
-    reason: 'timed out' | 'lost'
+    reason: 'timed out' | 'lost' | 'interrupted'
   ) {
     this.undelivered.delete(start.event.eventId);
     const maxRetries =
@@ -2513,6 +2540,8 @@ export class RetainedRunner {
     for (const timer of this.localTimers.values()) clearTimeout(timer);
     this.localTimers.clear();
     // Ending with unfinished work (the deadline) is a handoff, not a failure.
+    if (!this.fault && this.localWorkers.size > 0)
+      await this.interruptLocalAttempts();
     if (!this.fault && (this.workers.size > 0 || pendingTimers))
       await this.handOff();
     const error = this.fault?.superseded

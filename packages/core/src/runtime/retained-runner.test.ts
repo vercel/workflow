@@ -109,10 +109,17 @@ async function queuedFixture(timing?: {
   fixture.world.invoke = invoke;
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   await fixture.send('fanout', 'start');
-  const messages = queue.mock.calls
-    .map((call) => call[1])
-    .filter((message) => 'stepId' in message);
-  return { ...fixture, queue, invoke, messages };
+  return {
+    ...fixture,
+    queue,
+    invoke,
+    // Live: dispatches continue after the start resolves.
+    get messages() {
+      return queue.mock.calls
+        .map((call) => call[1])
+        .filter((message) => 'stepId' in message);
+    },
+  };
 }
 
 /** The same step delivered through the queue: the worker answers only after
@@ -2472,6 +2479,11 @@ it('hands off at once when its instance is stopping instead of idling to its tim
   expect(Date.now() - started).toBeLessThan(5000);
   // Like a deadline handoff: a wake for the next owner, and no failure.
   expect(keys.some((k) => k.startsWith('retained-handoff:'))).toBe(true);
+  // The cut-off local body's attempt is ended now, so the next owner retries
+  // it promptly rather than after the abandoned-attempt bound.
+  expect(
+    fixture.owner.events.filter((e) => e.eventType === 'step_retrying')
+  ).toHaveLength(1);
   expect(fixture.owner.events.some((e) => e.eventType === 'run_failed')).toBe(
     false
   );
