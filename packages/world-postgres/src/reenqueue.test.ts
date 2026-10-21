@@ -137,6 +137,7 @@ describe('re-enqueue active runs on start', () => {
     delete process.env.PORT;
     delete process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING;
     delete process.env.WORKFLOW_DEPLOYMENT_ID;
+    delete process.env.WORKFLOW_POSTGRES_INVOKE;
   });
 
   it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {
@@ -221,6 +222,19 @@ describe('re-enqueue active runs on start', () => {
     ).toEqual(['workflow_flows@build_a']);
 
     await world.close();
+  });
+
+  it('refuses to enable routing with invocation delivery on', () => {
+    process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING = '1';
+    process.env.WORKFLOW_DEPLOYMENT_ID = 'build_a';
+    process.env.WORKFLOW_POSTGRES_INVOKE = '1';
+
+    expect(() => createWorld()).toThrow(
+      'Deployment routing requires WORKFLOW_POSTGRES_INVOKE to be unset on every process sharing the database. Unset it (or enableInvoke) on deployment "build_a"'
+    );
+    expect(() =>
+      createWorld({ pool, deploymentId: 'build_a', enableInvoke: true })
+    ).toThrow('Deployment routing requires WORKFLOW_POSTGRES_INVOKE');
   });
 
   it('refuses to enable routing without WORKFLOW_DEPLOYMENT_ID', () => {

@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import {
+  assertRoutingCompatible,
   assertValidDeploymentId,
   getDeploymentIdFromEnv,
 } from './deployment.js';
@@ -69,6 +70,7 @@ export function createWorld(
   if (config.deploymentId !== undefined) {
     assertValidDeploymentId(config.deploymentId);
   }
+  assertRoutingCompatible(config);
   const maxPoolSize =
     config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
   let closing = false;

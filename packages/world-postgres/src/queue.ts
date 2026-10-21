@@ -48,6 +48,7 @@ import {
   deploymentTaskName,
   isRoutableDeploymentId,
   LEGACY_DEPLOYMENT_ID,
+  ROUTING_REQUIRES_INVOKE_OFF,
 } from './deployment.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
@@ -896,9 +897,9 @@ export function createQueue(
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     const target = targetDeploymentId(opts?.deploymentId);
-    // Only this deployment's executor task is known to have a consumer. Every
-    // deployment consumes its flows task, and one with invoke enabled moves
-    // orchestration from there to its executor itself.
+    // Only this deployment can have an executor task: a routed deployment
+    // cannot enable invoke. Every deployment consumes its flows task, and a
+    // `'postgres'` one with invoke on moves orchestration to its executor.
     const input =
       invocations && target === deploymentId && prefix === ownPrefix()
         ? executorInput(message)
@@ -935,12 +936,13 @@ export function createQueue(
       payload,
       options,
       async (client, _id, run) => {
-        // Whether another deployment has invoke enabled is unknown here, and
-        // without it no executor would answer. Throwing rolls back the
+        // Only this deployment has an executor: a routed one cannot enable
+        // invoke (see `assertRoutingCompatible`), so no process would answer
+        // an input for another deployment's run. Throwing rolls back the
         // mailbox insertion.
         if (targetDeploymentId(run.deploymentId) !== deploymentId) {
           throw new WorkflowWorldError(
-            `Cannot invoke run ${runId}: it belongs to deployment ${JSON.stringify(run.deploymentId)}, and a Postgres World process invokes only its own deployment's runs (${JSON.stringify(deploymentId)}).`,
+            `Cannot invoke run ${runId}: it belongs to deployment ${JSON.stringify(run.deploymentId)}, so this database uses deployment routing. ${ROUTING_REQUIRES_INVOKE_OFF}`,
             { status: 409 }
           );
         }

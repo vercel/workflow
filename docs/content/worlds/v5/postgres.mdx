@@ -93,7 +93,8 @@ at most 10 seconds for its locks; if a long transaction holds them,
 Set `WORKFLOW_POSTGRES_INVOKE=1`, or pass `enableInvoke: true` to the Postgres
 World's factory, to send hook inputs to the run's executor and wait for its
 response. Invocation is off by default. Apply the migrations and upgrade
-producers and workers together before enabling it.
+producers and workers together before enabling it. Invocation can't be combined
+with [deployment routing](#workflow_postgres_deployment_routing).
 
 The executor validates the hook input and writes its event before responding.
 Workflow user code can consume the event later. The World stores inputs and
@@ -294,16 +295,16 @@ Set to `1` when the application or framework coordinates shutdown and awaits `wo
 
 Set to `1` to run this process as the deployment named by `WORKFLOW_DEPLOYMENT_ID`, or pass `deploymentId` to `createWorld()`. Default: unset, so the process is the deployment named `postgres`.
 
-Each deployment consumes Graphile jobs only from its own tasks: `workflow_flows` (plus `workflow_flows_executor` with invocation enabled) for `postgres`, and `workflow_flows@<id>` (plus `workflow_flows_executor@<id>`) for any other id. A job addressed to a deployment, such as a hook resume or a step for a run that deployment started, goes to that deployment's task whether or not routing is on in the sending process. On startup a process re-enqueues only its own deployment's active runs.
+Each deployment consumes Graphile jobs only from its own task: `workflow_flows` for `postgres`, and `workflow_flows@<id>` for any other id. `WORKFLOW_POSTGRES_JOB_PREFIX` replaces `workflow_` in both. A job addressed to a deployment, such as a hook resume or a step for a run that deployment started, goes to that deployment's task whether or not routing is on in the sending process. On startup a process re-enqueues only its own deployment's active runs.
 
 This applies to `start(workflow, args, { deploymentId })` too, with routing on or off: a run started with a concrete `deploymentId` other than `postgres` waits for a process running as that deployment. Older releases ran such a run on the single `postgres` deployment. `deploymentId: "latest"` still targets the current deployment, and so does an id no deployment can have.
-
-With [invocation delivery](#experimental-invocation-delivery) on, a process sends hook inputs only to its own deployment's runs. A hook resume for a run on another deployment fails with a `409` error instead of waiting for an executor that may not exist.
 
 With routing on, runs this process starts record its deployment id, and the World declares deployment affinity, so the runtime refuses to replay a run on a deployment other than its own. Give every process that runs the same build the same id. The id can contain 1-64 letters, digits, `_`, `.`, and `-`, and can't be `postgres` or `latest`. `WORKFLOW_DEPLOYMENT_ID` alone does not turn routing on.
 
 <Callout type="warn">
-Routing is experimental. A run's jobs wait until a process of its deployment is running, so keep each deployment's processes running until its runs end. Before enabling routing on a database that older releases of this package used, upgrade every process to this release with routing off: older releases ignore the deployment a job is addressed to and re-enqueue every active run on startup.
+Routing is experimental, and it requires [invocation delivery](#experimental-invocation-delivery) off on every process sharing the database: a hook resume for a run on another deployment, which handing a run to a newer build depends on, can't be delivered as an invocation. A process with routing on refuses to start with `WORKFLOW_POSTGRES_INVOKE` set, and a `postgres` process with it set fails such a resume with a `409` error.
+
+A run's jobs wait until a process of its deployment is running, so keep each deployment's processes running until its runs end. Before enabling routing on a database that older releases of this package used, upgrade every process to this release with routing off: older releases ignore the deployment a job is addressed to and re-enqueue every active run on startup.
 </Callout>
 
 ### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`

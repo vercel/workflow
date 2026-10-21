@@ -335,9 +335,8 @@ By default, every process is one deployment named `postgres`. Set
 it starts record the id, and the World declares deployment affinity.
 `WORKFLOW_DEPLOYMENT_ID` alone does not turn routing on.
 
-Each deployment consumes jobs only from its own tasks: `workflow_flows` (and
-`workflow_flows_executor`) for `postgres`, `workflow_flows@<id>` (and
-`workflow_flows_executor@<id>`) otherwise. A job addressed to a deployment goes
+Each deployment consumes jobs only from its own task: `workflow_flows` for
+`postgres`, `workflow_flows@<id>` otherwise. A job addressed to a deployment goes
 to its task whether or not the sending process has routing on, and on startup a
 process re-enqueues only its own deployment's active runs. A run's jobs wait
 until a process of its deployment runs, so keep each deployment running until
@@ -347,9 +346,12 @@ This includes `start(workflow, args, { deploymentId })` with routing on or off:
 a run started with a concrete id other than `postgres` waits for a process
 running as that deployment, where older releases ran it on the single
 `postgres` deployment. An id no deployment can have stays on the sending
-process's deployment. With invocation delivery on, a process sends hook
-inputs only to its own deployment's runs, and a hook resume for another
-deployment's run fails with `409`.
+process's deployment.
+
+Routing requires `WORKFLOW_POSTGRES_INVOKE` to be unset on every process
+sharing the database, because a hook resume for another deployment's run can't
+be delivered as an invocation. A process with routing on refuses to start with
+it set, and a `postgres` process with it set fails such a resume with `409`.
 
 Upgrade every process to this release with routing off before enabling it on a
 database that older releases used: they ignore the deployment a job is
@@ -359,7 +361,8 @@ addressed to and re-enqueue every active run on startup.
 
 Enable synchronous hook-input delivery with `WORKFLOW_POSTGRES_INVOKE=1` when
 using `WORKFLOW_TARGET_WORLD`, or pass `enableInvoke: true` to `createWorld()`.
-Invocation is off by default.
+Invocation is off by default. It can't be combined with
+[deployment routing](#experimental-deployment-routing).
 
 Apply the database migrations before running the upgraded World, including when
 invocation is disabled, because hook deduplication and data purging use new
@@ -410,8 +413,9 @@ jobs can execute concurrently. The default job prefix produces these names:
 | `workflow_flows_executor` | Start or resume workflow execution | `workflow_flows:<runId>:executor`, one queue per run |
 | `workflow_flows` | Step execution and health checks | No run-scoped named queue |
 
-With [deployment routing](#experimental-deployment-routing) on, both task
-identifiers end in `@<deploymentId>`. The named queues do not change.
+Deployment routing requires invocation off, so a routed deployment has only
+`workflow_flows@<deploymentId>`. See
+[Experimental deployment routing](#experimental-deployment-routing).
 
 Graphile permits one active job per run's named queue across worker processes.
 Different runs, step jobs, and health checks can execute concurrently.
