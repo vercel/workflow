@@ -262,6 +262,7 @@ const SYMBOL_NAMES = [
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
+  '@workflow/errors//WorkflowStartError',
 ] as const;
 type SymbolName = (typeof SYMBOL_NAMES)[number];
 
@@ -1177,6 +1178,19 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
+    WorkflowStartError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'WorkflowStartError') return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        runId: own(value, 'runId'),
+        stage: own(value, 'stage'),
+      };
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
     RangeError: namedErrorSubclassReducer('RangeError'),
     ReferenceError: namedErrorSubclassReducer('ReferenceError'),
     RetryableError: (value) => {
@@ -1885,6 +1899,37 @@ export function createQuickJSSerde(
       } else {
         error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
         for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+      }
+      return error;
+    },
+    WorkflowStartError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass('@workflow/errors//WorkflowStartError');
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (runId, stage, cause).
+        const runId = own(value, 'runId') ?? vm.undefined;
+        const stage = own(value, 'stage') ?? vm.undefined;
+        const cause = guestHasOwn(value, 'cause')
+          ? (own(value, 'cause') ?? vm.undefined)
+          : vm.undefined;
+        error = vm.construct(cls, runId, stage, cause);
+        if (runId !== vm.undefined) runId.dispose();
+        if (stage !== vm.undefined) stage.dispose();
+        if (cause !== vm.undefined) cause.dispose();
+        const message = own(value, 'message');
+        if (message && !message.isUndefined) define(error, 'message', message);
+        message?.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'WorkflowStartError' });
+        for (const field of ['runId', 'stage']) {
           const handle = own(value, field);
           if (handle && !handle.isUndefined) define(error, field, handle);
           handle?.dispose();

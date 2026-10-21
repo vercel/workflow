@@ -278,6 +278,25 @@ describe('recreateRunFromExisting', () => {
     );
   });
 
+  it("never forwards the source run's start Hook", async () => {
+    // A re-run is a new run by intent; forwarding the reservation would make
+    // it a duplicate of the source and refuse it with HookConflictError.
+    const world = createMockWorld({
+      run: {
+        runId: 'wrun_source',
+        deploymentId: 'deploy_source',
+        startHook: { token: 'order:1' },
+      },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    const opts = vi.mocked(start).mock.calls[0][2] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty('hook');
+    expect(JSON.stringify(opts)).not.toContain('order:1');
+  });
+
   it('pins the source run spec version for a replay on its own deployment', async () => {
     const world = createMockWorld({
       run: { deploymentId: 'deploy_source', specVersion: 6 },

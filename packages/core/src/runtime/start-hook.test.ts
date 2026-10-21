@@ -1,0 +1,481 @@
+import {
+  EntityConflictError,
+  HookConflictError,
+  RUN_ERROR_CODES,
+  START_HOOK_ADMISSION_REJECTED,
+  ThrottleError,
+  WorkflowRuntimeError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
+import { healthCheck } from './helpers.js';
+import { normalizeStartHook, start } from './start.js';
+import { setWorld } from './world.js';
+
+vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+vi.mock('../telemetry.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../telemetry.js')>()),
+  serializeTraceCarrier: vi.fn().mockResolvedValue({}),
+  trace: vi.fn((_name, fn) => fn(undefined)),
+  getActiveSpan: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The cross-deployment capability probe, answered directly.
+vi.mock('./helpers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./helpers.js')>()),
+  healthCheck: vi.fn(),
+}));
+
+const workflow = { workflowId: 'workflow//./test//orders' };
+const TOKEN = 'order:123';
+
+let eventsCreate: ReturnType<typeof vi.fn>;
+let queue: ReturnType<typeof vi.fn>;
+let calls: string[];
+
+/** A World that admits start Hooks, echoing the reservation. */
+function admittingWorld(overrides: Record<string, unknown> = {}) {
+  const world = {
+    specVersion: SPEC_VERSION_CURRENT,
+    getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+    capabilities: {
+      atomicStartHook: { active: true },
+      hookRetention: { active: true },
+    },
+    events: { create: eventsCreate },
+    queue,
+    ...overrides,
+  } as any;
+  setWorld(world);
+  return world;
+}
+
+const accept = async (runId: string, event: any) => {
+  calls.push('create');
+  return {
+    run: { runId, status: 'pending', startHook: event.eventData.startHook },
+  };
+};
+
+beforeEach(() => {
+  calls = [];
+  eventsCreate = vi.fn(accept);
+  queue = vi.fn(async () => {
+    calls.push('queue');
+  });
+});
+
+afterEach(() => {
+  setWorld(undefined);
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
+});
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => {
+      throw new Error('expected start() to throw');
+    },
+    (error: unknown) => error
+  );
+}
+
+describe('normalizeStartHook', () => {
+  it.each([
+    [''],
+    [42],
+    [undefined],
+    [null],
+  ])('rejects the token %j', (token) => {
+    expect(() => normalizeStartHook({ token } as any)).toThrow(
+      WorkflowRuntimeError
+    );
+  });
+
+  it('resolves a duration to an absolute retention', () => {
+    const before = Date.now();
+    const { tokenRetentionUntil } = normalizeStartHook({
+      token: TOKEN,
+      experimental_minRetention: '1h',
+    });
+    expect(tokenRetentionUntil!.getTime()).toBeGreaterThanOrEqual(
+      before + 3_600_000
+    );
+  });
+
+  it('rejects a retention that is not in the future', () => {
+    expect(() =>
+      normalizeStartHook({
+        token: TOKEN,
+        experimental_minRetention: new Date(Date.now() - 1000),
+      })
+    ).toThrow(/future time/);
+  });
+});
+
+describe('start({ hook })', () => {
+  it('publishes the candidate first, then admits it, both carrying the reservation', async () => {
+    admittingWorld();
+
+    const run = await start(workflow, ['a'], { hook: { token: TOKEN } });
+
+    expect(calls).toEqual(['queue', 'create']);
+    const [runId, event] = eventsCreate.mock.calls[0];
+    expect(run.runId).toBe(runId);
+    expect(event.eventData.startHook).toEqual({ token: TOKEN });
+    const payload = queue.mock.calls[0][1];
+    expect(payload.runId).toBe(runId);
+    expect(payload.runInput.startHook).toEqual({ token: TOKEN });
+  });
+
+  it('carries the retention as an absolute time', async () => {
+    admittingWorld();
+    const until = new Date(Date.now() + 60_000);
+
+    await start(workflow, [], {
+      hook: { token: TOKEN, experimental_minRetention: until },
+    });
+
+    expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
+      token: TOKEN,
+      tokenRetentionUntil: until,
+    });
+  });
+
+  it('refuses a World without the capability before writing anything', async () => {
+    admittingWorld({ capabilities: { hookRetention: { active: true } } });
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
+    expect(queue).not.toHaveBeenCalled();
+    expect(eventsCreate).not.toHaveBeenCalled();
+  });
+
+  it('refuses a retention on a World without Hook retention', async () => {
+    admittingWorld({ capabilities: { atomicStartHook: { active: true } } });
+
+    const error = await rejection(
+      start(workflow, [], {
+        hook: { token: TOKEN, experimental_minRetention: '1h' },
+      })
+    );
+
+    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('refuses a dynamic workflow', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, '1');
+    admittingWorld();
+
+    const error = await rejection(
+      start('async function w() { "use workflow"; }', [], {
+        experimental_dynamic: { steps: {} },
+        hook: { token: TOKEN },
+      } as any)
+    );
+
+    expect((error as Error).message).toMatch(/not supported for dynamic/);
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('throws the owner HookConflictError for a refused candidate', async () => {
+    admittingWorld();
+    eventsCreate.mockRejectedValue(new HookConflictError(TOKEN, 'wrun_owner'));
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(HookConflictError.is(error)).toBe(true);
+    expect(error).toMatchObject({
+      token: TOKEN,
+      conflictingRunId: 'wrun_owner',
+    });
+  });
+
+  it('calls a refusal without an owner a contract error', async () => {
+    admittingWorld();
+    eventsCreate.mockRejectedValue(new HookConflictError(TOKEN));
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
+  });
+
+  it('calls EntityConflictError a contract error: admission must replay its decision', async () => {
+    admittingWorld();
+    eventsCreate.mockRejectedValue(new EntityConflictError('exists'));
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
+  });
+
+  it.each([
+    ['a 5xx', new WorkflowWorldError('down', { status: 503 })],
+    [
+      'a transport failure',
+      new WorkflowWorldError('reset', { code: 'TRANSPORT' }),
+    ],
+    ['a non-World error', new Error('socket hang up')],
+  ])('reports an uncertain queue on %s, without admitting', async (_label, cause) => {
+    admittingWorld();
+    queue.mockRejectedValue(cause);
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(WorkflowStartError.is(error)).toBe(true);
+    expect(error).toMatchObject({ stage: 'queue', cause });
+    expect((error as WorkflowStartError).runId).toMatch(/^wrun_/);
+    expect(eventsCreate).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a permanent queue refusal as-is', async () => {
+    admittingWorld();
+    const cause = new WorkflowWorldError('bad', { status: 400 });
+    queue.mockRejectedValue(cause);
+
+    expect(
+      await rejection(start(workflow, [], { hook: { token: TOKEN } }))
+    ).toBe(cause);
+  });
+
+  it.each([
+    ['a 5xx', new WorkflowWorldError('down', { status: 500 })],
+    ['contention', new ThrottleError('busy')],
+    ['a timeout', new WorkflowWorldError('slow', { code: 'TIMEOUT' })],
+  ])('reports an uncertain admission on %s', async (_label, cause) => {
+    admittingWorld();
+    eventsCreate.mockRejectedValue(cause);
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(WorkflowStartError.is(error)).toBe(true);
+    expect(error).toMatchObject({ stage: 'admission' });
+    expect((error as WorkflowStartError).runId).toBe(
+      queue.mock.calls[0][1].runId
+    );
+  });
+
+  it('rethrows a permanent admission rejection as-is', async () => {
+    admittingWorld();
+    const cause = new WorkflowWorldError('disabled', {
+      status: 400,
+      code: START_HOOK_ADMISSION_REJECTED,
+    });
+    eventsCreate.mockRejectedValue(cause);
+
+    expect(
+      await rejection(start(workflow, [], { hook: { token: TOKEN } }))
+    ).toBe(cause);
+  });
+
+  it('refuses to report success when the World did not echo the reservation', async () => {
+    admittingWorld();
+    eventsCreate.mockImplementation(async (runId: string) => ({
+      run: { runId, status: 'pending' },
+    }));
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
+    expect((error as Error).message).toMatch(/did not confirm reserving/);
+  });
+
+  describe('stream arguments', () => {
+    /** A one-shot source that records whether it was ever read. */
+    function oneShotSource() {
+      const reads = { count: 0 };
+      const stream = new ReadableStream<string>(
+        {
+          pull(controller) {
+            reads.count++;
+            controller.enqueue('webhook body');
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 }
+      );
+      return { stream, reads };
+    }
+
+    function streamWorld() {
+      const streams = {
+        write: vi.fn().mockResolvedValue(undefined),
+        writeMulti: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        get: vi.fn(),
+      };
+      admittingWorld({ streams });
+      return streams;
+    }
+
+    it.each([
+      ['refused', () => new HookConflictError(TOKEN, 'wrun_owner')],
+      ['uncertain', () => new WorkflowWorldError('down', { status: 503 })],
+    ])('never reads a %s candidate stream argument', async (_label, error) => {
+      const streams = streamWorld();
+      eventsCreate.mockRejectedValue(error());
+      const { stream, reads } = oneShotSource();
+
+      await start(workflow, [stream], { hook: { token: TOKEN } }).catch(
+        () => {}
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(reads.count).toBe(0);
+      expect(stream.locked).toBe(false);
+      expect(streams.write).not.toHaveBeenCalled();
+      expect(streams.close).not.toHaveBeenCalled();
+    });
+
+    it('never opens the readback into a refused candidate writable argument', async () => {
+      const streams = streamWorld();
+      eventsCreate.mockRejectedValue(
+        new HookConflictError(TOKEN, 'wrun_owner')
+      );
+      const sink = new WritableStream<string>();
+
+      await start(workflow, [sink], { hook: { token: TOKEN } }).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(sink.locked).toBe(false);
+      expect(streams.get).not.toHaveBeenCalled();
+    });
+
+    it('pipes the stream only once the candidate is admitted', async () => {
+      const streams = streamWorld();
+      let admit!: () => void;
+      eventsCreate.mockImplementation(
+        (runId: string, event: any) =>
+          new Promise((resolve) => {
+            admit = () => resolve(accept(runId, event));
+          })
+      );
+      const { stream, reads } = oneShotSource();
+
+      const pending = start(workflow, [stream], { hook: { token: TOKEN } });
+      await vi.waitFor(() => expect(eventsCreate).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(reads.count).toBe(0);
+
+      admit();
+      await pending;
+      await vi.waitFor(() => expect(reads.count).toBe(1));
+      await vi.waitFor(() => expect(streams.close).toHaveBeenCalled());
+    });
+  });
+
+  describe('cross-deployment', () => {
+    it('refuses without probing when the World has no probe channel', async () => {
+      admittingWorld();
+
+      const startedAt = Date.now();
+      const error = await rejection(
+        start(workflow, [], {
+          deploymentId: 'dpl_other',
+          hook: { token: TOKEN },
+        })
+      );
+
+      expect(error).toMatchObject({
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      });
+      expect(healthCheck).not.toHaveBeenCalled();
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('keeps an ordinary start to a World with no probe channel synchronous', async () => {
+      admittingWorld();
+      eventsCreate.mockImplementation(async (runId: string) => ({
+        run: { runId, status: 'pending' },
+      }));
+
+      await start(workflow, [], { deploymentId: 'dpl_other' });
+
+      expect(healthCheck).not.toHaveBeenCalled();
+    });
+
+    const probedWorld = () =>
+      admittingWorld({ streams: { get: vi.fn(), write: vi.fn() } });
+
+    it('refuses a target whose probe answered without the capability', async () => {
+      probedWorld();
+      vi.mocked(healthCheck).mockResolvedValue({
+        healthy: true,
+        format: 'json',
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { hookRetention: { active: true } },
+      });
+
+      const error = await rejection(
+        start(workflow, [], {
+          deploymentId: 'dpl_other',
+          hook: { token: TOKEN },
+        })
+      );
+
+      expect(error).toMatchObject({
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      });
+      expect((error as Error).message).toMatch(/dpl_other/);
+      expect(eventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('reports a probe that did not answer as retryable, not as a contract error', async () => {
+      probedWorld();
+      vi.mocked(healthCheck).mockResolvedValue({
+        healthy: false,
+        error: 'Health check timed out after 10000ms',
+      });
+
+      const error = await rejection(
+        start(workflow, [], {
+          deploymentId: 'dpl_other',
+          hook: { token: TOKEN },
+        })
+      );
+
+      expect(WorkflowWorldError.is(error)).toBe(true);
+      expect(error).toMatchObject({ code: 'TIMEOUT' });
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('admits on a target that advertises the capability', async () => {
+      probedWorld();
+      vi.mocked(healthCheck).mockResolvedValue({
+        healthy: true,
+        format: 'json',
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { atomicStartHook: { active: true } },
+      });
+
+      await start(workflow, [], {
+        deploymentId: 'dpl_other',
+        hook: { token: TOKEN },
+      });
+
+      expect(calls).toEqual(['queue', 'create']);
+    });
+  });
+});

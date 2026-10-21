@@ -8,6 +8,7 @@ import {
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
+  WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
@@ -4818,6 +4819,34 @@ describe('Workflow error serialization', () => {
     expect(hydrated.token).toBe('approval-token');
     expect(hydrated.conflictingRunId).toBe('wrun_conflicting');
     expect(hydrated.message).toContain('wrun_conflicting');
+  });
+
+  it('should round-trip WorkflowStartError preserving the candidate and stage', async () => {
+    const error = new WorkflowStartError(
+      'wrun_candidate',
+      'admission',
+      new Error('gateway timed out')
+    );
+    const hydrated = (await roundTrip(error)) as WorkflowStartError;
+    expect(hydrated).toBeInstanceOf(WorkflowStartError);
+    expect(WorkflowStartError.is(hydrated)).toBe(true);
+    expect(hydrated.runId).toBe('wrun_candidate');
+    expect(hydrated.stage).toBe('admission');
+    expect(hydrated.message).toBe(error.message);
+    expect((hydrated.cause as Error).message).toBe('gateway timed out');
+  });
+
+  it('should serialize WorkflowStartError using its dedicated reducer key', async () => {
+    const serialized = await dehydrateStepReturnValue(
+      new WorkflowStartError('wrun_candidate', 'queue'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('["WorkflowStartError",');
+    expect(str).not.toContain('["Error",');
   });
 
   it('should serialize HookConflictError using its dedicated reducer key', async () => {

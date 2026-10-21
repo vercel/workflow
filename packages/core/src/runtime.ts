@@ -4,6 +4,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  HookConflictError,
   HookNotFoundError,
   MaxEventsExceededError,
   PreconditionFailedError,
@@ -11,7 +12,9 @@ import {
   RUN_ERROR_CODES,
   type RunErrorCode,
   RunExpiredError,
+  START_HOOK_ADMISSION_REJECTED,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -218,6 +221,7 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type StartHookOptions,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
@@ -1410,6 +1414,10 @@ export function workflowEntrypoint(
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
+                    // An atomic start's candidate may be refused, so its first
+                    // delivery must not run anything before `run_started`
+                    // admits it.
+                    runInput.startHook === undefined &&
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
@@ -2504,6 +2512,13 @@ export function workflowEntrypoint(
                               dynamicWorkflowCode: runInput.dynamicWorkflowCode,
                               dynamicWorkflowCodeRef:
                                 runInput.dynamicWorkflowCodeRef,
+                              // Without the key, a run this event creates
+                              // could never receive sealed writes.
+                              encryptionPublicKey: runInput.encryptionPublicKey,
+                              // The queued copy of `start({ hook })`: this
+                              // write may be the one that admits or refuses
+                              // the candidate.
+                              startHook: runInput.startHook,
                             },
                           }
                         : {}),
@@ -2688,6 +2703,34 @@ export function workflowEntrypoint(
                         }
                         startWorkflowCompile(workflowRun);
                       } catch (err) {
+                        // The queued copy of a `start({ hook })` candidate the
+                        // World refused: another run owns the token, so this
+                        // candidate never becomes a run. Nothing ran; ack the
+                        // message. Narrowed to exactly the two admission
+                        // answers so every other World error keeps its own
+                        // handling below.
+                        if (runInput?.startHook !== undefined) {
+                          if (HookConflictError.is(err)) {
+                            runtimeLogger.info(
+                              'Start Hook candidate refused: another run owns the token, skipping',
+                              {
+                                workflowRunId: runId,
+                                conflictingRunId: err.conflictingRunId,
+                              }
+                            );
+                            return;
+                          }
+                          if (
+                            WorkflowWorldError.is(err) &&
+                            err.code === START_HOOK_ADMISSION_REJECTED
+                          ) {
+                            runtimeLogger.error(
+                              'Start Hook candidate permanently rejected by the World, skipping',
+                              { workflowRunId: runId, error: err.message }
+                            );
+                            return;
+                          }
+                        }
                         // Run was concurrently completed/failed/canceled
                         if (
                           EntityConflictError.is(err) ||

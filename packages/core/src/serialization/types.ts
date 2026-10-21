@@ -2,7 +2,10 @@
  * Shared types for the serialization system.
  */
 
-import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+import type {
+  RuntimeDecryptionErrorContext,
+  WorkflowStartStage,
+} from '@workflow/errors';
 
 // ---- Format Prefix ----
 
@@ -104,6 +107,13 @@ export interface SerializableSpecial {
     token: string;
     claimedByRunId: string;
     claimedByHookId?: string;
+  };
+  WorkflowStartError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    runId: string;
+    stage: WorkflowStartStage;
   };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
