@@ -5027,6 +5027,16 @@ export function workflowEntrypoint(
                         // way: the invocation it wakes replays this run
                         // concurrently and may race this one for a step's
                         // claim.
+                        // A dispatched sibling can also replay before this
+                        // batch's lazy claims land, or race a later batch once
+                        // it settles. Latch off forced optimistic starts just
+                        // as for an explicit branch hand-off.
+                        if (
+                          outOfBandObservation &&
+                          outOfBandObservation.externalStepCount > 0
+                        ) {
+                          branchHandedOff = true;
+                        }
                         const forceOptimisticStart =
                           turbo &&
                           !branchHandedOff &&
