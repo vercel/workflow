@@ -10,6 +10,11 @@ export {
   type RetryableErrorOptions,
 } from '@workflow/errors';
 export type { Hook, HookOptions } from '../create-hook.js';
+export {
+  experimental_lock,
+  type LockOptions,
+  type LockSlot,
+} from '../lock.js';
 export type { Serializable } from '../schemas.js';
 export { sleep } from '../sleep.js';
 export { createHook, createWebhook } from './create-hook.js';

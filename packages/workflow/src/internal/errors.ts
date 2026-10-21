@@ -4,6 +4,7 @@ export {
   HookForceClaimedError,
   HookNotFoundError,
   InBandSupersededError,
+  LockUnsupportedError,
   PreconditionFailedError,
   RunExpiredError,
   RunNotSupportedError,

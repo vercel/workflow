@@ -2569,6 +2569,86 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  describe('experimental_lock()', () => {
+    test(
+      'admits at most `concurrency` runs into the critical section, with distinct fencing tokens',
+      { timeout: 180_000 },
+      async (ctx) => {
+        // Lock keys are shared by every deployment of a project environment,
+        // and every PR deploys the same workbench projects: namespace the key
+        // per deployment and per test run so parallel CI runs never contend.
+        const key = `e2e-lock:${process.env.VERCEL_DEPLOYMENT_ID ?? 'local'}:${Math.random().toString(36).slice(2)}`;
+        const concurrency = 2;
+        const workflow = await e2e('lockWorkflow');
+        const runs = await Promise.all(
+          Array.from({ length: 5 }, () =>
+            start(workflow, [key, concurrency, 1_500])
+          )
+        );
+        const settled = await Promise.allSettled(
+          runs.map((run) => run.returnValue)
+        );
+        // A backend that refuses lock events (switched off, or older than
+        // locks) fails the run closed. Its refused lock_created must have
+        // persisted nothing: no lock event of any kind in the run's log.
+        const refused = settled.filter(
+          (s): s is PromiseRejectedResult =>
+            s.status === 'rejected' &&
+            String(s.reason?.message ?? s.reason).includes(
+              'requires a World that supports concurrency locks'
+            )
+        );
+        if (refused.length > 0) {
+          expect(refused).toHaveLength(runs.length);
+          const world = await getWorld();
+          for (const run of runs) {
+            const { data } = await world.events.list({
+              runId: run.runId,
+              pagination: { limit: 1000 },
+            });
+            expect(data.filter((e) => e.eventType.startsWith('lock_'))).toEqual(
+              []
+            );
+          }
+          ctx.skip();
+        }
+        const results = settled.map((s) => {
+          if (s.status === 'rejected') throw s.reason;
+          return s.value;
+        }) as {
+          supported: boolean;
+          startedAt?: number;
+          endedAt?: number;
+          fencingToken?: number;
+        }[];
+        // A World without the `locks` capability fails closed in the
+        // workflow with LockUnsupportedError, before writing anything.
+        if (results.some((r) => !r.supported)) ctx.skip();
+
+        expect(new Set(results.map((r) => r.fencingToken)).size).toBe(
+          results.length
+        );
+        // Shrink each window by a clock-skew allowance: on Vercel the steps
+        // run on different instances, so a window that starts right after
+        // another ends can read as a few milliseconds early.
+        const skewMs = 250;
+        const edges = results
+          .flatMap((r) => [
+            { at: (r.startedAt ?? 0) + skewMs, delta: 1 },
+            { at: (r.endedAt ?? 0) - skewMs, delta: -1 },
+          ])
+          .sort((a, b) => a.at - b.at || a.delta - b.delta);
+        let open = 0;
+        let maxOpen = 0;
+        for (const edge of edges) {
+          open += edge.delta;
+          maxOpen = Math.max(maxOpen, open);
+        }
+        expect(maxOpen).toBeLessThanOrEqual(concurrency);
+      }
+    );
+  });
+
   describe('createHook({ experimental_force: true })', () => {
     /** Every event of a run, in log order, across pages. */
     async function allRunEvents(runId: string) {

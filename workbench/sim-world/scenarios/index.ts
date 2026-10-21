@@ -37,6 +37,13 @@ import { scenario as hookOnExecutionState } from './hook-on-execution-state.ts';
 import { scenario as inFlightAfterDecision } from './in-flight-after-decision.ts';
 import { scenario as inFlightBeforeDecision } from './in-flight-before-decision.ts';
 import { scenario as inFlightBeforeDecisionCounted } from './in-flight-before-decision-counted.ts';
+import { scenario as lockAcquireBeforeRelease } from './lock-acquire-before-release.ts';
+import { scenario as lockCancelledWaiter } from './lock-cancelled-waiter.ts';
+import { scenario as lockDuplicateDelivery } from './lock-duplicate-delivery.ts';
+import { scenario as lockRaceLastSlot } from './lock-race-last-slot.ts';
+import { scenario as lockReleaseBeforeAcquire } from './lock-release-before-acquire.ts';
+import { scenario as lockReleaseVsReclaim } from './lock-release-vs-reclaim.ts';
+import { scenario as lockWaiterRetries } from './lock-waiter-retries.ts';
 import { scenario as longSleep } from './long-sleep.ts';
 import { scenario as parallelSteps } from './parallel-steps.ts';
 import { scenario as peekHookAfterBranch } from './peek-hook-after-branch.ts';
@@ -187,4 +194,18 @@ export const scenarios: ScenarioSpec[] = [
   writersIndependentStepBodies,
   writersScriptedTempo,
   cancelMidStep,
+
+  // -------------------------------------------------------------------------
+  // Locks: several runs contending for one `experimental_lock()` key. Each holds the run
+  // under test inside its critical section and steers the others by runId.
+  // The lock invariants (no position over-admits, fencing tokens increase,
+  // count matches holders) are checked against every run's log.
+  // -------------------------------------------------------------------------
+  lockWaiterRetries,
+  lockRaceLastSlot,
+  lockReleaseBeforeAcquire,
+  lockAcquireBeforeRelease,
+  lockReleaseVsReclaim,
+  lockDuplicateDelivery,
+  lockCancelledWaiter,
 ];

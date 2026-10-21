@@ -18,6 +18,7 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type { Lock, LockHolder } from './locks.js';
 import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
@@ -560,6 +561,39 @@ export interface Storage {
      */
     delete(runId: string): Promise<void>;
   };
+
+  /**
+   * OPTIONAL lock inspection and administration, for observability and for an
+   * operator who has to free a slot by hand. Present only on a World that
+   * declares {@link WorldCapabilities.locks}; the runtime never calls it, so a
+   * lock-capable World may still omit it. Lock *admission* goes through
+   * `events.create` (`lock_created` / `lock_released`), never through here.
+   */
+  locks?: {
+    /** The key's semaphore row, or `null` when nothing has ever held it. */
+    get(key: string): Promise<Lock | null>;
+    /**
+     * Live holder rows, filtered by key and/or run. Unordered; small by
+     * construction (at most `concurrency` per key).
+     */
+    listHolders(params: {
+      key?: string;
+      runId?: string;
+    }): Promise<LockHolder[]>;
+    /**
+     * Force-release one holder: delete its row and decrement the key, in the
+     * same atomic step every other decrement uses. The holder's run is not
+     * told; its eventual `lock_released` is then a no-op, and a fencing token
+     * is what lets a downstream system reject its later writes. Resolves
+     * `released: false` when the row was already gone.
+     *
+     * Reserved: optional even for a World that implements `locks`.
+     */
+    releaseHolder?(params: {
+      runId: string;
+      correlationId: string;
+    }): Promise<{ released: boolean }>;
+  };
 }
 
 /**
@@ -718,6 +752,43 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
+
+  /**
+   * Native concurrency: `experimental_lock(key, { concurrency })` in workflow code. The
+   * runtime only ever writes lock events to a World that declares
+   * `locks.concurrency === true`, and `experimental_lock()` throws `LockUnsupportedError`
+   * on any other, so a workflow can never silently run unbounded.
+   *
+   * Declaring it commits the World to the lock entity contract in
+   * `@workflow/world`'s `locks.ts` (`count` equals the number of live holder
+   * rows, maintained transactionally) and to these `events.create` semantics:
+   *
+   * - `lock_created` for a scope `(runId, correlationId)` with no event yet:
+   *   upsert the key (first writer's `concurrency` wins), then grant with one
+   *   conditional write (`count < concurrency`), inserting the holder row and
+   *   bumping `grantSeq` in the same atomic step. Granted: commit
+   *   `lock_acquired` (carrying the new `grantSeq` as `fencingToken`) *in
+   *   place of* the `lock_created`. Refused: commit the `lock_created` with a
+   *   World-computed `retryAt`.
+   * - `lock_created` for a scope that already has events appends nothing. A
+   *   scope with a `lock_acquired` returns it; a pending one retries the grant
+   *   and returns its new `lock_acquired`, or its committed `lock_created`
+   *   with a fresh `retryAt` on `EventResult.lock`.
+   * - `lock_released` deletes the scope's holder row and decrements, as one
+   *   atomic step, and commits the event; a duplicate is `EntityConflictError`.
+   * - A grant is refused (`EntityConflictError`) once the run is terminal, and
+   *   the terminal transition deletes the run's holder rows and decrements
+   *   their keys, so a grant racing it either lands before the reclaim sees it
+   *   or after the run reads terminal.
+   * - `lock_waiter_queued` is rejected until the World implements the stage-2
+   *   waitlist.
+   *
+   * `@workflow/world`'s `test-support/lock-conformance.ts` checks these
+   * against a World's `events` storage.
+   */
+  locks?: {
+    concurrency: boolean;
+  };
 
   /**
    * Stores a dynamic run's workflow code with the run. The World must persist

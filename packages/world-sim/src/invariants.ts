@@ -18,6 +18,8 @@
 import {
   type Event,
   isTerminalRunEventType,
+  type Lock,
+  type LockHolder,
   type Step,
   type Wait,
   type WorkflowRun,
@@ -393,5 +395,143 @@ export function checkInvariants(input: InvariantInput): InvariantViolation[] {
     }
   }
 
+  return violations;
+}
+
+export interface LockInvariantInput {
+  /** Every run's events, in the order the World committed them. */
+  events: Event[];
+  /** The store's lock rows and live holders, to check against the log. */
+  locks: Lock[];
+  holders: LockHolder[];
+}
+
+/**
+ * `experimental_lock()` safety, re-derived from the event logs alone. Lock keys are shared
+ * across runs, so unlike {@link checkInvariants} this walks every run's log at
+ * once, in commit order (the order the World decided grants in).
+ *
+ * - `lock.over-admitted`: at no position does a key's holder set exceed the
+ *   concurrency its grants were checked against. A holder joins at its
+ *   `lock_acquired` and leaves at its `lock_released`, its run's terminal
+ *   event, or (opt-in lease) once its `leaseExpiresAt` has passed.
+ * - `lock.fencing-monotonic`: fencing tokens strictly increase per key.
+ * - `lock.one-event-per-type`: a scope records each lock event type once, so
+ *   waiting K attempts left exactly one `lock_created`.
+ * - `lock.grant-after-terminal`: no grant lands in a finished run.
+ * - `lock.count-matches-holders`: the store's `count` and holder rows are
+ *   what the log implies at the end.
+ */
+export function checkLockInvariants(
+  input: LockInvariantInput
+): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  const add = (
+    rule: string,
+    message: string,
+    event?: Pick<Event, 'runId' | 'eventId'>
+  ) => {
+    violations.push({
+      rule,
+      message,
+      runId: event?.runId,
+      eventId: event?.eventId,
+    });
+  };
+
+  type Hold = { runId: string; correlationId: string; leaseExpiresAt?: number };
+  const holdersByKey = new Map<string, Map<string, Hold>>();
+  const lastToken = new Map<string, number>();
+  const seenScopeEvents = new Set<string>();
+  const terminalRuns = new Set<string>();
+  const scopeKey = (runId: string, correlationId: string) =>
+    `${runId}:${correlationId}`;
+
+  for (const event of input.events) {
+    const at = event.createdAt.getTime();
+    // Expire opt-in leases before deciding anything at this position.
+    for (const holds of holdersByKey.values()) {
+      for (const [id, hold] of holds) {
+        if (hold.leaseExpiresAt !== undefined && hold.leaseExpiresAt <= at) {
+          holds.delete(id);
+        }
+      }
+    }
+    if (isTerminalRunEventType(event.eventType)) {
+      terminalRuns.add(event.runId);
+      for (const holds of holdersByKey.values()) {
+        for (const [id, hold] of holds) {
+          if (hold.runId === event.runId) holds.delete(id);
+        }
+      }
+      continue;
+    }
+    if (!event.eventType.startsWith('lock_') || !event.correlationId) continue;
+
+    const once = `${scopeKey(event.runId, event.correlationId)}:${event.eventType}`;
+    if (seenScopeEvents.has(once)) {
+      add(
+        'lock.one-event-per-type',
+        `Scope ${event.correlationId} recorded a second ${event.eventType}`,
+        event
+      );
+    }
+    seenScopeEvents.add(once);
+
+    const data = (event as { eventData?: Record<string, unknown> }).eventData;
+    const key = String(data?.key);
+    const holds = holdersByKey.get(key) ?? new Map<string, Hold>();
+    holdersByKey.set(key, holds);
+
+    if (event.eventType === 'lock_acquired') {
+      if (terminalRuns.has(event.runId)) {
+        add(
+          'lock.grant-after-terminal',
+          `Grant of "${key}" landed after run ${event.runId} ended`,
+          event
+        );
+      }
+      const token = Number(data?.fencingToken);
+      const previous = lastToken.get(key);
+      if (previous !== undefined && !(token > previous)) {
+        add(
+          'lock.fencing-monotonic',
+          `Fencing token ${token} for "${key}" does not exceed ${previous}`,
+          event
+        );
+      }
+      lastToken.set(key, token);
+      const leaseExpiresAt = data?.leaseExpiresAt
+        ? new Date(data.leaseExpiresAt as Date).getTime()
+        : undefined;
+      holds.set(scopeKey(event.runId, event.correlationId), {
+        runId: event.runId,
+        correlationId: event.correlationId,
+        ...(leaseExpiresAt !== undefined && { leaseExpiresAt }),
+      });
+      const limit = Number(data?.effectiveConcurrency);
+      if (holds.size > limit) {
+        add(
+          'lock.over-admitted',
+          `"${key}" has ${holds.size} holders at this position, above its concurrency ${limit}`,
+          event
+        );
+      }
+    } else if (event.eventType === 'lock_released') {
+      holds.delete(scopeKey(event.runId, event.correlationId));
+    }
+  }
+
+  // The store's rows are a fold of the same log.
+  for (const lock of input.locks) {
+    const derived = holdersByKey.get(lock.key)?.size ?? 0;
+    const rows = input.holders.filter((h) => h.key === lock.key).length;
+    if (lock.count !== rows || lock.count !== derived) {
+      add(
+        'lock.count-matches-holders',
+        `"${lock.key}" stores count ${lock.count} with ${rows} holder row(s); the log implies ${derived}`
+      );
+    }
+  }
   return violations;
 }

@@ -3,6 +3,8 @@ import type {
   Event,
   EventType,
   Hook,
+  Lock,
+  LockHolder,
   QueuePayload,
   Step,
   Wait,
@@ -170,6 +172,10 @@ export interface WorldSnapshot {
   steps(runId?: string): Step[];
   hooks(runId?: string): Hook[];
   waits(runId?: string): Wait[];
+  /** Every `experimental_lock()` key's semaphore row. */
+  locks(): Lock[];
+  /** Live lock holder rows. */
+  lockHolders(): LockHolder[];
   /** Queue messages that have been enqueued but not yet delivered. */
   pendingMessages(): PendingMessageView[];
   /**
@@ -362,8 +368,25 @@ export interface ScenarioApi {
    * separate process from the run's invocation.
    */
   beginHookDelivery(token: string, payload: unknown): Promise<InFlightWrite>;
-  /** Cancel the run under test, as an operator would. */
-  cancelRun(reason?: string): Promise<void>;
+  /**
+   * Cancel a run, as an operator would: the run under test, or `runId`
+   * (one `startRun` returned).
+   */
+  cancelRun(reason?: string, runId?: string): Promise<void>;
+  /**
+   * Start another run of a workflow alongside the run under test, as a
+   * second `start()` would. Its messages join the same delivery loop, so
+   * scenarios about several runs contending for one resource (a `experimental_lock()`
+   * key) can steer all of them. Resolves the new run's id. Only the run under
+   * test is checked against `expect`; check the others with `sim.check`.
+   */
+  startRun(workflow: string, input?: unknown[]): Promise<string>;
+  /**
+   * Enqueue a fresh flow message for a run, as a queue redelivery or a
+   * duplicate wake would. Lets a scenario put two deliveries of one run in
+   * flight at once.
+   */
+  wakeRun(runId: string): Promise<void>;
   /** Jump virtual time forward. */
   advanceTime(ms: number): void;
   /**

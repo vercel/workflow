@@ -38,11 +38,16 @@ import {
   IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
+  isLockEventType,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  type Lock,
+  type LockAttempt,
+  type LockHolder,
+  lockRetryAt,
   type PaginatedResponse,
   type PaginationOptions,
   type ResolveData,
@@ -210,6 +215,10 @@ export interface SimStore extends Storage {
   allHooks(runId?: string): Hook[];
   allWaits(runId?: string): Wait[];
   hookByToken(token: string): Hook | undefined;
+  /** Every lock key's semaphore row. */
+  allLocks(): Lock[];
+  /** Live lock holder rows. */
+  allLockHolders(): LockHolder[];
 }
 
 /** Brand check that survives a swapped global constructor (see `clock.ts`). */
@@ -325,6 +334,32 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const waits = new Map<string, Wait>();
   /** hookIds that have been explicitly disposed; disposal is permanent. */
   const disposedHooks = new Set<string>();
+  /**
+   * Lock keys (`experimental_lock()`). Holders live with the row they count, so `count`
+   * is the holder map's size by construction; every decrement is the delete
+   * of a specific holder.
+   */
+  const lockRows = new Map<
+    string,
+    Omit<Lock, 'count'> & { holders: Map<string, LockHolder> }
+  >();
+  const holderKey = (runId: string, correlationId: string) =>
+    `${runId}:${correlationId}`;
+  function lockRow(key: string, concurrency: number, at: Date) {
+    let row = lockRows.get(key);
+    if (!row) {
+      row = {
+        key,
+        concurrency,
+        grantSeq: 0,
+        holders: new Map(),
+        createdAt: at,
+        updatedAt: at,
+      };
+      lockRows.set(key, row);
+    }
+    return row;
+  }
   /**
    * Per run: ULID time of the newest externally-originated event. Only read
    * when `preconditionGuard` is on. See `SimCreateParams.snapshot`.
@@ -452,6 +487,12 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     }
     for (const [key, wait] of waits) {
       if (wait.runId === runId) waits.delete(key);
+    }
+    // Terminal reclaim: the run's lock slots go with it.
+    for (const row of lockRows.values()) {
+      for (const [id, holder] of row.holders) {
+        if (holder.runId === runId) row.holders.delete(id);
+      }
     }
   }
 
@@ -661,6 +702,37 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         return {};
       }
 
+      case 'lock_created': {
+        const key = data?.key as string;
+        lockRow(key, data?.concurrency as number, at);
+        return {};
+      }
+
+      case 'lock_acquired': {
+        const key = data?.key as string;
+        const row = lockRow(key, data?.effectiveConcurrency as number, at);
+        const fencingToken = data?.fencingToken as number;
+        row.holders.set(holderKey(runId, correlationId as string), {
+          key,
+          runId,
+          correlationId: correlationId as string,
+          fencingToken,
+          acquiredAt: at,
+          ...(data?.leaseExpiresAt
+            ? { leaseExpiresAt: new Date(data.leaseExpiresAt as Date) }
+            : {}),
+        });
+        row.grantSeq = Math.max(row.grantSeq, fencingToken);
+        row.updatedAt = at;
+        return {};
+      }
+
+      case 'lock_released': {
+        const row = lockRows.get(data?.key as string);
+        row?.holders.delete(holderKey(runId, correlationId as string));
+        return {};
+      }
+
       case 'wait_created': {
         if (!correlationId) return {};
         const key = waitKey(runId, correlationId);
@@ -753,6 +825,132 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       });
     fenceLocks.set(runId, run);
     return run;
+  }
+
+  function createLockEvent(
+    runId: string,
+    currentRun: WorkflowRun | undefined,
+    data: AnyEventRequest,
+    position: Pick<Event, 'eventId' | 'createdAt'>,
+    now: Date,
+    specVersion: number,
+    resolveData: ResolveData
+  ): EventResult {
+    if (!currentRun) throw new WorkflowRunNotFoundError(runId);
+    if (data.eventType === 'lock_waiter_queued') {
+      throw new WorkflowWorldError(
+        'lock_waiter_queued is not supported: the sim World has no lock waitlist',
+        { status: 400 }
+      );
+    }
+    if (isTerminalWorkflowRunStatus(currentRun.status)) {
+      throw new EntityConflictError(
+        `Cannot change a lock on run in terminal state "${currentRun.status}"`
+      );
+    }
+    const correlationId = data.correlationId as string;
+    const request = data.eventData as {
+      key: string;
+      concurrency: number;
+      leaseTtlMs?: number;
+    };
+    const scope = eventsForRun(runId).filter(
+      (e) => e.correlationId === correlationId
+    );
+    const created = scope.find((e) => e.eventType === 'lock_created');
+    const acquired = scope.find((e) => e.eventType === 'lock_acquired');
+    const released = scope.find((e) => e.eventType === 'lock_released');
+    const commit = (
+      eventType: 'lock_created' | 'lock_acquired' | 'lock_released',
+      eventData: Record<string, unknown>,
+      lock: LockAttempt
+    ): EventResult => {
+      const event = {
+        eventType,
+        correlationId,
+        runId,
+        ...position,
+        specVersion,
+        eventData,
+      } as Event;
+      applyEvent(event, now);
+      append(event);
+      return { event: stripEventDataRefs(clone(event), resolveData), lock };
+    };
+    const tokenOf = (e: Event) =>
+      (e as { eventData: { fencingToken: number } }).eventData.fencingToken;
+
+    if (data.eventType === 'lock_released') {
+      if (!acquired || released) {
+        throw new EntityConflictError(
+          `Lock scope "${correlationId}" does not hold "${request.key}"`
+        );
+      }
+      return commit(
+        'lock_released',
+        { key: request.key },
+        {
+          key: request.key,
+          status: 'released',
+        }
+      );
+    }
+
+    const row = lockRow(request.key, request.concurrency, now);
+    if (acquired) {
+      return {
+        event: stripEventDataRefs(clone(acquired), resolveData),
+        lock: {
+          key: request.key,
+          status: released ? 'released' : 'held',
+          fencingToken: tokenOf(acquired),
+          concurrency: row.concurrency,
+        },
+      };
+    }
+    for (const [id, holder] of row.holders) {
+      if (holder.leaseExpiresAt && +holder.leaseExpiresAt <= +now) {
+        row.holders.delete(id);
+      }
+    }
+    if (row.holders.size === 0) row.concurrency = request.concurrency;
+    if (row.holders.size < row.concurrency) {
+      const fencingToken = row.grantSeq + 1;
+      return commit(
+        'lock_acquired',
+        {
+          key: request.key,
+          concurrency: request.concurrency,
+          effectiveConcurrency: row.concurrency,
+          fencingToken,
+          ...(request.leaseTtlMs !== undefined && {
+            leaseTtlMs: request.leaseTtlMs,
+            leaseExpiresAt: new Date(+now + request.leaseTtlMs),
+          }),
+        },
+        {
+          key: request.key,
+          status: 'held',
+          fencingToken,
+          concurrency: row.concurrency,
+        }
+      );
+    }
+    // Refused. The scope's deterministic retry schedule (see `lockRetryAt`).
+    const waitingSince = created ? +created.createdAt : +now;
+    const retryAt = new Date(
+      lockRetryAt(`${runId}:${correlationId}`, waitingSince, +now)
+    );
+    const lock: LockAttempt = {
+      key: request.key,
+      status: 'pending',
+      retryAt,
+      concurrency: row.concurrency,
+    };
+    if (created) {
+      return { event: stripEventDataRefs(clone(created), resolveData), lock };
+    }
+    return commit('lock_created', { ...request, retryAt }, lock);
   }
 
   async function create(
@@ -854,6 +1052,21 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           );
         }
       }
+    }
+
+    // ---- Locks --------------------------------------------------------------
+    // Their own state machine, keyed across runs. Synchronous from the checks
+    // to the append, so the grant is atomic in this single-threaded store.
+    if (isLockEventType(data.eventType)) {
+      return createLockEvent(
+        runId,
+        currentRun,
+        data,
+        position,
+        now,
+        specVersion,
+        resolveData
+      );
     }
 
     const createsChildEntity = isChildEntityCreationEvent(data);
@@ -1443,6 +1656,14 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       const found = hookId ? hooks.get(hookId) : undefined;
       return found ? clone(found) : undefined;
     },
+    allLocks: () =>
+      [...lockRows.values()].map(({ holders, ...row }) =>
+        clone({ ...row, count: holders.size })
+      ),
+    allLockHolders: () =>
+      [...lockRows.values()].flatMap((row) =>
+        [...row.holders.values()].map(clone)
+      ),
   };
 
   return storage;

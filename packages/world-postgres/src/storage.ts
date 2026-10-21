@@ -50,6 +50,7 @@ import {
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isLockEventType,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
@@ -91,6 +92,12 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
+import {
+  acquireLock,
+  type LockEventInserter,
+  reclaimRunLocks,
+  releaseLock,
+} from './locks.js';
 import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
   getRunStatusPollIntervalMs,
@@ -1561,6 +1568,76 @@ function createUnfencedEventsStorage(
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
+      // Lock events have their own state machine (locks.ts), keyed across
+      // runs; none of the entity checks below apply to them.
+      if (isLockEventType(data.eventType)) {
+        if (!currentRun) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
+        if (data.eventType === 'lock_waiter_queued') {
+          throw new WorkflowWorldError(
+            'lock_waiter_queued is not supported: the Postgres World has no lock waitlist',
+            { status: 400 }
+          );
+        }
+        if (isTerminalWorkflowRunStatus(currentRun.status)) {
+          throw new EntityConflictError(
+            `Cannot ${data.eventType === 'lock_created' ? 'acquire' : 'release'} a lock on run in terminal state "${currentRun.status}"`
+          );
+        }
+        const insertLockEvent: LockEventInserter = async (tx, event) => {
+          const value = await insertEventRow(tx, {
+            runId: effectiveRunId,
+            eventId: await allocateEventId(tx, effectiveRunId),
+            correlationId: event.correlationId,
+            eventType: event.eventType,
+            eventData: event.eventData,
+            specVersion: effectiveSpecVersion,
+          });
+          if (!value) {
+            throw new EntityConflictError(
+              `${event.eventType} for run "${effectiveRunId}" could not be created`
+            );
+          }
+          return EventSchema.parse({
+            ...event,
+            ...value,
+            runId: effectiveRunId,
+            specVersion: effectiveSpecVersion,
+          });
+        };
+        const { event, lock } = await (data.eventType === 'lock_created'
+          ? acquireLock(drizzle, insertLockEvent, effectiveRunId, data)
+          : releaseLock(
+              drizzle,
+              insertLockEvent,
+              effectiveRunId,
+              data as Extract<AnyEventRequest, { eventType: 'lock_released' }>
+            ));
+        const resolveData = params?.resolveData ?? 'all';
+        const report =
+          params?.eventCount !== undefined
+            ? await reportSkippedSlots(
+                drizzle,
+                effectiveRunId,
+                event.eventId,
+                params.eventCount,
+                resolveData
+              )
+            : undefined;
+        const lockResult: EventResult = {
+          event: stripEventDataRefs(event, resolveData),
+          lock,
+        };
+        if (!report) return lockResult;
+        return {
+          ...lockResult,
+          events: report.events,
+          cursor: null,
+          hasMore: report.hasMore,
+        };
+      }
+
       // Retry convergence must precede the hook existence/terminal checks.
       // A committed resume stays accepted after disposal or run completion.
       if (data.eventType === 'hook_received' && params?.resumeId) {
@@ -2046,6 +2123,9 @@ function createUnfencedEventsStorage(
           await tx
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId));
+          // Terminal reclaim: free every lock slot the run still holds, in
+          // the transaction that makes it terminal (see locks.ts).
+          await reclaimRunLocks(tx, effectiveRunId);
 
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);

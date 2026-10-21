@@ -45,6 +45,7 @@ import {
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isLegacySpecVersion,
+  isLockEventType,
   isSlotEventId,
   isStepEventType,
   isTerminalRunEventType,
@@ -117,6 +118,12 @@ import {
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+import {
+  createLockAcquisition,
+  createLockRelease,
+  type LockEventContext,
+  reclaimRunLocks,
+} from './locks-storage.js';
 import {
   purgeRunEntityData,
   purgesUserDataOnFinish,
@@ -1179,6 +1186,64 @@ export function createEventsStorage(
       }
       return createImpl();
 
+      async function createLockEventImpl(
+        effectiveRunId: string,
+        currentRun: WorkflowRun | null,
+        now: Date
+      ): Promise<EventResult> {
+        if (!currentRun) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
+        if (data.eventType === 'lock_waiter_queued') {
+          throw new WorkflowWorldError(
+            'lock_waiter_queued is not supported: the Local World has no lock waitlist',
+            { status: 400 }
+          );
+        }
+        if (isTerminalWorkflowRunStatus(currentRun.status)) {
+          throw new EntityConflictError(
+            `Cannot ${data.eventType === 'lock_created' ? 'acquire' : 'release'} a lock on run in terminal state "${currentRun.status}"`
+          );
+        }
+        const ctx: LockEventContext = {
+          basedir,
+          tag,
+          runId: effectiveRunId,
+          now,
+          specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+          storeEvent,
+          mintEventId: () => mintEventId(effectiveRunId),
+          readEvent: (eventId) =>
+            readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            ),
+        };
+        const { event, lock } =
+          data.eventType === 'lock_created'
+            ? await createLockAcquisition(ctx, data as any)
+            : await createLockRelease(ctx, data as any);
+        const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+        const result: EventResult = {
+          event: stripEventDataRefs(event, resolveData),
+          lock,
+        };
+        if (typeof params?.sinceCursor !== 'string') return result;
+        const delta = await queryRunEvents(effectiveRunId, {
+          sortOrder: 'asc',
+          cursor: params.sinceCursor,
+        });
+        return {
+          ...result,
+          events: delta.data,
+          cursor: delta.cursor,
+          hasMore: delta.hasMore,
+        };
+      }
+
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-drawn candidate eventId. The
         // hook_created dedup-recovery path below may reassign it to
@@ -1436,6 +1501,12 @@ export function createEventsStorage(
               params && { resolveData: entityResolveData(params.resolveData) }
             );
           }
+        }
+
+        // Lock events have their own state machine (locks-storage.ts), keyed
+        // across runs; none of the entity checks below apply to them.
+        if (isLockEventType(data.eventType)) {
+          return createLockEventImpl(effectiveRunId, currentRun, now);
         }
 
         // ============================================================
@@ -1906,6 +1977,11 @@ export function createEventsStorage(
             ''
           );
           await reapPendingHookEvents(basedir, effectiveRunId, tag);
+          // Terminal reclaim: free every lock slot the run still holds. After
+          // the marker, so a grant racing this transition either inserted its
+          // holder row before the walk (and is deleted here) or reads the
+          // marker and refuses; see locks-storage.ts.
+          await reclaimRunLocks(basedir, effectiveRunId, tag);
           // Re-derive this terminal event's replay-ordering key at the
           // linearization point. The eventId/createdAt allocated at
           // createImpl() entry can predate a hook_received that

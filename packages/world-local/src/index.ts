@@ -163,6 +163,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // on the data directory shares it; see the in-band writer fence in
       // storage/events-storage.ts.
       inBandFence: true,
+      // A per-key semaphore file under a lock file, with terminal reclaim
+      // ordered against grants by the run-terminal marker; see
+      // storage/locks-storage.ts.
+      locks: { concurrency: true },
     },
     ...queue,
     ...storage,

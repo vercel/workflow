@@ -34,6 +34,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
   isSealedNoopEvent,
+  LOCK_KEY_MAX_LENGTH,
   type RunInput,
   type SnapshotMetadata,
   type WorkflowRun,
@@ -189,12 +190,39 @@ export interface PendingHookDispose {
   hasCreatedEvent: boolean;
 }
 
+/**
+ * A `experimental_lock()` scope. Collected while its acquisition promise is unresolved
+ * (the entrypoint re-POSTs its `lock_created`); `hasCreatedEvent` becomes true
+ * only on `lock_acquired`, since a `lock_created` alone means it is waiting.
+ */
+export interface PendingLock {
+  type: 'lock';
+  correlationId: string;
+  key: string;
+  concurrency: number;
+  leaseTtlMs?: number;
+  /** True once the slot is granted (`lock_acquired` in the log). */
+  hasCreatedEvent: boolean;
+  /** A `lock_created` for this scope is in the log: it has waited. */
+  waiting?: boolean;
+}
+
+/** The owed `lock_released` of a scope workflow code released. */
+export interface PendingLockRelease {
+  type: 'lock_release';
+  correlationId: string;
+  key: string;
+  hasCreatedEvent: boolean;
+}
+
 export type PendingOperation =
   | PendingStep
   | PendingWait
   | PendingHook
   | PendingAttribute
-  | PendingHookDispose;
+  | PendingHookDispose
+  | PendingLock
+  | PendingLockRelease;
 
 export interface QuickJSRuntimeResult {
   /** The workflow completed: result is format-prefixed devalue bytes */
@@ -751,6 +779,77 @@ if (typeof Request === "undefined") {
     text: { value: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("__builtin_response_text"), writable: true, configurable: true },
   });
 }
+
+// lock — one slot of a distributed semaphore. Mirrors workflow/lock.ts: the
+// promise resolves on lock_acquired with a slot whose release() (or
+// Symbol.dispose / Symbol.asyncDispose) queues a lock_release op; the host
+// writes lock_released at the next suspension.
+globalThis[Symbol.for("WORKFLOW_LOCK")] = function(key, options) {
+  function fatal(message, name) {
+    var Cls = globalThis[Symbol.for('@workflow/errors//FatalError')];
+    var err = (!name && typeof Cls === 'function') ? new Cls(message) : new Error(message);
+    if (!(typeof Cls === 'function' && err instanceof Cls)) {
+      err.name = name || "FatalError";
+      err.fatal = true;
+    }
+    if (name) err.key = key;
+    return err;
+  }
+  return new Promise(function(resolve, reject) {
+    options = options || {};
+    if (typeof key !== "string" || key.length === 0 || key.length > ${LOCK_KEY_MAX_LENGTH}) {
+      throw fatal("experimental_lock() key must be a non-empty string of at most ${LOCK_KEY_MAX_LENGTH} characters");
+    }
+    var concurrency = options.concurrency;
+    if (typeof concurrency !== "number" || !Number.isInteger(concurrency) || concurrency < 1) {
+      throw fatal('experimental_lock("' + key + '") requires an integer \`concurrency\` of at least 1');
+    }
+    var leaseTtlMs = options.leaseTtlMs;
+    if (leaseTtlMs !== undefined && (typeof leaseTtlMs !== "number" || !Number.isInteger(leaseTtlMs) || leaseTtlMs < 1)) {
+      throw fatal('experimental_lock("' + key + '") \`leaseTtlMs\` must be a positive integer of milliseconds');
+    }
+    if (globalThis.__worldCapabilities?.locks?.concurrency !== true) {
+      throw fatal('experimental_lock("' + key + '") requires a World that supports concurrency locks, and the configured World does not declare the \`locks\` capability', "LockUnsupportedError");
+    }
+    var correlationId = "lock_" + globalThis.__generateUlid();
+    var op = {
+      type: "lock",
+      correlationId: correlationId,
+      key: key,
+      concurrency: concurrency,
+      hasCreatedEvent: false,
+    };
+    if (leaseTtlMs !== undefined) op.leaseTtlMs = leaseTtlMs;
+    globalThis.__pending.push(op);
+    globalThis.__registerResolver(correlationId, resolve, reject);
+  });
+};
+
+// Builds the slot a lock_acquired resolves with. Called host-side.
+globalThis.__makeLockSlot = function(correlationId, key, fencingToken, concurrency) {
+  var released = false;
+  function release() {
+    if (released) return;
+    released = true;
+    var recorded = (globalThis.__releasedLocks || {})[correlationId];
+    if (recorded) return;
+    globalThis.__pending.push({
+      type: "lock_release",
+      correlationId: correlationId,
+      key: key,
+      hasCreatedEvent: false,
+    });
+  }
+  var slot = {
+    key: key,
+    fencingToken: fencingToken,
+    concurrency: concurrency,
+    release: release,
+  };
+  slot[Symbol.dispose] = release;
+  slot[Symbol.asyncDispose] = function() { release(); return Promise.resolve(); };
+  return slot;
+};
 
 // createHook — returns a Hook object that is both a Thenable and AsyncIterable.
 // Each await/yield creates a new promise keyed by the same correlationId.
@@ -2966,6 +3065,69 @@ async function processEvents(
         markCreated(vm, cidJs);
         break;
       }
+      case 'lock_created':
+      case 'lock_acquired': {
+        // Same divergence rule as workflow/lock.ts: the recorded request must
+        // be the one this replay computed. A mismatch rejects the awaiter.
+        const scope = vm.dump(
+          vm.evalCode(
+            `(function(){
+              var op = globalThis.__pending.find(function(p){return p.correlationId===${cidJs}&&p.type==="lock";});
+              return op ? { key: op.key, concurrency: op.concurrency, settled: op.hasCreatedEvent } : null;
+            })()`
+          )
+        ) as { key: string; concurrency: number; settled: boolean } | null;
+        if (!scope || scope.settled) break;
+        const recordedKey = eventData?.key as string | undefined;
+        const recordedConcurrency = eventData?.concurrency as
+          | number
+          | undefined;
+        let settleJs: string | undefined;
+        if (
+          recordedKey !== scope.key ||
+          recordedConcurrency !== scope.concurrency
+        ) {
+          const message = `Replay divergence: ${event.eventType} recorded experimental_lock(${JSON.stringify(recordedKey)}, { concurrency: ${recordedConcurrency} }) but the workflow now asks for experimental_lock(${JSON.stringify(scope.key)}, { concurrency: ${scope.concurrency} }) (lock ${cid})`;
+          settleJs = `var err = new Error(${JSON.stringify(message)}); err.name = "ReplayDivergenceError"; err.fatal = true; globalThis.__resolvers[${cidJs}].reject(err);`;
+        } else if (event.eventType === 'lock_created') {
+          vm.evalCode(
+            `globalThis.__pending.find(function(p){return p.correlationId===${cidJs}&&p.type==="lock";}).waiting = true;`
+          ).dispose();
+          break;
+        } else {
+          const fencingToken = Number(eventData?.fencingToken ?? 0);
+          const effective = Number(
+            eventData?.effectiveConcurrency ?? scope.concurrency
+          );
+          settleJs = `globalThis.__resolvers[${cidJs}].resolve(globalThis.__makeLockSlot(${cidJs}, ${JSON.stringify(scope.key)}, ${fencingToken}, ${effective}));`;
+        }
+        const settled = vm.dump(
+          vm.evalCode(
+            `(function(){
+              if (!globalThis.__resolvers[${cidJs}]) return false;
+              ${settleJs}
+              delete globalThis.__resolvers[${cidJs}];
+              return true;
+            })()`
+          )
+        );
+        markCreated(vm, cidJs, 'lock');
+        if (settled) {
+          resolved = true;
+          let b: number;
+          do {
+            b = vm.executePendingJobs();
+          } while (b > 0);
+        }
+        break;
+      }
+      case 'lock_released': {
+        vm.evalCode(
+          `(globalThis.__releasedLocks = globalThis.__releasedLocks || {})[${cidJs}] = true;`
+        ).dispose();
+        markCreated(vm, cidJs, 'lock_release');
+        break;
+      }
       case 'step_created':
       case 'step_started':
       case 'step_retrying':
@@ -3309,6 +3471,10 @@ function collectDrainOperations(
     return globalThis.__pendingList().filter(function(p){
       if (p.abortRequested) return true;
       if (p.hasCreatedEvent) return false;
+      // A scope still waiting is abandoned at completion, and a held one is
+      // freed by the World's terminal reclaim; only an owed lock_release is
+      // flushed. Mirrors workflow.ts drainPendingQueueItems.
+      if (p.type === "lock") return false;
       // Skip system hooks that were disposed before ever being created.
       if (p.type === "hook" && p.disposed) return false;
       return true;

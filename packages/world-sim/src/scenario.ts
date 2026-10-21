@@ -37,7 +37,7 @@ import {
   type ScenarioLimits,
   type SelectNext,
 } from './drive.js';
-import { checkInvariants } from './invariants.js';
+import { checkInvariants, checkLockInvariants } from './invariants.js';
 import { verifyReplay } from './replay.js';
 import { createTempo, ScenarioAborted } from './tempo.js';
 import type {
@@ -290,9 +290,25 @@ export async function runScenario(
         },
       };
     },
-    async cancelRun(reason) {
+    async startRun(workflow, input = []) {
+      const id = options.workflowIds?.[workflow];
+      if (!id) throw new Error(`Unknown workflow "${workflow}"`);
+      const run = await start({ workflowId: id }, input);
+      return run.runId;
+    },
+    async wakeRun(target) {
+      const run = world.store.allRuns().find((r) => r.runId === target);
+      if (!run) throw new Error(`Unknown run "${target}"`);
       await world.asExternal(() =>
-        world.events.create(runId, {
+        world.queue(`${WORKFLOW_QUEUE_PREFIX}${run.workflowName}` as never, {
+          runId: target,
+          requestedAt: new Date(),
+        })
+      );
+    },
+    async cancelRun(reason, target) {
+      await world.asExternal(() =>
+        world.events.create(target ?? runId, {
           eventType: 'run_cancelled',
           specVersion: SPEC_VERSION_CURRENT,
           ...(reason ? { eventData: { cancelReason: reason } } : {}),
@@ -518,7 +534,15 @@ export async function runScenario(
         runs: world.store.allRuns(),
         steps: world.store.allSteps(runId),
         waits: world.store.allWaits(runId),
-      }).concat(replayViolations)
+      })
+        .concat(
+          checkLockInvariants({
+            events: world.store.allEventsInCommitOrder(),
+            locks: world.store.allLocks(),
+            holders: world.store.allLockHolders(),
+          })
+        )
+        .concat(replayViolations)
     : [];
 
   problems.push(...world.watchErrors());
