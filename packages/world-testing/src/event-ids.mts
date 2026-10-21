@@ -5,7 +5,7 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   slotToEventId,
 } from '@workflow/world';
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
@@ -30,12 +30,7 @@ export function eventIds(world: string) {
       'addition',
       [1, 2]
     );
-    await vi.waitFor(
-      async () => {
-        expect((await server.getRun(result.runId)).status).toBe('completed');
-      },
-      { interval: 200, timeout: 25_000 }
-    );
+    await server.waitForCompletedLog(result.runId);
 
     // The version the World declared, stamped on the run it created. Slot ids
     // and this number have to agree: the World allocates the positions, but the

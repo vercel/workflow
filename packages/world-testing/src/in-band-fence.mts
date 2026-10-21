@@ -1,5 +1,5 @@
 import { eventIdToSlot } from '@workflow/world';
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
@@ -25,12 +25,7 @@ export function inBandFence(world: string) {
         'addition',
         [1, 2]
       );
-      await vi.waitFor(
-        async () => {
-          expect((await server.getRun(result.runId)).status).toBe('completed');
-        },
-        { interval: 200, timeout: 25_000 }
-      );
+      await server.waitForCompletedLog(result.runId);
 
       // A full listing covers every position up to the counters' `seq`, and a
       // settled run's log holds them all. `run_created` and the orchestrator's
