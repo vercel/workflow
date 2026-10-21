@@ -8,6 +8,16 @@ import {
 
 type ReplayPayloadField = 'result' | 'error' | 'payload';
 
+export interface ReplayPreparationLimits {
+  concurrency?: number;
+}
+
+interface PreparationJob {
+  value: Uint8Array;
+  resolve: (value: PreparedReplayPayload) => void;
+  reject: (error: unknown) => void;
+}
+
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
   const type = typeof value;
@@ -23,9 +33,10 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * those replays. Deserialization still runs against each VM's globals so every
  * replay receives fresh object graphs and correctly revived Workflow objects.
  *
- * Successful prepared plaintext and memoized primitive step results remain
- * resident for the invocation lifetime. Their memory never crosses workflow
- * runs or queue deliveries.
+ * Successful preparations remain available for the invocation. Speculative
+ * preparation has a concurrency limit; a demanded queued payload starts
+ * immediately. Failed speculation remains until its ordered consumer observes
+ * the original error.
  */
 export class ReplayPayloadCache {
   private readonly preparedPayloads = new Map<
@@ -35,12 +46,20 @@ export class ReplayPayloadCache {
   private readonly primitiveStepResults = new Map<string, unknown>();
   private readonly encryptionKey: Promise<PayloadKey | undefined>;
   private nextUnscannedEventIndex = 0;
+  private readonly speculative = new Map<string, PreparationJob>();
+  private readonly concurrency: number;
+  private activeSpeculative = 0;
 
   constructor(
     encryptionKey: PayloadKey | undefined | Promise<PayloadKey | undefined>,
-    private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
+    private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload,
+    limits: ReplayPreparationLimits = {}
   ) {
     this.encryptionKey = Promise.resolve(encryptionKey);
+    this.concurrency = limits.concurrency ?? 8;
+    if (!Number.isSafeInteger(this.concurrency) || this.concurrency < 1) {
+      throw new RangeError('Invalid replay preparation concurrency');
+    }
   }
 
   /** Start preparing an event payload as soon as its frame is decoded. */
@@ -137,7 +156,7 @@ export class ReplayPayloadCache {
   ): Promise<PreparedReplayPayload> {
     if (!(value instanceof Uint8Array)) return this.runPreparation(value);
 
-    const preparation = this.ensurePreparation(cacheKey, value);
+    const preparation = this.ensurePreparation(cacheKey, value, true);
     void preparation.catch(() => {
       if (this.preparedPayloads.get(cacheKey) === preparation) {
         this.preparedPayloads.delete(cacheKey);
@@ -149,14 +168,55 @@ export class ReplayPayloadCache {
   /** Start preparation once and share the exact in-flight promise. */
   private ensurePreparation(
     cacheKey: string,
-    value: Uint8Array
+    value: Uint8Array,
+    demand = false
   ): Promise<PreparedReplayPayload> {
     const cached = this.preparedPayloads.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      const queued = demand ? this.speculative.get(cacheKey) : undefined;
+      if (queued) {
+        this.speculative.delete(cacheKey);
+        this.runJob(queued, false);
+      }
+      return cached;
+    }
 
-    const preparation = this.runPreparation(value);
+    let resolve!: PreparationJob['resolve'];
+    let reject!: PreparationJob['reject'];
+    const preparation = new Promise<PreparedReplayPayload>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    // Register before starting work, including synchronous/reentrant preparers.
     this.preparedPayloads.set(cacheKey, preparation);
+    const job = { value, resolve, reject };
+    if (demand) {
+      this.runJob(job, false);
+    } else {
+      this.speculative.set(cacheKey, job);
+      this.drainPreparations();
+    }
     return preparation;
+  }
+
+  private runJob(job: PreparationJob, speculative: boolean): void {
+    if (speculative) this.activeSpeculative++;
+    void this.runPreparation(job.value)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        if (speculative) this.activeSpeculative--;
+        this.drainPreparations();
+      });
+  }
+
+  private drainPreparations(): void {
+    while (this.activeSpeculative < this.concurrency) {
+      const entry = this.speculative.entries().next().value;
+      if (!entry) break;
+      const [key, job] = entry;
+      this.speculative.delete(key);
+      this.runJob(job, true);
+    }
   }
 
   /** Normalize synchronous and asynchronous preparers to one promise contract. */
