@@ -57,6 +57,11 @@ import {
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
 } from './constants.js';
+import {
+  getLockContinuationDispatch,
+  getWaitContinuationDispatch,
+  isEarlyLockRetry,
+} from './continuation-dispatch.js';
 import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
@@ -74,6 +79,7 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
+import { lockWakeTargetFor, wakeLockGrantees } from './lock-wakes.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
@@ -81,6 +87,8 @@ import {
   type PendingAttribute,
   type PendingHook,
   type PendingHookDispose,
+  type PendingLock,
+  type PendingLockRelease,
   type PendingOperation,
   type PendingStep,
   type PendingWait,
@@ -102,7 +110,6 @@ import {
   isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
 } from './vm-mode.js';
-import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { safeWaitUntil } from './wait-until.js';
 import { getWorld } from './world.js';
 
@@ -165,7 +172,7 @@ async function queueStepMessage(params: {
    * Publish purpose, used to bucket the idempotency key. Worlds retire
    * used keys (VQS retention TTL, world-postgres completed-keys cache),
    * so a key shared across purposes silently swallows the second
-   * publish. See wait-continuation.ts for the same hazard on wait
+   * publish. See continuation-dispatch.ts for the same hazard on wait
    * keys. `dispatch` is the plain background handoff (overflow / crash
    * recovery) and uses the step-identity-scoped dispatch key
    * (stepDispatchIdempotencyKey) so it stays mutually
@@ -360,8 +367,18 @@ async function dispatchPendingOps(params: {
    * a bug from the dashboard, matching the node:vm drain's behavior.
    */
   finalizeUnserializableSteps?: boolean;
+  /**
+   * The invocation's record of lock scopes it has asked for a slot, with the
+   * World's `retryAt` (see the node engine's `SuspensionHandlerParams`): a
+   * waiting scope is re-POSTed only once that instant has passed. Lock
+   * acquisition happens only when this is passed; the terminal drain omits
+   * it and never asks for a slot.
+   */
+  lockProbes?: Map<string, number>;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
+  /** Lock scopes this pass's `lock_created` writes were granted. */
+  grantedLockCids: Set<string>;
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
   /**
@@ -396,6 +413,13 @@ async function dispatchPendingOps(params: {
   // setAttributes() promise), so the entrypoint requeues immediately,
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
+  const grantedLockCids = new Set<string>();
+  // Where a FIFO World should wake this run once a slot is reserved for it.
+  const lockWake = lockWakeTargetFor(
+    params.world,
+    params.workflowRun,
+    params.namespace
+  );
   const opsPromises: Promise<void>[] = [];
   const hooksNeedingCreation = pendingOperations.filter(
     (op) => op.type === 'hook' && !op.hasCreatedEvent
@@ -786,6 +810,80 @@ async function dispatchPendingOps(params: {
           }
         })()
       );
+    } else if (op.type === 'lock_release' && !op.hasCreatedEvent) {
+      const release = op as PendingLockRelease;
+      opsPromises.push(
+        (async () => {
+          try {
+            const released = await createEvent({
+              eventType: 'lock_released',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: release.correlationId,
+              eventData: { key: release.key },
+            });
+            // A FIFO World reserved the slot for the head of the queue.
+            await wakeLockGrantees(params.world, released.lockHandoffs, {
+              runId: params.runId,
+            });
+          } catch (err) {
+            // Already released, or the run ended and the World reclaimed it.
+            if (EntityConflictError.is(err) || RunExpiredError.is(err)) return;
+            throw err;
+          }
+        })()
+      );
+    } else if (
+      op.type === 'lock' &&
+      !op.hasCreatedEvent &&
+      params.lockProbes !== undefined
+    ) {
+      const lock = op as PendingLock;
+      const probes = params.lockProbes;
+      const probedRetryAtMs = probes.get(lock.correlationId);
+      if (probedRetryAtMs !== undefined && probedRetryAtMs > Date.now()) {
+        continue;
+      }
+      opsPromises.push(
+        (async () => {
+          let result: Awaited<ReturnType<EventCreator>>;
+          try {
+            result = await createEvent({
+              eventType: 'lock_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: lock.correlationId,
+              eventData: {
+                key: lock.key,
+                concurrency: lock.concurrency,
+                ...(lock.leaseTtlMs !== undefined && {
+                  leaseTtlMs: lock.leaseTtlMs,
+                }),
+                ...(lockWake && { wake: lockWake }),
+              },
+            });
+          } catch (err) {
+            if (EntityConflictError.is(err) || RunExpiredError.is(err)) return;
+            throw err;
+          }
+          // This write may have moved a stale grant on to another waiter.
+          await wakeLockGrantees(params.world, result.lockHandoffs, {
+            runId: params.runId,
+          });
+          // Granted, or refused for good: either way the VM must replay
+          // over the committed event before anything else.
+          if (
+            result.event?.eventType === 'lock_acquired' ||
+            result.event?.eventType === 'lock_failed'
+          ) {
+            probes.delete(lock.correlationId);
+            grantedLockCids.add(lock.correlationId);
+            return;
+          }
+          probes.set(
+            lock.correlationId,
+            result.lock?.retryAt?.getTime() ?? Date.now() + 1_000
+          );
+        })()
+      );
     } else if (op.type === 'wait' && !op.hasCreatedEvent) {
       const wait = op as PendingWait;
       opsPromises.push(
@@ -812,10 +910,31 @@ async function dispatchPendingOps(params: {
   await Promise.all(opsPromises);
 
   return {
+    grantedLockCids,
     createdAttributeEvent,
     createdGetConflictHook,
     failedSerializationStepCids,
   };
+}
+
+/**
+ * The soonest retry among the lock scopes in `ops` still waiting for a slot,
+ * from the World's `retryAt` this invocation recorded for each.
+ */
+function soonestLockRetry(
+  ops: PendingOperation[],
+  probes: Map<string, number>
+): { correlationId: string; retryAtMs: number } | undefined {
+  let soonest: { correlationId: string; retryAtMs: number } | undefined;
+  for (const op of ops) {
+    if (op.type !== 'lock' || op.hasCreatedEvent) continue;
+    const retryAtMs = probes.get(op.correlationId);
+    if (retryAtMs === undefined) continue;
+    if (!soonest || retryAtMs < soonest.retryAtMs) {
+      soonest = { correlationId: op.correlationId, retryAtMs };
+    }
+  }
+  return soonest;
 }
 
 /**
@@ -992,6 +1111,12 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
+  /**
+   * The lock scope this invocation is the delayed retry for, if it is one
+   * (`WorkflowInvokePayload.lockContinuation`). Read only to tell an early
+   * delivery apart; see `getLockContinuationDispatch`.
+   */
+  lockContinuation?: { correlationId: string; retryAtMs: number };
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -1008,7 +1133,39 @@ export async function runWorkflowWithQuickJS(params: {
     requestId,
     namespace,
     waitContinuation,
+    lockContinuation,
   } = params;
+  // Lock scopes this invocation asked for a slot, with the World's retryAt.
+  const lockProbes = new Map<string, number>();
+  /** Arms the delayed retry for a waiting lock scope. */
+  const armLockRetry = async (retry: {
+    correlationId: string;
+    retryAtMs: number;
+  }): Promise<void> => {
+    const dispatch = getLockContinuationDispatch(
+      retry.retryAtMs,
+      retry.correlationId,
+      Date.now(),
+      isEarlyLockRetry(lockContinuation, retry)
+    );
+    await queueMessage(
+      world,
+      getWorkflowQueueName(workflowRun.workflowName, namespace),
+      {
+        runId,
+        traceCarrier: await nextTraceCarrier(),
+        requestedAt: new Date(),
+        lockContinuation: {
+          correlationId: retry.correlationId,
+          retryAtMs: retry.retryAtMs,
+        },
+      },
+      {
+        delaySeconds: dispatch.delaySeconds,
+        idempotencyKey: dispatch.idempotencyKey,
+      }
+    );
+  };
 
   /**
    * Attempt number for the continuation this invocation is about to arm for
@@ -1357,8 +1514,13 @@ export async function runWorkflowWithQuickJS(params: {
    * asked for, because nothing replays a finished run's log. The node
    * engine's `deltaRequestCursor` makes the same exclusion for `sinceCursor`.
    */
-  const terminalCreateEvent: EventCreator = (data, eventParams) =>
-    world.events.create(runId, data, eventParams);
+  const terminalCreateEvent: EventCreator = async (data, eventParams) => {
+    const result = await world.events.create(runId, data, eventParams);
+    // A terminal run event's lock reclaim (FIFO Worlds) may have handed this
+    // run's slots to waiters.
+    await wakeLockGrantees(world, result.lockHandoffs, { runId });
+    return result;
+  };
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling. With a restored snapshot `events` is only
@@ -1652,6 +1814,8 @@ export async function runWorkflowWithQuickJS(params: {
   };
   observeEventsForOwnership(events);
   const scheduledWaitContinuations = new Set<string>();
+  // Lock scopes whose retry continuation this invocation already armed.
+  const scheduledLockRetries = new Set<string>();
   const maxInlineSteps = getMaxInlineSteps();
   const budget = new ReplayBudget();
   const workflowStartedAt = workflowRun.startedAt
@@ -1847,11 +2011,15 @@ export async function runWorkflowWithQuickJS(params: {
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
         finalizeUnserializableSteps: true,
+        lockProbes,
         wfdiag,
       });
       if (
         dispatched.createdAttributeEvent ||
-        dispatched.createdGetConflictHook
+        dispatched.createdGetConflictHook ||
+        // A grant's lock_acquired resolves the awaiter; the feed below reads
+        // it, and if the listing lags, the exit requeues.
+        dispatched.grantedLockCids.size > 0
       ) {
         pendingRequeueSignal = true;
       }
@@ -2074,7 +2242,22 @@ export async function runWorkflowWithQuickJS(params: {
           soonestWait = { correlationId: wait.correlationId, seconds };
         }
       }
-      if (soonestWait) {
+      // A waiting lock and a pending wait share one wake: arm the sooner.
+      const inlineLockRetry = soonestLockRetry(pendingOperations, lockProbes);
+      if (
+        inlineLockRetry &&
+        !scheduledLockRetries.has(inlineLockRetry.correlationId) &&
+        (!soonestWait ||
+          Math.ceil((inlineLockRetry.retryAtMs - Date.now()) / 1000) <
+            soonestWait.seconds)
+      ) {
+        scheduledLockRetries.add(inlineLockRetry.correlationId);
+        await armLockRetry(inlineLockRetry);
+        wfdiag('lock_retry_scheduled', {
+          correlationId: inlineLockRetry.correlationId,
+          retryAtMs: inlineLockRetry.retryAtMs,
+        });
+      } else if (soonestWait) {
         scheduledWaitContinuations.add(soonestWait.correlationId);
         const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
         await queueMessage(
@@ -2680,12 +2863,32 @@ export async function runWorkflowWithQuickJS(params: {
       return;
     }
 
+    // A waiting lock: arm its retry when it is due before any pending wait
+    // (the next pass re-observes the wait), unless the loop already did.
+    const exitLockRetry = soonestLockRetry(pendingOperations, lockProbes);
+    if (
+      exitLockRetry &&
+      !scheduledLockRetries.has(exitLockRetry.correlationId) &&
+      (!soonestWait ||
+        Math.ceil((exitLockRetry.retryAtMs - Date.now()) / 1000) <
+          soonestWait.seconds)
+    ) {
+      wfdiag('exit_suspended', {
+        action: 'schedule_lock_retry',
+        lockCorrelationId: exitLockRetry.correlationId,
+        retryAtMs: exitLockRetry.retryAtMs,
+      });
+      scheduledLockRetries.add(exitLockRetry.correlationId);
+      await armLockRetry(exitLockRetry);
+      return;
+    }
+
     if (soonestWait) {
       // Delayed continuation for the soonest pending wait the loop has
       // not already scheduled. The dispatch helper handles delay
       // clamping (long waits chain across hops) and idempotency-key
       // dedup of re-observations of the same pending wait. See
-      // runtime/wait-continuation.ts.
+      // runtime/continuation-dispatch.ts.
       wfdiag('exit_suspended', {
         action: 'schedule_wait_timeout',
         timeoutSeconds: soonestWait.seconds,

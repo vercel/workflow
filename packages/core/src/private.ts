@@ -262,7 +262,7 @@ export interface WorkflowOrchestratorContext {
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */
-export type DeliveryKind = 'hook' | 'wait' | 'step' | 'attribute';
+export type DeliveryKind = 'hook' | 'wait' | 'step' | 'attribute' | 'lock';
 
 interface DeliveryBarrierEntry {
   kind: DeliveryKind;
@@ -307,6 +307,10 @@ interface DeliveryBarrierEntry {
  *    branch that may draw the next correlation ID, so it is as branch-deciding
  *    as a step result; gating only one direction would still let a later
  *    delivery overtake a branch resuming from an attribute write (#4770).
+ *  - a lock grant (the `lock_acquired` that resolves `experimental_lock()`) is ordered
+ *    exactly like an attribute, for the same reason: the branch it resumes
+ *    draws correlation IDs, and a workflow may `Promise.race` it against a
+ *    hook payload or a step result.
  *
  * The step-behind-step edge is not redundant with the serial `promiseQueue`.
  * The queue fixes the order in which step results are HYDRATED, but a step no
@@ -326,10 +330,11 @@ interface DeliveryBarrierEntry {
  * wait-for graph can never contain a cycle.
  */
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
-  hook: ['hook', 'wait', 'step', 'attribute'],
-  wait: ['hook', 'step', 'attribute'],
-  step: ['wait', 'hook', 'step', 'attribute'],
-  attribute: ['hook', 'wait', 'step', 'attribute'],
+  hook: ['hook', 'wait', 'step', 'attribute', 'lock'],
+  wait: ['hook', 'step', 'attribute', 'lock'],
+  step: ['wait', 'hook', 'step', 'attribute', 'lock'],
+  attribute: ['hook', 'wait', 'step', 'attribute', 'lock'],
+  lock: ['hook', 'wait', 'step', 'attribute', 'lock'],
 };
 
 /**
@@ -357,11 +362,15 @@ function gatesOn(
   if (otherIndex >= index || !DEFER_BEHIND[kind].includes(other.kind)) {
     return false;
   }
-  // A step or attribute skips an UNARMED earlier entry (an unclaimed buffered
-  // hook payload). See the asymmetry described on `awaitEarlierDeliveries`.
-  // The skip is direct, never transitive: armed entries are still gated on,
-  // even when they are themselves parked behind such a payload.
-  return !((kind === 'step' || kind === 'attribute') && !other.armed);
+  // A step, attribute or lock grant skips an UNARMED earlier entry (an
+  // unclaimed buffered hook payload). See the asymmetry described on
+  // `awaitEarlierDeliveries`. The skip is direct, never transitive: armed
+  // entries are still gated on, even when they are themselves parked behind
+  // such a payload.
+  return !(
+    (kind === 'step' || kind === 'attribute' || kind === 'lock') &&
+    !other.armed
+  );
 }
 
 /**

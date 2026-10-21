@@ -211,6 +211,9 @@ const app = new Hono()
       eventType: string;
       correlationId?: string;
       payloadDigest: string | null;
+      createdAt: string;
+      /** Plain metadata of lock events (they carry no payload). */
+      lock?: unknown;
     }[] = [];
     let cursor: string | undefined;
     // The in-band fence snapshot of the first page, which the whole listing
@@ -229,6 +232,10 @@ const app = new Hono()
           eventType: e.eventType,
           correlationId: e.correlationId,
           payloadDigest: payloadDigest(e),
+          createdAt: new Date(e.createdAt).toISOString(),
+          ...(e.eventType.startsWith('lock_') && 'eventData' in e
+            ? { lock: e.eventData }
+            : {}),
         });
       }
       if (!page.hasMore) break;

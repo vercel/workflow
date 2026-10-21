@@ -40,6 +40,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_LOCK,
   WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
@@ -62,6 +63,7 @@ import { createSetAttributes } from './workflow/attribute-dispatcher.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
+import { createLock } from './workflow/lock.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
@@ -106,6 +108,16 @@ async function drainPendingQueueItems(
       item.disposed = true;
     }
   }
+  // Lock scopes: only an owed release is recorded at completion. A scope
+  // still waiting is abandoned (a run that finished does not want the slot),
+  // and a held one is freed by the World's terminal reclaim, so neither gets
+  // a write here.
+  for (const [correlationId, item] of pendingQueue) {
+    if (item.type === 'lock' && !item.released) {
+      pendingQueue.delete(correlationId);
+    }
+  }
+  if (pendingQueue.size === 0) return;
   try {
     const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
@@ -664,6 +676,7 @@ async function createWorkflowSessionInner(
   const useStep = createUseStep(workflowContext);
   const createHook = createCreateHook(workflowContext);
   const sleep = createSleep(workflowContext);
+  const lock = createLock(workflowContext);
   const setAttributes = createSetAttributes(workflowContext);
 
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -674,6 +687,8 @@ async function createWorkflowSessionInner(
   vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_SLEEP] = sleep;
+  // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+  vmGlobalThis[WORKFLOW_LOCK] = lock;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
     getWorkflowRunStreamId(workflowRun.runId, namespace);

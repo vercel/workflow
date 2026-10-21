@@ -22,6 +22,7 @@ import {
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { wakeLockGrantees } from './lock-wakes.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
@@ -310,13 +311,15 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(this.runId, {
+    const result = await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: specVersionForRunWrite(run.specVersion),
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
     });
+    // The run's lock reclaim (FIFO Worlds) may have handed its slots on.
+    await wakeLockGrantees(world, result?.lockHandoffs, { runId: this.runId });
   }
 
   /**

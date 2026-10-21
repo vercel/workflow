@@ -1,0 +1,53 @@
+---
+title: lock-waitlist-full
+description: experimental_lock() was refused because too many runs are already waiting for the key.
+type: troubleshooting
+summary: Raise the World's waitlist cap, spread the work across more keys, or catch the error and handle the refusal.
+prerequisites:
+  - /docs/api-reference/workflow/experimental-lock
+related:
+  - /docs/api-reference/workflow/experimental-lock
+---
+
+This error is thrown by [`experimental_lock()`](/docs/api-reference/workflow/experimental-lock) when every slot of the key is taken and the key's waitlist is already at the World's cap, so the run was refused instead of queued.
+
+## Error message
+
+```text
+experimental_lock("<key>") was refused: the key's waitlist is full (<cap> waiters)
+```
+
+## Why this happens
+
+A World caps how many runs can wait for one key, 100,000 by default. A key with that many waiting runs is being asked for far faster than its slots are released, and a longer queue would only grow the wait.
+
+The refusal is recorded in the run's event log, so catching the error is safe: the run takes the same branch every time it replays.
+
+## How to fix it
+
+- Spread the work across more keys, if the limit does not have to be shared by all of it.
+- Raise the cap on the Local and Postgres Worlds with [`WORKFLOW_LOCK_WAITLIST_CAP`](/docs/configuration/worlds#workflow_lock_waitlist_cap).
+- Catch the error and decide what to do without the slot:
+
+```typescript lineNumbers
+import { experimental_lock } from "workflow";
+import { LockWaitlistFullError } from "workflow/errors";
+
+declare function exportReport(tenantId: string): Promise<void>; // @setup
+declare function scheduleLater(tenantId: string): Promise<void>; // @setup
+
+export async function nightlyReport(tenantId: string) {
+  "use workflow";
+
+  try {
+    await using slot = await experimental_lock("reports", { concurrency: 4 });
+    await exportReport(tenantId);
+  } catch (error) {
+    if (LockWaitlistFullError.is(error)) { // [!code highlight]
+      await scheduleLater(tenantId);
+      return;
+    }
+    throw error;
+  }
+}
+```

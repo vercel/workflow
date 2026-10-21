@@ -18,6 +18,9 @@
 import {
   type Event,
   isTerminalRunEventType,
+  type Lock,
+  type LockHolder,
+  type LockWaiter,
   type Step,
   type Wait,
   type WorkflowRun,
@@ -393,5 +396,220 @@ export function checkInvariants(input: InvariantInput): InvariantViolation[] {
     }
   }
 
+  return violations;
+}
+
+export interface LockInvariantInput {
+  /** Every run's events, in the order the World committed them. */
+  events: Event[];
+  /** The store's lock rows and live holders, to check against the log. */
+  locks: Lock[];
+  holders: LockHolder[];
+  /** With `fifo`: live waiter rows, whose reserved slots `count` includes. */
+  waiters?: LockWaiter[];
+  /**
+   * The World ran the FIFO waitlist, so the FIFO rules apply.
+   * `movedBack` names the scopes grant grace sent to the tail (as
+   * `runId:correlationId`), which the log cannot show.
+   */
+  fifo?: { movedBack: Set<string> };
+}
+
+/**
+ * `experimental_lock()` safety, re-derived from the event logs alone. Lock keys are shared
+ * across runs, so unlike {@link checkInvariants} this walks every run's log at
+ * once, in commit order (the order the World decided grants in).
+ *
+ * - `lock.over-admitted`: at no position does a key's holder set exceed the
+ *   concurrency its grants were checked against. A holder joins at its
+ *   `lock_acquired` and leaves at its `lock_released`, its run's terminal
+ *   event, or (opt-in lease) once its `leaseExpiresAt` has passed.
+ * - `lock.fencing-monotonic`: fencing tokens strictly increase per key.
+ * - `lock.one-event-per-type`: a scope records each lock event type once, so
+ *   waiting K attempts left exactly one `lock_created`.
+ * - `lock.grant-after-terminal`: no grant lands in a finished run.
+ * - `lock.count-matches-holders`: the store's `count` is its holder rows
+ *   plus its reserved waiter rows, and the holder rows are what the log
+ *   implies at the end.
+ *
+ * With `fifo`, for keys of concurrency 1, where a reservation fills
+ * the key and claims therefore follow reservations one at a time:
+ *
+ * - `lock.fifo`: queued scopes are granted in the order they queued (their
+ *   `lock_created`), apart from the ones grace moved back.
+ * - `lock.admitted-past-queue`: no scope is granted straight off (a
+ *   `lock_acquired` with no `lock_created` before it) while another scope is
+ *   queued for the key.
+ */
+export function checkLockInvariants(
+  input: LockInvariantInput
+): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  const add = (
+    rule: string,
+    message: string,
+    event?: Pick<Event, 'runId' | 'eventId'>
+  ) => {
+    violations.push({
+      rule,
+      message,
+      runId: event?.runId,
+      eventId: event?.eventId,
+    });
+  };
+
+  type Hold = { runId: string; correlationId: string; leaseExpiresAt?: number };
+  /** Per key: scopes that queued and are not yet granted, in queue order. */
+  const queuedByKey = new Map<string, string[]>();
+  const queuedScopes = new Set<string>();
+  const holdersByKey = new Map<string, Map<string, Hold>>();
+  const lastToken = new Map<string, number>();
+  const seenScopeEvents = new Set<string>();
+  const terminalRuns = new Set<string>();
+  const scopeKey = (runId: string, correlationId: string) =>
+    `${runId}:${correlationId}`;
+
+  for (const event of input.events) {
+    const at = event.createdAt.getTime();
+    // Expire opt-in leases before deciding anything at this position.
+    for (const holds of holdersByKey.values()) {
+      for (const [id, hold] of holds) {
+        if (hold.leaseExpiresAt !== undefined && hold.leaseExpiresAt <= at) {
+          holds.delete(id);
+        }
+      }
+    }
+    if (isTerminalRunEventType(event.eventType)) {
+      terminalRuns.add(event.runId);
+      for (const [key, queue] of queuedByKey) {
+        queuedByKey.set(
+          key,
+          queue.filter((id) => !id.startsWith(`${event.runId}:`))
+        );
+      }
+      for (const holds of holdersByKey.values()) {
+        for (const [id, hold] of holds) {
+          if (hold.runId === event.runId) holds.delete(id);
+        }
+      }
+      continue;
+    }
+    if (!event.eventType.startsWith('lock_') || !event.correlationId) continue;
+
+    const once = `${scopeKey(event.runId, event.correlationId)}:${event.eventType}`;
+    if (seenScopeEvents.has(once)) {
+      add(
+        'lock.one-event-per-type',
+        `Scope ${event.correlationId} recorded a second ${event.eventType}`,
+        event
+      );
+    }
+    seenScopeEvents.add(once);
+
+    const data = (event as { eventData?: Record<string, unknown> }).eventData;
+    const key = String(data?.key);
+    const holds = holdersByKey.get(key) ?? new Map<string, Hold>();
+    holdersByKey.set(key, holds);
+
+    const id = scopeKey(event.runId, event.correlationId);
+    const queue = queuedByKey.get(key) ?? [];
+    queuedByKey.set(key, queue);
+    if (event.eventType === 'lock_created') {
+      queue.push(id);
+      queuedScopes.add(id);
+    }
+    if (event.eventType === 'lock_acquired' && input.fifo) {
+      const single = Number(data?.effectiveConcurrency) === 1;
+      const eligible = queue.filter((q) => !input.fifo?.movedBack.has(q));
+      if (single && queuedScopes.has(id)) {
+        if (!input.fifo.movedBack.has(id) && eligible[0] !== id) {
+          add(
+            'lock.fifo',
+            `Scope ${event.correlationId} was granted "${key}" ahead of ${eligible[0]}, which queued first`,
+            event
+          );
+        }
+      } else if (single && queue.length > 0) {
+        add(
+          'lock.admitted-past-queue',
+          `Scope ${event.correlationId} was granted "${key}" straight off while ${queue[0]} was queued`,
+          event
+        );
+      }
+      const index = queue.indexOf(id);
+      if (index >= 0) queue.splice(index, 1);
+    }
+    if (
+      event.eventType === 'lock_released' ||
+      event.eventType === 'lock_failed'
+    ) {
+      const index = queue.indexOf(id);
+      if (index >= 0) queue.splice(index, 1);
+    }
+
+    if (event.eventType === 'lock_acquired') {
+      if (terminalRuns.has(event.runId)) {
+        add(
+          'lock.grant-after-terminal',
+          `Grant of "${key}" landed after run ${event.runId} ended`,
+          event
+        );
+      }
+      const token = Number(data?.fencingToken);
+      const previous = lastToken.get(key);
+      if (previous !== undefined && !(token > previous)) {
+        add(
+          'lock.fencing-monotonic',
+          `Fencing token ${token} for "${key}" does not exceed ${previous}`,
+          event
+        );
+      }
+      lastToken.set(key, token);
+      const leaseExpiresAt = data?.leaseExpiresAt
+        ? new Date(data.leaseExpiresAt as Date).getTime()
+        : undefined;
+      holds.set(scopeKey(event.runId, event.correlationId), {
+        runId: event.runId,
+        correlationId: event.correlationId,
+        ...(leaseExpiresAt !== undefined && { leaseExpiresAt }),
+      });
+      const limit = Number(data?.effectiveConcurrency);
+      if (holds.size > limit) {
+        add(
+          'lock.over-admitted',
+          `"${key}" has ${holds.size} holders at this position, above its concurrency ${limit}`,
+          event
+        );
+      }
+    } else if (event.eventType === 'lock_released') {
+      holds.delete(scopeKey(event.runId, event.correlationId));
+    }
+  }
+
+  // The store's rows are a fold of the same log.
+  for (const lock of input.locks) {
+    const derived = holdersByKey.get(lock.key)?.size ?? 0;
+    const rows = input.holders.filter((h) => h.key === lock.key).length;
+    const reserved = (input.waiters ?? []).filter(
+      (w) => w.key === lock.key && w.grantedAt
+    ).length;
+    if (lock.count !== rows + reserved || rows !== derived) {
+      add(
+        'lock.count-matches-holders',
+        `"${lock.key}" stores count ${lock.count} with ${rows} holder row(s) and ${reserved} reservation(s); the log implies ${derived} holder(s)`
+      );
+    }
+    if (lock.count < lock.concurrency) {
+      const queued = (input.waiters ?? []).filter(
+        (w) => w.key === lock.key && !w.grantedAt
+      );
+      if (queued.length > 0) {
+        add(
+          'lock.no-waiter-behind-free-slot',
+          `"${lock.key}" has a free slot and ${queued.length} queued waiter(s)`
+        );
+      }
+    }
+  }
   return violations;
 }

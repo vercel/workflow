@@ -59,6 +59,26 @@ export interface WaitInvocationQueueItem {
   hasCreatedEvent?: boolean;
 }
 
+/**
+ * One `experimental_lock()` scope. Stays queued from the call until its `lock_released`
+ * is in the log: pending while it waits for a slot, held after
+ * `lock_acquired`, and flagged `released` once workflow code releases it so
+ * the next suspension writes the `lock_released`.
+ */
+export interface LockInvocationQueueItem {
+  type: 'lock';
+  correlationId: string;
+  key: string;
+  concurrency: number;
+  leaseTtlMs?: number;
+  /** A `lock_created` for this scope is in the log (it has waited). */
+  hasCreatedEvent?: boolean;
+  /** A `lock_acquired` for this scope is in the log. */
+  acquired?: boolean;
+  /** Workflow code released the slot; `lock_released` is owed. */
+  released?: boolean;
+}
+
 export interface AttributeInvocationQueueItem {
   type: 'attribute';
   correlationId: string;
@@ -70,6 +90,7 @@ export type QueueItem =
   | StepInvocationQueueItem
   | HookInvocationQueueItem
   | WaitInvocationQueueItem
+  | LockInvocationQueueItem
   | AttributeInvocationQueueItem;
 
 /**
@@ -89,6 +110,10 @@ export class WorkflowSuspension extends Error {
   attributeCount: number;
   hookDisposedCount: number;
   abortCount: number;
+  /** Lock scopes still waiting for a slot. */
+  lockCount: number;
+  /** Lock scopes whose release is not recorded yet. */
+  lockReleaseCount: number;
   /**
    * Correlation ids of the open hooks that workflow code was waiting on a
    * payload for when the VM went idle, i.e. the hooks whose `hook_received`
@@ -111,6 +136,8 @@ export class WorkflowSuspension extends Error {
     let attributeCount = 0;
     let hookDisposedCount = 0;
     let abortCount = 0;
+    let lockCount = 0;
+    let lockReleaseCount = 0;
     for (const item of items) {
       if (item.type === 'step') stepCount++;
       else if (item.type === 'hook') {
@@ -119,6 +146,10 @@ export class WorkflowSuspension extends Error {
         else hookCount++;
       } else if (item.type === 'wait') waitCount++;
       else if (item.type === 'attribute') attributeCount++;
+      else if (item.type === 'lock') {
+        if (item.released) lockReleaseCount++;
+        else if (!item.acquired) lockCount++;
+      }
     }
 
     // Build description parts
@@ -142,10 +173,24 @@ export class WorkflowSuspension extends Error {
         `${hookDisposedCount} hook ${pluralize('disposal', 'disposals', hookDisposedCount)}`
       );
     }
+    if (lockCount > 0) {
+      parts.push(`${lockCount} ${pluralize('lock', 'locks', lockCount)}`);
+    }
+    if (lockReleaseCount > 0) {
+      parts.push(
+        `${lockReleaseCount} lock ${pluralize('release', 'releases', lockReleaseCount)}`
+      );
+    }
 
     // Determine verb (has/have) and action (run/created/received)
     const totalCount =
-      stepCount + hookCount + waitCount + attributeCount + hookDisposedCount;
+      stepCount +
+      hookCount +
+      waitCount +
+      attributeCount +
+      hookDisposedCount +
+      lockCount +
+      lockReleaseCount;
     const hasOrHave = pluralize('has', 'have', totalCount);
     // Pick action verb: use "processed" when mixed types are present
     const typeCount =
@@ -153,7 +198,9 @@ export class WorkflowSuspension extends Error {
       (hookCount > 0 ? 1 : 0) +
       (waitCount > 0 ? 1 : 0) +
       (attributeCount > 0 ? 1 : 0) +
-      (hookDisposedCount > 0 ? 1 : 0);
+      (hookDisposedCount > 0 ? 1 : 0) +
+      (lockCount > 0 ? 1 : 0) +
+      (lockReleaseCount > 0 ? 1 : 0);
     let action: string;
     if (typeCount > 1) {
       action = 'processed';
@@ -166,6 +213,10 @@ export class WorkflowSuspension extends Error {
     } else if (attributeCount > 0) {
       action = 'written';
     } else if (hookDisposedCount > 0) {
+      action = 'processed';
+    } else if (lockCount > 0) {
+      action = 'acquired';
+    } else if (lockReleaseCount > 0) {
       action = 'processed';
     } else {
       action = 'received';
@@ -186,6 +237,8 @@ export class WorkflowSuspension extends Error {
     this.attributeCount = attributeCount;
     this.hookDisposedCount = hookDisposedCount;
     this.abortCount = abortCount;
+    this.lockCount = lockCount;
+    this.lockReleaseCount = lockReleaseCount;
   }
 
   static is(value: unknown): value is WorkflowSuspension {

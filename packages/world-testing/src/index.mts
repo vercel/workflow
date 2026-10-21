@@ -6,6 +6,7 @@ import { idempotency } from './idempotency.mjs';
 import { inBandFence } from './in-band-fence.mjs';
 import { inlineExecution } from './inline-execution.mjs';
 import { lineage } from './lineage.mjs';
+import { locks } from './locks.mjs';
 import { nullByte } from './null-byte.mjs';
 import { resolveData } from './resolve-data.mjs';
 
@@ -19,5 +20,6 @@ export function createTestSuite(pkgName: string) {
   errors(pkgName);
   inlineExecution(pkgName);
   lineage(pkgName);
+  locks(pkgName);
   resolveData(pkgName);
 }

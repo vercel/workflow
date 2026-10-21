@@ -37,8 +37,9 @@ import {
   type ScenarioLimits,
   type SelectNext,
 } from './drive.js';
-import { checkInvariants } from './invariants.js';
+import { checkInvariants, checkLockInvariants } from './invariants.js';
 import { verifyReplay } from './replay.js';
+import type { SimLockPolicy } from './store.js';
 import { createTempo, ScenarioAborted } from './tempo.js';
 import type {
   InvariantViolation,
@@ -127,6 +128,12 @@ export interface ScenarioSpec {
    */
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
+  /**
+   * The World's `experimental_lock()` waitlist policy. Absent: a refused
+   * acquisition polls; `{ fifo: true }` runs the FIFO waitlist with direct
+   * handoff (and declares `locks.fifo`).
+   */
+  locks?: SimLockPolicy;
   /** Enforce (and advertise) the optimistic-concurrency fence. */
   preconditionGuard?: boolean;
   /**
@@ -224,6 +231,7 @@ export async function runScenario(
     options.preconditionGuard ?? spec.preconditionGuard ?? false;
   const world = createSimWorld({
     clock,
+    ...(spec.locks && { locks: spec.locks }),
     preconditionGuard,
     countGuard: spec.countGuard ?? preconditionGuard,
   });
@@ -290,9 +298,25 @@ export async function runScenario(
         },
       };
     },
-    async cancelRun(reason) {
+    async startRun(workflow, input = []) {
+      const id = options.workflowIds?.[workflow];
+      if (!id) throw new Error(`Unknown workflow "${workflow}"`);
+      const run = await start({ workflowId: id }, input);
+      return run.runId;
+    },
+    async wakeRun(target) {
+      const run = world.store.allRuns().find((r) => r.runId === target);
+      if (!run) throw new Error(`Unknown run "${target}"`);
       await world.asExternal(() =>
-        world.events.create(runId, {
+        world.queue(`${WORKFLOW_QUEUE_PREFIX}${run.workflowName}` as never, {
+          runId: target,
+          requestedAt: new Date(),
+        })
+      );
+    },
+    async cancelRun(reason, target) {
+      await world.asExternal(() =>
+        world.events.create(target ?? runId, {
           eventType: 'run_cancelled',
           specVersion: SPEC_VERSION_CURRENT,
           ...(reason ? { eventData: { cancelReason: reason } } : {}),
@@ -320,6 +344,18 @@ export async function runScenario(
       if (!message) return false;
       clock.advanceTo(message.readyAtMs);
       await deliver(world, message);
+      return true;
+    },
+    async dropQueued(select) {
+      const chosen = select(world.simQueue.view());
+      if (!chosen) return false;
+      const message = world.simQueue.takeById(chosen);
+      if (!message) return false;
+      world.simQueue.settle(message);
+      world.pushTrace({
+        kind: 'note',
+        message: `dropped queue message ${chosen}`,
+      });
       return true;
     },
     note(message) {
@@ -518,7 +554,19 @@ export async function runScenario(
         runs: world.store.allRuns(),
         steps: world.store.allSteps(runId),
         waits: world.store.allWaits(runId),
-      }).concat(replayViolations)
+      })
+        .concat(
+          checkLockInvariants({
+            events: world.store.allEventsInCommitOrder(),
+            locks: world.store.allLocks(),
+            holders: world.store.allLockHolders(),
+            waiters: world.store.allLockWaiters(),
+            ...(world.capabilities?.locks?.fifo && {
+              fifo: { movedBack: world.store.lockMovedBack() },
+            }),
+          })
+        )
+        .concat(replayViolations)
     : [];
 
   problems.push(...world.watchErrors());

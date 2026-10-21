@@ -37,6 +37,20 @@ import { scenario as hookOnExecutionState } from './hook-on-execution-state.ts';
 import { scenario as inFlightAfterDecision } from './in-flight-after-decision.ts';
 import { scenario as inFlightBeforeDecision } from './in-flight-before-decision.ts';
 import { scenario as inFlightBeforeDecisionCounted } from './in-flight-before-decision-counted.ts';
+import { scenario as lockAcquireBeforeRelease } from './lock-acquire-before-release.ts';
+import { scenario as lockCancelledWaiter } from './lock-cancelled-waiter.ts';
+import { scenario as lockDuplicateDelivery } from './lock-duplicate-delivery.ts';
+import { scenario as lockFifoBurst } from './lock-fifo-burst.ts';
+import { scenario as lockFifoCancelledHead } from './lock-fifo-cancelled-head.ts';
+import { scenario as lockFifoEnqueueBeforeRelease } from './lock-fifo-enqueue-before-release.ts';
+import { scenario as lockFifoGranteeCrash } from './lock-fifo-grantee-crash.ts';
+import { scenario as lockFifoHandoff } from './lock-fifo-handoff.ts';
+import { scenario as lockFifoLostWake } from './lock-fifo-lost-wake.ts';
+import { scenario as lockFifoReleaseBeforeEnqueue } from './lock-fifo-release-before-enqueue.ts';
+import { scenario as lockRaceLastSlot } from './lock-race-last-slot.ts';
+import { scenario as lockReleaseBeforeAcquire } from './lock-release-before-acquire.ts';
+import { scenario as lockReleaseVsReclaim } from './lock-release-vs-reclaim.ts';
+import { scenario as lockWaiterRetries } from './lock-waiter-retries.ts';
 import { scenario as longSleep } from './long-sleep.ts';
 import { scenario as parallelSteps } from './parallel-steps.ts';
 import { scenario as peekHookAfterBranch } from './peek-hook-after-branch.ts';
@@ -187,4 +201,27 @@ export const scenarios: ScenarioSpec[] = [
   writersIndependentStepBodies,
   writersScriptedTempo,
   cancelMidStep,
+
+  // -------------------------------------------------------------------------
+  // Locks: several runs contending for one `experimental_lock()` key. Each holds the run
+  // under test inside its critical section and steers the others by runId.
+  // The lock invariants (no position over-admits, fencing tokens increase,
+  // count matches holders) are checked against every run's log.
+  // -------------------------------------------------------------------------
+  lockWaiterRetries,
+  lockRaceLastSlot,
+  lockReleaseBeforeAcquire,
+  lockAcquireBeforeRelease,
+  lockReleaseVsReclaim,
+  lockDuplicateDelivery,
+  lockCancelledWaiter,
+  // With `locks.fifo`: the FIFO waitlist with direct handoff. The lock
+  // invariants add FIFO order and never admitting past a queue.
+  lockFifoHandoff,
+  lockFifoLostWake,
+  lockFifoGranteeCrash,
+  lockFifoCancelledHead,
+  lockFifoReleaseBeforeEnqueue,
+  lockFifoEnqueueBeforeRelease,
+  lockFifoBurst,
 ];

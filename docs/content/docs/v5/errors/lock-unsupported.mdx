@@ -1,0 +1,51 @@
+---
+title: lock-unsupported
+description: experimental_lock() was called on a World that does not support concurrency locks.
+type: troubleshooting
+summary: Run the workflow on a World with the locks capability, or remove the experimental_lock() call.
+prerequisites:
+  - /docs/api-reference/workflow/experimental-lock
+related:
+  - /docs/api-reference/workflow/experimental-lock
+---
+
+This error is thrown by [`experimental_lock()`](/docs/api-reference/workflow/experimental-lock) when the World the workflow runs on does not declare the `locks` capability.
+
+## Error message
+
+```text
+experimental_lock("<key>") requires a World that supports concurrency locks, and the configured World does not declare the `locks` capability
+```
+
+## Why this happens
+
+A lock is enforced by the World, not by the workflow. A World that cannot enforce it would let every run through, so `experimental_lock()` fails rather than run the section with no limit.
+
+The Local and Postgres Worlds support locks. The Vercel World will once its backend ships them.
+
+## How to fix it
+
+- Run the workflow on a World that supports locks.
+- If the workflow must also run where locks are not supported, catch the error and decide what to do without the limit:
+
+```typescript lineNumbers
+import { experimental_lock } from "workflow";
+import { LockUnsupportedError } from "workflow/errors";
+
+declare function sync(accountId: string): Promise<void>; // @setup
+
+export async function syncAccount(accountId: string) {
+  "use workflow";
+
+  try {
+    await using slot = await experimental_lock(`sync:${accountId}`, { concurrency: 1 });
+    await sync(accountId);
+  } catch (error) {
+    if (LockUnsupportedError.is(error)) { // [!code highlight]
+      await sync(accountId); // no concurrency limit here
+      return;
+    }
+    throw error;
+  }
+}
+```
