@@ -131,6 +131,30 @@ The Local World is the default outside Vercel and is intended for development.
 - Per-run event ceiling reported to the runtime. A run whose event log reaches it fails with `MAX_EVENTS_EXCEEDED`, bounding a runaway loop. See [`WORKFLOW_MAX_EVENTS_OVERRIDE`](/docs/configuration/runtime-tuning#workflow_max_events_override) for the runtime-side clamp.
 - Runs started on the QuickJS engine with snapshotting enabled are exempt, matching the Vercel World. See [max-events-exceeded](/docs/errors/max-events-exceeded).
 
+### `WORKFLOW_LOCKS_FIFO`
+
+- Factory option: none
+- Default: on
+- Applies to the Local and Postgres Worlds. [`experimental_lock()`](/docs/api-reference/workflow/experimental-lock) waiters queue in FIFO order and are handed the slot when it frees. Set to `0` to make waiters poll for a free slot with backoff instead.
+
+### `WORKFLOW_LOCK_GRANT_GRACE_MS`
+
+- Factory option: none
+- Default: `60000`
+- Applies to the Local and Postgres Worlds. How long a slot handed to a waiting run stays reserved for it before the next lock operation on the key may pass it to the next waiter. The slow run is moved to the back of the queue, not dropped. See [Waiting](/docs/api-reference/workflow/experimental-lock#waiting).
+
+### `WORKFLOW_LOCK_WAITLIST_CAP`
+
+- Factory option: none
+- Default: `100000`
+- Applies to the Local and Postgres Worlds. The most runs that can wait for one key. An acquisition past it throws [`LockWaitlistFullError`](/docs/errors/lock-waitlist-full).
+
+### `WORKFLOW_LOCK_BACKSTOP_MS`
+
+- Factory option: none
+- Default: `300000`
+- Applies to the Local and Postgres Worlds. How often a waiting run checks for its slot on its own, in case the wake sent when its slot was handed over was lost.
+
 ## Postgres World
 
 The Postgres World is a self-hosted durable backend for long-running server processes.
@@ -188,6 +212,8 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Default: `30`
 - Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days.
 - Set this to the same limit as your production World so oversized values fail during development.
+
+The `experimental_lock()` waitlist settings, [`WORKFLOW_LOCKS_FIFO`](#workflow_locks_fifo), [`WORKFLOW_LOCK_GRANT_GRACE_MS`](#workflow_lock_grant_grace_ms), [`WORKFLOW_LOCK_WAITLIST_CAP`](#workflow_lock_waitlist_cap) and [`WORKFLOW_LOCK_BACKSTOP_MS`](#workflow_lock_backstop_ms), apply to the Postgres World as well.
 
 ### `namespace`
 
@@ -260,6 +286,18 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Set `1` to serialize orchestrator (flow) invocations per run: each run's replays get their own queue topic and the flow trigger is generated with `maxConcurrency: 1`. Inline step executions get per-step topics and keep full parallelism.
 - Read at **both build time and runtime**: set it as a project-level environment variable so the generated trigger and the runtime queue routing agree.
 - Routing each run through a dedicated `maxConcurrency: 1` topic might lead to higher queue performance overhead. See [Vercel World](/worlds/vercel#workflow_sequential_replays) for details.
+
+### `WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS`
+
+- Factory option: none
+- Default: off
+- Set to `1` to declare the `locks` capability, so [`experimental_lock()`](/docs/api-reference/workflow/experimental-lock) sends lock events to the Workflow backend instead of throwing `LockUnsupportedError`. A backend that does not support locks yet refuses them, and the run fails with [`lock-unsupported`](/docs/errors/lock-unsupported).
+
+### `WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS_FIFO`
+
+- Factory option: none
+- Default: off
+- With [`WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS=1`](#workflow_vercel_experimental_locks), set to `1` to declare the FIFO waitlist, so `experimental_lock()` waiters queue and are woken when their slot is handed over instead of polling. Only for a Workflow backend that implements the waitlist.
 
 ### `VERCEL_WORKFLOW_SERVER_URL`
 
