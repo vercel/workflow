@@ -440,6 +440,46 @@ export function lockConformance(options: LockConformanceOptions): void {
       if (lock) expect(lock.count).toBe(concurrency);
     });
 
+    test("a scope's lock events must name the key it was created for", async () => {
+      const events = options.events();
+      const mine = uniqueId('key');
+      const other = uniqueId('key');
+      const runId = await createRun(events);
+      const held = await acquire(events, runId, mine, 1);
+      expect(held.event.eventType).toBe('lock_acquired');
+      const otherRun = await createRun(events);
+      const otherHeld = await acquire(events, otherRun, other, 1);
+      expect(otherHeld.event.eventType).toBe('lock_acquired');
+
+      // Releasing, or re-acquiring, under another key is refused, and frees
+      // nothing on either key.
+      const wrongRelease = await create(events)(
+        runId,
+        lockReleased(held.correlationId, other)
+      ).catch((err: unknown) => err);
+      expect(wrongRelease).toBeInstanceOf(Error);
+      const wrongAcquire = await create(events)(
+        runId,
+        lockCreated(held.correlationId, other, 1)
+      ).catch((err: unknown) => err);
+      expect(wrongAcquire).toBeInstanceOf(Error);
+      expect(await freeSlots(events, mine, 1)).toBe(0);
+      expect(await freeSlots(events, other, 1)).toBe(0);
+      const locks = options.locks?.(events);
+      if (locks) {
+        expect((await locks.get(mine))?.count).toBe(1);
+        expect((await locks.get(other))?.count).toBe(1);
+      }
+
+      // The right key still releases it.
+      const released = await create(events)(
+        runId,
+        lockReleased(held.correlationId, mine)
+      );
+      expect(released.event?.eventType).toBe('lock_released');
+      expect(await freeSlots(events, mine, 1)).toBe(1);
+    });
+
     test('a release racing the terminal reclaim never double-decrements', async () => {
       const first = options.events();
       const second = options.secondEvents?.(first) ?? first;

@@ -124,6 +124,14 @@ async function scopeEvents(
   return scope;
 }
 
+/** The key a scope's first lock event named, which every later one must. */
+function scopeKeyOf(scope: LockScopeEvents): string | undefined {
+  const first =
+    scope.created ?? scope.acquired ?? scope.failed ?? scope.released;
+  return (first as { eventData?: { key?: string } } | undefined)?.eventData
+    ?.key;
+}
+
 /** Takes the run row `FOR SHARE` and refuses a terminal run. */
 async function lockLiveRun(
   tx: DrizzleTransaction,
@@ -347,7 +355,16 @@ export async function acquireLock(
   return drizzle.transaction(async (tx) => {
     await lockLiveRun(tx, runId, 'acquire');
     let row = await lockKeyRow(tx, key, concurrency);
+    // Read under the key row's lock, so a concurrent delivery's grant is
+    // visible. A mismatched key throws, rolling back the row upsert.
     const scope = await scopeEvents(tx, runId, correlationId);
+    const scopeKey = scopeKeyOf(scope);
+    if (scopeKey !== undefined && scopeKey !== key) {
+      throw new WorkflowWorldError(
+        `Lock scope "${correlationId}" was created for key "${scopeKey}", not "${key}"`,
+        { status: 409 }
+      );
+    }
     if (scope.acquired) {
       return {
         event: scope.acquired,
@@ -689,6 +706,14 @@ export async function releaseLock(
       .for('update')
       .limit(1);
     const scope = await scopeEvents(tx, runId, correlationId);
+    // A release must name the key the scope holds or waits on: freeing a
+    // slot on any other would leave both keys' counters wrong.
+    const scopeKey = scopeKeyOf(scope);
+    if (scopeKey !== undefined && scopeKey !== key) {
+      throw new EntityConflictError(
+        `Lock scope "${correlationId}" does not hold "${key}"`
+      );
+    }
     // A scope that holds its slot, or one still waiting for it.
     const [waiting] =
       row && !scope.acquired
