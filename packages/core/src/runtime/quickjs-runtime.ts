@@ -828,13 +828,19 @@ globalThis[Symbol.for("WORKFLOW_LOCK")] = function(key, options) {
 };
 
 // Builds the slot a lock_acquired resolves with. Called host-side.
+// __heldLocks has an entry only while workflow code holds the slot, so the
+// bookkeeping is bounded by the locks held at once, not by every lock the
+// run ever took. An entry is \`recorded\` when the log already has this
+// scope's lock_released before release() runs, which then owes nothing.
+globalThis.__heldLocks = {};
 globalThis.__makeLockSlot = function(correlationId, key, fencingToken, concurrency) {
-  var released = false;
+  var state = { released: false, recorded: false };
+  globalThis.__heldLocks[correlationId] = state;
   function release() {
-    if (released) return;
-    released = true;
-    var recorded = (globalThis.__releasedLocks || {})[correlationId];
-    if (recorded) return;
+    if (state.released) return;
+    state.released = true;
+    delete globalThis.__heldLocks[correlationId];
+    if (state.recorded) return;
     globalThis.__pushPending({
       type: "lock_release",
       correlationId: correlationId,
@@ -3124,6 +3130,11 @@ async function processEvents(
           )
         );
         markCreated(vm, cidJs, 'lock');
+        // Settled for good: nothing reads the scope's op again (a re-scanned
+        // lock event finds no op and is ignored), so release it.
+        vm.evalCode(
+          `(function(){var op=globalThis.__findPending(${cidJs}, "lock"); if(op && op.hasCreatedEvent && !globalThis.__resolvers[${cidJs}]) globalThis.__releasePending(op);})();`
+        ).dispose();
         if (settled) {
           resolved = true;
           let b: number;
@@ -3134,10 +3145,17 @@ async function processEvents(
         break;
       }
       case 'lock_released': {
+        // The owed lock_release is durable: release its op. If workflow code
+        // has not released the slot yet in this replay, mark it so release()
+        // owes nothing. Otherwise (a re-scan) there is nothing left to do.
         vm.evalCode(
-          `(globalThis.__releasedLocks = globalThis.__releasedLocks || {})[${cidJs}] = true;`
+          `(function(){
+            var op = globalThis.__findPending(${cidJs}, "lock_release");
+            if (op) { op.hasCreatedEvent = true; globalThis.__releasePending(op); return; }
+            var held = globalThis.__heldLocks[${cidJs}];
+            if (held) held.recorded = true;
+          })();`
         ).dispose();
-        markCreated(vm, cidJs, 'lock_release');
         break;
       }
       case 'step_created':

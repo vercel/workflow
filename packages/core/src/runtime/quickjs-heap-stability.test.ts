@@ -124,6 +124,28 @@ async function drive(
             createdAt: at(),
           });
           break;
+        case 'lock':
+          events.push({
+            ...base,
+            eventId: `${id}_l`,
+            eventType: 'lock_acquired',
+            eventData: {
+              key: op.key,
+              concurrency: op.concurrency,
+              fencingToken: n,
+            },
+            createdAt: at(),
+          });
+          break;
+        case 'lock_release':
+          events.push({
+            ...base,
+            eventId: `${id}_r`,
+            eventType: 'lock_released',
+            eventData: { key: op.key },
+            createdAt: at(),
+          });
+          break;
         default:
           throw new Error(`unexpected op ${op.type}`);
       }
@@ -143,6 +165,7 @@ async function start(body: string) {
       var sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       var createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
       var setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+      var lock = globalThis[Symbol.for("WORKFLOW_LOCK")];
       var PAD = ${JSON.stringify(PAD)};
       async function workflow() {
         ${body}
@@ -150,12 +173,14 @@ async function start(body: string) {
           pending: globalThis.__pending.size,
           hooks: Object.keys(globalThis.__hooks || {}).length,
           terminal: Object.keys(globalThis.__terminalBuffer).length,
+          locks: Object.keys(globalThis.__heldLocks).length,
         };
       }
       globalThis.__private_workflows.set("workflow//test//workflow", workflow);
     `,
     workflowId: 'workflow//test//workflow',
     workflowRun: run,
+    worldCapabilities: { locks: { concurrency: true } },
     events: [
       {
         eventId: 'evnt_run_created',
@@ -183,28 +208,34 @@ describe('QuickJS heap stability over many events', () => {
     [
       'steps with large arguments',
       `for (var i = 0; i < ${ITERATIONS}; i++) await step(PAD + i);`,
-      { pending: 1, hooks: 0 },
+      { pending: 1, hooks: 0, locks: 0 },
     ],
     [
       'sleeps',
       `for (var i = 0; i < ${ITERATIONS}; i++) await sleep(1000);`,
-      { pending: 1, hooks: 0 },
+      { pending: 1, hooks: 0, locks: 0 },
     ],
     [
       'attributes',
       `for (var i = 0; i < ${ITERATIONS}; i++) await setAttributes({ k: "v" + (i % 10) });`,
-      { pending: 1, hooks: 0 },
+      { pending: 1, hooks: 0, locks: 0 },
     ],
     [
       'hooks created and disposed around a step',
       `for (var i = 0; i < ${ITERATIONS}; i++) { var h = createHook({ token: "tok_" + i, metadata: PAD }); await step(i); h.dispose(); }`,
       // The last step, the last hook, and its not-yet-recorded dispose.
-      { pending: 3, hooks: 1 },
+      { pending: 3, hooks: 1, locks: 0 },
     ],
     [
       'one hook token reused across create and dispose',
       `for (var i = 0; i < ${ITERATIONS}; i++) { var h = createHook({ token: "tok", metadata: PAD }); await step(i); h.dispose(); }`,
-      { pending: 3, hooks: 1 },
+      { pending: 3, hooks: 1, locks: 0 },
+    ],
+    [
+      'locks acquired and released around a step',
+      `for (var i = 0; i < ${ITERATIONS}; i++) { var slot = await lock("k", { concurrency: 1 }); await step(i); slot.release(); }`,
+      // The last step, and the last slot's not-yet-recorded release.
+      { pending: 2, hooks: 0, locks: 0 },
     ],
   ])('%s: settled ops are released', async (_name, body, finalIteration) => {
     const { session, run } = await start(body);
@@ -230,7 +261,7 @@ describe('QuickJS heap stability over many events', () => {
     );
     try {
       const { result } = await drive(session, run.runId, []);
-      expect(result).toEqual({ pending: 1, hooks: 0, terminal: 0 });
+      expect(result).toEqual({ pending: 1, hooks: 0, terminal: 0, locks: 0 });
     } finally {
       session.dispose();
     }
@@ -283,6 +314,7 @@ describe('QuickJS heap stability over many events', () => {
         pending: 2,
         hooks: 0,
         terminal: 0,
+        locks: 0,
       });
     } finally {
       session.dispose();
