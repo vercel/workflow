@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../scripts/trusted-sources-headers.mjs';
 
 /**
  * Docs smoke checks.
@@ -31,9 +31,8 @@ const NEXT_CLI = fileURLToPath(
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const assertNoProtection = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: await getTrustedSourcesHeaders(),
   });
   const location = res.headers.get('location') || '';
   if (
@@ -58,9 +57,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
   let lastVercelId = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const res = await fetch(url, {
-        headers: await getTrustedSourcesHeaders(),
-      });
+      const res = await fetchWithTrustedSources(url);
       if (res.ok) return;
       lastStatus = res.status;
       lastVercelId = res.headers.get('x-vercel-id');
@@ -82,9 +79,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
 };
 
 const assertPngResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -101,9 +96,7 @@ const assertPngResponse = async (path) => {
 };
 
 const assertHtmlMeta = async (path, expectedOgImagePath) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -166,9 +159,7 @@ const assertHtmlMeta = async (path, expectedOgImagePath) => {
  * components/worlds/world-detail-page.tsx.
  */
 const assertWorldVersionMarkers = async (path, { maintenance }) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -199,9 +190,8 @@ const assertWorldVersionMarkers = async (path, { maintenance }) => {
  * self-redirect loops, so assert a plain 200 with no redirect.
  */
 const assertServesDirectly = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: await getTrustedSourcesHeaders(),
   });
   if (res.status !== 200) {
     const location = res.headers.get('location');
@@ -217,9 +207,7 @@ const assertTextResponse = async (
   expectedText,
   headers = {}
 ) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { ...(await getTrustedSourcesHeaders()), ...headers },
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`, { headers });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -235,9 +223,7 @@ const assertTextResponse = async (
 
 const assertChangelogData = async () => {
   const path = '/changelog/data/2';
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -416,9 +402,7 @@ const checks = [
 ];
 
 const assertXmlResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }

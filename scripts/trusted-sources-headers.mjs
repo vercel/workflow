@@ -1,6 +1,11 @@
 /**
  * Returns headers needed to bypass Vercel Deployment Protection.
  *
+ * Module-private: the credential admits its bearer to every protected
+ * deployment the trusted-sources rules cover, so it must only ever travel to
+ * the host a caller named. `fetchWithTrustedSources` is the only way out,
+ * because it is the only thing that can hold that line across redirects.
+ *
  * Source preference, in order:
  *   1. **`VERCEL_PROTECTION_BYPASS` env var** — an explicit Protection
  *      Bypass for Automation secret. Useful for local e2e runs against a
@@ -18,16 +23,16 @@
  *      (the runtime injects the per-request token) and as a manual
  *      override for local development.
  *
- * Returns an empty object when neither source is available, so callers
- * can safely spread the result into request headers regardless of
- * environment. When the target deployment doesn't have Deployment
- * Protection enabled, the header is silently ignored by Vercel's edge.
+ * Returns an empty object when neither source is available, so the result is
+ * always safe to merge into request headers regardless of environment. When
+ * the target deployment doesn't have Deployment Protection enabled, the header
+ * is silently ignored by Vercel's edge.
  *
  * See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
  *
  * @returns {Promise<Record<string, string>>}
  */
-export async function getTrustedSourcesHeaders() {
+async function getTrustedSourcesHeaders() {
   if (process.env.VERCEL_PROTECTION_BYPASS) {
     return {
       'x-vercel-protection-bypass': process.env.VERCEL_PROTECTION_BYPASS,
@@ -39,6 +44,104 @@ export async function getTrustedSourcesHeaders() {
     return { 'x-vercel-trusted-oidc-idp-token': token };
   }
   return {};
+}
+
+/** Statuses that carry a `Location` worth following. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Hops followed before giving up, matching fetch's own redirect limit. */
+const MAX_REDIRECTS = 20;
+
+/**
+ * @typedef {object} Hop
+ * @property {URL} target
+ * @property {string} method
+ * @property {BodyInit | null | undefined} body
+ */
+
+/**
+ * The request a redirect response asks for next, or `null` when the chain ends
+ * here. The method rewrite mirrors fetch's own, so a followed hop sends what
+ * fetch would have sent.
+ *
+ * @param {Response} response
+ * @param {Hop} hop
+ * @returns {Hop | null}
+ */
+function nextHop(response, hop) {
+  if (!REDIRECT_STATUSES.has(response.status)) return null;
+  const location = response.headers.get('location');
+  if (!location) return null;
+  const rewriteToGet =
+    response.status === 303 ||
+    ((response.status === 301 || response.status === 302) &&
+      hop.method.toUpperCase() === 'POST');
+  return {
+    target: new URL(location, hop.target),
+    method: rewriteToGet ? 'GET' : hop.method,
+    body: rewriteToGet ? undefined : hop.body,
+  };
+}
+
+/**
+ * `fetch` against a deployment, carrying the Deployment Protection credential
+ * only to the origin the caller asked for.
+ *
+ * The target is a deployment of code under test — a preview built from the
+ * branch — so its redirects are not ours to trust. Plain `fetch` follows them
+ * and re-sends every header except `Authorization`, `Cookie` and
+ * `Proxy-Authorization`, so a single `Location: https://attacker.example`
+ * hands over `x-vercel-trusted-oidc-idp-token` (a Trusted Source for every
+ * project in the team) or `x-vercel-protection-bypass`. Redirects are
+ * therefore followed here, one hop at a time, with the credential attached
+ * only while the chain stays on the origin the caller named.
+ *
+ * `init.redirect` is honoured: `'manual'` and `'error'` are handed to `fetch`
+ * as-is, since neither leaves this origin.
+ *
+ * @param {string | URL} url
+ * @param {RequestInit} [init]
+ * @returns {Promise<Response>}
+ */
+export async function fetchWithTrustedSources(url, init = {}) {
+  const credentials = await getTrustedSourcesHeaders();
+  const { redirect = 'follow', headers: callerHeaders, ...rest } = init;
+  const origin = new URL(url).origin;
+
+  /** @type {Hop} */
+  let hop = {
+    target: new URL(url),
+    method: rest.method ?? 'GET',
+    body: rest.body,
+  };
+
+  for (let followed = 0; ; followed++) {
+    const headers = new Headers(callerHeaders);
+    if (hop.target.origin === origin) {
+      for (const [name, value] of Object.entries(credentials)) {
+        headers.set(name, value);
+      }
+    }
+
+    const response = await fetch(hop.target, {
+      ...rest,
+      method: hop.method,
+      body: hop.body,
+      headers,
+      redirect: redirect === 'follow' ? 'manual' : redirect,
+    });
+    if (redirect !== 'follow') return response;
+
+    const next = nextHop(response, hop);
+    if (!next) return response;
+    if (followed === MAX_REDIRECTS) {
+      throw new TypeError(`Too many redirects following ${url}`);
+    }
+
+    // Release the connection before issuing the next hop.
+    await response.body?.cancel().catch(() => {});
+    hop = next;
+  }
 }
 
 /**
