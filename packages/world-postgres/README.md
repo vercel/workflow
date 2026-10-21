@@ -343,6 +343,13 @@ process re-enqueues only its own deployment's active runs. A run's jobs wait
 until a process of its deployment runs, so keep each deployment running until
 its runs end.
 
+This includes `start(workflow, args, { deploymentId })` with routing on or off:
+a run started with a concrete id other than `postgres` waits for a process
+running as that deployment, where older releases ran it on the single
+`postgres` deployment. With invocation delivery on, a process sends hook
+inputs only to its own deployment's runs, and a hook resume for another
+deployment's run fails with `409`.
+
 Upgrade every process to this release with routing off before enabling it on a
 database that older releases used: they ignore the deployment a job is
 addressed to and re-enqueue every active run on startup.

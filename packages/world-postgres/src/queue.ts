@@ -890,8 +890,12 @@ export function createQueue(
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
+    const target = targetDeploymentId(opts?.deploymentId);
+    // Only this deployment's executor task is known to have a consumer. Every
+    // deployment consumes its flows task, and one with invoke enabled moves
+    // orchestration from there to its executor itself.
     const input =
-      invocations && prefix === ownPrefix()
+      invocations && target === deploymentId && prefix === ownPrefix()
         ? executorInput(message)
         : undefined;
     await addGraphileJob({
@@ -908,7 +912,7 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
-      target: targetDeploymentId(opts?.deploymentId),
+      target,
       ...(input ? { executorRunId: input.runId } : {}),
     });
     return { messageId };
@@ -926,6 +930,15 @@ export function createQueue(
       payload,
       options,
       async (client, _id, run) => {
+        // Whether another deployment has invoke enabled is unknown here, and
+        // without it no executor would answer. Throwing rolls back the
+        // mailbox insertion.
+        if (run.deploymentId !== deploymentId) {
+          throw new WorkflowWorldError(
+            `Cannot invoke run ${runId}: it belongs to deployment ${JSON.stringify(run.deploymentId)}, and a Postgres World process invokes only its own deployment's runs (${JSON.stringify(deploymentId)}).`,
+            { status: 409 }
+          );
+        }
         const wake = MessageData.encode({
           id: run.workflowName,
           data: transport.serialize({ runId }) as Buffer,
@@ -938,7 +951,7 @@ export function createQueue(
           `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
           queue_name => $3, max_attempts => $4)`,
           [
-            executorTask(targetDeploymentId(run.deploymentId)),
+            executorTask(deploymentId),
             JSON.stringify(wake),
             executorQueueName(runId),
             MAX_GRAPHILE_JOB_ATTEMPTS,

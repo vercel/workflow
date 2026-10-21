@@ -675,13 +675,16 @@ describe('postgres queue http execution', () => {
     expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
   });
 
-  it("wakes an invoked run on its own deployment's executor task", async () => {
+  it.each([
+    [undefined, 'postgres', 'workflow_flows_executor'],
+    ['build_a', 'build_a', 'workflow_flows_executor@build_a'],
+  ])('a %s process wakes an invoked run on its own executor task', async (self, runDeployment, task) => {
     const client = { query: vi.fn() };
     invocationTransport.invoke.mockImplementation(
       async (_runId, _payload, _options, enqueue) => {
         await enqueue(client, 'inv_1', {
           workflowName: 'example',
-          deploymentId: 'build_b',
+          deploymentId: runDeployment,
         });
       }
     );
@@ -689,7 +692,7 @@ describe('postgres queue http execution', () => {
       {
         connectionString: 'postgres://test',
         enableInvoke: true,
-        deploymentId: 'build_a',
+        deploymentId: self,
       },
       pool
     );
@@ -698,11 +701,68 @@ describe('postgres queue http execution', () => {
     await queue.invoke?.('run_a', { value: 1 });
 
     expect(client.query).toHaveBeenCalledWith(expect.any(String), [
-      'workflow_flows_executor@build_b',
+      task,
       expect.any(String),
       'workflow_flows:run_a:executor',
       expect.any(Number),
     ]);
+  });
+
+  it.each([
+    [undefined, 'build_b'],
+    ['build_a', 'build_b'],
+    ['build_a', 'postgres'],
+  ])('a %s process refuses to invoke a run of deployment %s', async (self, runDeployment) => {
+    const client = { query: vi.fn() };
+    invocationTransport.invoke.mockImplementation(
+      async (_runId, _payload, _options, enqueue) => {
+        await enqueue(client, 'inv_1', {
+          workflowName: 'example',
+          deploymentId: runDeployment,
+        });
+      }
+    );
+    const queue = buildQueue(
+      {
+        connectionString: 'postgres://test',
+        enableInvoke: true,
+        deploymentId: self,
+      },
+      pool
+    );
+    await queue.start();
+
+    await expect(queue.invoke?.('run_a', { value: 1 })).rejects.toThrow(
+      `Cannot invoke run run_a: it belongs to deployment ${JSON.stringify(runDeployment)}`
+    );
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, 'build_b', 'workflow_flows@build_b'],
+    ['build_a', 'build_b', 'workflow_flows@build_b'],
+    ['build_a', 'postgres', 'workflow_flows'],
+  ])('an invoke-enabled %s process sends orchestration for deployment %s to %s', async (self, target, task) => {
+    const queue = buildQueue(
+      {
+        connectionString: 'postgres://test',
+        enableInvoke: true,
+        deploymentId: self,
+      },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__wkf_workflow_example',
+      { runId: 'run_b' },
+      { deploymentId: target }
+    );
+
+    const [identifier, , options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0];
+    expect(identifier).toBe(task);
+    expect(options).not.toHaveProperty('queueName');
   });
 
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
