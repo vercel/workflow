@@ -13,7 +13,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { once, setWorkflowBasePath } from '@workflow/utils';
+import { once, setWorkflowBasePath, withResolvers } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -49,9 +49,21 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { type Logger, runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import {
+  type AdvanceOnlyDelivery,
+  advanceOnlyHasWork,
+  advanceOnlyLeavesStep,
+  peerStepIds,
+  pendingStepIdsIn,
+  runRowFromCreation,
+  settlesBranch,
+  settlesWithin,
+} from './runtime/branch-replay.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
+  getEagerBranchReplayDelayMs,
+  getEagerBranchReplayMaxPending,
   getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
@@ -60,6 +72,7 @@ import {
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
   isDynamicWorkflowsEnabled,
+  isEagerBranchReplayEnabled,
   isInlineOwnershipEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
@@ -839,6 +852,7 @@ export function workflowEntrypoint(
           runContext,
           hookResumeTiming,
           waitContinuation,
+          advanceOnly: incomingAdvanceOnly,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -1807,11 +1821,41 @@ export function workflowEntrypoint(
                     return outcome;
                   };
 
+                  // Advance-only: this invocation replays because one branch of
+                  // a fan-out settled while sibling steps are still in flight
+                  // in other invocations (a queued step finishing beside
+                  // pending siblings, or a continuation an inline batch handed
+                  // off; see `isEagerBranchReplayEnabled`). Its replays act on
+                  // the work they create and nothing else: the siblings belong
+                  // to the invocations running them, and whichever of those
+                  // settles last replays the run the ordinary way. So a pass
+                  // that reaches nothing new returns at once, and the dispatch
+                  // pass leaves the siblings' messages and backstops alone
+                  // rather than re-sending them on every branch's settlement.
+                  let advanceOnly =
+                    incomingAdvanceOnly === true &&
+                    isEagerBranchReplayEnabled();
+                  span?.setAttributes({
+                    'workflow.advance_only': advanceOnly,
+                  });
+                  const advanceOnlyDelivery: AdvanceOnlyDelivery = {
+                    messageId: metadata.messageId,
+                    redelivery: metadata.attempt > 1,
+                  };
+                  // Set once this invocation has handed a settled inline
+                  // branch to another invocation. From then on a peer may
+                  // replay this run concurrently, which ends the
+                  // single-handler guarantee turbo's forced optimistic start
+                  // rests on, so later batches here claim before they run.
+                  let branchHandedOff = false;
+
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
                   // from the batch are done. If so, replay inline (saving a queue
-                  // roundtrip). If not, return: the last handler to complete
-                  // will pick up the replay.
+                  // roundtrip). If siblings are still pending, replay
+                  // advance-only so this step's branch can move on now; with
+                  // the kill switch off, return and let the last handler to
+                  // complete pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
                       // Run identity for this execution. A message stamped
@@ -2038,33 +2082,13 @@ export function workflowEntrypoint(
                         // incrementally from here.
                         const loaded = await loadWorkflowRunEvents(runId);
                         eventLog = nextEventLogLoad(loaded);
+                        const runCreatedEvent = loaded.events.find(
+                          (event) => event.eventType === 'run_created'
+                        );
 
                         // Check for pending steps: any created step without
-                        // a matching step_completed or step_failed. A
-                        // `step_started` counts as the creation too: a World
-                        // may record an inline step's creation on its
-                        // `step_started` alone, with no `step_created`.
-                        const stepCreatedIds = new Set<string | undefined>();
-                        const stepTerminalIds = new Set<string | undefined>();
-                        for (const e of loaded.events) {
-                          if (
-                            e.eventType === 'step_created' ||
-                            e.eventType === 'step_started'
-                          ) {
-                            stepCreatedIds.add(e.correlationId);
-                          } else if (
-                            e.eventType === 'step_completed' ||
-                            e.eventType === 'step_failed'
-                          ) {
-                            stepTerminalIds.add(e.correlationId);
-                          }
-                        }
-                        const pendingStepIds = new Set<string | undefined>();
-                        for (const id of stepCreatedIds) {
-                          if (!stepTerminalIds.has(id)) {
-                            pendingStepIds.add(id);
-                          }
-                        }
+                        // a matching step_completed or step_failed.
+                        const pendingStepIds = pendingStepIdsIn(loaded.events);
 
                         if (pendingStepIds.size > 0) {
                           // A pending step that THIS message inline-owns (a
@@ -2087,6 +2111,97 @@ export function workflowEntrypoint(
                               'Background step done; falling through to recover an inline step owned by this message',
                               { workflowRunId: runId }
                             );
+                          } else if (
+                            isEagerBranchReplayEnabled() &&
+                            // A wide fan-out of one-step branches would
+                            // otherwise replay on every settlement for
+                            // nothing; see EAGER_BRANCH_REPLAY_MAX_PENDING.
+                            pendingStepIds.size <=
+                              getEagerBranchReplayMaxPending() &&
+                            // The QuickJS engine runs its own replay loop,
+                            // which has no advance-only mode and re-sends
+                            // every pending step it did not create: replaying
+                            // there on every settlement would cost a fan-out
+                            // a quadratic number of sends. It keeps waiting
+                            // for the siblings until it gets that mode.
+                            !useQuickJSVm({
+                              executionContext:
+                                runCreatedEvent?.eventType === 'run_created'
+                                  ? runCreatedEvent.eventData.executionContext
+                                  : undefined,
+                            })
+                          ) {
+                            // Other steps still in progress. Replay anyway, so
+                            // the branch this step belongs to can create its
+                            // next step now instead of once its siblings have
+                            // settled (vercel/workflow#4457). Advance-only: a
+                            // branch with nothing left to do costs this replay
+                            // and no writes, and the siblings stay with the
+                            // invocations running them.
+                            //
+                            // Siblings that settle within the grace delay are
+                            // cheaper to replay once for, and the last of them
+                            // does that; see EAGER_BRANCH_REPLAY_DELAY_MS. So
+                            // give them that long, then re-read what has
+                            // landed since: if none of them is pending any
+                            // more, leave the replay to whichever settled
+                            // last, as before. Its own read follows its write,
+                            // and this step's terminal event precedes both.
+                            //
+                            // Only the siblings this step was scheduled beside
+                            // count. A step created after it belongs to a
+                            // branch that already advanced on its own: it will
+                            // not settle together with this one, so waiting on
+                            // it only delays this branch, and when the delay
+                            // ends the steps created meanwhile are just the
+                            // next round, which that branch's replay made.
+                            const peers = peerStepIds(
+                              loaded.events,
+                              pendingStepIds,
+                              incomingStepId
+                            );
+                            const graceMs = getEagerBranchReplayDelayMs();
+                            if (peers.size > 0 && graceMs > 0) {
+                              replayBudget.pause();
+                              try {
+                                await new Promise((resolve) =>
+                                  setTimeout(resolve, graceMs)
+                                );
+                              } finally {
+                                replayBudget.resume();
+                              }
+                              appendEventLog(
+                                loaded,
+                                await loadWorkflowRunEvents(
+                                  runId,
+                                  loaded.cursor ?? undefined
+                                )
+                              );
+                              eventLog = nextEventLogLoad(loaded);
+                              const stillPending = pendingStepIdsIn(
+                                loaded.events
+                              );
+                              if (
+                                ![...peers].some((id) => stillPending.has(id))
+                              ) {
+                                runtimeLogger.debug(
+                                  'Background step done and its siblings settled within the grace delay, returning',
+                                  { workflowRunId: runId, graceMs }
+                                );
+                                return;
+                              }
+                            }
+                            runtimeLogger.debug(
+                              'Background step done with other steps pending, replaying advance-only',
+                              {
+                                workflowRunId: runId,
+                                pendingSteps: pendingStepIds.size,
+                              }
+                            );
+                            advanceOnly = true;
+                            span?.setAttributes({
+                              'workflow.advance_only': true,
+                            });
                           } else {
                             // Other steps still in progress. Return without
                             // queuing: the last handler to complete will see
@@ -2099,17 +2214,38 @@ export function workflowEntrypoint(
                           }
                         }
 
-                        // All steps done: fall through to the main replay loop.
-                        // Set up shared state so the loop can continue.
-                        runtimeLogger.debug(
-                          'All parallel steps done, replaying inline after background step',
-                          { workflowRunId: runId }
-                        );
+                        // Fall through to the main replay loop: every step is
+                        // done, or this replay is advance-only. Set up shared
+                        // state so the loop can continue.
+                        if (!advanceOnly) {
+                          runtimeLogger.debug(
+                            'All parallel steps done, replaying inline after background step',
+                            { workflowRunId: runId }
+                          );
+                        }
                         // Fetch the run row only when continuing into replay,
                         // not for every queued step's prologue. This also
                         // covers recovery of an inline step owned by this message.
+                        //
+                        // An advance-only replay builds the row instead, from
+                        // the identity this message carries and the run's own
+                        // `run_created`, the way turbo builds it from the start
+                        // payload. Every settlement in a fan-out but the last
+                        // takes this path, so reading the row here would put
+                        // back the per-branch `runs.get` the fetch-free
+                        // prologue removed (vercel/workflow#3456). The status
+                        // is the one field neither source holds, and the loop
+                        // reads it from the log instead: it returns before
+                        // replaying a log that holds a terminal run event.
                         const replayRunRow =
                           bgRun ??
+                          (advanceOnly && runContext && runCreatedEvent
+                            ? runRowFromCreation(
+                                runId,
+                                runCreatedEvent,
+                                runContext
+                              )
+                            : undefined) ??
                           (await world.runs.get(runId, {
                             resolveData: 'none',
                           }));
@@ -2135,9 +2271,6 @@ export function workflowEntrypoint(
                         // The step body needs no workflow VM. Compile only when
                         // replaying, using the fetched row's VM selection.
                         startWorkflowCompile(replayRunRow);
-                        const runCreatedEvent = loaded.events.find(
-                          (event) => event.eventType === 'run_created'
-                        );
                         let replayInput: unknown;
                         if (runCreatedEvent) {
                           replayInput = runCreatedEvent.eventData.input;
@@ -3611,6 +3744,33 @@ export function workflowEntrypoint(
                           runtimeLogger.debug(suspensionMessage);
                         }
 
+                        // An advance-only pass that reached nothing new: the
+                        // branch whose step settled is waiting on siblings
+                        // again, and the invocations running them replay when
+                        // they settle. Nothing here is this invocation's to
+                        // write or send, so leave without touching it. A wide
+                        // fan-out of one-step branches lands here on every
+                        // settlement but the last, for the cost of the replay.
+                        // (A step this delivery itself owes, see
+                        // `advanceOnlyLeavesStep`, keeps the pass going.)
+                        if (
+                          advanceOnly &&
+                          !advanceOnlyHasWork(err, advanceOnlyDelivery)
+                        ) {
+                          runtimeLogger.debug(
+                            'Advance-only replay reached no new work; returning',
+                            {
+                              workflowRunId: runId,
+                              loopIteration,
+                              steps: err.stepCount,
+                            }
+                          );
+                          span?.setAttributes({
+                            'workflow.advance_only.idle_exit': true,
+                          });
+                          return;
+                        }
+
                         // V2: handle suspension without queuing steps.
                         // Each event creation inside handleSuspension carries the
                         // precondition snapshot of the loaded event log, so a
@@ -4222,6 +4382,9 @@ export function workflowEntrypoint(
                         // invocation already published the step's message
                         // on an earlier pass. See publishedStepCorrelationIds.
                         let republishesSkipped = 0;
+                        // Pending siblings an advance-only pass left to the
+                        // invocations running them. See `advanceOnly`.
+                        let advanceOnlySiblingsLeft = 0;
                         for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
                           publishedStepCorrelationIds.add(correlationId);
                         }
@@ -4294,6 +4457,23 @@ export function workflowEntrypoint(
                             // message; re-execute the step in this
                             // invocation instead of queueing it.
                             ownedRecoverySteps.push(step);
+                            continue;
+                          }
+                          // Advance-only: a step this pass did not create is
+                          // a sibling some other invocation is running (or
+                          // created and dispatched), and settling it is that
+                          // invocation's job. Re-sending its message or
+                          // arming its backstop from every branch that
+                          // settles beside it would turn a fan-out's
+                          // settlements into a quadratic number of sends.
+                          if (
+                            advanceOnly &&
+                            !suspensionResult.createdStepCorrelationIds.has(
+                              step.correlationId
+                            ) &&
+                            advanceOnlyLeavesStep(step, advanceOnlyDelivery)
+                          ) {
+                            advanceOnlySiblingsLeft++;
                             continue;
                           }
                           // Delayed backstop wake while another invocation's
@@ -4528,6 +4708,12 @@ export function workflowEntrypoint(
                               republishesSkipped,
                             }
                           );
+                        }
+                        if (advanceOnlySiblingsLeft > 0) {
+                          span?.setAttributes({
+                            'workflow.advance_only.siblings_left':
+                              advanceOnlySiblingsLeft,
+                          });
                         }
                         if (ownedRecoverySteps.length > 0) {
                           runtimeLogger.warn(
@@ -4850,8 +5036,14 @@ export function workflowEntrypoint(
                         // Until the build emits a verifiable signal that the
                         // deployed trigger is serialized, the conservative
                         // latch stays.
+                        //
+                        // A branch hand-off (below) latches it off the same
+                        // way: the invocation it wakes replays this run
+                        // concurrently and may race this one for a step's
+                        // claim.
                         const forceOptimisticStart =
                           turbo &&
+                          !branchHandedOff &&
                           !suspensionResult.hasAttributeEvents &&
                           !suspensionResult.waitTimeout &&
                           !suspensionResult.hasHookEvents &&
@@ -4910,6 +5102,12 @@ export function workflowEntrypoint(
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
+                        // Resolved once each execution's claim has settled
+                        // (or the execution itself has, when it sent none).
+                        // The branch hand-off below waits on all of them.
+                        const claimsSettled = inlineExecutions.map(() =>
+                          withResolvers<void>()
+                        );
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
                             const run = () => {
@@ -5008,6 +5206,8 @@ export function workflowEntrypoint(
                                     }
                                   : {}),
                                 replayRecoveryReporter,
+                                onStartSettled:
+                                  claimsSettled[stepIndex].resolve,
                               });
                             };
                             // Invariant bookkeeping: this invocation owns
@@ -5035,9 +5235,13 @@ export function workflowEntrypoint(
                               run,
                               isFreshClaim ? 'debug' : 'warn'
                             );
-                            return executed.finally(() =>
-                              inFlightOwnedSteps.delete(s.correlationId)
-                            );
+                            return executed.finally(() => {
+                              inFlightOwnedSteps.delete(s.correlationId);
+                              // Covers the executions that never sent a
+                              // claim: a single-flight loser, or an executor
+                              // that returned before its start.
+                              claimsSettled[stepIndex].resolve();
+                            });
                           }
                         );
                         // The joins below sit BETWEEN these promises' creation
@@ -5051,6 +5255,118 @@ export function workflowEntrypoint(
                         // awaits below, which are what decide the outcome.
                         for (const promise of stepExecutionPromises) {
                           promise.catch(() => {});
+                        }
+                        // Branch hand-off (vercel/workflow#4457). This loop
+                        // replays only once the whole batch has settled, so a
+                        // step that settles early would hold its branch until
+                        // the slowest sibling here is done. Instead, hand the
+                        // run to another invocation the moment one settles
+                        // with siblings still running: its advance-only
+                        // replay creates the settled branch's next step now,
+                        // and it leaves these siblings alone, since they stay
+                        // this invocation's to settle. The step that settles
+                        // last hands nothing off: this loop replays next.
+                        //
+                        // Only after every claim in the batch has settled:
+                        // until then the woken replay could see a sibling as
+                        // not yet created and claim it from under a body
+                        // optimistic start is already running here. Only
+                        // after the batch's creates and publishes are
+                        // durable, for the same reason. And never on an
+                        // invoke-capable World, which serializes a run's
+                        // orchestrator deliveries, so the continuation would
+                        // wait for this one anyway. Nor in a fan-out wider
+                        // than the early-replay bound, whose branches mostly
+                        // have nothing after their step (see
+                        // EAGER_BRANCH_REPLAY_MAX_PENDING).
+                        const branchHandOffs: Promise<void>[] = [];
+                        if (
+                          stepExecutionPromises.length > 1 &&
+                          isEagerBranchReplayEnabled() &&
+                          pendingSteps.length - 1 <=
+                            getEagerBranchReplayMaxPending() &&
+                          !world.capabilities?.invoke
+                        ) {
+                          const batchClaimedAndDurable = Promise.all([
+                            dispatchesSettled,
+                            suspensionResult.deferredBatchWork,
+                            ...claimsSettled.map((claim) => claim.promise),
+                          ]);
+                          batchClaimedAndDurable.catch(() => {});
+                          // A batch whose steps settle within the grace delay
+                          // of each other replays once here, which costs less
+                          // than a replay per branch; see
+                          // EAGER_BRANCH_REPLAY_DELAY_MS.
+                          const batchSettled = Promise.allSettled(
+                            stepExecutionPromises
+                          );
+                          const graceMs = getEagerBranchReplayDelayMs();
+                          let stillRunning = stepExecutionPromises.length;
+                          for (const [
+                            index,
+                            promise,
+                          ] of stepExecutionPromises.entries()) {
+                            const handOff = promise.then(
+                              async (result) => {
+                                stillRunning--;
+                                if (
+                                  stillRunning === 0 ||
+                                  !settlesBranch(result) ||
+                                  (await settlesWithin(batchSettled, graceMs))
+                                ) {
+                                  return;
+                                }
+                                branchHandedOff = true;
+                                await batchClaimedAndDurable;
+                                await queueMessage(
+                                  world,
+                                  getWorkflowQueueName(workflowName, namespace),
+                                  {
+                                    ...(await replayMessage()),
+                                    advanceOnly: true,
+                                  }
+                                );
+                                runtimeLogger.debug(
+                                  'Inline step settled with siblings still running; handed its branch to an advance-only replay',
+                                  {
+                                    workflowRunId: runId,
+                                    loopIteration,
+                                    stepId:
+                                      inlineExecutions[index].correlationId,
+                                    stillRunning,
+                                  }
+                                );
+                              },
+                              () => {
+                                stillRunning--;
+                              }
+                            );
+                            // An optimization only: the branch still
+                            // advances when this batch has settled and the
+                            // loop replays, so a failed hand-off is logged
+                            // and otherwise ignored.
+                            branchHandOffs.push(
+                              handOff.catch((handOffErr) => {
+                                runtimeLogger.warn(
+                                  'Failed to hand a settled inline branch to another invocation; it advances once its batch settles',
+                                  {
+                                    workflowRunId: runId,
+                                    loopIteration,
+                                    stepId:
+                                      inlineExecutions[index].correlationId,
+                                    errorName:
+                                      handOffErr instanceof Error
+                                        ? handOffErr.name
+                                        : 'UnknownError',
+                                    errorMessage:
+                                      handOffErr instanceof Error
+                                        ? handOffErr.message
+                                        : String(handOffErr),
+                                  }
+                                );
+                              })
+                            );
+                          }
                         }
                         try {
                           // Join the dispatch publishes launched above and
@@ -5076,6 +5392,9 @@ export function workflowEntrypoint(
                           stepResults = await Promise.all(
                             stepExecutionPromises
                           );
+                          // Every claim has settled by now, so this only
+                          // waits out the hand-off publishes themselves.
+                          await Promise.all(branchHandOffs);
                         } catch (stepErr) {
                           // A stale (412) rejection of an inline step_started
                           // claim: the loaded view this batch was scheduled

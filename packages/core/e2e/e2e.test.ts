@@ -994,6 +994,25 @@ describe.concurrent('e2e', () => {
     expect(returnValue.winner).toBe('step');
   });
 
+  // vercel/workflow#4457. The QuickJS engine's branches still advance in
+  // lockstep (see WORKFLOW_EAGER_BRANCH_REPLAY).
+  test.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
+    'parallelBranchesAdvanceIndependentlyWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await e2e('parallelBranchesAdvanceIndependentlyWorkflow'),
+        []
+      );
+      const { chain, long } = await run.returnValue;
+      // The chain's second step starts once its first settles, rather than
+      // once the 10s step beside it does. Both times are host clocks of the
+      // invocations that ran the steps, so allow for skew between them; the
+      // margin under lockstep is the other way round by seconds.
+      expect(chain[1].startedAt).toBeLessThan(long.endedAt - 2_000);
+    }
+  );
+
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;
