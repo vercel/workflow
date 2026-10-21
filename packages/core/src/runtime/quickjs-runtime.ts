@@ -53,6 +53,7 @@ import {
 } from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
+import { newHookRegion, tagHookUlid } from '../hook-region.js';
 import { runtimeLogger } from '../logger.js';
 import { createSeededNanoid } from '../seeded-nanoid.js';
 import { decompress } from '../serialization/compression.js';
@@ -780,8 +781,18 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
       throw unsupportedForceError;
     }
   }
-  var token = options.token || globalThis.__generateNanoid();
-  var correlationId = "hook_" + globalThis.__generateUlid();
+  // Where the hook is stored (see hook-region.ts): a webhook's run region, or
+  // undefined for the World's default region. Same draw order as before
+  // (nanoid, then ULID); the region only decorates them.
+  var hookRegion = globalThis.__hookRegion(!!options.isWebhook);
+  var token = options.token || (hookRegion !== undefined
+    // WEBHOOK_TOKEN_PREFIX in hook-region.ts
+    ? "wh." + hookRegion + "." + globalThis.__generateNanoid()
+    : globalThis.__generateNanoid());
+  var hookUlid = globalThis.__generateUlid();
+  var correlationId = "hook_" + (hookRegion === undefined
+    ? hookUlid
+    : globalThis.__tagHookUlid(hookUlid, hookRegion));
   var isDisposed = false;
   var hasCreatedEvent = false;
   var tokenRetentionUntil;
@@ -1409,6 +1420,15 @@ async function prepareBaselineSnapshot(
         return vm.newString('00000000000000000000000000');
       });
       vm.setProp(vm.global, '__generateUlid', ulidFn);
+      // Hook region callbacks draw nothing; placeholders only so hydrate-time
+      // code that reaches createHook fails on its ID draws (counted above)
+      // rather than on a missing global.
+      using hookRegionFn = vm.newFunction('__hookRegion', () => vm.undefined);
+      vm.setProp(vm.global, '__hookRegion', hookRegionFn);
+      using tagHookUlidFn = vm.newFunction('__tagHookUlid', (ulid) =>
+        vm.newString(ulid.toString())
+      );
+      vm.setProp(vm.global, '__tagHookUlid', tagHookUlidFn);
     }
 
     // Serde capture root: created BEFORE the bundle evaluates, exactly
@@ -1779,6 +1799,33 @@ export async function startQuickJSWorkflow(
       fn: (vm) => () => vm.newString(generateUlid()) as never,
       install: (vm, fnHandle) => {
         vm.setProp(vm.global, '__generateUlid', fnHandle);
+      },
+    },
+    // Per-region webhook storage (see hook-region.ts). Pure functions of the
+    // run ID and the World's static capabilities, so a replay or a restored
+    // snapshot mints the same hook ID and token.
+    {
+      name: '__hookRegion',
+      fn: (vm) => (isWebhook) => {
+        const region = newHookRegion({
+          isWebhook: isWebhook.toBoolean(),
+          runId: workflowRun.runId,
+          capabilities: options.worldCapabilities,
+        });
+        return region === undefined
+          ? vm.undefined
+          : (vm.newString(region) as never);
+      },
+      install: (vm, fnHandle) => {
+        vm.setProp(vm.global, '__hookRegion', fnHandle);
+      },
+    },
+    {
+      name: '__tagHookUlid',
+      fn: (vm) => (ulid, region) =>
+        vm.newString(tagHookUlid(ulid.toString(), region.toString())) as never,
+      install: (vm, fnHandle) => {
+        vm.setProp(vm.global, '__tagHookUlid', fnHandle);
       },
     },
     {

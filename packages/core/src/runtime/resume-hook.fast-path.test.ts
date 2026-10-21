@@ -331,6 +331,20 @@ describe('resume entry points and hook kinds', () => {
     expect(createEvent).toHaveBeenCalled();
   });
 
+  it("resumeWebhook() looks a regional token up in the token's region", async () => {
+    const token = 'wh.cle1.V1StGXR8_Z5jdHi6B-myT';
+    const { getByToken } = makeWorld(hookFor({ isWebhook: true, token }));
+    await resumeWebhook(token, new Request('http://x', { method: 'GET' }));
+    expect(getByToken).toHaveBeenCalledWith(token, { region: 'cle1' });
+  });
+
+  it('resumeWebhook() looks a legacy token up in the default region', async () => {
+    const token = 'V1StGXR8_Z5jdHi6B-myT';
+    const { getByToken } = makeWorld(hookFor({ isWebhook: true, token }));
+    await resumeWebhook(token, new Request('http://x', { method: 'GET' }));
+    expect(getByToken).toHaveBeenCalledWith(token);
+  });
+
   it("re-looks a hook object's token up in the hook's own region", async () => {
     const { getByToken, createEvent } = makeWorld(
       hookFor({ hookId: 'hook_claimer', runId: 'wrun_claimer' })

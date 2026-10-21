@@ -182,6 +182,10 @@ export async function eventCollectorWorkflow() {
 }
 ```
 
+### Webhook regions
+
+On the [Vercel World](/worlds/vercel#good-to-know), a webhook is stored in the region its run lives in, so deliveries stay in-region. The region is encoded in the generated token, and therefore in `webhook.url`, so the webhook endpoint always finds it. There is nothing to configure.
+
 ## Related functions
 
 - [`createHook()`](/docs/api-reference/workflow/create-hook): Use when the app resumes from server-side code with a deterministic business token.

@@ -7,6 +7,10 @@ import {
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
+import {
+  decode as decodeRunIdUlid,
+  encode as encodeRunIdUlid,
+} from '@workflow/world-vercel/run-id';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -1800,5 +1804,69 @@ describe('createWebhook', () => {
       const conflict = await hook.getConflict();
       expect(conflict?.runId).toBe('wrun_legacy_victim');
     });
+  });
+});
+
+describe('webhook regions', () => {
+  const cle1RunId = `wrun_${encodeRunIdUlid(monotonicFactory()(), 'cle1')}`;
+  const regionalCapabilities = {
+    hookRetention: { active: true },
+    hookRegions: true,
+  };
+
+  const queuedHook = (ctx: WorkflowOrchestratorContext) => {
+    const item = ctx.invocationsQueue.values().next().value;
+    if (item?.type !== 'hook') throw new Error('expected a queued hook');
+    return item;
+  };
+  const idRegion = (correlationId: string) => {
+    const decoded = decodeRunIdUlid(correlationId.slice('hook_'.length));
+    return decoded.tagged ? decoded.region : undefined;
+  };
+  const regionalContext = () => {
+    const ctx = setupWorkflowContext([]);
+    ctx.runId = cle1RunId;
+    ctx.worldCapabilities = regionalCapabilities;
+    return ctx;
+  };
+
+  it("stores a webhook in its run's region, encoded in the token and the ID", () => {
+    const ctx = regionalContext();
+    createCreateHook(ctx)({ isWebhook: true });
+    const item = queuedHook(ctx);
+    expect(item.token).toMatch(/^wh\.cle1\.[A-Za-z0-9_-]{21}$/);
+    expect(idRegion(item.correlationId)).toBe('cle1');
+  });
+
+  it('leaves a createHook() hook untagged, with the same draws as before', () => {
+    const baseline = setupWorkflowContext([]);
+    createCreateHook(baseline)({});
+    const ctx = regionalContext();
+    createCreateHook(ctx)({});
+    expect(queuedHook(ctx).correlationId).toBe(
+      queuedHook(baseline).correlationId
+    );
+    expect(queuedHook(ctx).token).toBe(queuedHook(baseline).token);
+    expect(idRegion(queuedHook(ctx).correlationId)).toBeUndefined();
+  });
+
+  it('mints identical IDs and tokens on replay', () => {
+    const first = regionalContext();
+    const second = regionalContext();
+    createCreateHook(first)({ isWebhook: true });
+    createCreateHook(second)({ isWebhook: true });
+    expect(queuedHook(second)).toMatchObject({
+      correlationId: queuedHook(first).correlationId,
+      token: queuedHook(first).token,
+    });
+  });
+
+  it('leaves webhooks untagged on a World without hookRegions', () => {
+    const ctx = setupWorkflowContext([]);
+    ctx.runId = cle1RunId;
+    createCreateHook(ctx)({ isWebhook: true });
+    const item = queuedHook(ctx);
+    expect(item.token).not.toMatch(/^wh\./);
+    expect(idRegion(item.correlationId)).toBeUndefined();
   });
 });

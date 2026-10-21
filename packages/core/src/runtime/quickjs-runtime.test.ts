@@ -1,3 +1,7 @@
+import {
+  decode as decodeRunIdUlid,
+  encode as encodeRunIdUlid,
+} from '@workflow/world-vercel/run-id';
 import { assert, describe, expect, it } from 'vitest';
 import { deserialize, serialize } from '../serialization/workflow-vm.js';
 import {
@@ -2406,5 +2410,60 @@ describe('baseline snapshot startup optimization', () => {
     const entry = await __peekBaselineEntryForTests(throwingCode);
     expect(entry?.state).toBe('ineligible');
     __clearBaselineSnapshotCacheForTests();
+  });
+});
+
+describe('QuickJS webhook regions', () => {
+  // A cle1-tagged run ID (fixed, so the test is deterministic).
+  const cle1RunId = `wrun_${encodeRunIdUlid('01JGXQ9Z0000000000000000AA', 'cle1')}`;
+  const code = `
+    async function workflow() {
+      var hooks = [
+        globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({ isWebhook: true }),
+        globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({ token: "order:1" }),
+      ];
+      await hooks[1].getConflict();
+    }
+    workflow.workflowId = "workflow//test//workflow";
+    globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+  `;
+
+  const run = (worldCapabilities: Record<string, unknown>) =>
+    runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun({ runId: cle1RunId }),
+      worldCapabilities,
+      events: [],
+    });
+  const hookOps = (result: Awaited<ReturnType<typeof run>>) =>
+    result.suspended!.pendingOperations.filter((o) => o.type === 'hook') as {
+      correlationId: string;
+      token: string;
+    }[];
+  const idRegion = (correlationId: string) => {
+    const decoded = decodeRunIdUlid(correlationId.slice('hook_'.length));
+    return decoded.tagged ? decoded.region : undefined;
+  };
+
+  it("stores a webhook in its run's region, and nothing else", async () => {
+    const [webhook, hook] = hookOps(await run({ hookRegions: true }));
+    expect(webhook.token).toMatch(/^wh\.cle1\.[A-Za-z0-9_-]{21}$/);
+    expect(idRegion(webhook.correlationId)).toBe('cle1');
+    expect(hook.token).toBe('order:1');
+    expect(idRegion(hook.correlationId)).toBeUndefined();
+  });
+
+  it('mints the same values on every replay', async () => {
+    const first = hookOps(await run({ hookRegions: true }));
+    const second = hookOps(await run({ hookRegions: true }));
+    expect(second).toEqual(first);
+  });
+
+  it('leaves webhooks untagged on a World without hookRegions', async () => {
+    for (const op of hookOps(await run({}))) {
+      expect(op.token).not.toMatch(/^wh\./);
+      expect(idRegion(op.correlationId)).toBeUndefined();
+    }
   });
 });

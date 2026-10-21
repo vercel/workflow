@@ -20,6 +20,7 @@ import {
 import { monotonicFactory } from 'ulid';
 import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
+import { webhookTokenRegion } from '../hook-region.js';
 import { runtimeLogger } from '../logger.js';
 import { decodeRunPublicKey } from '../sealed-box.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
@@ -1114,8 +1115,12 @@ export async function resumeWebhook(
   // systematically shorter total than `resumeHook` ones into the same metric.
   const resumeRequestedAtMs = Date.now();
   const world = await getWorldLazy();
+  // A webhook's generated token carries the region the webhook is stored in
+  // (`wh.<region>.<id>`; see hook-region.ts). A legacy token carries none and
+  // lives in the World's default region.
+  const region = webhookTokenRegion(token);
   const { hook, metadataEncryptionKey } = withLazyMetadata(
-    await world.hooks.getByToken(token)
+    await getByTokenIn(world, token, region)
   );
 
   // Only webhooks can be resumed via the public endpoint.
@@ -1172,7 +1177,7 @@ export async function resumeWebhook(
     metadataEncryptionKey(),
     true,
     resumeRequestedAtMs,
-    { region: undefined, kind: 'webhook' }
+    { region, kind: 'webhook' }
   );
 
   if (responseReadable) {

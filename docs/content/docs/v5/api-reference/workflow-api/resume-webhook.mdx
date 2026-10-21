@@ -62,6 +62,8 @@ Returns a `Promise<Response>` that resolves to one of:
 
 Throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active webhook.
 
+A webhook's generated token carries the region the webhook is stored in, so `resumeWebhook()` finds it without any region option.
+
 ## Usage note
 
 <Callout type="warn">

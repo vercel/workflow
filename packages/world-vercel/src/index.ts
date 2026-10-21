@@ -88,6 +88,10 @@ export function createWorld(config?: APIConfig): World {
       // a forced creation is answered with `hook_conflict`, which the
       // runtime reports as an unsupported-World failure rather than a win.
       hookForceClaim: true,
+      // Hooks are stored per region on the backend: the runtime stores each
+      // webhook in its run's region, region-tagging its hook ID and token,
+      // and by-token lookups name the region.
+      hookRegions: true,
       // Stored with the run (inline, or behind `uploadDynamicWorkflowCode`
       // for large definitions). The server refuses a dynamic `run_created`
       // for a project outside its rollout, so `start()` fails at the write.
