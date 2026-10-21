@@ -61,6 +61,7 @@ import {
   getErrorTitle,
   recreateRun,
   resumeHook,
+  resumeHookById,
   unwrapServerActionResult,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
@@ -288,7 +289,14 @@ export function RunDetailView({
   const encryptionKeyRef = useRef<Uint8Array | null>(null);
 
   const handleResolveHook = useCallback(
-    async (hookToken: string, payload: unknown) => {
+    async (hookToken: string, payload: unknown, hook?: { hookId?: string }) => {
+      // Prefer the hook ID: resuming the hook object reaches webhooks too and
+      // the region the hook is stored in. The token is the fallback for a
+      // hook known only by its token.
+      if (hook?.hookId) {
+        await resumeHookById(env, hook.hookId, payload);
+        return;
+      }
       await resumeHook(env, hookToken, payload);
     },
     [env]

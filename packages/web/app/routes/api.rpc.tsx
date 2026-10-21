@@ -26,6 +26,7 @@ import {
   recreateRun,
   reenqueueRun,
   resumeHook,
+  resumeHookById,
   runHealthCheck,
   wakeUpRun,
 } from '~/server/workflow-server-actions.server';
@@ -59,6 +60,8 @@ const handlers = {
   reenqueueRun: (p: any) => reenqueueRun(p.worldEnv ?? {}, p.runId),
   wakeUpRun: (p: any) => wakeUpRun(p.worldEnv ?? {}, p.runId, p.options),
   resumeHook: (p: any) => resumeHook(p.worldEnv ?? {}, p.token, p.payload),
+  resumeHookById: (p: any) =>
+    resumeHookById(p.worldEnv ?? {}, p.hookId, p.payload),
   fetchStreams: (p: any) => fetchStreams(p.worldEnv ?? {}, p.runId),
   fetchWorkflowsManifest: (p: any) => fetchWorkflowsManifest(p.worldEnv ?? {}),
   runHealthCheck: (p: any) => runHealthCheck(p.worldEnv ?? {}, p.options),

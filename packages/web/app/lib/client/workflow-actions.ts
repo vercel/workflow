@@ -5,6 +5,7 @@ import {
   fetchHookToken as fetchHookTokenServerAction,
   recreateRun as recreateRunServerAction,
   reenqueueRun as reenqueueRunServerAction,
+  resumeHookById as resumeHookByIdServerAction,
   resumeHook as resumeHookServerAction,
   wakeUpRun as wakeUpRunServerAction,
 } from '~/lib/rpc-client';
@@ -57,6 +58,18 @@ export async function resumeHook(
   payload: unknown
 ): Promise<ResumeHookResult> {
   return unwrapOrThrow(resumeHookServerAction(env, token, payload));
+}
+
+/**
+ * Resume a hook, looked up by its ID, by sending a JSON payload. Reaches any
+ * hook, webhooks included, in whichever region it is stored.
+ */
+export async function resumeHookById(
+  env: EnvMap,
+  hookId: string,
+  payload: unknown
+): Promise<ResumeHookResult> {
+  return unwrapOrThrow(resumeHookByIdServerAction(env, hookId, payload));
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   recreateRun,
   reenqueueRun,
   resumeHook,
+  resumeHookById,
   wakeUpRun,
 } from './workflow-actions';
 
@@ -15,6 +16,7 @@ vi.mock('~/lib/rpc-client', () => ({
   reenqueueRun: vi.fn(),
   wakeUpRun: vi.fn(),
   resumeHook: vi.fn(),
+  resumeHookById: vi.fn(),
 }));
 
 import * as rpc from '~/lib/rpc-client';
@@ -124,6 +126,28 @@ describe('resumeHook', () => {
   it('throws with the server error message when resume fails', async () => {
     vi.mocked(rpc.resumeHook).mockReturnValue(fail('resume failed'));
     await expect(resumeHook(env, 'token-1', {})).rejects.toThrow(
+      'resume failed'
+    );
+  });
+});
+
+describe('resumeHookById', () => {
+  it('resumes the hook by its ID', async () => {
+    vi.mocked(rpc.resumeHookById).mockReturnValue(
+      ok({ hookId: 'h1', runId: 'r1' })
+    );
+    await expect(resumeHookById(env, 'h1', { key: 'value' })).resolves.toEqual({
+      hookId: 'h1',
+      runId: 'r1',
+    });
+    expect(rpc.resumeHookById).toHaveBeenCalledWith(env, 'h1', {
+      key: 'value',
+    });
+  });
+
+  it('throws with the server error message when resume fails', async () => {
+    vi.mocked(rpc.resumeHookById).mockReturnValue(fail('resume failed'));
+    await expect(resumeHookById(env, 'h1', {})).rejects.toThrow(
       'resume failed'
     );
   });

@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  HookForceClaimedError,
   HookNotFoundError,
   RunExpiredError,
 } from '@workflow/errors';
@@ -267,5 +268,78 @@ describe('resumeHook (resumeContext fast path)', () => {
       deploymentId: resumeContext.deploymentId,
     });
     expect(queue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resume entry points and hook kinds', () => {
+  afterEach(() => setWorld(undefined));
+
+  const resumeContext = {
+    deploymentId: 'deployment_kinds',
+    workflowName: 'processOrder',
+    runSpecVersion: SPEC_VERSION_CURRENT,
+    workflowCoreVersion: '5.0.0',
+  };
+  const hookFor = (overrides: Partial<Hook> = {}): Hook => ({
+    runId: 'wrun_kinds',
+    hookId: 'hook_kinds',
+    token: 'order:kinds',
+    ownerId: 'owner_1',
+    projectId: 'project_1',
+    environment: 'production',
+    createdAt: new Date(),
+    resumeContext,
+    ...overrides,
+  });
+
+  const makeWorld = (hook: Hook) => {
+    const getByToken = vi.fn().mockResolvedValue(hook);
+    const createEvent = vi.fn().mockResolvedValue({});
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+      runs: { get: vi.fn() },
+      events: { create: createEvent },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue: vi.fn().mockResolvedValue({}),
+    } as unknown as World);
+    return { getByToken, createEvent };
+  };
+
+  it("refuses a webhook's token", async () => {
+    const { createEvent } = makeWorld(hookFor({ isWebhook: true }));
+    const error = await resumeHook('order:kinds', { ok: true }).catch(
+      (err: unknown) => err
+    );
+    expect(HookNotFoundError.is(error)).toBe(true);
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('still resumes a createHook() token', async () => {
+    const { getByToken, createEvent } = makeWorld(
+      hookFor({ isWebhook: false })
+    );
+    await resumeHook('order:kinds', { ok: true });
+    expect(getByToken).toHaveBeenCalledWith('order:kinds');
+    expect(createEvent).toHaveBeenCalled();
+  });
+
+  it('resumes a webhook passed as a hook object', async () => {
+    const { getByToken, createEvent } = makeWorld(hookFor());
+    await resumeHook(hookFor({ isWebhook: true }), { ok: true });
+    expect(getByToken).not.toHaveBeenCalled();
+    expect(createEvent).toHaveBeenCalled();
+  });
+
+  it("re-looks a hook object's token up in the hook's own region", async () => {
+    const { getByToken, createEvent } = makeWorld(
+      hookFor({ hookId: 'hook_claimer', runId: 'wrun_claimer' })
+    );
+    createEvent.mockRejectedValueOnce(
+      new HookForceClaimedError('order:kinds', 'wrun_claimer', 'hook_claimer')
+    );
+    await resumeHook(hookFor({ region: 'cle1' }), { ok: true });
+    expect(getByToken).toHaveBeenCalledWith('order:kinds', { region: 'cle1' });
+    expect(createEvent).toHaveBeenCalledTimes(2);
   });
 });
