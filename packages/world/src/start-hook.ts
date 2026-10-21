@@ -32,15 +32,23 @@ import { z } from 'zod';
  *   two apart. (A resilient `run_started` response need not echo it.)
  * - **Ownership.** The token is unavailable to every other run (start
  *   reservations and `createHook()` alike) until the owning run has ended AND
- *   `tokenRetentionUntil` (when set) has passed. A reservation cannot be taken
- *   over with `createHook({ experimental_force })`.
+ *   `tokenRetentionUntil` (when set) has passed.
  * - **Adoption.** The owning run may `createHook({ token })` with the same
  *   token. That materializes the reservation as a Hook rather than
  *   conflicting. The Hook's own `tokenRetentionUntil` may extend the
  *   reservation but never shortens it, and disposing the Hook does not release
- *   the reservation before the run ends. A reservation the run never
- *   materialized is not a Hook: `getHookByToken()` and `resumeHook()` report
- *   it as not found.
+ *   the reservation before the run ends.
+ * - **TBD: force claims.** Proposed: `createHook({ experimental_force })`
+ *   against a materialized reservation transfers the reservation with the
+ *   Hook, so the claimer owns the token until it ends (a handoff whose source
+ *   run stays parked must not pin the token to it). A reservation not yet
+ *   materialized cannot be force-claimed (`hook_conflict`). Not final.
+ * - **TBD: deliveries before materialization.** Today a reservation the run
+ *   has not materialized is not a Hook: `getHookByToken()` and `resumeHook()`
+ *   report it as not found. Callers that route a duplicate's payload to the
+ *   owner straight after `HookConflictError` race the owner's boot, so this
+ *   is expected to change to either parking the delivery until adoption or a
+ *   distinct retryable "reserved, not yet live" error. Not final.
  * - **Orphan bound.** A candidate accepted but never created (the creating
  *   writer died after deciding) must not hold the token forever. Once the
  *   candidate's `runId` is older than {@link START_HOOK_CANDIDATE_MAX_AGE_MS}
