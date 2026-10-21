@@ -56,7 +56,7 @@ The world-vercel backend no longer writes step and wait rows in the same transac
 
 ### Run-ahead
 
-When no other writer could change what the workflow does next, the orchestrator hands an inline step's outcome to the workflow before the write commits ([`WORKFLOW_RUN_AHEAD_DEPTH`](/docs/configuration/runtime-tuning#workflow_run_ahead_depth) outcomes at most). The writes still go out in decision order. An awaited hook, an `AbortController`, a step running elsewhere, or a wait due within the invocation makes the orchestrator wait for its writes first.
+When no other writer could change what the workflow does next, the orchestrator hands an inline step's outcome to the workflow before the write commits ([`WORKFLOW_RUN_AHEAD_DEPTH`](/docs/configuration/runtime-tuning#workflow_run_ahead_depth) outcomes at most). The writes still go out in decision order. An awaited hook, an `AbortController`, a step running elsewhere, or a wait due within the invocation makes the orchestrator wait for its writes first. Run-ahead exists on the node engine only (section 7, "QuickJS").
 
 {/* @skip-typecheck - illustrative workflow */}
 ```typescript
@@ -117,7 +117,7 @@ During that week the app upgrades to a World that declares spec 9. When the slee
 
 ### Choosing the spec for new runs
 
-`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight.
+`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight. `WORKFLOW_SEALED_LOG` is no longer read: an app that sets `WORKFLOW_SEALED_LOG=0` now mints spec 9 runs, and the runtime warns once that the variable is ignored.
 
 ### Writers outside the orchestrator
 
@@ -278,7 +278,7 @@ The handoff could have stayed a flag on the result (`handoff: true`) behind a ca
 
 ### Per-run and per-step topics are dropped for spec 9
 
-With the key doing the serialization, a spec 9 run uses one topic per workflow name. This reduces the number of topics and lets a fan-out's step messages batch into one request. The tradeoff is that the key is now the only serialization: when the key is not applied (see section 8), spec 9 runs have none.
+With the key doing the serialization, a spec 9 run uses one topic per workflow name. This reduces the number of topics and lets a fan-out's step messages batch into one request. The tradeoff is that the key is now the only serialization: when it is not applied, spec 9 runs have none and only the fence keeps them safe. That happened once, through a client bug (section 8), and would happen for a spec 9 message sent without its spec stamp (section 7, "Spec detection").
 
 ### Coalesced re-runs instead of new deliveries
 
@@ -307,11 +307,30 @@ export async function digest(userId: string) {
 
 If the `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw the step first and the replay sees the wait first. A reliable wake-up under a running orchestrator would be a new out-of-band "wake requested" event, written like `hook_received` and turned into an in-band `wait_completed` by the orchestrator. Not implemented.
 
+Callers of `run.wakeUp()`: the public API (`Run.wakeUp()`), `@workflow/vitest`'s `waitForSleep()` pattern, the local observability UI (`packages/web`), and the Vercel dashboard's wake-up action. The dashboard calls `wakeUpRun` from a pinned `@workflow/core` release that writes `wait_completed` out-of-band, which the backend refuses on spec 9 runs. Its wake-up therefore does not work on spec 9 runs until it moves to a release with this change.
+
 ### A second concurrent sleep lost its timer (fixed)
 
 A spec 9 delivery arms one timer, for the earliest open wait it owns (`armTimers`), and a timer delivery used to own only its own wait (`schedulesWaitTimer`). So in `await Promise.all([sleep("1h"), sleep("2h")])`, the first timer delivery completed the first sleep and armed nothing for the second, and the run stayed suspended until something else woke it. Reproduced on both engines with the test harness. e2e did not catch it: its only parallel sleeps have equal durations, which one timer covers.
 
 A timer delivery now also owns the open waits created by the message that created its own wait, so each timer arms the next one once its own completes. There is still one timer per creating message at a time, so timers do not pile up across suspensions.
+
+### Step bodies a run-ahead stop can run twice
+
+When a hazard stops run-ahead, a step whose body started ahead of its creation, and whose creation the stop then refused, has no committed start, so the restarted pass runs its body again. Per-entity batch order is now part of the spec 9 contract, so one refused speculative batch can carry up to `WORKFLOW_RUN_AHEAD_DEPTH` such steps (2 by default): up to that many bodies can run twice per stop, where earlier heads of this PR ran at most one. A hazard needs another writer (a hook payload for an awaited hook, an out-of-band step event, a cancellation) to land below the speculative writes.
+
+{/* @skip-typecheck - illustrative workflow */}
+```typescript
+export async function moderate(postId: string) {
+  "use workflow";
+  const hook = createHook<{ approved: boolean }>();
+  const score = await classify(postId);  // run-ahead: outcome handed over early
+  await notifyModerators(postId, score); // may start ahead of its creation
+  return await hook;
+}
+```
+
+If the hook's payload lands below `classify`'s speculative outcome, the stop refuses the batch that creates `notifyModerators`, and the restarted pass runs it again. A step declared with `maxRetries: 0` never starts before its start commits, under run-ahead or turbo (`mayRunBeforeItsStart` in `spec9/step-executor.ts`), so it is never one of them.
 
 ### Spec 8 retries and sleeps on Vercel (fixed)
 
@@ -342,7 +361,7 @@ The first two candidate fixes are implemented (section 5): a run-ahead stop rest
 
 ### Handoffs verified live, and a long sequential run rarely reaches one
 
-Verified on Vercel with a throwaway probe deployment of this head:
+Verified on Vercel with a throwaway probe deployment of head `16f7001`. The handoff was then signalled with a `handoff: true` result flag; it is now `{ timeoutSeconds: 0 }` on a spec 9 run (section 4), with the same queue call underneath. Not re-verified since:
 
 - **Deadline handoff.** A run of 100-second inline steps reached the 5-minute inline deadline (`elapsedMs: 300421`) and handed off. The same queue message was redelivered 1.2 seconds later with `deliveryCount: 2` and `attempt: 1`: the handoff count reaches the next delivery, and `attempt` leaves the handoff out.
 - **Stream-flush handoffs.** All 28 stream-flush handoffs (`readableStreamWorkflow`, `fetchWorkflow`) on the e2e deployments were redelivered once, on the same message, about 2 seconds after the first invocation started.
@@ -362,13 +381,33 @@ export async function nightlyReport() {
 
 Each invocation runs about 4 minutes of `aggregateDay` inline, then sends one step to the background and ends. That costs a step invocation and a queue hop where a handoff would cost a redelivery. Handing off at the margin would remove that hop. Not implemented.
 
-### QuickJS continuation path covered by typecheck only
+### QuickJS
 
-The QuickJS engine's exit requeues (replay budget, elapsed wait, unread write) go through `continueInNextDelivery`, which hands off (`{ timeoutSeconds: 0 }`) on every World. The node engine's deadline handoff has a test. The QuickJS path has none, because QuickJS keeps its VM live through inline steps and a test trigger for these exits was not found.
+Spec 9 runs on both engines. Every spec 9 runtime test file runs on both, except the run-ahead suite, and the QuickJS Vercel Prod lanes pass what the node lanes pass. Differences and gaps:
+
+- **No run-ahead.** QuickJS always waits for its writes to commit, so run-ahead stops, their restarts, and the out-of-band `wait_completed` hazard in the `wakeUp()` section never occur on it.
+- **No replay-divergence recovery.** As before this change, QuickJS fails the run on a VM failure.
+- **Continuations covered by typecheck only.** Its exit continuations (replay budget, an elapsed wait, an unread write of its own) hand off through `continueInNextDelivery`. No test triggers them, because QuickJS keeps its VM live through inline steps. The deadline handoff verified on Vercel was on the node engine.
+- **Fence refusal** shares the node path's handling, through the catch in `spec9/delivery.ts`; QuickJS reports its sent step and timer messages back (`onStepMessageSent`, `onWaitTimerSent`). Covered by the orchestrator tests that run on both engines; QuickJS inline-step retries have no dedicated test.
 
 ### pnpm 11 and the pre-release `@vercel/queue`
 
 Until `@vercel/queue` is released, the catalog points at a tarball URL. pnpm 11 refuses a URL dependency inside another package (`blockExoticSubdeps`, on by default). CI's workbench staging turns that check off while a catalog entry is a URL. Anyone installing this PR's pre-release tarballs with pnpm 11 needs `blockExoticSubdeps: false` until the release.
+
+### Benchmarks
+
+The benchmark suite on head `16f7001` (nextjs-turbopack preview, p75 in milliseconds, one run of 30 samples per scenario and 10 for fan-out), against `main`'s production baseline:
+
+| Metric | `16f7001` | vs `main` |
+|---|---:|---:|
+| TTFS, one step | 292 | −81% |
+| TTFS, stream | 280 | −81% |
+| TTFS, hook and stream | 492 | −74% |
+| Fan-out TTFS, 100 steps | 655 | −28% |
+| Fan-out TTLS, 100 steps | 2213 | −54% |
+| STSO, 1020 inline steps | 12 | −92% |
+
+The branch is measured on a preview deployment and `main` on production, which is warmer, so the comparison favors `main` and the percentages are directional. Not re-run since the queue and interface changes after `16f7001`.
 
 ## 8. Bugs found during this work
 
@@ -407,12 +446,21 @@ After 32 re-runs, a refused acknowledgment used to go to the retry handler, whic
 
 **Example.** A fan-out of hundreds of steps whose completions keep coalescing into the orchestrator. Every pass finds more completions waiting, and the 32 re-runs run out. Before the fix, each time that happened counted as a failed attempt with a backoff, so a long, busy fan-out could reach the delivery cap. Now the next delivery continues at once, and nothing is counted.
 
+### Terminal-event bookkeeping keeps the QuickJS heap flat
+
+`main` added a heap stability test (#4945) that requires the QuickJS VM heap to stay flat over long runs. Spec 9's terminal-inert rule (every event after an entity's terminal event is inert, by log position) kept one entry per correlation id in the VM heap for the whole run, and failed it with 224k to 438k bytes against a 64 KiB bound.
+
+The rule now keeps no per-entity record. Within one batch of events, the host holds each id's first terminal position. Across batches it reads closure from state the VM already has: a step, wait or attribute id the VM has drawn with no resolver left, an outcome buffered for an id not drawn yet, or a user hook whose entry has been released or force-claimed. Only terminals that VM state cannot show (a disposal that reached the log before this VM disposed the hook, an `AbortController` hook, an id outside the ULID scheme) go into a small heap record, dropped once VM state shows them, so it survives a snapshot. Six tests cover a live session and a snapshot restore. Residual: that record still grows by one entry per hook disposed before this VM reached its `dispose()` and never matched later (a hook force-claimed before this VM created it, for example), which I expect to be rare in production but have not measured.
+
 ## 10. Before merge
 
 - Remove the temporary `[diag]` warn logs in `packages/core/src/runtime/spec9/delivery.ts`.
 - Release the `@vercel/queue` change and pin its version in place of the preview tarball URL. Then drop the `blockExoticSubdeps` exception from workbench staging if nothing else needs it.
 - Revert `WORKFLOW_SERVER_URL_OVERRIDE`.
 - Deploy the world-vercel backend change first.
+- Get the Vercel e2e lanes green. On the current head they fail only five tests, all of which read step payloads through `workflow inspect steps --withData`, which the world-vercel backend now refuses for spec 9 runs. A backend change for that is in progress.
+- Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks (section 7).
+- Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
 - Re-run the storm workflows on Vercel (`stepStormReproWorkflow`, `hookStormReproWorkflow`) to confirm the cascade is gone (section 7).
 - Run the e2e suite on Vercel with spec 8 runs (`WORKFLOW_SPEC_VERSION=8`) to confirm the restored new-message continuation, and with `WORKFLOW_SEQUENTIAL_REPLAYS=1` to confirm spec 9 runs work unkeyed on the per-run topics.
 - Decide the release channel: a 5.x minor or a v6 beta.
