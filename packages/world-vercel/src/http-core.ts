@@ -21,18 +21,20 @@ import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookConflictError,
   HookForceClaimedError,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
+  START_HOOK_ADMISSION_REJECTED,
   StreamError,
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { envNumber } from '@workflow/world';
+import { envNumber, START_HOOK_WIRE_CODES } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { createThrottleWaiter, sleep } from './event-retry.js';
 import {
@@ -384,7 +386,11 @@ export function inBandCounter(value: unknown): number | undefined {
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
+ *   - 409 with code `start-hook-conflict` → HookConflictError naming the
+ *     token's owner (a refused `start({ hook })` candidate)
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
+ *   - 400 with code `start-hook-admission-rejected` or `start-hook-disabled`
+ *     → WorkflowWorldError with code START_HOOK_ADMISSION_REJECTED (permanent)
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
  *   - 412 with code `in-band-superseded` → InBandSupersededError (the in-band
@@ -434,6 +440,35 @@ export function errorForResponse(
       typeof claimedBy?.runId === 'string' ? claimedBy.runId : 'unknown',
       typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
     );
+  }
+  if (status === 409 && code === START_HOOK_WIRE_CODES.conflict) {
+    // A start Hook admission refused because another run owns the token. The
+    // decision is immutable per candidate run, so every retry of this
+    // candidate answers the same owner.
+    const conflict =
+      details && typeof details === 'object'
+        ? (details as { token?: unknown; conflictingRunId?: unknown })
+        : undefined;
+    return new HookConflictError(
+      typeof conflict?.token === 'string' ? conflict.token : '',
+      typeof conflict?.conflictingRunId === 'string'
+        ? conflict.conflictingRunId
+        : undefined
+    );
+  }
+  if (
+    status === 400 &&
+    (code === START_HOOK_WIRE_CODES.admissionRejected ||
+      code === START_HOOK_WIRE_CODES.disabled)
+  ) {
+    // Permanent: the backend will never admit this start Hook request (or
+    // has admission switched off). The distinct code lets the queued copy of
+    // the candidate stop retrying without swallowing unrelated 400s.
+    return new WorkflowWorldError(message, {
+      url,
+      status,
+      code: START_HOOK_ADMISSION_REJECTED,
+    });
   }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) {

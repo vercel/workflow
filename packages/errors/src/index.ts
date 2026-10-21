@@ -228,6 +228,58 @@ export class WorkflowWorldError extends WorkflowError {
 }
 
 /**
+ * `WorkflowWorldError.code` for a `start({ hook })` request the World will
+ * never admit: an invalid start Hook, a retention beyond the World's limit, a
+ * candidate too old to be created, or admission switched off on the backend.
+ * Permanent, so the queued copy of the candidate stops retrying on it.
+ */
+export const START_HOOK_ADMISSION_REJECTED = 'START_HOOK_ADMISSION_REJECTED';
+
+/** Which half of `start({ hook })` could not be confirmed. */
+export type WorkflowStartStage = 'queue' | 'admission';
+
+/**
+ * Thrown when `start()` with a `hook` cannot confirm whether its candidate run
+ * was queued (`stage: 'queue'`) or admitted (`stage: 'admission'`). The outcome
+ * is unknown, not failed: the candidate may still become the run that owns the
+ * token. `runId` identifies the candidate for inspection.
+ *
+ * Retrying the logical request with the same Hook token is safe: it can never
+ * admit a second owner. If the first candidate was admitted, the retry throws
+ * `HookConflictError` naming it.
+ *
+ * Use the static `WorkflowStartError.is()` method for type-safe checking in
+ * catch blocks.
+ */
+export class WorkflowStartError extends WorkflowWorldError {
+  /** The candidate run's ID. */
+  readonly runId: string;
+  /** The step whose outcome could not be confirmed. */
+  readonly stage: WorkflowStartStage;
+
+  constructor(runId: string, stage: WorkflowStartStage, cause?: unknown) {
+    const causeMessage = isError(cause)
+      ? cause.message
+      : cause === undefined
+        ? 'unknown error'
+        : String(cause);
+    super(
+      `Could not confirm whether workflow run "${runId}" was ${
+        stage === 'queue' ? 'queued' : 'admitted'
+      }: ${causeMessage}`,
+      { cause }
+    );
+    this.name = 'WorkflowStartError';
+    this.runId = runId;
+    this.stage = stage;
+  }
+
+  static is(value: unknown): value is WorkflowStartError {
+    return isError(value) && value.name === 'WorkflowStartError';
+  }
+}
+
+/**
  * Thrown when a workflow run fails during execution.
  *
  * This error indicates that the workflow encountered a fatal error and cannot
@@ -1258,6 +1310,9 @@ const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
 const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
+const WORKFLOW_START_ERROR_KEY = Symbol.for(
+  '@workflow/errors//WorkflowStartError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1303,6 +1358,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
     Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
       value: StreamError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, WORKFLOW_START_ERROR_KEY)) {
+    Object.defineProperty(globalThis, WORKFLOW_START_ERROR_KEY, {
+      value: WorkflowStartError,
       writable: false,
       enumerable: false,
       configurable: false,
