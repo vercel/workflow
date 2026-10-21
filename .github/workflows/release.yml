@@ -21,6 +21,12 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     permissions:
+      # `contents: write` lets the default `GITHUB_TOKEN` push the release
+      # tags and create the GitHub Release. On `main` the "Version Packages"
+      # PR is maintained with a gh-sts App token (see below); other branches
+      # (`stable`) still use `GITHUB_TOKEN` for it, hence
+      # `pull-requests: write`. `id-token: write` is for npm provenance and
+      # for the OIDC token that gh-sts exchanges.
       contents: write
       pull-requests: write
       id-token: write
@@ -205,8 +211,74 @@ jobs:
         if: ${{ !cancelled() && steps.mode.outputs.mode == 'version' }}
         run: git reset --hard HEAD && git clean -fd
 
+      # The release PR is pushed and opened with a GitHub App installation
+      # token rather than `GITHUB_TOKEN`: events created by `GITHUB_TOKEN` do
+      # not trigger other workflows, so the "Version Packages" PR's CI sat at
+      # "action required" until someone approved or re-ran it. The gh-sts
+      # policy that authorizes this token only matches this workflow file on
+      # `main` (pinned by repository and owner ID) for `push` and
+      # `workflow_dispatch`, and the token is scoped to `contents: write` and
+      # `pull_requests: write` on this repository. It is minted after every
+      # publish step has run and is revoked at the end of the job. (Earlier
+      # steps in this job can request OIDC tokens too, since the job needs
+      # `id-token: write` for npm publishing; this token is no broader than
+      # what those steps already hold.)
+      - name: Mint scoped GitHub token via gh-sts
+        id: gh-sts
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' && github.ref == 'refs/heads/main' }}
+        uses: actions/github-script@v7
+        env:
+          GH_STS_POLICY: vercel-workflow-release-pr
+        with:
+          script: |
+            const audience = 'gh-sts.vercel-infra.com';
+            const policy = process.env.GH_STS_POLICY;
+            const { owner, repo } = context.repo;
+            const permissions = { contents: 'write', pull_requests: 'write' };
+
+            const idToken = await core.getIDToken(audience);
+            const res = await fetch(`https://${audience}/token`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${idToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ policy, owner, repo, permissions }),
+            });
+            const text = await res.text();
+            let body;
+            try {
+              body = JSON.parse(text);
+            } catch {}
+            if (!res.ok || typeof body?.token !== 'string') {
+              const detail = body ? `${body.code}: ${body.error}` : text.slice(0, 500);
+              throw new Error(`gh-sts token exchange failed (HTTP ${res.status}) ${detail}`);
+            }
+            core.setSecret(body.token);
+            if (body.policy !== policy || body.owner !== owner || body.repo !== repo) {
+              throw new Error(
+                `gh-sts returned a token for ${body.policy} (${body.owner}/${body.repo}), expected ${policy} (${owner}/${repo})`,
+              );
+            }
+            core.setOutput('token', body.token);
+            core.info(
+              `Minted ${JSON.stringify(body.permissions)} token for ${owner}/${repo} via policy ${policy}, expires ${body.expires_at}`,
+            );
+
       - name: Create or update the release pull request
-        if: ${{ !cancelled() && steps.reset.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' && steps.gh-sts.outcome != 'failure' }}
         uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
+          github-token: ${{ steps.gh-sts.outputs.token || github.token }}
           script: pnpm ci:version
+
+      - name: Revoke gh-sts token
+        # Installation tokens otherwise stay valid for an hour after the job.
+        if: always() && steps.gh-sts.outputs.token != ''
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.gh-sts.outputs.token }}
+          script: |
+            await github.request('DELETE /installation/token');
+            core.info('Revoked the gh-sts installation token.');
