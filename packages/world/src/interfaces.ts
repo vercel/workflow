@@ -842,16 +842,19 @@ export interface World extends Queue, Streamer, Storage {
    *
    * Two overloads:
    *
-   * - `getEncryptionKeyForRun(run)`: Preferred. Pass a `WorkflowRun` when
-   *   the run entity already exists. The World reads any context it needs
-   *   (e.g., `deploymentId`) directly from the run.
+   * - `getEncryptionKeyForRun(run)`: Used when the runtime already holds
+   *   the `WorkflowRun` entity. The World reads any context it needs (e.g.,
+   *   `deploymentId`) directly from the run.
    *
-   * - `getEncryptionKeyForRun(runId, context?)`: Used when the run entity
-   *   is not locally available, such as `start()` before run creation or a
-   *   forwarded writable stream carrying its owning deployment context. The
+   * - `getEncryptionKeyForRun(runId, context?)`: Used everywhere else: when
+   *   the run does not exist yet (`start()` before run creation), and when
+   *   the runtime has a run id but no reason to load the run's payloads
+   *   (stream reads, forwarded writable streams, hook resumption). The
    *   `context` parameter carries opaque world-specific data (e.g.,
    *   `{ deploymentId }` for world-vercel) needed to resolve the correct key.
    *   When `context` is omitted, the World assumes the current deployment.
+   *
+   * Implementations must resolve the same key from either form.
    *
    * When not implemented, encryption is disabled: data is stored unencrypted.
    */
@@ -883,6 +886,19 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * The region an existing run's data lives in, derived from its run ID
+   * alone (no I/O, never throws).
+   *
+   * The counterpart of {@link createRunId} for worlds that embed a region in
+   * the IDs they mint. Callers that create a run on behalf of an existing one
+   * (e.g. `recreateRunFromExisting()`) pass the result to `start({ region })`
+   * so the new run is placed where the original was, rather than wherever the
+   * calling process happens to execute. Return `null` when the ID is not one
+   * this world recognizes. Worlds without a regional dimension omit this.
+   */
+  regionForRunId?(runId: string): string | null;
 
   /**
    * Upload a dynamic run's serialized workflow VM code to the World's blob

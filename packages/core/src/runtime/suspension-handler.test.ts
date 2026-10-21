@@ -16,7 +16,12 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type QueueItem, WorkflowSuspension } from '../global.js';
-import { hydrateStepArguments, hydrateStepError } from '../serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  hydrateStepArguments,
+  hydrateStepError,
+} from '../serialization.js';
+import { runWorkflow } from '../workflow.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from './hook-wake.js';
@@ -267,6 +272,61 @@ describe('handleSuspension', () => {
       expect.anything()
     );
     expect([...result.createdStepCorrelationIds]).toEqual(['s4']);
+  });
+
+  it('neither re-creates nor inlines a replayed step whose log holds only its step_started', async () => {
+    // A World may record an inline step's creation on its step_started alone.
+    // Replaying that log must hand the handler a step it already knows is
+    // created: re-creating it costs a rejected write, and choosing it as a
+    // lazy-inline candidate would send a creating step_started the World
+    // rejects, so the pass would drop a step whose owner may have died.
+    const replayedRun: WorkflowRun = {
+      ...run,
+      workflowName: 'workflow',
+      input: await dehydrateWorkflowArguments([], run.runId, undefined, []),
+    };
+    const workflowCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+      async function workflow() { return await add(1, 2); }
+      globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+    const suspend = (events: Event[]) =>
+      runWorkflow(workflowCode, replayedRun, events, undefined).then(
+        () => expect.unreachable('the step has no result yet'),
+        (err: unknown) => {
+          expect(err).toBeInstanceOf(WorkflowSuspension);
+          return err as WorkflowSuspension;
+        }
+      );
+    const [{ correlationId }] = (await suspend([])).items;
+
+    const suspension = await suspend([
+      {
+        eventId: slotToEventId(1),
+        runId: run.runId,
+        eventType: 'step_started',
+        correlationId,
+        eventData: {
+          stepName: 'add',
+          workflowName: 'workflow',
+          ownerMessageId: 'msg_owner',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+
+    const result = await handleSuspension({
+      suspension,
+      world: createWorld(eventsCreate),
+      run: replayedRun,
+    });
+
+    expect(eventsCreate).not.toHaveBeenCalled();
+    expect(result.lazyInlineSteps).toEqual([]);
+    expect(result.pendingSteps.map((s) => s.correlationId)).toEqual([
+      correlationId,
+    ]);
   });
 
   it('honors WORKFLOW_MAX_INLINE_STEPS as the inline cap', async () => {

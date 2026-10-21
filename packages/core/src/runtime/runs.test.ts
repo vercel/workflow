@@ -325,6 +325,61 @@ describe('recreateRunFromExisting', () => {
     expect(vi.mocked(start).mock.calls[0][2]?.specVersion).toBe(7);
   });
 
+  it("defaults the region to the source run's region", async () => {
+    const world = createMockWorld({ run: { runId: 'wrun_source' } });
+    const regionForRunId = vi.fn().mockReturnValue('cle1');
+    Object.assign(world, { regionForRunId });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    expect(regionForRunId).toHaveBeenCalledWith('wrun_source');
+    expect(vi.mocked(start).mock.calls[0][2]?.region).toBe('cle1');
+  });
+
+  it('prefers an explicit region over the source run region', async () => {
+    const world = createMockWorld();
+    Object.assign(world, { regionForRunId: vi.fn().mockReturnValue('cle1') });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', { region: 'fra1' });
+
+    expect(vi.mocked(start).mock.calls[0][2]?.region).toBe('fra1');
+  });
+
+  it("leaves the region to start() when the world can't derive one", async () => {
+    const world = createMockWorld();
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    expect(vi.mocked(start).mock.calls[0][2]).not.toHaveProperty('region');
+  });
+
+  it('keeps a world-vercel run in its own region rather than the caller region', async () => {
+    // The observability dashboard replays runs from whatever region its own
+    // function runs in. Without this, a replay was tagged (and its data
+    // stored) in that region instead of the original run's.
+    const { createRunId, regionForRunId } = await import(
+      '@workflow/world-vercel'
+    );
+    vi.stubEnv('VERCEL_REGION', 'sfo1');
+    try {
+      const sourceRunId = `wrun_${createRunId({ region: 'cle1' })}`;
+      const world = createMockWorld({ run: { runId: sourceRunId } });
+      Object.assign(world, { regionForRunId });
+      vi.mocked(start).mockResolvedValue({
+        runId: 'wrun_new',
+      } as Run<unknown>);
+
+      await recreateRunFromExisting(world, sourceRunId);
+
+      expect(vi.mocked(start).mock.calls[0][2]?.region).toBe('cle1');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('refuses a dynamic run rather than creating one with no code behind it', async () => {
     // Starting by name alone would create a run carrying the dynamic
     // workflow id and none of the stored code, which no delivery could run.

@@ -56,6 +56,7 @@ interface World extends Storage, Queue, Streamer {
   getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
   getEncryptionKeyForRun?(runId: string, context?: Record<string, unknown>): Promise<Uint8Array | undefined>;
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+  regionForRunId?(runId: string): string | null;
   describeRun?(run: Readonly<Record<string, unknown>>): Record<string, string | null> | null | Promise<Record<string, string | null> | null>;
   processExitTriggersQueueRedelivery?: boolean;
 }
@@ -73,20 +74,21 @@ The remaining optional members:
 - `start()` initializes background tasks (for example, queue polling); `close()` releases resources like connection pools and listeners.
 - `getEncryptionKeyForRun()` returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 - `createRunId()` mints the ID for a new run. Implementations may embed World-specific metadata as long as the result remains a valid ULID. This is how [multi-region placement](/worlds/vercel#multi-region) works. `@workflow/world-vercel` reads `options.region` from the `start()` options and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
+- `regionForRunId()` is the inverse of `createRunId()` for Worlds that embed a region: it returns the region an existing run's data lives in, from the ID alone. `recreateRunFromExisting()` uses it so a replayed run lands in the original run's region. Return `null` for an ID you don't recognize; omit the method if your World has no regional dimension.
 - `describeRun()` returns world-specific display fields for a run (for example, a region decoded from its ID) that tooling like `workflow inspect` renders as extra columns. It must be cheap, tolerate missing fields, and never throw.
 - `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget. When `true`, it exits and relies on queue redelivery. When `false` or absent, it attempts to write `run_failed` and returns.
 
 ### Declaring the spec version
 
-`specVersion` is the protocol version your World implements, and the version stamped on every run it creates. Export `SPEC_VERSION_CURRENT` from `@workflow/world` rather than writing a number:
+`specVersion` is the protocol version your World implements, and the version stamped on every run it creates. Declare `mintedSpecVersion()` from `@workflow/world` rather than writing a number:
 
 {/* @skip-typecheck - partial World, the other members are elided */}
 ```typescript
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion } from '@workflow/world';
 
 export function createWorld(): World {
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: mintedSpecVersion(),
     // ...
   };
 }
@@ -94,7 +96,9 @@ export function createWorld(): World {
 
 The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
 
-Using the constant keeps that check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number leaves your World a version behind the next bump, and the runtime rejects it. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
+`mintedSpecVersion()` returns the current spec version, or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) opts new runs out. Call it inside `createWorld()` so a process can create Worlds in both modes. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
+
+Calling it keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number, or `SPEC_VERSION_CURRENT`, which does not follow `WORKFLOW_SEALED_LOG`, leaves your World out of step. Keep `@workflow/world` in the same release channel as the `workflow` version your users install. See [Spec versions](/worlds/upgrading-to-v5#spec-versions) for what each version requires of a World.
 
 ## The event log model
 
@@ -235,6 +239,16 @@ The version a World stamps comes from `mintedSpecVersion()`: 8 by default or the
 
 Not every write carries `eventCount`, and a World is free to skip the report read for event types whose writer never holds a log to merge it into (the step executor's `step_started`, `step_retrying`, `step_completed`, and `step_failed`, and the run-terminal `run_completed`, `run_failed`, and `run_cancelled`). Which writes send `eventCount` or `sinceCursor`, and why, is tabulated in [Events returned on a write](/docs/how-it-works/event-sourcing#events-returned-on-a-write). When a write carries both, the `sinceCursor` delta is a superset of the report, so return the delta and skip the report.
 
+Independent concurrent hook registrations in a hooks-only suspension deliberately omit `eventCount` and `sinceCursor`, even though the worker holds a loaded log. The Node.js runtime waits for every registration to settle and verifies that their returned events fill every position immediately after that log. A gap, incomplete response, or missing committed-event cursor keeps the normal history reload. Mixed suspensions, forced claims, and same-token lifecycle operations keep their usual catch-up parameters.
+
+### Optional: returning a committed-event cursor
+
+An `events.create()` result may include `eventCursor`: a World-owned cursor that its own ascending `events.list()` accepts as an exclusive position immediately after the returned `event`. It is distinct from a history-page `cursor`, and does not assert that the caller has loaded earlier events.
+
+Returning `eventCursor` opts into using the returned `event` as replay input. That event **must equal the event returned by `events.list()` for the same position and `resolveData` option**, including its stored `createdAt`, normalized `tokenRetentionUntil`, resolved metadata bytes, and any `hook_conflict` details such as `conflictingRunId` or `forceRefusedReason`. Return the persisted event rather than reconstructing it from the creation request.
+
+The runtime uses the cursor only after proving that the committed responses extend its loaded prefix without a hole. This is optional: a World that omits `eventCursor` remains supported and retains the reload path. The runtime never interprets a World's cursor encoding.
+
 ### Optional: rejecting a stale write
 
 A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
@@ -246,7 +260,7 @@ Implement rejection when your store allocates positions outside the commit and c
 Two rules make this safe:
 
 - **Only reject on evidence.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always indicate a real discrepancy because the runtime responds by discarding a replay.
-- **Accept a creation that carries no `eventCount`.** It came from a caller with no loaded log that could be stale, such as a queued step body or out-of-band writer, rather than a caller claiming the log is empty.
+- **Accept a creation that carries no `eventCount`.** The caller is not claiming the log is empty. It may have no loaded log, as with a queued step body or out-of-band writer, or may deliberately defer catch-up until concurrent hook registrations settle. Without a count there is no evidence for count-based rejection; independent ownership checks and write fences still apply.
 
 A rejection may include the events the caller was missing as `{ events, cursor }` on the error's `details`. Include them only when you can prove that the set fully accounts for the discrepancy, isn't truncated, and contains only events from the run being written. The runtime merges them directly into the replay's event log, so incorrect data is worse than no delta. Otherwise, omit them, and the runtime performs a full reload.
 

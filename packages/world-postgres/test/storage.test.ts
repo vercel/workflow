@@ -3305,6 +3305,460 @@ describe('Storage (Postgres integration)', () => {
         ).rejects.toThrow(/terminal/i);
       });
     });
+
+    describe('terminal write atomicity', () => {
+      it.each([
+        {
+          eventType: 'step_completed' as const,
+          eventData: { result: new Uint8Array([1]) },
+        },
+        {
+          eventType: 'step_failed' as const,
+          eventData: { error: new Uint8Array([1]) },
+        },
+      ])('rolls back the $eventType step update when the matching event insert fails', async ({
+        eventType,
+        eventData,
+      }) => {
+        const stepId = `step_partial_${eventType}`;
+        await createStep(events, testRunId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        });
+        await updateStep(events, testRunId, stepId, 'step_started');
+
+        // Stands in for a process that dies after the step UPDATE and
+        // before the event INSERT.
+        await pool.query(`
+            CREATE FUNCTION workflow.reject_step_terminal_event_for_test()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+              IF NEW.type = '${eventType}'
+                AND NEW.correlation_id = '${stepId}'
+              THEN
+                RAISE EXCEPTION 'forced ${eventType} event insert failure';
+              END IF;
+              RETURN NEW;
+            END;
+            $$;
+
+            CREATE TRIGGER reject_step_terminal_event_for_test
+            BEFORE INSERT ON workflow.workflow_events
+            FOR EACH ROW
+            EXECUTE FUNCTION workflow.reject_step_terminal_event_for_test();
+          `);
+
+        try {
+          await expect(
+            updateStep(events, testRunId, stepId, eventType, eventData)
+          ).rejects.toMatchObject({
+            cause: {
+              message: expect.stringMatching(
+                new RegExp(`forced ${eventType} event insert failure`)
+              ),
+            },
+          });
+        } finally {
+          await pool.query(`
+              DROP TRIGGER reject_step_terminal_event_for_test
+                ON workflow.workflow_events;
+              DROP FUNCTION workflow.reject_step_terminal_event_for_test();
+            `);
+        }
+
+        const [stepRow] = await drizzle
+          .select({ status: DrizzleSchema.steps.status })
+          .from(DrizzleSchema.steps)
+          .where(eq(DrizzleSchema.steps.stepId, stepId));
+        expect(stepRow?.status).toBe('running');
+
+        // Recovery replays step_started; it must not be refused as terminal.
+        const restarted = await updateStep(
+          events,
+          testRunId,
+          stepId,
+          'step_started'
+        );
+        expect(restarted.attempt).toBe(2);
+        await updateStep(events, testRunId, stepId, eventType, eventData);
+
+        const evts = await events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          evts.data
+            .filter((event) => event.correlationId === stepId)
+            .map((event) => event.eventType)
+        ).toEqual(['step_created', 'step_started', 'step_started', eventType]);
+      });
+    });
+  });
+
+  describe('entity and event atomicity', () => {
+    let testRunId: string;
+    beforeEach(async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+    });
+
+    // Refuses the insert of one event type, standing in for a process that
+    // dies after the entity write and before the event insert.
+    async function rejectEventInsert<T>(
+      eventType: string,
+      write: () => Promise<T>
+    ): Promise<void> {
+      await pool.query(`
+        CREATE FUNCTION workflow.reject_event_for_test()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.type = '${eventType}' THEN
+            RAISE EXCEPTION 'forced ${eventType} event insert failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$;
+
+        CREATE TRIGGER reject_event_for_test
+        BEFORE INSERT ON workflow.workflow_events
+        FOR EACH ROW
+        EXECUTE FUNCTION workflow.reject_event_for_test();
+      `);
+      try {
+        await expect(write()).rejects.toMatchObject({
+          cause: {
+            message: expect.stringMatching(
+              new RegExp(`forced ${eventType} event insert failure`)
+            ),
+          },
+        });
+      } finally {
+        await pool.query(`
+          DROP TRIGGER reject_event_for_test ON workflow.workflow_events;
+          DROP FUNCTION workflow.reject_event_for_test();
+        `);
+      }
+    }
+
+    async function eventTypes(correlationId?: string): Promise<string[]> {
+      const evts = await events.list({ runId: testRunId, pagination: {} });
+      return evts.data
+        .filter(
+          (event) =>
+            correlationId === undefined || event.correlationId === correlationId
+        )
+        .map((event) => event.eventType);
+    }
+
+    async function waitStatus(correlationId: string) {
+      const [row] = await drizzle
+        .select({ status: DrizzleSchema.waits.status })
+        .from(DrizzleSchema.waits)
+        .where(eq(DrizzleSchema.waits.waitId, `${testRunId}-${correlationId}`));
+      return row?.status;
+    }
+
+    it('rolls back run_started when its event insert fails', async () => {
+      const start = () => updateRun(events, testRunId, 'run_started');
+      await rejectEventInsert('run_started', start);
+      expect((await runs.get(testRunId)).status).toBe('pending');
+
+      // Left `running` without its event, every later run_started would take
+      // the already-running early return and never write it.
+      await start();
+      expect((await runs.get(testRunId)).status).toBe('running');
+      expect(await eventTypes()).toEqual(['run_created', 'run_started']);
+    });
+
+    it.each([
+      {
+        eventType: 'run_completed' as const,
+        eventData: { output: new Uint8Array([1]) },
+        status: 'completed',
+      },
+      {
+        eventType: 'run_failed' as const,
+        eventData: { error: new Uint8Array([2]) },
+        status: 'failed',
+      },
+      {
+        eventType: 'run_cancelled' as const,
+        eventData: undefined,
+        status: 'cancelled',
+      },
+    ])('rolls back $eventType, and its hook and wait cleanup, when its event insert fails', async ({
+      eventType,
+      eventData,
+      status,
+    }) => {
+      await updateRun(events, testRunId, 'run_started');
+      await createHook(events, testRunId, {
+        hookId: 'hook_terminal',
+        token: `token-${eventType}`,
+      });
+      await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'wait_terminal',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+
+      const end = () =>
+        events.create(testRunId, { eventType, eventData } as any);
+      await rejectEventInsert(eventType, end);
+      expect((await runs.get(testRunId)).status).toBe('running');
+      const hookRows = await drizzle
+        .select({ hookId: DrizzleSchema.hooks.hookId })
+        .from(DrizzleSchema.hooks)
+        .where(eq(DrizzleSchema.hooks.runId, testRunId));
+      expect(hookRows).toHaveLength(1);
+      expect(await waitStatus('wait_terminal')).toBe('waiting');
+
+      // Committed separately, the retry would be refused as terminal and the
+      // terminal event never written.
+      const result = await end();
+      expect(result.run?.status).toBe(status);
+      expect((await eventTypes()).at(-1)).toBe(eventType);
+      expect(await waitStatus('wait_terminal')).toBeUndefined();
+    });
+
+    it('rolls back attr_set when its event insert fails', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      const set = () =>
+        events.create(testRunId, {
+          eventType: 'attr_set',
+          correlationId: 'attr_atomic',
+          eventData: {
+            changes: [{ key: 'phase', value: 'running' }],
+            writer: { type: 'workflow' },
+          },
+        });
+      await rejectEventInsert('attr_set', set);
+      expect((await runs.get(testRunId)).attributes?.phase).toBeUndefined();
+
+      await set();
+      expect((await runs.get(testRunId)).attributes?.phase).toBe('running');
+      expect(await eventTypes('attr_atomic')).toEqual(['attr_set']);
+    });
+
+    it('rolls back the attributes of an attr_set that loses the event insert race', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      // Two connections, and an event insert slow enough that both writers
+      // pass the duplicate pre-check before either has committed.
+      const racePool = new TestPool({
+        connectionString: process.env.DATABASE_URL,
+        max: 4,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+      await pool.query(`
+        CREATE FUNCTION workflow.slow_attr_set_for_test()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.type = 'attr_set' THEN
+            PERFORM pg_sleep(0.3);
+          END IF;
+          RETURN NEW;
+        END;
+        $$;
+
+        CREATE TRIGGER slow_attr_set_for_test
+        BEFORE INSERT ON workflow.workflow_events
+        FOR EACH ROW
+        EXECUTE FUNCTION workflow.slow_attr_set_for_test();
+      `);
+      let results: PromiseSettledResult<unknown>[];
+      try {
+        results = await Promise.allSettled(
+          ['first', 'second'].map((value) =>
+            raceEvents.create(testRunId, {
+              eventType: 'attr_set',
+              correlationId: 'attr_race',
+              eventData: {
+                changes: [{ key: 'phase', value }],
+                writer: { type: 'workflow' },
+              },
+            })
+          )
+        );
+      } finally {
+        await pool.query(`
+          DROP TRIGGER slow_attr_set_for_test ON workflow.workflow_events;
+          DROP FUNCTION workflow.slow_attr_set_for_test();
+        `);
+        await racePool.end();
+      }
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(
+        (results.find((r) => r.status === 'rejected') as PromiseRejectedResult)
+          .reason
+      ).toMatchObject({ name: 'EntityConflictError' });
+      // The snapshot matches the one attr_set the log holds.
+      const logged = (
+        await events.list({ runId: testRunId, pagination: {} })
+      ).data.filter((event) => event.eventType === 'attr_set');
+      expect(logged).toHaveLength(1);
+      const loggedValue = (
+        logged[0].eventData as { changes: { value: string }[] }
+      ).changes[0].value;
+      expect((await runs.get(testRunId)).attributes?.phase).toBe(loggedValue);
+    });
+
+    it('rolls back step_retrying when its event insert fails', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      const stepId = 'step_retry_atomic';
+      await createStep(events, testRunId, {
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(events, testRunId, stepId, 'step_started');
+      const retry = () =>
+        events.create(testRunId, {
+          eventType: 'step_retrying',
+          correlationId: stepId,
+          eventData: { error: new Uint8Array([3]) },
+        });
+      await rejectEventInsert('step_retrying', retry);
+      expect((await steps.get(testRunId, stepId)).status).toBe('running');
+
+      await retry();
+      expect((await steps.get(testRunId, stepId)).status).toBe('pending');
+      expect(await eventTypes(stepId)).toEqual([
+        'step_created',
+        'step_started',
+        'step_retrying',
+      ]);
+    });
+
+    it('rolls back wait_created when its event insert fails', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      const create = () =>
+        events.create(testRunId, {
+          eventType: 'wait_created',
+          correlationId: 'wait_atomic',
+          eventData: { resumeAt: new Date('2099-01-01') },
+        });
+      await rejectEventInsert('wait_created', create);
+      expect(await waitStatus('wait_atomic')).toBeUndefined();
+
+      await create();
+      expect(await eventTypes('wait_atomic')).toEqual(['wait_created']);
+    });
+
+    it('rolls back wait_completed when its event insert fails', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'wait_atomic',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+      const complete = () =>
+        events.create(testRunId, {
+          eventType: 'wait_completed',
+          correlationId: 'wait_atomic',
+        });
+      await rejectEventInsert('wait_completed', complete);
+      expect(await waitStatus('wait_atomic')).toBe('waiting');
+
+      await complete();
+      expect(await waitStatus('wait_atomic')).toBe('completed');
+      expect(await eventTypes('wait_atomic')).toEqual([
+        'wait_created',
+        'wait_completed',
+      ]);
+    });
+
+    it('completes the missing wait_completed of a wait the old path left completed', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'wait_orphan',
+        eventData: { resumeAt: new Date('2000-01-01') },
+      });
+      // The old two-statement path: the UPDATE committed, the event did not.
+      await drizzle
+        .update(DrizzleSchema.waits)
+        .set({ status: 'completed', completedAt: new Date() })
+        .where(eq(DrizzleSchema.waits.waitId, `${testRunId}-wait_orphan`));
+
+      const complete = () =>
+        events.create(testRunId, {
+          eventType: 'wait_completed',
+          correlationId: 'wait_orphan',
+        });
+      const results = await Promise.allSettled([complete(), complete()]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(
+        (results.find((r) => r.status === 'rejected') as PromiseRejectedResult)
+          .reason
+      ).toMatchObject({ name: 'EntityConflictError' });
+      expect(await eventTypes('wait_orphan')).toEqual([
+        'wait_created',
+        'wait_completed',
+      ]);
+
+      // Once the event exists, a duplicate completion is refused as before.
+      await expect(complete()).rejects.toMatchObject({
+        name: 'EntityConflictError',
+      });
+      expect(await eventTypes('wait_orphan')).toEqual([
+        'wait_created',
+        'wait_completed',
+      ]);
+    });
+
+    it('completes the missing wait_created of a waiting row the old path left behind', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await drizzle.insert(DrizzleSchema.waits).values({
+        waitId: `${testRunId}-wait_orphan`,
+        runId: testRunId,
+        status: 'waiting',
+        resumeAt: new Date('2099-01-01'),
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+
+      const create = () =>
+        events.create(testRunId, {
+          eventType: 'wait_created',
+          correlationId: 'wait_orphan',
+          eventData: { resumeAt: new Date('2099-01-01') },
+        });
+      const result = await create();
+      expect(result.wait?.status).toBe('waiting');
+      await expect(create()).rejects.toMatchObject({
+        name: 'EntityConflictError',
+      });
+      expect(await eventTypes('wait_orphan')).toEqual(['wait_created']);
+    });
+
+    it('does not journal wait_created for an orphaned row that already completed', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await drizzle.insert(DrizzleSchema.waits).values({
+        waitId: `${testRunId}-wait_orphan`,
+        runId: testRunId,
+        status: 'completed',
+        completedAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      await expect(
+        events.create(testRunId, {
+          eventType: 'wait_created',
+          correlationId: 'wait_orphan',
+          eventData: { resumeAt: new Date('2099-01-01') },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      expect(await eventTypes('wait_orphan')).toEqual([]);
+    });
   });
 
   describe('run terminal state validation', () => {
