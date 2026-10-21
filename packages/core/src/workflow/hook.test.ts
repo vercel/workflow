@@ -11,7 +11,6 @@ import {
   decode as decodeRunIdUlid,
   encode as encodeRunIdUlid,
 } from '@workflow/world-vercel/run-id';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -26,6 +25,7 @@ import {
 } from '../private.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { Run } from '../runtime/run.js';
+import { createSeededNanoid } from '../seeded-nanoid.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
 import { createContext } from '../vm/index.js';
 import { createWebhook } from './create-hook.js';
@@ -58,9 +58,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
-    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
-    ),
+    generateNanoid: createSeededNanoid(() => context.globalThis.Math.random()),
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,

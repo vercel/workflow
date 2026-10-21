@@ -330,12 +330,12 @@ describe('describeError — payload shape snapshots', () => {
     expect(
       describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT)
     ).toMatchInlineSnapshot(`
-        {
-          "attribution": "sdk",
-          "errorCode": "REPLAY_TIMEOUT",
-          "hint": "The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (\`"use step"\` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.",
-        }
-      `);
+      {
+        "attribution": "sdk",
+        "errorCode": "REPLAY_TIMEOUT",
+        "hint": "The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (\`"use step"\` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Run long-running workflows on the QuickJS VM with snapshotting by setting WORKFLOW_VM=quickjs in the environment that starts runs. Snapshotted QuickJS runs resume without replaying the full event log and are exempt from the default per-run event limit. Runs keep the VM they started with. You can also override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var.",
+      }
+    `);
   });
 
   test('MAX_DELIVERIES_EXCEEDED via precomputed errorCode payload', () => {

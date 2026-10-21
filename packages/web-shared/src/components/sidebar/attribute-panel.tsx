@@ -239,6 +239,7 @@ type AttributeKey =
   | 'resumeAt'
   | 'expiredAt'
   | 'workflowCoreVersion'
+  | 'workflowVm'
   | 'receivedCount'
   | 'lastReceivedAt'
   | 'disposedAt'
@@ -278,6 +279,7 @@ const attributeOrder: AttributeKey[] = [
   'computeInstanceId',
   'specVersion',
   'workflowCoreVersion',
+  'workflowVm',
   'ownerId',
   'projectId',
   'environment',
@@ -337,6 +339,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   computeInstanceId: 'Compute Instance ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
+  workflowVm: 'Workflow VM',
   occurredAt: 'Occurred',
   createdAt: 'Created',
   startedAt: 'Started',
@@ -475,6 +478,9 @@ const attributeToDisplayFn: Record<
   computeInstanceId: opaqueIdOrNull,
   specVersion: (value: unknown) => String(value),
   workflowCoreVersion: (value: unknown) => String(value),
+  // Only present when the run's executionContext recorded an engine.
+  workflowVm: (value: unknown) =>
+    typeof value === 'string' && value.length > 0 ? value : null,
   // Tenancy (we don't show these)
   ownerId: (_value: unknown) => null,
   projectId: (_value: unknown) => null,
@@ -909,7 +915,7 @@ export const AttributePanel = ({
   /** Resource type of the selected span, used to show targeted loading skeletons. */
   resource?: string;
 }) => {
-  // Extract workflowCoreVersion from executionContext for display
+  // Extract workflowCoreVersion / workflowVm from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
     const execCtx = data.executionContext as
@@ -917,6 +923,9 @@ export const AttributePanel = ({
       | undefined;
     if (execCtx?.workflowCoreVersion) {
       result.workflowCoreVersion = execCtx.workflowCoreVersion;
+    }
+    if (typeof execCtx?.workflowVm === 'string') {
+      result.workflowVm = execCtx.workflowVm;
     }
     if (moduleSpecifier) {
       result.moduleSpecifier = moduleSpecifier;

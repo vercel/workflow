@@ -37,6 +37,7 @@ import {
   entityResolveData,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
   HookSchema,
   IN_BAND_SEQ_AT_RUN_CREATION,
@@ -134,6 +135,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * from the ceiling rather than restate it.
  */
 export const MAX_CACHED_EVENT_ENTRIES = 1000;
+
+/**
+ * How many times a forced `hook_created` re-reads the token's holder after it
+ * changed between that read and the claim lock. Each retry means another
+ * claimer took the token in between.
+ */
+const MAX_FORCE_CLAIM_VICTIM_RETRIES = 100;
 
 function getHookRetentionLimitMs(): number {
   const days = Number(
@@ -974,6 +982,103 @@ export function createEventsStorage(
       getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
 
+  const missingRunCreatedError = (runId: string, reason: string) =>
+    new WorkflowWorldError(
+      `Cannot restore missing run_created for workflow run "${runId}": ${reason}`
+    );
+
+  /**
+   * Publishes a run's creation at its fixed first slot without ever bumping.
+   * `writeExclusive` is the complete cross-process arbitration: it holds no
+   * lock while writing its temp file, and the hard link either publishes this
+   * event or reveals the winner.
+   */
+  async function publishRunCreatedAtFirstSlot(event: Event): Promise<boolean> {
+    const eventId = slotToEventId(FIRST_EVENT_SLOT);
+    const firstSlotEvent =
+      event.eventId === eventId ? event : { ...event, eventId };
+    const eventPath = taggedPath(
+      basedir,
+      runEntityDir('events', event.runId),
+      `${event.runId}-${eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(firstSlotEvent, jsonReplacer, 2);
+    if (await writeExclusive(eventPath, serializedEvent)) {
+      notePublishedSlot(event.runId, eventId);
+      rememberStoredEvent(firstSlotEvent, eventPath, serializedEvent);
+      return true;
+    }
+
+    const occupant = await readJSONWithFallback(
+      basedir,
+      runEntityDir('events', event.runId),
+      `${event.runId}-${eventId}`,
+      ReadEventSchema,
+      tag
+    );
+    if (
+      occupant?.eventType === 'run_created' &&
+      occupant.runId === event.runId
+    ) {
+      notePublishedSlot(event.runId, eventId);
+      return false;
+    }
+    throw missingRunCreatedError(
+      event.runId,
+      `event slot ${FIRST_EVENT_SLOT} is occupied by ${
+        occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+      }`
+    );
+  }
+
+  /**
+   * Restores the first event of a pending run whose entity write survived but
+   * whose creation-event write did not. The run record is the only authority:
+   * a redelivered event may carry different data.
+   */
+  async function restoreMissingRunCreated(run: WorkflowRun): Promise<void> {
+    const firstPage = await queryRunEvents(run.runId, {
+      limit: 1,
+      sortOrder: 'asc',
+    });
+    const first = firstPage.data[0];
+    if (first) {
+      if (first.eventType === 'run_created' && first.runId === run.runId) {
+        return;
+      }
+      throw missingRunCreatedError(
+        run.runId,
+        `the event log is not empty (its first event is "${first.eventType}")`
+      );
+    }
+    if (run.input === undefined) {
+      throw missingRunCreatedError(run.runId, 'the original input is missing');
+    }
+
+    const eventId = slotToEventId(FIRST_EVENT_SLOT);
+    const event: Event = {
+      eventType: 'run_created',
+      runId: run.runId,
+      eventId,
+      createdAt: run.createdAt,
+      specVersion: run.specVersion,
+      eventData: {
+        deploymentId: run.deploymentId,
+        workflowName: run.workflowName,
+        input: run.input,
+        executionContext: run.executionContext,
+        attributes: run.attributes,
+        encryptionPublicKey: run.encryptionPublicKey,
+      },
+    };
+    if (await publishRunCreatedAtFirstSlot(event)) {
+      console.warn(
+        `[world-local] restored missing run_created for ${run.runId} (creation was interrupted or is still in flight)`
+      );
+    }
+  }
+
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
@@ -992,6 +1097,8 @@ export function createEventsStorage(
   // in-process invocation enters the dedup branch.
   const stepLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
+  const hookLockKey = (runId: string, hookId: string) =>
+    tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
 
   const storage: LocalEventsStorage = {
     clearCache,
@@ -1064,10 +1171,11 @@ export function createEventsStorage(
         runId &&
         data.correlationId
       ) {
-        const lockKey = tag
-          ? `${runId}-${data.correlationId}.hook.${tag}`
-          : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, createImpl);
+        return withInProcessLock(
+          hookLocks,
+          hookLockKey(runId, data.correlationId),
+          createImpl
+        );
       }
       return createImpl();
 
@@ -1122,6 +1230,7 @@ export function createEventsStorage(
         // on running steps, and running steps are always allowed to modify regardless
         // of run state. This optimization saves filesystem reads per step event.
         let currentRun: WorkflowRun | null = null;
+        let createdByResilientStart = false;
         const skipRunValidationEvents = ['step_completed', 'step_retrying'];
         if (
           data.eventType !== 'run_created' &&
@@ -1223,8 +1332,18 @@ export function createEventsStorage(
                     encryptionPublicKey: runInputData.encryptionPublicKey,
                   },
                 };
-                await storeEvent(runCreatedEvent);
-                currentRun = createdRun;
+                const published =
+                  await publishRunCreatedAtFirstSlot(runCreatedEvent);
+                currentRun = published
+                  ? createdRun
+                  : await readJSONWithFallback(
+                      basedir,
+                      'runs',
+                      effectiveRunId,
+                      WorkflowRunSchema,
+                      tag
+                    );
+                createdByResilientStart = true;
               } else {
                 // Run already exists (concurrent run_created won the
                 // race). Re-read it so downstream logic sees the real state.
@@ -1237,6 +1356,38 @@ export function createEventsStorage(
                 );
               }
             }
+          }
+        }
+
+        // A pending run whose creation was interrupted has a run record but no
+        // `run_created`. Restore it before any event that could become the run's
+        // first event takes slot 1. Runs created just above by resilient start,
+        // and legacy or newer-spec runs, are skipped.
+        if (
+          currentRun?.status === 'pending' &&
+          !createdByResilientStart &&
+          !requiresNewerWorld(currentRun.specVersion) &&
+          !isLegacySpecVersion(currentRun.specVersion) &&
+          (data.eventType === 'run_started' ||
+            data.eventType === 'attr_set' ||
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed')
+        ) {
+          if (
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed'
+          ) {
+            try {
+              await restoreMissingRunCreated(currentRun);
+            } catch (error) {
+              const reason =
+                error instanceof Error ? error.message : String(error);
+              console.warn(
+                `[world-local] could not restore missing run_created for ${currentRun.runId}: ${reason}`
+              );
+            }
+          } else {
+            await restoreMissingRunCreated(currentRun);
           }
         }
 
@@ -1321,7 +1472,9 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(stored, resolveData),
               run: currentRun,
-              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
+              ...(currentRun
+                ? { maxEvents: getMaxEventsForRun(currentRun) }
+                : {}),
             };
           }
 
@@ -1840,7 +1993,7 @@ export function createEventsStorage(
               if (params?.skipPreload) {
                 return {
                   run: currentRun,
-                  maxEvents: getMaxEventsPerRun(),
+                  maxEvents: getMaxEventsForRun(currentRun),
                 };
               }
               const preloaded = await queryRunEvents(effectiveRunId, {
@@ -1851,7 +2004,7 @@ export function createEventsStorage(
                 events: preloaded.data,
                 cursor: preloaded.cursor,
                 hasMore: preloaded.hasMore,
-                maxEvents: getMaxEventsPerRun(),
+                maxEvents: getMaxEventsForRun(currentRun),
               };
             }
 
@@ -2429,10 +2582,11 @@ export function createEventsStorage(
           // run cannot race its successor and create a spurious conflict
           // (issue #2778). Missing claim caches are rebuilt from the event log;
           // stale owners are removed before the successor is admitted.
-          const claimResult = await withHookTokenClaimLock(
-            basedir,
-            hookData.token,
-            async (signal) => {
+          const claimToken = (lockedVictim?: {
+            runId: string;
+            hookId: string;
+          }) =>
+            withHookTokenClaimLock(basedir, hookData.token, async (signal) => {
               let existingClaim = await readHookTokenClaim(constraintPath);
               if (!existingClaim) {
                 // Repair a missing or corrupt claim from the event log.
@@ -2463,6 +2617,13 @@ export function createEventsStorage(
                 if (hookData.force !== true || !existingClaim.hookId) {
                   return { status: 'conflict' as const, claim: existingClaim };
                 }
+                if (
+                  existingClaim.runId !== lockedVictim?.runId ||
+                  existingClaim.hookId !== lockedVictim?.hookId
+                ) {
+                  // Retry under the per-hook lock of the hook holding it now.
+                  return { status: 'victim-changed' as const };
+                }
                 // `createHook({ experimental_force: true })`: take the token
                 // over. Same order as workflow-server (docs/hook-force-claim.md,
                 // specs/HookForceClaim.tla): tell the victim FIRST — its
@@ -2475,12 +2636,15 @@ export function createEventsStorage(
                 // serializes it against the victim's own disposal.
                 signal.throwIfAborted();
                 // The victim's claim is written before its `hook_created` is
-                // published (see the entity-write ordering below), so a
-                // takeover can meet a creation still in flight. That is fine:
-                // the creator's publish is refused by the journal guard (its
-                // own disposal is committed by then) and its replay reads the
-                // disposal with no creation — the runtime handles exactly
-                // that. Nothing waits here: while this lock is held the token
+                // published (see the entity-write ordering below). In one
+                // process this takeover first waits on the victim's per-hook
+                // key, which the creation holds across both, so it cannot
+                // meet the creation midway; from another instance (per-hook
+                // keys are not shared) it can meet a creation still in
+                // flight. That is fine: the creator's publish is refused by
+                // the journal guard (its own disposal is committed by then)
+                // and its replay reads the disposal with no creation — the
+                // runtime handles exactly that. Nothing waits here: while this lock is held the token
                 // resolves to nothing, and every millisecond of that is a
                 // `getHookByToken` that misses.
                 const victimRun = await readJSONWithFallback(
@@ -2660,8 +2824,57 @@ export function createEventsStorage(
                 assert(await writeExclusive(constraintPath, claimContent()));
               }
               return { status: 'claimed' as const };
+            });
+          // A takeover writes the victim's dispose lock and `hook_disposed`
+          // row, so it also holds the victim's per-hook lock: a resume to the
+          // victim checks that dispose lock and appends under that lock, and
+          // must not pass the check and then land behind the row (#4923).
+          // Order: this hook's key (held by `create`), the victim's key, then
+          // the token claim lock. The victim's own `hook_disposed` takes its
+          // key and then the claim lock, so the victim's key must not be
+          // taken inside the claim lock. There is no cycle: a resume takes
+          // only its hook's key, and a hook becomes a holder (someone's
+          // victim) only after its own takeover is done waiting. The holder
+          // is read here and confirmed under the claim lock; a change of
+          // holder in between retries under the new holder's key. Like every
+          // per-hook lock, this serializes within one process. Across
+          // instances sharing a data directory only the resume's last-instant
+          // dispose-lock check remains, and the window is wider than for an
+          // ordinary disposal: the takeover appends the victim's row right
+          // after its dispose lock, with no teardown in between to absorb a
+          // resume that passed that check.
+          let claimResult: Awaited<ReturnType<typeof claimToken>>;
+          for (let attempt = 0; ; attempt++) {
+            // Every `victim-changed` means another claimer took the token in
+            // between, so this ends. The bound turns a disagreement between
+            // the read here and the one under the claim lock into an error
+            // instead of a spin.
+            if (attempt === MAX_FORCE_CLAIM_VICTIM_RETRIES) {
+              throw new WorkflowWorldError(
+                `Hook token holder kept changing during a forced claim of "${data.correlationId}"`
+              );
             }
-          );
+            const holder =
+              hookData.force === true
+                ? await readHookTokenClaim(constraintPath)
+                : null;
+            const victim =
+              holder?.hookId &&
+              !(
+                holder.runId === effectiveRunId &&
+                holder.hookId === data.correlationId
+              )
+                ? { runId: holder.runId, hookId: holder.hookId }
+                : undefined;
+            claimResult = victim
+              ? await withInProcessLock(
+                  hookLocks,
+                  hookLockKey(victim.runId, victim.hookId),
+                  () => claimToken(victim)
+                )
+              : await claimToken();
+            if (claimResult.status !== 'victim-changed') break;
+          }
           if (claimResult.status === 'owned' && claimResult.claim.claimedFrom) {
             // A retry adopting a forced claim still names the victim, so the
             // runtime still wakes it.
@@ -3251,6 +3464,35 @@ export function createEventsStorage(
             notePublishedSlot(effectiveRunId, eventId);
             break;
           }
+          // A run's creation is permanently slot 1. Recovery can win that
+          // slot while the original publisher is paused; converge on that
+          // same event and surface the EntityConflictError that start()
+          // already treats as benign. Any other occupant is corrupt history,
+          // not a reason to move run_created to a later slot.
+          if (data.eventType === 'run_created') {
+            const slot = eventIdToSlot(eventId);
+            const occupant = await readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            );
+            if (
+              slot === FIRST_EVENT_SLOT &&
+              occupant?.eventType === 'run_created' &&
+              occupant.runId === effectiveRunId
+            ) {
+              break;
+            }
+            throw new WorkflowWorldError(
+              `Cannot publish run_created for workflow run "${effectiveRunId}": event slot ${
+                slot ?? eventId
+              } is occupied by ${
+                occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+              }`
+            );
+          }
           // Losing this publish to THIS SAME resume is the convergence the
           // claim exists to force, and it has to be answered before the bump
           // rather than after the loop, because only one of the two takers of
@@ -3482,8 +3724,9 @@ export function createEventsStorage(
           hook,
           wait,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
-          // Per-run event ceiling (mirrors the Vercel World).
-          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
+          // Per-run event ceiling (mirrors the Vercel World, including the
+          // QuickJS-snapshot exemption).
+          ...(run ? { maxEvents: getMaxEventsForRun(run) } : {}),
         };
 
         if (!eventPage) return result;

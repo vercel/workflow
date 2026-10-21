@@ -18,7 +18,9 @@ an extra queued continuation unless other background operations remain pending.
 Hook registration acknowledgements and token conflicts participate in replay
 delivery ordering alongside step results, hook payloads, and sleep completions.
 Concurrent branches awaiting `hook.getConflict()` preserve their step correlation
-IDs when replaying an extended event history.
+IDs when replaying an extended event history. `setAttributes()` acknowledgements
+take part in the same ordering, so a branch awaiting `setAttributes()` while
+another branch is in flight keeps its own step results on replay.
 
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 
