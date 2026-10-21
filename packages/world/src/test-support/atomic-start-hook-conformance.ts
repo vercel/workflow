@@ -229,6 +229,12 @@ export function atomicStartHookConformance(
       const started = await create(events, runId, runStarted({ token }));
       expect(started.run?.status).toBe('running');
 
+      // The reservation survives the run's status transitions: a late retry
+      // of the direct write still finds its own run.
+      expect((await runs.get(runId)).startHook?.token).toBe(token);
+      const late = await create(events, runId, runCreated({ token }));
+      expect(late.run?.runId).toBe(runId);
+
       const log = await events.list({ runId });
       expect(
         log.data.filter((event) => event.eventType === 'run_created')
@@ -316,8 +322,8 @@ export function atomicStartHookConformance(
         create(first, runId, runCreated({ token })),
         create(second, runId, runStarted({ token })),
       ]);
-      expect(direct.status).toBe('fulfilled');
-      expect(queued.status).toBe('fulfilled');
+      expect(direct.status === 'rejected' ? direct.reason : 'ok').toBe('ok');
+      expect(queued.status === 'rejected' ? queued.reason : 'ok').toBe('ok');
 
       const log = await first.list({ runId });
       expect(
@@ -384,6 +390,36 @@ export function atomicStartHookConformance(
       expect(stillConflicts.event?.eventType).toBe('hook_conflict');
 
       await finish(events, owner);
+      await admit(events, { token });
+    });
+
+    test('an adopted Hook retention extends the reservation past its disposal', async () => {
+      const events = setup();
+      const token = newToken();
+      const retentionMs = 2_000;
+      const owner = await admit(events, { token });
+      await create(events, owner, runStarted({ token }));
+
+      // Adopt with a retention, dispose, adopt again with none.
+      const first = newHookId();
+      await create(events, owner, {
+        ...hookCreated(token, first),
+        eventData: {
+          token,
+          tokenRetentionUntil: new Date(Date.now() + retentionMs),
+        },
+      } as AnyEventRequest);
+      await create(events, owner, hookDisposed(token, first));
+      const second = await create(
+        events,
+        owner,
+        hookCreated(token, newHookId())
+      );
+      expect(second.event?.eventType).toBe('hook_created');
+
+      await finish(events, owner);
+      await expectRefused(admit(events, { token }), token, owner);
+      await sleep(retentionMs + 250);
       await admit(events, { token });
     });
 

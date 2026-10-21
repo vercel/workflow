@@ -504,6 +504,11 @@ async function admitStartHook({
   });
 }
 
+function maxDate(...dates: (Date | undefined)[]): Date | undefined {
+  const times = dates.flatMap((d) => (d ? [d.getTime()] : []));
+  return times.length ? new Date(Math.max(...times)) : undefined;
+}
+
 function startHookRejected(message: string): WorkflowWorldError {
   return new WorkflowWorldError(message, {
     status: 400,
@@ -2303,6 +2308,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2339,6 +2345,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2386,6 +2393,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2425,6 +2433,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2897,7 +2906,17 @@ export function createEventsStorage(
                     tag
                   )))
               ) {
-                carriedReservation = existingClaim.reservation;
+                // Fold every retention the reservation has been extended to
+                // into it, so disposing an adopted Hook and adopting again
+                // with a shorter one cannot shorten what was promised.
+                const until = maxDate(
+                  existingClaim.reservation.tokenRetentionUntil,
+                  existingClaim.tokenRetentionUntil,
+                  hookData.tokenRetentionUntil
+                );
+                carriedReservation = until
+                  ? { tokenRetentionUntil: until }
+                  : {};
                 signal.throwIfAborted();
                 await write(constraintPath, claimContent(), {
                   overwrite: true,
@@ -3080,7 +3099,12 @@ export function createEventsStorage(
                 // A start reservation riding on the victim's Hook moves to
                 // the claimer with it, so the token follows the Hook instead of
                 // staying pinned to a run that may never end.
-                carriedReservation = existingClaim.reservation;
+                carriedReservation = existingClaim.reservation && {
+                  tokenRetentionUntil: maxDate(
+                    existingClaim.reservation.tokenRetentionUntil,
+                    existingClaim.tokenRetentionUntil
+                  ),
+                };
                 // Fall through to the release below with the victim told.
               }
 

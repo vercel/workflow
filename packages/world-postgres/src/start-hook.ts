@@ -234,3 +234,29 @@ export async function transferStartReservation(
       )
     );
 }
+
+/**
+ * Extends the reservation `runId` holds on `token` to at least `until`, for
+ * the run's own `createHook()` with a retention: the Hook can be disposed,
+ * but the extension it brought must outlive it.
+ */
+export async function extendStartReservation(
+  tx: DrizzleTransaction,
+  token: string,
+  runId: string,
+  until: Date
+): Promise<void> {
+  const admissions = Schema.startHookAdmissions;
+  await tx
+    .update(admissions)
+    .set({
+      tokenRetentionUntil: sql`greatest(coalesce(${admissions.tokenRetentionUntil}, ${until.toISOString()}::timestamptz), ${until.toISOString()}::timestamptz)`,
+    })
+    .where(
+      and(
+        eq(admissions.token, token),
+        eq(admissions.decision, 'accepted'),
+        eq(admissions.holderRunId, runId)
+      )
+    );
+}

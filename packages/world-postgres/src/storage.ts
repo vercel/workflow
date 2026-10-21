@@ -101,6 +101,7 @@ import {
 } from './run-status.js';
 import {
   decideStartHookAdmission,
+  extendStartReservation,
   findActiveStartReservation,
   lockStartHookToken,
   type StartHookDecision,
@@ -2619,6 +2620,16 @@ function createUnfencedEventsStorage(
                 throw new WorkflowWorldError(
                   `Hook token "${eventData.token}" was reserved by a start concurrently; retry`,
                   { status: 503 }
+                );
+              }
+              // The run's own reservation: a retention this Hook brings
+              // extends it, and outlives the Hook's disposal.
+              if (eventData.tokenRetentionUntil) {
+                await extendStartReservation(
+                  tx,
+                  eventData.token,
+                  effectiveRunId,
+                  eventData.tokenRetentionUntil
                 );
               }
               await tx
