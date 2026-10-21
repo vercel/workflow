@@ -665,7 +665,14 @@ export async function handleSuspension({
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
   const allHookItems = suspension.items.filter(
-    (item): item is HookInvocationQueueItem => item.type === 'hook'
+    (item): item is HookInvocationQueueItem =>
+      item.type === 'hook' &&
+      !(
+        terminalDrain &&
+        item.isSystem &&
+        !item.hasCreatedEvent &&
+        !item.abortRequested
+      )
   );
   const waitItems = suspension.items.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
@@ -912,13 +919,15 @@ export async function handleSuspension({
       // Dispose after creation for hooks born and disposed within this
       // batch. A hook whose creation conflicted was never created, so
       // there is nothing to dispose.
-      // A terminal event releases all remaining hooks. Keep disposals before
-      // a later same-token registration so that registration cannot conflict
-      // with this run's own hook, including when it force-claims the token.
+      // A terminal event releases non-retained hooks. Explicit disposal also
+      // releases retained tokens early. Keep disposals before a later same-token
+      // registration so it cannot conflict with this run's own hook.
       if (
         queueItem.disposed &&
         !creationConflicted &&
-        (!terminalDrain || index < lastCreationIndex)
+        (!terminalDrain ||
+          index < lastCreationIndex ||
+          queueItem.tokenRetentionUntil !== undefined)
       ) {
         await disposeHook(queueItem);
       }

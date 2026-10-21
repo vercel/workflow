@@ -5,6 +5,35 @@ import { jsonlines } from './jsonlines.mjs';
 import { createFetcher, startServer } from './util.mjs';
 
 export function hooks(world: string) {
+  test.each(['completed', 'failed'] as const)(
+    'releases non-retained hook tokens when a run is %s',
+    { timeout: 60_000 },
+    async (status) => {
+      const server = await startServer({ world }).then(createFetcher);
+      const token = `terminal-${status}-${Date.now().toString(36)}`;
+      for (const expected of [status, 'completed']) {
+        const { runId } = await server.invoke(
+          'workflows/hooks.ts',
+          'registerUntilTerminal',
+          [token, expected === 'failed']
+        );
+        await vi.waitFor(
+          async () => {
+            expect((await server.getRun(runId)).status).toBe(expected);
+          },
+          { interval: 200, timeout: 25_000 }
+        );
+        const events = await server.getEvents(runId);
+        expect(
+          events.filter((event) => event.eventType === 'hook_created')
+        ).toHaveLength(1);
+        expect(
+          events.filter((event) => event.eventType === 'hook_disposed')
+        ).toHaveLength(0);
+      }
+    }
+  );
+
   test('hooks', { timeout: 60_000 }, async () => {
     const server = await startServer({ world }).then(createFetcher);
     const token = Date.now().toString(36);

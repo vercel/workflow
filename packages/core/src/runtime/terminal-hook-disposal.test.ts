@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   CreateEventRequest,
   Event,
@@ -5,9 +8,11 @@ import type {
   World,
 } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { createWorld } from '@workflow/world-local';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import {
+  dehydrateRunError,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
@@ -191,6 +196,242 @@ describe.each([
         .filter((event) => event.eventData?.token === 'other')
         .map((event) => event.eventType)
     ).toEqual(['hook_created']);
+  });
+
+  it('skips an unused AbortController born in the final segment', async () => {
+    const { create, execute } = await setup(`
+      new AbortController();
+      return "done";
+    `);
+    await execute([]);
+    expect(create.mock.calls.map(([, event]) => event.eventType)).toEqual(
+      engine === 'node' ? [] : ['run_completed']
+    );
+  });
+
+  it('consumes legacy user and system hook disposals before termination', async () => {
+    const { workflowCode, workflowRun, create, execute } = await setup(`
+      var controller = new AbortController();
+      var hook = createHook({ token: 'legacy' });
+      await hook;
+      hook.dispose();
+      return "done";
+    `);
+    const first = await runQuickJSWorkflow({
+      workflowCode,
+      workflowId: 'workflow',
+      workflowRun,
+      events: [],
+    });
+    // Both engines use the same deterministic id generator.
+    assert(first.suspended);
+    const hooks = first.suspended.pendingOperations.filter(
+      (op) => op.type === 'hook'
+    );
+    const events: Event[] = hooks.map((hook, index) => ({
+      runId: workflowRun.runId,
+      createdAt: workflowRun.createdAt,
+      eventId: `evnt_created_${index}`,
+      eventType: 'hook_created',
+      correlationId: hook.correlationId,
+      eventData: {
+        token: hook.token,
+        ...(hook.isSystem && { isSystem: true }),
+      },
+    }));
+    events.unshift({
+      runId: workflowRun.runId,
+      createdAt: workflowRun.createdAt,
+      eventId: 'evnt_run_created',
+      eventType: 'run_created',
+      eventData: { input: workflowRun.input },
+    });
+    const user = hooks.find((hook) => hook.token === 'legacy');
+    assert(user);
+    events.push({
+      runId: workflowRun.runId,
+      createdAt: workflowRun.createdAt,
+      eventId: 'evnt_received',
+      eventType: 'hook_received',
+      correlationId: user.correlationId,
+      eventData: {
+        token: user.token,
+        payload: await dehydrateStepReturnValue(
+          'ready',
+          workflowRun.runId,
+          undefined
+        ),
+      },
+    });
+    events.push(
+      ...hooks.map(
+        (hook, index): Event => ({
+          runId: workflowRun.runId,
+          createdAt: workflowRun.createdAt,
+          eventId: `evnt_disposed_${index}`,
+          eventType: 'hook_disposed',
+          correlationId: hook.correlationId,
+          eventData: { token: hook.token },
+        })
+      )
+    );
+    await execute(events);
+    expect(create.mock.calls.map(([, event]) => event.eventType)).toEqual(
+      engine === 'node' ? [] : ['run_completed']
+    );
+  });
+
+  it.each([
+    { replayed: false, outcome: 'completed' },
+    { replayed: true, outcome: 'completed' },
+    { replayed: false, outcome: 'failed' },
+    { replayed: true, outcome: 'failed' },
+  ] as const)('releases a disposed retained token on $outcome (replayed: $replayed)', async ({
+    replayed,
+    outcome,
+  }) => {
+    const dir = await mkdtemp(join(tmpdir(), 'terminal-retained-hook-'));
+    try {
+      const world: World = createWorld({ dataDir: dir });
+      setWorld(world);
+      const input = await dehydrateWorkflowArguments([], 'run', undefined, []);
+      const created = await world.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_retention',
+          workflowName: 'workflow',
+          input,
+        },
+      });
+      const initialRun = created.run;
+      assert(initialRun);
+      await world.events.create(initialRun.runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      });
+      const run = await world.runs.get(initialRun.runId);
+      const code = `
+        var createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
+        async function workflow() {
+          var hook = createHook({ token: 'retained', experimental_minRetention: 60000 });
+          ${replayed ? 'await hook;' : ''}
+          hook.dispose();
+          ${outcome === 'failed' ? 'throw new Error("workflow failed");' : 'return "done";'}
+        }
+        globalThis.__private_workflows = new Map([['workflow', workflow]]);
+      `;
+      if (replayed) {
+        const first = await runQuickJSWorkflow({
+          workflowCode: code,
+          workflowId: 'workflow',
+          workflowRun: run,
+          worldCapabilities: world.capabilities,
+          events: [],
+        });
+        assert(first.suspended);
+        const hook = first.suspended.pendingOperations.find(
+          (op) => op.type === 'hook'
+        );
+        assert(hook);
+        await world.events.create(run.runId, {
+          eventType: 'hook_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hook.correlationId,
+          eventData: {
+            token: hook.token,
+            tokenRetentionUntil: new Date(Date.now() + 60000),
+          },
+        });
+        await world.events.create(run.runId, {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hook.correlationId,
+          eventData: {
+            token: hook.token,
+            payload: await dehydrateStepReturnValue(
+              'ready',
+              run.runId,
+              undefined
+            ),
+          },
+        });
+      }
+      const { data: events } = await world.events.list({
+        runId: run.runId,
+        pagination: { sortOrder: 'asc', limit: 1000 },
+      });
+      if (engine === 'node') {
+        const result = runWorkflow(
+          code,
+          run,
+          events,
+          undefined,
+          undefined,
+          undefined,
+          world.capabilities
+        );
+        if (outcome === 'completed') {
+          const output = (await result) as Uint8Array;
+          await world.events.create(run.runId, {
+            eventType: 'run_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { output },
+          });
+        } else {
+          await expect(result).rejects.toThrow('workflow failed');
+          await world.events.create(run.runId, {
+            eventType: 'run_failed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              error: await dehydrateRunError(
+                new Error('workflow failed'),
+                run.runId
+              ),
+            },
+          });
+        }
+      } else {
+        await runWorkflowWithQuickJS({
+          workflowCode: code,
+          workflowName: 'workflow',
+          workflowRun: run,
+          preloadedEvents: events,
+          preloadedEventsComplete: true,
+        });
+      }
+      expect((await world.runs.get(run.runId)).status).toBe(outcome);
+      const log = await world.events.list({
+        runId: run.runId,
+        pagination: { sortOrder: 'asc', limit: 1000 },
+      });
+      expect(
+        log.data.filter((event) => event.eventType === 'hook_disposed')
+      ).toHaveLength(1);
+      // Use the real token index: a terminal event alone would leave a retained
+      // token claimed, so this registration must succeed because of disposal.
+      const next = await world.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_retention',
+          workflowName: 'workflow',
+          input,
+        },
+      });
+      assert(next.run);
+      const claim = await world.events.create(next.run.runId, {
+        eventType: 'hook_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: 'hook_reclaimed',
+        eventData: { token: 'retained' },
+      });
+      expect(claim.event?.eventType).toBe('hook_created');
+    } finally {
+      setWorld(undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([

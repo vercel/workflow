@@ -70,7 +70,7 @@ import { createSleep } from './workflow/sleep.js';
  * Treats completion as a final suspension so unawaited hook, wait, and
  * attribute operations are recorded before the run becomes terminal. This
  * also lets a final `controller.abort()` reach in-flight steps. Final hook
- * disposals are omitted because the terminal event cleans up all hooks.
+ * disposals of non-retained hooks are omitted because termination releases them.
  *
  * It records `*_created` and native attribute events, but never executes step
  * bodies: `step_started` is rejected after the run becomes terminal. A

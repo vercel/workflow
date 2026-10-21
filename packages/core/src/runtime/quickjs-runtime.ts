@@ -2979,6 +2979,8 @@ async function processEvents(
         const settledGetConflict = vm.dump(
           vm.evalCode(
             `(function(){
+              var hook = globalThis.__findPending(${cidJs}, "hook");
+              if (hook) hook.tokenRetentionUntil = ${JSON.stringify(eventData?.tokenRetentionUntil?.valueOf()) ?? 'undefined'};
               var state = globalThis.__hooks && globalThis.__hooks[${JSON.stringify(cid)}];
               if (!state) return false;
               state.created = true;
@@ -3266,7 +3268,7 @@ function dumpPendingOps(
 /**
  * Collect terminal side effects, including abort recordings and uncommitted
  * operations. Run termination cleans up hooks, so retain disposals only when
- * they release a token for a later pending hook registration.
+ * they release a retained token early or allow a later pending registration.
  */
 function collectDrainOperations(
   vm: QuickJS,
@@ -3282,7 +3284,11 @@ function collectDrainOperations(
     `(function(){
     var pending = globalThis.__pendingList();
     var lastHookCreation = new Map();
+    var retainedHooks = new Set();
     pending.forEach(function(p, index){
+      if (p.type === "hook" && p.tokenRetentionUntil !== undefined) {
+        retainedHooks.add(p.correlationId);
+      }
       if (p.type === "hook" && p.isSystem && !p.abortRequested && !p.disposed) {
         p.disposed = true;
       }
@@ -3292,7 +3298,9 @@ function collectDrainOperations(
     });
     return pending.filter(function(p, index){
       if (p.type === "hook_dispose") {
-        return !p.hasCreatedEvent && index < lastHookCreation.get(p.token);
+        var last = lastHookCreation.get(p.token);
+        return !p.hasCreatedEvent && (retainedHooks.has(p.correlationId) ||
+          (last !== undefined && index < last));
       }
       if (p.abortRequested) return true;
       if (p.hasCreatedEvent) return false;
