@@ -23,6 +23,10 @@ vi.mock('@workflow/rollup', () => ({
 
 vi.mock('@workflow/vite', () => ({
   workflowHotUpdatePlugin: () => ({ name: 'workflow:hot-update' }),
+  workflowFlowAssetsPlugin: (options: { assetsDir: string }) => ({
+    name: 'workflow:flow-assets',
+    assetsDir: options.assetsDir,
+  }),
 }));
 
 vi.mock('./builder.js', () => ({
@@ -32,6 +36,10 @@ vi.mock('./builder.js', () => ({
     }
 
     build = mocks.build;
+
+    get flowAssetsDir() {
+      return 'flow-assets-dir';
+    }
   },
 }));
 

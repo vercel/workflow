@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  createChunkRelativeFlowAssetLoaderCode,
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
   getWorkflowQueueTrigger,
+  replaceFlowAssetsPlaceholder,
 } from './constants.js';
 
 describe('getWorkflowQueueTrigger', () => {
@@ -127,6 +129,36 @@ describe('createWorkflowEntrypointOptionsCode', () => {
       })
     ).toBe(
       ', { namespace: "custom", basePath: "/v2", routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt }'
+    );
+  });
+});
+
+describe('replaceFlowAssetsPlaceholder', () => {
+  const loader = createChunkRelativeFlowAssetLoaderCode();
+
+  it.each([
+    ['index.mjs', './__workflow_assets/'],
+    ['entries/endpoints/flow/_server.js', '../../../__workflow_assets/'],
+    ['chunks/nitro/nitro.mjs', '../../__workflow_assets/'],
+  ])('points a loader in %s at %s', (chunk, base) => {
+    expect(replaceFlowAssetsPlaceholder(loader, chunk)).toContain(
+      `new URL(${JSON.stringify(base)} + name, import.meta.url)`
+    );
+  });
+
+  it('resolves against a nested assets directory', () => {
+    expect(
+      replaceFlowAssetsPlaceholder(
+        loader,
+        'server/chunks/flow.js',
+        'server/assets'
+      )
+    ).toContain('new URL("../assets/" + name, import.meta.url)');
+  });
+
+  it('leaves chunks without a loader alone', () => {
+    expect(replaceFlowAssetsPlaceholder('export {}', 'index.mjs')).toBe(
+      undefined
     );
   });
 });

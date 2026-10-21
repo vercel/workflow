@@ -4,7 +4,10 @@ import { join, resolve } from 'node:path';
 import { loadConfig } from '@sveltejs/load-config';
 import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
-import { workflowHotUpdatePlugin } from '@workflow/vite';
+import {
+  workflowFlowAssetsPlugin,
+  workflowHotUpdatePlugin,
+} from '@workflow/vite';
 import type { Plugin, PluginOption } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
 
@@ -101,6 +104,9 @@ function createWorkflowPlugins(builder: SvelteKitBuilder): Plugin[] {
       builder,
       enqueue,
     }),
+    // Emitted outside SvelteKit's `appDir`, which SvelteKit never copies to
+    // its public client output.
+    workflowFlowAssetsPlugin({ assetsDir: builder.flowAssetsDir }),
   ];
 }
 

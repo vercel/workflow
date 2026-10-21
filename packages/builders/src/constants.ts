@@ -56,6 +56,54 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
 export const FLOW_ASSETS_DIR = '__workflow_assets';
 
 /**
+ * Base directory of the flow assets in a chunk-relative asset loader (see
+ * {@link createChunkRelativeFlowAssetLoaderCode}). The integration's bundler
+ * plugin replaces the quoted `"<placeholder>/"` in each output chunk with that
+ * chunk's path to its copy of the assets.
+ */
+export const FLOW_ASSETS_DIR_PLACEHOLDER = '__WORKFLOW_FLOW_ASSETS_DIR__';
+
+/**
+ * The asset loader for a flow route that a framework re-bundles into a chunk
+ * whose location only its bundler knows: it reads the files relative to that
+ * chunk (`import.meta.url`), from a base directory the bundler plugin fills in
+ * (see {@link FLOW_ASSETS_DIR_PLACEHOLDER}).
+ */
+export function createChunkRelativeFlowAssetLoaderCode(): string {
+  return `(name) => import('node:fs/promises').then((fs) => fs.readFile(new URL(${JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`)} + name, import.meta.url)))`;
+}
+
+/**
+ * Replace the flow assets placeholder in an output chunk with the chunk's
+ * path to `assetsDir` (a directory relative to the output root, like the
+ * chunk's own file name). Returns undefined when the chunk has none.
+ */
+export function replaceFlowAssetsPlaceholder(
+  code: string,
+  chunkFileName: string,
+  assetsDir: string = FLOW_ASSETS_DIR
+): string | undefined {
+  const placeholder = JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`);
+  if (!code.includes(placeholder)) return undefined;
+  const chunkDir = chunkFileName.split('/').slice(0, -1);
+  const target = assetsDir.split('/').filter(Boolean);
+  let common = 0;
+  while (
+    common < chunkDir.length &&
+    common < target.length &&
+    chunkDir[common] === target[common]
+  ) {
+    common++;
+  }
+  const rel = [
+    ...Array(chunkDir.length - common).fill('..'),
+    ...target.slice(common),
+  ].join('/');
+  const base = rel.startsWith('..') ? `${rel}/` : `./${rel}/`;
+  return code.replaceAll(placeholder, JSON.stringify(base));
+}
+
+/**
  * Creates the optional second argument for generated `workflowEntrypoint()`
  * calls. The namespace is resolved while building so generated route files do
  * not need `WORKFLOW_QUEUE_NAMESPACE` at runtime.

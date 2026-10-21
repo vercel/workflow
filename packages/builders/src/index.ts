@@ -12,11 +12,14 @@ export {
   resolveProjectRoot,
 } from './config-helpers.js';
 export {
+  createChunkRelativeFlowAssetLoaderCode,
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
   FLOW_ASSETS_DIR,
+  FLOW_ASSETS_DIR_PLACEHOLDER,
   getWorkflowQueueTrigger,
   isSequentialReplaysEnabled,
+  replaceFlowAssetsPlaceholder,
   WORKFLOW_QUEUE_TRIGGER,
 } from './constants.js';
 export {

@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  createChunkRelativeFlowAssetLoaderCode,
+  FLOW_ASSETS_DIR,
   NORMALIZE_REQUEST_CODE,
   resolveProjectRoot,
   type SvelteKitConfig,
@@ -21,13 +23,39 @@ export class SvelteKitBuilder extends BaseBuilder {
   #routesDir: string;
 
   /**
-   * SvelteKit re-bundles the flow route (adapter-node bundles it again) and
-   * offers no non-public way to ship a server-only file with it. Ship
-   * nothing: QuickJS runs compute the baseline heap in memory on each cold
-   * instance instead (same result).
+   * SvelteKit re-bundles the flow route into its server build. The
+   * `workflow:flow-assets` Vite plugin emits the assets into that build
+   * outside `appDir` (so SvelteKit keeps them server-only) and points the
+   * loader at them relative to the bundled route.
+   *
+   * Where they ship depends on the adapter. adapter-node 6+ deploys the
+   * whole server output; adapter-vercel traces the files. Older adapter-node
+   * releases (5.x) drop non-JS server files, so the read fails there and the
+   * runtime computes the baseline heap in memory instead (same result).
    */
   protected override getFlowAssetLoaderCode(): string | undefined {
-    return undefined;
+    return createChunkRelativeFlowAssetLoaderCode();
+  }
+
+  /**
+   * Only for `vite build`. The builder is created while Vite loads its config,
+   * before the command is known to plugins, so this reads it from the CLI
+   * arguments. (`NODE_ENV` can't tell `vite build` from `vite preview`, which
+   * also loads the config and runs this builder.) In `vite dev`,
+   * `vite preview` and `svelte-kit sync`, or a build driven through Vite's
+   * JavaScript API, the runtime computes the assets in memory on first use.
+   */
+  protected override get prebuildsFlowAssets(): boolean {
+    return process.argv.slice(2).includes('build') && super.prebuildsFlowAssets;
+  }
+
+  /** Where this builder writes the flow route's assets. */
+  get flowAssetsDir(): string {
+    return join(
+      this.#routesDir,
+      '.well-known/workflow/v1/flow',
+      FLOW_ASSETS_DIR
+    );
   }
 
   constructor(config: Partial<SvelteKitConfig> & { routesDir?: string } = {}) {
