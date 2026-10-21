@@ -1206,13 +1206,22 @@ export function createEventsStorage(
             `Cannot ${data.eventType === 'lock_created' ? 'acquire' : 'release'} a lock on run in terminal state "${currentRun.status}"`
           );
         }
+        // A lock write appends at most one event, and none when it answers
+        // with one the scope already published (a re-POST), so it reports
+        // what it appended for the in-band count rather than leaving
+        // fencedCreate to infer it from `result.event`.
+        let appended = 0;
         const ctx: LockEventContext = {
           basedir,
           tag,
           runId: effectiveRunId,
           now,
           specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
-          storeEvent,
+          storeEvent: async (event) => {
+            const stored = await storeEvent(event);
+            appended++;
+            return stored;
+          },
           mintEventId: () => mintEventId(effectiveRunId),
           readEvent: (eventId) =>
             readJSONWithFallback(
@@ -1222,6 +1231,23 @@ export function createEventsStorage(
               ReadEventSchema,
               tag
             ),
+          findEvent: async (correlationId, eventType) => {
+            const found = await paginatedFileSystemQuery({
+              directory: path.join(
+                basedir,
+                runEntityDir('events', effectiveRunId)
+              ),
+              schema: ReadEventSchema,
+              filePrefix: `${effectiveRunId}-`,
+              filter: (event) =>
+                event.eventType === eventType &&
+                event.correlationId === correlationId,
+              limit: 1,
+              getCreatedAt: getObjectCreatedAt('evnt'),
+              getId: (event) => event.eventId,
+            });
+            return (found.data[0] as Event | undefined) ?? null;
+          },
         };
         const { event, lock, lockHandoffs } =
           data.eventType === 'lock_created'
@@ -1232,6 +1258,7 @@ export function createEventsStorage(
           event: stripEventDataRefs(event, resolveData),
           lock,
           ...(lockHandoffs && { lockHandoffs }),
+          allocated: appended,
         };
         if (typeof params?.sinceCursor !== 'string') return result;
         const delta = await queryRunEvents(effectiveRunId, {
@@ -4161,9 +4188,10 @@ export function createEventsStorage(
         throw error;
       }
       // A create can succeed without appending (`run_started` on a run that
-      // is already running returns the run and no event); it allocated no
-      // position, so the count stays.
-      const allocated = result.event ? 1 : 0;
+      // is already running returns the run and no event, a lock re-POST
+      // returns the event its scope already published); it allocated no
+      // position, so the count stays. Lock writes report their own count.
+      const allocated = result.allocated ?? (result.event ? 1 : 0);
       await writeInBandCount(runId, { seqInBand: current + allocated });
       return { ...result, allocated };
     });

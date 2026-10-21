@@ -72,6 +72,13 @@ const LockStateSchema = z.compile(
 );
 type LockState = z.infer<typeof LockStateSchema>;
 
+const LOCK_EVENT_TYPES_PUBLISHED = [
+  'lock_created',
+  'lock_acquired',
+  'lock_failed',
+  'lock_released',
+] as const;
+
 const LockScopeSchema = z.compile(
   z.object({
     key: z.string(),
@@ -84,6 +91,13 @@ const LockScopeSchema = z.compile(
     /** The scope's `lock_failed` (waitlist full). Terminal. */
     failedEventId: z.string().optional(),
     releasedEventId: z.string().optional(),
+    /**
+     * The lock event this scope is about to publish, written before the
+     * publish and cleared when its id is recorded. Present on a retry only
+     * after a crash in between, which then looks for the published event
+     * instead of appending a second one.
+     */
+    publishing: z.enum(LOCK_EVENT_TYPES_PUBLISHED).optional(),
   })
 );
 type LockScope = z.infer<typeof LockScopeSchema>;
@@ -324,6 +338,11 @@ export interface LockEventContext {
   /** Draws a candidate id for an event this handler is about to publish. */
   mintEventId: () => Promise<string>;
   readEvent: (eventId: string) => Promise<Event | null>;
+  /** This run's event of `eventType` for `correlationId`, if published. */
+  findEvent: (
+    correlationId: string,
+    eventType: string
+  ) => Promise<Event | null>;
 }
 
 /** A lock write's result, as `events.create` returns it. */
@@ -348,6 +367,44 @@ type LockReleasedRequest = {
   correlationId: string;
   eventData: { key: string };
 };
+
+type ScopeEventField =
+  | 'createdEventId'
+  | 'acquiredEventId'
+  | 'failedEventId'
+  | 'releasedEventId';
+
+/**
+ * Publishes one of a scope's lock events and records its id on the scope.
+ * The scope first notes which event it is publishing, so a retry after a
+ * crash between the publish and the record returns the published event
+ * rather than appending a second one. The log is searched only then.
+ */
+async function publishScopeEvent(
+  ctx: LockEventContext,
+  scope: LockScope,
+  field: ScopeEventField,
+  event: Event
+): Promise<Event> {
+  const { basedir, tag } = ctx;
+  const { publishing, ...rest } = scope;
+  if (publishing === event.eventType) {
+    const found = await ctx.findEvent(scope.correlationId, event.eventType);
+    if (found) {
+      await writeScope(basedir, { ...rest, [field]: found.eventId }, tag);
+      return found;
+    }
+  } else {
+    await writeScope(
+      basedir,
+      { ...rest, publishing: event.eventType as LockScope['publishing'] },
+      tag
+    );
+  }
+  const stored = await ctx.storeEvent(event);
+  await writeScope(basedir, { ...rest, [field]: stored.eventId }, tag);
+  return stored;
+}
 
 async function requireEvent(
   ctx: LockEventContext,
@@ -510,16 +567,11 @@ export async function createLockAcquisition(
     // between): finish it with the token it was granted.
     const existing = state.holders[id];
     if (existing) {
-      const stored = await ctx.storeEvent(
+      const stored = await publishScopeEvent(
+        ctx,
+        scope ?? { key, runId, correlationId, requestedAt: ctx.now },
+        'acquiredEventId',
         acquiredEvent(ctx, await ctx.mintEventId(), data, state, existing)
-      );
-      await writeScope(
-        basedir,
-        {
-          ...(scope ?? { key, runId, correlationId, requestedAt: ctx.now }),
-          acquiredEventId: stored.eventId,
-        },
-        tag
       );
       return {
         event: stored,
@@ -578,13 +630,11 @@ export async function createLockAcquisition(
         updatedAt: ctx.now,
       };
       await writeState(basedir, state, tag);
-      const stored = await ctx.storeEvent(
+      const stored = await publishScopeEvent(
+        ctx,
+        scope as LockScope,
+        'acquiredEventId',
         acquiredEvent(ctx, await ctx.mintEventId(), data, state, holder)
-      );
-      await writeScope(
-        basedir,
-        { ...(scope as LockScope), acquiredEventId: stored.eventId },
-        tag
       );
       return withHandoffs({
         event: stored,
@@ -615,25 +665,25 @@ export async function createLockAcquisition(
           lock,
         });
       }
-      const stored = await ctx.storeEvent({
-        eventType: 'lock_created',
-        correlationId,
-        runId,
-        eventId: await ctx.mintEventId(),
-        createdAt: ctx.now,
-        specVersion: ctx.specVersion,
-        eventData: {
-          key,
-          concurrency,
-          ...(leaseTtlMs !== undefined && { leaseTtlMs }),
-          ...(lock.retryAt && { retryAt: lock.retryAt }),
-          ...(wake && { wake }),
-        },
-      } as Event);
-      await writeScope(
-        basedir,
-        { ...(scope as LockScope), createdEventId: stored.eventId },
-        tag
+      const stored = await publishScopeEvent(
+        ctx,
+        scope as LockScope,
+        'createdEventId',
+        {
+          eventType: 'lock_created',
+          correlationId,
+          runId,
+          eventId: await ctx.mintEventId(),
+          createdAt: ctx.now,
+          specVersion: ctx.specVersion,
+          eventData: {
+            key,
+            concurrency,
+            ...(leaseTtlMs !== undefined && { leaseTtlMs }),
+            ...(lock.retryAt && { retryAt: lock.retryAt }),
+            ...(wake && { wake }),
+          },
+        } as Event
       );
       return withHandoffs({ event: stored, lock });
     };
@@ -664,7 +714,7 @@ export async function createLockAcquisition(
         if (changed) {
           await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
         }
-        const stored = await ctx.storeEvent({
+        const stored = await publishScopeEvent(ctx, scope, 'failedEventId', {
           eventType: 'lock_failed',
           correlationId,
           runId,
@@ -678,11 +728,6 @@ export async function createLockAcquisition(
             waitlistCap: policy.waitlistCap,
           },
         } as Event);
-        await writeScope(
-          basedir,
-          { ...scope, failedEventId: stored.eventId },
-          tag
-        );
         return withHandoffs({
           event: stored,
           lock: {
@@ -763,7 +808,7 @@ export async function createLockRelease(
         await writeState(basedir, { ...state, updatedAt: ctx.now }, tag);
       }
     }
-    const stored = await ctx.storeEvent({
+    const stored = await publishScopeEvent(ctx, scope, 'releasedEventId', {
       eventType: 'lock_released',
       correlationId,
       runId,
@@ -772,11 +817,6 @@ export async function createLockRelease(
       specVersion: ctx.specVersion,
       eventData: { key },
     } as Event);
-    await writeScope(
-      basedir,
-      { ...scope, releasedEventId: stored.eventId },
-      tag
-    );
     return {
       event: stored,
       lock: { key, status: 'released' },

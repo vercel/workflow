@@ -4,7 +4,7 @@
  * the same directory standing in for a second process), plus the
  * world-local-specific crash repair.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -127,5 +127,126 @@ describe('lock files written with WORKFLOW_LOCKS_FIFO=0, on a FIFO World', () =>
       queuedCount: 0,
       reservedCount: 0,
     });
+  });
+});
+
+describe('lock write crash repair and in-band accounting', () => {
+  function setup(prefix: string) {
+    const dir = freshDir(prefix);
+    const { events } = createStorage(dir);
+    const create = events.create as (
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: Record<string, unknown>
+    ) => Promise<EventResult>;
+    const newRun = async () => {
+      const { run } = await create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'w',
+          input: new Uint8Array([1]),
+        },
+      } as AnyEventRequest);
+      const runId = run?.runId as string;
+      await create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as AnyEventRequest);
+      return runId;
+    };
+    const lockCreated = (correlationId: string) =>
+      ({
+        eventType: 'lock_created',
+        correlationId,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { key: 'k', concurrency: 1 },
+      }) as AnyEventRequest;
+    const lockEvents = async (runId: string, correlationId: string) =>
+      (await events.list({ runId, pagination: { limit: 1000 } })).data
+        .filter((e) => e.correlationId === correlationId)
+        .map((e) => e.eventType);
+    /**
+     * Leaves the scope as a crash between publishing `eventType` and
+     * recording it would: the event is in the log, the scope names none.
+     */
+    const forgetRecorded = (
+      runId: string,
+      correlationId: string,
+      eventType: 'lock_created' | 'lock_acquired',
+      field: 'createdEventId' | 'acquiredEventId'
+    ) => {
+      const file = path.join(
+        dir,
+        'locks',
+        'scopes',
+        runId,
+        `${correlationId}.json`
+      );
+      const scope = JSON.parse(readFileSync(file, 'utf8'));
+      delete scope[field];
+      scope.publishing = eventType;
+      writeFileSync(file, JSON.stringify(scope));
+    };
+    return { events, create, newRun, lockCreated, lockEvents, forgetRecorded };
+  }
+
+  test('a grant published but not recorded is not published again', async () => {
+    const t = setup('wl-locks-crash-acquired-');
+    const runId = await t.newRun();
+    const first = await t.create(runId, t.lockCreated('lock_a'));
+    expect(first.event?.eventType).toBe('lock_acquired');
+    t.forgetRecorded(runId, 'lock_a', 'lock_acquired', 'acquiredEventId');
+
+    const retried = await t.create(runId, t.lockCreated('lock_a'));
+    expect(retried.event?.eventId).toBe(first.event?.eventId);
+    expect(await t.lockEvents(runId, 'lock_a')).toEqual(['lock_acquired']);
+  });
+
+  test('a wait published but not recorded is not published again', async () => {
+    const t = setup('wl-locks-crash-created-');
+    const holder = await t.newRun();
+    expect(
+      (await t.create(holder, t.lockCreated('lock_h'))).event?.eventType
+    ).toBe('lock_acquired');
+    const runId = await t.newRun();
+    const first = await t.create(runId, t.lockCreated('lock_w'));
+    expect(first.event?.eventType).toBe('lock_created');
+    t.forgetRecorded(runId, 'lock_w', 'lock_created', 'createdEventId');
+
+    const retried = await t.create(runId, t.lockCreated('lock_w'));
+    expect(retried.event?.eventId).toBe(first.event?.eventId);
+    expect(await t.lockEvents(runId, 'lock_w')).toEqual(['lock_created']);
+  });
+
+  test('an in-band re-POST that appends nothing does not advance the in-band count', async () => {
+    const t = setup('wl-locks-inband-');
+    const holder = await t.newRun();
+    await t.create(holder, t.lockCreated('lock_h'));
+    const runId = await t.newRun();
+    const seq = async () =>
+      (
+        (await t.events.list({ runId, pagination: { limit: 1000 } })) as {
+          snapshot?: { seqInBand: number };
+        }
+      ).snapshot?.seqInBand as number;
+
+    const before = await seq();
+    const first = await t.create(runId, t.lockCreated('lock_w'), {
+      inBand: true,
+      expectedSeqInBand: before,
+    });
+    expect(first.event?.eventType).toBe('lock_created');
+    expect(first.allocated).toBe(1);
+    expect(await seq()).toBe(before + 1);
+
+    const again = await t.create(runId, t.lockCreated('lock_w'), {
+      inBand: true,
+      expectedSeqInBand: before + 1,
+    });
+    expect(again.event?.eventId).toBe(first.event?.eventId);
+    expect(again.allocated).toBe(0);
+    expect(await seq()).toBe(before + 1);
   });
 });
