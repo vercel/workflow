@@ -157,13 +157,20 @@ interface MailboxBatch {
 const MAX_MAILBOX_BATCH = 100;
 /** Steps of one run that may be running at once (local and dispatched). A
  * sliding window: each committed outcome frees a slot for the next pending
- * step on the owner's next pass. */
-const MAX_RUNNING_STEPS = 200;
+ * step on the owner's next pass.
+ *
+ * Kept low because every running step's result arrives at the owner as its
+ * own request, and they tend to arrive together. On Vercel, about 200
+ * requests arriving at once for one affinity ID get its instance retired by
+ * the platform's admission (seconds into a fan-out, with no error in the
+ * function), and the run stalls until that instance stops; about 100 at once
+ * is absorbed. Rejecting early in the owner cannot help, since admission
+ * happens before a request reaches it. Raise this only with fan-in that
+ * batches results before they reach the owner. */
+const MAX_RUNNING_STEPS = 64;
 /** Inputs an owner queues before refusing more with a fast 429 (the caller
  * keeps its input and retries). Each queued input holds its request open
- * until committed, so this bounds the owner's concurrent inbound requests:
- * an affinity-pinned instance holding ~200 at once stopped receiving any new
- * requests. Deliberately below MAX_RUNNING_STEPS; results beyond it retry. */
+ * until committed, so this bounds the owner's concurrent inbound requests. */
 const MAILBOX_CAPACITY = 64;
 /** A remote step runs under its queue delivery's lease: a lost worker is
  * redelivered and reported (`step_status` with `lost`). This bound only
@@ -441,7 +448,9 @@ export class RetainedRunner {
     /** Step bodies this owner runs itself; the rest are dispatched. */
     private readonly localStepSlots = 3,
     /** Inputs queued before refusing more; see MAILBOX_CAPACITY. */
-    private readonly mailboxCapacity = MAILBOX_CAPACITY
+    private readonly mailboxCapacity = MAILBOX_CAPACITY,
+    /** Steps running at once; see MAX_RUNNING_STEPS. */
+    private readonly maxRunningSteps = MAX_RUNNING_STEPS
   ) {
     this.facade = {
       ...backend,
@@ -1638,7 +1647,7 @@ export class RetainedRunner {
       return this.dispatcher.launch(chunk, policy.attemptTimeoutMs);
     };
     let available =
-      MAX_RUNNING_STEPS -
+      this.maxRunningSteps -
       [...this.steps.values()].filter((step) => step.status === 'running')
         .length;
     for (const step of this.steps.values()) {

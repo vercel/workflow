@@ -1942,7 +1942,9 @@ async function setup(
     attemptTimeoutMs ?? (queued === true ? 1000 : 60_000),
     // The former all-dispatched mode: every body goes to another invocation.
     queued === true ? 0 : 3,
-    // These tests deliver whole batches at once; backpressure is tested apart.
+    // These tests deliver whole batches at once; backpressure and the
+    // running window are tested apart.
+    1024,
     1024
   );
   const send = async (requestId: string, value: string, target = owner) => {
