@@ -25,7 +25,8 @@ another branch is in flight keeps its own step results on replay.
 Hook disposals pending when a workflow completes or fails rely on the terminal
 event's hook cleanup, avoiding redundant `hook_disposed` events. Disposals still
 persist when the workflow suspends, a later pending registration needs the
-same token, or explicit disposal releases a retained token early. Final `AbortController.abort()` calls still propagate to steps.
+same token, or explicit disposal releases a retained token early. Final
+`AbortController.abort()` calls still propagate to steps.
 
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 
