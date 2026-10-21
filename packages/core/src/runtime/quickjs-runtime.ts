@@ -202,8 +202,8 @@ export interface QuickJSRuntimeResult {
     result: Uint8Array;
     /**
      * Leftover pending operations that still need durable side effects at
-     * completion: abort recordings, system-hook disposals, fire-and-forget
-     * attribute/hook/step events. Mirrors the node:vm engine's
+     * completion: abort recordings, fire-and-forget attribute/hook/step events,
+     * and disposals needed by later hook registrations. Mirrors the node:vm engine's
      * drainPendingQueueItems. The entrypoint dispatches these WITHOUT
      * queueing steps or requeuing the run.
      */
@@ -3127,15 +3127,6 @@ function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
 // ---- State Checking ----
 
 /**
- * Collect leftover pending operations that need durable side effects when
- * the workflow reaches a terminal state. Mirrors the node:vm engine's
- * drainPendingQueueItems (workflow.ts): still-alive system hooks
- * (AbortController) without an abort in flight are implicitly disposed so
- * they don't leak hook rows; ops without created events (fire-and-forget
- * attributes/hooks/steps/waits) and pending abort recordings are surfaced
- * for the entrypoint to flush.
- */
-/**
  * Per-VM cache of serialized pending-op field bytes, keyed
  * `correlationId:field`. A step's raw input is immutable once pushed, so
  * its bytes are computed once even though the op is re-collected on every
@@ -3272,6 +3263,11 @@ function dumpPendingOps(
   return plainOps;
 }
 
+/**
+ * Collect terminal side effects, including abort recordings and uncommitted
+ * operations. Run termination cleans up hooks, so retain disposals only when
+ * they release a token for a later pending hook registration.
+ */
 function collectDrainOperations(
   vm: QuickJS,
   serde: QuickJSSerde
@@ -3284,29 +3280,20 @@ function collectDrainOperations(
     vm,
     serde,
     `(function(){
-    var toDispose = [];
-    globalThis.__pending.forEach(function(p){
+    var pending = globalThis.__pendingList();
+    var lastHookCreation = new Map();
+    pending.forEach(function(p, index){
       if (p.type === "hook" && p.isSystem && !p.abortRequested && !p.disposed) {
         p.disposed = true;
-        // Only dispose hooks that were durably created; a hook that never
-        // reached storage has nothing to clean up.
-        if (p.hasCreatedEvent) {
-          toDispose.push({
-            type: "hook_dispose",
-            correlationId: p.correlationId,
-            // Carried, not dropped: the entrypoint sends it on hook_disposed,
-            // and the node:vm engine does the same for this case — its
-            // completion drain marks the system hook disposed and reuses the
-            // queue item, token and all. Synthesizing a fresh object here is
-            // what makes it easy to lose.
-            token: p.token,
-            hasCreatedEvent: false,
-          });
-        }
+      }
+      if (p.type === "hook" && !p.hasCreatedEvent && !p.disposed) {
+        lastHookCreation.set(p.token, index);
       }
     });
-    toDispose.forEach(function(d){ globalThis.__pushPending(d); });
-    return globalThis.__pendingList().filter(function(p){
+    return pending.filter(function(p, index){
+      if (p.type === "hook_dispose") {
+        return !p.hasCreatedEvent && index < lastHookCreation.get(p.token);
+      }
       if (p.abortRequested) return true;
       if (p.hasCreatedEvent) return false;
       // Skip system hooks that were disposed before ever being created.
