@@ -941,8 +941,10 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         }
         const result = await create(runId, data, params);
         // A create can succeed without appending (`run_started` on a running
-        // run); it allocated no position, so the count stays.
-        const allocated = result.event ? 1 : 0;
+        // run, a lock re-POST answered with its scope's existing event); it
+        // allocated no position, so the count stays. Lock writes report
+        // their own count.
+        const allocated = result.allocated ?? (result.event ? 1 : 0);
         if (allocated > 0) seqInBandByRun.set(runId, current + allocated);
         return { ...result, allocated } as EventResult;
       });
@@ -1017,10 +1019,30 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       return withHandoffs({
         event: stripEventDataRefs(clone(event), resolveData),
         lock,
+        allocated: 1,
       });
     };
     const tokenOf = (e: Event) =>
       (e as { eventData: { fencingToken: number } }).eventData.fencingToken;
+
+    // Every lock event of a scope names the key its first one did: a write
+    // under any other would free or take a slot the scope does not have.
+    const scopeKey = (
+      (created ?? acquired ?? failed ?? released) as
+        | { eventData?: { key?: string } }
+        | undefined
+    )?.eventData?.key;
+    if (scopeKey !== undefined && scopeKey !== request.key) {
+      if (data.eventType === 'lock_released') {
+        throw new EntityConflictError(
+          `Lock scope "${correlationId}" does not hold "${request.key}"`
+        );
+      }
+      throw new WorkflowWorldError(
+        `Lock scope "${correlationId}" was created for key "${scopeKey}", not "${request.key}"`,
+        { status: 409 }
+      );
+    }
 
     if (data.eventType === 'lock_released') {
       const row = lockRows.get(request.key);
@@ -1313,15 +1335,20 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     // Their own state machine, keyed across runs. Synchronous from the checks
     // to the append, so the grant is atomic in this single-threaded store.
     if (isLockEventType(data.eventType)) {
-      return createLockEvent(
-        runId,
-        currentRun,
-        data,
-        position,
-        now,
-        specVersion,
-        resolveData
-      );
+      // A re-POST answers with the scope's existing event and appends
+      // nothing; only a write that commits one reports a position.
+      return {
+        allocated: 0,
+        ...createLockEvent(
+          runId,
+          currentRun,
+          data,
+          position,
+          now,
+          specVersion,
+          resolveData
+        ),
+      };
     }
 
     const createsChildEntity = isChildEntityCreationEvent(data);
