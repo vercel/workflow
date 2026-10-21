@@ -2,15 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cp } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { FLOW_ASSETS_DIR, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  FLOW_ASSETS_DIR,
+  replaceFlowAssetsPlaceholder,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
-import { dirname, join, relative } from 'pathe';
-import {
-  FLOW_ASSETS_DIR_PLACEHOLDER,
-  LocalBuilder,
-  VercelBuilder,
-} from './builders.js';
+import { join } from 'pathe';
+import { LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
@@ -86,17 +86,11 @@ function addNodeRequireBanner(config: RollupConfig): void {
  */
 function workflowFlowAssetsPlugin(nitro: Nitro) {
   const sourceDir = join(nitro.options.buildDir, 'workflow', FLOW_ASSETS_DIR);
-  const placeholder = JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`);
   return {
     name: 'workflow:flow-assets',
     renderChunk(code: string, chunk: { fileName: string }) {
-      if (!code.includes(placeholder)) return null;
-      const rel = relative(dirname(chunk.fileName), FLOW_ASSETS_DIR);
-      const base = rel.startsWith('.') ? `${rel}/` : `./${rel}/`;
-      return {
-        code: code.replaceAll(placeholder, JSON.stringify(base)),
-        map: null,
-      };
+      const replaced = replaceFlowAssetsPlaceholder(code, chunk.fileName);
+      return replaced === undefined ? null : { code: replaced, map: null };
     },
     async writeBundle(options: { dir?: string }) {
       if (!options.dir || !existsSync(sourceDir)) return;

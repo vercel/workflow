@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  createChunkRelativeFlowAssetLoaderCode,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
@@ -62,12 +63,6 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   }
 }
 
-/**
- * Base directory of the flow assets in the generated route's loader,
- * replaced per chunk by the `workflow:flow-assets` plugin (see index.ts).
- */
-export const FLOW_ASSETS_DIR_PLACEHOLDER = '__WORKFLOW_FLOW_ASSETS_DIR__';
-
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
 
@@ -77,7 +72,7 @@ export class LocalBuilder extends BaseBuilder {
    * rewrites the placeholder to that chunk's path to its copy of them.
    */
   protected override getFlowAssetLoaderCode(): string | undefined {
-    return `(name) => import('node:fs/promises').then((fs) => fs.readFile(new URL(${JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`)} + name, import.meta.url)))`;
+    return createChunkRelativeFlowAssetLoaderCode();
   }
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');

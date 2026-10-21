@@ -4,6 +4,8 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
+  createChunkRelativeFlowAssetLoaderCode,
+  FLOW_ASSETS_DIR,
   NORMALIZE_REQUEST_CODE,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
@@ -23,19 +25,38 @@ const WORKFLOW_ROUTES = [
 
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
+  #prebuildFlowAssets: boolean;
 
   /**
-   * Astro's server build moves the assets it tracks into the public client
-   * output, and offers no non-public way to ship a server-only file with the
-   * route (Vercel deployments use the Build Output API builder, which
-   * does). Ship nothing: QuickJS runs compute the baseline heap in memory on
-   * each cold instance instead (same result).
+   * Astro re-bundles the flow route into its server build. The
+   * `workflow:flow-assets` Vite plugin emits the assets into that build
+   * (with `emitServerAsset()` where Astro provides it, so they are never
+   * moved to the public client output) and points the loader at them
+   * relative to the bundled route.
    */
   protected override getFlowAssetLoaderCode(): string | undefined {
-    return undefined;
+    return createChunkRelativeFlowAssetLoaderCode();
   }
 
-  constructor(options: Partial<AstroConfig> = {}) {
+  /** Only for `astro build`; `astro dev` computes the assets in memory. */
+  protected override get prebuildsFlowAssets(): boolean {
+    return this.#prebuildFlowAssets && super.prebuildsFlowAssets;
+  }
+
+  /**
+   * Where this builder writes the flow route's assets. The leading
+   * underscore keeps Astro from treating the directory as pages.
+   */
+  get flowAssetsDir(): string {
+    return join(this.#pagesDir, '.well-known/workflow/v1', FLOW_ASSETS_DIR);
+  }
+
+  constructor(
+    options: Partial<AstroConfig> & {
+      /** Prebuild the flow route's assets (production builds only). */
+      prebuildFlowAssets?: boolean;
+    } = {}
+  ) {
     const config = resolveAstroBuilderConfig(options);
     super({
       ...createBaseBuilderConfig({
@@ -53,6 +74,7 @@ export class LocalBuilder extends BaseBuilder {
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
     });
     this.#pagesDir = config.pagesDir;
+    this.#prebuildFlowAssets = options.prebuildFlowAssets ?? true;
   }
 
   override async build(): Promise<void> {

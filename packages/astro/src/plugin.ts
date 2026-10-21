@@ -2,7 +2,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type AstroConfig, createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
-import { workflowHotUpdatePlugin } from '@workflow/vite';
+import {
+  type WorkflowFlowAssetsPluginOptions,
+  workflowFlowAssetsPlugin,
+  workflowHotUpdatePlugin,
+} from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
 import { LocalBuilder, VercelBuilder } from './builder.js';
 
@@ -28,6 +32,7 @@ export function workflowPlugin(
     name: 'workflow:astro',
     hooks: {
       'astro:config:setup': async ({
+        command,
         config,
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
@@ -41,7 +46,10 @@ export function workflowPlugin(
 
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
-          const builder = new LocalBuilder(builderOptions);
+          const builder = new LocalBuilder({
+            ...builderOptions,
+            prebuildFlowAssets: command === 'build',
+          });
           try {
             await builder.build();
           } catch (buildError) {
@@ -55,6 +63,10 @@ export function workflowPlugin(
             workflowHotUpdatePlugin({
               builder,
               enqueue,
+            }) as any,
+            workflowFlowAssetsPlugin({
+              assetsDir: builder.flowAssetsDir,
+              emitFile: await getServerAssetEmitter(),
             }) as any
           );
         }
@@ -72,4 +84,30 @@ export function workflowPlugin(
       },
     },
   };
+}
+
+/**
+ * Astro moves the server build's tracked assets to its public client output.
+ * `emitServerAsset()` (newer Astro releases) opts an asset out of that, and
+ * out of the static files list. Without it, a plain `emitFile()` asset still
+ * stays in the server output, since Astro only moves the assets it tracks.
+ */
+async function getServerAssetEmitter(): Promise<
+  WorkflowFlowAssetsPluginOptions['emitFile']
+> {
+  try {
+    const utils = (await import('astro/assets/utils')) as {
+      emitServerAsset?: (
+        context: unknown,
+        options: { type: 'asset'; fileName: string; source: Uint8Array }
+      ) => string;
+    };
+    const { emitServerAsset } = utils;
+    if (typeof emitServerAsset !== 'function') return undefined;
+    return (context, file) => {
+      emitServerAsset(context, { type: 'asset', ...file });
+    };
+  } catch {
+    return undefined;
+  }
 }

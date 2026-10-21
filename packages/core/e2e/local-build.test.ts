@@ -97,9 +97,9 @@ const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
 
 /**
  * Where a local production build puts the QuickJS engine's prebuilt baseline
- * heap, which the flow route reads at runtime. Projects missing here ship
- * none: SvelteKit and Astro have no non-public way to ship it (QuickJS runs
- * compute it in memory there), and Nest builds at application startup.
+ * heap, which the flow route reads at runtime. Nest is missing because it
+ * builds at application startup, where the runtime computes the heap in
+ * memory instead.
  */
 const QUICKJS_BASELINE_ASSET_PATHS: Record<string, string> = {
   example:
@@ -115,6 +115,8 @@ const QUICKJS_BASELINE_ASSET_PATHS: Record<string, string> = {
   express: '.output/server/__workflow_assets/quickjs-baseline.bin',
   fastify: '.output/server/__workflow_assets/quickjs-baseline.bin',
   'tanstack-start': '.output/server/__workflow_assets/quickjs-baseline.bin',
+  sveltekit: 'build/server/__workflow_assets/quickjs-baseline.bin',
+  astro: 'dist/server/__workflow_assets/quickjs-baseline.bin',
 };
 
 /**
