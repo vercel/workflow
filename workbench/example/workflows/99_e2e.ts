@@ -4,6 +4,7 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_lock,
   FatalError,
   fetch,
   getStepMetadata,
@@ -15,7 +16,11 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
-import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
+import {
+  HookConflictError,
+  HookForceClaimedError,
+  LockUnsupportedError,
+} from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -4331,4 +4336,39 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   'use workflow';
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
+}
+
+//////////////////////////////////////////////////////////
+// experimental_lock(): native concurrency
+
+async function lockedCriticalSection(holdMs: number) {
+  'use step';
+  const startedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, holdMs));
+  return { startedAt, endedAt: Date.now() };
+}
+
+/**
+ * Holds one slot of `key` across a step. Callers namespace `key` per test run:
+ * lock keys are shared across every deployment of a project's environment.
+ */
+export async function lockWorkflow(
+  key: string,
+  concurrency: number,
+  holdMs: number
+) {
+  'use workflow';
+  try {
+    const slot = await experimental_lock(key, { concurrency });
+    try {
+      const window = await lockedCriticalSection(holdMs);
+      return { ...window, fencingToken: slot.fencingToken, supported: true };
+    } finally {
+      slot.release();
+    }
+  } catch (error) {
+    // Lets the suite skip on a World without the `locks` capability.
+    if (LockUnsupportedError.is(error)) return { supported: false };
+    throw error;
+  }
 }
