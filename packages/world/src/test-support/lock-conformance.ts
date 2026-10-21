@@ -916,13 +916,20 @@ export function lockConformance(options: LockConformanceOptions): void {
       const events = options.events();
       const key = uniqueId('key');
       const leased = await createRun(events);
+      // The waiter's run exists before the lease starts, so only its
+      // acquisition has to land inside the lease, with room for a slow host.
+      const waiterRun = await createRun(events);
+      const leaseTtlMs = 2_000;
       const held = await acquire(events, leased, key, 1, uniqueId('lock'), {
-        leaseTtlMs: 200,
+        leaseTtlMs,
       });
       expect(held.event.eventType).toBe('lock_acquired');
-      const w = await scope(events, key, 1);
+      const w = {
+        runId: waiterRun,
+        ...(await acquire(events, waiterRun, key, 1)),
+      };
       expect(w.result.lock?.waiter).toBe('queued');
-      await sleep(400);
+      await sleep(leaseTtlMs + 200);
       // The prune frees the slot and hands it to the head of the queue,
       // which is the scope retrying: it claims in the same write.
       const claimed = await retry(events, w, key, 1);
