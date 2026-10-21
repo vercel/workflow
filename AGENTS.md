@@ -439,14 +439,29 @@ Because those PRs have no deployment of their own, CI treats them specially: the
   - The other worlds (`@workflow/world`, `@workflow/world-postgres`, `@workflow/world-local`) are deliberately **not** in the group. They version independently and are expected to drift from the SDK version.
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
-- Create a changeset using `pnpm changeset add`
+- Create a changeset using `pnpm changeset add` from the repo root. Add exactly one per PR (see "Writing changesets" below).
   - All changed packages should be included in the changeset. Never include unchanged packages.
   - Never list a package from the `ignore` array in `.changeset/config.json` (private workbench and simulation packages such as `@workflow/world-sim`), even when the PR changes it. Changesets rejects a changeset that mixes ignored and published packages, and the failure only surfaces in the Release job on `main`. `node scripts/check-changesets.mjs` runs that validation locally; CI runs it in `lint.yml`.
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
   - The bump type determines the released version on both branches. While `main` is in pre-release mode it only increments `beta.N`, but the type is still recorded and applies when pre mode exits and when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
-- When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse: one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
+
+### Writing changesets
+
+A changeset's summary is copied verbatim into each listed package's `CHANGELOG.md` and the GitHub release notes, as one bullet among every other change in the release. Write it for a user skimming that list, not for the reviewer of the PR.
+
+- **One changeset per PR.** A single changeset can list every package the PR changes, each at the bump it needs, and gives the release one entry. Don't split one change into a changeset per package, and when a PR ends up with several, merge them into one. A PR that ships unrelated user-facing changes is usually a sign it should be split; if it genuinely can't be and separate entries read better, add the `allow-multiple-changesets` label.
+- **One sentence, two at most.** Typical entries are well under 200 characters. Say what changed and, when it isn't obvious, why it matters to the user: `Fix stream cursors not being advanced for skipped chunks, so repeated notifications cannot consume the requested start offset twice`.
+- **Start with an imperative verb**: `Add`, `Fix`, `Remove`, `Support`, `Allow`, `Stop`, `Upgrade`. Name the public API, option or env var involved in backticks (`` `createHook({ experimental_force: true })` ``, `` `WORKFLOW_EVENTS_TRANSPORT=http` ``).
+- **No package or commit-type prefix** (`[core]`, `fix(world-vercel):`). The changelog already groups entries by package.
+- **User-visible impact, not implementation.** Leave out internal function names, the investigation, alternatives considered and the rationale; those belong in the PR description, the commit message and the docs. If users need details, link to the docs instead of explaining inline: `` See [`experimental_force` docs](https://workflow-sdk.dev/v5/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for details. ``
+- **A single line of plain text.** No extra paragraphs, headings, lists or code blocks, and don't hard-wrap it.
+- **Say what users must do.** For a `major`, start with `**Breaking:**` and say what to change. When upgrading in place can affect in-flight runs (for example a replay divergence on world-local or world-postgres), say so, and what to do, in one sentence: `Self-hosted runs that already recorded one of the previously colliding IDs may report a replay divergence if they continue on upgraded code; restart those in-flight runs after upgrading.`
+- **Pick the bump by user impact.** A new default behavior, or a change to a stored or wire format that older versions cannot read, is `minor` even when the diff is small. Changes confined to a feature that is still experimental (`experimental_*` options, the QuickJS engine) can stay `patch`.
+- **No release, no packages.** For a PR that changes only docs, workbench apps, tests or CI, use `pnpm changeset --empty`. An empty changeset releases nothing, so its summary is never published.
+
+`node .github/scripts/lint-changesets.js` checks the changesets your branch adds or edits against `origin/main` (`--all` checks every pending changeset), and the Changeset Lint workflow runs it on every PR. It fails when a PR adds more than one changeset without the `allow-multiple-changesets` label, when a summary is over 600 characters (link URLs don't count), when it has more than one paragraph, a heading, a list or a code block, or when packages are listed with no summary. It warns, without failing, when a summary is over 300 characters, more than two sentences, hard-wrapped, or starts with a package or commit-type prefix. Changesets already on `main` are not re-linted.
 
 ### Backporting to `stable`
 
