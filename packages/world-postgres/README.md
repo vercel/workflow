@@ -346,7 +346,8 @@ its runs end.
 This includes `start(workflow, args, { deploymentId })` with routing on or off:
 a run started with a concrete id other than `postgres` waits for a process
 running as that deployment, where older releases ran it on the single
-`postgres` deployment. With invocation delivery on, a process sends hook
+`postgres` deployment. An id no deployment can have stays on the sending
+process's deployment. With invocation delivery on, a process sends hook
 inputs only to its own deployment's runs, and a hook resume for another
 deployment's run fails with `409`.
 

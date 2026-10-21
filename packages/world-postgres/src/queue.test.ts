@@ -661,22 +661,28 @@ describe('postgres queue http execution', () => {
     expect(vi.mocked(workerUtilsMock.addJob).mock.calls[0][0]).toBe(task);
   });
 
-  it('refuses to queue for a deployment id no deployment can have', async () => {
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+  it.each([
+    [undefined, 'workflow_flows'],
+    ['build_a', 'workflow_flows@build_a'],
+  ])('a %s process keeps a job for a deployment id no deployment can have', async (self, task) => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', deploymentId: self },
+      pool
+    );
     await queue.start();
 
-    await expect(
-      queue.queue(
-        '__wkf_workflow_example',
-        { runId: 'run_a' },
-        { deploymentId: 'build/a' }
-      )
-    ).rejects.toThrow('Cannot queue for deployment "build/a"');
-    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+    await queue.queue(
+      '__wkf_workflow_example',
+      { runId: 'run_a' },
+      { deploymentId: 'build/a' }
+    );
+
+    expect(vi.mocked(workerUtilsMock.addJob).mock.calls[0][0]).toBe(task);
   });
 
   it.each([
     [undefined, 'postgres', 'workflow_flows_executor'],
+    [undefined, 'build/a', 'workflow_flows_executor'],
     ['build_a', 'build_a', 'workflow_flows_executor@build_a'],
   ])('a %s process wakes an invoked run on its own executor task', async (self, runDeployment, task) => {
     const client = { query: vi.fn() };
@@ -765,9 +771,12 @@ describe('postgres queue http execution', () => {
     expect(options).not.toHaveProperty('queueName');
   });
 
-  it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
+  it.each([
+    [undefined, 'workflow_flows', 'workflow_flows_executor'],
+    ['build_a', 'workflow_flows@build_a', 'workflow_flows_executor@build_a'],
+  ])('a %s process transfers legacy orchestration before HTTP execution and preserves its retry budget', async (deploymentId, flowsTask, executorTask) => {
     const queue = buildQueue(
-      { connectionString: 'postgres://test', enableInvoke: true },
+      { connectionString: 'postgres://test', enableInvoke: true, deploymentId },
       pool
     );
     await queue.start();
@@ -788,16 +797,16 @@ describe('postgres queue http execution', () => {
         },
         { idempotencyKey: 'legacy-key' }
       );
-      await getTaskHandler('workflow_flows')(payload, {
+      await getTaskHandler(flowsTask)(payload, {
         job: { attempts: 4, max_attempts: 9 },
       });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
-        'workflow_flows_executor',
+        executorTask,
         expect.objectContaining({ ...payload, attempt: 4, attemptOffset: 3 }),
         expect.objectContaining({
           queueName: 'workflow_flows:run_a:executor',
-          jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
+          jobKey: `${executorTask}:transfer:${payload.messageId}`,
           maxAttempts: 6,
         })
       );
@@ -1361,7 +1370,7 @@ function buildMessageData(
   });
 }
 
-function getTaskHandler(name: 'workflow_flows') {
+function getTaskHandler(name: string) {
   const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
   const task = taskList?.[name];
   expect(task).toBeTypeOf('function');

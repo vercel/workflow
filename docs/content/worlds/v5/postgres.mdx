@@ -296,7 +296,7 @@ Set to `1` to run this process as the deployment named by `WORKFLOW_DEPLOYMENT_I
 
 Each deployment consumes Graphile jobs only from its own tasks: `workflow_flows` (plus `workflow_flows_executor` with invocation enabled) for `postgres`, and `workflow_flows@<id>` (plus `workflow_flows_executor@<id>`) for any other id. A job addressed to a deployment, such as a hook resume or a step for a run that deployment started, goes to that deployment's task whether or not routing is on in the sending process. On startup a process re-enqueues only its own deployment's active runs.
 
-This applies to `start(workflow, args, { deploymentId })` too, with routing on or off: a run started with a concrete `deploymentId` other than `postgres` waits for a process running as that deployment. Older releases ran such a run on the single `postgres` deployment. `deploymentId: "latest"` still targets the current deployment.
+This applies to `start(workflow, args, { deploymentId })` too, with routing on or off: a run started with a concrete `deploymentId` other than `postgres` waits for a process running as that deployment. Older releases ran such a run on the single `postgres` deployment. `deploymentId: "latest"` still targets the current deployment, and so does an id no deployment can have.
 
 With [invocation delivery](#experimental-invocation-delivery) on, a process sends hook inputs only to its own deployment's runs. A hook resume for a run on another deployment fails with a `409` error instead of waiting for an executor that may not exist.
 

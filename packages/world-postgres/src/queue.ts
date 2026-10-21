@@ -282,14 +282,19 @@ export function createQueue(
    * The deployment a producer addressed, or this one. Every deployment sends
    * to the others, including in single-deployment mode: a `'postgres'`
    * process can start or hand off a run on an opted-in one.
+   *
+   * An id no deployment can have stays here rather than throwing: `start()`
+   * writes `run_created` alongside the queue, so a throw would leave a pending
+   * run that nothing recovers. A `'postgres'` process runs it, as before
+   * routing; a routed one's deployment affinity guard fails it.
    */
   function targetDeploymentId(requested: string | undefined): string {
-    if (requested === undefined || requested === 'latest') return deploymentId;
-    if (!isRoutableDeploymentId(requested)) {
-      throw new WorkflowWorldError(
-        `Cannot queue for deployment ${JSON.stringify(requested)}: no Postgres World deployment can have that id.`,
-        { status: 400 }
-      );
+    if (
+      requested === undefined ||
+      requested === 'latest' ||
+      !isRoutableDeploymentId(requested)
+    ) {
+      return deploymentId;
     }
     return requested;
   }
@@ -933,7 +938,7 @@ export function createQueue(
         // Whether another deployment has invoke enabled is unknown here, and
         // without it no executor would answer. Throwing rolls back the
         // mailbox insertion.
-        if (run.deploymentId !== deploymentId) {
+        if (targetDeploymentId(run.deploymentId) !== deploymentId) {
           throw new WorkflowWorldError(
             `Cannot invoke run ${runId}: it belongs to deployment ${JSON.stringify(run.deploymentId)}, and a Postgres World process invokes only its own deployment's runs (${JSON.stringify(deploymentId)}).`,
             { status: 409 }
