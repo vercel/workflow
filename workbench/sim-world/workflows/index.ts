@@ -17,6 +17,7 @@
  *   6. Forks        — a hook racing a timeout, which is where corruption lives.
  *   7. Step-vs-step — the same fork with no out-of-band event at all.
  *   8. Unclaimed    — a hook payload nobody reads, parked under a fork.
+ *   9. Locks        — runs contending for one `experimental_lock()` key.
  *
  * Step functions are module-private and sit directly above the first workflow
  * that uses them. Names are unique across the whole file, so a scenario can
@@ -26,6 +27,7 @@
 
 import {
   createHook,
+  experimental_lock,
   getStepMetadata,
   RetryableError,
   setAttributes,
@@ -684,4 +686,33 @@ export async function claimedPayloadForkWorkflow(documentId: string) {
     branchPoke,
   ]);
   return `${stepTail}|${sleepTail}`;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Locks
+// ---------------------------------------------------------------------------
+
+/** The critical section: a scenario parks a run inside it by its runId. */
+async function lockedWork(tag: string) {
+  'use step';
+  return tag;
+}
+
+/**
+ * Takes one slot of `key`, runs one step inside it, releases. Every lock
+ * scenario runs several of these against one key and steers them by runId.
+ */
+export async function lockedWorkflow(
+  key: string,
+  concurrency: number,
+  tag: string
+) {
+  'use workflow';
+  const slot = await experimental_lock(key, { concurrency });
+  try {
+    await lockedWork(tag);
+  } finally {
+    slot.release();
+  }
+  return `${tag}:${slot.fencingToken}`;
 }
