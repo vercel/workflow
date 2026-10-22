@@ -55,6 +55,7 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
+  type StartHook,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -173,6 +174,12 @@ interface SplitEventData {
     /** Ref key of dynamic workflow code uploaded ahead of the write, for
      *  definitions too large to send inline. */
     dynamicWorkflowCodeRef?: string;
+    /**
+     * Atomic start Hook reservation (run_created / resilient run_started).
+     * Nested as `{ token, tokenRetentionUntil? }`; the retention is a Date
+     * (CBOR tag 1). See `start-hook.ts` in @workflow/world for the contract.
+     */
+    startHook?: StartHook;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -229,6 +236,7 @@ type MetaSourceField =
   | 'encryptionPublicKey'
   | 'dynamicWorkflowCode'
   | 'dynamicWorkflowCodeRef'
+  | 'startHook'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -408,6 +416,28 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
     meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
+  }
+  // Atomic start Hook admission. The server drops meta keys it does not
+  // know, so this adapter only advertises `atomicStartHook` once the backend
+  // admits it (see `index.ts`); otherwise the reservation would vanish here
+  // without an error and the run would start unreserved.
+  if (
+    eventData.startHook !== undefined &&
+    eventData.startHook !== null &&
+    typeof eventData.startHook === 'object'
+  ) {
+    const startHook = eventData.startHook as StartHook;
+    meta.startHook = {
+      token: startHook.token,
+      ...(startHook.tokenRetentionUntil instanceof Date
+        ? { tokenRetentionUntil: startHook.tokenRetentionUntil }
+        : {}),
+      // The serialized metadata bytes, exactly what `hook_created` would
+      // carry as its payload; a CBOR byte string in the meta.
+      ...(startHook.metadata instanceof Uint8Array
+        ? { metadata: startHook.metadata }
+        : {}),
+    };
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.

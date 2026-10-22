@@ -12,6 +12,13 @@ import { type DrizzleHandle, Schema } from './drizzle/index.js';
  */
 const NULL = sql`NULL`;
 
+function withoutMetadata<T extends { metadata?: unknown }>(
+  value: T
+): Omit<T, 'metadata'> {
+  const { metadata: _metadata, ...rest } = value;
+  return rest;
+}
+
 /**
  * Delete a finished run's user data now, for runs started with
  * `$retention: 0`.
@@ -59,12 +66,30 @@ export async function purgeRunUserData(
   runId: string,
   purgedAt: Date
 ): Promise<void> {
-  const { runs, steps, events, hooks, streams, invocations } = Schema;
+  const {
+    runs,
+    steps,
+    events,
+    hooks,
+    streams,
+    invocations,
+    startHookAdmissions,
+  } = Schema;
 
   await drizzle.transaction(async (tx) => {
+    // A start Hook's metadata is user data; its token and retention are not,
+    // and the admission still needs them to hold the token.
+    const [own] = await tx
+      .select({ startHook: runs.startHook })
+      .from(runs)
+      .where(eq(runs.runId, runId));
+    const startHook = own?.startHook;
     await tx
       .update(runs)
       .set({
+        ...(startHook?.metadata !== undefined && {
+          startHook: withoutMetadata(startHook),
+        }),
         expiredAt: purgedAt,
         input: NULL,
         inputJson: NULL,
@@ -102,6 +127,11 @@ export async function purgeRunUserData(
       .update(hooks)
       .set({ metadata: NULL, metadataJson: NULL, resumeContext: NULL })
       .where(eq(hooks.runId, runId));
+
+    await tx
+      .update(startHookAdmissions)
+      .set({ metadata: NULL })
+      .where(eq(startHookAdmissions.runId, runId));
 
     await tx
       .update(streams)

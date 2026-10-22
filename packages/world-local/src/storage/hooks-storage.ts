@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { HookNotFoundError } from '@workflow/errors';
+import { HookNotFoundError, HookReservedError } from '@workflow/errors';
 import type {
   Event,
   GetHookParams,
@@ -10,9 +10,9 @@ import type {
   Storage,
 } from '@workflow/world';
 import {
+  HOOK_RESERVED_RETRY_AFTER_SECONDS,
   HookSchema,
   isTerminalWorkflowRunStatus,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -30,9 +30,12 @@ import {
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import {
+  type HookTokenClaim,
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  isWithinStartHookOrphanGrace,
+  RunRecordSchema,
   readHookDisposeLock,
   readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
@@ -99,7 +102,7 @@ async function isTerminalRunCache(
     basedir,
     'runs',
     runId,
-    WorkflowRunSchema,
+    RunRecordSchema,
     tag
   );
   return run ? isTerminalWorkflowRunStatus(run.status) : false;
@@ -243,6 +246,33 @@ export function createHooksStorage(
   async function findHookByToken(token: string): Promise<Hook | null> {
     // Fast path: the token claim file points at the owning hookId.
     const claim = await readHookTokenClaim(hookTokenClaimPath(basedir, token));
+    // A start reservation its run has not adopted yet: the token has an
+    // owner, just no Hook. Retryable until the run adopts it; not found once
+    // the run has ended without doing so.
+    const throwIfReserved = async (reserved: HookTokenClaim) => {
+      const owner = await readJSONWithFallback(
+        basedir,
+        'runs',
+        reserved.runId,
+        RunRecordSchema,
+        tag
+      );
+      // Reserved while its run is live, or, before the run is written,
+      // while its admission may still be in flight (the orphan grace).
+      if (
+        owner
+          ? !isTerminalWorkflowRunStatus(owner.status)
+          : isWithinStartHookOrphanGrace(reserved)
+      ) {
+        throw new HookReservedError(token, reserved.runId, {
+          retryAfter: HOOK_RESERVED_RETRY_AFTER_SECONDS,
+        });
+      }
+    };
+    if (claim?.reservation && !claim.hookId) {
+      await throwIfReserved(claim);
+      return null;
+    }
     if (claim?.hookId) {
       try {
         const hook = await readJSONWithFallback(
@@ -263,6 +293,24 @@ export function createHooksStorage(
           // an instant. Resolve to whoever holds the token now (below).
         } else if (hook) {
           return null;
+        } else if (
+          claim.reservation &&
+          !(await isHookDisposalCommitted(basedir, claim.hookId, tag))
+        ) {
+          // Mid-adoption: the claim already names the adopting Hook, whose
+          // entity is written once its `hook_created` is published. A
+          // creation that published and died before the entity write is
+          // recovered from the log; until it publishes, the token is still
+          // the run's reservation.
+          const recovered = await rebuildLiveHookByTokenFromEventLog(
+            basedir,
+            token,
+            tag
+          );
+          if (recovered) {
+            return { ...recovered, isWebhook: recovered.isWebhook ?? true };
+          }
+          await throwIfReserved(claim);
         }
       } catch (error) {
         if (!UnsafeEntityIdError.is(error)) {
