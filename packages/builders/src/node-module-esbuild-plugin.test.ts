@@ -57,6 +57,41 @@ async function buildWorkflowWithViolation(
   }
 }
 
+/**
+ * Write `files` (paths relative to a fresh temp dir) and bundle `entry` with
+ * the plugin. Returns the build failure, or `undefined` if the build passed.
+ */
+async function buildFixture(files: Record<string, string>, entry: string) {
+  const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
+  const { mkdirSync } = await import('node:fs');
+  for (const [path, contents] of Object.entries(files)) {
+    const absolutePath = join(tempDir, path);
+    mkdirSync(resolve(absolutePath, '..'), { recursive: true });
+    writeFileSync(absolutePath, contents);
+  }
+  const relativePath = (path: string) =>
+    relative(process.cwd(), join(tempDir, path));
+
+  try {
+    await esbuild.build({
+      entryPoints: [join(tempDir, entry)],
+      bundle: true,
+      write: false,
+      platform: 'neutral',
+      logLevel: 'silent',
+      plugins: [createNodeModuleErrorPlugin()],
+    });
+    return { failure: undefined, relativePath };
+  } catch (error: any) {
+    if (error && typeof error === 'object' && 'errors' in error) {
+      return { failure: error as esbuild.BuildFailure, relativePath };
+    }
+    throw error;
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 describe('workflow-node-module-error plugin', () => {
   it('should error on fs import', async () => {
     const testCode = `
@@ -473,6 +508,98 @@ describe('workflow-node-module-error plugin', () => {
       file: relativeEntry,
     });
   });
+
+  it.each([
+    ['a BOM', '\uFEFF'],
+    ['an inline block comment', '/* filesystem */ '],
+    ['a multi-line block comment', '/* filesystem\n */ '],
+    ['a block comment mentioning import', '/* import filesystem */ '],
+    ['a comment after another statement', 'const x = 1; /* filesystem */ '],
+  ])('should error on a Node.js import preceded by %s', async (_, prefix) => {
+    const { failure, relativeEntry } = await buildWorkflowWithViolation(
+      `${prefix}import fs from "node:fs";\nexport const read = fs.readFile;`
+    );
+
+    expect(failure.errors).toHaveLength(1);
+    expect(failure.errors[0].text).toContain('"node:fs" which is a Node.js module');
+    expect(failure.errors[0].location).toMatchObject({
+      file: relativeEntry,
+      line: prefix.split('\n').length + 1,
+      column: 20,
+      lineText: 'export const read = fs.readFile;',
+      length: 2,
+    });
+  });
+
+  // https://github.com/vercel/workflow/issues/4903
+  it('should error when a package using Node.js modules is imported across multiple lines', async () => {
+    const { failure, relativePath } = await buildFixture(
+      {
+        'node_modules/fake-client/package.json': JSON.stringify({
+          name: 'fake-client',
+          main: 'index.js',
+        }),
+        'node_modules/fake-client/index.js': `
+          import { Stream } from "stream";
+          export const BookingStatus = new Stream();
+          export const BookingType = {};
+          export const SalesConsultationType = {};
+        `,
+        'schemas/bookings.ts': `import {
+  BookingStatus,
+  BookingType,
+  SalesConsultationType,
+} from "fake-client";
+
+export const bookingStatusSchema = [BookingStatus, BookingType, SalesConsultationType];
+`,
+        'workflow.ts': `
+          import { bookingStatusSchema } from "./schemas/bookings";
+          export function workflow() {
+            return bookingStatusSchema;
+          }
+        `,
+      },
+      'workflow.ts'
+    );
+
+    if (!failure) throw new Error('Expected build to fail');
+    expect(failure.errors).toHaveLength(1);
+    const violation = failure.errors[0];
+    expect(violation.text).toContain('"fake-client"');
+    expect(violation.text).toContain('which depends on Node.js modules');
+    expect(violation.location).toMatchObject({
+      file: relativePath('schemas/bookings.ts'),
+      line: 7,
+    });
+    expect(violation.location?.lineText).toContain('BookingStatus');
+  });
+
+  it('should error when a Node.js module is imported across multiple lines', async () => {
+    const { failure, relativePath } = await buildFixture(
+      {
+        'workflow.ts': `import {
+  readFile,
+  writeFile,
+} from "fs";
+
+export function workflow() {
+  return [readFile, writeFile];
+}
+`,
+      },
+      'workflow.ts'
+    );
+
+    if (!failure) throw new Error('Expected build to fail');
+    expect(failure.errors).toHaveLength(1);
+    const violation = failure.errors[0];
+    expect(violation.text).toContain('"fs" which is a Node.js module');
+    expect(violation.location).toMatchObject({
+      file: relativePath('workflow.ts'),
+      line: 7,
+    });
+  });
 });
 
 describe('workflow-node-module-error helper functions', () => {
@@ -649,6 +776,124 @@ describe('workflow-node-module-error helper functions', () => {
       // Since the identifier is never referenced (only imported), we should
       // not produce a location preview.
       expect(location).toBeUndefined();
+    });
+
+    it('should find the usage of a multi-line named import', async () => {
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `import {
+  readFile,
+  writeFile,
+} from "node:fs";
+
+export const read = readFile;
+`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toEqual({
+          file: 'file.ts',
+          line: 6,
+          column: 20,
+          lineText: 'export const read = readFile;',
+          length: 'readFile'.length,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should not match across a preceding import statement', async () => {
+      // A lazy cross-line match starting at the first `import` would capture
+      // `a from "x";\nimport { b }` and pick the wrong identifier.
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `import a from "x";
+import {
+  b,
+} from "node:fs";
+
+export const first = a;
+export const second = b;
+`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toMatchObject({
+          line: 7,
+          lineText: 'export const second = b;',
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ['a line comment', '// import order matters here'],
+      ['a JSDoc block', '/**\n * Helpers we import for the workflow\n */'],
+    ])('should not start the match in %s that mentions import', async (_, comment) => {
+      // Without anchoring the match to a statement start, it would begin at the
+      // `import` in the comment and capture `order matters here\nimport fs` as
+      // the specifier, losing the location of the default import.
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `${comment}\nimport fs from "node:fs";\n\nexport const read = fs.readFile;\n`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toMatchObject({
+          lineText: 'export const read = fs.readFile;',
+          column: 'export const read = '.length,
+          length: 'fs'.length,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should find a multi-line import that follows another statement on the same line', async () => {
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `const x = 1; import {
+  readFile,
+} from "node:fs";
+
+export const read = readFile;
+`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toMatchObject({
+          line: 5,
+          lineText: 'export const read = readFile;',
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 });
