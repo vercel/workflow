@@ -2694,7 +2694,6 @@ describe.concurrent('e2e', () => {
         expect(claimerEvents.map((e) => e.eventType)).toEqual([
           'hook_created',
           'hook_received',
-          'hook_disposed',
         ]);
         expect((claimerEvents[0] as any).eventData).toMatchObject({
           force: true,

@@ -69,7 +69,8 @@ import { createSleep } from './workflow/sleep.js';
  *
  * Treats completion as a final suspension so unawaited hook, wait, and
  * attribute operations are recorded before the run becomes terminal. This
- * also lets a final `controller.abort()` reach in-flight steps.
+ * also lets a final `controller.abort()` reach in-flight steps. Final hook
+ * disposals of non-retained hooks are omitted because termination releases them.
  *
  * It records `*_created` and native attribute events, but never executes step
  * bodies: `step_started` is rejected after the run becomes terminal. A
@@ -90,22 +91,6 @@ async function drainPendingQueueItems(
   runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
-  // Implicitly dispose any abort hooks (system hooks) that are still alive at
-  // workflow completion so they don't leak rows in the hooks table for the
-  // run's lifetime. Skip hooks that already have an abort in flight; those
-  // will emit hook_received via the abort processing path. User hooks
-  // (isSystem !== true) are intentionally left alone: their lifetime is
-  // managed by the user's code, not the runtime.
-  for (const item of pendingQueue.values()) {
-    if (
-      item.type === 'hook' &&
-      item.isSystem &&
-      !item.disposed &&
-      !item.abortRequested
-    ) {
-      item.disposed = true;
-    }
-  }
   try {
     const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
@@ -114,6 +99,7 @@ async function drainPendingQueueItems(
       world,
       run: workflowRun,
       runReadyBarrier,
+      terminalDrain: true,
     });
   } catch (err) {
     runtimeLogger.warn(
