@@ -9995,7 +9995,7 @@ packages:
     engines: {node: '>=20.0.0'}
 
   '@vercel/queue@https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz':
-    resolution: {integrity: sha512-FbH08AeUCc/m9c30+F5fsMFdNOrHeePYDP7Tg2KkYFOEPhft6isYk98DDNBsiQUiynT+7axlB3i5jA3seun1gw==, tarball: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz}
+    resolution: {integrity: sha512-bLUL5rfNovYzrBrNp1lRi0BIwSvGVdCwNoh2csxzccymc5YTjggp8YuTut21cmZRNz/0WrA0gqErDzvv1OSEUg==, tarball: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz}
     version: 0.8.0
     engines: {node: '>=20.0.0'}
     peerDependencies:
