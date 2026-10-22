@@ -1,12 +1,19 @@
 import {
   RunExpiredError,
+  START_HOOK_CANDIDATE_CANCELLED,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+  type World,
+} from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import {
   deriveRunPayloadKeys,
@@ -309,14 +316,42 @@ export class Run<TResult> {
     'use step';
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
-    const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(this.runId, {
-      eventType: 'run_cancelled',
-      specVersion: specVersionForRunWrite(run.specVersion),
-      ...(options?.cancelReason !== undefined
-        ? { eventData: { cancelReason: options.cancelReason } }
-        : {}),
-    });
+    // A run that does not exist is cancelled through the World all the same:
+    // a `start({ hook })` candidate that was admitted but never created its
+    // run (the one a `WorkflowStartError` names) is fenced by it, so it can
+    // never start. Otherwise the World answers `WorkflowRunNotFoundError`.
+    const run = await world.runs
+      .get(this.runId, { resolveData: 'none' })
+      .catch((err: unknown) => {
+        // Only a World with start Hooks can have a candidate with no run
+        // to fence; anywhere else a missing run stays a plain not-found.
+        if (
+          !WorkflowRunNotFoundError.is(err) ||
+          world.capabilities?.atomicStartHook?.active !== true
+        ) {
+          throw err;
+        }
+        return undefined;
+      });
+    try {
+      await world.events.create(this.runId, {
+        eventType: 'run_cancelled',
+        specVersion: run
+          ? specVersionForRunWrite(run.specVersion)
+          : SPEC_VERSION_CURRENT,
+        ...(options?.cancelReason !== undefined
+          ? { eventData: { cancelReason: options.cancelReason } }
+          : {}),
+      });
+    } catch (err) {
+      if (
+        WorkflowWorldError.is(err) &&
+        err.code === START_HOOK_CANDIDATE_CANCELLED
+      ) {
+        return;
+      }
+      throw err;
+    }
   }
 
   /**

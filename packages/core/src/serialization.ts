@@ -2002,6 +2002,22 @@ function attachAbortListenerOnce(
 }
 
 /**
+ * Run `pipe` now, or, with a gate, only once it resolves `true`. A `false` or
+ * rejected gate never runs it, and the returned promise still resolves, so an
+ * op that never pipes cannot surface as an unhandled rejection.
+ */
+function afterStreamStartGate(
+  gate: Promise<boolean> | undefined,
+  pipe: () => Promise<void>
+): Promise<void> {
+  if (!gate) return pipe();
+  return gate.then(
+    (open) => (open ? pipe() : undefined),
+    () => undefined
+  );
+}
+
+/**
  * Reducers for serialization boundary from the client side, passing arguments
  * to the workflow handler.
  *
@@ -2034,7 +2050,14 @@ export function getExternalReducers(
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  // `start({ hook })`'s arguments: pipe each stream (upload or readback)
+  // only once this resolves `true`, the candidate having been admitted. On
+  // `false` the stream is left untouched (never read, locked, or cancelled),
+  // so a refused duplicate never drains a one-shot source such as a webhook
+  // `request.body` into a run that does not exist. Undefined everywhere else:
+  // pipes start immediately.
+  streamStartGate?: Promise<boolean>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2056,38 +2079,39 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(
-        runId,
-        name,
-        runReadyBarrier
-      );
-      if (type === 'bytes') {
-        if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
-        } else {
-          ops.push(value.pipeTo(writable));
-        }
-      } else {
-        ops.push(
-          value
-            .pipeThrough(
-              getSerializeStream(
-                getExternalReducers(
-                  global,
-                  ops,
-                  runId,
-                  cryptoKey,
-                  framedByteStreams,
-                  runReadyBarrier,
-                  readbackOps,
-                  framedAbortStreams
-                ),
-                cryptoKey
-              )
-            )
-            .pipeTo(writable)
+      // The server sink is opened with the pipe, so a gated stream that never
+      // pipes never touches its server stream either.
+      const pipe = (): Promise<void> => {
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
         );
-      }
+        if (type === 'bytes') {
+          return framedByteStreams
+            ? value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+            : value.pipeTo(writable);
+        }
+        return value
+          .pipeThrough(
+            getSerializeStream(
+              getExternalReducers(
+                global,
+                ops,
+                runId,
+                cryptoKey,
+                framedByteStreams,
+                runReadyBarrier,
+                readbackOps,
+                framedAbortStreams,
+                streamStartGate
+              ),
+              cryptoKey
+            )
+          )
+          .pipeTo(writable);
+      };
+      ops.push(afterStreamStartGate(streamStartGate, pipe));
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -2134,8 +2158,11 @@ export function getExternalReducers(
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-      const readable = new WorkflowServerReadableStream(runId, name);
-      readbackOps.push(readable.pipeTo(value));
+      readbackOps.push(
+        afterStreamStartGate(streamStartGate, () =>
+          new WorkflowServerReadableStream(runId, name).pipeTo(value)
+        )
+      );
 
       return { name };
     },
@@ -3882,7 +3909,9 @@ export async function dehydrateWorkflowArguments(
   framedByteStreams = false,
   compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  // See getExternalReducers. Only `start({ hook })` passes one.
+  streamStartGate?: Promise<boolean>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3895,7 +3924,8 @@ export async function dehydrateWorkflowArguments(
         framedByteStreams,
         undefined,
         readbackOps,
-        framedAbortStreams
+        framedAbortStreams,
+        streamStartGate
       )
     );
     return revive(str);
@@ -3913,7 +3943,8 @@ export async function dehydrateWorkflowArguments(
           framedByteStreams,
           undefined,
           readbackOps,
-          framedAbortStreams
+          framedAbortStreams,
+          streamStartGate
         )
       ),
       compression,

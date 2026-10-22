@@ -220,6 +220,32 @@ export function getWebRevivers(): Revivers {
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
+    HookReservedError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        token?: string;
+        runId?: string;
+        retryAfter?: number;
+      };
+      error.name = 'HookReservedError';
+      error.token = value.token;
+      error.runId = value.runId;
+      if (value.retryAfter !== undefined) error.retryAfter = value.retryAfter;
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        runId?: string;
+        stage?: string;
+      };
+      error.name = 'WorkflowStartError';
+      error.runId = value.runId;
+      error.stage = value.stage;
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     RetryableError: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new Error(value.message, opts) as Error & {

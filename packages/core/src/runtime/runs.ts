@@ -1,7 +1,10 @@
 import {
   EntityConflictError,
+  START_HOOK_CANDIDATE_CANCELLED,
   StreamError,
+  WorkflowRunNotFoundError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
@@ -9,6 +12,7 @@ import {
   type BulkCancelWorkflowRunsResult,
   type Event,
   isLegacySpecVersion,
+  SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   type World,
 } from '@workflow/world';
@@ -138,6 +142,8 @@ export async function recreateRunFromExisting(
         : undefined);
     const region = options.region ?? world.regionForRunId?.(runId) ?? undefined;
 
+    // Never forward the source run's `startHook`: a re-run is a new run by
+    // intent, and the reservation would refuse it as a duplicate.
     const newRun = await start(
       { workflowId: run.workflowName },
       workflowArgs as unknown[],
@@ -162,6 +168,12 @@ export async function recreateRunFromExisting(
 /**
  * Cancel a workflow run.
  *
+ * A run that does not exist (yet) is still cancelled through the World: a
+ * `start({ hook })` candidate that was admitted but never created a run (the
+ * recovery `WorkflowStartError` points at) is fenced by it, so no copy of it
+ * can create the run any more. Otherwise the World answers not found, which
+ * is thrown as `WorkflowRunNotFoundError`.
+ *
  * @param options - Optional cancellation settings. `cancelReason` records a
  *   free-text reason (max 512 chars) on the run_cancelled event.
  */
@@ -170,12 +182,25 @@ export async function cancelRun(
   runId: string,
   options?: CancelRunOptions
 ): Promise<void> {
+  let missing = false;
   try {
-    const run = await world.runs.get(runId, { resolveData: 'none' });
-    const specVersion = specVersionForRunWrite(
-      run.specVersion,
-      SPEC_VERSION_LEGACY
-    );
+    const run = await world.runs
+      .get(runId, { resolveData: 'none' })
+      .catch((err: unknown) => {
+        // Only a World with start Hooks can have a candidate with no run
+        // to fence; anywhere else a missing run stays a plain not-found.
+        if (
+          !WorkflowRunNotFoundError.is(err) ||
+          world.capabilities?.atomicStartHook?.active !== true
+        ) {
+          throw err;
+        }
+        missing = true;
+        return undefined;
+      });
+    const specVersion = run
+      ? specVersionForRunWrite(run.specVersion, SPEC_VERSION_LEGACY)
+      : SPEC_VERSION_CURRENT;
     const compatMode = isLegacySpecVersion(specVersion);
     const eventRequest = {
       eventType: 'run_cancelled' as const,
@@ -186,6 +211,14 @@ export async function cancelRun(
     };
     await world.events.create(runId, eventRequest, { v1Compat: compatMode });
   } catch (err) {
+    // The World fenced a candidate that never became a run: cancelled.
+    if (
+      WorkflowWorldError.is(err) &&
+      err.code === START_HOOK_CANDIDATE_CANCELLED
+    ) {
+      return;
+    }
+    if (missing && WorkflowRunNotFoundError.is(err)) throw err;
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
