@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
+import { StartHookSchema } from './start-hook.js';
 
 // Workflow run schemas
 export const WorkflowRunStatusSchema = z.compile(
@@ -122,6 +123,13 @@ export const WorkflowRunBaseSchema = z.compile(
      * implement `getEncryptionKeyForRun` (encryption disabled).
      */
     encryptionPublicKey: z.string().optional(),
+    /**
+     * The Hook token this run reserved through `start({ hook })`, echoed by a
+     * World that admitted it (see `start-hook.ts`). Required on the
+     * `run_created` response; a World may also return it on later reads.
+     * Never forwarded when a run is re-run: a re-run is a new run by intent.
+     */
+    startHook: StartHookSchema.optional(),
     expiredAt: z.coerce.date().optional(),
     startedAt: z.coerce.date().optional(),
     completedAt: z.coerce.date().optional(),

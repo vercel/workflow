@@ -7,6 +7,7 @@ import {
   SPEC_VERSION_CURRENT,
   type Streamer,
 } from '@workflow/world';
+import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from '../fs.js';
 import { createStorage } from '../storage.js';
@@ -155,6 +156,55 @@ describe('run retention (world-local)', () => {
       const persisted = await storage.runs.get(run.runId);
       expect(persisted.dynamicWorkflowCode).toBeUndefined();
       expect(persisted.expiredAt).toBeInstanceOf(Date);
+    });
+
+    it.each([
+      ['unadopted', false],
+      ['adopted', true],
+    ])("drops an %s start Hook's metadata, keeping its token and retention", async (_label, adopt) => {
+      const token = `order:purge-${adopt}`;
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
+      const run = await startRun(
+        { [RETENTION_ATTRIBUTE]: '0' },
+        {
+          startHook: { token, tokenRetentionUntil, metadata: HOOK_METADATA },
+        }
+      );
+      if (adopt) {
+        // No metadata of its own: the reservation's carries over.
+        await createHook(storage, run.runId, { hookId: 'hook_start', token });
+      }
+      await complete(run.runId);
+
+      const onDisk = JSON.parse(
+        await fs.readFile(
+          path.join(testDir, 'runs', `${run.runId}.json`),
+          'utf8'
+        )
+      );
+      expect(onDisk.startHook).toEqual({
+        token,
+        tokenRetentionUntil: tokenRetentionUntil.toISOString(),
+      });
+      expect((await storage.runs.get(run.runId)).startHook).toEqual({
+        token,
+        tokenRetentionUntil,
+      });
+      expect(await eventPayloads(run.runId)).toEqual([]);
+      // The token is still held for its retention.
+      const contender = await storage.events
+        .create(`wrun_${ulid()}`, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'dpl_test',
+            workflowName: 'retention-workflow',
+            input: RUN_INPUT,
+            startHook: { token },
+          },
+        } as never)
+        .catch((e: unknown) => e);
+      expect(contender).toMatchObject({ conflictingRunId: run.runId });
     });
 
     it('keeps the run listable, with its metadata intact', async () => {

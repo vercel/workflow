@@ -66,6 +66,11 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
     // much user data as the input it ran on. The run is terminal, so nothing
     // replays it again.
     dynamicWorkflowCode: undefined,
+    // A start Hook's metadata is user data too; the token and its retention
+    // are not, and the reservation still needs them.
+    ...(run.startHook?.metadata !== undefined && {
+      startHook: { ...run.startHook, metadata: undefined },
+    }),
     expiredAt: purgedAt,
   };
 }

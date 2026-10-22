@@ -21,18 +21,23 @@ import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookConflictError,
   HookForceClaimedError,
+  HookReservedError,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
+  START_HOOK_ADMISSION_DISABLED,
+  START_HOOK_ADMISSION_REJECTED,
+  START_HOOK_CANDIDATE_CANCELLED,
   StreamError,
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { envNumber } from '@workflow/world';
+import { envNumber, START_HOOK_WIRE_CODES } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { createThrottleWaiter, sleep } from './event-retry.js';
 import {
@@ -384,7 +389,16 @@ export function inBandCounter(value: unknown): number | undefined {
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
+ *   - 409 with code `start-hook-conflict` → HookConflictError naming the
+ *     token's owner (a refused `start({ hook })` candidate)
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
+ *   - 400 with code `start-hook-admission-rejected` → WorkflowWorldError with
+ *     code START_HOOK_ADMISSION_REJECTED (permanent)
+ *   - 400 with code `start-hook-disabled` → WorkflowWorldError with code
+ *     START_HOOK_ADMISSION_DISABLED (not final: nothing was recorded)
+ *   - 409 with code `start-hook-candidate-cancelled` → WorkflowWorldError
+ *     with code START_HOOK_CANDIDATE_CANCELLED (a cancel fenced a candidate
+ *     that never became a run)
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
  *   - 412 with code `in-band-superseded` → InBandSupersededError (the in-band
@@ -393,6 +407,8 @@ export function inBandCounter(value: unknown): number | undefined {
  *   - other 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot, the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
+ *   - 425 with code `hook-reserved` → HookReservedError naming the run that
+ *     reserved the token (`start({ hook })`, not adopted yet) + retryAfter
  *   - 425 → TooEarlyError + retryAfter (step retry pacing; see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
@@ -434,6 +450,47 @@ export function errorForResponse(
       typeof claimedBy?.runId === 'string' ? claimedBy.runId : 'unknown',
       typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
     );
+  }
+  if (status === 409 && code === START_HOOK_WIRE_CODES.conflict) {
+    // A start Hook admission refused because another run owns the token. The
+    // decision is immutable per candidate run, so every retry of this
+    // candidate answers the same owner.
+    const conflict =
+      details && typeof details === 'object'
+        ? (details as { token?: unknown; conflictingRunId?: unknown })
+        : undefined;
+    return new HookConflictError(
+      typeof conflict?.token === 'string' ? conflict.token : '',
+      typeof conflict?.conflictingRunId === 'string'
+        ? conflict.conflictingRunId
+        : undefined
+    );
+  }
+  if (status === 400 && code === START_HOOK_WIRE_CODES.admissionRejected) {
+    // Permanent: the backend will never admit this start Hook request. The
+    // distinct code lets the queued copy of the candidate stop retrying
+    // without swallowing unrelated 400s.
+    return new WorkflowWorldError(message, {
+      url,
+      status,
+      code: START_HOOK_ADMISSION_REJECTED,
+    });
+  }
+  if (status === 400 && code === START_HOOK_WIRE_CODES.disabled) {
+    // Admission is switched off and nothing was recorded for the candidate:
+    // not final, since another copy may be admitted once it is back on.
+    return new WorkflowWorldError(message, {
+      url,
+      status,
+      code: START_HOOK_ADMISSION_DISABLED,
+    });
+  }
+  if (status === 409 && code === START_HOOK_WIRE_CODES.candidateCancelled) {
+    return new WorkflowWorldError(message, {
+      url,
+      status,
+      code: START_HOOK_CANDIDATE_CANCELLED,
+    });
   }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) {
@@ -478,6 +535,20 @@ export function errorForResponse(
   }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });
+  if (status === 425 && code === START_HOOK_WIRE_CODES.reserved) {
+    // A by-token lookup (or delivery) that landed on a start reservation its
+    // run has not adopted yet. The token is owned, so this is not a 404; the
+    // caller fills in the token it asked about.
+    const reservedBy =
+      details && typeof details === 'object'
+        ? (details as { runId?: unknown }).runId
+        : undefined;
+    return new HookReservedError(
+      '',
+      typeof reservedBy === 'string' ? reservedBy : 'unknown',
+      retryAfter !== undefined ? { retryAfter } : undefined
+    );
+  }
   if (status === 425) return new TooEarlyError(message, { retryAfter });
   if (status === 429) {
     // A firewall challenge can't be solved by a server-to-server client, so map
