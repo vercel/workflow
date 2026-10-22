@@ -509,6 +509,28 @@ describe('workflow-node-module-error plugin', () => {
     });
   });
 
+  it.each([
+    ['a BOM', '\uFEFF'],
+    ['an inline block comment', '/* filesystem */ '],
+    ['a multi-line block comment', '/* filesystem\n */ '],
+    ['a block comment mentioning import', '/* import filesystem */ '],
+    ['a comment after another statement', 'const x = 1; /* filesystem */ '],
+  ])('should error on a Node.js import preceded by %s', async (_, prefix) => {
+    const { failure, relativeEntry } = await buildWorkflowWithViolation(
+      `${prefix}import fs from "node:fs";\nexport const read = fs.readFile;`
+    );
+
+    expect(failure.errors).toHaveLength(1);
+    expect(failure.errors[0].text).toContain('"node:fs" which is a Node.js module');
+    expect(failure.errors[0].location).toMatchObject({
+      file: relativeEntry,
+      line: prefix.split('\n').length + 1,
+      column: 20,
+      lineText: 'export const read = fs.readFile;',
+      length: 2,
+    });
+  });
+
   // https://github.com/vercel/workflow/issues/4903
   it('should error when a package using Node.js modules is imported across multiple lines', async () => {
     const { failure, relativePath } = await buildFixture(

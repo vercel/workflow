@@ -237,10 +237,10 @@ export async function getViolationLocation(
     // Match against the whole file so imports spanning several lines are
     // found. The specifier excludes `;` and quotes so a match can't start at
     // an earlier import statement and run on into this one. The match must
-    // also start a statement (line start or after `;`), so the word `import`
-    // in a preceding comment can't become the start of the match.
+    // also start a statement (line start or after `;`), allowing whitespace
+    // (including a BOM) and block comments before the import keyword.
     const importRegex = new RegExp(
-      `(?:^|;)[ \\t]*import\\s+([^;'"]+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`,
+      `(?:^|;)(?:\\s|/\\*[\\s\\S]*?\\*/)*import\\s+([^;'"]+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`,
       'm'
     );
     const importMatch = contents.match(importRegex);
