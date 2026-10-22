@@ -23,6 +23,13 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { resumeHook, setWorld, start } from '@workflow/core/runtime';
 import {
+  HookConflictError,
+  HookNotFoundError,
+  HookReservedError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
   type Event,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -37,14 +44,22 @@ import {
   type ScenarioLimits,
   type SelectNext,
 } from './drive.js';
+import { readEffects, resetEffects } from './effects.js';
 import { checkInvariants } from './invariants.js';
 import { verifyReplay } from './replay.js';
+import type { StartHookDecision } from './start-hook.js';
+import { checkStartHookInvariants } from './start-hook-invariants.js';
 import { createTempo, ScenarioAborted } from './tempo.js';
 import type {
   InvariantViolation,
   PendingMessageView,
+  ResumeOutcome,
   ScenarioApi,
   ScenarioScript,
+  StartCall,
+  StartOutcome,
+  StartRequest,
+  StartRequestRecord,
   TraceEntry,
 } from './types.js';
 import {
@@ -138,6 +153,22 @@ export interface ScenarioSpec {
    * `preconditionGuard: true` to model the watermark alone.
    */
   countGuard?: boolean;
+  /**
+   * A World with atomic start Hooks: declares `atomicStartHook`,
+   * `hookRetention` and `hookForceClaim`, and the store keeps their contract
+   * (`start-hook.ts`). Also adds the start Hook properties to the checks
+   * (`start-hook-invariants.ts`). Off by default, so the rest of the book
+   * plays against the World it was written for.
+   */
+  startHooks?: boolean;
+  /**
+   * Who starts the run under test. `runner` (the default) calls `start()`
+   * once, before the script can do anything but hold its first call.
+   * `script` starts nothing: the script calls `sim.start()` as many clients
+   * as it likes, and the run under test (`runId`) is the first run the World
+   * created.
+   */
+  startedBy?: 'runner' | 'script';
 }
 
 export interface ScenarioExpectation {
@@ -183,6 +214,12 @@ export interface ScenarioResult {
   wallMs: number;
   /** Populated when the runner itself threw. */
   error?: unknown;
+  /** Every run the World created, in creation order. */
+  runs: { runId: string; workflowName: string; status: WorkflowRunStatus }[];
+  /** Every `sim.start` request and how each attempt was answered. */
+  requests: StartRequestRecord[];
+  /** Every start Hook admission decision. */
+  startHookDecisions: StartHookDecision[];
 }
 
 export interface RunScenarioOptions {
@@ -226,7 +263,10 @@ export async function runScenario(
     clock,
     preconditionGuard,
     countGuard: spec.countGuard ?? preconditionGuard,
+    startHooks: spec.startHooks,
   });
+  const scriptStarts = spec.startedBy === 'script';
+  resetEffects();
 
   const workflowId =
     typeof spec.workflow === 'string'
@@ -266,11 +306,164 @@ export async function runScenario(
 
   world.registerHandler(WORKFLOW_QUEUE_PREFIX, options.handler);
 
+  // ---- Script callers ------------------------------------------------------
+  const ledger = new Map<string, StartRequestRecord>();
+  /** Pauses the script took, released when it finishes whatever it did. */
+  const scriptPauses: (() => void)[] = [];
+  let callerCount = 0;
+
+  function startCall(request: StartRequest = {}): StartCall {
+    const name = request.caller ?? `c${++callerCount}`;
+    const requestName = request.request ?? name.replace(/\/\d+$/, '');
+    const record = ledger.get(requestName) ?? {
+      request: requestName,
+      ...(request.hook ? { token: request.hook.token } : {}),
+      attempts: [],
+    };
+    ledger.set(requestName, record);
+    const attempt: StartRequestRecord['attempts'][number] = {
+      caller: name,
+      atMs: clock.now(),
+    };
+    record.attempts.push(attempt);
+
+    const life = world.newCaller(name);
+    life.died.then((reason) => {
+      attempt.died = reason;
+    });
+    const targetName = request.workflow ?? spec.workflow;
+    const targetId =
+      typeof targetName === 'string'
+        ? options.workflowIds?.[targetName]
+        : targetName.workflowId;
+    world.pushTrace({
+      kind: 'note',
+      message: `${name} calls start(${typeof targetName === 'string' ? targetName : targetName.workflowId}${
+        request.hook ? `, hook "${request.hook.token}"` : ''
+      })`,
+    });
+    const outcome = (async (): Promise<StartOutcome> => {
+      if (!targetId) {
+        return {
+          kind: 'error',
+          name: 'Error',
+          message: `Unknown workflow "${String(targetName)}"`,
+        };
+      }
+      try {
+        const run = await world.runAsCaller(life, () =>
+          start(
+            { workflowId: targetId },
+            (request.input ?? spec.input ?? []) as unknown[],
+            request.hook ? { hook: request.hook } : {}
+          )
+        );
+        return { kind: 'run', runId: run.runId };
+      } catch (error) {
+        return classifyStartError(error);
+      }
+    })().then((answer) => {
+      attempt.outcome = answer;
+      world.pushTrace({
+        kind: 'note',
+        message: `${name} <- ${describeStartOutcome(answer)}`,
+      });
+      return answer;
+    });
+    return { caller: name, outcome, died: life.died };
+  }
+
   const api: ScenarioApi = {
     world: world.snapshot,
     get runId() {
-      return runId;
+      // A script-started scenario's run under test is the first run created.
+      return runId || (scriptStarts ? firstRunId(world) : '');
     },
+    start: startCall,
+    async startUntilResolved(request, opts) {
+      const attempts = opts?.attempts ?? 3;
+      const base = request.caller ?? `c${++callerCount}`;
+      let last: StartOutcome | undefined;
+      for (let i = 1; i <= attempts; i++) {
+        const call = startCall({
+          ...request,
+          caller: i === 1 ? base : `${base}/${i}`,
+          request: request.request ?? base.replace(/\/\d+$/, ''),
+        });
+        // A caller that died is a client that crashed: its restart retries.
+        const answer = await Promise.race([
+          call.outcome,
+          call.died.then(() => undefined),
+        ]);
+        if (answer && answer.kind !== 'uncertain') return answer;
+        last = answer ?? last;
+      }
+      return (
+        last ?? {
+          kind: 'error',
+          name: 'Error',
+          message: `every one of ${attempts} attempt(s) died`,
+        }
+      );
+    },
+    async resume(token, payload): Promise<ResumeOutcome> {
+      try {
+        const hook = await world.asExternal(() => resumeHook(token, payload));
+        return { kind: 'delivered', runId: hook.runId };
+      } catch (error) {
+        if (HookReservedError.is(error)) {
+          return {
+            kind: 'reserved',
+            runId: error.runId,
+            ...(error.retryAfter !== undefined
+              ? { retryAfter: error.retryAfter }
+              : {}),
+          };
+        }
+        if (HookNotFoundError.is(error)) return { kind: 'not-found' };
+        return {
+          kind: 'error',
+          name: error instanceof Error ? error.name : typeof error,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    dropQueued(select) {
+      const chosen = select(world.simQueue.view());
+      const message = chosen ? world.simQueue.takeById(chosen) : undefined;
+      if (!message) return false;
+      world.simQueue.settle(message);
+      world.pushTrace({
+        kind: 'warn',
+        message: `the queue gave up on ${message.messageId} after ${message.deliveries} delivery attempt(s)`,
+      });
+      return true;
+    },
+    delayQueued(select, ms) {
+      const chosen = select(world.simQueue.view());
+      const message = chosen ? world.simQueue.takeById(chosen) : undefined;
+      if (!message) return false;
+      world.simQueue.requeue(
+        message,
+        Math.max(message.readyAtMs, clock.now()) + ms
+      );
+      world.pushTrace({
+        kind: 'note',
+        message: `delayed ${message.messageId} by ${ms}ms`,
+      });
+      return true;
+    },
+    pauseDeliveries() {
+      const release = world.pauseDeliveries();
+      scriptPauses.push(release);
+      world.pushTrace({ kind: 'note', message: 'deliveries paused' });
+      return () => {
+        release();
+        world.pushTrace({ kind: 'note', message: 'deliveries resumed' });
+      };
+    },
+    effects: () => readEffects(),
+    requests: () => [...ledger.values()],
     async deliverHook(token, payload) {
       // Go through the real `resumeHook` rather than writing `hook_received`
       // directly: the point of the simulation is to exercise the same code an
@@ -347,6 +540,7 @@ export async function runScenario(
         })
         .finally(() => {
           scriptSettled = true;
+          for (const release of scriptPauses) release();
         })
     : undefined;
 
@@ -367,6 +561,7 @@ export async function runScenario(
     world.pushTrace({ kind: 'warn', message: reason });
     problems.push(reason);
     controller.abort(reason);
+    world.abandonInFlight(reason);
   }, limits.maxWallMs + 250);
   // Deliberately NOT unref'd. A total deadlock (every writer parked, the
   // scheduler blocked inside a held call, the script awaiting something that
@@ -379,15 +574,19 @@ export async function runScenario(
   setWorld(world);
 
   try {
-    const run = await start({ workflowId }, (spec.input ?? []) as unknown[]);
-    runId = run.runId;
+    if (!scriptStarts) {
+      const run = await start({ workflowId }, (spec.input ?? []) as unknown[]);
+      runId = run.runId;
+    }
 
     const drain = await driveQueue({
       world,
       limits,
       wallStart,
       selectNext: spec.selectNext,
+      ...(scriptStarts ? { keepAlive: () => !scriptSettled } : {}),
     });
+    if (!runId) runId = firstRunId(world);
     deliveries = drain.deliveries;
     if (drain.exceeded) {
       outcome = 'budget-exceeded';
@@ -426,6 +625,7 @@ export async function runScenario(
           events: world.store.allEvents(runId),
           handler: options.handler,
           limits,
+          startHooks: spec.startHooks,
         });
       } finally {
         uninstallClock = clock.install();
@@ -443,6 +643,38 @@ export async function runScenario(
           `delivery(ies), re-derived ${check.regenerated.length} event(s)` +
           (check.violations.length === 0 ? ' — matches' : ' — MISMATCH'),
       });
+    }
+
+    // Every other run the World created replays too: an owner admitted by a
+    // queued copy, a child started from a step, a successor that took a
+    // token over. Each must be a log the runtime can replay back into itself.
+    if (spec.verifyReplay !== false) {
+      for (const other of world.store.allRuns()) {
+        if (other.runId === runId) continue;
+        if (other.status !== 'completed' && other.status !== 'failed') continue;
+        uninstallClock();
+        let check: Awaited<ReturnType<typeof verifyReplay>>;
+        try {
+          check = await verifyReplay({
+            run: other,
+            events: world.store.allEvents(other.runId),
+            handler: options.handler,
+            limits,
+            startHooks: spec.startHooks,
+          });
+        } finally {
+          uninstallClock = clock.install();
+          setWorld(world);
+        }
+        replayViolations = replayViolations.concat(check.violations);
+        world.pushTrace({
+          kind: 'note',
+          message:
+            `replay check (${other.runId}): ${check.deliveries} delivery(ies), ` +
+            `re-derived ${check.regenerated.length} event(s)` +
+            (check.violations.length === 0 ? ' — matches' : ' — MISMATCH'),
+        });
+      }
     }
   } catch (err) {
     thrown = err;
@@ -510,16 +742,31 @@ export async function runScenario(
 
   if (expected?.status !== outcome) problems.push(...outcomeProblems);
 
-  const violations = runId
-    ? checkInvariants({
-        runId,
-        events,
-        eventsInCommitOrder: world.store.allEventsInCommitOrder(runId),
+  const allRunIds = world.store.allRuns().map((r) => r.runId);
+  const checkedRunIds = runId
+    ? [runId, ...allRunIds.filter((id) => id !== runId)]
+    : allRunIds;
+  const violations = checkedRunIds
+    .flatMap((id) =>
+      checkInvariants({
+        runId: id,
+        events: world.store.allEvents(id),
+        eventsInCommitOrder: world.store.allEventsInCommitOrder(id),
         runs: world.store.allRuns(),
-        steps: world.store.allSteps(runId),
-        waits: world.store.allWaits(runId),
-      }).concat(replayViolations)
-    : [];
+        steps: world.store.allSteps(id),
+        waits: world.store.allWaits(id),
+      })
+    )
+    .concat(replayViolations)
+    .concat(
+      spec.startHooks
+        ? checkStartHookInvariants({
+            world,
+            requests: [...ledger.values()],
+            effects: readEffects(),
+          })
+        : []
+    );
 
   problems.push(...world.watchErrors());
 
@@ -559,7 +806,66 @@ export async function runScenario(
     virtualElapsedMs,
     wallMs,
     error: thrown,
+    runs: world.store.allRuns().map((r) => ({
+      runId: r.runId,
+      workflowName: r.workflowName,
+      status: r.status,
+    })),
+    requests: [...ledger.values()],
+    startHookDecisions: world.store.startHookDecisions(),
   };
+}
+
+/** The first run the World created, or `''`. */
+function firstRunId(world: SimWorld): string {
+  return world.store.allRuns()[0]?.runId ?? '';
+}
+
+function classifyStartError(error: unknown): StartOutcome {
+  if (HookConflictError.is(error)) {
+    return {
+      kind: 'conflict',
+      token: error.token,
+      ...(error.conflictingRunId
+        ? { conflictingRunId: error.conflictingRunId }
+        : {}),
+    };
+  }
+  if (WorkflowStartError.is(error)) {
+    return {
+      kind: 'uncertain',
+      runId: error.runId,
+      stage: error.stage,
+      message: error.message,
+    };
+  }
+  if (WorkflowWorldError.is(error)) {
+    return {
+      kind: 'rejected',
+      ...(error.code ? { code: error.code } : {}),
+      message: error.message,
+    };
+  }
+  return {
+    kind: 'error',
+    name: error instanceof Error ? error.name : typeof error,
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+export function describeStartOutcome(outcome: StartOutcome): string {
+  switch (outcome.kind) {
+    case 'run':
+      return `run ${outcome.runId}`;
+    case 'conflict':
+      return `HookConflictError: "${outcome.token}" is owned by ${outcome.conflictingRunId ?? '(unnamed)'}`;
+    case 'uncertain':
+      return `WorkflowStartError(${outcome.stage}) for ${outcome.runId}`;
+    case 'rejected':
+      return `rejected${outcome.code ? ` ${outcome.code}` : ''}: ${outcome.message}`;
+    case 'error':
+      return `${outcome.name}: ${outcome.message}`;
+  }
 }
 
 function describeStall(world: SimWorld, runId: string): string {
@@ -646,5 +952,8 @@ function failedBeforeStart(
     worldCalls: 0,
     virtualElapsedMs: 0,
     wallMs: 0,
+    runs: [],
+    requests: [],
+    startHookDecisions: [],
   };
 }

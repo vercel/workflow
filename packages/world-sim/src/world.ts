@@ -60,15 +60,103 @@ export const WORKFLOW_QUEUE_PREFIX = getQueueTopicPrefix('workflow');
  */
 export interface Watch {
   match: CallMatch;
-  action: (ctx: CallContext, api: ScenarioApi) => void | Promise<void>;
+  action: (
+    ctx: CallContext,
+    api: ScenarioApi
+  ) => void | WatchVerdict | Promise<void | WatchVerdict>;
   options: {
     /** Fire on the nth match only (1-based). Defaults to 1. */
     nth?: number;
     /** Fire on every match instead of just one. Overrides `nth`. */
     every?: boolean;
     label?: string;
+    /**
+     * The action blocks the call until the script releases it. Lets the
+     * scheduler tell a script caller that is held (others may run) from one
+     * that is merely busy (nothing else may start; see `callersBusy`).
+     */
+    holds?: boolean;
   };
 }
+
+/**
+ * What a fault watch does to the call it fired on, instead of letting it
+ * through. See DESIGN.md §Fault injection.
+ *
+ * - `die`: the writer making the call dies there. The call never returns (at
+ *   `before` it never runs, at `after` its effect is committed, at `inside`
+ *   the store stops between the write's halves), and every later call the
+ *   same writer makes is dropped. A writer inside a queue delivery takes the
+ *   delivery with it, which the queue redelivers; a script caller is
+ *   abandoned.
+ * - `throw`: the call throws `error` to its caller. At `after` the effect is
+ *   committed, which is a lost response.
+ */
+export type WatchVerdict =
+  | { kind: 'die'; reason: string }
+  | { kind: 'throw'; error: unknown };
+
+/**
+ * One process that can die: a queue delivery, or a script caller. Its calls
+ * run in its async context, so a fault can find the process a call belongs
+ * to, and everything that process does afterwards is dropped.
+ */
+export interface WriterLife {
+  readonly label: string;
+  readonly dead: boolean;
+  /** Where it died. */
+  readonly reason?: string;
+  /** Resolves with `reason` when it dies. Never rejects. */
+  readonly died: Promise<string>;
+  die(reason: string): void;
+}
+
+/** A script-started `start()` (or other client operation) and its state. */
+export interface CallerLife extends WriterLife {
+  /** Writer id, `caller:<name>`. */
+  readonly writer: WriterId;
+  /** The operation is running (not yet settled, not dead). */
+  active: boolean;
+  /** How many of its calls are held by the script right now. */
+  held: number;
+}
+
+function createLife(label: string): WriterLife & { reason?: string } {
+  let resolveDied!: (reason: string) => void;
+  const died = new Promise<string>((resolve) => {
+    resolveDied = resolve;
+  });
+  const life = {
+    label,
+    dead: false,
+    reason: undefined as string | undefined,
+    died,
+    die(reason: string) {
+      if (life.dead) return;
+      life.dead = true;
+      life.reason = reason;
+      resolveDied(reason);
+    },
+  };
+  return life;
+}
+
+/** One queue delivery and how it ended. */
+export interface DeliveryRecord {
+  messageId: string;
+  runId?: string;
+  attempt: number;
+  atMs: number;
+  /**
+   * `acked`: answered 2xx and settled. `rescheduled`: answered with a
+   * `timeoutSeconds`. `error`: answered non-2xx, so the queue retries it.
+   * `died`: a fault killed it. `abandoned`: it never answered.
+   */
+  outcome: 'acked' | 'rescheduled' | 'error' | 'died' | 'abandoned';
+}
+
+/** A call that never returns: what a dead process's caller sees. */
+const never = <T>(): Promise<T> => new Promise<T>(() => {});
 
 /**
  * How many call points to remember for level-triggered waiting. Generous: a
@@ -82,6 +170,13 @@ export interface SimWorldOptions {
   deploymentId?: string;
   /** See `SimStoreOptions.preconditionGuard`. */
   preconditionGuard?: boolean;
+  /**
+   * Declare and implement atomic start Hooks: `atomicStartHook`,
+   * `hookRetention` (which also gives every start Hook its default 24h
+   * retention) and `hookForceClaim`. Off by default, so a scenario that does
+   * not ask runs against the World the rest of the book was written for.
+   */
+  startHooks?: boolean;
   /**
    * Also enforce the count half of the fence (see `SimStoreOptions.countGuard`).
    *
@@ -120,6 +215,35 @@ export interface SimWorld extends World {
   callHistory(): readonly ObservedPoint[];
   /** Every intercepted call that threw. */
   rejections(): readonly RejectedCall[];
+  /** A fresh delivery lifetime, for `drive.ts`'s `deliver`. */
+  newDeliveryLife(label: string): WriterLife;
+  /** Run a queue delivery's handler as that delivery's process. */
+  runDelivery<T>(life: WriterLife, fn: () => Promise<T>): Promise<T>;
+  /** Register a script caller; its writer id is `caller:<name>`. */
+  newCaller(name: string): CallerLife;
+  /** Run a client operation as a script caller. */
+  runAsCaller<T>(life: CallerLife, fn: () => Promise<T>): Promise<T>;
+  /**
+   * A script caller is running and not held: the scheduler waits, so a
+   * client's own sequence of calls is never interleaved with a delivery
+   * unless the script held it to ask for exactly that.
+   */
+  callersBusy(): boolean;
+  /** Hold the scheduler between deliveries; returns its release. */
+  pauseDeliveries(): () => void;
+  /** Whether anything holds the scheduler between deliveries. */
+  deliveriesPaused(): boolean;
+  /**
+   * Resolves when the scenario gives up on everything still in flight (its
+   * wall-clock deadline). A delivery blocked forever is abandoned then, so
+   * the scenario reports instead of leaving Node an empty event loop.
+   */
+  abandoned: Promise<string>;
+  abandonInFlight(reason: string): void;
+  /** How every delivery so far was answered, in order. */
+  deliveryLog: DeliveryRecord[];
+  /** Every script caller so far. */
+  callers(): readonly CallerLife[];
 }
 
 /** A trace entry without the fields the world stamps on (seq, time, depth). */
@@ -159,6 +283,18 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    */
   const externalCtx = new AsyncLocalStorage<true>();
   const isExternal = () => externalCtx.getStore() === true;
+  /** The queue delivery this call chain belongs to, when it is one. */
+  const deliveryLife = new AsyncLocalStorage<WriterLife>();
+  /** The script caller this call chain belongs to, when it is one. */
+  const callerLife = new AsyncLocalStorage<CallerLife>();
+  const callerList: CallerLife[] = [];
+  let pauses = 0;
+  const abandonment = createLife('scenario');
+  /** The intercepted call a store checkpoint belongs to. */
+  const currentCall = new AsyncLocalStorage<CallContext>();
+  /** The process this call chain belongs to, if one that can die. */
+  const currentLife = (): WriterLife | undefined =>
+    callerLife.getStore() ?? deliveryLife.getStore();
   let callSeq = 0;
   let traceSeq = 0;
 
@@ -179,6 +315,11 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     ids,
     preconditionGuard: options.preconditionGuard,
     countGuard: options.countGuard,
+    atomicStartHook: options.startHooks,
+    hookForceClaim: options.startHooks,
+    // A checkpoint is a call point of the call it is inside of.
+    checkpoint: (name) => checkpoint(name),
+    onNote: (message) => pushTrace({ kind: 'note', message }),
     // Fires synchronously inside `events.create`, so it runs in that call's
     // async context and `isExternal()` still describes who is writing.
     onEvent: (event) =>
@@ -252,6 +393,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     eventData?: unknown;
   }): WriterId {
     if (isExternal()) return 'external';
+    const caller = callerLife.getStore();
+    if (caller) return caller.writer;
 
     const data = event.eventData as
       | {
@@ -287,6 +430,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     request: CallContext['request']
   ): WriterId {
     if (isExternal()) return 'external';
+    const caller = callerLife.getStore();
+    if (caller) return caller.writer;
     if (call !== 'events.create' || !request) return 'orchestrator';
     return writerOfEvent({ ...request, runId });
   }
@@ -367,6 +512,10 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       return false;
     }
 
+    if (match.checkpoint !== undefined && match.checkpoint !== ctx.checkpoint) {
+      return false;
+    }
+
     if (match.where) {
       // A predicate that throws must not become a world-call failure; see the
       // note on watch actions below. Treat it as "did not match" and report.
@@ -385,10 +534,13 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     return true;
   }
 
-  async function fireWatches(ctx: CallContext): Promise<void> {
+  async function fireWatches(
+    ctx: CallContext
+  ): Promise<WatchVerdict | undefined> {
     // Calls the scenario itself makes are not call points: they would otherwise
     // trip the watches they were made from inside of.
-    if (isExternal()) return;
+    if (isExternal()) return undefined;
+    let verdict: WatchVerdict | undefined;
 
     // Iterate a copy: an action may dispose its own watch, or arm a new one.
     for (const entry of [...watches]) {
@@ -414,13 +566,17 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // interleaving the writer vocabulary exists to state. Scenario-originated
       // writes get their attribution from `asExternal` instead, which follows
       // the call chain rather than the wall clock.
+      const caller = callerLife.getStore();
+      const holding = opts.holds === true && caller !== undefined;
+      if (holding) caller.held++;
       try {
         if (!resolveApi) {
           throw new Error(
             'A watch fired before the scenario API was installed'
           );
         }
-        await entry.watch.action(ctx, resolveApi());
+        const result = await entry.watch.action(ctx, resolveApi());
+        if (result && !verdict) verdict = result;
       } catch (err) {
         // A throwing watch must not become a world-call failure. Propagating it
         // would make `events.create` reject and send the runtime down its
@@ -434,8 +590,40 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
           kind: 'warn',
           message: `watch "${opts.label ?? 'watch'}" failed: ${message}`,
         });
+      } finally {
+        if (holding) caller.held--;
       }
     }
+    if (verdict?.kind === 'die') {
+      // Everything this process does from here on is dropped; see `intercept`.
+      const life = currentLife();
+      life?.die(verdict.reason);
+      pushTrace({
+        kind: 'warn',
+        message: `${life ? `${life.label} died` : 'writer died'}: ${verdict.reason}`,
+      });
+    }
+    return verdict;
+  }
+
+  /**
+   * A store checkpoint: a call point between two commits of one write. It
+   * shares the enclosing call's `seq` and request; only the phase and the
+   * checkpoint name differ.
+   */
+  async function checkpoint(name: string): Promise<void> {
+    const call = currentCall.getStore();
+    if (!call) return;
+    const ctx: CallContext = {
+      ...call,
+      phase: 'inside',
+      checkpoint: name,
+      atMs: clock.now(),
+    };
+    record(ctx);
+    const verdict = await fireWatches(ctx);
+    if (verdict?.kind === 'die') return never();
+    if (verdict?.kind === 'throw') throw verdict.error;
   }
 
   /** Best-effort extraction of the run a call concerns, for cue matching. */
@@ -487,6 +675,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
         : {}),
       ...(stepName ? { stepName: shortStepName(stepName) } : {}),
       ...(data?.eventData?.token ? { token: data.eventData.token } : {}),
+      ...(ctx.checkpoint ? { checkpoint: ctx.checkpoint } : {}),
+      ...(ctx.runId ? { runId: ctx.runId } : {}),
       ...((ctx.event?.correlationId ?? ctx.request?.correlationId)
         ? {
             correlationId:
@@ -583,6 +773,10 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   /** Wrap one world method so it becomes a call point. */
   function intercept<F extends AsyncFn>(call: WorldCallName, fn: F): F {
     return (async (...args: Parameters<F>) => {
+      // A dead process makes no more calls. Its in-flight async work may still
+      // reach here (a sibling step body, a background flush); in production
+      // that work died with the process, so it is dropped unrecorded.
+      if (currentLife()?.dead) return never();
       const runId = runIdOf(call, args);
       const request =
         call === 'events.create'
@@ -603,7 +797,9 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       };
 
       record(base);
-      await fireWatches(base);
+      const entering = await fireWatches(base);
+      if (entering?.kind === 'die') return never();
+      if (entering?.kind === 'throw') throw entering.error;
 
       let callArgs = args;
       let entered = base;
@@ -652,7 +848,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       let error: unknown;
       let threw = false;
       try {
-        result = await fn(...callArgs);
+        result = await currentCall.run(entered, () => fn(...callArgs));
       } catch (err) {
         error = err;
         threw = true;
@@ -704,7 +900,9 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       }
 
       record(after);
-      await fireWatches(after);
+      const leaving = await fireWatches(after);
+      if (leaving?.kind === 'die') return never();
+      if (leaving?.kind === 'throw') throw leaving.error;
 
       if (threw) throw error;
       return result;
@@ -733,6 +931,13 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     capabilities: {
       // The store fences in-band writes; see store.ts.
       inBandFence: true,
+      ...(options.startHooks
+        ? {
+            atomicStartHook: { active: true },
+            hookRetention: { active: true },
+            hookForceClaim: true,
+          }
+        : {}),
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
@@ -804,6 +1009,41 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     callCount: () => callSeq,
     callHistory: () => history,
     rejections: () => rejected,
+    newDeliveryLife: (label) => createLife(label),
+    runDelivery: (life, fn) => deliveryLife.run(life, fn),
+    newCaller(name) {
+      const life = Object.assign(createLife(`caller:${name}`), {
+        writer: `caller:${name}` as WriterId,
+        active: false,
+        held: 0,
+      });
+      callerList.push(life);
+      return life;
+    },
+    async runAsCaller(life, fn) {
+      life.active = true;
+      try {
+        return await callerLife.run(life, fn);
+      } finally {
+        life.active = false;
+      }
+    },
+    callersBusy: () =>
+      callerList.some((c) => c.active && !c.dead && c.held === 0),
+    callers: () => callerList,
+    pauseDeliveries() {
+      pauses++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        pauses--;
+      };
+    },
+    deliveriesPaused: () => pauses > 0,
+    abandoned: abandonment.died,
+    deliveryLog: [],
+    abandonInFlight: (reason) => abandonment.die(reason),
   };
 
   return world;

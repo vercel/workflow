@@ -402,6 +402,12 @@ export function createWriters(deps: {
     anyStep: () =>
       makeWriter('step:*', 'any step body', (w) => w.startsWith('step:')),
     any: () => makeWriter('*', 'any writer', () => true),
+    caller: (name) =>
+      makeWriter(
+        `caller:${name}`,
+        `caller:${name}`,
+        (w) => w === `caller:${name}`
+      ),
     seen: () => {
       const out: WriterId[] = [];
       for (const point of world.callHistory()) {
