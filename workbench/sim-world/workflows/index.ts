@@ -17,6 +17,8 @@
  *   6. Forks        — a hook racing a timeout, which is where corruption lives.
  *   7. Step-vs-step — the same fork with no out-of-band event at all.
  *   8. Unclaimed    — a hook payload nobody reads, parked under a fork.
+ *   9. Start Hooks  — `start({ hook })` owners, a child started from a step,
+ *                     and Eve's force-claim handoff.
  *
  * Step functions are module-private and sit directly above the first workflow
  * that uses them. Names are unique across the whole file, so a scenario can
@@ -27,10 +29,13 @@
 import {
   createHook,
   getStepMetadata,
+  getWorkflowMetadata,
   RetryableError,
   setAttributes,
   sleep,
 } from 'workflow';
+import { start } from 'workflow/api';
+import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
 
 // ---------------------------------------------------------------------------
 // 1. Smoke
@@ -684,4 +689,108 @@ export async function claimedPayloadForkWorkflow(documentId: string) {
     branchPoke,
   ]);
   return `${stepTail}|${sleepTail}`;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Start Hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Records that user code ran, for whom, on which attempt: the evidence
+ * `NoLoserExecution` reads, since a candidate refused before it became a run
+ * has no event log to show it. The key is `SIM_EFFECTS_KEY` in
+ * `@workflow/world-sim`, spelled out so the bundle need not import it.
+ */
+async function recordEffect(label: string) {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const { attempt } = getStepMetadata();
+  const host = globalThis as unknown as Record<symbol, unknown[] | undefined>;
+  const key = Symbol.for('@workflow/world-sim/effects');
+  host[key] ??= [];
+  host[key].push({ runId: workflowRunId, label, attempt });
+  return label;
+}
+
+/**
+ * The owner of a `start({ hook })` reservation. Its first act is a step, so
+ * an optimistic inline start would run user code before admission, which is
+ * what `start-hook-refused-under-turbo` looks for. Then it adopts the token
+ * with its own `createHook()` and takes one payload.
+ */
+export async function reservedOwnerWorkflow(token: string) {
+  'use workflow';
+  await recordEffect('owner:begin');
+  using hook = createHook<{ note: string }>({ token });
+  const payload = await hook;
+  await recordEffect(`owner:${payload.note}`);
+  return payload.note;
+}
+
+/** A start Hook owner that never adopts its token: one step, then done. */
+export async function unadoptedOwnerWorkflow(label: string) {
+  'use workflow';
+  return await recordEffect(`unadopted:${label}`);
+}
+
+/**
+ * Starts a child with a start Hook from inside a step and reports who owns
+ * the token. A retry of the step is a new candidate with the same token, so
+ * it learns the owner from the refusal.
+ */
+async function startChildWithHook(token: string) {
+  'use step';
+  try {
+    const run = await start(unadoptedOwnerWorkflow, ['child'], {
+      hook: { token },
+    });
+    return { owner: run.runId, via: 'admitted' };
+  } catch (error) {
+    if (HookConflictError.is(error)) {
+      return { owner: error.conflictingRunId ?? null, via: 'conflict' };
+    }
+    throw error;
+  }
+}
+
+export async function inStepStartWorkflow(token: string) {
+  'use workflow';
+  return await startChildWithHook(token);
+}
+
+/**
+ * Eve's handoff, the source half: owns the token through its start Hook and
+ * adopts it, and when a successor takes the Hook over it stays parked, on a
+ * Hook of its own the scenario releases last, rather than ending. A
+ * reservation pinned to it would block the successor's token for as long as
+ * it parks.
+ */
+export async function handoffSourceWorkflow(token: string) {
+  'use workflow';
+  using hook = createHook<{ note: string }>({ token });
+  try {
+    const payload = await hook;
+    return `source:${payload.note}`;
+  } catch (error) {
+    if (HookForceClaimedError.is(error)) {
+      using parked = createHook<{ note: string }>({
+        token: `${token}:release`,
+      });
+      await parked;
+      return 'source:handed-off';
+    }
+    throw error;
+  }
+}
+
+/** The successor half: takes the token over and takes one payload. */
+export async function handoffSuccessorWorkflow(token: string) {
+  'use workflow';
+  using hook = createHook<{ note: string }>({
+    token,
+    experimental_force: true,
+  });
+  const payload = await hook;
+  await recordEffect(`successor:${payload.note}`);
+  return `successor:${payload.note}`;
 }

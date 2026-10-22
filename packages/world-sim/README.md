@@ -300,6 +300,7 @@ is committed to storage.
 | `orchestrator` | `sim.writer.orchestrator()` | The workflow function and the runtime around it, committing at a suspension point. One per queue delivery. | the run lifecycle, `step_created` / `step_started`, `hook_created`, `wait_*` |
 | `step:<name>` | `sim.writer.step('<name>')` | One step body, running inline with full Node access. Two steps sharing a function name share the writer. | its own `step_completed` / `step_failed` / `step_retrying`, and any `attr_set` from step context |
 | `external` | none (see [Withholdings](#withholdings)) | The scenario, acting as a webhook receiver or an operator | `hook_received`, `run_cancelled` |
+| `caller:<name>` | `sim.writer.caller('<name>')` | A client calling `start()` from outside any run, started with `sim.start({ caller })` (see [Clients and faults](#clients-and-faults)) | the `queue` and `run_created` of `start()` |
 
 Two step bodies in a *single* delivery are already two writers racing to the
 same log: no second invocation and no real threads are required. That is why the
@@ -476,6 +477,59 @@ Note the missing `await`. Awaiting it here would wait for the delivery to
 wake, fire it, await the hold, and the two are now interleaved. Await the
 returned promise at the end to assert it found something.
 
+### Clients and faults
+
+A scenario with `startedBy: 'script'` starts its own runs, as many clients as
+it likes, and `startHooks: true` gives it a World with atomic start Hooks
+(`start(wf, args, { hook: { token } })`). The
+[`start-hook-*` scenarios](../../workbench/sim-world/scenarios) are the worked
+examples.
+
+| | |
+| --- | --- |
+| `start({ caller, hook, workflow, input })` | Call the real `start()` as writer `caller:<name>`. Returns `{ outcome, died }` at once; `outcome` is `run`, `conflict` (naming the owner), `uncertain` (`WorkflowStartError`), `rejected` or `error` |
+| `startUntilResolved(request, { attempts })` | `start()` retried while uncertain (or while its caller dies), each retry a new candidate on `<caller>/2`, `<caller>/3`, … of one logical request |
+| `resume(token, payload)` | The real `resumeHook()`, answered as `delivered`, `reserved` (`HookReservedError`), `not-found` or `error` instead of throwing |
+| `fault.die(match)` | The writer making the next matching call dies there; a delivery is redelivered, a caller is abandoned |
+| `fault.loseResponse(match)` | The next matching call commits, and its caller sees a retryable transport error |
+| `fault.fail(match)` | The next matching call fails before it runs |
+| `dropQueued(select)` / `delayQueued(select, ms)` | The queue gives up on a message / backs it off |
+| `pauseDeliveries()` | Keep the scheduler from taking another message until the returned function is called |
+| `effects()` / `requests()` | What step bodies recorded running (`SIM_EFFECTS_KEY`) / every start request and its answers |
+
+While a caller is running and not held, the scheduler delivers nothing, so
+`start()`'s own enqueue and `run_created` happen back to back unless the
+script holds the caller between them. A fault matches with the same
+`CallMatch` as `park`, plus `phase: 'inside'` and a `checkpoint` name for a
+point between a write's two commits (`start-hook:accepted`: a start Hook
+candidate decided, its run not yet created).
+
+```ts
+import type { ScenarioScript } from '@workflow/world-sim';
+
+const script: ScenarioScript = async (sim) => {
+  // The client dies after its enqueue commits: its candidate is only a
+  // queue message. Its restart retries with the same token.
+  const died = sim.fault.die({ writer: 'caller:c1', call: 'queue' });
+  sim.start({ caller: 'c1', hook: { token: 'order:1' } });
+  await died;
+  const retry = await sim.start({ caller: 'c1/2', hook: { token: 'order:1' } })
+    .outcome;
+  sim.check('the retry owns the token', retry.kind === 'run');
+};
+```
+
+Those scenarios add six start Hook rules to the checks:
+
+| Rule | What it means |
+| --- | --- |
+| `starthook.at-most-one-owner` | No two runs hold one token at the same virtual instant, re-derived from every run's log |
+| `starthook.no-loser-execution` | A refused candidate creates no run, is served no write, and runs no step body |
+| `starthook.every-request-resolves` | Every request ends with its run, a refusal naming the owner, or a permanent rejection |
+| `starthook.stranded-delivery` | Every queued copy of a candidate was decided |
+| `starthook.refusal-not-acked` | A refused candidate's delivery acks its refusal instead of failing and being retried |
+| `starthook.reservation-released` | A token is free once its owner has ended and its retention passed (an orphan, once its 24h window closed), and not before |
+
 ## Extending the simulator
 
 The following table routes changes to the instrument itself by task. Adding a
@@ -489,7 +543,8 @@ The module map is [DESIGN.md §1](./DESIGN.md#1-module-map).
 | add a phase to an existing call | `CallPhase` in `types.ts`, where `world.ts` parks on it, plus the writer op that names it | [§3 Two phases](./DESIGN.md#two-phases-and-a-third-hold-that-is-not-one) |
 | add a rule the log must satisfy | `invariants.ts`, plus the rule table above | [§8 Consistency checking](./DESIGN.md#8-consistency-checking) |
 | add or change a writer kind | `writers.ts` for the handles, `world.ts` for attribution | [§3 Writer attribution](./DESIGN.md#writer-attribution-is-derived-not-instrumented) |
-| add a fault injector | `store.ts`, next to `withholdNextEvent` and the guards | [§5 Fault injection](./DESIGN.md#fault-injection) |
+| add a fault injector | a fault: `Faults` in `types.ts` and `armFault` in `tempo.ts`; a store fault: `store.ts`, next to `withholdNextEvent` | [§5 Fault injection](./DESIGN.md#fault-injection) |
+| add a point inside a write | `checkpoint` in `store.ts` (or `start-hook.ts`) | [§5 Fault injection](./DESIGN.md#fault-injection) |
 | change what a read returns | `store.ts` `applyWithhold` | [§5 The store](./DESIGN.md#5-the-store) |
 | change where an event lands | `store.ts` `positionAtCommit` / `mintEvent` | [World behaviors](#world-behaviors) above |
 | add a spec field | `ScenarioSpec` in `scenario.ts`, `RunScenarioOptions` beside it, then `run.ts` for the CLI flag | [§6 Spec](./DESIGN.md#spec) |
@@ -511,7 +566,8 @@ replays the log in a fresh world, so a store rule that is not applied there
 turns every scenario using it red for the wrong reason.
 
 **Tests come in two shapes.** `src/*.test.ts` are Vitest units against the
- pieces in isolation. Copy `store.test.ts` for anything that changes what the
+ pieces in isolation, including `@workflow/world`'s shared conformance suites
+ (`in-band-fence.test.ts`, `start-hook.test.ts`). Copy `store.test.ts` for anything that changes what the
  log looks like. The scenario book is the integration test; run it before and
  after and diff the counts.
 

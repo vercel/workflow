@@ -46,6 +46,8 @@ export interface ReplayCheckInput {
   events: readonly Event[];
   handler: (req: Request) => Promise<Response>;
   limits: Required<ScenarioLimits>;
+  /** The original World's start Hook support, which the replay must share. */
+  startHooks?: boolean;
 }
 
 export interface ReplayCheckResult {
@@ -125,7 +127,12 @@ export async function verifyReplay(
   const replayClock = createVirtualClock(terminal.createdAt.getTime() + 1);
   const uninstallClock = replayClock.install();
 
-  const replayWorld = createSimWorld({ clock: replayClock });
+  // Same capabilities as the original: the replay re-runs the workflow body,
+  // and a `createHook({ experimental_force })` there checks for one.
+  const replayWorld = createSimWorld({
+    clock: replayClock,
+    startHooks: input.startHooks,
+  });
   replayWorld.store.seedFromLog(seeded);
   replayWorld.registerHandler(WORKFLOW_QUEUE_PREFIX, handler);
   replayWorld.setScenarioApi(() => {

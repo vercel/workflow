@@ -50,6 +50,45 @@ import { scenario as smokeOneStep } from './smoke-one-step.ts';
 import { scenario as staleReadEqualStepCounts } from './stale-read-equal-step-counts.ts';
 import { scenario as staleReadStepCountFork } from './stale-read-step-count-fork.ts';
 import { scenario as staleReadStepCountForkFenced } from './stale-read-step-count-fork-fenced.ts';
+import {
+  afterCommit as startHookAdoptionCrash,
+  beforeCommit as startHookAdoptionCrashBeforeCommit,
+} from './start-hook-adoption-crash.ts';
+import { scenario as startHookConcurrentCandidates } from './start-hook-concurrent-candidates.ts';
+import {
+  scenario as startHookForceClaimHandoff,
+  crashScenario as startHookForceClaimHandoffCrash,
+} from './start-hook-force-claim-handoff.ts';
+import {
+  lostResponse as startHookInStepStartLostResponse,
+  stepDies as startHookInStepStartStepDies,
+} from './start-hook-in-step-start.ts';
+import { scenario as startHookLostRunCreatedResponse } from './start-hook-lost-run-created-response.ts';
+import { scenario as startHookLostStartMessage } from './start-hook-lost-start-message.ts';
+import {
+  inFlight as startHookOrphanInFlight,
+  late as startHookOrphanLate,
+} from './start-hook-orphan.ts';
+import { scenario as startHookOwnerDiesBeforeAdopting } from './start-hook-owner-dies-before-adopting.ts';
+import { scenario as startHookOwnerEndsUnadopted } from './start-hook-owner-ends-unadopted.ts';
+import {
+  scenario as startHookQueuedCopyFirstAdmits,
+  fencedScenario as startHookQueuedCopyFirstAdmitsFenced,
+} from './start-hook-queued-copy-first-admits.ts';
+import {
+  scenario as startHookQueuedCopyFirstRefused,
+  fencedScenario as startHookQueuedCopyFirstRefusedFenced,
+} from './start-hook-queued-copy-first-refused.ts';
+import {
+  scenario as startHookRefusedRedelivered,
+  fencedScenario as startHookRefusedRedeliveredFenced,
+} from './start-hook-refused-redelivered.ts';
+import { scenario as startHookRefusedUnderTurbo } from './start-hook-refused-under-turbo.ts';
+import { scenario as startHookRetention } from './start-hook-retention.ts';
+import {
+  queuedWins as startHookStartDiesAfterEnqueueQueuedWins,
+  retryWins as startHookStartDiesAfterEnqueueRetryWins,
+} from './start-hook-start-dies-after-enqueue.ts';
 import { scenario as stepRetriesTwice } from './step-retries-twice.ts';
 import { scenario as stepVsStepFork } from './step-vs-step-fork.ts';
 import { scenario as stepVsStepForkFenced } from './step-vs-step-fork-fenced.ts';
@@ -187,4 +226,43 @@ export const scenarios: ScenarioSpec[] = [
   writersIndependentStepBodies,
   writersScriptedTempo,
   cancelMidStep,
+
+  // -------------------------------------------------------------------------
+  // Atomic start Hooks: `start(wf, args, { hook: { token } })`. Many clients,
+  // one token, and a process killed or delayed at every point between
+  // `start()`'s enqueue, its `run_created`, the queued copy's admission, the
+  // owner's adoption, and the token's release. Every one of these adds the
+  // start Hook properties (`start-hook-invariants.ts`) to the checks.
+  // -------------------------------------------------------------------------
+
+  // The two copies of one candidate: start()'s run_created and its queued
+  // copy's run_started, in the order production cannot promise.
+  startHookQueuedCopyFirstAdmits,
+  startHookQueuedCopyFirstAdmitsFenced,
+  startHookQueuedCopyFirstRefused,
+  startHookQueuedCopyFirstRefusedFenced,
+  // A client that cannot tell whether its start worked, and retries.
+  startHookStartDiesAfterEnqueueRetryWins,
+  startHookStartDiesAfterEnqueueQueuedWins,
+  startHookLostRunCreatedResponse,
+  startHookLostStartMessage,
+  startHookConcurrentCandidates,
+  // A refused candidate runs nothing, however it is delivered.
+  startHookRefusedUnderTurbo,
+  startHookRefusedRedelivered,
+  startHookRefusedRedeliveredFenced,
+  // A start from inside a step, whose retry is the next candidate.
+  startHookInStepStartLostResponse,
+  startHookInStepStartStepDies,
+  // The owner between admission and adoption.
+  startHookOwnerDiesBeforeAdopting,
+  startHookOwnerEndsUnadopted,
+  startHookAdoptionCrash,
+  startHookAdoptionCrashBeforeCommit,
+  // Moving a token, and letting it go.
+  startHookForceClaimHandoff,
+  startHookForceClaimHandoffCrash,
+  startHookOrphanLate,
+  startHookOrphanInFlight,
+  startHookRetention,
 ];
