@@ -47,8 +47,8 @@ export const EXPERIMENTAL_START_HOOK_ENV =
   'WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK';
 
 function isExperimentalStartHookEnabled(): boolean {
-  const value = process.env[EXPERIMENTAL_START_HOOK_ENV];
-  return value === '1' || value === 'true';
+  // DO NOT MERGE: on for the chaos drill against the workflow-server preview.
+  return true;
 }
 
 export function createWorld(config?: APIConfig): World {

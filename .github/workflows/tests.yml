@@ -478,7 +478,7 @@ jobs:
     runs-on: ubuntu-latest
     # 19 regions: the implicit-route cases pay one cold start each,
     # sequentially.
-    timeout-minutes: 35
+    timeout-minutes: 60
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     # One cell, so one group per slot. See e2e-vercel-prod's block above.
@@ -536,6 +536,31 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-slug'] }}
           # See the note on e2e-vercel-prod.
           VERCEL_WORKFLOW_SERVER_URL: ${{ steps.deployment.outputs.environment == 'preview' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      # DO NOT MERGE: the start({ hook }) chaos drill against the
+      # workflow-server chaos-drill preview.
+      - name: Run start Hook chaos drill
+        if: always()
+        run: pnpm vitest run packages/core/e2e/e2e-start-hook-drill.test.ts --reporter=verbose
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          WORKFLOW_E2E_START_HOOK_DRILL: '1'
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+          APP_NAME: nextjs-turbopack
+          WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ env.VERCEL_PROJECT_ID }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-slug'] }}
+
+      - name: Upload start Hook chaos drill report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: start-hook-drill-report
+          path: e2e-start-hook-drill-report.json
+          if-no-files-found: ignore
 
       - name: Report E2E results
         if: always()
