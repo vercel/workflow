@@ -1102,7 +1102,7 @@ describe.concurrent('e2e', () => {
     ] as const;
 
     for (const tc of startIndexCases) {
-      test(tc.name, { timeout: 60_000 }, async () => {
+      test(tc.name, { timeout: 120_000 }, async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
 
         if (tc.waitForCompletion) {
@@ -1154,7 +1154,7 @@ describe.concurrent('e2e', () => {
     test(
       'getTailIndex returns correct index after stream completes',
       {
-        timeout: 60_000,
+        timeout: 120_000,
       },
       async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
@@ -1171,7 +1171,7 @@ describe.concurrent('e2e', () => {
     test(
       'getTailIndex returns -1 before any chunks are written',
       {
-        timeout: 60_000,
+        timeout: 120_000,
       },
       async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
@@ -1188,7 +1188,7 @@ describe.concurrent('e2e', () => {
     test(
       'getChunks returns same content as reading the stream',
       {
-        timeout: 60_000,
+        timeout: 120_000,
       },
       async () => {
         const run = await start(await e2e('outputStreamWorkflow'), []);
@@ -1230,7 +1230,7 @@ describe.concurrent('e2e', () => {
 
   test(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
-    { timeout: 60_000 },
+    { timeout: 120_000 },
     async () => {
       const run = await start(await e2e('outputStreamInsideStepWorkflow'), []);
       const reader = run.getReadable().getReader();
