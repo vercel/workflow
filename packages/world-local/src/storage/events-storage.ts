@@ -3985,11 +3985,100 @@ export function createEventsStorage(
     );
   }
 
-  /** Run `fn` holding the run's fence lock: in this process, then across processes. */
+  function isFencePidAlive(pid: number): boolean | null {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') return false;
+      if (code === 'EPERM') return true;
+      return null;
+    }
+  }
+
+  async function readLockMetaPid(metaPath: string): Promise<number | null> {
+    try {
+      const raw = await fs.readFile(metaPath, 'utf8');
+      const parsed = JSON.parse(raw) as { pid?: unknown };
+      return typeof parsed.pid === 'number' ? parsed.pid : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function safeUnlinkFile(filePath: string): Promise<void> {
+    try {
+      await fs.unlink(filePath);
+    } catch {}
+  }
+
+  async function safeRmDir(dirPath: string): Promise<void> {
+    try {
+      await fs.rm(dirPath, { recursive: true, force: true });
+    } catch {}
+  }
+
+  async function reclaimDeadInBandLock(countPath: string): Promise<void> {
+    const metaPath = `${countPath}.lock-meta`;
+    const pid = await readLockMetaPid(metaPath);
+    if (pid === null || isFencePidAlive(pid) !== false) return;
+
+    const claimPath = `${countPath}.lock.claim-${monotonicUlid()}`;
+    try {
+      await fs.rename(`${countPath}.lock`, claimPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        await safeUnlinkFile(metaPath);
+      }
+      return;
+    }
+    await safeUnlinkFile(metaPath);
+    await safeRmDir(claimPath);
+  }
+
+  async function writeInBandLockMeta(countPath: string): Promise<void> {
+    try {
+      await fs.writeFile(
+        `${countPath}.lock-meta`,
+        JSON.stringify({ pid: process.pid })
+      );
+    } catch {}
+  }
+
+  async function removeInBandLockMetaIfOwned(countPath: string): Promise<void> {
+    try {
+      const raw = await fs.readFile(`${countPath}.lock-meta`, 'utf8');
+      const parsed = JSON.parse(raw) as { pid?: unknown };
+      if (parsed.pid !== process.pid) return;
+      await fs.unlink(`${countPath}.lock-meta`);
+    } catch {}
+  }
+
+  /**
+   * Run `fn` holding the run's fence lock: in this process, then across
+   * processes.
+   *
+   * Before acquiring the file lock, check whether a stale lock was left behind
+   * by a dead process (the recorded PID is no longer alive per
+   * `process.kill(pid, 0)`). If so, reclaim it immediately via atomic `rename`
+   * rather than waiting the full 30s `stale` timeout, cutting SIGKILL recovery
+   * from ~30s to <1s in the common case. The PID is recorded on the lock
+   * (`writeInBandLockMeta`) after acquisition so future callers can detect
+   * death, and cleaned up on release.
+   *
+   * If `process.kill` returns `null` or `EPERM` (e.g. restricted containers
+   * where PID liveness cannot be determined), the reclaim is skipped and the
+   * original `stale: 30_000` behavior applies unchanged.
+   */
   function withFenceLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
     return withInProcessLock(fenceState.locks, fenceKey(runId), async () => {
       const countPath = inBandCountPath(basedir, runId, tag);
       await fs.mkdir(path.dirname(countPath), { recursive: true });
+
+      await reclaimDeadInBandLock(countPath);
+
       let compromised: Error | undefined;
       let release: () => Promise<void>;
       try {
@@ -4007,6 +4096,7 @@ export function createEventsStorage(
             compromised = error;
           },
         });
+        await writeInBandLockMeta(countPath);
       } catch (error) {
         throw new WorkflowWorldError(
           `Could not acquire the in-band fence lock of run ${runId}`,
@@ -4017,11 +4107,9 @@ export function createEventsStorage(
       try {
         result = await fn();
       } finally {
+        await removeInBandLockMetaIfOwned(countPath);
         if (!compromised) await release().catch(() => {});
       }
-      // Held past its staleness (a stalled process): another writer may have
-      // taken the lock meanwhile, so this write's place in the count is not
-      // known. Not a 4xx, so a writer treats the outcome as unknown.
       if (compromised) {
         throw new WorkflowWorldError(
           `The in-band fence lock of run ${runId} was lost while a write held it`,
