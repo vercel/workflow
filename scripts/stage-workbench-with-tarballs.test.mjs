@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   parseCatalogEntries,
   rewriteDependencySpecs,
-  urlCatalogEntries,
 } from './stage-workbench-with-tarballs.mjs';
 
 const temporaryDirectories = [];
@@ -72,20 +71,5 @@ overrides: {}
       'dependencies.ai',
       'dependencies.zod',
     ]);
-  });
-});
-
-describe('staged workbench URL catalog entries', () => {
-  it('finds only default-catalog entries pinned to a URL', () => {
-    expect(
-      urlCatalogEntries({
-        default: {
-          '@vercel/queue': 'https://example.vercel.dev/queue.tgz',
-          zod: '4.1.0',
-        },
-        other: { pkg: 'https://example.vercel.dev/other.tgz' },
-      })
-    ).toEqual([['@vercel/queue', 'https://example.vercel.dev/queue.tgz']]);
-    expect(urlCatalogEntries({})).toEqual([]);
   });
 });

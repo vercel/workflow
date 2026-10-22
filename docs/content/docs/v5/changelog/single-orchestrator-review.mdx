@@ -18,7 +18,7 @@ The PR does four things:
 1. **Spec 9 runtime.** A new orchestrator under `packages/core/src/runtime/spec9/`.
 2. **Spec 8 kept side by side.** The previous orchestrator moves to `packages/core/src/runtime/spec8/`, and each delivery is routed by the run's stored spec version.
 3. **World contract changes.** A required in-band fence for Worlds that declare spec 9, a `{ timeoutSeconds: 0 }` handoff every World implements for spec 9 runs, in-band event time and per-entity batch order as part of the spec 9 storage contract, and optional coalescing.
-4. **Vercel queue serialization.** On Vercel, spec 9 runs are kept to one orchestrator invocation by a Vercel Queues concurrency key per run on the existing `__wkf_workflow_*` topic. Spec 8 runs keep `main`'s queue topology and behavior. This needs a pre-release `@vercel/queue` with the experimental concurrency key and lease handoff support.
+4. **Vercel queue serialization.** On Vercel, spec 9 runs are kept to one orchestrator invocation by a Vercel Queues concurrency key per run on the existing `__wkf_workflow_*` topic. Spec 8 runs keep `main`'s queue topology and behavior. This needs `@vercel/queue` 0.9.0 or later, the first release with the experimental concurrency key and lease handoff support.
 
 ## 2. The spec 9 model
 
@@ -429,10 +429,6 @@ Spec 9 runs on both engines. Every spec 9 runtime test file runs on both, except
 - **Continuations covered by typecheck only.** Its exit continuations (replay budget, an elapsed wait, an unread write of its own) hand off through `continueInNextDelivery`. No test triggers them, because QuickJS keeps its VM live through inline steps. The deadline handoff verified on Vercel was on the node engine.
 - **Fence refusal** shares the node path's handling, through the catch in `spec9/delivery.ts`; QuickJS reports its sent step and timer messages back (`onStepMessageSent`, `onWaitTimerSent`). Covered by the orchestrator tests that run on both engines; QuickJS inline-step retries have no dedicated test.
 
-### pnpm 11 and the pre-release `@vercel/queue`
-
-Until `@vercel/queue` is released, the catalog points at a tarball URL. pnpm 11 refuses a URL dependency inside another package (`blockExoticSubdeps`, on by default). CI's workbench staging turns that check off while a catalog entry is a URL. Anyone installing this PR's pre-release tarballs with pnpm 11 needs `blockExoticSubdeps: false` until the release.
-
 ### Benchmarks
 
 The benchmark suite on head `16f7001` (nextjs-turbopack preview, p75 in milliseconds, one run of 30 samples per scenario and 10 for fan-out), against `main`'s production baseline:
@@ -494,7 +490,6 @@ The rule now keeps no per-entity record. Within one batch of events, the host ho
 ## 10. Before merge
 
 - Remove the temporary `[diag]` warn logs in `packages/core/src/runtime/spec9/delivery.ts`.
-- Release the `@vercel/queue` change and pin its version in place of the preview tarball URL. Then drop the `blockExoticSubdeps` exception from workbench staging if nothing else needs it.
 - The world-vercel backend change is merged and deployed; this PR no longer points at its preview.
 - Get the Vercel e2e lanes green. On the current head they fail only five tests, all of which read step payloads through `workflow inspect steps --withData`, which the world-vercel backend now refuses for spec 9 runs. A backend change for that is in progress.
 - Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks (section 7).

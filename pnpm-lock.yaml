@@ -32,7 +32,7 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz
+      specifier: 0.9.0
     '@vitest/coverage-v8':
       specifier: ^4.1.10
       version: 4.1.10
@@ -1438,7 +1438,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz(@opentelemetry/api@1.9.1)
+        version: 0.9.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1493,7 +1493,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz(@opentelemetry/api@1.9.1)
+        version: 0.9.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1646,7 +1646,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz(@opentelemetry/api@1.9.1)
+        version: 0.9.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -9994,9 +9994,8 @@ packages:
     resolution: {integrity: sha512-6pjdXyNfdCQnj1nyeB1rPtll/XUhmciyeZJD0rpIUUwmcIfR+utDl6+iFvlHvsBdqAVT8UC6ydObT0v+xldfUQ==}
     engines: {node: '>=20.0.0'}
 
-  '@vercel/queue@https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz':
-    resolution: {integrity: sha512-bLUL5rfNovYzrBrNp1lRi0BIwSvGVdCwNoh2csxzccymc5YTjggp8YuTut21cmZRNz/0WrA0gqErDzvv1OSEUg==, tarball: https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz}
-    version: 0.8.0
+  '@vercel/queue@0.9.0':
+    resolution: {integrity: sha512-Bt98IBWGrokAgGpK6ATFEM3CY7xtak3cVh1cVZDeFmN5JslO22ESiaWt0xCdeOJl+TPnoe54XZwByELKrY+Icw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@opentelemetry/api': 1.9.1
@@ -27172,7 +27171,7 @@ snapshots:
       picocolors: 1.1.1
     optional: true
 
-  '@vercel/queue@https://vqs-git-peter-queue-experimental-concurrency-key.labs.vercel.dev/queue.tgz(@opentelemetry/api@1.9.1)':
+  '@vercel/queue@0.9.0(@opentelemetry/api@1.9.1)':
     dependencies:
       '@vercel/oidc': 3.2.0
       minimatch: 10.2.5
