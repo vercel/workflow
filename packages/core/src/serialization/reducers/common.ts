@@ -14,6 +14,7 @@ import {
   FatalError,
   HookConflictError,
   HookForceClaimedError,
+  HookReservedError,
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
@@ -327,6 +328,20 @@ export function getCommonReducers(
       }
       return reduced;
     },
+    HookReservedError: (value) => {
+      const base = reduceNamedErrorSubclassBase('HookReservedError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['HookReservedError'] = {
+        ...base,
+        token: readProperty(value, 'token') as HookReservedError['token'],
+        runId: readProperty(value, 'runId') as HookReservedError['runId'],
+      };
+      const retryAfter = readProperty(value, 'retryAfter') as
+        | number
+        | undefined;
+      if (retryAfter !== undefined) reduced.retryAfter = retryAfter;
+      return reduced;
+    },
     // WorkflowStartError carries the candidate run and the stage that could
     // not be confirmed; `start()` is a step, so it crosses into workflows.
     WorkflowStartError: (value) => {
@@ -557,6 +572,24 @@ export function getCommonRevivers(
         value.token,
         value.claimedByRunId,
         value.claimedByHookId
+      );
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
+      return error;
+    },
+    HookReservedError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//HookReservedError')
+        ] as typeof HookReservedError | undefined) ?? HookReservedError;
+      const error = new Ctor(
+        value.token,
+        value.runId,
+        value.retryAfter !== undefined
+          ? { retryAfter: value.retryAfter }
+          : undefined
       );
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) {

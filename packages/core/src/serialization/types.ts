@@ -108,6 +108,14 @@ export interface SerializableSpecial {
     claimedByRunId: string;
     claimedByHookId?: string;
   };
+  HookReservedError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    token: string;
+    runId: string;
+    retryAfter?: number;
+  };
   WorkflowStartError: {
     message: string;
     stack?: string;

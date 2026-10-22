@@ -3,6 +3,8 @@ import type { WorkflowRuntimeError } from '@workflow/errors';
 import {
   FatalError,
   HookConflictError,
+  HookNotFoundError,
+  HookReservedError,
   RetryableError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
@@ -4834,6 +4836,19 @@ describe('Workflow error serialization', () => {
     expect(hydrated.stage).toBe('admission');
     expect(hydrated.message).toBe(error.message);
     expect((hydrated.cause as Error).message).toBe('gateway timed out');
+  });
+
+  it('should round-trip HookReservedError, which is never a HookNotFoundError', async () => {
+    const hydrated = (await roundTrip(
+      new HookReservedError('order:1', 'wrun_owner', { retryAfter: 2 })
+    )) as HookReservedError;
+    expect(HookReservedError.is(hydrated)).toBe(true);
+    expect(HookNotFoundError.is(hydrated)).toBe(false);
+    expect(hydrated).toMatchObject({
+      token: 'order:1',
+      runId: 'wrun_owner',
+      retryAfter: 2,
+    });
   });
 
   it('should serialize WorkflowStartError using its dedicated reducer key', async () => {

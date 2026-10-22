@@ -2,6 +2,7 @@ import {
   EntityConflictError,
   HookConflictError,
   RUN_ERROR_CODES,
+  START_HOOK_ADMISSION_REJECTED,
   WorkflowRuntimeError,
   WorkflowStartError,
   WorkflowWorldError,
@@ -54,6 +55,7 @@ import {
 import type { CompressionMode } from '../serialization/compression.js';
 import {
   dehydrateDynamicWorkflowCode,
+  dehydrateStepArguments,
   dehydrateWorkflowArguments,
   type PayloadKey,
   sealTo,
@@ -374,11 +376,30 @@ export interface StartHookOptions {
    * shorten it.
    */
   experimental_minRetention?: StringValue | Date | number;
+
+  /**
+   * Data stored with the Hook, with the same semantics and serialization as
+   * `createHook({ metadata })`. The World keeps it with the reservation; when
+   * the workflow's `createHook({ token })` adopts the reservation without
+   * metadata of its own, the Hook carries this one, so `getHookByToken()`
+   * returns it.
+   */
+  metadata?: unknown;
 }
 
 /**
- * Validates and resolves `start({ hook })` before anything is written.
- * Exported for tests.
+ * How long a start Hook keeps its token by default, counted from `start()`:
+ * the token is unavailable until the run ends or this passes, whichever is
+ * later. Applies only on a World (and, cross-deployment, a target) that
+ * supports Hook retention; elsewhere the default is skipped rather than
+ * refusing the start. `experimental_minRetention: 0` opts out.
+ */
+export const DEFAULT_START_HOOK_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Validates and resolves `start({ hook })` before anything is written. The
+ * default retention and the metadata are applied later, once the World and
+ * the run's key are known. Exported for tests.
  */
 export function normalizeStartHook(options: StartHookOptions): StartHook {
   if (typeof options?.token !== 'string' || options.token.length === 0) {
@@ -386,7 +407,10 @@ export function normalizeStartHook(options: StartHookOptions): StartHook {
       'start({ hook }) requires hook.token to be a non-empty string.'
     );
   }
-  if (options.experimental_minRetention === undefined) {
+  if (
+    options.experimental_minRetention === undefined ||
+    options.experimental_minRetention === 0
+  ) {
     return { token: options.token };
   }
   const tokenRetentionUntil = parseDurationToDate(
@@ -450,6 +474,30 @@ function assertTargetAdmitsStartHook(
       `start({ hook: { experimental_minRetention } }) requires the target deployment (${deploymentId}) to support Hook retention, and it does not.`
     );
   }
+}
+
+/**
+ * Inside a workflow, `start()` is a step, and a step retries every error that
+ * is not fatal. A start Hook's deterministic answers (a refusal naming the
+ * owner, a permanent rejection, a contract error) cannot change on a retry,
+ * so they are marked fatal there and reach the workflow on the first attempt
+ * with their own type intact. `WorkflowStartError` is left retryable: a retry
+ * with the same token is safe, and either becomes the owner or is refused
+ * naming it.
+ */
+function finalInStep<E>(error: E): E {
+  if (
+    contextStorage.getStore()?.workflowMetadata !== undefined &&
+    error instanceof Error
+  ) {
+    Object.defineProperty(error, 'fatal', {
+      value: true,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return error;
 }
 
 /** Whether a World error is a deterministic answer rather than an outage. */
@@ -778,7 +826,7 @@ export async function start<TArgs extends unknown[], TResult>(
     const queueName = getWorkflowQueueName(workflowName, opts.namespace);
 
     const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
-    return trace(spanName, async (span) => {
+    const traced = trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -791,14 +839,7 @@ export async function start<TArgs extends unknown[], TResult>(
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
       if (startHook) {
-        span?.setAttributes({
-          ...Attribute.WorkflowStartHook(true),
-          ...(startHook.tokenRetentionUntil
-            ? Attribute.WorkflowStartHookRetentionUntil(
-                startHook.tokenRetentionUntil.toISOString()
-              )
-            : {}),
-        });
+        span?.setAttributes(Attribute.WorkflowStartHook(true));
         // The calling World writes `run_created`, so it must admit too. A
         // cross-deployment target is checked again below, from its probe.
         if (world.capabilities?.atomicStartHook?.active !== true) {
@@ -937,6 +978,10 @@ export async function start<TArgs extends unknown[], TResult>(
       // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
       let targetSpecVersion: number;
       let specVersionSource: SpecVersionSource;
+      // Whether the deployment that executes the run keeps Hook retention,
+      // for the start Hook's default retention. Same deployment: the caller's
+      // World, checked below.
+      let targetSupportsHookRetention = true;
       if (!crossDeployment) {
         framedByteStreams = true;
         targetCompression = true;
@@ -979,6 +1024,8 @@ export async function start<TArgs extends unknown[], TResult>(
         });
         if (startHook) {
           assertTargetAdmitsStartHook(startHook, deploymentId, probe);
+          targetSupportsHookRetention =
+            probe?.capabilities?.hookRetention?.active === true;
         }
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(
@@ -1056,6 +1103,29 @@ export async function start<TArgs extends unknown[], TResult>(
       ) {
         throw startHookContractError(
           `start({ hook }) requires spec version ${SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT} or later, but this run would be stamped ${specVersion}.`
+        );
+      }
+      // The default retention: absolute from now, like an explicit
+      // `experimental_minRetention`. Skipped, not refused, where the World or
+      // the target cannot keep it; an explicit retention there still fails
+      // closed above.
+      if (
+        startHook &&
+        opts.hook?.experimental_minRetention === undefined &&
+        world.capabilities?.hookRetention?.active === true &&
+        targetSupportsHookRetention
+      ) {
+        startHook.tokenRetentionUntil = new Date(
+          Date.now() + DEFAULT_START_HOOK_RETENTION_MS
+        );
+      }
+      if (startHook) {
+        span?.setAttributes(
+          startHook.tokenRetentionUntil
+            ? Attribute.WorkflowStartHookRetentionUntil(
+                startHook.tokenRetentionUntil.toISOString()
+              )
+            : {}
         );
       }
       const allowReservedAttributes = opts.allowReservedAttributes === true;
@@ -1274,6 +1344,19 @@ export async function start<TArgs extends unknown[], TResult>(
         ops,
         streamStartGate?.promise
       );
+      // The start Hook's metadata, serialized and encrypted exactly as
+      // `createHook({ metadata })`'s is, so the adopted Hook's lookups
+      // hydrate it the same way.
+      if (startHook && opts.hook?.metadata !== undefined) {
+        startHook.metadata = (await dehydrateStepArguments(
+          opts.hook.metadata,
+          runId,
+          encryptionKey,
+          globalThis,
+          v1Compat,
+          compression
+        )) as StartHook['metadata'];
+      }
 
       // Dynamic workflow code goes through the same serialization pipeline as
       // the arguments — compressed, then encrypted with the run's key — and is
@@ -1596,5 +1679,19 @@ export async function start<TArgs extends unknown[], TResult>(
 
       return new Run<TResult>(runId, { resilientStart });
     });
+    if (!startHook) return traced;
+    try {
+      return await traced;
+    } catch (error) {
+      if (
+        HookConflictError.is(error) ||
+        (WorkflowWorldError.is(error) &&
+          (error.code === START_HOOK_ADMISSION_REJECTED ||
+            error.code === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR))
+      ) {
+        finalInStep(error);
+      }
+      throw error;
+    }
   });
 }

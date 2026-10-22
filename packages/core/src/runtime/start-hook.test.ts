@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  FatalError,
   HookConflictError,
   RUN_ERROR_CODES,
   START_HOOK_ADMISSION_REJECTED,
@@ -10,9 +11,15 @@ import {
 } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hydrateStepArguments } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import { healthCheck } from './helpers.js';
-import { normalizeStartHook, start } from './start.js';
+import {
+  DEFAULT_START_HOOK_RETENTION_MS,
+  normalizeStartHook,
+  start,
+} from './start.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -126,10 +133,147 @@ describe('start({ hook })', () => {
     expect(calls).toEqual(['queue', 'create']);
     const [runId, event] = eventsCreate.mock.calls[0];
     expect(run.runId).toBe(runId);
-    expect(event.eventData.startHook).toEqual({ token: TOKEN });
+    expect(event.eventData.startHook.token).toBe(TOKEN);
     const payload = queue.mock.calls[0][1];
     expect(payload.runId).toBe(runId);
-    expect(payload.runInput.startHook).toEqual({ token: TOKEN });
+    expect(payload.runInput.startHook).toEqual(event.eventData.startHook);
+  });
+
+  describe('default retention', () => {
+    it('keeps the token for 24 hours from start() by default', async () => {
+      admittingWorld();
+      const before = Date.now();
+
+      await start(workflow, [], { hook: { token: TOKEN } });
+
+      const { tokenRetentionUntil } =
+        eventsCreate.mock.calls[0][1].eventData.startHook;
+      expect(tokenRetentionUntil.getTime()).toBeGreaterThanOrEqual(
+        before + DEFAULT_START_HOOK_RETENTION_MS
+      );
+      expect(tokenRetentionUntil.getTime()).toBeLessThanOrEqual(
+        Date.now() + DEFAULT_START_HOOK_RETENTION_MS
+      );
+    });
+
+    it('opts out with experimental_minRetention: 0', async () => {
+      admittingWorld();
+
+      await start(workflow, [], {
+        hook: { token: TOKEN, experimental_minRetention: 0 },
+      });
+
+      expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
+        token: TOKEN,
+      });
+    });
+
+    it('is skipped, not refused, on a World without Hook retention', async () => {
+      admittingWorld({ capabilities: { atomicStartHook: { active: true } } });
+
+      await start(workflow, [], { hook: { token: TOKEN } });
+
+      expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
+        token: TOKEN,
+      });
+    });
+  });
+
+  it('serializes hook.metadata like createHook metadata', async () => {
+    admittingWorld();
+
+    await start(workflow, [], {
+      hook: { token: TOKEN, metadata: { sessionId: 's_1' } },
+    });
+
+    const [runId, event] = eventsCreate.mock.calls[0];
+    const { metadata } = event.eventData.startHook;
+    expect(metadata).toBeInstanceOf(Uint8Array);
+    expect(await hydrateStepArguments(metadata, runId, undefined)).toEqual({
+      sessionId: 's_1',
+    });
+    expect(queue.mock.calls[0][1].runInput.startHook.metadata).toBe(metadata);
+  });
+
+  describe('inside a workflow step', () => {
+    const inStep = <T>(fn: () => Promise<T>) =>
+      contextStorage.run(
+        {
+          stepMetadata: {
+            stepName: 'start',
+            stepId: 'step_1',
+            stepStartedAt: new Date(),
+            attempt: 1,
+          },
+          workflowMetadata: {
+            workflowName: 'parent',
+            workflowRunId: 'wrun_parent',
+            workflowStartedAt: new Date(),
+            url: 'http://localhost:3000',
+            features: { encryption: false },
+          },
+          ops: [],
+        } as any,
+        fn
+      );
+
+    it('makes a refusal final for the step, keeping its type', async () => {
+      admittingWorld();
+      eventsCreate.mockRejectedValue(
+        new HookConflictError(TOKEN, 'wrun_owner')
+      );
+
+      const error = await rejection(
+        inStep(() => start(workflow, [], { hook: { token: TOKEN } }))
+      );
+
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(FatalError.is(error)).toBe(true);
+    });
+
+    it('makes a permanent rejection final for the step', async () => {
+      admittingWorld();
+      eventsCreate.mockRejectedValue(
+        new WorkflowWorldError('no', {
+          status: 400,
+          code: START_HOOK_ADMISSION_REJECTED,
+        })
+      );
+
+      const error = await rejection(
+        inStep(() => start(workflow, [], { hook: { token: TOKEN } }))
+      );
+
+      expect(FatalError.is(error)).toBe(true);
+    });
+
+    it('leaves an uncertain start retryable', async () => {
+      admittingWorld();
+      eventsCreate.mockRejectedValue(
+        new WorkflowWorldError('down', { status: 503 })
+      );
+
+      const error = await rejection(
+        inStep(() => start(workflow, [], { hook: { token: TOKEN } }))
+      );
+
+      expect(WorkflowStartError.is(error)).toBe(true);
+      expect((error as WorkflowStartError).retryable).toBe(true);
+      expect(FatalError.is(error)).toBe(false);
+    });
+
+    it('does not mark a refusal outside a workflow', async () => {
+      admittingWorld();
+      eventsCreate.mockRejectedValue(
+        new HookConflictError(TOKEN, 'wrun_owner')
+      );
+
+      const error = await rejection(
+        start(workflow, [], { hook: { token: TOKEN } })
+      );
+
+      expect(FatalError.is(error)).toBe(false);
+    });
   });
 
   it('carries the retention as an absolute time', async () => {

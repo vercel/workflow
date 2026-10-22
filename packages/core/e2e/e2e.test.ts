@@ -5,6 +5,7 @@ import {
   FatalError,
   HookConflictError,
   HookNotFoundError,
+  HookReservedError,
   RetryableError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
@@ -2508,17 +2509,21 @@ describe.concurrent('e2e', () => {
       if (world.capabilities?.atomicStartHook?.active !== true) ctx.skip();
     };
 
-    /** Resume the owner's adopted Hook, waiting for it to register. */
+    /**
+     * Resume the owner's Hook. Until the owner adopts its reservation with
+     * `createHook()`, the token is reserved, not missing: retry on
+     * HookReservedError, the way callers are documented to.
+     */
     async function routeToOwner(token: string, message: string) {
       const deadline = Date.now() + 60_000;
       for (;;) {
         try {
           return await resumeHook(token, { message });
         } catch (error) {
-          if (!HookNotFoundError.is(error) || Date.now() > deadline) {
+          if (!HookReservedError.is(error) || Date.now() > deadline) {
             throw error;
           }
-          await sleep(250);
+          await sleep((error.retryAfter ?? 1) * 1000);
         }
       }
     }
@@ -2543,9 +2548,11 @@ describe.concurrent('e2e', () => {
         const token = `start-hook-${Math.random().toString(36).slice(2)}`;
         const workflow = await e2e('startHookOwnerWorkflow');
 
+        // No retention, so the token is free again once the owner ends.
+        const hook = { token, experimental_minRetention: 0 };
         const results = await Promise.allSettled(
           Array.from({ length: 6 }, () =>
-            startHooked(workflow, [token, 1], { hook: { token } })
+            startHooked(workflow, [token, 1], { hook })
           )
         );
 
@@ -2603,6 +2610,11 @@ describe.concurrent('e2e', () => {
         const first = await startOrRoute('unused');
         assert(first.started);
         const second = await startOrRoute('second');
+        // The owner's createHook() brought no metadata, so the adopted Hook
+        // carries the start's. Read while the owner still waits for 'third'.
+        const ownerHook = await getHookByToken(token);
+        expect(ownerHook.runId).toBe(first.started.runId);
+        expect(await ownerHook.metadata).toEqual({ sessionId: 'session-1' });
         const third = await startOrRoute('third');
         expect(second).toEqual({ routedTo: first.started.runId });
         expect(third).toEqual({ routedTo: first.started.runId });
@@ -2615,15 +2627,16 @@ describe.concurrent('e2e', () => {
     );
 
     testJsOnly(
-      'keeps the token for the retention after the owner ends',
+      'keeps the token after the owner ends, for the default retention',
       { timeout: 120_000 },
       async (ctx) => {
         await skipUnlessStartHookSupported(ctx);
         const token = `start-hook-retained-${Math.random().toString(36).slice(2)}`;
         const workflow = await e2e('startHookOwnerWorkflow');
 
+        // No explicit retention: the 24-hour default applies.
         const owner = await startHooked(workflow, [token, 1], {
-          hook: { token, experimental_minRetention: '1 hour' },
+          hook: { token },
         });
         await routeToOwner(token, 'done');
         await owner.returnValue;
