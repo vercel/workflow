@@ -22,6 +22,12 @@ IDs when replaying an extended event history. `setAttributes()` acknowledgements
 take part in the same ordering, so a branch awaiting `setAttributes()` while
 another branch is in flight keeps its own step results on replay.
 
+Hook disposals pending when a workflow completes or fails rely on the terminal
+event's hook cleanup, avoiding redundant `hook_disposed` events. Disposals still
+persist when the workflow suspends, a later pending registration needs the
+same token, or explicit disposal releases a retained token early. Final
+`AbortController.abort()` calls still propagate to steps.
+
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 
 Queued step messages carry immutable run identity in `runContext`, so step

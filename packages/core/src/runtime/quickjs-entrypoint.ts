@@ -2485,9 +2485,9 @@ export async function runWorkflowWithQuickJS(params: {
       ...Attribute.QuickJSOutcome('completed'),
     });
 
-    // Flush leftover pending side effects (abort recordings, system-hook
-    // disposals, fire-and-forget attribute/hook events) BEFORE writing
-    // run_completed. Mirrors the node:vm engine's drainPendingQueueItems.
+    // Flush leftover pending side effects (abort recordings and fire-and-forget
+    // attribute/hook events) BEFORE writing run_completed. Mirrors the node:vm
+    // engine's drainPendingQueueItems.
     // Drain failures are swallowed: the workflow's own outcome is the
     // source of truth.
     if (result.completed.drainOperations?.length) {

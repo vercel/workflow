@@ -78,6 +78,11 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
+   * The workflow is completing or failing. Its terminal event cleans up hooks,
+   * so only dispose hooks needed to release a token for a later registration.
+   */
+  terminalDrain?: boolean;
+  /**
    * The runtime's loaded event log. Event creations normally name the position
    * they were derived from, so a backend that has recorded
    * events the replay did not see can report them back on the write, or, if
@@ -495,6 +500,7 @@ export async function handleSuspension({
   span,
   requestId,
   eventLog,
+  terminalDrain,
   runReadyBarrier,
   replayRecoveryReporter,
   stepDispatch,
@@ -659,7 +665,14 @@ export async function handleSuspension({
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
   const allHookItems = suspension.items.filter(
-    (item): item is HookInvocationQueueItem => item.type === 'hook'
+    (item): item is HookInvocationQueueItem =>
+      item.type === 'hook' &&
+      !(
+        terminalDrain &&
+        item.isSystem &&
+        !item.hasCreatedEvent &&
+        !item.abortRequested
+      )
   );
   const waitItems = suspension.items.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
@@ -852,7 +865,13 @@ export async function handleSuspension({
   const processHookGroup = async (
     items: HookInvocationQueueItem[]
   ): Promise<void> => {
-    for (const queueItem of items) {
+    const lastCreationIndex = terminalDrain
+      ? items.reduce(
+          (last, item, index) => (item.hasCreatedEvent ? last : index),
+          -1
+        )
+      : -1;
+    for (const [index, queueItem] of items.entries()) {
       let creationConflicted = false;
 
       if (!queueItem.hasCreatedEvent) {
@@ -900,7 +919,16 @@ export async function handleSuspension({
       // Dispose after creation for hooks born and disposed within this
       // batch. A hook whose creation conflicted was never created, so
       // there is nothing to dispose.
-      if (queueItem.disposed && !creationConflicted) {
+      // A terminal event releases non-retained hooks. Explicit disposal also
+      // releases retained tokens early. Keep disposals before a later same-token
+      // registration so it cannot conflict with this run's own hook.
+      if (
+        queueItem.disposed &&
+        !creationConflicted &&
+        (!terminalDrain ||
+          index < lastCreationIndex ||
+          queueItem.tokenRetentionUntil !== undefined)
+      ) {
         await disposeHook(queueItem);
       }
     }

@@ -8,7 +8,7 @@ import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
-import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
 import { hydrateRunError } from '../src/serialization';
@@ -678,9 +678,7 @@ export async function fetchManifest(
   if (cachedManifest && !forceRefresh) return cachedManifest;
 
   const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
-  const res = await fetch(url, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(url);
   if (!res.ok) {
     throw new Error(
       `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`

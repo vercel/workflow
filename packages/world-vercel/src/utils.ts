@@ -434,7 +434,19 @@ export async function makeRequest<T>({
         const nodeAgents = getNodeHttpAgents(config);
         const undiciRequest = nodeAgents
           ? undefined
-          : new Request(url, { ...options, body, headers, signal });
+          : new Request(url, {
+              ...options,
+              body,
+              headers,
+              signal,
+              // The workflow API answers directly, so a 3xx is a misdirected
+              // request rather than a hop to take. Following it would re-send
+              // `x-vercel-trusted-oidc-idp-token` to whatever host the
+              // `Location` names — fetch only strips `Authorization` across
+              // origins, not other credential headers. Matches the node:http
+              // transport, which never follows redirects.
+              redirect: 'manual',
+            });
         const undiciDispatcher = nodeAgents ? undefined : getDispatcher(config);
         // Both transports issue the same span against the same URL, so this
         // is the only thing that tells them apart in a trace.
