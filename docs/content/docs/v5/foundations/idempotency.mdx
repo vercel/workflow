@@ -86,7 +86,7 @@ export async function POST(request: Request) {
 }
 ```
 
-The token belongs to the run until it ends, and with `experimental_minRetention` until that time has also passed, so late retries keep getting the same owner. If `start()` cannot confirm the outcome it throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error); retrying the request with the same token is safe. See [`start()`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) for the full behavior and World support.
+The token belongs to the run until it ends and its retention (24 hours from `start()` by default, or `experimental_minRetention`) has also passed, so late retries keep getting the same owner. If `start()` cannot confirm the outcome it throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error); retrying the request with the same token is safe. See [`start()`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) for the full behavior and World support.
 
 ### Start or route to the owner
 
@@ -109,7 +109,7 @@ export async function processOrder(orderId: string) {
 
 ```typescript lineNumbers
 import { resumeHook, start } from "workflow/api";
-import { HookConflictError, HookNotFoundError } from "workflow/errors";
+import { HookConflictError, HookReservedError } from "workflow/errors";
 import { processOrder } from "./workflows/process-order";
 
 export async function POST(request: Request) {
@@ -123,21 +123,25 @@ export async function POST(request: Request) {
     if (!HookConflictError.is(error)) throw error;
   }
 
-  // The owner may not have registered its Hook yet: retry briefly.
+  // The owner may not have registered its Hook yet: retry while it is reserved.
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
       const hook = await resumeHook(token, { note }); // [!code highlight]
       return Response.json({ runId: hook.runId, started: false });
     } catch (error) {
-      if (!HookNotFoundError.is(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      if (!HookReservedError.is(error)) throw error; // [!code highlight]
+      await new Promise((resolve) =>
+        setTimeout(resolve, (error.retryAfter ?? 1) * 1000)
+      );
     }
   }
   throw new Error("The owning run did not register its hook in time");
 }
 ```
 
-Until the owning run's `createHook()` registers, the reservation is not a Hook, so `resumeHook()` throws `HookNotFoundError` and the retry above waits for it.
+Until the owning run's `createHook()` registers, the token is reserved but there is no Hook to resume, so `resumeHook()` (and `getHookByToken()`) throw [`HookReservedError`](/docs/api-reference/workflow-errors/hook-reserved-error) naming the owner, with a suggested `retryAfter` in seconds. It is never a `HookNotFoundError`, so you can tell "owned, not live yet" from "nobody owns this token". If the owner ends without ever registering the Hook, the lookup answers `HookNotFoundError`. Inside a workflow step, the step's ordinary retries cover `HookReservedError`.
+
+Pass `hook.metadata` to `start()` to attach data the route reads back after the resume (for example, a session ID). The owner's `createHook()` keeps it unless it passes metadata of its own.
 
 ### Workflow-side coordination
 

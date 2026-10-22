@@ -74,6 +74,9 @@ All errors extend [`WorkflowError`](/docs/api-reference/workflow-errors/workflow
     <Card href="/docs/api-reference/workflow-errors/hook-force-claimed-error" title="HookForceClaimedError">
         Thrown to a hook's awaiters when another run takes its token over with `experimental_force`.
     </Card>
+    <Card href="/docs/api-reference/workflow-errors/hook-reserved-error" title="HookReservedError">
+        Thrown when a hook token is reserved by a starting run that has not registered its hook yet.
+    </Card>
 </Cards>
 
 ## Backend errors
