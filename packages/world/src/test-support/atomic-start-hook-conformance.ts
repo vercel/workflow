@@ -5,6 +5,7 @@ import type {
   CreateEventParams,
   EventResult,
 } from '../events.js';
+import type { Hook } from '../hooks.js';
 import type { Storage, WorldCapabilities } from '../interfaces.js';
 import { SPEC_VERSION_CURRENT } from '../spec-version.js';
 import {
@@ -34,9 +35,12 @@ import {
  * - The owner's own `createHook()` with the token adopts the reservation; any
  *   other run's conflicts with the owner; disposing the adopted Hook does not
  *   release the token while the owner runs.
+ * - A by-token lookup before adoption throws `HookReservedError` naming the
+ *   owner, and answers not found once the owner ended without adopting, or
+ *   after the adopted Hook was disposed.
+ * - An adoption without metadata takes the reservation's; its own wins.
  * - A forced `createHook()` cannot take a reservation that has no Hook, and
- *   taking its materialized Hook moves the reservation to the claimer
- *   (proposed rule, see `start-hook.ts`).
+ *   taking its adopted Hook moves the reservation to the claimer.
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
  *
@@ -46,8 +50,8 @@ import {
 export interface AtomicStartHookConformanceOptions {
   /** Describe-block name, usually the World's name. */
   name: string;
-  /** The storage under test (its events and runs). Called once per test. */
-  storage: () => Pick<Storage, 'events' | 'runs'>;
+  /** The storage under test. Called once per test. */
+  storage: () => Pick<Storage, 'events' | 'runs' | 'hooks'>;
   /** The capabilities the World under test declares (`World.capabilities`). */
   capabilities: () => WorldCapabilities | undefined;
   /** A fresh client-minted run id (`wrun_<ulid>`). */
@@ -85,11 +89,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function atomicStartHookConformance(
   options: AtomicStartHookConformanceOptions
 ): void {
-  // The runs storage of the current test's storage; see `setup`.
+  // The runs and hooks storage of the current test's storage; see `setup`.
   let runs: Storage['runs'];
+  let hooks: Storage['hooks'];
   const setup = (): Storage['events'] => {
     const storage = options.storage();
     runs = storage.runs;
+    hooks = storage.hooks;
     return storage.events;
   };
 
@@ -98,6 +104,12 @@ export function atomicStartHookConformance(
     runId: string,
     data: AnyEventRequest
   ) => (events.create as CreateAny)(runId, data);
+
+  const lookup = (token: string): Promise<{ hook?: Hook; error?: unknown }> =>
+    hooks.getByToken(token).then(
+      (hook) => ({ hook }),
+      (error: unknown) => ({ error })
+    );
 
   const runData = (startHook: StartHook) => ({
     deploymentId: 'dpl_start_hook_conformance',
@@ -421,6 +433,71 @@ export function atomicStartHookConformance(
       await expectRefused(admit(events, { token }), token, owner);
       await sleep(retentionMs + 250);
       await admit(events, { token });
+    });
+
+    test('a lookup before adoption is HookReservedError, and not found once the owner ends without adopting', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
+      await create(events, owner, runStarted({ token }));
+
+      const reserved = await lookup(token);
+      expect(errorNamed(reserved.error, 'HookReservedError')).toBe(true);
+      expect(errorNamed(reserved.error, 'HookNotFoundError')).toBe(false);
+      expect(reserved.error).toMatchObject({ token, runId: owner });
+
+      await finish(events, owner);
+      expect(errorNamed((await lookup(token)).error, 'HookNotFoundError')).toBe(
+        true
+      );
+    });
+
+    test('a lookup after adoption finds the Hook, and not found once it is disposed', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
+      await create(events, owner, runStarted({ token }));
+      const hookId = newHookId();
+      await create(events, owner, hookCreated(token, hookId));
+
+      expect((await lookup(token)).hook?.runId).toBe(owner);
+
+      await create(events, owner, hookDisposed(token, hookId));
+      expect(errorNamed((await lookup(token)).error, 'HookNotFoundError')).toBe(
+        true
+      );
+      // Still reserved for admission while the owner runs.
+      await expectRefused(admit(events, { token }), token, owner);
+    });
+
+    test("the reservation's metadata carries over to an adoption that brings none", async () => {
+      const events = setup();
+      const token = newToken();
+      const metadata = new Uint8Array([1, 2, 3]);
+      const owner = await admit(events, { token, metadata });
+      await create(events, owner, runStarted({ token }));
+      await create(events, owner, hookCreated(token, newHookId()));
+
+      const { hook } = await lookup(token);
+      expect(hook?.metadata).toEqual(metadata);
+    });
+
+    test("an adoption's own metadata wins over the reservation's", async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, {
+        token,
+        metadata: new Uint8Array([1, 2, 3]),
+      });
+      await create(events, owner, runStarted({ token }));
+      const own = new Uint8Array([9, 9]);
+      await create(events, owner, {
+        ...hookCreated(token, newHookId()),
+        eventData: { token, metadata: own },
+      } as AnyEventRequest);
+
+      const { hook } = await lookup(token);
+      expect(hook?.metadata).toEqual(own);
     });
 
     test('a forced createHook cannot take a reservation with no Hook', async () => {

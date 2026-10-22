@@ -526,6 +526,7 @@ export async function makeRequest<T>({
             code?: string;
             error?: string;
             details?: unknown;
+            runId?: unknown;
           } = await parseResponseBody(response)
             .then(
               (r) =>
@@ -534,6 +535,7 @@ export async function makeRequest<T>({
                   code?: string;
                   error?: string;
                   details?: unknown;
+                  runId?: unknown;
                 }
             )
             .catch(() => ({}));
@@ -559,7 +561,11 @@ export async function makeRequest<T>({
             code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
-            details: errorData.details,
+            // `425 hook-reserved` names its run at the top level.
+            details:
+              errorCode === 'hook-reserved'
+                ? { runId: errorData.runId }
+                : errorData.details,
           });
           span?.setAttributes({
             ...ErrorType(errorCode || `HTTP ${response.status}`),

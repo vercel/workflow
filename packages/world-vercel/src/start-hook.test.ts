@@ -1,8 +1,11 @@
 import {
   EntityConflictError,
   HookConflictError,
+  HookNotFoundError,
+  HookReservedError,
   START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
+  TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { START_HOOK_WIRE_CODES } from '@workflow/world';
@@ -11,6 +14,7 @@ import { ulid } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
 import { throwForErrorResponse } from './events-v4.js';
+import { getHookByToken } from './hooks.js';
 import { errorForResponse } from './http-core.js';
 import { createWorld, EXPERIMENTAL_START_HOOK_ENV } from './index.js';
 
@@ -208,6 +212,65 @@ describe('atomic start Hook wire contract (world-vercel)', () => {
   it('keeps an unrelated 400 untagged', () => {
     const error = errorForResponse(400, 'bad', { code: 'validation-error' });
     expect((error as WorkflowWorldError).code).toBe('validation-error');
+  });
+
+  it('carries the start Hook metadata bytes in the meta', () => {
+    const metadata = new Uint8Array([7, 8, 9]);
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_created',
+      specVersion: 8,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new Uint8Array([1]),
+        startHook: { token: 'order:1', metadata },
+      },
+    } as never);
+    expect(meta.startHook).toEqual({ token: 'order:1', metadata });
+  });
+
+  it('maps a 425 hook-reserved to HookReservedError, never HookNotFoundError', () => {
+    const thrown = thrownBy(() =>
+      throwForErrorResponse(
+        425,
+        { 'content-type': 'application/json', 'retry-after': '2' },
+        json({ error: START_HOOK_WIRE_CODES.reserved, runId: 'wrun_owner' }),
+        'createEvent',
+        'http://x'
+      )
+    );
+    expect(HookReservedError.is(thrown)).toBe(true);
+    expect(HookNotFoundError.is(thrown)).toBe(false);
+    expect(thrown).toMatchObject({ runId: 'wrun_owner', retryAfter: 2 });
+  });
+
+  it('keeps a plain 425 a TooEarlyError', () => {
+    expect(TooEarlyError.is(errorForResponse(425, 'later'))).toBe(true);
+  });
+
+  it('getHookByToken surfaces a reserved token with the token it asked about', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: START_HOOK_WIRE_CODES.reserved,
+            runId: 'wrun_owner',
+          }),
+          {
+            status: 425,
+            headers: { 'content-type': 'application/json', 'retry-after': '1' },
+          }
+        )
+    );
+    const error = await getHookByToken('order:1', config).catch(
+      (e: unknown) => e
+    );
+    expect(HookReservedError.is(error)).toBe(true);
+    expect(error).toMatchObject({
+      token: 'order:1',
+      runId: 'wrun_owner',
+      retryAfter: 1,
+    });
   });
 
   it('keeps contention a retryable 429', () => {

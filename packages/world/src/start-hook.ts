@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SerializedDataSchema } from './serialization.js';
 
 /**
  * Atomic start Hook admission: `start(workflow, args, { hook: { token } })`.
@@ -38,17 +39,18 @@ import { z } from 'zod';
  *   conflicting. The Hook's own `tokenRetentionUntil` may extend the
  *   reservation but never shortens it, and disposing the Hook does not release
  *   the reservation before the run ends.
- * - **TBD: force claims.** Proposed: `createHook({ experimental_force })`
- *   against a materialized reservation transfers the reservation with the
+ *   The reservation's `metadata` carries over to the adopted Hook unless the
+ *   `createHook()` passes its own, which wins.
+ * - **Force claims.** `createHook({ experimental_force })` against an adopted
+ *   reservation transfers the reservation, retention included, with the
  *   Hook, so the claimer owns the token until it ends (a handoff whose source
  *   run stays parked must not pin the token to it). A reservation not yet
- *   materialized cannot be force-claimed (`hook_conflict`). Not final.
- * - **TBD: deliveries before materialization.** Today a reservation the run
- *   has not materialized is not a Hook: `getHookByToken()` and `resumeHook()`
- *   report it as not found. Callers that route a duplicate's payload to the
- *   owner straight after `HookConflictError` race the owner's boot, so this
- *   is expected to change to either parking the delivery until adoption or a
- *   distinct retryable "reserved, not yet live" error. Not final.
+ *   adopted cannot be force-claimed (`hook_conflict`).
+ * - **Lookups before adoption.** A reservation whose run has not adopted it is
+ *   not a Hook yet, but the token has an owner: a by-token lookup (and so
+ *   `resumeHook()`) throws `HookReservedError` naming the run, retryable,
+ *   while that run has not ended. It answers not found once the run ended
+ *   without adopting it, or after the adopted Hook was disposed.
  * - **Orphan bound.** A candidate accepted but never created (the creating
  *   writer died after deciding) must not hold the token forever. Once the
  *   candidate's `runId` is older than {@link START_HOOK_CANDIDATE_MAX_AGE_MS}
@@ -72,6 +74,13 @@ export const StartHookSchema = z.object({
    * `capabilities.hookRetention`.
    */
   tokenRetentionUntil: z.coerce.date().optional(),
+  /**
+   * The Hook's metadata, serialized like `createHook({ metadata })`'s (the
+   * same bytes `hook_created.eventData.metadata` carries). The World stores
+   * it with the reservation and gives it to the adopted Hook when the run's
+   * `createHook()` passes none.
+   */
+  metadata: SerializedDataSchema.optional(),
 });
 export type StartHook = z.infer<typeof StartHookSchema>;
 
@@ -105,9 +114,22 @@ export const START_HOOK_ADMISSION_REJECTED_CODE =
  * Both 400 codes map to `WorkflowWorldError` with code
  * {@link START_HOOK_ADMISSION_REJECTED_CODE}. Contention the backend could
  * not settle answers a plain 429, which stays retryable.
+ *
+ * A by-token Hook lookup (or a `hook_received`) that lands on a reservation
+ * its run has not adopted answers `425 hook-reserved` with `runId` at the top
+ * level and a `Retry-After` header, writing nothing. Maps to
+ * `HookReservedError(token, runId, { retryAfter })`.
  */
 export const START_HOOK_WIRE_CODES = {
   conflict: 'start-hook-conflict',
   admissionRejected: 'start-hook-admission-rejected',
   disabled: 'start-hook-disabled',
+  reserved: 'hook-reserved',
 } as const;
+
+/**
+ * Seconds a World suggests between retries of a lookup refused with
+ * `HookReservedError`: the owner is usually registering its Hook within a
+ * delivery or two.
+ */
+export const HOOK_RESERVED_RETRY_AFTER_SECONDS = 1;

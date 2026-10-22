@@ -3,6 +3,7 @@ export {
   HookConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,

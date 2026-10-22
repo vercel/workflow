@@ -23,6 +23,7 @@ import {
   EntityConflictError,
   HookConflictError,
   HookForceClaimedError,
+  HookReservedError,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
@@ -399,6 +400,8 @@ export function inBandCounter(value: unknown): number | undefined {
  *   - other 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot, the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
+ *   - 425 with code `hook-reserved` → HookReservedError naming the run that
+ *     reserved the token (`start({ hook })`, not adopted yet) + retryAfter
  *   - 425 → TooEarlyError + retryAfter (step retry pacing; see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
@@ -513,6 +516,20 @@ export function errorForResponse(
   }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });
+  if (status === 425 && code === START_HOOK_WIRE_CODES.reserved) {
+    // A by-token lookup (or delivery) that landed on a start reservation its
+    // run has not adopted yet. The token is owned, so this is not a 404; the
+    // caller fills in the token it asked about.
+    const reservedBy =
+      details && typeof details === 'object'
+        ? (details as { runId?: unknown }).runId
+        : undefined;
+    return new HookReservedError(
+      '',
+      typeof reservedBy === 'string' ? reservedBy : 'unknown',
+      retryAfter !== undefined ? { retryAfter } : undefined
+    );
+  }
   if (status === 425) return new TooEarlyError(message, { retryAfter });
   if (status === 429) {
     // A firewall challenge can't be solved by a server-to-server client, so map

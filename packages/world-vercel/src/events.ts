@@ -432,6 +432,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
       ...(startHook.tokenRetentionUntil instanceof Date
         ? { tokenRetentionUntil: startHook.tokenRetentionUntil }
         : {}),
+      // The serialized metadata bytes, exactly what `hook_created` would
+      // carry as its payload; a CBOR byte string in the meta.
+      ...(startHook.metadata instanceof Uint8Array
+        ? { metadata: startHook.metadata }
+        : {}),
     };
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).

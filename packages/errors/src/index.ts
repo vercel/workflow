@@ -244,9 +244,11 @@ export type WorkflowStartStage = 'queue' | 'admission';
  * is unknown, not failed: the candidate may still become the run that owns the
  * token. `runId` identifies the candidate for inspection.
  *
- * Retrying the logical request with the same Hook token is safe: it can never
- * admit a second owner. If the first candidate was admitted, the retry throws
- * `HookConflictError` naming it.
+ * Retryable: retrying the logical request with the same Hook token is safe,
+ * because it can never admit a second owner. If the first candidate was
+ * admitted, the retry throws `HookConflictError` naming it; otherwise the
+ * retry's candidate becomes the owner. Inside a workflow, the `start()` step
+ * retries it like any other transient failure.
  *
  * Use the static `WorkflowStartError.is()` method for type-safe checking in
  * catch blocks.
@@ -256,6 +258,8 @@ export class WorkflowStartError extends WorkflowWorldError {
   readonly runId: string;
   /** The step whose outcome could not be confirmed. */
   readonly stage: WorkflowStartStage;
+  /** Always `true`: a retry with the same Hook token is safe. */
+  readonly retryable = true;
 
   constructor(runId: string, stage: WorkflowStartStage, cause?: unknown) {
     const causeMessage = isError(cause)
@@ -904,6 +908,55 @@ export class HookNotFoundError extends WorkflowError {
 }
 
 /**
+ * Thrown by `resumeHook()` and `getHookByToken()` when the token is reserved
+ * by a run started with `start({ hook })` that has not registered its Hook
+ * (`createHook({ token })`) yet. The token has an owner, so this is not
+ * `HookNotFoundError`: retry after `retryAfter` seconds (or shortly), and the
+ * lookup resolves once the owner's Hook is registered. If the owner ends
+ * without registering one, the lookup answers `HookNotFoundError` instead.
+ *
+ * Retryable: inside a step, the step's ordinary retries cover it.
+ *
+ * @example
+ * ```ts
+ * import { HookReservedError } from "workflow/errors";
+ *
+ * for (;;) {
+ *   try {
+ *     return await resumeHook(token, payload);
+ *   } catch (error) {
+ *     if (!HookReservedError.is(error)) throw error;
+ *     await sleep((error.retryAfter ?? 1) * 1000);
+ *   }
+ * }
+ * ```
+ */
+export class HookReservedError extends WorkflowError {
+  token: string;
+  /** The run that reserved the token and will own its Hook. */
+  runId: string;
+  /** Suggested delay before retrying, in seconds. */
+  retryAfter?: number;
+
+  constructor(token: string, runId: string, options?: { retryAfter?: number }) {
+    super(
+      `Hook token "${token}" is reserved by workflow run "${runId}", which has not registered its hook yet; retry shortly`,
+      {}
+    );
+    this.name = 'HookReservedError';
+    this.token = token;
+    this.runId = runId;
+    if (options?.retryAfter !== undefined) {
+      this.retryAfter = options.retryAfter;
+    }
+  }
+
+  static is(value: unknown): value is HookReservedError {
+    return isError(value) && value.name === 'HookReservedError';
+  }
+}
+
+/**
  * Thrown when an operation conflicts with the current state of an entity.
  * This includes attempts to modify an entity already in a terminal state,
  * create an entity that already exists, or any other 409-style conflict.
@@ -1313,6 +1366,9 @@ const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
 const WORKFLOW_START_ERROR_KEY = Symbol.for(
   '@workflow/errors//WorkflowStartError'
 );
+const HOOK_RESERVED_ERROR_KEY = Symbol.for(
+  '@workflow/errors//HookReservedError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1358,6 +1414,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
     Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
       value: StreamError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, HOOK_RESERVED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_RESERVED_ERROR_KEY, {
+      value: HookReservedError,
       writable: false,
       enumerable: false,
       configurable: false,

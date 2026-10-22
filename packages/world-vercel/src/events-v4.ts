@@ -829,6 +829,9 @@ function errorFromV4Response(
     if (statusCode === 409 && code === 'hook-force-claimed') {
       details = { claimedBy: record.claimedBy };
     }
+    if (statusCode === 425 && code === START_HOOK_WIRE_CODES.reserved) {
+      details = { runId: record.runId };
+    }
     if (statusCode === 409 && code === START_HOOK_WIRE_CODES.conflict) {
       details = {
         token: record.token,
@@ -865,6 +868,8 @@ interface V4ErrorBody {
   /** 409 start-hook-conflict: the refused token and the run that owns it. */
   token?: unknown;
   conflictingRunId?: unknown;
+  /** 425 hook-reserved: the run that reserved the token. */
+  runId?: unknown;
   events?: unknown;
   cursor?: unknown;
   /** 412 in-band-superseded: the backend's counters at the refusal. */
