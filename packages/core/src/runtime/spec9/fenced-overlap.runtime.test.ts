@@ -1,3 +1,4 @@
+import { InBandSupersededError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -163,15 +164,16 @@ describe.each([
     const orchestratorCalls = orchestratorMessagesOf(world).length;
     gate.resolve();
     const [resultA, resultB] = await Promise.all([deliveryA, deliveryB]);
-    // Both acknowledge, and neither sends the run another orchestrator
-    // message. Usually A stands down: B's view included every in-band write,
-    // and B finishes the run. Or A's run-ahead hit the wake's event below a
+    // Both acknowledge, and the one that stands down sends one plain wake.
+    // Usually A stands down: B's view included every in-band write, and B
+    // finishes the run. Or A's run-ahead hit the wake's event below a
     // speculative write and still wrote s1's outcome (a hazard stops
     // decisions, not outcomes), and that write took the fence first: then B
     // stands down, and A continues in place from a fresh load and finishes
-    // the run.
-    expectAcknowledged(world, resultA, start, orchestratorCalls);
-    expectAcknowledged(world, resultB, wakeMessage, orchestratorCalls);
+    // the run. The wake then finds the run finished.
+    expectAcknowledged(world, resultA, start);
+    expectAcknowledged(world, resultB, wakeMessage);
+    expectAcknowledged(world, undefined, start, orchestratorCalls, 1);
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(1019);
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -206,8 +208,8 @@ describe.each([
     ]);
   });
 
-  it('discards the retained session when a later write is fenced out, and the winning delivery replays to the same result', async () => {
-    const { world, runId, start } = await setupOrchestratorRun(
+  it('discards the retained session when a later write is fenced out, and the delivery of its wake replays to the same result', async () => {
+    const { world, start } = await setupOrchestratorRun(
       twoStepWorkflow,
       [],
       {},
@@ -233,11 +235,9 @@ describe.each([
       new Request('https://example.test')
     );
 
-    expectAcknowledged(world, await world.deliver(start), start, 0);
+    expectAcknowledged(world, await world.deliver(start), start, 0, 1);
     expect(eventsOf(world, 'run_completed')).toHaveLength(0);
-    // The fenced-out delivery leaves the run to the writer that took the
-    // fence, which this test stands in for with a delivery of its own.
-    world.enqueue(ORCHESTRATOR_QUEUE, { runId });
+    // The fenced-out delivery sent one wake; its delivery finishes the run.
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(30);
     expect(eventsOf(world, 'step_completed')).toHaveLength(2);
@@ -246,6 +246,104 @@ describe.each([
     expect(await runResult(cold)).toBe(30);
     expect(cold.creates.map((c) => c.event.eventType)).toEqual([
       'run_completed',
+    ]);
+  });
+});
+
+/**
+ * A World that answers an in-band `step_completed` the way world-vercel does
+ * when it sealed the writer's own position (its write outlived the World's
+ * staleness bound), or refused a write after allocating it: the in-band
+ * count moves past the writer's, the position holds a sealed `noop`, and the
+ * write is refused as superseded. No other orchestrator of the run exists.
+ */
+function refuseOwnStepCompleted(
+  world: () => AppendOnlyWorld,
+  times: number
+): ConstructorParameters<typeof AppendOnlyWorld>[0] {
+  let refused = 0;
+  return {
+    beforeCreate(data) {
+      if (data.eventType !== 'step_completed' || refused >= times) return;
+      refused++;
+      const current = world();
+      current.seqInBand++;
+      current.appendOutOfBand({ eventType: 'noop' } as Partial<Event>);
+      throw new InBandSupersededError('in-band-superseded', {
+        seq: current.seq,
+        seqInBand: current.seqInBand,
+      });
+    },
+  };
+}
+
+describe.each([
+  'node',
+  'quickjs',
+] as const)('a write the fence refuses with no other orchestrator of the run (%s engine)', (engine) => {
+  it('acknowledges with one plain wake, whose delivery completes the run (serialized queue)', async () => {
+    let current: AppendOnlyWorld | undefined;
+    const { world, start } = await setupOrchestratorRun(
+      twoStepWorkflow,
+      [],
+      refuseOwnStepCompleted(() => current!, 1),
+      engine
+    );
+    current = world;
+
+    expectAcknowledged(world, await world.deliver(start), start, 0, 1);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(30);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    // One orchestrator message: the wake. Nothing else stood in.
+    expect(orchestratorMessagesOf(world)).toHaveLength(1);
+  });
+
+  it('runs again from a fresh load in the same delivery when the wake is coalesced into it (coalescing queue)', async () => {
+    let current: AppendOnlyWorld | undefined;
+    const { world, start } = await setupOrchestratorRun(
+      twoStepWorkflow,
+      [],
+      { coalesce: true, ...refuseOwnStepCompleted(() => current!, 1) },
+      engine
+    );
+    current = world;
+
+    expect(await world.deliver(start)).toBeUndefined();
+    // The wake was coalesced into the refused delivery itself, which ran
+    // again and finished the run: no message is left.
+    expect(world.coalescedMessages).toBe(1);
+    expect(world.held).toEqual([]);
+    expect(await runResult(world)).toBe(30);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+  });
+
+  it('hands the message off once a delivery refused on every pass runs out of coalesced re-runs', async () => {
+    const maxCoalescedReruns = 3;
+    let current: AppendOnlyWorld | undefined;
+    const { world, start } = await setupOrchestratorRun(
+      twoStepWorkflow,
+      [],
+      {
+        coalesce: true,
+        maxCoalescedReruns,
+        ...refuseOwnStepCompleted(() => current!, Number.POSITIVE_INFINITY),
+      },
+      engine
+    );
+    current = world;
+
+    await world.deliver(start);
+    // Each pass sent one wake, which was coalesced into the delivery; past
+    // the bound the message was handed off instead of running again.
+    expect(world.deliveries).toHaveLength(maxCoalescedReruns + 1);
+    expect(world.coalescedHandoffs).toBe(1);
+    expect(world.held).toEqual([
+      expect.objectContaining({
+        messageId: start.messageId,
+        handoffCount: 1,
+      }),
     ]);
   });
 });

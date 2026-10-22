@@ -745,7 +745,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
       },
     });
 
-    expectAcknowledged(world, await world.deliver(start), start, 0);
+    expectAcknowledged(world, await world.deliver(start), start, 0, 1);
     // Nothing after the refused write reached the World, and every outcome
     // that did has its creation.
     expect(committedAtRefusal).toBeDefined();
@@ -755,8 +755,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
       expect(created.has(completed.correlationId)).toBe(true);
     }
 
-    // The writer that took the fence (stood in for here) finishes the run.
-    world.enqueue(ORCHESTRATOR_QUEUE, { runId: world.events[0]!.runId });
+    // No other orchestrator exists: the wake the refused delivery sent
+    // finishes the run.
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);

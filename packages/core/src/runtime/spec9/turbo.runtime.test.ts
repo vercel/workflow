@@ -265,19 +265,18 @@ describe.each([
 
     const first = await world.deliver(start);
 
-    // (c) Superseded: acknowledged, with nothing sent in its place.
+    // (c) Superseded: acknowledged, with one plain wake sent in its place.
     // The body that started ahead of run_started ran, but nothing it or the
     // orchestrator would have written reached the World.
     expect(bodies).toHaveLength(1);
     expect(types(world.events)).toEqual(['run_created']);
     expect(world.creates).toEqual([]);
-    expectAcknowledged(world, first, start);
-    expect(world.held).toHaveLength(0);
-    expect(world.queueCalls).toEqual([]);
+    expectAcknowledged(world, first, start, 0, 1);
+    expect(world.held).toHaveLength(1);
+    expect(world.queueCalls).toHaveLength(1);
 
-    // The writer that took the fence (stood in for by a wake) is not turbo:
-    // it loads the log first and completes.
-    world.enqueue(QUEUE, { runId: world.events[0]!.runId });
+    // The wake's delivery is not turbo: it loads the log first and
+    // completes.
     await world.runUntilIdle();
     expect(world.listCalls.length).toBeGreaterThan(0);
     expect(indexOf(world, 'run_completed')).toBeGreaterThan(0);

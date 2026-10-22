@@ -967,11 +967,14 @@ async function runDelivery(
       const err = turboStartFailure ? turboStartFailure.error : caught;
       if (OrchestratorSupersededError.is(err) || writer.isSuperseded) {
         forgetConsumedPosition(world, runId);
-        // Expected under overlap (a stalled invocation, or a
-        // transport retry of a write that already committed),
-        // so not an error.
+        // Expected, so not an error: another orchestrator invocation of the
+        // run wrote in-band (an overlap the queue let through, such as a
+        // delivery that outlived its lease), or the World sealed this
+        // writer's own position (its write took longer than the World's
+        // staleness bound), or a write the World refused after allocating
+        // its position moved the count past this writer's.
         runtimeLogger.info(
-          'Orchestrator superseded by another invocation of the run; sending the messages its own writes owe and acknowledging',
+          'Orchestrator write refused by the in-band fence; sending the messages its own writes owe and a wake, and acknowledging',
           {
             workflowRunId: runId,
             loopIteration,
@@ -981,14 +984,29 @@ async function runDelivery(
         );
         span?.setAttributes(Attribute.WorkflowSuperseded(true));
         continuation.exit = `superseded:${(err as Error)?.message?.slice(0, 200)}`;
-        // The writer that superseded this one holds every write it
-        // committed: its fenced write came after them, and whatever this
-        // delivery read below them reached it too, through its load or the
-        // skipped-slot report of that write. What it cannot know is which
-        // queue messages those writes still owe (it is not their creator),
-        // so they go out before the acknowledgment. A crash before they do
-        // redelivers this message, whose creator rules re-send them.
+        // What this delivery's committed writes owe the queue goes out
+        // first: no other delivery is their creator, so none would send
+        // them. A crash before they do redelivers this message, whose
+        // creator rules re-send them.
         await sendUnsentMessages?.();
+        // Then one plain orchestrator wake, because a refusal does not prove
+        // that another orchestrator is running: the World also refuses a
+        // write whose own position it sealed, or one behind a refused write
+        // that allocated, and then nothing else is queued for the run. The
+        // wake is an ordinary orchestrator message (keyed where the World
+        // keys them) and carries nothing the log does not hold. A World
+        // that coalesces folds it into the delivery that holds the run: a
+        // live winner, at no cost, or this delivery itself, whose
+        // acknowledgment is then refused and which runs again from a fresh
+        // load in the same invocation (the World bounds those re-runs and
+        // hands the message off past the bound). A World that serializes
+        // delivers it after the running delivery.
+        await queueMessage(
+          world,
+          getWorkflowQueueName(workflowName, namespace),
+          await replayMessage(),
+          { specVersion: runSpecVersion }
+        );
         continuation.handoff = false;
         return undefined;
       }

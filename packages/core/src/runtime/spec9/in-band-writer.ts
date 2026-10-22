@@ -24,8 +24,15 @@ import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
  * writes as superseded, for that write and for every write after it. The
  * orchestrator delivery that sees it stops writing and stops starting inline
  * step bodies, sends the queue messages its own committed writes still owe
- * (see {@link InBandWriter.onAccepted}), and acknowledges its message: the
- * writer that superseded it holds a log with every write this one committed.
+ * (see {@link InBandWriter.onAccepted}) and one plain orchestrator wake, and
+ * acknowledges its message.
+ *
+ * The refusal does not say that another writer is running. The World
+ * refuses a write whose expected count is stale, which happens when another
+ * orchestrator wrote in-band, when the World sealed this writer's own
+ * position because its write outlived the World's staleness bound, or when
+ * an earlier write of this writer was refused after the World had allocated
+ * its position. The wake covers the cases with no other writer.
  */
 export class OrchestratorSupersededError extends Error {
   constructor(readonly cause: unknown) {
@@ -868,10 +875,12 @@ export class InBandWriter {
 
   private stop(error: unknown, always = false): unknown {
     // A definite refusal (a 4xx other than the fence) allocated nothing on
-    // the World, so the count stands and the caller may handle it. If
-    // the World did allocate after all, the next in-band write is refused
-    // and the delivery reloads, which is safe. A required write stops the
-    // writer either way.
+    // the World, so the count stands and the caller may handle it. If the
+    // World did allocate after all (world-vercel answers some 409s after it
+    // allocated the position), the count moved past this writer's: its next
+    // in-band write is refused as superseded, and the delivery stands down
+    // with a wake, so the run continues from a fresh load. A required write
+    // stops the writer either way.
     if (
       !always &&
       !InBandSupersededError.is(error) &&

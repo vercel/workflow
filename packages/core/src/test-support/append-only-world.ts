@@ -113,6 +113,8 @@ export class AppendOnlyWorld {
   private activeOrchestrator: { coalesced: number } | undefined;
   /** How many messages were coalesced into a delivery, in `coalesce` mode. */
   coalescedMessages = 0;
+  /** Deliveries handed off past `maxCoalescedReruns`, in `coalesce` mode. */
+  coalescedHandoffs = 0;
 
   constructor(
     readonly options: {
@@ -151,15 +153,23 @@ export class AppendOnlyWorld {
        */
       advanceClock?: (seconds: number) => void;
       /**
-       * Coalesce like a VQS concurrency key: an orchestrator message for the
-       * run (no `stepId`, not delayed) enqueued while one of its
+       * Coalesce like a VQS concurrency key: a keyed message (an orchestrator
+       * message by `orchestratorRunIdOf`, so not a step message and not an
+       * intermediate wait hop) enqueued undelayed while one of the run's
        * orchestrator deliveries runs is not held but counted on that
        * delivery, and a delivery that would acknowledge with messages
        * counted runs its handler again until none are, each re-run with the
        * next `deliveryCount` and the same `attempt`, as world-vercel reports
-       * one.
+       * one. A delayed message is held; a test that lets one come due while
+       * a delivery runs calls {@link AppendOnlyWorld.comeDue}.
        */
       coalesce?: boolean;
+      /**
+       * In `coalesce` mode, the most re-runs of one delivery; past them the
+       * message is handed off (redelivered, not counted as an attempt), as
+       * world-vercel does. Unbounded when absent.
+       */
+      maxCoalescedReruns?: number;
       /**
        * Called before every `events.create`, before anything is checked or
        * written. A test throws from it to refuse a write, or awaits in it to
@@ -470,6 +480,16 @@ export class AppendOnlyWorld {
       for (let rerun = 1; ; rerun++) {
         const result = await this.deliverOnce(current);
         if (result !== undefined || active.coalesced === covered) {
+          return result;
+        }
+        if (rerun > (this.options.maxCoalescedReruns ?? Infinity)) {
+          // Out of re-runs: hand the message off.
+          this.coalescedHandoffs++;
+          this.held.push({
+            ...held,
+            deliveryCount: held.deliveryCount + 1,
+            handoffCount: (held.handoffCount ?? 0) + 1,
+          });
           return result;
         }
         covered = active.coalesced;

@@ -12,6 +12,7 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   expectAcknowledged,
   orchestratorMessagesOf,
+  stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
 import * as workflowModule from '../../workflow.js';
 import { getMaxQueueDeliveries, MAX_BATCH_EVENTS } from '../constants.js';
@@ -483,7 +484,7 @@ describe.each([
     }
   });
 
-  it('stops a superseded orchestrator without running bodies, and acknowledges without a message', async () => {
+  it('stops a superseded orchestrator without running bodies, and acknowledges with one plain wake', async () => {
     const { world, runId, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
@@ -511,13 +512,12 @@ describe.each([
 
     const result = await world.deliver(start);
     expect(calls.so_add).toBeUndefined();
-    // Acknowledged, and nothing stands in for it: the writer that took the
-    // fence holds the run.
-    expectAcknowledged(world, result, start, 0);
-    expect(world.queueCalls).toEqual([]);
-    // That writer's own delivery (stood in for here) re-snapshots and
-    // finishes the run.
-    world.enqueue(QUEUE, { runId });
+    // Acknowledged with one plain wake and no step message: the refusal does
+    // not say another orchestrator is running, so the wake makes sure one
+    // runs.
+    expectAcknowledged(world, result, start, 0, 1);
+    expect(stepMessagesOf(world)).toEqual([]);
+    // The wake's delivery re-snapshots and finishes the run.
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
     expect(calls.so_add).toBe(1);
@@ -879,7 +879,7 @@ describe.each([
         return stepId === undefined ? [] : [stepId];
       });
 
-    it('sends the messages its committed background steps still owe, then acknowledges without a wake', async () => {
+    it('sends the messages its committed background steps still owe and one wake, then acknowledges', async () => {
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
       try {
         let current: AppendOnlyWorld | undefined;
@@ -890,7 +890,7 @@ describe.each([
         );
         current = world;
 
-        expectAcknowledged(world, await world.deliver(start), start, 0);
+        expectAcknowledged(world, await world.deliver(start), start, 0, 1);
         // Every step_created it committed has its message, sent once; none
         // of the refused creations does.
         const committed = eventsOf(world, 'step_created').map(
@@ -900,9 +900,8 @@ describe.each([
         expect(committed.length).toBeLessThan(fanOut);
         expect(stepMessageIds(world).sort()).toEqual([...committed].sort());
 
-        // The writer that took the fence (stood in for here) creates the
-        // rest and finishes the run; each step runs once.
-        world.enqueue(QUEUE, { runId });
+        // The wake's delivery creates the rest and finishes the run; each
+        // step runs once.
         await world.runUntilIdle(500);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
@@ -1005,10 +1004,12 @@ describe.each([
           world,
           await world.deliver(timer),
           timer,
-          orchestratorCalls
+          orchestratorCalls,
+          1
         );
         // Its wait is still open, and the writer that took the fence is not
-        // its timer: the timer goes out again.
+        // its timer: the timer goes out again, next to the plain wake every
+        // refused delivery sends.
         const resent = world.held.filter(
           (held) =>
             (

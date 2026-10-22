@@ -91,16 +91,18 @@ export const orchestratorMessagesOf = (world: AppendOnlyWorld) =>
 
 /**
  * Asserts that a delivery stood down by acknowledging its message: it
- * returned nothing, the World no longer holds the message, and it sent no
- * orchestrator message after `orchestratorCallsBefore` (the count of
- * orchestrator queue calls before it ran), only the step messages and timers
- * its own writes owed.
+ * returned nothing, the World no longer holds the message, and, after
+ * `orchestratorCallsBefore` (the count of orchestrator queue calls before it
+ * ran), it sent `wakes` plain orchestrator wakes (no timer, no message-only
+ * state) besides the step messages and timers its own writes owed. A
+ * delivery the in-band fence refused sends one.
  */
 export function expectAcknowledged(
   world: AppendOnlyWorld,
   result: unknown,
   message: { messageId: string },
-  orchestratorCallsBefore?: number
+  orchestratorCallsBefore?: number,
+  wakes = 0
 ): void {
   if (result !== undefined) {
     throw new Error(
@@ -111,16 +113,29 @@ export function expectAcknowledged(
     throw new Error('expected the message to be acknowledged');
   }
   if (orchestratorCallsBefore === undefined) return;
-  const wakes = orchestratorMessagesOf(world)
+  const sent = orchestratorMessagesOf(world)
     .slice(orchestratorCallsBefore)
     .filter(
       (call) =>
         (call.message as { waitContinuation?: unknown }).waitContinuation ===
         undefined
     );
-  if (wakes.length > 0) {
+  if (sent.length !== wakes) {
     throw new Error(
-      `expected no orchestrator wake, found ${JSON.stringify(wakes.map((call) => call.message))}`
+      `expected ${wakes} orchestrator wake(s), found ${JSON.stringify(sent.map((call) => call.message))}`
     );
+  }
+  for (const call of sent) {
+    const extra = Object.keys(call.message as object).filter(
+      (key) =>
+        !['runId', 'traceCarrier', 'requestedAt', 'runSpecVersion'].includes(
+          key
+        )
+    );
+    if (extra.length > 0 || call.opts?.delaySeconds !== undefined) {
+      throw new Error(
+        `expected a plain orchestrator wake, found ${JSON.stringify(call)}`
+      );
+    }
   }
 }
