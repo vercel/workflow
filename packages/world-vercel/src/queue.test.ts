@@ -88,6 +88,7 @@ import {
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import {
   createQueue,
+  MAX_REDELIVERY_DELAY_SECONDS,
   recordStepExecution,
   resolveMessageLifetime,
 } from './queue.js';
@@ -1295,6 +1296,25 @@ describe('createQueue', () => {
 
       expect(retry(thrown, { messageId: 'msg-123', deliveryCount: 1 })).toEqual(
         { afterSeconds: 0, experimental_handoff: true }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ])('redelivers a spec 9 message after the longest delay for { timeoutSeconds: %s }, not a handoff', async (timeoutSeconds) => {
+      const { handler, retry } = captureHandler({ timeoutSeconds });
+      const thrown = await handler(
+        {
+          payload: spec9({ runId: 'run-123' }),
+          queueName: '__wkf_workflow_test',
+        },
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
+      ).catch((err: unknown) => err);
+
+      expect(retry(thrown, { messageId: 'msg-123', deliveryCount: 1 })).toEqual(
+        { afterSeconds: MAX_REDELIVERY_DELAY_SECONDS }
       );
       expect(mockSend).not.toHaveBeenCalled();
     });

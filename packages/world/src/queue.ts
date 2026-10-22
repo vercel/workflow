@@ -716,12 +716,22 @@ export interface QueueOptions {
    * Deduplicates sends that carry the same key while the first message with
    * that key exists (on Vercel Queues: for `min(retention, 24h)`).
    *
-   * The runtime sets it on exactly one kind of message: a step's execution
-   * message, with a key stable for the step, because a second message for a
-   * step would be a second owner of its body. Wakes of a run's orchestrator
-   * (after a step outcome, `resumeHook()`, `cancel()`, a timer) carry no key:
-   * a duplicate wake costs one cheap delivery, while a key can be absorbed by
-   * a delivery that is already exiting and lose the wakeup.
+   * On a spec 9 run's messages the runtime sets it on:
+   *
+   * - a step's execution message, with a key stable for the step, because a
+   *   second message for a step would be a second owner of its body;
+   * - the wake a background step's completion shares with the other
+   *   completions of its one-second window (`wake:<runId>:<window>`), sent
+   *   delayed past the window's end, so every completion that joins the key
+   *   committed before the message is delivered.
+   *
+   * Every other wake of a spec 9 run's orchestrator (after a lone step
+   * outcome, `resumeHook()`, `cancel()`, a force-claimed hook, a timer, a
+   * fence refusal) carries no key: a duplicate wake costs one cheap delivery,
+   * while a key can be absorbed by a delivery that is already exiting and
+   * lose the wakeup. Wakes of runs below spec 9 keep their earlier keys
+   * (`hook-<resumeId>`, `hook-force-claim-<hookId>`, the QuickJS engine's
+   * `hook_conflict_<correlationId>`).
    */
   idempotencyKey?: string;
   /**
@@ -858,8 +868,8 @@ export interface Queue {
    *   `n > 0`**: do NOT acknowledge the message. Deliver the SAME message
    *   again (same `messageId`, next `deliveryCount`) after about `n` seconds.
    *   The runtime returns this from a step handler to retry a step in place
-   *   after `retryAfter`, and from an orchestrator delivery the in-band fence
-   *   refused after its replacements ran out. A World MAY clamp `n` to what
+   *   after `retryAfter`, and from an orchestrator delivery to defer the run
+   *   (an inline step start refused for load). A World MAY clamp `n` to what
    *   its queue supports (Vercel Queues clamps a redelivery delay to
    *   [5s, 900s]); the runtime tolerates an early redelivery by checking the
    *   log and asking again. A World whose queue cannot redeliver the same
@@ -874,8 +884,11 @@ export interface Queue {
    *   before its work does (the invocation deadline, a stream flush, the
    *   replay budget, a wait or a write it cannot read yet). The runtime never
    *   returns it where the next delivery has to count as a redelivery: a
-   *   fence-refused delivery acknowledges its message and sends a
-   *   replacement instead.
+   *   fence-refused delivery sends what its writes owe and one plain wake,
+   *   and acknowledges its message. A World should not treat a non-finite
+   *   `n` as a handoff (a handoff is not an attempt, so a handler that kept
+   *   returning one would never stop); world-vercel redelivers after its
+   *   longest delay.
    * - **Earlier runs (spec <= 8), `{ timeoutSeconds: n }`**: continue the run
    *   after about `n` seconds (`0`: at once), by redelivering the same message
    *   or by publishing a new message with the same payload. world-vercel
@@ -914,10 +927,14 @@ export interface Queue {
    *   re-runs so far) and leaves `attempt` unchanged: a coalesced message is
    *   never delivered, so a re-run must read the run's log, as a redelivery
    *   does, and whatever those messages were sent for was committed to the
-   *   log before they were sent. The one orchestrator message whose payload
-   *   carries more than the log, `run.wakeUp()`'s `completeWaits`, is
-   *   best-effort: coalesced, it is lost, and the waits run their full
-   *   length.
+   *   log before they were sent. Two orchestrator payload fields carry more
+   *   than the log. `run.wakeUp()`'s `completeWaits` is best-effort:
+   *   coalesced, it is lost, and the waits run their full length. A timer's
+   *   `waitContinuation` names its wait: coalesced, the name is lost, which
+   *   costs nothing for a final timer (the holder's re-run sees the wait due
+   *   and completes it, and the delivery that completes a wait arms the next
+   *   one of its chain), and an intermediate hop of a long wait, which would
+   *   lose its chain, is never coalesced ({@link isIntermediateWaitHop}).
    * - `invocationStartedAt` (epoch ms) is when the function invocation running
    *   this handler call began, when the World knows it. It is the same for
    *   every coalesced re-run of a delivery, which all share that invocation:

@@ -319,10 +319,19 @@ class RedeliverSameMessage extends Error {
  * is a replay that read the log those messages' senders committed to, and a
  * run whose messages keep arriving faster than a replay finishes would
  * otherwise re-run until the invocation's deadline, which the orchestrator
- * checks and hands off at. Past the bound, the refused acknowledgment is a
- * handler error and the message is redelivered with backoff.
+ * checks and hands off at. The bound also ends a delivery whose every pass
+ * is refused by the in-band fence: each refused pass sends one wake, which is
+ * coalesced into the same delivery. Past the bound, `@vercel/queue` throws
+ * `ConcurrencyCoalescedPendingError`, and the `retry` hook hands the message
+ * off: redelivered at once, not counted as an attempt.
  */
 const MAX_COALESCED_RERUNS = 32;
+
+/**
+ * The longest redelivery delay VQS honors for one hop (it clamps
+ * `afterSeconds` to [5s, 900s]). Exported for unit tests.
+ */
+export const MAX_REDELIVERY_DELAY_SECONDS = 900;
 
 const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // Ceiling for the per-redelivery backoff. This value is the `retry-after` we
@@ -336,7 +345,7 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // the full ~24h message-visibility window would require a higher delivery cap,
 // not a higher ceiling: VQS clamps every hop at 900s, so going above it here
 // is pointless.
-const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
+const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = MAX_REDELIVERY_DELAY_SECONDS;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
 function getErrorRetryAfterSeconds(error: unknown): number | undefined {
@@ -992,14 +1001,17 @@ export function createQueue(config?: APIConfig): Queue {
               return;
             }
             // A single-orchestrator run: leave this message unacknowledged
-            // and have VQS deliver it again after the delay, a step retried
-            // in place, or an orchestrator delivery the in-band fence refused
-            // past its replacements. The same message keeps its id, so a
-            // redelivery of the delivery that created a step still recognizes
-            // itself. `0` is a handoff.
+            // and have VQS deliver it again after the delay (a step retried
+            // in place, an orchestrator delivery deferred for load). The same
+            // message keeps its id, so a redelivery of the delivery that
+            // created a step still recognizes itself. `0` (or less) is a
+            // handoff. A non-finite delay is no handoff: a handoff is not an
+            // attempt, so a handler that kept answering one would be
+            // redelivered at once forever. It is the longest redelivery
+            // instead, which the delivery cap counts.
             const afterSeconds = Number.isFinite(result.timeoutSeconds)
               ? Math.max(0, Math.ceil(result.timeoutSeconds))
-              : 0;
+              : MAX_REDELIVERY_DELAY_SECONDS;
             throw new RedeliverSameMessage(afterSeconds);
           }
         } finally {
