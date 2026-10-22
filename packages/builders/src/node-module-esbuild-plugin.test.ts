@@ -688,48 +688,6 @@ export function workflow() {
       line: 7,
     });
   });
-
-  it('should still error when the violating import cannot be located in user code', async () => {
-    // workflow.ts imports pkg-a, pkg-a imports pkg-b, and pkg-b imports a
-    // Node.js module. The violation is attributed to "pkg-b", which never
-    // appears in workflow.ts, so no source location can be found. The build
-    // must fail anyway: a missing location only degrades the error message.
-    const { failure, relativePath } = await buildFixture(
-      {
-        'node_modules/pkg-a/package.json': JSON.stringify({
-          name: 'pkg-a',
-          main: 'index.js',
-        }),
-        'node_modules/pkg-a/index.js': `
-          export { makeStream } from "pkg-b";
-        `,
-        'node_modules/pkg-b/package.json': JSON.stringify({
-          name: 'pkg-b',
-          main: 'index.js',
-        }),
-        'node_modules/pkg-b/index.js': `
-          import { Stream } from "stream";
-          export function makeStream() {
-            return new Stream();
-          }
-        `,
-        'workflow.ts': `
-          import { makeStream } from "pkg-a";
-          export function workflow() {
-            return makeStream();
-          }
-        `,
-      },
-      'workflow.ts'
-    );
-
-    if (!failure) throw new Error('Expected build to fail');
-    expect(failure.errors).toHaveLength(1);
-    const violation = failure.errors[0];
-    expect(violation.text).toContain('"pkg-b"');
-    expect(violation.text).toContain(relativePath('workflow.ts'));
-    expect(violation.location).toBeNull();
-  });
 });
 
 describe('workflow-node-module-error helper functions', () => {

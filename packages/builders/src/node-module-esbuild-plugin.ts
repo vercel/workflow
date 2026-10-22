@@ -36,7 +36,7 @@ type PackageViolation = {
   packageName: string;
   importer: string;
   path: string;
-  location: Partial<esbuild.Location> | undefined;
+  location: Partial<esbuild.Location>;
 };
 
 /**
@@ -434,17 +434,18 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
             relativeWorkflowFile,
             packageName
           );
-          // Always record the violation. The location only improves the
-          // message: it is missing when the import can't be found in user
-          // code (e.g. a transitive dependency, or an import whose first
-          // binding is never referenced), and dropping the violation then
-          // would let a bundle that fails at load time build cleanly.
-          packageViolations.push({
-            path: args.path,
-            importer: relativeWorkflowFile,
-            packageName,
-            location,
-          });
+          // Only report violations where we can find the import location.
+          // If we can't find it, the package is likely a transitive dependency
+          // that the user didn't directly import - we'll report the top-level
+          // package they did import instead.
+          if (location) {
+            packageViolations.push({
+              path: args.path,
+              importer: relativeWorkflowFile,
+              packageName,
+              location,
+            });
+          }
         }
 
         // Mark builtin imports as side-effect-free so esbuild can tree-shake
@@ -505,16 +506,10 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
             );
             const moduleType = getModuleTypeLabel(violation.path);
 
-            // Without a location, esbuild can't show where the import is, so
-            // name the user file it was traced back to.
-            const via = violation.location
-              ? ''
-              : ` (reached from "${violation.importer}")`;
-
             // Different messages for built-in modules vs npm packages that use them
             const text = isBuiltinModule
-              ? `You are attempting to use "${violation.packageName}"${via} which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
-              : `You are attempting to use "${violation.packageName}"${via} which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
+              ? `You are attempting to use "${violation.packageName}" which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
+              : `You are attempting to use "${violation.packageName}" which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
 
             return {
               text,

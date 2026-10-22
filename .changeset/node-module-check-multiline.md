@@ -2,4 +2,4 @@
 '@workflow/builders': patch
 ---
 
-Fail the build when workflow code reaches a Node.js module through a multi-line import or a transitive dependency, instead of passing silently.
+Point the Node.js module error at the user's code when the offending import spans multiple lines.
