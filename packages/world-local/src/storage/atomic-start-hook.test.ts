@@ -160,6 +160,25 @@ describe('atomic start Hook (world-local)', () => {
     expect(error).toMatchObject({ runId });
   });
 
+  it('recovers an adoption that published hook_created but died before its entity write', async () => {
+    const token = 'order:published-adoption';
+    const owner = `wrun_${ulid()}`;
+    await create(owner, creating('run_created', token));
+    await create(owner, { eventType: 'run_started', specVersion: SPEC } as any);
+    const hookId = `hook_${ulid()}`;
+    await create(owner, {
+      eventType: 'hook_created',
+      correlationId: hookId,
+      specVersion: SPEC,
+      eventData: { token },
+    } as AnyEventRequest);
+    // Lose the entity, as a crash between the publish and its write would.
+    await fs.rm(path.join(testDir, 'hooks', `${hookId}.json`));
+
+    const hook = await storage.hooks.getByToken(token);
+    expect(hook).toMatchObject({ hookId, runId: owner });
+  });
+
   it('keeps the start Hook metadata when an interrupted adoption is retried', async () => {
     const token = 'order:retried-adoption';
     const metadata = new Uint8Array([4, 5, 6]);

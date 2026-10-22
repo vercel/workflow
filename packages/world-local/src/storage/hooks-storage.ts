@@ -290,8 +290,18 @@ export function createHooksStorage(
           !(await isHookDisposalCommitted(basedir, claim.hookId, tag))
         ) {
           // Mid-adoption: the claim already names the adopting Hook, whose
-          // entity is written once its `hook_created` is published. The
-          // token is still the run's reservation in between.
+          // entity is written once its `hook_created` is published. A
+          // creation that published and died before the entity write is
+          // recovered from the log; until it publishes, the token is still
+          // the run's reservation.
+          const recovered = await rebuildLiveHookByTokenFromEventLog(
+            basedir,
+            token,
+            tag
+          );
+          if (recovered) {
+            return { ...recovered, isWebhook: recovered.isWebhook ?? true };
+          }
           await throwIfReservedByLiveRun(claim.runId);
         }
       } catch (error) {
