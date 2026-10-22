@@ -2648,6 +2648,90 @@ describe.concurrent('e2e', () => {
         expect(duplicate).toMatchObject({ conflictingRunId: owner.runId });
       }
     );
+
+    testJsOnly(
+      'admits through the queued copy when run_created lands late, and refuses a duplicate there too',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-late-${Math.random().toString(36).slice(2)}`;
+        const workflow = await e2e('startHookOwnerWorkflow');
+        const world = await getWorld();
+
+        // Hold the direct `run_created` back, so the queued copy's
+        // `run_started` reaches the World first and admits the candidate on
+        // its own (the resilient start, with no log yet). The late direct
+        // write must then replay that decision.
+        const LATE_MS = 10_000;
+        let candidateRunId: string | undefined;
+        const late = {
+          ...world,
+          queue: (async (...args: Parameters<World['queue']>) => {
+            candidateRunId ??= (args[1] as { runId?: string }).runId;
+            return world.queue(...args);
+          }) as World['queue'],
+          events: {
+            ...world.events,
+            create: (async (...args: Parameters<World['events']['create']>) => {
+              if (
+                (args[1] as { eventType: string }).eventType === 'run_created'
+              ) {
+                await sleep(LATE_MS);
+              }
+              return world.events.create(...args);
+            }) as World['events']['create'],
+          },
+        } as World;
+
+        const pending = startHooked(workflow, [token, 1], {
+          world: late,
+          hook: { token, experimental_minRetention: 0 },
+        });
+        // The run exists before the direct write is sent: the queued copy
+        // created it.
+        const deadline = Date.now() + LATE_MS - 1_000;
+        let admittedByQueuedCopy = false;
+        while (Date.now() < deadline) {
+          if (candidateRunId) {
+            const found = await world.runs
+              .get(candidateRunId, { resolveData: 'none' })
+              .then(
+                () => true,
+                () => false
+              );
+            if (found) {
+              admittedByQueuedCopy = true;
+              break;
+            }
+          }
+          await sleep(250);
+        }
+        expect(
+          admittedByQueuedCopy,
+          'the queued copy should admit the candidate while run_created is held back'
+        ).toBe(true);
+        // A duplicate is refused naming the candidate the queued copy admitted.
+        const duplicate = await startHooked(workflow, [token, 1], {
+          hook: { token, experimental_minRetention: 0 },
+        }).catch((error: unknown) => error);
+        const owner = await pending;
+        expect(HookConflictError.is(duplicate)).toBe(true);
+        expect(duplicate).toMatchObject({ conflictingRunId: owner.runId });
+
+        const { data: events } = await world.events.list({
+          runId: owner.runId,
+        });
+        expect(
+          events.filter((e) => e.eventType === 'run_created')
+        ).toHaveLength(1);
+
+        await routeToOwner(token, 'done');
+        expect(await owner.returnValue).toEqual({
+          conflictRunId: null,
+          messages: ['done'],
+        });
+      }
+    );
   });
 
   test(
