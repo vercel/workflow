@@ -485,7 +485,7 @@ describe.each([
   });
 
   it('stops a superseded orchestrator without running bodies, and acknowledges with one plain wake', async () => {
-    const { world, runId, start } = await setup(
+    const { world, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
       [1, 2]
@@ -883,7 +883,7 @@ describe.each([
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
       try {
         let current: AppendOnlyWorld | undefined;
-        const { world, runId, start } = await setup(
+        const { world, start } = await setup(
           fanOutCode,
           [fanOut],
           refuseLateCreations(() => current!)
