@@ -1333,14 +1333,17 @@ describe('hook_conflict on a forced hook', () => {
     expect(out.conflict).toEqual({ name: 'FatalError', fatal: true });
   });
 
-  it('stays an ordinary HookConflictError when the World declined on purpose (forceRefusedReason)', async () => {
+  it.each([
+    'victim-spec-version',
+    'start-reservation',
+  ] as const)('stays an ordinary HookConflictError when the World declined on purpose (%s)', async (forceRefusedReason) => {
     // The run holding the token predates involuntary disposal, so the World
     // would not take it: the caller gets
     // the everyday conflict and the owning run's handle, exactly as without
     // `experimental_force`.
     const out = await runWithConflict({
       conflictingRunId: 'wrun_legacy_victim',
-      forceRefusedReason: 'victim-spec-version',
+      forceRefusedReason,
     });
     expect(out.awaited).toEqual({
       name: 'HookConflictError',

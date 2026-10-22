@@ -3,6 +3,7 @@ import {
   ERROR_SLUGS,
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -30,6 +31,7 @@ import {
   SerializationFormat,
   sealTo,
 } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
@@ -305,7 +307,41 @@ function asLazyMetadataHook(hook: ResumableHook): Hook {
  */
 export async function getHookByToken(token: string): Promise<Hook> {
   const world = await getWorldLazy();
-  return withLazyMetadata(await world.hooks.getByToken(token)).hook;
+  return withLazyMetadata(await getByTokenAwaitingOwner(world, token)).hook;
+}
+
+/**
+ * How long a lookup inside a step keeps asking again while the token is
+ * reserved (`HookReservedError`: its owner has not registered its Hook yet,
+ * typically because it is still starting), before throwing it to the step's
+ * ordinary retries.
+ */
+export const HOOK_RESERVED_STEP_WAIT_MS = 30_000;
+
+/**
+ * `world.hooks.getByToken`, except that inside a step a `HookReservedError`
+ * is waited out for up to {@link HOOK_RESERVED_STEP_WAIT_MS}, asking again
+ * after each answer's `retryAfter`. A step's retries are few and a second
+ * apart, so they alone would give up on an owner that takes a few seconds to
+ * start. Outside a step the error is thrown at once, for the caller to
+ * handle.
+ */
+async function getByTokenAwaitingOwner(
+  world: Awaited<ReturnType<typeof getWorldLazy>>,
+  token: string
+): Promise<ResumableHook> {
+  const inStep = contextStorage.getStore()?.stepMetadata !== undefined;
+  const deadline = Date.now() + HOOK_RESERVED_STEP_WAIT_MS;
+  for (;;) {
+    try {
+      return await world.hooks.getByToken(token);
+    } catch (error) {
+      if (!inStep || !HookReservedError.is(error)) throw error;
+      const waitMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+      if (Date.now() + waitMs > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
 }
 
 /**
@@ -600,6 +636,9 @@ async function resumeHookImpl<T = any>(
             try {
               relocated = await world.hooks.getByToken(token);
             } catch (lookupError) {
+              // The token is reserved by a run that has not registered its
+              // Hook yet: that, not the stale not-found, is the answer.
+              if (HookReservedError.is(lookupError)) throw lookupError;
               if (!HookNotFoundError.is(lookupError)) {
                 runtimeLogger.warn(
                   'Hook resume: re-resolving the token after a not-found failed; surfacing the original error',
@@ -655,7 +694,7 @@ async function resumeHookAttempt<T = any>(
     let hook: ResumableHook;
     if (suppliedToken) {
       try {
-        hook = await world.hooks.getByToken(tokenOrHook);
+        hook = await getByTokenAwaitingOwner(world, tokenOrHook);
       } catch (lookupError) {
         if (HookNotFoundError.is(lookupError)) {
           notFoundReasons.set(lookupError, 'lookup');

@@ -109,6 +109,14 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     'wrun_claimer',
     'hook_claimer',
   ],
+  HookReservedError: [
+    ['HookReservedError', 1],
+    { message: 2, token: 3, runId: 4, retryAfter: 5 },
+    'Hook token "order:1" is reserved by workflow run "wrun_owner", which has not registered its hook yet; retry shortly',
+    'order:1',
+    'wrun_owner',
+    1,
+  ],
   Instance: [
     ['Instance', 1],
     { classId: 2, data: 3 },
@@ -192,6 +200,13 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     ['WorkflowFunction', 1],
     { workflowId: 2 },
     'workflow//example',
+  ],
+  WorkflowStartError: [
+    ['WorkflowStartError', 1],
+    { message: 2, runId: 3, stage: 4 },
+    'Could not confirm whether workflow run "wrun_candidate" was admitted: timeout',
+    'wrun_candidate',
+    'admission',
   ],
   WritableStream: [['WritableStream', 1], { name: 2 }, 'stream-a'],
 };
