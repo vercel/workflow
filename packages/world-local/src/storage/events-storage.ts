@@ -2848,6 +2848,8 @@ export function createEventsStorage(
           // A start reservation this claim carries: the run's own, adopted by
           // this Hook, or one taken over with the Hook it rides on.
           let carriedReservation: HookTokenClaim['reservation'];
+          // The reservation's metadata, for an adoption that brings none.
+          let adoptedMetadata: SerializedData | undefined;
           const claimContent = () =>
             JSON.stringify({
               token: hookData.token,
@@ -2917,6 +2919,16 @@ export function createEventsStorage(
                 carriedReservation = until
                   ? { tokenRetentionUntil: until }
                   : {};
+                if (hookData.metadata === undefined) {
+                  const ownRun = await readJSONWithFallback(
+                    basedir,
+                    'runs',
+                    effectiveRunId,
+                    WorkflowRunSchema,
+                    tag
+                  );
+                  adoptedMetadata = ownRun?.startHook?.metadata;
+                }
                 signal.throwIfAborted();
                 await write(constraintPath, claimContent(), {
                   overwrite: true,
@@ -3342,6 +3354,17 @@ export function createEventsStorage(
                 // republishes the victim's wake from this row alone when the
                 // invocation that created the hook died before waking it.
                 forceClaimedFrom: claimedFrom,
+              },
+            } as Event;
+          }
+          if (adoptedMetadata !== undefined) {
+            // An adopted start reservation's metadata, journaled with the
+            // creation so the entity and any rebuild from the log agree.
+            event = {
+              ...event,
+              eventData: {
+                ...(event.eventData as Record<string, unknown>),
+                metadata: adoptedMetadata,
               },
             } as Event;
           }

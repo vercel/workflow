@@ -4,6 +4,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  type SerializedData,
   START_HOOK_CANDIDATE_MAX_AGE_MS,
   type StartHook,
   TERMINAL_WORKFLOW_RUN_STATUSES,
@@ -15,6 +16,7 @@ import {
   exists,
   gt,
   inArray,
+  isNull,
   ne,
   notExists,
   notInArray,
@@ -199,6 +201,7 @@ export async function decideStartHookAdmission(
     decision: 'accepted',
     holderRunId: runId,
     tokenRetentionUntil: startHook.tokenRetentionUntil,
+    metadata: startHook.metadata,
   });
   return { decision: 'accepted', replayed: false };
 }
@@ -236,21 +239,29 @@ export async function transferStartReservation(
 }
 
 /**
- * Extends the reservation `runId` holds on `token` to at least `until`, for
- * the run's own `createHook()` with a retention: the Hook can be disposed,
- * but the extension it brought must outlive it.
+ * The run's own `createHook()` adopting its reservation of `token`: marks it
+ * adopted (so lookups stop answering `HookReservedError`), extends its
+ * retention to at least the Hook's (the extension must outlive the Hook's
+ * disposal), and returns the reservation's metadata for a Hook that brings
+ * none. Returns `undefined` when the run holds no reservation of the token.
  */
-export async function extendStartReservation(
+export async function adoptStartReservation(
   tx: DrizzleTransaction,
   token: string,
   runId: string,
-  until: Date
-): Promise<void> {
+  hookRetentionUntil: Date | undefined
+): Promise<{ metadata: SerializedData | undefined } | undefined> {
   const admissions = Schema.startHookAdmissions;
-  await tx
+  const until = hookRetentionUntil?.toISOString();
+  const [row] = await tx
     .update(admissions)
     .set({
-      tokenRetentionUntil: sql`greatest(coalesce(${admissions.tokenRetentionUntil}, ${until.toISOString()}::timestamptz), ${until.toISOString()}::timestamptz)`,
+      adoptedAt: sql`coalesce(${admissions.adoptedAt}, now())`,
+      ...(until
+        ? {
+            tokenRetentionUntil: sql`greatest(coalesce(${admissions.tokenRetentionUntil}, ${until}::timestamptz), ${until}::timestamptz)`,
+          }
+        : {}),
     })
     .where(
       and(
@@ -258,5 +269,41 @@ export async function extendStartReservation(
         eq(admissions.decision, 'accepted'),
         eq(admissions.holderRunId, runId)
       )
-    );
+    )
+    .returning({ metadata: admissions.metadata });
+  return row ? { metadata: row.metadata ?? undefined } : undefined;
+}
+
+/**
+ * The run holding an UNADOPTED, live start reservation of `token`: its holder
+ * exists, has not ended, and has not created a Hook for it yet.
+ */
+export async function findUnadoptedStartReservation(
+  db: DrizzleHandle,
+  token: string
+): Promise<string | undefined> {
+  const admissions = Schema.startHookAdmissions;
+  const [row] = await db
+    .select({ holderRunId: admissions.holderRunId })
+    .from(admissions)
+    .where(
+      and(
+        eq(admissions.token, token),
+        eq(admissions.decision, 'accepted'),
+        isNull(admissions.adoptedAt),
+        exists(
+          db
+            .select({ runId: Schema.runs.runId })
+            .from(Schema.runs)
+            .where(
+              and(
+                eq(Schema.runs.runId, admissions.holderRunId),
+                notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
+              )
+            )
+        )
+      )
+    )
+    .limit(1);
+  return row?.holderRunId ?? undefined;
 }

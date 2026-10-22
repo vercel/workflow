@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS "workflow"."workflow_start_hook_admissions" (
 	"holder_run_id" varchar,
 	"conflicting_run_id" varchar,
 	"token_retention_until" timestamp with time zone,
+	"metadata_cbor" bytea,
+	"adopted_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint

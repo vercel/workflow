@@ -5,7 +5,11 @@ import { afterAll, beforeAll, describe, test } from 'vitest';
 import { atomicStartHookConformance } from '../../world/src/test-support/atomic-start-hook-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
 import { createWorld } from '../src/index.js';
-import { createEventsStorage, createRunsStorage } from '../src/storage.js';
+import {
+  createEventsStorage,
+  createHooksStorage,
+  createRunsStorage,
+} from '../src/storage.js';
 import { TestPool } from './pool.js';
 
 /**
@@ -23,6 +27,7 @@ describe('atomic start Hook (world-postgres)', () => {
   let pool: TestPool;
   let events: ReturnType<typeof createEventsStorage>;
   let runs: ReturnType<typeof createRunsStorage>;
+  let hooks: ReturnType<typeof createHooksStorage>;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -39,6 +44,7 @@ describe('atomic start Hook (world-postgres)', () => {
     const drizzle = createClient(pool);
     events = createEventsStorage(drizzle);
     runs = createRunsStorage(drizzle);
+    hooks = createHooksStorage(drizzle);
   }, 120_000);
 
   afterAll(async () => {
@@ -48,7 +54,7 @@ describe('atomic start Hook (world-postgres)', () => {
 
   atomicStartHookConformance({
     name: 'world-postgres',
-    storage: () => ({ events, runs }),
+    storage: () => ({ events, runs, hooks }),
     secondEvents: () => createEventsStorage(createClient(pool)),
     capabilities: () => createWorld({ pool }).capabilities,
     newRunId: () => `wrun_${ulid()}`,

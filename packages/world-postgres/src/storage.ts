@@ -4,6 +4,7 @@ import {
   EntityConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
@@ -47,6 +48,7 @@ import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
+  HOOK_RESERVED_RETRY_AFTER_SECONDS,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -100,9 +102,10 @@ import {
   type RunStatusListener,
 } from './run-status.js';
 import {
+  adoptStartReservation,
   decideStartHookAdmission,
-  extendStartReservation,
   findActiveStartReservation,
+  findUnadoptedStartReservation,
   lockStartHookToken,
   type StartHookDecision,
   startHookConflict,
@@ -2622,15 +2625,26 @@ function createUnfencedEventsStorage(
                   { status: 503 }
                 );
               }
-              // The run's own reservation: a retention this Hook brings
-              // extends it, and outlives the Hook's disposal.
-              if (eventData.tokenRetentionUntil) {
-                await extendStartReservation(
-                  tx,
-                  eventData.token,
-                  effectiveRunId,
-                  eventData.tokenRetentionUntil
-                );
+              // The run's own reservation: this Hook adopts it. A retention
+              // the Hook brings extends the reservation (and outlives the
+              // Hook's disposal), and the reservation's metadata fills in for
+              // a Hook created without any.
+              const adopted = await adoptStartReservation(
+                tx,
+                eventData.token,
+                effectiveRunId,
+                eventData.tokenRetentionUntil
+              );
+              const hookMetadata =
+                eventData.metadata ?? adopted?.metadata ?? undefined;
+              if (
+                eventData.metadata === undefined &&
+                hookMetadata !== undefined
+              ) {
+                storedEventData = {
+                  ...(storedEventData as Record<string, unknown>),
+                  metadata: hookMetadata,
+                };
               }
               await tx
                 .delete(Schema.hooks)
@@ -2648,7 +2662,7 @@ function createUnfencedEventsStorage(
                   runId: effectiveRunId,
                   hookId: data.correlationId!,
                   token: eventData.token,
-                  metadata: eventData.metadata as SerializedContent,
+                  metadata: hookMetadata as SerializedContent,
                   ownerId: '', // TODO: get from context
                   projectId: '', // TODO: get from context
                   environment: '', // TODO: get from context
@@ -3708,6 +3722,14 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
     async getByToken(token, params) {
       const [value] = await getByToken.execute({ token });
       if (!value) {
+        // A start reservation its run has not adopted yet owns the token
+        // without a Hook: retryable, not missing.
+        const reservedBy = await findUnadoptedStartReservation(drizzle, token);
+        if (reservedBy) {
+          throw new HookReservedError(token, reservedBy, {
+            retryAfter: HOOK_RESERVED_RETRY_AFTER_SECONDS,
+          });
+        }
         throw new HookNotFoundError(token);
       }
       value.metadata ||= value.metadataJson;

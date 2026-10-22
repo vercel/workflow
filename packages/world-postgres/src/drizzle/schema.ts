@@ -273,6 +273,14 @@ export const startHookAdmissions = schema.table(
     holderRunId: varchar('holder_run_id'),
     conflictingRunId: varchar('conflicting_run_id'),
     tokenRetentionUntil: timestamptz('token_retention_until'),
+    /** The start Hook's serialized metadata, for an adoption that has none. */
+    metadata: Cbor<SerializedData>()('metadata_cbor'),
+    /**
+     * When the holder's `createHook()` first adopted the reservation. Until
+     * then a by-token lookup answers `HookReservedError` rather than not
+     * found.
+     */
+    adoptedAt: timestamptz('adopted_at'),
     createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
   },
   (tb) => [index().on(tb.token)]
