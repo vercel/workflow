@@ -677,6 +677,38 @@ describe('createQueue', () => {
       expect(sent(0).wrapper.queueName).toBe('__wkf_workflow_test');
     });
 
+    it('keys a final wait timer, and sends an intermediate hop of a long wait unkeyed', async () => {
+      const queue = createQueue();
+      await queue.queue(
+        '__wkf_workflow_test',
+        {
+          runId: 'wrun_abc',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          waitContinuation: { correlationId: 'wait_1', attempt: 0 },
+        },
+        { delaySeconds: 60 }
+      );
+      await queue.queue(
+        '__wkf_workflow_test',
+        {
+          runId: 'wrun_abc',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          waitContinuation: {
+            correlationId: 'wait_1',
+            attempt: 0,
+            resumeAtMs: Date.now() + 30 * 3_600_000,
+          },
+        },
+        { delaySeconds: 60 }
+      );
+
+      expect(sent(0).options.experimental_concurrencyKey).toBe('wrun_abc');
+      // A coalesced hop is never delivered, and the holder's re-run, which
+      // finds the wait not yet due, would not send the next one.
+      expect(sent(1).topic).toBe('__wkf_workflow_test');
+      expect(sent(1).options).not.toHaveProperty('experimental_concurrencyKey');
+    });
+
     it('sends a spec 9 step message unkeyed on the same topic', async () => {
       const queue = createQueue();
       await queue.queue('__wkf_workflow_test', {

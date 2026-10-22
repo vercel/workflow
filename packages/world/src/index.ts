@@ -106,6 +106,7 @@ export {
   getQueueTopicPrefix,
   getRunQueueNamespace,
   HealthCheckPayloadSchema,
+  isIntermediateWaitHop,
   isSingleOrchestratorMessage,
   MessageId,
   messageRunSpecVersion,

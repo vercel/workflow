@@ -102,13 +102,14 @@ import {
   isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
 } from '../vm-mode.js';
-import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
 import {
+  ownedWaitChains,
   schedulesWaitTimer,
   stepsToReenqueue,
-  timerWaitCreator,
+  waitCreatorMessageId,
+  waitTimersToArm,
 } from './creator-rules.js';
 import {
   type InBandWriter,
@@ -124,6 +125,7 @@ import {
   awaitsExternalWork,
   type LogStepState,
   MAX_STEP_MESSAGE_INPUT_BYTES,
+  openWaits,
   stepCreationOf,
 } from './log-state.js';
 import {
@@ -133,6 +135,7 @@ import {
 } from './step-executor.js';
 import { stepMessageRetentionSeconds } from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
+import { waitTimerMessage } from './wait-timer.js';
 
 /**
  * Queue a step for background execution via the unified workflow queue
@@ -364,6 +367,13 @@ export async function runWorkflowWithQuickJS(params: {
   onStepMessageSent?: (correlationId: string) => void;
   /** Called once a wait's timer message went out, with the wait's id. */
   onWaitTimerSent?: (correlationId: string) => void;
+  /**
+   * Waits whose `wait_completed` this delivery committed, filled by the
+   * delivery from its writer's accepted events; this engine adds its own
+   * completions too. Their chains are this delivery's to arm (see
+   * `ownedWaitChains`).
+   */
+  completedWaits?: Set<string>;
   turbo?: {
     /** The backgrounded `run_started`, folded into the log view on landing. */
     runStarted: Promise<EventResult>;
@@ -404,26 +414,34 @@ export async function runWorkflowWithQuickJS(params: {
       ? waitContinuation.attempt + 1
       : 0;
   /**
-   * Whether this delivery arms the timer of the wait `correlationId`: only
-   * the delivery whose message wrote its `wait_created`, a redelivery of
-   * that message, or the wait's own timer delivery (see
-   * `schedulesWaitTimer`). Other deliveries leave the timer to them, so
-   * timer messages do not pile up across suspensions. Assigned once the
-   * log is loaded.
+   * Whether this delivery may arm the timer of the wait `correlationId`: it
+   * is in a wait chain this delivery owns, this delivery is about to write
+   * it, or this is the wait's own timer delivery (see `ownedWaitChains` and
+   * `schedulesWaitTimer`). Other deliveries leave the timer alone, so timer
+   * messages do not pile up across suspensions. Assigned once the log is
+   * loaded.
    */
   let armsWaitTimer: (correlationId: string) => boolean = () => true;
+  /** The chain a wait is in: its creator, or this delivery's own message. */
+  let waitChainEvent: (correlationId: string) => Event | undefined = () =>
+    undefined;
+  /** Waits whose `wait_completed` this delivery committed. */
+  const completedWaits = params.completedWaits ?? new Set<string>();
+  /** Waits whose timer this invocation sent. */
+  const scheduledWaitContinuations = new Set<string>();
   /** A timer wake: delayed, and carrying no idempotency key. */
   const queueWaitTimer = async (
     correlationId: string,
-    seconds: number
+    seconds: number,
+    resumeAtMs: number
   ): Promise<void> => {
-    const attempt = nextWaitContinuationAttempt(correlationId);
-    const { delaySeconds } = getWaitContinuationDispatch(
-      seconds,
+    const timer = waitTimerMessage({
       correlationId,
-      Date.now(),
-      attempt
-    );
+      resumeAtMs,
+      seconds,
+      nowMs: Date.now(),
+      attempt: nextWaitContinuationAttempt(correlationId),
+    });
     await queueMessage(
       world,
       getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -431,11 +449,65 @@ export async function runWorkflowWithQuickJS(params: {
         runId,
         traceCarrier: await nextTraceCarrier(),
         requestedAt: new Date(),
-        waitContinuation: { correlationId, attempt },
+        waitContinuation: timer.waitContinuation,
       },
-      { delaySeconds }
+      { specVersion: workflowRun.specVersion, delaySeconds: timer.delaySeconds }
     );
     params.onWaitTimerSent?.(correlationId);
+  };
+  /**
+   * Arms the timer of each candidate `waitTimersToArm` picks (the earliest
+   * open wait of each chain, and the wait a timer delivery is for) that
+   * this delivery has not armed yet.
+   */
+  const armWaitTimers = async (
+    candidates: readonly {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[]
+  ): Promise<void> => {
+    const owned = candidates
+      .filter(
+        (wait) =>
+          !scheduledWaitContinuations.has(wait.correlationId) &&
+          !completedWaits.has(wait.correlationId) &&
+          armsWaitTimer(wait.correlationId)
+      )
+      .map((wait) => ({ ...wait, event: waitChainEvent(wait.correlationId) }));
+    for (const wait of waitTimersToArm(
+      owned,
+      ownerMessageId ?? '',
+      waitContinuation?.correlationId
+    )) {
+      scheduledWaitContinuations.add(wait.correlationId);
+      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
+      wfdiag('wait_continuation_scheduled', {
+        correlationId: wait.correlationId,
+        delaySeconds: wait.seconds,
+      });
+    }
+  };
+  /**
+   * Arms the next timer of each wait chain of another message whose wait
+   * this delivery completed, right after the completion: the delivery may
+   * end in a handoff before any later sweep, and the next delivery does not
+   * know which waits this one completed.
+   */
+  const armCompletedChains = async (log: readonly Event[]): Promise<void> => {
+    const now = Date.now();
+    await armWaitTimers(
+      openWaits(log)
+        .filter((wait) => {
+          const creator = waitCreatorMessageId(wait.event);
+          return creator !== undefined && creator !== ownerMessageId;
+        })
+        .map((wait) => ({
+          correlationId: wait.correlationId,
+          resumeAtMs: wait.resumeAtMs,
+          seconds: Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000)),
+        }))
+    );
   };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
@@ -735,21 +807,25 @@ export async function runWorkflowWithQuickJS(params: {
    * as on the node engine.
    */
   let turboOptimistic = turbo?.optimistic === true;
+  waitChainEvent = (correlationId) =>
+    events.find(
+      (event) =>
+        event.eventType === 'wait_created' &&
+        event.correlationId === correlationId
+    );
   armsWaitTimer = (correlationId) =>
     ownerMessageId === undefined ||
     schedulesWaitTimer({
-      wait: events.find(
-        (event) =>
-          event.eventType === 'wait_created' &&
-          event.correlationId === correlationId
-      ),
+      wait: waitChainEvent(correlationId),
       correlationId,
-      messageId: ownerMessageId,
       timerFor: waitContinuation?.correlationId,
-      timerCreatorMessageId: timerWaitCreator(
+      ownedChains: ownedWaitChains({
         events,
-        waitContinuation?.correlationId
-      ),
+        messageId: ownerMessageId,
+        completedWaits,
+        timerFor: waitContinuation?.correlationId,
+        redelivery: deliveryAttempt !== 1,
+      }),
     });
   const writeEvent: EventCreator = (data, eventParams) =>
     params.writer
@@ -910,6 +986,7 @@ export async function runWorkflowWithQuickJS(params: {
             correlationId: event.correlationId,
             eventData: { resumeAt: new Date(resumeAt as string) },
           });
+          completedWaits.add(event.correlationId);
           if (!logView.tracking && result.event) {
             // No positions to order by (see QuickJSLogView), so the event
             // joins the initial log directly, as it always has.
@@ -926,6 +1003,7 @@ export async function runWorkflowWithQuickJS(params: {
   // wait_completed, plus anything another writer appended that they skipped
   // over) joins the initial log instead of waiting for a feed.
   events.push(...logView.takeContiguous());
+  if (completedWaits.size > 0) await armCompletedChains(events);
 
   // Resolve the workflow server port so `getWorkflowMetadata().url` inside
   // the VM matches what the step-side handler reports. Skipped on Vercel:
@@ -1137,7 +1215,6 @@ export async function runWorkflowWithQuickJS(params: {
     }
   };
   observeEventsForOwnership(events);
-  const scheduledWaitContinuations = new Set<string>();
   const maxInlineSteps = getMaxInlineSteps();
   const budget = new ReplayBudget();
   const workflowStartedAt = workflowRun.startedAt
@@ -1847,6 +1924,7 @@ export async function runWorkflowWithQuickJS(params: {
                 correlationId: wait.correlationId,
                 eventData: { resumeAt: new Date(wait.resumeAt) },
               });
+              completedWaits.add(wait.correlationId);
             } catch (err) {
               if (EntityConflictError.is(err)) return;
               throw err;
@@ -1856,6 +1934,7 @@ export async function runWorkflowWithQuickJS(params: {
       }
       if (waitCompletePromises.length > 0) {
         await Promise.all(waitCompletePromises);
+        await armCompletedChains(fullLog());
       }
 
       // 2. Cheap progress first: feed newly recorded events into the live
@@ -1973,32 +2052,28 @@ export async function runWorkflowWithQuickJS(params: {
       // bodies run, so the wait still completes if this invocation dies
       // mid-body. While it lives, the loop completes the wait itself when it
       // falls due (see `waitForInlineProgress`).
-      let soonestWait: { correlationId: string; seconds: number } | undefined;
+      const sweep: {
+        correlationId: string;
+        resumeAtMs: number;
+        seconds: number;
+      }[] = [];
       for (const op of pendingOperations) {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
-        if (scheduledWaitContinuations.has(wait.correlationId)) continue;
-        if (!armsWaitTimer(wait.correlationId)) continue;
         // Completed by this invocation already; the event just has not been
         // fed back into the VM yet.
         if (completedWaitIds2.has(wait.correlationId)) continue;
-        const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
+        const resumeAtMs = new Date(wait.resumeAt).getTime();
         // An elapsed wait still gets a continuation (clamped to 1s): one
         // whose deadline fell between the elapsed-wait pass above and this
         // sweep would otherwise get neither a wait_completed nor a timer.
-        const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
-        if (!soonestWait || seconds < soonestWait.seconds) {
-          soonestWait = { correlationId: wait.correlationId, seconds };
-        }
+        const seconds = Math.max(
+          1,
+          Math.ceil((resumeAtMs - Date.now()) / 1000)
+        );
+        sweep.push({ correlationId: wait.correlationId, resumeAtMs, seconds });
       }
-      if (soonestWait) {
-        scheduledWaitContinuations.add(soonestWait.correlationId);
-        await queueWaitTimer(soonestWait.correlationId, soonestWait.seconds);
-        wfdiag('wait_continuation_scheduled', {
-          correlationId: soonestWait.correlationId,
-          delaySeconds: soonestWait.seconds,
-        });
-      }
+      await armWaitTimers(sweep);
 
       for (const { step, state } of resumedInline) launchInline(step, state);
       for (const step of inlineCandidates) {
@@ -2369,25 +2444,25 @@ export async function runWorkflowWithQuickJS(params: {
     // loop's last check requeues immediately (its wait_completed is
     // written by the next invocation's elapsed-wait pass); pending waits
     // whose continuation the loop already enqueued are skipped.
-    let soonestWait: { seconds: number; correlationId: string } | undefined;
+    const exitSweep: {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[] = [];
     let hasElapsedWait = false;
     for (const op of pendingOperations) {
       if (op.type !== 'wait') continue;
       const wait = op as PendingWait;
-      const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
+      const resumeAtMs = new Date(wait.resumeAt).getTime();
+      const resumeMs = resumeAtMs - Date.now();
       if (resumeMs <= 0) {
         hasElapsedWait = true;
-      } else if (
-        !scheduledWaitContinuations.has(wait.correlationId) &&
-        armsWaitTimer(wait.correlationId)
-      ) {
-        const timeoutSeconds = Math.max(1, Math.ceil(resumeMs / 1000));
-        if (!soonestWait || timeoutSeconds < soonestWait.seconds) {
-          soonestWait = {
-            seconds: timeoutSeconds,
-            correlationId: wait.correlationId,
-          };
-        }
+      } else {
+        exitSweep.push({
+          correlationId: wait.correlationId,
+          resumeAtMs,
+          seconds: Math.max(1, Math.ceil(resumeMs / 1000)),
+        });
       }
     }
 
@@ -2412,19 +2487,22 @@ export async function runWorkflowWithQuickJS(params: {
       return;
     }
 
-    if (soonestWait) {
-      // Delayed continuation for the soonest pending wait the loop has
-      // not already scheduled. The dispatch helper handles delay
-      // clamping (long waits chain across hops) and idempotency-key
-      // dedup of re-observations of the same pending wait. See
-      // runtime/wait-continuation.ts.
+    if (
+      exitSweep.some(
+        (wait) =>
+          !scheduledWaitContinuations.has(wait.correlationId) &&
+          armsWaitTimer(wait.correlationId)
+      )
+    ) {
+      // Delayed continuations for the soonest pending wait of each chain
+      // this delivery owns that the loop has not already scheduled. A wait
+      // longer than one queue delay is reached in hops (see
+      // `waitTimerMessage`).
       wfdiag('exit_suspended', {
         action: 'schedule_wait_timeout',
-        timeoutSeconds: soonestWait.seconds,
-        waitCorrelationId: soonestWait.correlationId,
+        waits: exitSweep.length,
       });
-      scheduledWaitContinuations.add(soonestWait.correlationId);
-      await queueWaitTimer(soonestWait.correlationId, soonestWait.seconds);
+      await armWaitTimers(exitSweep);
       return;
     }
 

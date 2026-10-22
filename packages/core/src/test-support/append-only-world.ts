@@ -9,6 +9,7 @@ import {
   type Event,
   type EventListResponse,
   type EventResult,
+  orchestratorRunIdOf,
   SPEC_VERSION_CURRENT,
   slotToEventId,
   type WorkflowRun,
@@ -469,7 +470,7 @@ export class AppendOnlyWorld {
     if (index !== -1) this.held.splice(index, 1);
     const orchestrator =
       this.options.coalesce === true &&
-      (held.message as { stepId?: unknown }).stepId === undefined &&
+      orchestratorRunIdOf(held.message) !== undefined &&
       this.activeOrchestrator === undefined;
     if (!orchestrator) return this.deliverOnce(held);
     const active = { coalesced: 0 };
@@ -498,6 +499,29 @@ export class AppendOnlyWorld {
     } finally {
       this.activeOrchestrator = undefined;
     }
+  }
+
+  /**
+   * Lets a held (delayed) message come due now, as the queue's clock would.
+   * In `coalesce` mode, a keyed one (see `coalesce`) that comes due while an
+   * orchestrator delivery of the run runs is coalesced into it: no longer
+   * held, never delivered, and counted on that delivery, which runs again.
+   * Returns whether it was coalesced; otherwise it stays held for the test
+   * to deliver.
+   */
+  comeDue(held: HeldMessage): boolean {
+    if (
+      !this.activeOrchestrator ||
+      orchestratorRunIdOf(held.message) === undefined
+    ) {
+      return false;
+    }
+    const index = this.held.indexOf(held);
+    if (index === -1) return false;
+    this.held.splice(index, 1);
+    this.activeOrchestrator.coalesced++;
+    this.coalescedMessages++;
+    return true;
   }
 
   private async deliverOnce(held: HeldMessage): Promise<unknown> {
@@ -780,7 +804,7 @@ export class AppendOnlyWorld {
         const messageId = `msg_${self.queueCalls.length}`;
         if (
           self.activeOrchestrator &&
-          (message as { stepId?: unknown }).stepId === undefined &&
+          orchestratorRunIdOf(message) !== undefined &&
           !(
             options?.delaySeconds !== undefined &&
             (options.delaySeconds as number) > 0

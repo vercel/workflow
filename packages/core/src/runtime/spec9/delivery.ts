@@ -13,6 +13,7 @@ import {
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
+  WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -138,7 +139,6 @@ import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
 import { computeStepLatencyTracking } from '../step-latency.js';
 import { useQuickJSVm } from '../vm-mode.js';
-import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { consumeOwnResolvingWrite } from './consume-after-commit.js';
 import {
   forgetConsumedPosition,
@@ -147,9 +147,11 @@ import {
   recordConsumedPosition,
 } from './consumed-position.js';
 import {
+  ownedWaitChains,
   schedulesWaitTimer,
   stepsToReenqueue,
-  timerWaitCreator,
+  waitCreatorMessageId,
+  waitTimersToArm,
 } from './creator-rules.js';
 import {
   getInlineStepDeadlineMarginMs,
@@ -196,6 +198,7 @@ import {
   type StartedInBatch,
 } from './step-wait-creation.js';
 import { handleSuspension, pendingQueueDrain } from './suspension-handler.js';
+import { waitTimerMessage } from './wait-timer.js';
 
 /**
  * Apply the optional client-side event-limit override.
@@ -443,6 +446,12 @@ async function runDelivery(
   const ownCreationEventIds = new Map<string, string>();
   /** Waits whose timer message this delivery sent. */
   const timedWaits = new Set<string>();
+  /**
+   * Waits whose `wait_completed` this delivery committed: their chains are
+   * this delivery's to arm (see `ownedWaitChains`). Filled from the writer's
+   * accepted events, so the QuickJS engine's completions count too.
+   */
+  const completedWaits = new Set<string>();
   const noteCommitted = (event: Event): void => {
     const id = event.correlationId;
     if (!id) return;
@@ -484,6 +493,7 @@ async function runDelivery(
       ownOpenWaits.set(id, event);
     } else if (event.eventType === 'wait_completed') {
       ownOpenWaits.delete(id);
+      completedWaits.add(id);
     }
   };
   const noteStepMessageSent = (correlationId: string): void => {
@@ -856,6 +866,42 @@ async function runDelivery(
     if (spanAttributes) span?.setAttributes(spanAttributes);
     return outcome;
   };
+
+  // An intermediate hop of a long wait's timer chain (see
+  // `waitTimerMessage`): the World delivers it beside a running orchestrator
+  // of the run, so it reads nothing but the run's status, writes nothing,
+  // sends the next hop and acknowledges.
+  const hopResumeAtMs = waitContinuation?.resumeAtMs;
+  if (waitContinuation && hopResumeAtMs !== undefined) {
+    let run = prefetchedRun;
+    try {
+      run ??= (await world.runs.get(runId, { resolveData: 'none' })) as
+        | WorkflowRun
+        | undefined;
+    } catch (err) {
+      if (!WorkflowRunNotFoundError.is(err)) throw err;
+    }
+    if (!run || isTerminalWorkflowRunStatus(run.status)) return undefined;
+    const now = Date.now();
+    const next = waitTimerMessage({
+      correlationId: waitContinuation.correlationId,
+      resumeAtMs: hopResumeAtMs,
+      seconds: Math.max(0, Math.ceil((hopResumeAtMs - now) / 1000)),
+      nowMs: now,
+    });
+    runtimeLogger.debug('Wait timer hop; sending the next hop', {
+      workflowRunId: runId,
+      correlationId: waitContinuation.correlationId,
+      delaySeconds: next.delaySeconds,
+      intermediate: next.waitContinuation.resumeAtMs !== undefined,
+    });
+    span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+    await wakeSelf(
+      { waitContinuation: next.waitContinuation },
+      next.delaySeconds
+    );
+    return undefined;
+  }
 
   // A message with a stepId is a background step's own
   // message. Its invocation runs the body and reports the
@@ -1492,6 +1538,7 @@ async function runDelivery(
           writer,
           onStepMessageSent: noteStepMessageSent,
           onWaitTimerSent: (correlationId) => timedWaits.add(correlationId),
+          completedWaits,
           ...(wakeUpWaits.size > 0 ? { wakeUpWaits } : {}),
           ...(turboRunStarted && runReadyBarrier
             ? {
@@ -2395,7 +2442,8 @@ async function runDelivery(
           // Complete elapsed waits. `wait_completed` resolves a
           // promise, so it is consumed only after it commits,
           // behind whatever its report says landed below it.
-          for (const wait of dueWaits(log.events, Date.now(), wakeUpWaits)) {
+          const due = dueWaits(log.events, Date.now(), wakeUpWaits);
+          for (const wait of due) {
             wakeUpWaits.delete(wait.correlationId);
             const completed = await createEvent(
               {
@@ -2415,6 +2463,11 @@ async function runDelivery(
             }
           }
           assert(log, 'The event log is loaded in the loop');
+          // The next timer of each chain whose wait this pass completed
+          // goes out now, not at suspend: this delivery may end in a
+          // handoff first, and the next delivery does not know which
+          // waits this one completed.
+          if (due.length > 0) await armTimers(log.events, 'other-chains');
 
           if (isSlotGapCheckEnabled()) {
             // Run-ahead places an outcome at the slot its write
@@ -3679,59 +3732,70 @@ async function runDelivery(
       for (const step of steps) noteStepMessageSent(step.correlationId);
     }
 
-    /** The open waits of `events` whose timer this delivery schedules. */
+    /** The open waits of `events` whose timer this delivery may arm. */
     function ownedOpenWaits(events: readonly Event[]) {
       const timerFor = waitContinuation?.correlationId;
-      const timerCreatorMessageId = timerWaitCreator(events, timerFor);
+      const ownedChains = ownedWaitChains({
+        events,
+        messageId: creatorMessageId,
+        completedWaits,
+        timerFor,
+        redelivery: creatorDeliveryCount !== 1,
+      });
       return openWaits(events).filter((wait) =>
         schedulesWaitTimer({
           wait: wait.event,
           correlationId: wait.correlationId,
-          messageId: creatorMessageId,
           timerFor,
-          timerCreatorMessageId,
+          ownedChains,
         })
       );
     }
 
     /**
-     * Schedules the timer of the earliest wait this delivery owns, once per
-     * wait: a delivery that waits on inline bodies arms the timer early, and
-     * its suspend would otherwise send a second one.
+     * Arms the timer of the earliest open wait of each chain this delivery
+     * owns, and of the wait a timer delivery is for (`waitTimersToArm`),
+     * once per wait: a delivery that waits on inline bodies arms timers
+     * early, and its suspend would otherwise send them again. With
+     * `'other-chains'`, only the chains of other messages: those this
+     * delivery owns because it completed one of their waits.
      */
-    async function armTimers(events: Event[]): Promise<void> {
-      let earliest: { correlationId: string; resumeAtMs: number } | undefined;
-      for (const wait of ownedOpenWaits(events)) {
-        if (!earliest || wait.resumeAtMs < earliest.resumeAtMs) {
-          earliest = wait;
-        }
+    async function armTimers(
+      events: Event[],
+      scope: 'all' | 'other-chains' = 'all'
+    ): Promise<void> {
+      const owned = ownedOpenWaits(events).filter(
+        (wait) =>
+          scope === 'all' ||
+          (wait.event !== undefined &&
+            waitCreatorMessageId(wait.event) !== creatorMessageId)
+      );
+      for (const wait of waitTimersToArm(
+        owned,
+        creatorMessageId,
+        waitContinuation?.correlationId
+      )) {
+        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
       }
-      if (!earliest || timedWaits.has(earliest.correlationId)) return;
-      await sendWaitTimer(earliest);
     }
 
-    /** Sends the timer message of one wait. */
+    /** Sends the timer message of one wait (see `waitTimerMessage`). */
     async function sendWaitTimer(wait: {
       correlationId: string;
       resumeAtMs: number;
     }): Promise<void> {
       timedWaits.add(wait.correlationId);
       const now = Date.now();
-      const seconds = Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000));
-      const { delaySeconds } = getWaitContinuationDispatch(
-        seconds,
-        wait.correlationId,
-        now
-      );
+      const timer = waitTimerMessage({
+        correlationId: wait.correlationId,
+        resumeAtMs: wait.resumeAtMs,
+        seconds: Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000)),
+        nowMs: now,
+      });
       try {
         await wakeSelf(
-          {
-            waitContinuation: {
-              correlationId: wait.correlationId,
-              attempt: 0,
-            },
-          },
-          delaySeconds
+          { waitContinuation: timer.waitContinuation },
+          timer.delaySeconds
         );
       } catch (error) {
         timedWaits.delete(wait.correlationId);
@@ -3744,8 +3808,9 @@ async function runDelivery(
      * the step messages in `unsentStepMessages`, plus, on a redelivery of
      * its message, the ones the creator rules re-send for an earlier
      * delivery of it that never got them out (see `stepsToReenqueue`); and
-     * a timer for every open wait it owns that has none from it yet. A step
-     * message keeps its idempotency key, so one already sent is deduped.
+     * the timers of the wait chains it owns that have none from it yet
+     * (`armTimers`). A step message keeps its idempotency key, so one
+     * already sent is deduped.
      */
     async function sendOwedMessages(run: WorkflowRun): Promise<void> {
       const owed = new Map(unsentStepMessages);
@@ -3801,9 +3866,7 @@ async function runDelivery(
           (wait) => !log?.events.some((event) => event.eventId === wait.eventId)
         ),
       ];
-      for (const wait of ownedOpenWaits(events)) {
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await armTimers(events);
     }
 
     /**

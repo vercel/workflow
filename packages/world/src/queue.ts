@@ -461,6 +461,14 @@ export const WorkflowInvokePayloadSchema = z.compile(
       .object({
         correlationId: z.string(),
         attempt: z.number().int().nonnegative(),
+        /**
+         * The wait's `resumeAt` (epoch ms), set only on an intermediate hop
+         * of a spec 9 wait longer than one queue delay: a timer sent to fire
+         * before the wait is due, only so that the next hop can be sent (see
+         * {@link isIntermediateWaitHop}). Absent on a final hop, the timer
+         * due when the wait is.
+         */
+        resumeAtMs: z.number().optional(),
       })
       .optional()
       .catch(undefined),
@@ -596,9 +604,10 @@ export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
  *
  * An orchestrator delivery is a {@link WorkflowInvokePayload} without a
  * `stepId`: the start of a run, a wake after a step outcome, a hook resume,
- * a cancellation or a timer. A step execution message (`stepId` set) and a
- * health check (`__healthCheck`, which may carry the `runId` it prepares) are
- * not, and keep full parallelism.
+ * a cancellation or a timer. A step execution message (`stepId` set), a
+ * health check (`__healthCheck`, which may carry the `runId` it prepares)
+ * and an intermediate hop of a long wait's timer
+ * ({@link isIntermediateWaitHop}) are not, and keep full parallelism.
  *
  * A run's orchestrator deliveries are serialized only on single-orchestrator
  * runs (spec >= 9, see {@link singleOrchestratorRunIdOf}).
@@ -608,7 +617,32 @@ export function orchestratorRunIdOf(payload: unknown): string | undefined {
   const message = payload as Record<string, unknown>;
   if (message.__healthCheck === true) return undefined;
   if (typeof message.stepId === 'string') return undefined;
+  if (isIntermediateWaitHop(payload)) return undefined;
   return typeof message.runId === 'string' ? message.runId : undefined;
+}
+
+/**
+ * Whether a queue message is an intermediate hop of a long wait's timer
+ * chain: a timer the runtime sends to fire before its wait is due, because
+ * the wait is longer than one queue delay, so that the delivery sends the
+ * next hop. Marked by `waitContinuation.resumeAtMs`, which only such a hop
+ * carries.
+ *
+ * Its delivery is not an orchestrator delivery: it reads only the run's
+ * status, writes nothing, sends the next hop (the last one an ordinary
+ * timer) and acknowledges. So it is never serialized behind, or coalesced
+ * into, a delivery of its run ({@link orchestratorRunIdOf} leaves it out),
+ * and it must not be: a coalesced hop is never delivered, and the holder's
+ * re-run, which finds its wait not yet due, would not send the next one.
+ */
+export function isIntermediateWaitHop(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const continuation = (payload as Record<string, unknown>).waitContinuation;
+  return (
+    typeof continuation === 'object' &&
+    continuation !== null &&
+    Number.isFinite((continuation as { resumeAtMs?: unknown }).resumeAtMs)
+  );
 }
 
 /**

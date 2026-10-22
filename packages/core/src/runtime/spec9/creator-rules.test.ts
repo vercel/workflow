@@ -1,6 +1,11 @@
 import { type Event, slotToEventId } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { schedulesWaitTimer, stepsToReenqueue } from './creator-rules.js';
+import {
+  ownedWaitChains,
+  schedulesWaitTimer,
+  stepsToReenqueue,
+  waitTimersToArm,
+} from './creator-rules.js';
 
 let slot = 0;
 function ev(
@@ -94,42 +99,67 @@ describe('stepsToReenqueue', () => {
   });
 });
 
-describe('schedulesWaitTimer', () => {
-  const wait = (creatorMessageId?: string) =>
-    ev('wait_created', 'wait_a', {
-      resumeAt: new Date(0),
+describe('wait timer ownership', () => {
+  const wait = (correlationId: string, creatorMessageId?: string, at = 0) =>
+    ev('wait_created', correlationId, {
+      resumeAt: new Date(at),
       creatorMessageId,
     });
+  const owns = (
+    params: Partial<Parameters<typeof ownedWaitChains>[0]> & {
+      events: Event[];
+    }
+  ) =>
+    ownedWaitChains({
+      messageId: 'msg_wake',
+      completedWaits: [],
+      timerFor: undefined,
+      redelivery: false,
+      ...params,
+    });
 
-  it('schedules from the creating invocation and its redeliveries', () => {
+  it('owns its own message chain, and no other by default', () => {
+    const events = [wait('wait_a', MSG)];
+    expect([...owns({ events, messageId: MSG })]).toEqual([MSG]);
     expect(
       schedulesWaitTimer({
-        wait: wait(MSG),
+        wait: events[0],
         correlationId: 'wait_a',
-        messageId: MSG,
         timerFor: undefined,
+        ownedChains: owns({ events }),
+      })
+    ).toBe(false);
+  });
+
+  it('owns the chain of a wait it completed, whatever its message', () => {
+    const events = [wait('wait_a', MSG), wait('wait_b', MSG)];
+    const ownedChains = owns({ events, completedWaits: ['wait_a'] });
+    expect(ownedChains.has(MSG)).toBe(true);
+    expect(
+      schedulesWaitTimer({
+        wait: events[1],
+        correlationId: 'wait_b',
+        timerFor: undefined,
+        ownedChains,
       })
     ).toBe(true);
   });
 
-  it('does not schedule from another delivery', () => {
+  it("owns a timer's chain on a redelivery of the timer only", () => {
+    const events = [wait('wait_a', MSG), wait('wait_b', MSG)];
+    expect(owns({ events, timerFor: 'wait_a' }).has(MSG)).toBe(false);
     expect(
-      schedulesWaitTimer({
-        wait: wait(MSG),
-        correlationId: 'wait_a',
-        messageId: 'msg_wake',
-        timerFor: undefined,
-      })
-    ).toBe(false);
+      owns({ events, timerFor: 'wait_a', redelivery: true }).has(MSG)
+    ).toBe(true);
   });
 
   it('re-arms from the wait timer delivery itself', () => {
     expect(
       schedulesWaitTimer({
-        wait: wait(MSG),
+        wait: wait('wait_a', MSG),
         correlationId: 'wait_a',
-        messageId: 'msg_timer',
         timerFor: 'wait_a',
+        ownedChains: new Set(['msg_timer']),
       })
     ).toBe(true);
   });
@@ -139,9 +169,29 @@ describe('schedulesWaitTimer', () => {
       schedulesWaitTimer({
         wait: undefined,
         correlationId: 'wait_a',
-        messageId: 'msg_wake',
         timerFor: undefined,
+        ownedChains: new Set(['msg_wake']),
       })
     ).toBe(true);
+  });
+
+  it('arms the earliest wait of each chain, and the timer delivery its own wait', () => {
+    const open = [
+      { correlationId: 'a1', resumeAtMs: 10, event: wait('a1', 'msg_a') },
+      { correlationId: 'a2', resumeAtMs: 5, event: wait('a2', 'msg_a') },
+      { correlationId: 'b1', resumeAtMs: 20, event: wait('b1', 'msg_b') },
+      // Not in the log yet: in the chain of this delivery's message.
+      { correlationId: 'own', resumeAtMs: 30 },
+    ];
+    expect(
+      waitTimersToArm(open, 'msg_own', undefined)
+        .map((wait) => wait.correlationId)
+        .sort()
+    ).toEqual(['a2', 'b1', 'own']);
+    expect(
+      waitTimersToArm(open, 'msg_own', 'a1')
+        .map((wait) => wait.correlationId)
+        .sort()
+    ).toEqual(['a1', 'a2', 'b1', 'own']);
   });
 });

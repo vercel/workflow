@@ -89,44 +89,107 @@ export function stepsToReenqueue(params: {
 }
 
 /**
- * Whether this orchestrator delivery schedules the timer of the wait
- * `correlationId`.
+ * The wait chains whose timers this orchestrator delivery arms, each named
+ * by its creator: the message whose delivery wrote the chain's
+ * `wait_created` events (`creatorMessageId`). A delivery that creates
+ * several waits arms only the earliest (see {@link waitTimersToArm}), so the
+ * rest of its chain waits for whoever completes that one.
  *
- * Only the invocation that wrote the wait's `wait_created` schedules its
- * timer, or a redelivery of that same message, or the timer delivery for the
- * wait itself (whose delay a queue may have capped short of the deadline, so
- * it re-arms what is left). A timer delivery also schedules the waits created
- * by the message that created its own wait (`timerCreatorMessageId`): that
- * message armed only its earliest wait, so each timer arms the next one once
- * its own completes. Every other delivery leaves the timer alone, so
- * timer messages do not pile up across suspensions. A late or duplicate
- * timer finds the wait completed and exits cheaply.
+ * A delivery owns:
+ *
+ * - its own message's chain: the waits its message created (on a
+ *   redelivery, in an earlier delivery of it), and those it is about to
+ *   write;
+ * - the chain of every wait whose `wait_completed` it committed
+ *   (`completedWaits`), whatever message it is. The delivery that completes
+ *   a wait is the only one that knows the chain needs its next timer: the
+ *   completing delivery may be a hook or step wake into which the queue
+ *   coalesced the wait's timer, and a coalesced timer is never delivered;
+ * - on a redelivery of a timer message (`timerFor`, a crash or a rejected
+ *   delivery), that timer's chain: an earlier delivery of the message may
+ *   have completed the wait and died before it armed the next one.
+ *
+ * Every other delivery leaves a chain alone, so timer messages do not pile
+ * up across suspensions. A late or duplicate timer finds its wait completed
+ * and arms nothing.
+ */
+export function ownedWaitChains(params: {
+  events: readonly Event[];
+  messageId: string;
+  /** Waits whose `wait_completed` this delivery committed. */
+  completedWaits: Iterable<string>;
+  /** The wait a timer delivery is for. */
+  timerFor: string | undefined;
+  /** Whether this delivery is a redelivery of its message. */
+  redelivery: boolean;
+}): Set<string> {
+  const { events, messageId, completedWaits, timerFor, redelivery } = params;
+  const owned = new Set([messageId]);
+  const creatorOf = (correlationId: string) =>
+    waitCreatorMessageId(
+      events.find(
+        (event) =>
+          event.eventType === 'wait_created' &&
+          event.correlationId === correlationId
+      )
+    );
+  for (const correlationId of completedWaits) {
+    const creator = creatorOf(correlationId);
+    if (creator !== undefined) owned.add(creator);
+  }
+  if (redelivery && timerFor !== undefined) {
+    const creator = creatorOf(timerFor);
+    if (creator !== undefined) owned.add(creator);
+  }
+  return owned;
+}
+
+/**
+ * Whether this orchestrator delivery may arm the timer of the open wait
+ * `correlationId`: the wait is in a chain it owns
+ * ({@link ownedWaitChains}), it is about to write the wait, or it is the
+ * wait's own timer delivery, which arrived before the wait was due (a timer
+ * is delivered a little early under clock skew) and re-arms what is left.
  */
 export function schedulesWaitTimer(params: {
   wait: Event | undefined;
   correlationId: string;
-  messageId: string;
   timerFor: string | undefined;
-  /** The creator of the wait `timerFor`, when this is a timer delivery. */
-  timerCreatorMessageId?: string;
+  ownedChains: ReadonlySet<string>;
 }): boolean {
-  const { wait, correlationId, messageId, timerFor, timerCreatorMessageId } =
-    params;
+  const { wait, correlationId, timerFor, ownedChains } = params;
   if (timerFor === correlationId) return true;
-  if (
-    timerCreatorMessageId !== undefined &&
-    waitCreatorMessageId(wait) === timerCreatorMessageId
-  ) {
-    return true;
-  }
   if (wait === undefined) {
     // Not in the log yet: this delivery is about to write it.
     return true;
   }
-  return (
-    wait.eventType === 'wait_created' &&
-    wait.eventData.creatorMessageId === messageId
-  );
+  const creator = waitCreatorMessageId(wait);
+  return creator !== undefined && ownedChains.has(creator);
+}
+
+/**
+ * The waits whose timers to arm, out of the open waits a delivery may arm
+ * ({@link schedulesWaitTimer}): the earliest of each chain, and the wait a
+ * timer delivery is for (`timerFor`). A wait not in the log yet is in the
+ * chain of `messageId`.
+ */
+export function waitTimersToArm<
+  W extends { correlationId: string; resumeAtMs: number; event?: Event },
+>(waits: readonly W[], messageId: string, timerFor: string | undefined): W[] {
+  const earliest = new Map<string, W>();
+  const out: W[] = [];
+  for (const wait of waits) {
+    if (wait.correlationId === timerFor) out.push(wait);
+    const chain = waitCreatorMessageId(wait.event) ?? messageId;
+    const current = earliest.get(chain);
+    if (!current || wait.resumeAtMs < current.resumeAtMs) {
+      earliest.set(chain, wait);
+    }
+  }
+  for (const wait of earliest.values()) {
+    if (!out.includes(wait)) out.push(wait);
+  }
+  return out;
 }
 
 /** The message whose invocation wrote `wait`'s `wait_created`, if recorded. */
@@ -136,18 +199,4 @@ export function waitCreatorMessageId(
   return wait?.eventType === 'wait_created'
     ? wait.eventData.creatorMessageId
     : undefined;
-}
-
-/** The creator of the wait a timer delivery (`timerFor`) is for. */
-export function timerWaitCreator(
-  events: readonly Event[],
-  timerFor: string | undefined
-): string | undefined {
-  if (timerFor === undefined) return undefined;
-  return waitCreatorMessageId(
-    events.find(
-      (event) =>
-        event.eventType === 'wait_created' && event.correlationId === timerFor
-    )
-  );
 }
