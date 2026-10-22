@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "5.0.1",
+  "version": "5.0.6",
   "description": "Testing utilities and World implementation for Workflow SDK",
   "main": "dist/src/index.mjs",
   "files": [
@@ -29,6 +29,7 @@
     "chalk": "5.6.2",
     "hono": "4.12.25",
     "jsonlines": "0.1.1",
+    "ulid": "catalog:",
     "workflow": "workspace:*",
     "zod": "catalog:"
   },

@@ -48,44 +48,42 @@ WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
 
 Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` or `DATABASE_URL` is set when running this command:
 
-<Tabs items={["npm", "pnpm", "Yarn", "Bun"]}>
-
-<Tab value="npm">
-
-```bash
+```bash tab="npm"
 npx --package=@workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-<Tab value="pnpm">
-
-```bash
+```bash tab="pnpm"
 pnpm dlx --package @workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-<Tab value="Yarn">
-
-```bash
+```bash tab="Yarn"
 yarn dlx --package @workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-<Tab value="Bun">
-
-```bash
+```bash tab="Bun"
 bunx --package @workflow/world-postgres bootstrap
 ```
 
-</Tab>
-
-</Tabs>
-
 <Callout type="info">
-The migration is idempotent and can safely be run as a post-deployment lifecycle script.
+The migration is idempotent and can safely be run as a post-deployment lifecycle script. Run it again when you upgrade `@workflow/world-postgres`: a release can add migrations that the upgraded World needs before it handles workflows.
+</Callout>
+
+<Callout type="warn">
+Migration 0027 converts every timestamp column to `timestamp with time zone`.
+On a server whose time zone is UTC (the default on most hosted providers) it
+only changes the catalog and rebuilds one small index, and the upgrade order
+does not matter. On a server in another time zone it also rewrites each
+`created_at` value from local time to the instant it recorded, about one
+rewrite of each table, holding the tables' locks until it finishes. There, stop
+the previous version's workers, run `bootstrap`, then start the upgraded app:
+older versions read the converted columns shifted by the server's UTC offset,
+so you cannot roll back past this migration either. If your app's connection
+pool set a session time zone other than the server's, pass it to the migration
+with `?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the
+connection string, or with `ALTER DATABASE ... SET workflow.legacy_timezone =
+'Europe/Berlin'` where your pooler drops startup `options`. The migration waits
+at most 10 seconds for its locks; if a long transaction holds them,
+`bootstrap` fails and can be run again.
 </Callout>
 
 ## Starting the World
@@ -154,9 +152,9 @@ still adds overhead. Pulling in `workflow/runtime` from a server-startup hook pu
 the whole runtime into the cold-start path before the first request is served.
 </Callout>
 
-<Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
+<TabsWithChildren tabs={["Next.js","SvelteKit","Nitro"]}>
 
-<Tab value="Next.js">
+<TabContent order={1}>
 
 Create an `instrumentation.ts` file in your project root:
 
@@ -174,9 +172,9 @@ export async function register() {
 Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
 </Callout>
 
-</Tab>
+</TabContent>
 
-<Tab value="SvelteKit">
+<TabContent order={2}>
 
 Create a `src/hooks.server.ts` file:
 
@@ -194,9 +192,9 @@ export const init: ServerInit = async () => {
 Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 </Callout>
 
-</Tab>
+</TabContent>
 
-<Tab value="Nitro">
+<TabContent order={3}>
 
 Create a plugin to start the world on server initialization:
 
@@ -225,9 +223,9 @@ export default defineNitroConfig({
 Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 </Callout>
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
@@ -342,11 +340,32 @@ export default createWorld({
 
 Options passed to `createWorld()` take precedence over the environment variables above. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
 
-You can also pass an existing `pg.Pool` as `pool` instead of a connection string.
-
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
+
+You can also pass an existing `pg.Pool` as `pool` instead of a connection string. The World then leaves that pool's `'error'` events to you. A connection the server ends, in a restart, a failover or an idle timeout, emits one, and an `'error'` event with no listener ends the process. Listen on each client the pool connects as well as on the pool: pg-pool listens only on idle clients, and the World holds a checked-out client across a transaction's statements.
+
+{/*@skip-typecheck: requires pg, which the docs type-check does not install*/}
+
+```typescript title="my-world.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+import { Pool } from "pg";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+pool.on("connect", (client) =>
+  client.on("error", (error) => console.error(error.message))
+);
+pool.on("error", () => {}); // An idle client's error, logged just above
+
+export default createWorld({ pool });
+```
+
+A pool the World creates from `connectionString` already has these listeners.
+
+### Queue consumers other than the Workflow SDK
+
+The worker delivers every job over HTTP, and by default to the Workflow SDK's flow route, `/.well-known/workflow/v1/flow`. A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix (`__{namespace}_wkf_workflow_`) and registers where those go: `world.registerRoute(prefix, "/api/agent/queue")` to deliver them to its own route, or `world.registerHandler(prefix, handler)` to deliver them inside the process that took the job, without HTTP. A job keeps the prefix it was enqueued under and the route its producer had registered, so a worker in another process delivers it to the same place. Register before calling `start()`, which re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`).
 
 ### Application-managed shutdown
 
@@ -364,7 +383,7 @@ The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage**: Workflow runs, events, steps, and hooks are stored in PostgreSQL tables.
 - **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries.
-- **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution.
+- **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution. If the database drops the `LISTEN` connection, the World reconnects every second and re-reads persisted chunks for open stream readers, so readers don't miss chunks written during the outage.
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
 
@@ -380,6 +399,8 @@ The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
 - `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
+
+A queue consumer that registered its own route with `registerRoute()` receives deliveries the same way, so protect that route like the flow route.
 
 ### Bringing your own auth
 

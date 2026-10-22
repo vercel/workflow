@@ -12,7 +12,6 @@ import {
   type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
-  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -76,6 +75,7 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './runtime/dynamic-workflow.js';
+import { maybeWarnApproachingEventLimit } from './runtime/event-limit-warning.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -109,6 +109,10 @@ import {
   hasOpenWaitDueBy,
   openHookAndWaitState,
 } from './runtime/open-hook-wait-state.js';
+import {
+  type OutOfBandObservation,
+  observeOutOfBandWriters,
+} from './runtime/out-of-band-observation.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -385,27 +389,6 @@ function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
   }
 
   return null;
-}
-
-/**
- * Whether a step execution rejected because the step entity does not exist,
- * the signature of a resilient step dispatch message whose delivery beat (or
- * outlived a transient failure of) the producer's parallel `step_created`
- * write. Every World surfaces it as a `WorkflowWorldError` naming the missing
- * step: world-vercel maps the backend's 404 to
- * `workflow step step_… not found`, world-local and world-postgres throw
- * `Step "step_…" not found` directly. The message match is deliberately loose
- * across those shapes; the status check narrows the remote case without
- * excluding the local ones (which carry no status).
- *
- * Used only when the message carries `stepInput`, since a bare dispatch
- * without a payload has nothing to recover from, and the error keeps
- * propagating for queue-driven recovery exactly as before.
- */
-function isStepMissingError(err: unknown): boolean {
-  if (!WorkflowWorldError.is(err)) return false;
-  if (err.status !== undefined && err.status !== 404) return false;
-  return /step/i.test(err.message) && /not found/i.test(err.message);
 }
 
 async function recordFatalRunError({
@@ -854,7 +837,6 @@ export function workflowEntrypoint(
           deploymentMismatchRetryCount,
           runInput,
           hookInput,
-          stepInput,
           runContext,
           hookResumeTiming,
           waitContinuation,
@@ -1108,6 +1090,19 @@ export function workflowEntrypoint(
                   // completion that already exists is acted on now rather
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
+                  // Inline-step boundaries this invocation scheduled, split by
+                  // whether an out-of-band event could have changed what they
+                  // led to. Recorded on the span so the share of boundaries a
+                  // future run-ahead could pipeline is measurable. See
+                  // runtime/out-of-band-observation.ts.
+                  const outOfBandBoundaries = {
+                    inert: 0,
+                    observedHook: 0,
+                    unknownHook: 0,
+                    abortSignal: 0,
+                    externalStep: 0,
+                    waitDue: 0,
+                  };
                   let loopIteration = 0;
                   // Hooks whose force-claim victim wake this invocation has
                   // already sent (its own forced creations, and the replay's
@@ -1820,104 +1815,6 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      // Resilient step dispatch: the producer parallelized the
-                      // `step_created` write with this queue publish, so the
-                      // step entity may not exist yet when this delivery
-                      // executes: the delivery beat the write, or the write
-                      // failed transiently and this message carries the only
-                      // copy of the input. Idempotently re-ensure the event
-                      // from the message's `stepInput`, keyed by the step's
-                      // correlation id, so the producer's write and this
-                      // re-ensure converge on exactly one event.
-                      //
-                      // Invoked from two places:
-                      //
-                      //  - IN-BAND (the load-bearing path): when the bare
-                      //    `step_started` below rejects with "step not found",
-                      //    the executor catch materializes the step and
-                      //    retries once, all within this delivery. This must
-                      //    not rely on delivery attempts: world-vercel's
-                      //    failure-retry path re-enqueues a FRESH message
-                      //    (attempt resets to 1), so an attempt-gated recovery
-                      //    is unreachable on the retry chain and the step
-                      //    would stall until the ORIGINAL message's
-                      //    ~300s visibility-timeout redelivery, measured
-                      //    exactly so in the durabench parallel sweeps before
-                      //    this path existed.
-                      //  - EAGERLY on a genuine redelivery (attempt > 1): a
-                      //    redelivered dispatch already had its create race
-                      //    resolved either way, so ensuring up front saves the
-                      //    failed-start round trip the in-band recovery would
-                      //    otherwise pay. On the legacy prologue it overlaps
-                      //    the run fetch (no wall-time cost); on the
-                      //    fetch-free (runContext) prologue it is the sole
-                      //    pre-step write and still the cheaper trade. First
-                      //    deliveries skip it: the producer's write almost
-                      //    always lands, and an eager ensure would burn a
-                      //    conditional write per step.
-                      const ensureStepFromMessage = async (): Promise<
-                        'ok' | 'gone'
-                      > => {
-                        if (!stepInput) return 'ok';
-                        try {
-                          await world.events.create(
-                            runId,
-                            {
-                              eventType: 'step_created',
-                              specVersion: SPEC_VERSION_CURRENT,
-                              correlationId: incomingStepId,
-                              eventData: {
-                                stepName: incomingStepName,
-                                workflowName,
-                                // Typed Uint8Array by StepDispatchInputSchema:
-                                // a non-binary (mangled) payload fails the
-                                // message parse above and never reaches this
-                                // write.
-                                input: stepInput.input,
-                              },
-                            },
-                            {
-                              requestId,
-                              // Marks this create as a dispatch re-ensure so
-                              // a guard-enforcing backend can refuse it when
-                              // the producer's write was 412-rejected (the
-                              // dispatch was revoked). Surfaces as
-                              // RunExpiredError → 'gone' below, acking the
-                              // message. Worlds without the guard ignore it.
-                              viaStepDispatch: true,
-                            }
-                          );
-                          // This delivery materialized the step, the
-                          // completion of the producer's recovery path.
-                          span?.setAttributes(
-                            Attribute.StepResilientDispatchMaterialized(true)
-                          );
-                          runtimeLogger.warn(
-                            'Materialized step_created from the queue message — the producer\u2019s direct write did not land',
-                            {
-                              workflowRunId: runId,
-                              stepId: incomingStepId,
-                              stepName: incomingStepName,
-                            }
-                          );
-                        } catch (err) {
-                          // The common case: the producer's write (or a
-                          // concurrent re-ensure) already landed.
-                          if (EntityConflictError.is(err)) return 'ok';
-                          // Nothing left to execute: the run went terminal
-                          // (matches the run-status check below), or a
-                          // guard-enforcing backend revoked this dispatch
-                          // (410 `step-dispatch-revoked`, the producer's
-                          // write was 412-rejected and the replay restarted
-                          // with a corrected schedule).
-                          if (RunExpiredError.is(err)) return 'gone';
-                          // Transient: rethrow so the queue redelivers and a
-                          // later attempt converges instead of executing (and
-                          // acking) a step that may not exist.
-                          throw err;
-                        }
-                        return 'ok';
-                      };
                       // Run identity for this execution. A message stamped
                       // with `runContext` (immutable run fields the producer
                       // held at dispatch time) skips the blocking `runs.get`
@@ -1949,40 +1846,11 @@ export function workflowEntrypoint(
                         )
                       );
                       if (runContext) {
-                        // The eager redelivery re-ensure has no run fetch to
-                        // overlap with on this path — it is kept because a
-                        // redelivered dispatch has already had its create race
-                        // resolved, so one conditional write here is cheaper
-                        // than letting the bare start fail and paying the
-                        // in-band recovery's extra start round trip.
-                        const ensureOutcome =
-                          stepInput && metadata.attempt > 1
-                            ? await ensureStepFromMessage()
-                            : ('ok' as const);
-                        if (ensureOutcome === 'gone') {
-                          runtimeLogger.debug(
-                            'Run already finished, skipping background step',
-                            { workflowRunId: runId }
-                          );
-                          return;
-                        }
                         runIdentity = runContext;
                       } else {
-                        const [fetched, ensureOutcome] = await Promise.all([
-                          world.runs.get(runId, {
-                            resolveData: 'none',
-                          }),
-                          stepInput && metadata.attempt > 1
-                            ? ensureStepFromMessage()
-                            : ('ok' as const),
-                        ]);
-                        if (ensureOutcome === 'gone') {
-                          runtimeLogger.debug(
-                            'Run already finished, skipping background step',
-                            { workflowRunId: runId }
-                          );
-                          return;
-                        }
+                        const fetched = await world.runs.get(runId, {
+                          resolveData: 'none',
+                        });
                         if (fetched.status !== 'running') {
                           runtimeLogger.debug(
                             'Run already finished, skipping background step',
@@ -2006,9 +1874,8 @@ export function workflowEntrypoint(
                       }
                       // Covers every queued step execution — first dispatch and
                       // redeliveries/retries alike. The re-route payload keeps
-                      // the message's stepInput/runContext so the target
-                      // deployment's consumer retains the resilient re-ensure
-                      // and the fetch-free prologue.
+                      // the message's runContext so the target deployment's
+                      // consumer retains the fetch-free prologue.
                       if (
                         (await guardDeployment(
                           {
@@ -2020,7 +1887,6 @@ export function workflowEntrypoint(
                             ...(await replayMessage()),
                             stepId: incomingStepId,
                             stepName: incomingStepName,
-                            ...(stepInput ? { stepInput } : {}),
                             ...(runContext ? { runContext } : {}),
                             // Keep the re-routed hop in the TTR decomposition.
                             ...(hookResumeTiming ? { hookResumeTiming } : {}),
@@ -2115,28 +1981,7 @@ export function workflowEntrypoint(
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          async () => {
-                            try {
-                              return await executeQueuedStep();
-                            } catch (err) {
-                              // In-band resilient recovery: a missing step on
-                              // a stepInput-carrying message means this
-                              // delivery outran (or outlived a transient
-                              // failure of) the producer's parallel
-                              // step_created write. Materialize the event
-                              // from the payload and retry ONCE, within this
-                              // delivery. See ensureStepFromMessage for why
-                              // this cannot wait for a redelivery. A second
-                              // failure propagates as before.
-                              if (!stepInput || !isStepMissingError(err)) {
-                                throw err;
-                              }
-                              if ((await ensureStepFromMessage()) === 'gone') {
-                                return { type: 'gone' as const };
-                              }
-                              return await executeQueuedStep();
-                            }
-                          }
+                          executeQueuedStep
                         );
                       } finally {
                         replayBudget.resume();
@@ -2195,12 +2040,18 @@ export function workflowEntrypoint(
                         const loaded = await loadWorkflowRunEvents(runId);
                         eventLog = nextEventLogLoad(loaded);
 
-                        // Check for pending steps: any step_created without
-                        // a matching step_completed or step_failed.
+                        // Check for pending steps: any created step without
+                        // a matching step_completed or step_failed. A
+                        // `step_started` counts as the creation too: a World
+                        // may record an inline step's creation on its
+                        // `step_started` alone, with no `step_created`.
                         const stepCreatedIds = new Set<string | undefined>();
                         const stepTerminalIds = new Set<string | undefined>();
                         for (const e of loaded.events) {
-                          if (e.eventType === 'step_created') {
+                          if (
+                            e.eventType === 'step_created' ||
+                            e.eventType === 'step_started'
+                          ) {
                             stepCreatedIds.add(e.correlationId);
                           } else if (
                             e.eventType === 'step_completed' ||
@@ -3157,7 +3008,7 @@ export function workflowEntrypoint(
 
                   // Steps THIS delivery has already published a
                   // step-execution message for, across its replay passes:
-                  // the suspension handler's resilient publishes
+                  // the suspension handler's batched fan-out publishes
                   // (`queuedStepCorrelationIds`) plus the dispatch pass's
                   // own immediate enqueues. A fan-out that runs some steps
                   // inline falls back into this loop once they finish,
@@ -3554,6 +3405,13 @@ export function workflowEntrypoint(
                             maxEventsLimit
                           );
                         }
+                        maybeWarnApproachingEventLimit({
+                          runId,
+                          workflowName,
+                          eventCount: workflowEventCount,
+                          limit: maxEventsLimit,
+                          isQuickJS: false,
+                        });
                       }
 
                       // Latency telemetry: judge TTFS eligibility against the
@@ -3794,12 +3652,11 @@ export function workflowEntrypoint(
                             runReadyBarrier,
                             replayRecoveryReporter,
                             forceClaimVictimWakes,
-                            // Resilient step dispatch: lets eligible newly
-                            // created steps publish their step-execution
-                            // message (carrying `stepInput`) in parallel with
-                            // the step_created write. Steps queued there are
-                            // reported back in `queuedStepCorrelationIds` and
-                            // skipped by the dispatch pass below.
+                            // Lets the batched fan-out publish each eagerly
+                            // created step's execution message after its
+                            // chunk commits. Steps queued there are reported
+                            // back in `queuedStepCorrelationIds` and skipped
+                            // by the dispatch pass below.
                             stepDispatch: {
                               queueName: getWorkflowQueueName(
                                 workflowName,
@@ -4432,9 +4289,7 @@ export function workflowEntrypoint(
                             continue;
                           }
                           // Already published by the suspension handler's
-                          // resilient dispatch THIS pass (create + queue in
-                          // parallel, message carrying `stepInput`). A
-                          // re-publish here would dedupe on the idempotency
+                          // batched fan-out THIS pass. A re-publish here would dedupe on the idempotency
                           // key anyway, but skip the wasted round-trip.
                           // Ownership never applies to these: they were
                           // created this pass, so no step_started stamp can
@@ -4547,7 +4402,7 @@ export function workflowEntrypoint(
                                 // Step-identity-scoped: dedupes against every
                                 // other dispatch of THIS step (concurrent
                                 // handlers, crash-recovery re-dispatch, the
-                                // suspension handler's resilient publish)
+                                // suspension handler's batched publish)
                                 // without absorbing a dispatch of a different
                                 // step under a reassigned correlation id.
                                 // See stepDispatchIdempotencyKey.
@@ -4924,6 +4779,71 @@ export function workflowEntrypoint(
                         ) {
                           span?.setAttributes({
                             'workflow.inline_delta_over_pending_wait': true,
+                          });
+                        }
+
+                        // Whether any event an out-of-band writer could append
+                        // now is able to change the decisions this batch leads
+                        // to. Nothing branches on it yet: it is the gate a
+                        // run-ahead of the inline batch must consult before
+                        // continuing past this boundary without the batch's
+                        // terminal writes, and the module documents the de-opt
+                        // and pipeline-depth rules that gate implies.
+                        // `undefined` when the batch runs no step inline:
+                        // only those boundaries can be pipelined.
+                        const outOfBandObservation:
+                          | OutOfBandObservation
+                          | undefined =
+                          lazyInlineSteps.length > 0
+                            ? observeOutOfBandWriters({
+                                items: err.items,
+                                observedHookIds: err.observedHookIds,
+                                selfExecutedStepIds: new Set([
+                                  ...inlineCorrelationIds,
+                                  ...ownedRecoverySteps.map(
+                                    (s) => s.correlationId
+                                  ),
+                                ]),
+                                waitDue: waitDueThisInvocation,
+                              })
+                            : undefined;
+                        if (outOfBandObservation) {
+                          if (outOfBandObservation.inert) {
+                            outOfBandBoundaries.inert++;
+                          } else {
+                            if (outOfBandObservation.observedHookCount > 0) {
+                              outOfBandBoundaries.observedHook++;
+                            }
+                            // Kept apart from observed hooks: a suspension
+                            // without awaiter tracking (QuickJS) blocks every
+                            // boundary with an open hook, which would
+                            // otherwise read as workflow code awaiting it.
+                            if (outOfBandObservation.unknownHookCount > 0) {
+                              outOfBandBoundaries.unknownHook++;
+                            }
+                            if (outOfBandObservation.abortSignalHookCount > 0) {
+                              outOfBandBoundaries.abortSignal++;
+                            }
+                            if (outOfBandObservation.externalStepCount > 0) {
+                              outOfBandBoundaries.externalStep++;
+                            }
+                            if (outOfBandObservation.waitDue) {
+                              outOfBandBoundaries.waitDue++;
+                            }
+                          }
+                          span?.setAttributes({
+                            'workflow.out_of_band.inert_boundaries':
+                              outOfBandBoundaries.inert,
+                            'workflow.out_of_band.observed_hook_boundaries':
+                              outOfBandBoundaries.observedHook,
+                            'workflow.out_of_band.unknown_hook_boundaries':
+                              outOfBandBoundaries.unknownHook,
+                            'workflow.out_of_band.abort_signal_boundaries':
+                              outOfBandBoundaries.abortSignal,
+                            'workflow.out_of_band.external_step_boundaries':
+                              outOfBandBoundaries.externalStep,
+                            'workflow.out_of_band.wait_due_boundaries':
+                              outOfBandBoundaries.waitDue,
                           });
                         }
 

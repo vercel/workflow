@@ -63,9 +63,7 @@ export function BenchmarkChart({ data, benchmarkName }: BenchmarkChartProps) {
 
   if (worlds.length === 0) {
     return (
-      <p className="text-muted-foreground text-sm">
-        No benchmark data available.
-      </p>
+      <p className="text-gray-900 text-sm">No benchmark data available.</p>
     );
   }
 
@@ -106,13 +104,13 @@ export function BenchmarkChart({ data, benchmarkName }: BenchmarkChartProps) {
                         {isFastest && '🥇 '}
                         {formatTime(metric.mean)}
                         {!isFastest && factor && (
-                          <span className="text-muted-foreground text-xs ml-1">
+                          <span className="text-gray-900 text-xs ml-1">
                             ({factor.toFixed(1)}x)
                           </span>
                         )}
                       </span>
                     ) : (
-                      <span className="text-muted-foreground">—</span>
+                      <span className="text-gray-900">—</span>
                     )}
                   </TableCell>
                 );
@@ -140,7 +138,7 @@ export function BenchmarkBar({
         id,
         name: w.name,
         type: w.type,
-        time: w.benchmark!.metrics[benchmarkName].mean,
+        time: w.benchmark?.metrics?.[benchmarkName]?.mean ?? 0,
       }))
       .sort((a, b) => a.time - b.time);
 
@@ -168,11 +166,11 @@ export function BenchmarkBar({
               {world.type === 'community' && '🌐 '}
               {world.name}
             </div>
-            <div className="flex-1 h-6 bg-muted rounded overflow-hidden">
+            <div className="flex-1 h-6 bg-gray-100 rounded overflow-hidden">
               <div
                 className={cn(
                   'h-full rounded transition-all',
-                  isFastest ? 'bg-green-500' : 'bg-primary/60'
+                  isFastest ? 'bg-green-500' : 'bg-gray-1000/60'
                 )}
                 style={{ width: `${width}%` }}
               />

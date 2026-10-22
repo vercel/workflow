@@ -1,5 +1,42 @@
 # @workflow/web
 
+## 5.0.6
+
+### Patch Changes
+
+- [#4758](https://github.com/vercel/workflow/pull/4758) [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b) Thanks [@pranaygp](https://github.com/pranaygp)! - Resolve a run's encryption key from metadata only when decrypting in `workflow inspect --decrypt` and the web UI, instead of making the server resolve the run's whole input and output for each lookup.
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Recommend the QuickJS VM with snapshotting on runs that failed with `MAX_EVENTS_EXCEEDED` or `REPLAY_TIMEOUT`
+- Updated dependencies [[`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/world-local@5.1.2
+
+## 5.0.5
+
+No changes in this release.
+
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb)]:
+  - @workflow/world-local@5.1.1
+
+## 5.0.3
+
+### Patch Changes
+
+- [#4736](https://github.com/vercel/workflow/pull/4736) [`28cb70d`](https://github.com/vercel/workflow/commit/28cb70da502b8051d955fda981502c509c93c714) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Upgrade `react-router` and `@react-router/*` to 7.18.4 to address CVE-2026-34077 and GHSA-qwww-vcr4-c8h2
+- Updated dependencies [[`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2)]:
+  - @workflow/world-local@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- [#4291](https://github.com/vercel/workflow/pull/4291) [`d7217a8`](https://github.com/vercel/workflow/commit/d7217a8fc0fb57eed91835c7bd58d9c292551ba9) Thanks [@mitul-s](https://github.com/mitul-s)! - De-duplicate separate shadcn button implementations between `@workflow/web-shared` and `@workflow/web`
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4)]:
+  - @workflow/world-local@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

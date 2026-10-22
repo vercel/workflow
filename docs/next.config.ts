@@ -1,9 +1,12 @@
-import { createMDX } from 'fumadocs-mdx/next';
+import path from 'node:path';
+import { createGeistdocs } from '@vercel/geistdocs/next';
 import type { NextConfig } from 'next';
 
-const withMDX = createMDX();
+const withGeistdocs = createGeistdocs();
 
 const config: NextConfig = {
+  outputFileTracingRoot: path.join(process.cwd(), '..'),
+
   experimental: {
     turbopackFileSystemCacheForDev: true,
   },
@@ -13,6 +16,10 @@ const config: NextConfig = {
   },
 
   outputFileTracingIncludes: {
+    // Next matches these keys as unanchored globs against the route, so this
+    // one key covers every /[lang]/changelog* route (HTML, numbered pages,
+    // data, and both Markdown handlers).
+    '/changelog': ['../packages/workflow/CHANGELOG.md'],
     '/og/\\[\\.\\.\\.slug\\]': ['./lib/og/assets/**/*'],
     '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
   },
@@ -431,4 +438,4 @@ const config: NextConfig = {
   },
 };
 
-export default withMDX(config);
+export default withGeistdocs(config);

@@ -18,23 +18,21 @@ export function WorldInstructions({ id, world }: WorldInstructionsProps) {
         <h2 className="text-heading-24 sm:text-heading-32">
           Installation & Usage
         </h2>
-        <p className="text-muted-foreground">
+        <p className="text-gray-900">
           This is a community-maintained World implementation. For installation
           instructions and usage documentation, please refer to the project's
           README on GitHub.
         </p>
         <div className="flex gap-3 flex-wrap">
           {world.repository && (
-            <Button asChild>
-              <a
-                href={world.repository}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2"
-              >
-                View on GitHub
-                <ExternalLink className="h-4 w-4" />
-              </a>
+            <Button
+              Component="a"
+              href={world.repository}
+              target="_blank"
+              rel="noopener noreferrer"
+              suffix={<ExternalLink className="h-4 w-4" />}
+            >
+              View on GitHub
             </Button>
           )}
         </div>

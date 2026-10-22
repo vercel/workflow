@@ -4,9 +4,11 @@ export const scenario: ScenarioSpec = {
   id: 'in-flight-before-decision-counted',
   name: 'in-flight: same tempo, count guard ON — the write is fenced',
   description:
-    'The count half of the fence is armed. A hook committed while the writer was ' +
-    'held can make the count at the caller watermark grow, so the write is ' +
-    'rejected and the orchestrator reloads before deciding again.',
+    'Both halves of the fence are armed. The hook commits while the ' +
+    "orchestrator is held at its decision, so it takes a slot above the caller's " +
+    'watermark: the watermark half rejects the decision on its own, and the ' +
+    'count at or below the watermark does not grow. The orchestrator reloads ' +
+    'and decides again on a log that holds the hook.',
   workflow: 'stepCountForkWorkflow',
   input: ['doc-30'],
   preconditionGuard: true,
@@ -21,20 +23,27 @@ export const scenario: ScenarioSpec = {
     await hook.commit();
     await wf.release();
 
-    // Matched on the count half's own message, not on "something was
-    // rejected". The twin rejects too — its writes hit `RunExpiredError` once
-    // the corrupted branch has run — so a bare `rejections().length > 0` would
-    // hold there as well and assert nothing about the guard.
+    // Matched on the decision itself, not on any 412. Which half fires is not
+    // the point: with commit-time slots the hook can only land above the
+    // watermark, so the watermark half is the one that can catch it. A 412
+    // elsewhere would not show the decision was fenced: with the watermark
+    // half disarmed, the count half lets this write through and rejects the
+    // settle step's `step_completed` instead, after the branch has run.
     sim.check(
-      'the count guard fenced the write the watermark let through',
+      'the fence rejected the decision',
       sim.world
         .rejections()
-        .some((r) => r.message.includes('at or below the caller'))
+        .some(
+          (r) =>
+            r.errorName === 'PreconditionFailedError' &&
+            r.writer === 'orchestrator' &&
+            r.eventType === 'step_started'
+        )
     );
   },
   // The rejection and the reload show up in the trace as `!!` lines. Whichever
   // branch the reload lands on, it is the one the durable log implies — so
-  // there is nothing to diverge, in either world.
+  // there is nothing to diverge.
   expect: {
     status: 'completed',
   },

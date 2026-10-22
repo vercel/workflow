@@ -93,7 +93,7 @@ export const AgentTraces = ({ variant = 'default' }: AgentTracesProps) => {
   const rows = variants[variant];
 
   return (
-    <div className="not-prose my-8 rounded-lg border bg-card p-4 sm:p-6">
+    <div className="not-prose my-8 rounded-lg border bg-background-100 p-4 sm:p-6">
       <div className="space-y-2 w-full">
         {rows.map((row, index) => (
           <div
@@ -120,7 +120,7 @@ export const AgentTraces = ({ variant = 'default' }: AgentTracesProps) => {
                 )}
               >
                 <div className="flex justify-between items-center h-full px-2">
-                  <span className="text-[10px] sm:text-[11px] font-mono font-medium text-foreground truncate leading-none">
+                  <span className="text-[10px] sm:text-[11px] font-mono font-medium text-gray-1000 truncate leading-none">
                     {row.label}
                   </span>
                   {index === 0 && (

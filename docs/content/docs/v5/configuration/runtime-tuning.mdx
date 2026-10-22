@@ -74,6 +74,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Positive-integer event limit reported by the Local World and enforced by the runtime as `MAX_EVENTS_EXCEEDED`.
 - The Local and Postgres Worlds also use it as the maximum number of events returned when `events.list()` is called without a limit. If more events exist, the response includes `hasMore: true` and a continuation cursor.
 - The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value. See [Vercel World limits](/worlds/vercel#per-run-limits).
+- Runs started on the QuickJS engine with snapshotting enabled (see [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold)) are exempt from this limit on the Local and Vercel Worlds. See [max-events-exceeded](/docs/errors/max-events-exceeded).
 - Invalid or non-positive values fall back to the default.
 
 ### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
@@ -88,15 +89,6 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Re-routed deliveries back off exponentially (1s, 2s, 4s). Set to `0` to fail the run on the first misrouted delivery.
 - Only applies to Worlds with atomic, immutable deployments (the Vercel World). A run whose pinned deployment cannot be reached at all fails immediately regardless of this value.
 - Transient or unknown queue publishing failures use normal queue redelivery and do not consume this budget.
-
-### `WORKFLOW_RESILIENT_STEP_DISPATCH`
-
-- Default: disabled
-- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step. The queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the legacy lazy hook resume's `hookInput` (which current producers no longer send; see [durable hook resume](/docs/changelog/lazy-hook-resume)).
-- It is off by default because the publish races the create's verdict, and a create can come back refused: as a duplicate this replay should stop pursuing, or as a [stale write](#stale-reads-and-why-nothing-has-to-be-rejected) on a World that refuses rather than reports. Either way the message carrying the payload is already out, so the consumer can materialize a step whose create was refused, and nothing orders the verdict before the consumer's redelivery re-ensure. The sequential path is the only one that gives the message a happens-after edge over it.
-- Even when enabled, the runtime falls back to the sequential create-then-publish dispatch when the step input is too large to inline on the queue message, or when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions).
-- Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
-- Set `1` to enable it.
 
 ### `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`
 
@@ -240,15 +232,17 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_SNAPSHOT_THRESHOLD`
 
-- Default: `0` (disabled)
-- Values: non-negative integer
+- Default: `1000` when the QuickJS engine is selected
+- Values: non-negative integer. `0` disables snapshotting.
 - Experimental. Only used by the QuickJS engine (`WORKFLOW_VM=quickjs`), and only with a World that provides snapshot storage (world-local, world-postgres, and world-vercel do).
-- When set above `0`, the runtime persists a **VM-memory snapshot** at a suspension once at least this many events have been processed since the last snapshot. Subsequent invocations restore the VM from the snapshot and replay only the events recorded since, instead of re-executing the workflow from the top against the full event log.
+- When above `0`, the runtime persists a **VM-memory snapshot** at a suspension once at least this many events have been processed since the last snapshot. Subsequent invocations restore the VM from the snapshot and replay only the events recorded since, instead of re-executing the workflow from the top against the full event log.
 - Short-lived runs below the threshold never pay the snapshot cost; long-running or unbounded runs stop scaling their resume cost with total event-log length. `1` snapshots at every qualifying suspension.
 - Choosing a value: a restore costs roughly the same regardless of log length (tens of milliseconds to decompress and restore the heap, plus fetching the snapshot), while a full replay grows with the log (tens of milliseconds at a few hundred events, seconds at several thousand). Restoring starts to pay off at a few hundred events, so values in the hundreds suit most long-running workflows. Very low values mostly add snapshot saves to runs that replay quickly anyway.
 - Snapshots are an optimization, not a source of truth: the event log remains authoritative, and a missing, corrupt, oversized, or incompatible snapshot automatically falls back to a full replay. Snapshots over 32 MB uncompressed are not saved.
-- Like `WORKFLOW_VM`, the policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with. `start()` rejects an invalid value. An invalid value on the workflow handler disables snapshotting with a warning.
-- A snapshot can only be restored by the exact QuickJS engine build that captured it. On Vercel, runs keep executing on the deployment they started on, so deploys don't affect in-flight snapshots. If your deployment serves in-flight runs from new code (for example, a self-hosted rolling update), an upgrade that changes the embedded engine makes every in-flight run fall back to a full replay at its next resume, all at once, before re-snapshotting at its next qualifying suspension. Plan for that one-time replay load when upgrading.
+- Set `0` to opt out and always replay the full event log.
+- Like `WORKFLOW_VM`, the policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with. Runs started with `WORKFLOW_VM=quickjs` are stamped with this value, or the default when unset. Runs without a stamped policy use the handler's value, or the default. `start()` rejects an invalid value. An invalid value on the workflow handler disables snapshotting with a warning.
+- Runs stamped with `workflowVm: "quickjs"` and a positive threshold are exempt from the default [per-run event limit](/docs/errors/max-events-exceeded) on the Local and Vercel Worlds.
+- A snapshot can only be restored by the exact QuickJS engine build that captured it. On Vercel, runs keep executing on the deployment they started on, so deploys don't affect in-flight snapshots. If your deployment serves in-flight runs from new code (for example, a self-hosted rolling update), an upgrade that changes the embedded engine or the snapshot format makes every in-flight run fall back to a full replay at its next resume, all at once, before re-snapshotting at its next qualifying suspension. Plan for that one-time replay load when upgrading.
 
 What a snapshot contains, and how it is protected:
 
@@ -279,6 +273,7 @@ What a snapshot contains, and how it is protected:
 - Default: compression enabled
 - Set `1` to disable compression when writing payloads.
 - Reads still decompress existing payloads.
+- To skip compression only for one run's arguments, pass `compressArguments: false` to [`start()`](/docs/api-reference/workflow-api/start) instead.
 
 ### `WORKFLOW_COMPRESSION_CODEC`
 
@@ -424,3 +419,4 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Lowers the per-run event ceiling supplied by the World. A run whose event log reaches the ceiling fails with `MAX_EVENTS_EXCEEDED`, which stops a runaway loop from growing its log without bound.
 - Clamp-down only: it never raises the World's limit, and it applies even when the World supplies none. With no World limit and no override, nothing is enforced.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
+- QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.

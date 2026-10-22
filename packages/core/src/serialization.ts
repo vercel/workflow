@@ -2802,7 +2802,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 
 /**
  * Resolves the owner's encryption key, preferring its public key, then its
- * deployment, and finally its run record.
+ * deployment, and finally the deployment on its run record.
  * @internal
  */
 export async function getForwardedWritableEncryptionKey(
@@ -2816,9 +2816,16 @@ export async function getForwardedWritableEncryptionKey(
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
-  const rawKey = deploymentId
-    ? await world.getEncryptionKeyForRun(runId, { deploymentId })
-    : await world.getEncryptionKeyForRun(await world.runs.get(runId));
+  // A descriptor minted before deployment ids were carried on the wire has to
+  // read the owning run for that one field, so it reads metadata only:
+  // `getEncryptionKeyForRun` needs nothing but the run's id and deployment,
+  // and the default `resolveData` would resolve its input and output too.
+  const ownerDeploymentId =
+    deploymentId ??
+    (await world.runs.get(runId, { resolveData: 'none' })).deploymentId;
+  const rawKey = await world.getEncryptionKeyForRun(runId, {
+    deploymentId: ownerDeploymentId,
+  });
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
@@ -3369,7 +3376,8 @@ function getStepRevivers(
   runId: string,
   cryptoKey: EncryptionKeyParam,
   deploymentId?: string,
-  streamStates?: FlushableStreamState[]
+  streamStates?: FlushableStreamState[],
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -3534,7 +3542,15 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
+          getStepRevivers(
+            global,
+            ops,
+            runId,
+            cryptoKey,
+            deploymentId,
+            streamStates,
+            runReadyBarrier
+          ),
           cryptoKey
         );
         const state = createFlushableState();
@@ -3581,13 +3597,26 @@ function getStepRevivers(
               value.encryptionPublicKey
             );
 
+      // Argument hydration precedes the step's contextStorage frame, so it
+      // must receive turbo's creation barrier explicitly. A forwarded writable
+      // belongs to another run: this barrier says nothing about its readiness.
+      const targetRunReady =
+        targetRunId === runId ? runReadyBarrier : undefined;
       const serialize = getSerializeStream(
-        getStepReducers(global, ops, targetRunId, targetKey),
+        getStepReducers(
+          global,
+          ops,
+          targetRunId,
+          targetKey,
+          false,
+          targetRunReady
+        ),
         targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        targetRunReady
       );
 
       // Create flushable state for this stream
@@ -4020,14 +4049,23 @@ export async function hydrateStepArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
-  streamStates?: FlushableStreamState[]
+  streamStates?: FlushableStreamState[],
+  runReadyBarrier?: Promise<unknown>
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
   const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
-        getStepRevivers(global, ops, runId, key, deploymentId, streamStates)
+        getStepRevivers(
+          global,
+          ops,
+          runId,
+          key,
+          deploymentId,
+          streamStates,
+          runReadyBarrier
+        )
       ),
       ...extraRevivers,
     },

@@ -289,6 +289,14 @@ export async function syncDashboard() {
 
 By default a chained run starts on the same deployment as its parent. For workflows that chain over long periods, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) so the next run picks up new code. [Versioning](/docs/foundations/versioning#self-upgrading-workflows) covers this pattern in full, including how the serialized state acts as the migration boundary between versions.
 
+## Performance
+
+Time to first step (TTFS) measures how long a new run takes to get going: from your app calling `start()` until the first line of the workflow's first step runs. The animation shows the run being created, the workflow running up to its first step, and that step starting.
+
+<MetricVideo metric="ttfs" />
+
+See [Time to first step](/docs/performance#time-to-first-step-ttfs) on the Performance page for how it's measured and the latest results.
+
 ## Next steps
 
 - Browse the [Cookbook](/cookbook) for copy-paste recipes covering composition, scheduling, timeouts, and more

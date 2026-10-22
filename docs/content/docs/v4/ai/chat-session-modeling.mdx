@@ -26,9 +26,9 @@ While there are many ways to model chat sessions, the two most common categories
 
 Each user message triggers a new workflow run. The client or API route owns the conversation history and sends the full message array with each request.
 
-<Tabs items={['Workflow', 'API Route', 'Client']}>
+<TabsWithChildren tabs={["Workflow","API Route","Client"]}>
 
-<Tab value="Workflow">
+<TabContent order={1}>
 
 ```typescript title="workflows/chat/index.ts" lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";
@@ -54,9 +54,9 @@ export async function chat(messages: UIMessage[]) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="API Route">
+<TabContent order={2}>
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
 import { createUIMessageStreamResponse, type UIMessage } from "ai";
@@ -77,9 +77,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Client">
+<TabContent order={3}>
 
 Chat messages need to be stored somewhere, typically a database. In this example, we assume a route like `/chats/:id` passes the session ID, allowing us to fetch existing messages and persist new ones.
 
@@ -130,9 +130,9 @@ export function Chat({ initialMessages }) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 This is the pattern used in the [Building Durable AI Agents](/docs/ai) guide.
 
@@ -152,9 +152,9 @@ For a full example of an agent using multi-turn workflows, check out the Flight 
 
 A key challenge in multi-turn workflows is ensuring user messages appear in the correct order when replaying the stream (e.g., after a page refresh). Since the stream primarily contains AI responses, user messages must be explicitly marked in the stream so the client can reconstruct the full conversation.
 
-<Tabs items={['Workflow', 'API Routes', 'Hook Definition', 'Client Hook']}>
+<TabsWithChildren tabs={["Workflow","API Routes","Hook Definition","Client Hook"]}>
 
-<Tab value="Workflow">
+<TabContent order={1}>
 
 ```typescript title="workflows/chat/index.ts" lineNumbers
 import {
@@ -249,9 +249,9 @@ export async function writeStreamClose(writable: WritableStream<UIMessageChunk>)
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="API Routes">
+<TabContent order={2}>
 
 Use three endpoints to start a session, send follow-up messages, and reconnect to the stream.
 
@@ -312,9 +312,9 @@ export async function GET(
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Hook Definition">
+<TabContent order={3}>
 
 ```typescript title="workflows/chat/hooks/chat-message.ts" lineNumbers
 import { defineHook } from "workflow";
@@ -327,9 +327,9 @@ export const chatMessageHook = defineHook({
 });
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Client Hook">
+<TabContent order={4}>
 
 A custom hook wraps `useChat` to manage the multi-turn session. It handles:
 
@@ -484,9 +484,9 @@ export function useMultiTurnChat() {
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 In this pattern, the workflow owns the entire conversation session. All messages are persisted in the workflow, and follow-up messages are injected via hooks. The workflow writes **user message markers** to the stream using `data-workflow` chunks, which allows the client to reconstruct the full conversation in the correct order when replaying the stream (e.g., after a page refresh).
 
@@ -516,9 +516,9 @@ This ensures the conversation displays as User → AI → User → AI regardless
 
 The multi-turn pattern also enables multiplayer chat sessions. Messages can come from system events, external services, and other users. A `hook` can inject messages into a workflow at any point, while clients reconnect to one stream containing the entire history.
 
-<Tabs items={['System Event', 'External Service', 'Multiple Users']}>
+<TabsWithChildren tabs={["System Event","External Service","Multiple Users"]}>
 
-<Tab value="System Event">
+<TabContent order={1}>
 
 Internal system events like scheduled tasks, background jobs, or database triggers can inject updates into an active conversation.
 
@@ -537,9 +537,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="External Service">
+<TabContent order={2}>
 
 External webhooks from third-party services, such as Stripe and Twilio, can notify the conversation of events.
 
@@ -559,9 +559,9 @@ export async function POST(req: Request) {
 }
 ```
 
-</Tab>
+</TabContent>
 
-<Tab value="Multiple Users">
+<TabContent order={3}>
 
 Multiple human users can participate in the same conversation. Each user's client connects to the same workflow stream.
 
@@ -586,9 +586,9 @@ export async function POST(
 }
 ```
 
-</Tab>
+</TabContent>
 
-</Tabs>
+</TabsWithChildren>
 
 ## Related documentation
 

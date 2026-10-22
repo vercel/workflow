@@ -21,7 +21,7 @@ export const Features = () => (
     {data.map((item) => (
       <div key={item.title}>
         <h3 className="mb-2 text-heading-20">{item.title}</h3>
-        <p className="text-muted-foreground">{item.description}</p>
+        <p className="text-gray-900">{item.description}</p>
       </div>
     ))}
   </div>

@@ -1,13 +1,13 @@
+import { Badge } from '@vercel/geistdocs/components/badge';
 import { Callout } from '@vercel/geistdocs/components/callout';
 import { createMdxComponents } from '@vercel/geistdocs/mdx';
-import { Step, Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import type { MDXComponents } from 'mdx/types';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import { PerformanceExplainer } from '@/components/custom/performance/explainer';
+import { MetricVideo } from '@/components/custom/performance/metric-video';
+import { Details } from '@/components/geistdocs/details';
 import { PreviewInstallServer } from '@/components/preview-install-server';
-import * as AccordionComponents from '@/components/ui/accordion';
-import { Badge } from '@/components/ui/badge';
 import { WorldTestingPerformance as WorldTestingPerformanceView } from '@/components/worlds/WorldTestingPerformance';
 import { TSDoc } from '@/lib/tsdoc';
 import { getWorldData } from '@/lib/worlds-data';
@@ -53,12 +53,10 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
     AgentTraces,
     FluidComputeCallout,
     Badge,
+    Details,
+    MetricVideo,
+    PerformanceExplainer,
     TSDoc,
-    Step,
-    Steps,
-    ...AccordionComponents,
-    Tabs,
-    Tab,
     PreviewInstall: PreviewInstallServer,
     WorldTestingPerformance,
     ...components,

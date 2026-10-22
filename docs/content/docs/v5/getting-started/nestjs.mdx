@@ -140,12 +140,9 @@ Add scripts to regenerate the SWC configuration before builds:
 }
 ```
 
-<Accordion type="single" collapsible>
-  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
-    <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">
-      Set up IntelliSense for TypeScript (optional)
-    </AccordionTrigger>
-    <AccordionContent className="[&_p]:my-2">
+<Details>
+<Summary>Set up IntelliSense for TypeScript (optional)</Summary>
+
 To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.json`:
 
 ```json title="tsconfig.json" lineNumbers
@@ -161,10 +158,7 @@ To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.jso
 }
 ```
 
-    </AccordionContent>
-
-  </AccordionItem>
-</Accordion>
+</Details>
 
 </Step>
 

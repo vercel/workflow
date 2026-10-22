@@ -77,6 +77,15 @@ export function useQuickJSVm(
 }
 
 /**
+ * Snapshot threshold the QuickJS engine uses when neither the run's
+ * `executionContext` nor `WORKFLOW_SNAPSHOT_THRESHOLD` specifies one.
+ * Short runs (most workflows) never reach it and so never pay the
+ * snapshot cost; long-running runs stop scaling their resume cost with
+ * total event-log length. Set `WORKFLOW_SNAPSHOT_THRESHOLD=0` to opt out.
+ */
+export const DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD = 1000;
+
+/**
  * Read and validate the `WORKFLOW_SNAPSHOT_THRESHOLD` env var.
  *
  * The threshold is the number of processed events after which the QuickJS
@@ -84,9 +93,9 @@ export function useQuickJSVm(
  * invocations restore the VM and replay only the events recorded since —
  * instead of re-executing the workflow from the top against the full log.
  *
- * `0` (or unset) disables snapshotting entirely: short-lived runs never
- * pay the snapshot cost, while long/forever runs can opt in. `1`
- * effectively snapshots at every suspension.
+ * When unset, the QuickJS engine uses
+ * {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD}. `0` explicitly disables
+ * snapshotting. `1` effectively snapshots at every suspension.
  *
  * Returns the configured threshold, or `undefined` if unset/empty.
  * Throws {@link WorkflowRuntimeError} for non-integer or negative values.
@@ -108,16 +117,59 @@ export function getSnapshotThresholdFromEnv(
 }
 
 /**
+ * The snapshot threshold `start()` stamps into a new run's
+ * `executionContext`: the client's `WORKFLOW_SNAPSHOT_THRESHOLD` when set,
+ * otherwise {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD} for QuickJS runs.
+ *
+ * Stamping the default (rather than leaving it implicit) matters because
+ * the World keys the per-run event limit on the persisted policy: runs with
+ * `workflowVm: "quickjs"` and a positive `snapshotThreshold` are exempt
+ * from the default event-count ceiling. Without the stamp, a run started
+ * with only `WORKFLOW_VM=quickjs` would snapshot at runtime but still be
+ * failed at the ceiling.
+ *
+ * Throws {@link WorkflowRuntimeError} on an invalid env value.
+ */
+export function getSnapshotThresholdForStart(
+  workflowVm: WorkflowVmMode | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): number | undefined {
+  const fromEnv = getSnapshotThresholdFromEnv(env);
+  if (fromEnv !== undefined) return fromEnv;
+  return workflowVm === 'quickjs'
+    ? DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD
+    : undefined;
+}
+
+/**
  * Resolve the snapshot threshold for a run: the run's stamped
  * `executionContext.snapshotThreshold` (set by the SDK at `start()` when
  * `WORKFLOW_SNAPSHOT_THRESHOLD` is set on the client) wins so a run keeps
  * the policy it started with; otherwise the handler's env var; otherwise
- * `0` (disabled). Only consulted by the QuickJS engine.
+ * {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD}. Only consulted by the QuickJS
+ * engine.
  *
  * Throws on an invalid value. The workflow handler uses
  * {@link getSnapshotThresholdForHandler}, which doesn't.
  */
 export function getSnapshotThreshold(workflowRun: WorkflowRun): number {
+  return (
+    getConfiguredSnapshotThreshold(workflowRun) ??
+    DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD
+  );
+}
+
+/**
+ * The snapshot threshold explicitly configured for a run (stamped into its
+ * `executionContext` or set via `WORKFLOW_SNAPSHOT_THRESHOLD` on the
+ * handler), or `undefined` when the run falls back to
+ * {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD}.
+ *
+ * Throws on an invalid value.
+ */
+export function getConfiguredSnapshotThreshold(
+  workflowRun: WorkflowRun
+): number | undefined {
   const fromRun = (
     workflowRun.executionContext as { snapshotThreshold?: unknown } | undefined
   )?.snapshotThreshold;
@@ -134,7 +186,30 @@ export function getSnapshotThreshold(workflowRun: WorkflowRun): number {
     }
     return fromRun;
   }
-  return getSnapshotThresholdFromEnv() ?? 0;
+  return getSnapshotThresholdFromEnv();
+}
+
+/**
+ * Whether the run's snapshot threshold was explicitly configured rather
+ * than falling back to {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD}. Never
+ * throws: an invalid value counts as configured.
+ *
+ * `start()` stamps the default into QuickJS runs (see
+ * {@link getSnapshotThresholdForStart}), so a stamped value equal to the
+ * default is treated as unconfigured unless `WORKFLOW_SNAPSHOT_THRESHOLD`
+ * is also set on the handler.
+ */
+export function isSnapshotThresholdConfigured(
+  workflowRun: WorkflowRun
+): boolean {
+  try {
+    const configured = getConfiguredSnapshotThreshold(workflowRun);
+    if (configured === undefined) return false;
+    if (configured !== DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD) return true;
+    return getSnapshotThresholdFromEnv() !== undefined;
+  } catch {
+    return true;
+  }
 }
 
 /**

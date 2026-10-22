@@ -13,8 +13,8 @@ import {
 } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
+import { entityEventClass } from '@workflow/world/event-metadata';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -28,6 +28,7 @@ import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -68,7 +69,8 @@ import { createSleep } from './workflow/sleep.js';
  *
  * Treats completion as a final suspension so unawaited hook, wait, and
  * attribute operations are recorded before the run becomes terminal. This
- * also lets a final `controller.abort()` reach in-flight steps.
+ * also lets a final `controller.abort()` reach in-flight steps. Final hook
+ * disposals of non-retained hooks are omitted because termination releases them.
  *
  * It records `*_created` and native attribute events, but never executes step
  * bodies: `step_started` is rejected after the run becomes terminal. A
@@ -89,22 +91,6 @@ async function drainPendingQueueItems(
   runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
-  // Implicitly dispose any abort hooks (system hooks) that are still alive at
-  // workflow completion so they don't leak rows in the hooks table for the
-  // run's lifetime. Skip hooks that already have an abort in flight; those
-  // will emit hook_received via the abort processing path. User hooks
-  // (isSystem !== true) are intentionally left alone: their lifetime is
-  // managed by the user's code, not the runtime.
-  for (const item of pendingQueue.values()) {
-    if (
-      item.type === 'hook' &&
-      item.isSystem &&
-      !item.disposed &&
-      !item.abortRequested
-    ) {
-      item.disposed = true;
-    }
-  }
   try {
     const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
@@ -113,6 +99,7 @@ async function drainPendingQueueItems(
       world,
       run: workflowRun,
       runReadyBarrier,
+      terminalDrain: true,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -491,9 +478,7 @@ async function createWorkflowSessionInner(
     mintCount += 1;
     return ulid(fixedTimestamp);
   };
-  const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-    new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
-  );
+  const generateNanoid = createSeededNanoid(() => vmGlobalThis.Math.random());
 
   // Create a mutable holder for the promise queue so the EventsConsumer
   // can access the current queue state via a getter. The queue is mutated
@@ -551,7 +536,10 @@ async function createWorkflowSessionInner(
         firstEventType,
         correlationId: event.correlationId,
       };
-      if (firstEventType !== event.eventType) {
+      if (
+        firstEventType !== event.eventType &&
+        entityEventClass(firstEventType) === entityEventClass(event.eventType)
+      ) {
         // Two writers reached opposite conclusions about one entity: a
         // `step_failed` behind a `step_completed`, or the reverse. Ignoring it
         // is still correct and still deterministic (replay reads the first one
@@ -560,6 +548,17 @@ async function createWorkflowSessionInner(
         // so the discarded outcome gets its own message.
         runtimeLogger.debug(
           'Ignoring inert event that decides an already-decided outcome differently',
+          details
+        );
+        return;
+      }
+      if (firstEventType !== event.eventType) {
+        // `firstEventType` is the entity's terminal event: the entity closed
+        // before this event, so nothing was left to consume it (a step
+        // invocation that stalled past its lease writing a start after the
+        // step's outcome, or a payload committed behind a hook's disposal).
+        runtimeLogger.debug(
+          'Ignoring inert event for an entity whose terminal event is already in the event log',
           details
         );
         return;
@@ -601,6 +600,7 @@ async function createWorkflowSessionInner(
     pendingDeliveries: 0,
     suspensionGeneration: 0,
     pendingDeliveryBarriers: new Map(),
+    hookPayloadAwaiters: new Map(),
     advanceClock,
     replayPayloadCache,
   };

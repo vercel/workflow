@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"constArrow":{"workflowId":"workflow//./input//constArrow"},"constFnExpr":{"workflowId":"workflow//./input//constFnExpr"},"fnDecl":{"workflowId":"workflow//./input//fnDecl"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//fnDecl/_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//constArrow/_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//constFnExpr/_anonymousStep2"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"constArrow":{"workflowId":"workflow//./input//constArrow"},"constFnExpr":{"workflowId":"workflow//./input//constFnExpr"},"fnDecl":{"workflowId":"workflow//./input//fnDecl"}}},"steps":{"input.js":{"constArrow/_anonymousStep1":{"stepId":"step//./input//constArrow/_anonymousStep1"},"constFnExpr/_anonymousStep2":{"stepId":"step//./input//constFnExpr/_anonymousStep2"},"fnDecl/_anonymousStep0":{"stepId":"step//./input//fnDecl/_anonymousStep0"}}}}*/;
 // Regression test: non-exported workflow functions in three different
 // declaration shapes must each emit a step ID that is namespaced under
 // the workflow function's name, and step mode and workflow mode must

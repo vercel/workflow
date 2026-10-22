@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
+import { fileURLToPath } from 'node:url';
+import { fetchWithTrustedSources } from '../../scripts/trusted-sources-headers.mjs';
 
 /**
  * Docs smoke checks.
@@ -22,13 +23,16 @@ const BASE_URL = rawBaseUrl
   : `http://${HOST}:${PORT}`;
 const USE_REMOTE = Boolean(rawBaseUrl);
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
+const NEXT_CLI = fileURLToPath(
+  new URL('../node_modules/next/dist/bin/next', import.meta.url)
+);
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const assertNoProtection = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: await getTrustedSourcesHeaders(),
   });
   const location = res.headers.get('location') || '';
   if (
@@ -53,9 +57,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
   let lastVercelId = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const res = await fetch(url, {
-        headers: await getTrustedSourcesHeaders(),
-      });
+      const res = await fetchWithTrustedSources(url);
       if (res.ok) return;
       lastStatus = res.status;
       lastVercelId = res.headers.get('x-vercel-id');
@@ -77,9 +79,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
 };
 
 const assertPngResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -96,9 +96,7 @@ const assertPngResponse = async (path) => {
 };
 
 const assertHtmlMeta = async (path, expectedOgImagePath) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -161,9 +159,7 @@ const assertHtmlMeta = async (path, expectedOgImagePath) => {
  * components/worlds/world-detail-page.tsx.
  */
 const assertWorldVersionMarkers = async (path, { maintenance }) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -194,15 +190,52 @@ const assertWorldVersionMarkers = async (path, { maintenance }) => {
  * self-redirect loops, so assert a plain 200 with no redirect.
  */
 const assertServesDirectly = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: await getTrustedSourcesHeaders(),
   });
   if (res.status !== 200) {
     const location = res.headers.get('location');
     throw new Error(
       `${path} returned ${res.status}${location ? ` -> ${location}` : ''}`
     );
+  }
+};
+
+const assertTextResponse = async (
+  path,
+  contentType,
+  expectedText,
+  headers = {}
+) => {
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`, { headers });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const actualContentType = res.headers.get('content-type') || '';
+  if (!actualContentType.includes(contentType)) {
+    throw new Error(`${path} content-type was ${actualContentType}`);
+  }
+  const text = await res.text();
+  if (!text.includes(expectedText)) {
+    throw new Error(`${path} did not contain ${JSON.stringify(expectedText)}`);
+  }
+};
+
+const assertChangelogData = async () => {
+  const path = '/changelog/data/2';
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const result = await res.json();
+  if (!Array.isArray(result.entries) || result.entries.length === 0) {
+    throw new Error(`${path} did not return changelog entries`);
+  }
+  if (
+    !Number.isInteger(result.total) ||
+    result.total <= result.entries.length
+  ) {
+    throw new Error(`${path} returned an invalid changelog total`);
   }
 };
 
@@ -286,6 +319,47 @@ const checks = [
     run: () => assertServesDirectly('/worlds/turso'),
   },
   {
+    name: 'Changelog HTML',
+    run: () =>
+      assertTextResponse('/changelog', 'text/html', 'Workflow SDK Changelog'),
+  },
+  {
+    name: 'Changelog Markdown',
+    run: () =>
+      assertTextResponse(
+        '/changelog.md',
+        'text/markdown',
+        '# Workflow SDK Changelog'
+      ),
+  },
+  {
+    name: 'Changelog paginated HTML',
+    run: () => assertTextResponse('/changelog/page/2', 'text/html', 'Page 2'),
+  },
+  {
+    name: 'Changelog paginated Markdown negotiation',
+    run: () =>
+      assertTextResponse(
+        '/changelog/page/2',
+        'text/markdown',
+        '# Workflow SDK Changelog - Page 2',
+        { Accept: 'text/markdown' }
+      ),
+  },
+  {
+    name: 'Changelog pagination data',
+    run: assertChangelogData,
+  },
+  {
+    name: 'WebMCP discovery',
+    run: () =>
+      assertTextResponse(
+        '/api/mcp?webmcp-script',
+        'text/javascript',
+        'search_docs'
+      ),
+  },
+  {
     name: 'OG docs page image',
     run: () => assertPngResponse('/og/foundations/idempotency/image.png'),
   },
@@ -328,9 +402,7 @@ const checks = [
 ];
 
 const assertXmlResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetchWithTrustedSources(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -350,7 +422,9 @@ const run = async () => {
   let cleanup = async () => {};
 
   if (!USE_REMOTE) {
-    child = spawn('pnpm', ['-C', 'docs', 'start'], {
+    child = spawn(process.execPath, [NEXT_CLI, 'start'], {
+      cwd: DOCS_DIR,
+      detached: process.platform !== 'win32',
       env: {
         ...process.env,
         PORT,
@@ -363,14 +437,26 @@ const run = async () => {
     stopServer = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      child.kill('SIGTERM');
-      await Promise.race([
-        new Promise((resolve) => child.once('exit', resolve)),
-        wait(5_000),
-      ]);
-      if (!child.killed) {
-        child.kill('SIGKILL');
-      }
+      const hasExited = () =>
+        child.exitCode !== null || child.signalCode !== null;
+      const kill = (signal) => {
+        if (hasExited()) return;
+        try {
+          if (process.platform === 'win32') {
+            child.kill(signal);
+          } else {
+            process.kill(-child.pid, signal);
+          }
+        } catch (error) {
+          // The process group already exited; nothing left to stop.
+          if (error?.code !== 'ESRCH') throw error;
+        }
+      };
+      if (hasExited()) return;
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      kill('SIGTERM');
+      await Promise.race([exited, wait(5_000)]);
+      kill('SIGKILL');
     };
 
     cleanup = async () => {

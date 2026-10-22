@@ -10,6 +10,7 @@ import type {
   CreateEventRequest,
   Event,
   EventBatchResult,
+  EventListResponse,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -471,7 +472,7 @@ export interface Storage {
       params?: GetEventParams
     ): Promise<Event>;
 
-    list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
+    list(params: ListEventsParams): Promise<EventListResponse>;
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<Event>>;
@@ -604,6 +605,43 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World implements the in-band writer fence
+   * ({@link CreateEventParams.inBand}). Optional: the runtime does not send
+   * the fence yet, and a World without it stays fully supported.
+   *
+   * Declaring it commits the World to all of:
+   *
+   * - **A per-run in-band count.** Next to the position counter its sequencer
+   *   allocates from (`seq`), the World counts the positions allocated to
+   *   in-band writes (`seqInBand`). A new run's `run_created` counts as
+   *   in-band and is never fenced itself, so a fresh run holds
+   *   `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
+   * - **The counters, from a list or a refusal.** `events.list` on a
+   *   slot-numbered run returns `snapshot: { seq, seqInBand }`
+   *   ({@link EventListResponse.snapshot}), read before the listing, on
+   *   every page where the World reads one. A World may list none
+   *   (world-vercel lists one only where its backend reports it); its
+   *   refusals then carry both counters, read together
+   *   (`InBandSupersededError.seq` and `.seqInBand`), and a writer takes its
+   *   count from a refusal instead. Building a World's in-band fence section
+   *   says how.
+   * - **Fenced in-band creates.** A create with `inBand: true` carries
+   *   {@link CreateEventParams.expectedSeqInBand}. The World checks it
+   *   against `seqInBand` and advances both counters by the positions it
+   *   allocates in one atomic step. On a mismatch it throws
+   *   `InBandSupersededError` (HTTP 412, `in-band-superseded`) and writes and
+   *   allocates nothing. An in-band write without an expected count is a 400.
+   *   A batch is one fenced allocation for the whole block.
+   * - **Unfenced out-of-band creates.** Writes with `inBand: false` (or
+   *   absent) move `seq` and never `seqInBand`, and are never refused by the
+   *   fence.
+   *
+   * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
+   * each of these against a World's `events` storage.
+   */
+  inBandFence?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
@@ -782,16 +820,19 @@ export interface World extends Queue, Streamer, Storage {
    *
    * Two overloads:
    *
-   * - `getEncryptionKeyForRun(run)`: Preferred. Pass a `WorkflowRun` when
-   *   the run entity already exists. The World reads any context it needs
-   *   (e.g., `deploymentId`) directly from the run.
+   * - `getEncryptionKeyForRun(run)`: Used when the runtime already holds
+   *   the `WorkflowRun` entity. The World reads any context it needs (e.g.,
+   *   `deploymentId`) directly from the run.
    *
-   * - `getEncryptionKeyForRun(runId, context?)`: Used when the run entity
-   *   is not locally available, such as `start()` before run creation or a
-   *   forwarded writable stream carrying its owning deployment context. The
+   * - `getEncryptionKeyForRun(runId, context?)`: Used everywhere else: when
+   *   the run does not exist yet (`start()` before run creation), and when
+   *   the runtime has a run id but no reason to load the run's payloads
+   *   (stream reads, forwarded writable streams, hook resumption). The
    *   `context` parameter carries opaque world-specific data (e.g.,
    *   `{ deploymentId }` for world-vercel) needed to resolve the correct key.
    *   When `context` is omitted, the World assumes the current deployment.
+   *
+   * Implementations must resolve the same key from either form.
    *
    * When not implemented, encryption is disabled: data is stored unencrypted.
    */
@@ -823,6 +864,19 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * The region an existing run's data lives in, derived from its run ID
+   * alone (no I/O, never throws).
+   *
+   * The counterpart of {@link createRunId} for worlds that embed a region in
+   * the IDs they mint. Callers that create a run on behalf of an existing one
+   * (e.g. `recreateRunFromExisting()`) pass the result to `start({ region })`
+   * so the new run is placed where the original was, rather than wherever the
+   * calling process happens to execute. Return `null` when the ID is not one
+   * this world recognizes. Worlds without a regional dimension omit this.
+   */
+  regionForRunId?(runId: string): string | null;
 
   /**
    * Upload a dynamic run's serialized workflow VM code to the World's blob

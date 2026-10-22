@@ -43,11 +43,16 @@ export const Templates = () => (
       <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 lg:text-heading-40">
         Get started
       </h2>
-      <p className="text-lg text-muted-foreground text-balance sm:max-w-md">
+      <p className="text-lg text-gray-900 text-balance sm:max-w-md">
         See Workflow SDK in action with one of the example templates.
       </p>
-      <Button asChild size="lg" className="rounded-full h-10 px-6 w-fit mt-2">
-        <Link href={examplesRepositoryUrl}>All examples</Link>
+      <Button
+        Component={Link}
+        href={examplesRepositoryUrl}
+        size="large"
+        className="rounded-full h-10 px-6 w-fit mt-2"
+      >
+        All examples
       </Button>
     </div>
     <div className="col-span-12 md:col-span-7 grid sm:grid-cols-2 gap-8">
@@ -55,10 +60,10 @@ export const Templates = () => (
         <a
           key={item.title}
           href={item.link}
-          className="flex-col bg-background group rounded-lg border p-4 overflow-hidden"
+          className="flex-col bg-background-100 group rounded-lg border p-4 overflow-hidden"
         >
           <h3 className="font-medium tracking-tight">{item.title}</h3>
-          <p className="text-muted-foreground text-sm line-clamp-2">
+          <p className="text-gray-900 text-sm line-clamp-2">
             {item.description}
           </p>
           <Image

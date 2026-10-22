@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
+  IN_BAND_SUPERSEDED_CODE,
   StreamError,
   ThrottleError,
   WorkflowWorldError,
@@ -32,6 +33,7 @@ import {
 import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
+  type EventLogSnapshot,
   type EventResult,
   EventSchema,
   type EventType,
@@ -66,9 +68,11 @@ import {
   errorForResponse,
   headersToRecord,
   httpLog,
+  inBandCounter,
   instrumentedFetch,
   parseRetryAfter,
   recordClientSpanStatus,
+  recordInBandRefusal,
   withHttpClientSpan,
 } from './http-core.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
@@ -79,6 +83,8 @@ import {
   StepLatencyOptimizations,
   StepStsoMs,
   WorkflowClientVersion,
+  WorkflowEventExpectedSeqInBand,
+  WorkflowEventInBand,
   WorkflowEventsTransport,
   WorkflowEventType,
   WorkflowStepStartMode,
@@ -363,6 +369,17 @@ interface CreateEventV4InputBase {
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
+  /**
+   * In-band writer fence: whether the run's orchestrator made this write. See
+   * `CreateEventParams.inBand` in @workflow/world.
+   */
+  inBand?: boolean;
+  /**
+   * The orchestrator's in-band position count, required with `inBand: true`.
+   * The backend allocates for the write only when this equals its own count,
+   * and otherwise answers 412 `in-band-superseded`.
+   */
+  expectedSeqInBand?: number;
   /** Content digest of the serialized resume payload. Forwarded alongside
    *  `resumeId` so the direct write and the queue re-ensure record an identical
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
@@ -464,62 +481,59 @@ export const VercelEventWireSchema = z.compile(
     })
 );
 
-const CreateEventV4BodyBaseSchema = z.compile(
+const CreateEventV4BodyBaseSchema = z.object({
+  event: VercelEventWireSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.transform(deserializeStep).optional(),
+  hook: HookSchema.optional(),
+  wait: WaitSchema.optional(),
+  stepCreated: z.literal(true).optional(),
+  maxEvents: z.number().int().positive().optional(),
+  // Positions the backend allocated for this write, when it reports them
+  // (`EventResult.allocated`): what an in-band writer advances its count by.
+  // Passed on for a single create answered with this body. A batch's item
+  // results reuse this schema, but a batch is one allocation for the whole
+  // block and its count is not passed on, nor is one on the streamed
+  // `run_started` and `hook_received` preload responses.
+  allocated: z.number().int().nonnegative().optional(),
+});
+
+const CreateEventV4PageSchema = z.union([
   z.object({
-    event: VercelEventWireSchema,
-    run: WorkflowRunSchema.optional(),
-    step: StepWireSchema.transform(deserializeStep).optional(),
-    hook: HookSchema.optional(),
-    wait: WaitSchema.optional(),
-    stepCreated: z.literal(true).optional(),
-    maxEvents: z.number().int().positive().optional(),
-  })
-);
+    events: z.array(VercelEventWireSchema),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+  }),
+  // This schema is always intersected with CreateEventV4BodyBaseSchema.
+  // Keep it non-strict so the base response fields remain valid here.
+  z.object({
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
+  }),
+]);
 
-const CreateEventV4PageSchema = z.compile(
-  z.union([
-    z.object({
-      events: z.array(VercelEventWireSchema),
-      cursor: z.string().nullable(),
-      hasMore: z.boolean(),
-    }),
-    // This schema is always intersected with CreateEventV4BodyBaseSchema.
-    // Keep it non-strict so the base response fields remain valid here.
-    z.object({
-      events: z.undefined().optional(),
-      cursor: z.undefined().optional(),
-      hasMore: z.undefined().optional(),
-    }),
-  ])
-);
-
-const CreateEventV4BodySchema = z.compile(
-  CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema)
+const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
+  CreateEventV4PageSchema
 );
 
 const CreateEventV4BodySchemas: {
   [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
 } = {
-  run_created: z.compile(
-    CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema,
-    }).and(CreateEventV4PageSchema)
-  ),
-  run_started: z.compile(
-    CreateEventV4BodyBaseSchema.extend({
-      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
-    }).and(CreateEventV4PageSchema)
-  ),
-  step_started: z.compile(
-    CreateEventV4BodyBaseSchema.extend({
-      step: StepWireSchema.extend({
-        startedAt: z.coerce.date(),
-      }).transform((step) => ({
-        ...deserializeStep(step),
-        startedAt: step.startedAt,
-      })),
-    }).and(CreateEventV4PageSchema)
-  ),
+  run_created: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema,
+  }).and(CreateEventV4PageSchema),
+  run_started: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+  }).and(CreateEventV4PageSchema),
+  step_started: CreateEventV4BodyBaseSchema.extend({
+    step: StepWireSchema.extend({
+      startedAt: z.coerce.date(),
+    }).transform((step) => ({
+      ...deserializeStep(step),
+      startedAt: step.startedAt,
+    })),
+  }).and(CreateEventV4PageSchema),
   run_completed: CreateEventV4BodySchema,
   run_failed: CreateEventV4BodySchema,
   run_cancelled: CreateEventV4BodySchema,
@@ -540,11 +554,69 @@ const CreateEventV4BodySchemas: {
 };
 
 const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
+
+/**
+ * The in-band fence's counters as a list response carries them
+ * (`EventListResponse.snapshot`), in slot units: read by the backend before
+ * the listing began, so a load that follows the cursor to the end covers
+ * every slot up to `seq`. Sent by a backend that reads them; absent
+ * otherwise.
+ */
+const EventLogSnapshotWireSchema = z.compile(
+  z
+    .object({
+      seq: z.number().int().nonnegative(),
+      seqInBand: z.number().int().nonnegative(),
+    })
+    // In-band positions are a subset of all positions.
+    .refine(({ seq, seqInBand }) => seqInBand <= seq)
+);
+
+const SNAPSHOT_SEQ_HEADER = 'x-wf-snapshot-seq';
+const SNAPSHOT_SEQ_IN_BAND_HEADER = 'x-wf-snapshot-seq-in-band';
+
+/** A header counter: decimal digits only, so `''`, `'0x2'` or `'1e1'` are not read as one. */
+const DECIMAL_COUNTER = /^\d+$/;
+
+/**
+ * The snapshot from a list response's headers, for a response whose end
+ * frame carries none. `undefined` unless both headers parse.
+ */
+function snapshotFromHeaders(headers: {
+  get(name: string): string | null;
+}): EventLogSnapshot | undefined {
+  const seq = headers.get(SNAPSHOT_SEQ_HEADER);
+  const seqInBand = headers.get(SNAPSHOT_SEQ_IN_BAND_HEADER);
+  if (
+    seq === null ||
+    seqInBand === null ||
+    !DECIMAL_COUNTER.test(seq) ||
+    !DECIMAL_COUNTER.test(seqInBand)
+  ) {
+    return undefined;
+  }
+  const parsed = EventLogSnapshotWireSchema.safeParse({
+    seq: Number(seq),
+    seqInBand: Number(seqInBand),
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** The snapshot an end frame carries, `undefined` when absent or malformed. */
+function snapshotFromEnd(snapshot: unknown): EventLogSnapshot | undefined {
+  if (snapshot === undefined) return undefined;
+  const parsed = EventLogSnapshotWireSchema.safeParse(snapshot);
+  return parsed.success ? parsed.data : undefined;
+}
+
 const EventStreamEndSchema = z.compile(
   z.object({
     _end: z.literal(1),
     next: z.string().optional(),
     hasMore: z.boolean(),
+    // Read on its own (`snapshotFromEnd`): a malformed snapshot lists none
+    // rather than failing the page.
+    snapshot: z.unknown().optional(),
   })
 );
 
@@ -694,7 +766,24 @@ function buildPostFrameMeta(
   if (input.viaStepDispatch !== undefined) {
     meta.viaStepDispatch = input.viaStepDispatch;
   }
+  if (input.inBand !== undefined) meta.inBand = input.inBand;
+  if (input.expectedSeqInBand !== undefined) {
+    meta.expectedSeqInBand = input.expectedSeqInBand;
+  }
   return meta;
+}
+
+/** Span attributes for a write's in-band fence; empty when it carries none. */
+function inBandFenceAttributes(input: {
+  inBand?: boolean;
+  expectedSeqInBand?: number;
+}): Record<string, boolean | number> {
+  return {
+    ...(input.inBand !== undefined ? WorkflowEventInBand(input.inBand) : {}),
+    ...(input.expectedSeqInBand !== undefined
+      ? WorkflowEventExpectedSeqInBand(input.expectedSeqInBand)
+      : {}),
+  };
 }
 
 /**
@@ -725,7 +814,12 @@ function errorFromV4Response(
     if (typeof record.code === 'string') code = record.code;
     // The server's generic error responder names the code `error`.
     else if (typeof record.error === 'string') code = record.error;
-    if (statusCode === 412) details = decodePreconditionDetails(record);
+    if (statusCode === 412) {
+      details =
+        code === IN_BAND_SUPERSEDED_CODE
+          ? decodeInBandSupersededDetails(record)
+          : decodePreconditionDetails(record);
+    }
     if (statusCode === 409 && code === 'hook-force-claimed') {
       details = { claimedBy: record.claimedBy };
     }
@@ -758,6 +852,25 @@ interface V4ErrorBody {
   claimedBy?: unknown;
   events?: unknown;
   cursor?: unknown;
+  /** 412 in-band-superseded: the backend's counters at the refusal. */
+  seq?: unknown;
+  seqInBand?: unknown;
+}
+
+/**
+ * Counters a 412 `in-band-superseded` body reports, for diagnostics only. A
+ * value that is not a nonnegative integer is dropped.
+ */
+function decodeInBandSupersededDetails(json: V4ErrorBody): {
+  seq?: number;
+  seqInBand?: number;
+} {
+  const seq = inBandCounter(json.seq);
+  const seqInBand = inBandCounter(json.seqInBand);
+  return {
+    ...(seq !== undefined ? { seq } : {}),
+    ...(seqInBand !== undefined ? { seqInBand } : {}),
+  };
 }
 
 /**
@@ -933,6 +1046,7 @@ async function postWorkflowRunEventV4(
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...inBandFenceAttributes(input),
       ...(input.eventType === 'step_started'
         ? {
             ...WorkflowStepStartMode(
@@ -1029,6 +1143,46 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   return decodeCreateEventResponse(response, input.eventType);
 }
 
+// Workflow SDK schema cache for v4 create-event responses. Every consumer of
+// @workflow/world-vercel uses it.
+//
+// One compiled schema per event type, per module copy. Several event types
+// share a base schema, and the refinement still differs, so the cache key is
+// the event type. A compiled schema closes over this copy's Zod objects.
+// The map stores schemas only, never response bodies or request data.
+// per-copy-ok: each bundler layer compiles an event type once, on first decode.
+const createEventResponseSchemas = new Map<
+  EventType,
+  z.ZodType<EventResult & { event: Event }>
+>();
+
+/** Uncompiled response schema. The cached schema is `z.compile` of this. */
+export function createEventResponseSchema<T extends EventType>(
+  eventType: T
+): z.ZodType<EventResult<T> & { event: Event }> {
+  return CreateEventV4BodySchemas[eventType].refine(
+    ({ event }) =>
+      event.eventType === eventType ||
+      (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+    { path: ['event', 'eventType'] }
+  );
+}
+
+export function getCreateEventResponseSchema<T extends EventType>(
+  eventType: T
+): z.ZodType<EventResult<T> & { event: Event }> {
+  const cached = createEventResponseSchemas.get(eventType) as
+    | z.ZodType<EventResult<T> & { event: Event }>
+    | undefined;
+  if (cached) return cached;
+
+  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
+    createEventResponseSchema(eventType)
+  );
+  createEventResponseSchemas.set(eventType, schema);
+  return schema;
+}
+
 /** Takes `FrameResponseLike` rather than `Response` because the WS branch has
  *  none to hand over; it synthesizes one. A real `Response` satisfies the
  *  interface, so the HTTP callers are unaffected. */
@@ -1051,14 +1205,7 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
-    CreateEventV4BodySchemas[eventType].refine(
-      ({ event }) =>
-        event.eventType === eventType ||
-        (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
-      { path: ['event', 'eventType'] }
-    )
-  );
+  const schema = getCreateEventResponseSchema(eventType);
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);
@@ -1208,6 +1355,8 @@ export async function createWorkflowRunEventsBatchV4(
     {
       ...WorkflowEventsTransport('http'),
       'workflow.batch.bytes': body.byteLength,
+      // Every frame of a batch carries the same fence.
+      ...inBandFenceAttributes(input.events[0]),
       ...(input.events.some((event) => event.eventType === 'step_started')
         ? {
             ...WorkflowStepStartMode(
@@ -1437,6 +1586,7 @@ async function postEventFrameOverWs(
         ...WorkflowEventsTransport('ws'),
         ...WorkflowEventType(input.eventType),
         ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...inBandFenceAttributes(input),
         ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
         ...(input.optimizations !== undefined
           ? StepLatencyOptimizations(input.optimizations)
@@ -1533,6 +1683,7 @@ async function postEventFrameOverWs(
           'createEvent',
           endpoint
         );
+        recordInBandRefusal(span, error);
         span?.recordException?.(error);
         throw error;
       }
@@ -1709,6 +1860,14 @@ export interface ListEventsV4Result {
   cursor: string | null;
   /** Explicit "another page of results exists" flag from the sentinel. */
   hasMore: boolean;
+  /**
+   * The in-band fence's counters the backend read before listing, when it
+   * reports them. For a read that resumed a truncated stream, those of the
+   * response that reached its sentinel: it listed every slot up to its `seq`
+   * above the resume cursor, and the earlier partial response covered the
+   * slots below it.
+   */
+  snapshot?: EventLogSnapshot;
 }
 
 /**
@@ -1804,11 +1963,15 @@ async function consumeEventFrameStream(
     for await (const frame of decodeFrames(response.body)) {
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
+        const snapshot =
+          snapshotFromEnd(end.snapshot) ??
+          snapshotFromHeaders(response.headers);
         return {
           kind: 'complete',
           events,
           cursor: end.next ?? null,
           hasMore: end.hasMore,
+          ...(snapshot ? { snapshot } : {}),
         };
       }
       if (frame.meta._error === 1) {
@@ -2151,6 +2314,11 @@ export async function getWorkflowRunEventsV4(
     events,
     cursor: consumed.cursor || (partialStreamRetries > 0 ? cursor : null),
     hasMore: consumed.hasMore,
+    // Only a complete response reaches its sentinel, and the loop ends on
+    // the first one, so this is the first snapshot the read saw.
+    ...(consumed.kind === 'complete' && consumed.snapshot
+      ? { snapshot: consumed.snapshot }
+      : {}),
   };
 }
 

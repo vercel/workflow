@@ -34,6 +34,7 @@ export const config = defineConfig({
   basePath,
   siteId,
   translations,
+  webmcp: { enabled: true },
   content: [
     { id: 'docs', label: 'Docs', dir: 'content/docs/v5', route: '/docs' },
     {

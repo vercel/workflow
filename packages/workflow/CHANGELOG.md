@@ -1,5 +1,97 @@
 # workflow
 
+## 5.2.3
+
+### Patch Changes
+
+- Updated dependencies [[`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a)]:
+  - @workflow/core@5.2.3
+  - @workflow/cli@5.0.6
+  - @workflow/errors@5.0.5
+  - @workflow/next@5.0.6
+  - @workflow/nitro@5.0.6
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/astro@5.0.6
+  - @workflow/nest@5.1.4
+  - @workflow/rollup@5.0.6
+  - @workflow/sveltekit@5.0.6
+  - @workflow/nuxt@5.0.6
+
+## 5.2.2
+
+### Patch Changes
+
+- Updated dependencies [[`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa), [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658), [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd)]:
+  - @workflow/core@5.2.2
+  - @workflow/cli@5.0.5
+  - @workflow/next@5.0.5
+  - @workflow/nitro@5.0.5
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/astro@5.0.5
+  - @workflow/nest@5.1.3
+  - @workflow/rollup@5.0.5
+  - @workflow/sveltekit@5.0.5
+  - @workflow/nuxt@5.0.5
+
+## 5.2.1
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+- Updated dependencies [[`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5), [`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/cli@5.0.4
+  - @workflow/core@5.2.1
+  - @workflow/errors@5.0.4
+  - @workflow/utils@5.0.2
+  - @workflow/next@5.0.4
+  - @workflow/nitro@5.0.4
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/nest@5.1.2
+  - @workflow/astro@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/sveltekit@5.0.4
+  - @workflow/nuxt@5.0.4
+
+## 5.2.0
+
+### Patch Changes
+
+- [#4438](https://github.com/vercel/workflow/pull/4438) [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Reject lifecycle registration inside steps, preserve reporting diagnostics for unreadable errors, and document executor registration and stream-lifetime constraints.
+- Updated dependencies [[`2036247`](https://github.com/vercel/workflow/commit/203624721d76f0e01be3e62ce352483185ca0543), [`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc)]:
+  - @workflow/cli@5.0.3
+  - @workflow/core@5.2.0
+  - @workflow/next@5.0.3
+  - @workflow/nitro@5.0.3
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/errors@5.0.3
+  - @workflow/astro@5.0.3
+  - @workflow/nest@5.1.1
+  - @workflow/rollup@5.0.3
+  - @workflow/sveltekit@5.0.3
+  - @workflow/nuxt@5.0.3
+
+## 5.1.0
+
+### Minor Changes
+
+- [#4578](https://github.com/vercel/workflow/pull/4578) [`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4) Thanks [@wycats](https://github.com/wycats)! - Export the existing `Serializable` type from `@workflow/core` and `workflow`.
+
+### Patch Changes
+
+- Updated dependencies [[`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4), [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`482b918`](https://github.com/vercel/workflow/commit/482b9183f2ec2a6104688d4a6d1416f76133645c), [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117), [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/core@5.1.0
+  - @workflow/next@5.0.2
+  - @workflow/utils@5.0.1
+  - @workflow/nest@5.1.0
+  - @workflow/cli@5.0.2
+  - @workflow/nitro@5.0.2
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/astro@5.0.2
+  - @workflow/rollup@5.0.2
+  - @workflow/sveltekit@5.0.2
+  - @workflow/errors@5.0.2
+  - @workflow/nuxt@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

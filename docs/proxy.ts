@@ -5,6 +5,13 @@ import { trackMdRequest } from '@/lib/md-tracking';
 const proxy = createProxy({
   config: geistdocsConfig,
   trackMarkdownRequest: trackMdRequest,
+  additionalMarkdownRoutes: [
+    {
+      from: '/changelog/page/*path',
+      to: '/[lang]/changelog-pages.mdx/*path',
+    },
+    { from: '/changelog', to: '/[lang]/changelog.md' },
+  ],
   markdownRoutes: [
     { from: '/docs/*path', to: '/[lang]/llms.mdx/docs/*path' },
     { from: '/cookbook/*path', to: '/[lang]/llms.mdx/cookbook/*path' },
@@ -22,8 +29,10 @@ const proxy = createProxy({
 });
 
 export const config = {
+  // Static files in public/ skip the proxy; otherwise its locale rewrite (`/en/...`) turns
+  // them into 404s.
   matcher: [
-    '/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|og(?:/|$)|.*\\.svg$|.*\\.zip$).*)',
+    '/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|og(?:/|$)|.*\\.(?:svg|zip|png|jpe?g|gif|webp|avif|mp4|webm)$).*)',
   ],
 };
 

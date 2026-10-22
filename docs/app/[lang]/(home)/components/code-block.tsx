@@ -1,3 +1,4 @@
+import { geistShikiTheme } from '@vercel/geistdocs/shiki-theme';
 import { codeToHtml } from 'shiki';
 import { cn } from '@/lib/utils';
 
@@ -12,11 +13,7 @@ type CodeBlockProps = {
 export const CodeBlock = async ({ code, lang, codeblock }: CodeBlockProps) => {
   const html = await codeToHtml(code, {
     lang,
-    themes: {
-      light: 'github-light-default',
-      dark: 'github-dark-default',
-    },
-    defaultColor: false,
+    theme: geistShikiTheme,
   });
 
   return (

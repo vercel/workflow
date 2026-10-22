@@ -221,6 +221,6 @@ which shape, which guards are armed in production, and which are dark.
 ## Requirements
 
 `run.ts` and the scenario book are TypeScript executed directly by Node's type
-stripping, which needs Node >= 22.18 (the version pinned in `.node-version`).
+stripping, which needs Node >= 22.18 (the workspace pins a newer supported version in `.node-version`).
 The normal SDK build pipeline compiles every workflow under test, exactly
 as a deployment would compile it.

@@ -1,5 +1,62 @@
 # @workflow/world-postgres
 
+## 5.0.5
+
+### Patch Changes
+
+- [#4883](https://github.com/vercel/workflow/pull/4883) [`93396c5`](https://github.com/vercel/workflow/commit/93396c5ca0e8579e69dc6e9f3b99a22f3d06eba5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Write `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `attr_set`, `step_retrying`, `wait_created` and `wait_completed` in one transaction with the entity change they record. A process that died between the two used to leave an entity in a state its event log did not explain; a completed wait with no `wait_completed` made the run retry the wait forever. A wait left in that state by an earlier version now gets its missing event on the next attempt.
+
+- [#4882](https://github.com/vercel/workflow/pull/4882) [`ecaa047`](https://github.com/vercel/workflow/commit/ecaa047e1060e1c9f64d4ab9746f44c42be31058) Thanks [@dretanacr](https://github.com/dretanacr)! - Write a step's `step_completed` or `step_failed` row update and its event in one transaction, as `step_started` already does. A process that died between the two used to leave a terminal step with no terminal event, so the replayed `step_started` was refused as terminal and the run never advanced.
+
+- [#4812](https://github.com/vercel/workflow/pull/4812) [`32f213e`](https://github.com/vercel/workflow/commit/32f213e2884e494d3e684013b275a77598875f3e) Thanks [@pranaygp](https://github.com/pranaygp)! - Keep a checked-out client in the World's own `pg` pool from ending the process when the database drops its connection.
+
+- [#4757](https://github.com/vercel/workflow/pull/4757) [`7882c81`](https://github.com/vercel/workflow/commit/7882c81480b99241090f5c316250c8203c1c2ba1) Thanks [@pranaygp](https://github.com/pranaygp)! - Store timestamps as `timestamp with time zone` so `createdAt` is correct when the Postgres server or session is not in UTC. Migration 0027 converts the columns and repairs `created_at` values written by earlier versions.
+- Updated dependencies [[`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/world-local@5.1.2
+  - @workflow/world@5.0.5
+  - @workflow/errors@5.0.5
+
+## 5.0.4
+
+### Patch Changes
+
+- [#4817](https://github.com/vercel/workflow/pull/4817) [`026741b`](https://github.com/vercel/workflow/commit/026741b8cf218d8bc89c33746139ce8958e48b20) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a process crash when the database closes an idle connection
+
+- [#4835](https://github.com/vercel/workflow/pull/4835) [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349) Thanks [@pranaygp](https://github.com/pranaygp)! - Add optional `Queue.registerRoute()` and `Queue.registerHandler()`, implemented by `@workflow/world-local` and `@workflow/world-postgres`, so a queue consumer other than the Workflow SDK receives its own prefix's messages on its own route or in process. `reenqueueActiveRuns()` re-enqueues a run to the queue namespace it recorded, and `@workflow/world-postgres` keeps a job's queue prefix.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement the optional in-band writer fence and list snapshot in `@workflow/world-local` and `@workflow/world-postgres`, declared with the new `inBandFence` capability.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report a message's cumulative `deliveryCount` across `{ timeoutSeconds }` redeliveries on `@workflow/world-postgres`.
+
+- [#4756](https://github.com/vercel/workflow/pull/4756) [`e631e78`](https://github.com/vercel/workflow/commit/e631e7883bb635c7c02c3d53e2bc6bb0569a4baa) Thanks [@pranaygp](https://github.com/pranaygp)! - Honor `pagination.sortOrder` in `runs.list` and `steps.list`, which always returned newest first.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report `deliveryCount` and `createdAt` in queue handler meta on `@workflow/world-local` and `@workflow/world-postgres`.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/world-local@5.1.1
+  - @workflow/utils@5.0.2
+
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431), [`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2)]:
+  - @workflow/world@5.0.3
+  - @workflow/world-local@5.1.0
+  - @workflow/errors@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- [#4658](https://github.com/vercel/workflow/pull/4658) [`a5c3983`](https://github.com/vercel/workflow/commit/a5c398328f1f17cb2ded7ff16988288818694939) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reconnect the stream and run-status `LISTEN` connection after the database drops it, instead of crashing the process.
+- Updated dependencies [[`2d2159e`](https://github.com/vercel/workflow/commit/2d2159e6c7b6dce3fc69d33e0e94839f3e941bc4), [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/world-local@5.0.2
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

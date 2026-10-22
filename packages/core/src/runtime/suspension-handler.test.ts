@@ -16,7 +16,12 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type QueueItem, WorkflowSuspension } from '../global.js';
-import { hydrateStepArguments, hydrateStepError } from '../serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  hydrateStepArguments,
+  hydrateStepError,
+} from '../serialization.js';
+import { runWorkflow } from '../workflow.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from './hook-wake.js';
@@ -274,6 +279,61 @@ describe('handleSuspension', () => {
       expect.anything()
     );
     expect([...result.createdStepCorrelationIds]).toEqual(['s4']);
+  });
+
+  it('neither re-creates nor inlines a replayed step whose log holds only its step_started', async () => {
+    // A World may record an inline step's creation on its step_started alone.
+    // Replaying that log must hand the handler a step it already knows is
+    // created: re-creating it costs a rejected write, and choosing it as a
+    // lazy-inline candidate would send a creating step_started the World
+    // rejects, so the pass would drop a step whose owner may have died.
+    const replayedRun: WorkflowRun = {
+      ...run,
+      workflowName: 'workflow',
+      input: await dehydrateWorkflowArguments([], run.runId, undefined, []),
+    };
+    const workflowCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+      async function workflow() { return await add(1, 2); }
+      globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+    const suspend = (events: Event[]) =>
+      runWorkflow(workflowCode, replayedRun, events, undefined).then(
+        () => expect.unreachable('the step has no result yet'),
+        (err: unknown) => {
+          expect(err).toBeInstanceOf(WorkflowSuspension);
+          return err as WorkflowSuspension;
+        }
+      );
+    const [{ correlationId }] = (await suspend([])).items;
+
+    const suspension = await suspend([
+      {
+        eventId: slotToEventId(1),
+        runId: run.runId,
+        eventType: 'step_started',
+        correlationId,
+        eventData: {
+          stepName: 'add',
+          workflowName: 'workflow',
+          ownerMessageId: 'msg_owner',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+
+    const result = await handleSuspension({
+      suspension,
+      world: createWorld(eventsCreate),
+      run: replayedRun,
+    });
+
+    expect(eventsCreate).not.toHaveBeenCalled();
+    expect(result.lazyInlineSteps).toEqual([]);
+    expect(result.pendingSteps.map((s) => s.correlationId)).toEqual([
+      correlationId,
+    ]);
   });
 
   it('honors WORKFLOW_MAX_INLINE_STEPS as the inline cap', async () => {
@@ -1697,23 +1757,8 @@ describe('handleSuspension', () => {
   });
 });
 
-describe('resilient step dispatch', () => {
+describe('step dispatch on the single-event path', () => {
   const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
-
-  // Opt-in feature, so every test that expects a publish has to ask for it.
-  // The default-off case is covered by its own test below, which unsets this.
-  let previousFlag: string | undefined;
-  beforeEach(() => {
-    previousFlag = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
-  });
-  afterEach(() => {
-    if (previousFlag === undefined) {
-      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    } else {
-      process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = previousFlag;
-    }
-  });
 
   /** A run whose queue transport supports binary payloads (CBOR). */
   const cborRun: WorkflowRun = { ...run, specVersion: SPEC_VERSION_CURRENT };
@@ -1758,7 +1803,7 @@ describe('resilient step dispatch', () => {
     getTraceCarrier: vi.fn().mockResolvedValue({ traceparent: '00-abc' }),
   });
 
-  it('publishes the overflow step alongside its step_created, carrying stepInput', async () => {
+  it('writes step_created without publishing when a stepDispatch is provided', async () => {
     const { world, eventsCreate, queue } = createQueueWorld();
 
     const result = await handleSuspension({
@@ -1768,7 +1813,8 @@ describe('resilient step dispatch', () => {
       stepDispatch: stepDispatch(),
     });
 
-    // The overflow step is created AND queued by the suspension handler.
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
     expect(eventsCreate).toHaveBeenCalledWith(
       run.runId,
       expect.objectContaining({
@@ -1777,125 +1823,6 @@ describe('resilient step dispatch', () => {
       }),
       expect.anything()
     );
-    expect(queue).toHaveBeenCalledTimes(1);
-    const [calledQueueName, payload, opts] = queue.mock.calls[0];
-    expect(calledQueueName).toBe(queueName);
-    expect(payload).toMatchObject({
-      runId: run.runId,
-      stepId: 's4',
-      stepName: 's4',
-      traceCarrier: { traceparent: '00-abc' },
-      // Immutable run identity so the consumer can start the step without a
-      // blocking runs.get (vercel/workflow#3456).
-      runContext: {
-        deploymentId: run.deploymentId,
-        specVersion: cborRun.specVersion,
-        startedAt: Number(cborRun.startedAt),
-        rootRunId: run.runId,
-      },
-    });
-    // The message carries the same serialized input as the direct write.
-    expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
-    const createdInput = eventsCreate.mock.calls.find(
-      ([, event]) => event.correlationId === 's4'
-    )?.[1].eventData.input;
-    expect(payload.stepInput.input).toBe(createdInput);
-    expect(eventsCreate.mock.calls[0][1].eventData).not.toHaveProperty(
-      'runContext'
-    );
-    // Step-identity-scoped key — matches the dispatch key runtime.ts uses for
-    // the same step, so redundant publishes dedupe.
-    expect(opts).toMatchObject({
-      idempotencyKey: stepDispatchIdempotencyKey('s4', 's4'),
-    });
-    // Reported so the caller skips its own dispatch for this step.
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
-    expect(result.createdStepCorrelationIds).toContain('s4');
-  });
-
-  it('swallows a transient step_created failure once the message is out (resilient)', async () => {
-    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
-      if (event.eventType === 'step_created') {
-        throw new WorkflowWorldError('backend blip', { status: 503 });
-      }
-      return { event };
-    });
-    const { world, queue } = createQueueWorld({ eventsCreate });
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: cborRun,
-      stepDispatch: stepDispatch(),
-    });
-
-    // The publish carried the payload, so the consumer re-ensures the event.
-    expect(queue).toHaveBeenCalledTimes(1);
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
-    // The write did NOT land, so this handler does not claim creation.
-    expect(result.createdStepCorrelationIds.has('s4')).toBe(false);
-  });
-
-  it('propagates a queue publish failure (the message is the durability bar)', async () => {
-    const queue = vi.fn().mockRejectedValue(new Error('queue down'));
-    const { world } = createQueueWorld({ queue });
-
-    await expect(
-      handleSuspension({
-        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-        world,
-        run: cborRun,
-        stepDispatch: stepDispatch(),
-      })
-    ).rejects.toThrow('queue down');
-  });
-
-  it('propagates a non-retryable step_created failure even when the publish succeeded', async () => {
-    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
-      if (event.eventType === 'step_created') {
-        throw new WorkflowWorldError('bad request', { status: 400 });
-      }
-      return { event };
-    });
-    const { world } = createQueueWorld({ eventsCreate });
-
-    await expect(
-      handleSuspension({
-        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-        world,
-        run: cborRun,
-        stepDispatch: stepDispatch(),
-      })
-    ).rejects.toThrow('bad request');
-  });
-
-  it('falls back to create-only when the run predates the CBOR queue transport', async () => {
-    const { world, queue } = createQueueWorld();
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: { ...run, specVersion: 2 },
-      stepDispatch: stepDispatch(),
-    });
-
-    expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
-  });
-
-  it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH is unset', async () => {
-    delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    const { world, queue } = createQueueWorld();
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: cborRun,
-      stepDispatch: stepDispatch(),
-    });
-
-    expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
   it('never queues from here when no stepDispatch is provided (terminal drain)', async () => {
@@ -2585,10 +2512,11 @@ describe('handleSuspension batched fan-out', () => {
       run: slotRun,
     });
 
-    // s1 defers; the remaining 33 eager creates chunk as 32 + 1.
-    expect(createBatch).toHaveBeenCalledTimes(2);
-    expect(createBatch.mock.calls[0][1]).toHaveLength(32);
-    expect(createBatch.mock.calls[1][1]).toHaveLength(1);
+    // s1 defers; the remaining 33 eager creates chunk as 16 + 16 + 1.
+    expect(createBatch).toHaveBeenCalledTimes(3);
+    expect(createBatch.mock.calls[0][1]).toHaveLength(16);
+    expect(createBatch.mock.calls[1][1]).toHaveLength(16);
+    expect(createBatch.mock.calls[2][1]).toHaveLength(1);
     expect(result.createdStepCorrelationIds.size).toBe(33);
   });
 
@@ -2822,12 +2750,10 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     it('keeps pairs whole at the chunk boundary (max inline cap)', async () => {
-      // The inline cap clamps at 16, so 16 pairs = exactly 32 rows — one full
-      // pair-only chunk, pairs adjacent throughout — and the lone eager
-      // create takes the guarded single path. (Pairs never share a chunk
-      // with plain creates, and with cap*2 == MAX_BATCH_FANOUT_EVENTS a
-      // straddle is structurally unreachable; the chunker still refuses to
-      // split one should those constants diverge.)
+      // The inline cap clamps at 16, so 16 pairs = 32 rows, which spill into
+      // two full 16-row pair-only chunks with every pair adjacent and none
+      // straddling the boundary. Both gate the return; the lone eager
+      // create takes the guarded single path.
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '16');
       const createBatch = successfulCreateBatch();
       const eventsCreate = vi
@@ -2843,9 +2769,13 @@ describe('handleSuspension batched fan-out', () => {
         ownerMessageId: 'msg_owner_1',
       });
 
-      expect(createBatch).toHaveBeenCalledTimes(1);
-      const head = createBatch.mock.calls[0][1];
-      expect(head).toHaveLength(32);
+      expect(createBatch).toHaveBeenCalledTimes(2);
+      expect(createBatch.mock.calls[0][1]).toHaveLength(16);
+      expect(createBatch.mock.calls[1][1]).toHaveLength(16);
+      const head = [
+        ...createBatch.mock.calls[0][1],
+        ...createBatch.mock.calls[1][1],
+      ];
       // 16 adjacent created+started pairs, in step order.
       for (let pair = 0; pair < 16; pair++) {
         expect(head[2 * pair].event.eventType).toBe('step_created');
@@ -2878,10 +2808,10 @@ describe('handleSuspension batched fan-out', () => {
       const ids = (from: number, to: number) =>
         Array.from({ length: to - from + 1 }, (_, i) => `s${from + i}`);
 
-      it('3 inline + 26 queued: [6 pair rows] then [26 creates]', async () => {
+      it('3 inline + 26 queued: [6 pair rows] then [16], [10] creates', async () => {
         // The pair chunk carries nothing but the pairs, so the inline bodies
-        // gate on a 6-row commit; the 26 plain creates (which would have
-        // fit beside them under the 32-row cap) commit in a sibling chunk.
+        // gate on a 6-row commit; the 26 plain creates (10 of which would
+        // have fit beside them) commit in sibling chunks.
         vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
         const createBatch = successfulCreateBatch();
         const world = createBatchWorld(vi.fn(), createBatch);
@@ -2889,41 +2819,6 @@ describe('handleSuspension batched fan-out', () => {
         const result = await handleSuspension({
           suspension: new WorkflowSuspension(
             stepsAndWait(ids(1, 29)),
-            globalThis
-          ),
-          world,
-          run: slotRun,
-          ownerMessageId: 'msg_owner_1',
-        });
-
-        expect(createBatch).toHaveBeenCalledTimes(2);
-        expect(shape(createBatch.mock.calls[0])).toEqual([
-          'step_created:s1',
-          'step_started:s1',
-          'step_created:s2',
-          'step_started:s2',
-          'step_created:s3',
-          'step_started:s3',
-        ]);
-        expect(shape(createBatch.mock.calls[1])).toEqual(
-          ids(4, 29).map((id) => `step_created:${id}`)
-        );
-        expect(result.inlineClaims.size).toBe(3);
-        for (const claim of result.inlineClaims.values()) {
-          expect(claim.owned).toBe(true);
-        }
-        expect([...result.createdStepCorrelationIds]).toEqual(ids(4, 29));
-      });
-
-      it('3 inline + 40 queued: [6], [32], [8]', async () => {
-        // Plain creates fill their own chunks to the cap, after the pairs.
-        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
-        const createBatch = successfulCreateBatch();
-        const world = createBatchWorld(vi.fn(), createBatch);
-
-        const result = await handleSuspension({
-          suspension: new WorkflowSuspension(
-            stepsAndWait(ids(1, 43)),
             globalThis
           ),
           world,
@@ -2941,9 +2836,50 @@ describe('handleSuspension batched fan-out', () => {
           'step_started:s3',
         ]);
         expect(shape(createBatch.mock.calls[1])).toEqual(
-          ids(4, 35).map((id) => `step_created:${id}`)
+          ids(4, 19).map((id) => `step_created:${id}`)
         );
         expect(shape(createBatch.mock.calls[2])).toEqual(
+          ids(20, 29).map((id) => `step_created:${id}`)
+        );
+        expect(result.inlineClaims.size).toBe(3);
+        for (const claim of result.inlineClaims.values()) {
+          expect(claim.owned).toBe(true);
+        }
+        expect([...result.createdStepCorrelationIds]).toEqual(ids(4, 29));
+      });
+
+      it('3 inline + 40 queued: [6], [16], [16], [8]', async () => {
+        // Plain creates fill their own chunks to the cap, after the pairs.
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+        const createBatch = successfulCreateBatch();
+        const world = createBatchWorld(vi.fn(), createBatch);
+
+        const result = await handleSuspension({
+          suspension: new WorkflowSuspension(
+            stepsAndWait(ids(1, 43)),
+            globalThis
+          ),
+          world,
+          run: slotRun,
+          ownerMessageId: 'msg_owner_1',
+        });
+
+        expect(createBatch).toHaveBeenCalledTimes(4);
+        expect(shape(createBatch.mock.calls[0])).toEqual([
+          'step_created:s1',
+          'step_started:s1',
+          'step_created:s2',
+          'step_started:s2',
+          'step_created:s3',
+          'step_started:s3',
+        ]);
+        expect(shape(createBatch.mock.calls[1])).toEqual(
+          ids(4, 19).map((id) => `step_created:${id}`)
+        );
+        expect(shape(createBatch.mock.calls[2])).toEqual(
+          ids(20, 35).map((id) => `step_created:${id}`)
+        );
+        expect(shape(createBatch.mock.calls[3])).toEqual(
           ids(36, 43).map((id) => `step_created:${id}`)
         );
         expect(result.inlineClaims.size).toBe(3);
@@ -3113,12 +3049,12 @@ describe('handleSuspension batched fan-out', () => {
     };
 
     it('POSTs every chunk concurrently instead of serially', async () => {
-      // 34 steps, no pairs (no ownerMessageId): s1 defers lazily, 33 eager
-      // creates chunk as 32 + 1 — and BOTH POSTs must be in flight before
+      // 18 steps, no pairs (no ownerMessageId): s1 defers lazily, 17 eager
+      // creates chunk as 16 + 1 — and BOTH POSTs must be in flight before
       // either commits.
       const { createBatch, releases } = gatedCreateBatch();
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 18 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -3130,18 +3066,18 @@ describe('handleSuspension batched fan-out', () => {
       });
       for (const release of releases) release();
       const result = await pending;
-      expect(result.createdStepCorrelationIds.size).toBe(33);
+      expect(result.createdStepCorrelationIds.size).toBe(17);
     });
 
     it('returns off the pair chunk; trailing chunks ride deferredBatchWork', async () => {
-      // 35 steps with two pairs: chunk 1 = the pairs alone (4 rows), chunk
-      // 2 = 32 eager, chunk 3 = 1 eager. Releasing only chunk 1 must
+      // 19 steps with two pairs: chunk 1 = the pairs alone (4 rows), chunk
+      // 2 = 16 eager, chunk 3 = 1 eager. Releasing only chunk 1 must
       // resolve the handler with the claims; chunks 2 and 3 settle
       // deferredBatchWork later.
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world, queue } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 19 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -3155,7 +3091,7 @@ describe('handleSuspension batched fan-out', () => {
         expect(createBatch).toHaveBeenCalledTimes(3);
       });
       expect(createBatch.mock.calls.map((call) => call[1].length)).toEqual([
-        4, 32, 1,
+        4, 16, 1,
       ]);
       releases[0]();
       const result = await pending;
@@ -3167,26 +3103,26 @@ describe('handleSuspension batched fan-out', () => {
       expect(await probe(result.deferredBatchWork)).toBe('pending');
       // Every eager step is claimed for in-flush publishing up front, so
       // the caller's dispatch pass skips them all.
-      expect(result.queuedStepCorrelationIds.size).toBe(33);
+      expect(result.queuedStepCorrelationIds.size).toBe(17);
       // The pair chunk carries no eager step, so nothing has published yet:
       // each plain chunk's messages wait for THAT chunk's commit.
       await tick();
       expect(queue).not.toHaveBeenCalled();
 
-      // Chunk 2's publishes fire off its own commit — 32 messages — while
+      // Chunk 2's publishes fire off its own commit — 16 messages — while
       // chunk 3's one waits for its own.
       releases[1]();
       await vi.waitFor(() => {
-        expect(queue).toHaveBeenCalledTimes(32);
+        expect(queue).toHaveBeenCalledTimes(16);
       });
       const publishedNow = queue.mock.calls.map((call) => call[1].stepId);
-      expect(publishedNow).not.toContain('s35');
+      expect(publishedNow).not.toContain('s19');
       expect(await probe(result.deferredBatchWork)).toBe('pending');
 
       releases[2]();
       // biome-ignore lint/style/noNonNullAssertion: asserted defined above
       await result.deferredBatchWork!;
-      expect(queue).toHaveBeenCalledTimes(33);
+      expect(queue).toHaveBeenCalledTimes(17);
       // Message shape and idempotency key match the caller's dispatch pass.
       const [calledQueueName, payload, opts] = queue.mock.calls[0];
       expect(calledQueueName).toBe(queueName);
@@ -3368,9 +3304,9 @@ describe('handleSuspension batched fan-out', () => {
       });
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 19 }, (_, i) => `s${i + 1}`);
 
-      // Chunk 1 = the two pairs alone (commits at once); chunk 2 = 32
+      // Chunk 1 = the two pairs alone (commits at once); chunk 2 = 16
       // eager creates, the one that fails; chunk 3 = the last eager create.
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -3429,11 +3365,11 @@ describe('handleSuspension batched fan-out', () => {
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
 
-      // s1/s2 pair-fold (cap 2); s5 is finalized sequentially; the 32
+      // s1/s2 pair-fold (cap 2); s5 is finalized sequentially; the 16
       // healthy eager creates fill the second call, the one that fails.
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const pending = stepsAndWait(
-        Array.from({ length: 35 }, (_, i) => `s${i + 1}`)
+        Array.from({ length: 19 }, (_, i) => `s${i + 1}`)
       ) as Map<string, { args: unknown[] }>;
       // biome-ignore lint/style/noNonNullAssertion: seeded above
       pending.get('s5')!.args = [new Unserializable()];
@@ -3507,7 +3443,7 @@ describe('handleSuspension batched fan-out', () => {
       });
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 19 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -3517,7 +3453,7 @@ describe('handleSuspension batched fan-out', () => {
         stepDispatch: stepDispatch(),
         allowDeferredBatchWork: true,
       });
-      // Chunk 1 = the two pairs alone; chunks 2 and 3 = the 33 eager
+      // Chunk 1 = the two pairs alone; chunks 2 and 3 = the 17 eager
       // creates.
       await vi.waitFor(() => {
         expect(createBatch).toHaveBeenCalledTimes(3);
@@ -3544,7 +3480,7 @@ describe('handleSuspension batched fan-out', () => {
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 19 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
