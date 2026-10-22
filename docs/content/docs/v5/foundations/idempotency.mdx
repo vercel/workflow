@@ -141,6 +141,11 @@ export async function POST(request: Request) {
 
 Until the owning run's `createHook()` registers, the token is reserved but there is no Hook to resume, so `resumeHook()` (and `getHookByToken()`) throw [`HookReservedError`](/docs/api-reference/workflow-errors/hook-reserved-error) naming the owner, with a suggested `retryAfter` in seconds. It is never a `HookNotFoundError`, so you can tell "owned, not live yet" from "nobody owns this token". If the owner ends without ever registering the Hook, the lookup answers `HookNotFoundError`. Inside a workflow step, the step's ordinary retries cover `HookReservedError`.
 
+Two rare states are worth handling when you route to the owner:
+
+- **An owner that never started.** If the run a conflict names is still `pending` a minute after it was created, its queue message was most likely lost. The refused `start()` re-publishes that run's message (at most once a minute per run), so the owner starts and the retry loop above reaches it.
+- **An owner that never became a run.** A conflict can name a candidate that was admitted but whose run was never created, because its writer died mid-start. `getRun()` doesn't find it, and `resumeHook()` answers `HookReservedError` until the World releases the reservation (within 24 hours), then `HookNotFoundError`. When you see `HookNotFoundError` after a conflict, start again with the same token.
+
 Pass `hook.metadata` to `start()` to attach data the route reads back after the resume (for example, a session ID). The owner's `createHook()` keeps it unless it passes metadata of its own.
 
 ### Workflow-side coordination

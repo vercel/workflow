@@ -83,6 +83,7 @@ import {
   healthCheck,
 } from './helpers.js';
 import { Run } from './run.js';
+import { wakePendingStartHookHolder } from './start-hook-holder.js';
 import {
   getSnapshotThresholdForStart,
   getWorkflowVmFromEnv,
@@ -1541,6 +1542,16 @@ export async function start<TArgs extends unknown[], TResult>(
                   `The World refused start Hook candidate "${runId}" without naming the run that owns the token.`
                 );
               }
+              // A holder stuck pending (its first message lost) would hold
+              // the token forever: wake it. Best effort; the refusal stands.
+              const wake = await wakePendingStartHookHolder(
+                world,
+                error.conflictingRunId,
+                traceCarrier
+              );
+              span?.setAttributes(
+                Attribute.WorkflowStartHookHolderWoken(wake === 'woken')
+              );
               throw error;
             }
             if (EntityConflictError.is(error)) {
