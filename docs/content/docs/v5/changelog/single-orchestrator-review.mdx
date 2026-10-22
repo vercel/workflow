@@ -456,8 +456,7 @@ The rule now keeps no per-entity record. Within one batch of events, the host ho
 
 - Remove the temporary `[diag]` warn logs in `packages/core/src/runtime/spec9/delivery.ts`.
 - Release the `@vercel/queue` change and pin its version in place of the preview tarball URL. Then drop the `blockExoticSubdeps` exception from workbench staging if nothing else needs it.
-- Revert `WORKFLOW_SERVER_URL_OVERRIDE`.
-- Deploy the world-vercel backend change first.
+- The world-vercel backend change is merged and deployed; this PR no longer points at its preview.
 - Get the Vercel e2e lanes green. On the current head they fail only five tests, all of which read step payloads through `workflow inspect steps --withData`, which the world-vercel backend now refuses for spec 9 runs. A backend change for that is in progress.
 - Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks (section 7).
 - Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
