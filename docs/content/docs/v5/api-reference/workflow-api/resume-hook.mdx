@@ -16,6 +16,8 @@ It durably writes the `hook_received` event and only then publishes a workflow w
 
 `resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
 
+It throws [`HookReservedError`](/docs/api-reference/workflow-errors/hook-reserved-error) instead when the token is reserved by a run started with [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) that has not registered its hook yet. Retry after its `retryAfter`; see [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner).
+
 If `resumeHook()` throws any other error, the outcome is ambiguous only in dispatch, never in durability: the event may already be durable even though the workflow wake failed, and any later wake of the run delivers it. Calling `resumeHook()` again creates a new `resumeId` and can append a second `hook_received`. Callers that need at-most-once behavior across separate invocations must retain and deduplicate their own request key.
 
 <Callout type="warn">
