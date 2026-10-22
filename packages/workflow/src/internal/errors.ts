@@ -3,6 +3,7 @@ export {
   HookConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   InBandSupersededError,
   PreconditionFailedError,
   RunExpiredError,
@@ -18,5 +19,6 @@ export {
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
+  WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';
