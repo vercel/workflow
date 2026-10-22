@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 import type {
   AnyEventRequest,
   CreateEventParams,
@@ -10,6 +10,7 @@ import type { Storage, WorldCapabilities } from '../interfaces.js';
 import { SPEC_VERSION_CURRENT } from '../spec-version.js';
 import {
   START_HOOK_ADMISSION_REJECTED_CODE,
+  START_HOOK_CANDIDATE_MAX_AGE_MS,
   type StartHook,
 } from '../start-hook.js';
 
@@ -43,6 +44,10 @@ import {
  *   taking its adopted Hook moves the reservation to the claimer.
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
+ * - Past the 24h orphan bound, a candidate with no run is refused with
+ *   `START_HOOK_ADMISSION_REJECTED` through either copy, and a staged
+ *   orphan (an accepted candidate whose run was never created) no longer
+ *   holds its token.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -65,6 +70,26 @@ export interface AtomicStartHookConformanceOptions {
   secondEvents?: (first: Storage['events']) => Storage['events'];
   /** How many concurrent candidates to race. Defaults to 8. */
   concurrentCandidates?: number;
+  /**
+   * Moves the clock the World's admission reads (its `Date.now()`) forward,
+   * so the 24h orphan bound can be crossed in virtual time. The suite calls
+   * it with `0` after each test to restore real time. Omit to skip the
+   * orphan-bound cases.
+   */
+  advanceClock?: (ms: number) => void;
+  /**
+   * Leaves the state a writer that died mid-admission leaves behind: the
+   * candidate accepted (its token reserved) but its run never created. Omit
+   * for a World where that state cannot exist (one that reserves the token
+   * and creates the run in a single transaction).
+   */
+  stageOrphan?: (runId: string, token: string) => Promise<void>;
+  /**
+   * Whether a staged orphan keeps its token until the 24h bound passes. A
+   * World may release earlier when the orphan was never observed as
+   * admitted (no caller saw its run): world-local does.
+   */
+  orphanHoldsWithinWindow?: boolean;
 }
 
 const SPEC = SPEC_VERSION_CURRENT;
@@ -543,6 +568,80 @@ export function atomicStartHookConformance(
       // ...and ending it does, though the source is still running.
       await finish(events, successor);
       await admit(events, { token });
+    });
+
+    describe('orphan bound', () => {
+      const DAY_MS = START_HOOK_CANDIDATE_MAX_AGE_MS;
+      const advance = options.advanceClock;
+      afterEach(() => advance?.(0));
+      const orphanTest = advance ? test : test.skip;
+      const stagedOrphanTest =
+        advance && options.stageOrphan ? test : test.skip;
+
+      orphanTest(
+        'refuses a candidate past the bound that never got a run, through either copy',
+        async () => {
+          const events = setup();
+          const token = newToken();
+          const late = options.newRunId();
+          advance?.(DAY_MS + 60_000);
+
+          for (const request of [
+            runStarted({ token }),
+            runCreated({ token }),
+          ]) {
+            const error = await refusal(create(events, late, request));
+            expect(errorNamed(error, 'WorkflowWorldError')).toBe(true);
+            expect(error).toMatchObject({
+              code: START_HOOK_ADMISSION_REJECTED_CODE,
+            });
+          }
+          expect(await runExists(late)).toBe(false);
+          // The refusal reserved nothing.
+          await admit(events, { token });
+        }
+      );
+
+      stagedOrphanTest(
+        options.orphanHoldsWithinWindow
+          ? 'an orphan holds its token within the bound and releases it after'
+          : 'an orphan never seen as admitted does not hold its token',
+        async () => {
+          const events = setup();
+          const token = newToken();
+          const orphan = options.newRunId();
+          await options.stageOrphan?.(orphan, token);
+
+          if (options.orphanHoldsWithinWindow) {
+            await expectRefused(admit(events, { token }), token, orphan);
+            advance?.(DAY_MS + 60_000);
+          }
+          // A contender owns the token now.
+          const contender = await admit(events, { token });
+          expect(await runExists(contender)).toBe(true);
+          expect(await runExists(orphan)).toBe(false);
+        }
+      );
+
+      stagedOrphanTest(
+        "refuses the orphan's own attempt past the bound",
+        async () => {
+          const events = setup();
+          const token = newToken();
+          const orphan = options.newRunId();
+          await options.stageOrphan?.(orphan, token);
+          advance?.(DAY_MS + 60_000);
+
+          const error = await refusal(
+            create(events, orphan, runStarted({ token }))
+          );
+          expect(error).toMatchObject({
+            code: START_HOOK_ADMISSION_REJECTED_CODE,
+          });
+          expect(await runExists(orphan)).toBe(false);
+          await admit(events, { token });
+        }
+      );
     });
 
     test('refuses a retention beyond the World limit as a permanent rejection', async () => {
