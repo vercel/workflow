@@ -242,44 +242,51 @@ export async function getViolationLocation(
     const contents = await readFile(absolutePath, 'utf8');
     const lines = contents.split(/\r?\n/);
 
+    // Match against the whole file so imports spanning several lines are
+    // found. The specifier excludes `;` and quotes so a match can't start at
+    // an earlier import statement and run on into this one. The match must
+    // also start a statement (line start or after `;`), so the word `import`
+    // in a preceding comment can't become the start of the match.
     const importRegex = new RegExp(
-      `import\\s+(.+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`
+      `(?:^|;)[ \\t]*import\\s+([^;'"]+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`,
+      'm'
     );
+    const importMatch = contents.match(importRegex);
 
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      const importMatch = line.match(importRegex);
+    if (importMatch && importMatch.index !== undefined) {
+      const startLine =
+        contents.slice(0, importMatch.index).split(/\r?\n/).length - 1;
+      const endLine = startLine + importMatch[0].split(/\r?\n/).length - 1;
 
-      if (importMatch && importMatch.index !== undefined) {
-        const specifier = importMatch[1].trim();
-        const identifier = getImportedIdentifier(specifier);
-        if (identifier) {
-          const usage = findIdentifierUsage(lines, i + 1, identifier);
-          if (usage) {
-            return {
-              file: relativePath,
-              line: usage.line + 1,
-              column: usage.column,
-              lineText: usage.lineText,
-              length: identifier.length,
-            };
-          }
-
-          // Identifier exists but is never referenced; surface no location
-          return undefined;
-        }
-
-        // Fallback: if we can't extract identifier, point to package name
-        const columnIndex = line.indexOf(packageName);
-        if (columnIndex !== -1) {
+      const specifier = importMatch[1].trim();
+      const identifier = getImportedIdentifier(specifier);
+      if (identifier) {
+        const usage = findIdentifierUsage(lines, endLine + 1, identifier);
+        if (usage) {
           return {
             file: relativePath,
-            line: i + 1,
-            column: columnIndex,
-            lineText: line,
-            length: packageName.length,
+            line: usage.line + 1,
+            column: usage.column,
+            lineText: usage.lineText,
+            length: identifier.length,
           };
         }
+
+        // Identifier exists but is never referenced; surface no location
+        return undefined;
+      }
+
+      // Fallback: if we can't extract identifier, point to package name
+      const line = lines[endLine];
+      const columnIndex = line.indexOf(packageName);
+      if (columnIndex !== -1) {
+        return {
+          file: relativePath,
+          line: endLine + 1,
+          column: columnIndex,
+          lineText: line,
+          length: packageName.length,
+        };
       }
     }
   } catch {

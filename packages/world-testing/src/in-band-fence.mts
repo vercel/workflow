@@ -28,23 +28,28 @@ export function inBandFence(world: string) {
       // Settled once `run_completed` is in the log. The run's status alone is
       // not enough: a World may show the terminal status before the terminal
       // event is listable.
-      const events = await vi.waitFor(
+      await vi.waitFor(
         async () => {
           const listed = await server.getEvents(result.runId);
-          expect(listed.at(-1)?.eventType).toBe('run_completed');
-          return listed;
+          expect(listed.map((event) => event.eventType)).toContain(
+            'run_completed'
+          );
         },
         { interval: 200, timeout: 25_000 }
       );
 
-      // A full listing covers every position up to the counters' `seq`, and a
-      // settled run's log holds them all. `run_created` and the orchestrator's
-      // own writes are in-band, so the count is at least 1 and at most `seq`.
+      // Read the counters first: a late step completion may still append an
+      // event after the run becomes terminal. The later full listing must
+      // cover every position up to the counters' `seq`. `run_created` and the
+      // orchestrator's own writes are in-band, so the count is at least 1 and at most `seq`.
       // The counters come from the list snapshot, or from a refusal where the
       // World lists none.
       const counters = await server.getFenceCounters(result.runId);
+      const events = await server.getEvents(result.runId);
       expect(counters).not.toBeNull();
-      expect(counters?.seq).toBe(eventIdToSlot(events.at(-1)?.eventId ?? ''));
+      expect(events.map((event) => eventIdToSlot(event.eventId))).toContain(
+        counters?.seq
+      );
       expect(counters?.seqInBand).toBeGreaterThanOrEqual(1);
       expect(counters?.seqInBand).toBeLessThanOrEqual(counters?.seq ?? 0);
     }

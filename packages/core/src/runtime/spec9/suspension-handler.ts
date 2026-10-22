@@ -45,6 +45,12 @@ export interface SuspensionHandlerParams {
   span?: Span;
   requestId?: string;
   /**
+   * The workflow is completing or failing. Its terminal event cleans up hooks,
+   * so only dispose hooks needed to release a token early or for a later
+   * registration.
+   */
+  terminalDrain?: boolean;
+  /**
    * The runtime's loaded event log. Every event creation this suspension makes
    * names the position it was derived from, so a backend that has recorded
    * events the replay did not see can report them back on the write, or, if
@@ -232,6 +238,7 @@ export async function handleSuspension({
   replayRecoveryReporter,
   forceClaimVictimWakes,
   writeEvent,
+  terminalDrain,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -344,7 +351,14 @@ export async function handleSuspension({
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
   const allHookItems = suspension.items.filter(
-    (item): item is HookInvocationQueueItem => item.type === 'hook'
+    (item): item is HookInvocationQueueItem =>
+      item.type === 'hook' &&
+      !(
+        terminalDrain &&
+        item.isSystem &&
+        !item.hasCreatedEvent &&
+        !item.abortRequested
+      )
   );
   const waitItems = suspension.items.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
@@ -369,6 +383,7 @@ export async function handleSuspension({
     forceClaimVictimWakes,
     createGuarded,
     eventSpecVersion: SPEC_VERSION_CURRENT,
+    terminalDrain,
   });
   const {
     dehydrateInput,
@@ -646,6 +661,12 @@ export function pendingQueueDrain(
   writeEvent: EventCreator
 ): PendingQueueDrain {
   return async (suspension, run) => {
-    await handleSuspension({ suspension, world, run, writeEvent });
+    await handleSuspension({
+      suspension,
+      world,
+      run,
+      writeEvent,
+      terminalDrain: true,
+    });
   };
 }

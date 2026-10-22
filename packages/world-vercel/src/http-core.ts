@@ -901,6 +901,13 @@ export async function instrumentedFetch(
               headers,
               body: requestBody,
               signal,
+              // Every Worlds endpoint answers directly, so a 3xx is a
+              // misdirected request, not a hop to take. Following it would
+              // re-send `x-vercel-trusted-oidc-idp-token` to whatever host the
+              // `Location` names — fetch only strips `Authorization` across
+              // origins, not other credential headers. Matches the node:http
+              // transport, which never follows redirects.
+              redirect: 'manual',
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
             } as any);
