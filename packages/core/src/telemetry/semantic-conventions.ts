@@ -108,6 +108,14 @@ export const WorkflowStartHookOutcome = SemanticConvention<
   'accepted' | 'rejected' | 'uncertain' | 'failed'
 >('workflow.start_hook.outcome');
 
+/**
+ * On a `rejected` `start({ hook })`: whether the holder was found stuck
+ * `pending` and its orchestrator message re-published.
+ */
+export const WorkflowStartHookHolderWoken = SemanticConvention<boolean>(
+  'workflow.start_hook.holder_woken'
+);
+
 /** The run that owns the token, on a `rejected` `start({ hook })`. */
 export const WorkflowStartHookConflictingRunId = SemanticConvention<string>(
   'workflow.start_hook.conflicting_run_id'

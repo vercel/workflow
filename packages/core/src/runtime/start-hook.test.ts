@@ -5,6 +5,7 @@ import {
   RUN_ERROR_CODES,
   START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
+  WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowStartError,
   WorkflowWorldError,
@@ -14,12 +15,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hydrateStepArguments } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
-import { healthCheck } from './helpers.js';
+import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import {
   DEFAULT_START_HOOK_RETENTION_MS,
   normalizeStartHook,
   start,
 } from './start.js';
+import {
+  START_HOOK_HOLDER_WAKE_AFTER_MS,
+  START_HOOK_HOLDER_WAKE_WINDOW_MS,
+  startHookHolderWakeKey,
+} from './start-hook-holder.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -351,6 +357,120 @@ describe('start({ hook })', () => {
     expect(error).toMatchObject({
       token: TOKEN,
       conflictingRunId: 'wrun_owner',
+    });
+  });
+
+  describe('a refusal naming a holder', () => {
+    const holderRun = (status: string, ageMs: number) => ({
+      runId: 'wrun_owner',
+      status,
+      workflowName: 'workflow//./test//orders',
+      deploymentId: 'dpl_owner',
+      specVersion: 8,
+      executionContext: { queueNamespace: 'eve' },
+      createdAt: new Date(Date.now() - ageMs),
+      updatedAt: new Date(),
+    });
+
+    function refusingWorld(get: ReturnType<typeof vi.fn>) {
+      admittingWorld({ runs: { get } });
+      eventsCreate.mockRejectedValue(
+        new HookConflictError(TOKEN, 'wrun_owner')
+      );
+    }
+
+    it('re-publishes a holder stuck pending, once per window, and still throws the conflict', async () => {
+      const get = vi
+        .fn()
+        .mockResolvedValue(
+          holderRun('pending', START_HOOK_HOLDER_WAKE_AFTER_MS + 1_000)
+        );
+      refusingWorld(get);
+
+      const error = await rejection(
+        start(workflow, [], { hook: { token: TOKEN } })
+      );
+
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(error).toMatchObject({ conflictingRunId: 'wrun_owner' });
+      expect(get).toHaveBeenCalledWith('wrun_owner', { resolveData: 'none' });
+      // The candidate's own publish, then the holder's wake.
+      expect(queue).toHaveBeenCalledTimes(2);
+      const [queueName, payload, opts] = queue.mock.calls[1];
+      expect(queueName).toBe(
+        getWorkflowQueueName('workflow//./test//orders', 'eve')
+      );
+      expect(queueName).toMatch(/^__eve_wkf_workflow_/);
+      expect(payload).toEqual({ runId: 'wrun_owner', traceCarrier: {} });
+      expect(payload).not.toHaveProperty('runInput');
+      expect(opts).toEqual({
+        deploymentId: 'dpl_owner',
+        specVersion: 8,
+        idempotencyKey: startHookHolderWakeKey('wrun_owner', Date.now()),
+      });
+    });
+
+    it.each([
+      ['running', 'running', START_HOOK_HOLDER_WAKE_AFTER_MS * 10],
+      ['pending but starting normally', 'pending', 1_000],
+      ['finished', 'completed', START_HOOK_HOLDER_WAKE_AFTER_MS * 10],
+    ])('does not re-publish a holder that is %s', async (_label, status, age) => {
+      refusingWorld(vi.fn().mockResolvedValue(holderRun(status, age)));
+
+      const error = await rejection(
+        start(workflow, [], { hook: { token: TOKEN } })
+      );
+
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(queue).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not re-publish a holder that is not a run (an accepted orphan)', async () => {
+      refusingWorld(
+        vi.fn().mockRejectedValue(new WorkflowRunNotFoundError('wrun_owner'))
+      );
+
+      const error = await rejection(
+        start(workflow, [], { hook: { token: TOKEN } })
+      );
+
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(queue).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the conflict when the wake fails', async () => {
+      refusingWorld(
+        vi
+          .fn()
+          .mockResolvedValue(
+            holderRun('pending', START_HOOK_HOLDER_WAKE_AFTER_MS + 1_000)
+          )
+      );
+      queue.mockImplementation(async () => {
+        calls.push('queue');
+        if (calls.filter((c) => c === 'queue').length > 1) {
+          throw new Error('queue down');
+        }
+      });
+
+      const error = await rejection(
+        start(workflow, [], { hook: { token: TOKEN } })
+      );
+
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(error).toMatchObject({ conflictingRunId: 'wrun_owner' });
+    });
+
+    it('buckets the wake key so concurrent refusals coalesce, and a later window wakes again', () => {
+      const t = 1_800_000_000_000;
+      expect(startHookHolderWakeKey('wrun_a', t)).toBe(
+        startHookHolderWakeKey('wrun_a', t + 1)
+      );
+      expect(startHookHolderWakeKey('wrun_a', t)).not.toBe(
+        startHookHolderWakeKey('wrun_a', t + START_HOOK_HOLDER_WAKE_WINDOW_MS)
+      );
+      // Never the original start message's key.
+      expect(startHookHolderWakeKey('wrun_a', t)).not.toBe('start-wrun_a');
     });
   });
 
