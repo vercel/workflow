@@ -85,13 +85,17 @@ A branch of a `Promise.all` doesn't wait for its slowest sibling before starting
 - **A background step** whose siblings are still pending replays as described above.
 - **An inline step** that settles early hands the run to another invocation through a continuation marked `advanceOnly`. That hand-off waits until `run_started`, every claim, dispatch, and deferred write is durable, and its send is joined before the delivery acknowledges.
 
-Both replays are **advance-only**: they act on the work their own replay creates (a branch's next step, hook, or wait) and leave the steps still in flight to the invocations running them, which replay when those settle. A pass that reaches nothing new returns without writing or sending anything. A pass that reaches workflow completion while a detached step or `Promise.race` loser is pending also returns without sealing the run; the last sibling's ordinary replay completes it, preserving the existing inline execution contract. A background step's advance-only replay builds the run row from the message's run identity and the persisted `run_created` and `run_started` events instead of reading it back.
+Both replays are **advance-only**: they act on the work their own replay creates (a branch's next step, hook, or wait) and leave the steps still in flight to the invocations running them, which replay when those settle. A pass that reaches nothing new returns without writing or sending anything. A background step's advance-only replay builds the run row from the message's run identity and the persisted `run_created` and `run_started` events instead of reading it back.
+
+After an inline hand-off was actually sent, neither `run_completed` nor `run_failed` is written while a step is really in progress. "Pending" here means a `step_started` without a terminal step event, or a normally scheduled `step_created` whose queue publication is owned by a delivery that cannot acknowledge until the send succeeds. A detached step recorded by terminal drain is marked separately: terminal drain never starts or publishes it, so its creation-only row does not keep the run open, matching the behavior without advance-only replay. A later `step_started` makes it pending normally.
+
+Deferring a terminal event also publishes one delayed backstop continuation, deduplicated per run. The step handler that settles last normally finishes the run first; if it does not, the backstop replays from storage and reschedules its own delivery while executable work remains. Completion therefore does not depend on another handler remaining eligible for advance-only replay.
 
 An advance-only replay still drives the steps no one else would: one its own message claimed inline (owned recovery), and, on a redelivery, any step created but never started, which the delivery being retried may have created before it crashed.
 
 A replay can't know ahead of time whether the settled branch has another step, and in a wide fan-out of one-step branches none does until the last. So a branch advances early only when at most `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` (default 1) other steps were pending when its attempt started. Eligibility does not change as a wide batch drains, so its tail does not add replays.
 
-The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and persisted creation/start events. An eligible multi-inline batch may add one deduplicated continuation per settled branch, but suppresses it when every sibling finishes before its durability barriers resolve. An advance-only pass that creates no work performs no writes or sends.
+The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and persisted creation/start events. An eligible multi-inline batch may add one deduplicated continuation per settled branch, but suppresses it when every sibling finishes before its durability barriers resolve; a 10 ms coalescing window also avoids the send when the remaining siblings settle almost together. An advance-only pass that creates no work performs no writes or sends. If a sent hand-off reaches a terminal outcome while executable work remains, it adds one delayed backstop send per run and as many delayed backstop replays as that work outlives.
 
 Before this, each round of a fan-out took as long as its slowest step: a branch of 1-second steps next to a branch of 30-second steps waited 30 seconds before each of its own. `WORKFLOW_ADVANCE_ONLY_REPLAY=0` restores that behavior, and fan-outs wider than the bound keep it. So does the QuickJS engine (`WORKFLOW_VM=quickjs`) for now.
 
@@ -101,10 +105,13 @@ Measured through `workbench/vitest` on world-local (Node.js VM, median and range
 
 | Case | `main` | Fix disabled | Fix enabled |
 | --- | ---: | ---: | ---: |
-| Two no-op steps in `Promise.all` (workflow wall time) | 77 ms (71–88) | 79.5 ms (72–97) | 73 ms (70–80) |
-| Two 200 ms steps in `Promise.all` (workflow wall time) | 287.5 ms (273–305) | 277.5 ms (273–288) | 273 ms (269–280) |
-| Three-step fast chain beside a slow chain (next-step gap) | 1,810 ms (1,809–1,828) | 1,809 ms (1,808–1,811) | 89.5 ms (84–98) |
-| `Promise.race` winner followed by another step (next-step gap) | 1,811 ms (1,809–1,813) | 1,809 ms (1,808–1,811) | 83 ms (80–123) |
+| Two no-op steps in `Promise.all` (workflow wall time) | 73.5 ms (69–80) | 73 ms (71–75) | 74 ms (70–80) |
+| Two 200 ms steps in `Promise.all` (workflow wall time) | 270 ms (268–274) | 271.5 ms (269–276) | 275 ms (270–280) |
+| Three-step fast chain beside a slow chain (next-step gap) | 1,809 ms (1,809–1,810) | 1,809 ms (1,808–1,810) | 87 ms (81–89) |
+| `Promise.race` winner followed by another step (next-step gap) | 1,809 ms (1,808–1,809) | 1,808 ms (1,808–1,809) | 83 ms (81–85) |
+| 100 ms step beside 300 ms step (next-step gap) | 209 ms (208–211) | 209 ms (208–210) | 84 ms (82–85) |
+| 100 ms step beside 600 ms step (next-step gap) | 509 ms (506–509) | 509 ms (508–509) | 85 ms (83–85) |
+| 100 ms step beside 1,500 ms step (next-step gap) | 1,408 ms (1,407–1,409) | 1,409 ms (1,409–1,410) | 84 ms (83–86) |
 
 The deterministic Sim World scenario book also passes all 42 scenarios with no consistency violations.
 
@@ -153,7 +160,7 @@ If a single step takes longer than the timeout threshold, the step runs to compl
 
 The `WorkflowInvokePayload` schema has two new optional fields: `stepId` and `stepName`. When `stepId` is present, the handler executes that specific step before (or instead of) replaying the workflow. Background steps are queued with both set, so the handler knows which step function to call without loading the event log. Previously, `stepName` was resolved by loading all events and searching for the `step_created` event matching the `stepId`, an O(N) operation on the full event history for every background step arrival.
 
-A continuation an inline batch hands off sets `advanceOnly: true`, which makes the receiving invocation replay advance-only. A consumer that predates the field replays the ordinary way.
+A continuation an inline batch hands off sets `advanceOnly: true`, which makes the receiving invocation replay advance-only. A terminal deferral also sets `terminalBackstop: true`; an early backstop reschedules its own delivery instead of spending its per-run dedupe key again. Consumers that predate either field ignore it and replay the ordinary way.
 
 The queue trigger configuration uses `WORKFLOW_QUEUE_TRIGGER` on the `__wkf_workflow_*` topic. The `__wkf_step_*` topic and its separate trigger are no longer generated.
 

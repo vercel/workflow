@@ -167,6 +167,26 @@ const TWO_CHAINS_BESIDE_SLOW = workflowSource(`
   return 'done';
 `);
 
+const RACE_THEN_DETACHED_TERMINAL_DRAIN = workflowSource(`
+  const winner = await Promise.race([
+    branchStep('slow'),
+    branchStep('fast1'),
+  ]);
+  const detached = Promise.all([
+    branchStep('detached1'),
+    branchStep('detached2'),
+    branchStep('detached3'),
+    branchStep('detached4'),
+  ]);
+  detached.catch(() => {});
+  return winner;
+`);
+
+const FAIL_AFTER_RACE = workflowSource(`
+  await Promise.race([branchStep('slow'), branchStep('fast1')]);
+  throw new Error('boom');
+`);
+
 const ATTRIBUTE_FANOUT_BESIDE_SLOW = `
   const branchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("branchStep");
   const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
@@ -436,9 +456,12 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, workflowCode);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
-      expect(h.stepMessageFor('fast1')).toBeDefined();
-    });
+    await vi.waitFor(
+      () => {
+        expect(h.stepMessageFor('fast1')).toBeDefined();
+      },
+      { timeout: 5_000 }
+    );
     const queuedBefore = h.queued.length;
     await h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
     return { h, slow, flow, sentByStepDelivery: h.queued.slice(queuedBefore) };
@@ -571,9 +594,12 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, SLOW_BESIDE_CHAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
-      expect(h.stepMessageFor('fast1')).toBeDefined();
-    });
+    await vi.waitFor(
+      () => {
+        expect(h.stepMessageFor('fast1')).toBeDefined();
+      },
+      { timeout: 5_000 }
+    );
     h.events.splice(
       h.events.findIndex((event) => event.eventType === 'run_created'),
       1
@@ -637,20 +663,52 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('fast2', fast2);
     const h = await setupHarness(runId, SLOW_BESIDE_CHAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
-      expect(h.stepMessageFor('fast1')).toBeDefined();
-    });
+    await vi.waitFor(
+      () => {
+        expect(h.stepMessageFor('fast1')).toBeDefined();
+      },
+      { timeout: 5_000 }
+    );
 
     const early = h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
-    await vi.waitFor(() => {
-      expect(bodyStarts.get('fast2')).toBe(1);
-    });
+    await vi.waitFor(
+      () => {
+        expect(bodyStarts.get('fast2')).toBe(1);
+      },
+      { timeout: 5_000 }
+    );
     slow.open();
     await settle();
     expect(bodyStarts.get('fast2')).toBe(1);
     fast2.open();
     await Promise.all([early, flow]);
     expect(bodyStarts.get('fast2')).toBe(1);
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('does not let terminal-drain-only rows block a queued replay', async () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+    await vi.waitFor(() => {
+      expect(h.stepMessageFor('fast1')).toBeDefined();
+    });
+
+    await h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
+    expect(
+      h.events.some(
+        (event) =>
+          event.eventType === 'step_created' &&
+          event.eventData.terminalDrain === true
+      )
+    ).toBe(true);
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+
+    slow.open();
+    await flow;
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 
@@ -713,6 +771,8 @@ describe('inline path: an inline step settling while its batch is still running'
   }
   const handOffs = (h: Harness) =>
     h.queued.filter((m) => m.advanceOnly === true);
+  const terminalBackstops = (h: Harness) =>
+    h.queued.filter((m) => m.terminalBackstop === true);
 
   it.each([
     ['disabled', '0', 0, 1],
@@ -950,6 +1010,70 @@ describe('inline path: an inline step settling while its batch is still running'
     detached.open();
     await handedOff;
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('ignores unsent terminal-drain creations and arms a self-rescheduling backstop', async () => {
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await vi.waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    await h.deliver(handOffs(h)[0], 'msg_handoff');
+
+    expect(
+      h.events.some(
+        (event) =>
+          event.eventType === 'step_created' &&
+          event.eventData.terminalDrain === true
+      )
+    ).toBe(true);
+    expect(h.events.map((event) => event.eventType)).not.toContain(
+      'run_completed'
+    );
+    expect(terminalBackstops(h)).toHaveLength(1);
+    const backstopCall = h.queue.mock.calls.find(([, message]) =>
+      Object.is(message, terminalBackstops(h)[0])
+    );
+    expect(backstopCall?.[2]).toMatchObject({
+      delaySeconds: 1,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}`,
+    });
+
+    await expect(
+      h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop')
+    ).resolves.toEqual({ timeoutSeconds: 1 });
+
+    slow.open();
+    await flow;
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('applies the same live-pending guard before run_failed', async () => {
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(runId, FAIL_AFTER_RACE);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await vi.waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    await h.deliver(handOffs(h)[0], 'msg_handoff');
+    expect(h.events.map((event) => event.eventType)).not.toContain(
+      'run_failed'
+    );
+    expect(terminalBackstops(h)).toHaveLength(1);
+
+    slow.open();
+    await flow;
+    const types = h.events.map((event) => event.eventType);
+    expect(types.lastIndexOf('step_completed')).toBeLessThan(
+      types.indexOf('run_failed')
+    );
   });
 
   it('restores main detached-step completion behavior with the kill switch off', async () => {

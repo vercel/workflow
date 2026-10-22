@@ -146,6 +146,8 @@ interface SplitEventData {
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
     ownerMessageId?: string;
+    /** A detached step recorded during terminal drain but not dispatched. */
+    terminalDrain?: true;
     /** Structured executionContext, included verbatim in frame meta. */
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
@@ -221,6 +223,7 @@ type MetaSourceField =
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
+  | 'terminalDrain'
   | 'executionContext'
   | 'attributes'
   | 'changes'
@@ -359,6 +362,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // disable ownership (replays would requeue in-flight inline steps again).
   if (typeof eventData.ownerMessageId === 'string') {
     meta.ownerMessageId = eventData.ownerMessageId;
+  }
+  if (eventData.terminalDrain === true) {
+    meta.terminalDrain = true;
   }
   if (
     eventData.executionContext !== undefined &&

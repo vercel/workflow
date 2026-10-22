@@ -2,4 +2,4 @@
 "@workflow/world": patch
 ---
 
-Add the optional `advanceOnly` field to the workflow queue payload, which marks a continuation handed off by a parallel inline batch.
+Add optional advance-only continuation markers to workflow queue payloads and distinguish terminal-drain-only step creations from executable pending work.

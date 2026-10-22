@@ -509,6 +509,12 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * value must read as "not advance-only" rather than fail the parse.
      */
     advanceOnly: z.literal(true).optional().catch(undefined),
+    /**
+     * Marks the delayed, per-run continuation that guarantees a terminal
+     * replay is retried after an advance-only hand-off. If it arrives while
+     * work is still live, the handler reschedules this same delivery.
+     */
+    terminalBackstop: z.literal(true).optional().catch(undefined),
   })
 );
 

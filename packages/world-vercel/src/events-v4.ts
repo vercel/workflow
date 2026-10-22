@@ -295,6 +295,9 @@ interface CreateEventV4InputBase {
    *  invocation running this step's body inline. Persisted on the event row
    *  so wake replays can observe the active owner. */
   ownerMessageId?: string;
+  /** Marks a detached step recorded during terminal drain but never
+   *  dispatched. A later step_started still makes the step live. */
+  terminalDrain?: true;
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
@@ -724,6 +727,9 @@ function buildPostFrameMeta(
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.ownerMessageId !== undefined) {
     meta.ownerMessageId = input.ownerMessageId;
+  }
+  if (input.terminalDrain !== undefined) {
+    meta.terminalDrain = input.terminalDrain;
   }
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;

@@ -245,6 +245,13 @@ export {
   type WorldFactoryModule,
 } from './runtime/world.js';
 
+// Lets near-simultaneous inline siblings finish without paying for an idle
+// advance-only replay, while still handing genuinely slower branches off.
+const ADVANCE_ONLY_HANDOFF_COALESCE_MS = 10;
+// A terminal deferral must make progress even if the handler expected to wake
+// it never does. One second avoids a tight replay loop around long steps.
+const ADVANCE_ONLY_TERMINAL_BACKSTOP_DELAY_SECONDS = 1;
+
 /**
  * Apply the optional client-side event-limit override.
  * `WORKFLOW_MAX_EVENTS_OVERRIDE`, when set to a positive integer, clamps the
@@ -852,6 +859,7 @@ export function workflowEntrypoint(
           hookResumeTiming,
           waitContinuation,
           advanceOnly: incomingAdvanceOnly,
+          terminalBackstop: incomingTerminalBackstop,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -1545,6 +1553,39 @@ export function workflowEntrypoint(
                     return undefined;
                   };
 
+                  /**
+                   * Keep terminal progress independent of another step
+                   * handler's replay eligibility. The first deferral publishes
+                   * one delayed continuation per run. If that continuation is
+                   * early, it reschedules its own delivery until the live work
+                   * has settled; it does not spend the per-run dedupe key again.
+                   */
+                  const deferTerminalForAdvanceOnlyWork = async (): Promise<
+                    { timeoutSeconds: number } | undefined
+                  > => {
+                    if (incomingTerminalBackstop === true) {
+                      return await reinvoke(
+                        ADVANCE_ONLY_TERMINAL_BACKSTOP_DELAY_SECONDS,
+                        { advanceOnly: true, terminalBackstop: true }
+                      );
+                    }
+                    await queueMessage(
+                      world,
+                      getWorkflowQueueName(workflowName, namespace),
+                      {
+                        ...(await replayMessage()),
+                        advanceOnly: true,
+                        terminalBackstop: true,
+                      },
+                      {
+                        delaySeconds:
+                          ADVANCE_ONLY_TERMINAL_BACKSTOP_DELAY_SECONDS,
+                        idempotencyKey: `advance-only:terminal-backstop:${runId}`,
+                      }
+                    );
+                    return undefined;
+                  };
+
                   // Precondition (412) recovery: how many times this invocation
                   // has thrown away its replay and started over in-process.
                   let preconditionRestarts = 0;
@@ -1850,6 +1891,11 @@ export function workflowEntrypoint(
                   // single-handler guarantee turbo's forced optimistic start
                   // rests on, so later batches here claim before they run.
                   let concurrentBranchReplayPossible = false;
+                  // This is deliberately separate from the optimistic-start
+                  // latch above: it means a continuation was actually sent.
+                  // An incoming advance-only delivery proves its producer sent
+                  // one even though that happened in another invocation.
+                  let handOffSent = advanceOnly;
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -3620,18 +3666,15 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // An advance-only replay may start downstream work that
+                      // A published hand-off may start downstream work that
                       // the original batch does not await (a detached step or
-                      // Promise.race loser). Both invocations know that work
-                      // can exist: the replay carries `advanceOnly`, and the
-                      // batch sets `concurrentBranchReplayPossible` after it
-                      // publishes the hand-off. Either must leave terminal
-                      // completion to the pending step's replay. Do not apply
-                      // this to unrelated ordinary continuations: main allows,
-                      // for example, a timer winner to seal a run while its
-                      // losing step finishes independently.
+                      // Promise.race loser). Leave terminal completion to a
+                      // replay after that live or durably scheduled work ends.
+                      // Creation-only terminal-drain rows do not count here.
+                      // Do not apply this to the optimistic-start latch or an
+                      // unrelated ordinary continuation: no hand-off was sent.
                       if (
-                        (advanceOnly || concurrentBranchReplayPossible) &&
+                        handOffSent &&
                         pendingStepIdsIn(eventLog.events).size > 0
                       ) {
                         runtimeLogger.debug(
@@ -3644,7 +3687,7 @@ export function workflowEntrypoint(
                         span?.setAttributes({
                           'workflow.advance_only.terminal_exit': true,
                         });
-                        return;
+                        return await deferTerminalForAdvanceOnlyWork();
                       }
 
                       // Workflow completed. Do NOT reload-and-retry the create
@@ -5356,12 +5399,24 @@ export function workflowEntrypoint(
                                 // this wait immediately. A genuinely slow
                                 // sibling loses the race and the hand-off still
                                 // goes out.
+                                let coalescingTimer:
+                                  | ReturnType<typeof setTimeout>
+                                  | undefined;
+                                const coalescingElapsed = new Promise<true>(
+                                  (resolve) => {
+                                    coalescingTimer = setTimeout(
+                                      () => resolve(true),
+                                      ADVANCE_ONLY_HANDOFF_COALESCE_MS
+                                    );
+                                  }
+                                );
                                 const siblingStillRunning = await Promise.race([
                                   batchSettled.then(() => false),
-                                  new Promise<true>((resolve) =>
-                                    setTimeout(() => resolve(true), 10)
-                                  ),
+                                  coalescingElapsed,
                                 ]);
+                                if (coalescingTimer !== undefined) {
+                                  clearTimeout(coalescingTimer);
+                                }
                                 if (
                                   !siblingStillRunning ||
                                   stillRunning === 0
@@ -5384,6 +5439,7 @@ export function workflowEntrypoint(
                                       ),
                                   }
                                 );
+                                handOffSent = true;
                                 span?.setAttributes({
                                   'workflow.advance_only.handoff_sent': true,
                                 });
@@ -5924,6 +5980,27 @@ export function workflowEntrypoint(
                         let failureKey: PayloadKey | undefined;
                         let dehydratedError: Uint8Array;
                         try {
+                          const failurePendingEvents = handOffSent
+                            ? eventLog.type === 'loadAll'
+                              ? (await loadWorkflowRunEvents(runId)).events
+                              : eventLog.events
+                            : undefined;
+                          if (
+                            failurePendingEvents &&
+                            pendingStepIdsIn(failurePendingEvents).size > 0
+                          ) {
+                            runtimeLogger.debug(
+                              'Workflow reached failure with advance-only work still pending; returning',
+                              {
+                                workflowRunId: runId,
+                                loopIteration,
+                              }
+                            );
+                            span?.setAttributes({
+                              'workflow.advance_only.terminal_exit': true,
+                            });
+                            return await deferTerminalForAdvanceOnlyWork();
+                          }
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
                           await awaitRunReady();

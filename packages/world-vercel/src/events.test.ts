@@ -991,9 +991,11 @@ describe('splitEventDataForV4 attribute fields', () => {
         stepName: 's',
         workflowName: 'wf',
         input: new TextEncoder().encode('[]'),
+        terminalDrain: true,
       },
     } as AnyEventRequest);
     expect(created.meta.workflowName).toBe('wf');
+    expect(created.meta.terminalDrain).toBe(true);
     expect(created.payload).toBeInstanceOf(Uint8Array);
 
     // The lazy inline start is the motivating hot-path event: it writes the

@@ -50,10 +50,15 @@ export function suspensionHasNewWork(
 }
 
 /**
- * The steps a log shows as pending: created without a `step_completed` or
- * `step_failed`. A `step_started` counts as the creation too: a World may
- * record an inline step's creation on its `step_started` alone, with no
- * `step_created`.
+ * Steps that have executable work in progress: a normally scheduled
+ * `step_created`, or a `step_started`, without a terminal step event.
+ *
+ * Terminal drain records detached steps while the workflow is already
+ * returning or throwing, but deliberately publishes no message for them.
+ * Those creation-only rows match main's event history and do not keep a run
+ * alive. A later `step_started` still makes one live, independently of how it
+ * was created. Older creation rows have no marker and retain their historical
+ * scheduled-work meaning.
  */
 export function pendingStepIdsIn(
   events: readonly Event[]
@@ -61,7 +66,10 @@ export function pendingStepIdsIn(
   const created = new Set<string | undefined>();
   const settled = new Set<string | undefined>();
   for (const e of events) {
-    if (e.eventType === 'step_created' || e.eventType === 'step_started') {
+    if (
+      (e.eventType === 'step_created' && e.eventData?.terminalDrain !== true) ||
+      e.eventType === 'step_started'
+    ) {
       created.add(e.correlationId);
     } else if (
       e.eventType === 'step_completed' ||
@@ -91,7 +99,10 @@ export function pendingSiblingCountAtLatestStart(
   const pending = new Set<string | undefined>();
   let count: number | undefined;
   for (const event of events) {
-    if (event.eventType === 'step_created') {
+    if (
+      event.eventType === 'step_created' &&
+      event.eventData?.terminalDrain !== true
+    ) {
       pending.add(event.correlationId);
     } else if (event.eventType === 'step_started') {
       pending.add(event.correlationId);

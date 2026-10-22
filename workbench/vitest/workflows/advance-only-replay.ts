@@ -209,6 +209,15 @@ export async function queuedRaceLoserWithDetachedTerminalDrain(
   return winner;
 }
 
+export async function failAfterRaceLoser(markerPath: string) {
+  'use workflow';
+  await Promise.race([
+    markerStep(markerPath, 'failure-race-winner', 100),
+    markerStep(markerPath, 'failure-race-loser', 1_500),
+  ]);
+  throw new Error('boom');
+}
+
 export async function duplicateProbe(markerPath: string) {
   'use workflow';
   await Promise.all([

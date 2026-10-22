@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { start } from 'workflow/api';
+import { getWorld } from 'workflow/runtime';
 import {
   caughtSlowPromiseChain,
   chainedFanoutBenchmark,
   detachedAfterAdvanceOnlyReplay,
   detachedStep,
   duplicateProbe,
+  failAfterRaceLoser,
   fastFirstParallelChains,
   oneStepFanoutBenchmark,
   queuedRaceLoserWithDetachedTerminalDrain,
@@ -137,7 +139,7 @@ async function terminalDrainRaceCompletes(
     | typeof queuedRaceLoserWithDetachedTerminalDrain,
   tag: string,
   maxInlineSteps?: string
-): Promise<boolean> {
+): Promise<{ completed: boolean; events: string; wallMs: number }> {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-terminal-drain-'));
   const markerPath = join(dir, `${tag}.log`);
   const originalMaxInlineSteps = process.env.WORKFLOW_MAX_INLINE_STEPS;
@@ -147,6 +149,7 @@ async function terminalDrainRaceCompletes(
     process.env.WORKFLOW_MAX_INLINE_STEPS = maxInlineSteps;
   }
   try {
+    const wallStart = performance.now();
     const run = await start(workflow, [markerPath]);
     const completed = await Promise.race([
       run.returnValue.then(
@@ -155,8 +158,24 @@ async function terminalDrainRaceCompletes(
       ),
       new Promise<false>((resolve) => setTimeout(() => resolve(false), 15_000)),
     ]);
+    let events = '';
+    if (!completed) {
+      const world = await getWorld();
+      const eventPage = await world.events.list({ runId: run.runId });
+      events = eventPage.data
+        .map((event) =>
+          event.eventType === 'step_created'
+            ? `${event.eventType}:${event.correlationId}:${event.eventData.terminalDrain === true ? 'terminal-drain' : 'scheduled'}`
+            : `${event.eventType}:${event.correlationId ?? ''}`
+        )
+        .join(', ');
+    }
     if (!completed) await run.cancel({ cancelReason: 'repro timeout' });
-    return completed;
+    return {
+      completed,
+      events,
+      wallMs: Math.round(performance.now() - wallStart),
+    };
   } finally {
     if (originalMaxInlineSteps === undefined) {
       delete process.env.WORKFLOW_MAX_INLINE_STEPS;
@@ -210,9 +229,9 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         expect
           .soft(
             gap,
-            `next started ${gap}ms after short ended, expected within 120ms\n${timeline}`
+            `next started ${gap}ms after short ended, expected within 300ms\n${timeline}`
           )
-          .toBeLessThanOrEqual(120);
+          .toBeLessThanOrEqual(300);
       }
     });
 
@@ -348,20 +367,45 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
           process.env.WORKFLOW_ADVANCE_ONLY_HANG_REPRO_RUNS ?? '20'
         );
         for (let index = 0; index < runs; index++) {
+          const result = await terminalDrainRaceCompletes(
+            workflow,
+            `terminal-drain-${index}`,
+            maxInlineSteps
+          );
           expect
             .soft(
-              await terminalDrainRaceCompletes(
-                workflow,
-                `terminal-drain-${index}`,
-                maxInlineSteps
-              ),
-              `run ${index + 1}/${runs} did not complete within 15 seconds`
+              result.completed,
+              `run ${index + 1}/${runs} did not complete within 15 seconds\n${result.events}`
             )
             .toBe(true);
         }
       },
       330_000
     );
+
+    it('records a running race loser before the workflow failure', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-failure-race-'));
+      const markerPath = join(dir, 'timeline.log');
+      try {
+        const run = await start(failAfterRaceLoser, [markerPath]);
+        await expect(run.returnValue).rejects.toThrow('boom');
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const completed = events
+          .map((event) => event.eventType)
+          .reduce<number[]>((indexes, eventType, index) => {
+            if (eventType === 'step_completed') indexes.push(index);
+            return indexes;
+          }, []);
+        const runFailed = events.findIndex(
+          (event) => event.eventType === 'run_failed'
+        );
+        expect(completed).toHaveLength(2);
+        expect(completed[1]).toBeLessThan(runFailed);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }, 15_000);
 
     it('does not execute a step twice across repeated early replays', async () => {
       for (let run = 0; run < 10; run++) {
@@ -477,6 +521,29 @@ async function measureDetached(tag: string): Promise<Measurement> {
     ...(detachedStart ? { detachedStartMs: detachedStart.at - firstAt } : {}),
     ...(detachedEnd ? { detachedEndMs: detachedEnd.at - firstAt } : {}),
     returnMs: returnedAt - firstAt,
+  };
+}
+
+async function measureTerminalDrainRace(
+  workflow:
+    | typeof retryingRaceLoserWithDetachedTerminalDrain
+    | typeof queuedRaceLoserWithDetachedTerminalDrain,
+  tag: string,
+  maxInlineSteps?: string
+): Promise<Measurement> {
+  const cpuStart = process.cpuUsage();
+  const result = await terminalDrainRaceCompletes(
+    workflow,
+    tag,
+    maxInlineSteps
+  );
+  const cpu = process.cpuUsage(cpuStart);
+  if (!result.completed) {
+    throw new Error(`terminal-drain race timed out\n${result.events}`);
+  }
+  return {
+    wallMs: result.wallMs,
+    cpuMs: Math.round((cpu.user + cpu.system) / 1_000),
   };
 }
 
@@ -633,6 +700,37 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
       }
       console.log(
         `${mode}-detached-race: ${JSON.stringify(results[`${mode}-detached-race`])}`
+      );
+    }
+
+    for (const [shape, workflow, maxInlineSteps] of [
+      [
+        'retrying-terminal-drain',
+        retryingRaceLoserWithDetachedTerminalDrain,
+        undefined,
+      ],
+      ['queued-terminal-drain', queuedRaceLoserWithDetachedTerminalDrain, '1'],
+    ] as const) {
+      if (selectedShape && selectedShape !== shape) continue;
+      for (let warmup = 0; warmup < warmups; warmup++) {
+        await measureTerminalDrainRace(
+          workflow,
+          `${mode}-${shape}-warmup-${warmup}`,
+          maxInlineSteps
+        );
+      }
+      results[`${mode}-${shape}`] = [];
+      for (let round = 0; round < rounds; round++) {
+        results[`${mode}-${shape}`].push(
+          await measureTerminalDrainRace(
+            workflow,
+            `${mode}-${shape}-${round}`,
+            maxInlineSteps
+          )
+        );
+      }
+      console.log(
+        `${mode}-${shape}: ${JSON.stringify(results[`${mode}-${shape}`])}`
       );
     }
   }

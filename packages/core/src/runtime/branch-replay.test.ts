@@ -70,6 +70,24 @@ describe('pendingSiblingCountAtLatestStart', () => {
     expect(pendingSiblingCountAtLatestStart(events, 'a')).toBe(0);
     expect(pendingSiblingCountAtLatestStart(events, 'missing')).toBeUndefined();
   });
+
+  it('does not count terminal-drain-only creations at attempt start', () => {
+    const terminalDrain = {
+      eventType: 'step_created',
+      correlationId: 'detached',
+      eventData: { terminalDrain: true },
+    } as unknown as Event;
+    expect(
+      pendingSiblingCountAtLatestStart(
+        [
+          event('step_created', 'live'),
+          terminalDrain,
+          event('step_started', 'live'),
+        ],
+        'live'
+      )
+    ).toBe(0);
+  });
 });
 
 const hook = (fields: Partial<Extract<QueueItem, { type: 'hook' }>>) =>
@@ -382,5 +400,24 @@ describe('pendingStepIdsIn', () => {
         event('step_completed', 'step_a'),
       ]).size
     ).toBe(0);
+  });
+
+  it('ignores terminal-drain-only creations but counts them once started', () => {
+    const terminalDrain = (eventType: 'step_created' | 'step_started') =>
+      ({
+        eventType,
+        correlationId: 'detached',
+        eventData:
+          eventType === 'step_created' ? { terminalDrain: true } : undefined,
+      }) as unknown as Event;
+    expect(pendingStepIdsIn([terminalDrain('step_created')])).toEqual(
+      new Set()
+    );
+    expect(
+      pendingStepIdsIn([
+        terminalDrain('step_created'),
+        terminalDrain('step_started'),
+      ])
+    ).toEqual(new Set(['detached']));
   });
 });

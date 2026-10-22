@@ -2107,6 +2107,23 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     expect(wireMeta.encryptionPublicKey).toBe(key);
   });
 
+  it('carries terminalDrain on step_created', async () => {
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'step_created',
+      correlationId: 'step_1',
+      specVersion: 5,
+      eventData: {
+        stepName: 'detached',
+        workflowName: 'myWorkflow',
+        input: new TextEncoder().encode('[]'),
+        terminalDrain: true,
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    expect(meta.terminalDrain).toBe(true);
+    expect(wireMeta.terminalDrain).toBe(true);
+  });
+
   // Generic guard: whatever the splitter decides belongs in the frame meta must
   // actually reach the wire. This fails for ANY field a future change adds to
   // the splitter but forgets in buildPostFrameMeta, not just this one.

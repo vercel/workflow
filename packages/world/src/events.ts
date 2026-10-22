@@ -357,6 +357,13 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
     stepName: z.string(),
     workflowName: z.string().optional(),
     input: SerializedDataSchema,
+    /**
+     * The workflow was already returning or throwing when it recorded this
+     * detached step. Terminal drain deliberately does not publish a step
+     * message, so a creation carrying this marker is not executable work by
+     * itself. If a later step_started exists, that start is authoritative.
+     */
+    terminalDrain: z.literal(true).optional(),
   }),
 });
 
