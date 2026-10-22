@@ -1281,12 +1281,30 @@ async function decodeCreateEventResponse<T extends EventType>(
   }
   const parsedBody = schema.safeParse(decoded);
   if (!parsedBody.success) {
-    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
-      code: 'SCHEMA_VALIDATION',
-      cause: parsedBody.error,
-    });
+    throw new WorkflowWorldError(
+      `v4 createEvent: invalid response body (${eventType}: ${describeIssuePaths(parsedBody.error)})`,
+      { code: 'SCHEMA_VALIDATION', cause: parsedBody.error }
+    );
   }
   return foldReportIncomplete(parsedBody.data);
+}
+
+/**
+ * Where a response failed its schema, without the values: a setup failure is
+ * logged with only the error's message, so the paths are what makes it
+ * diagnosable. Capped, since a union's issues can multiply.
+ */
+function describeIssuePaths(error: z.ZodError): string {
+  const MAX = 5;
+  const described = error.issues
+    .slice(0, MAX)
+    .map(
+      (issue) => `${issue.path.map(String).join('.') || '<root>'} ${issue.code}`
+    );
+  if (error.issues.length > MAX) {
+    described.push(`+${error.issues.length - MAX} more`);
+  }
+  return described.join(', ');
 }
 
 /**
