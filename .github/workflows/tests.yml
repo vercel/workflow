@@ -1035,6 +1035,7 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
+      WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK: '1'
 
     steps:
       - name: Checkout Repo
