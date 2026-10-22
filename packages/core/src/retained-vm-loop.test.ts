@@ -1649,6 +1649,40 @@ describe('retained VM through the inline replay loop', () => {
       ).toHaveLength(0);
     });
 
+    it('does not block the hook continuation behind a step when retention is off', async () => {
+      process.env.WORKFLOW_RETAINED_VM = '0';
+      const firstStarted = withResolvers<void>();
+      const secondStarted = withResolvers<void>();
+      const releaseFirst = withResolvers<void>();
+      registerStepFunction('r_hook_waiting_first', async () => {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+        return 10;
+      });
+      registerStepFunction('r_hook_releasing_second', async () => {
+        secondStarted.resolve();
+        releaseFirst.resolve();
+        return 20;
+      });
+      const code = racedBranchGetConflictWorkflow
+        .replace('r_s1', 'r_hook_waiting_first')
+        .replace('r_s2', 'r_hook_releasing_second');
+      const driving = drive('wrun_hook_continuation_cold_parallel', code);
+      try {
+        await firstStarted.promise;
+        const continued = await Promise.race([
+          secondStarted.promise.then(() => true),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), 1000)
+          ),
+        ]);
+        expect(continued).toBe(true);
+      } finally {
+        releaseFirst.resolve();
+        await driving;
+      }
+    });
+
     it('holds a step for one continuation only, across chained awaited hooks', async () => {
       // Two awaited registrations in separate suspensions, each committing a
       // hook write the step could be parked behind. The step is held for the

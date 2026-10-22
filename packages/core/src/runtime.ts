@@ -4610,6 +4610,27 @@ export function workflowEntrypoint(
                                 step.correlationId
                               )
                           );
+                          // Without a retained VM, advance by cold replay before
+                          // running the held batch too: a body may depend on
+                          // work started by the registration's continuation.
+                          if (
+                            holdInlineStepsForHook &&
+                            !retainedSession &&
+                            suspensionResult.awaitedHookCorrelationIds.some(
+                              (id) => !continuedHookIds.has(id)
+                            )
+                          ) {
+                            for (const id of suspensionResult.awaitedHookCorrelationIds) {
+                              continuedHookIds.add(id);
+                            }
+                            for (const step of lazyInlineSteps) {
+                              heldForHookContinuationIds.add(
+                                step.correlationId
+                              );
+                            }
+                            eventLog = nextEventLogLoad(eventLog);
+                            continue;
+                          }
                           if (
                             (holdInlineStepsForHook ||
                               inlineExecutions.length === 0) &&
